@@ -120,12 +120,6 @@ test("agent inspect summary renders placement, grants, manifest, and substitutes
       last_error: "worker offline",
     },
     substitutes: [{ provider: "opencode", model: "zen", variant: "fast" }],
-    active_substitute_index: 0,
-    last_substitution: {
-      substitute_index: 0,
-      reason: "Provider reported a substitutable resource limit: Insufficient balance",
-      activated_at_ms: 1_700_000_000_000,
-    },
   }), [slice({
     id: "slice-wrong",
     name: "wrong-by-worker",
@@ -176,8 +170,8 @@ test("agent inspect summary renders placement, grants, manifest, and substitutes
   assert.match(summary, /extension boundary: home validates every call; credentials never leave home/)
   assert.match(summary, /remote extension sync: failed, pending revoke, hash=abcdef123456, error=worker offline/)
   assert.match(summary, /remote extension next: keep the home revoke in place; run \/extension sync-status agent-remote; run \/machine kernels slice-machine if the revoke stays pending; use \/extension sync-retry agent-remote after the worker reconnects/)
-  assert.match(summary, /substitutes: \*0:opencode\/zen\/fast/)
-  assert.match(summary, /last substitution: Provider reported a substitutable resource limit: Insufficient balance/)
+  assert.match(summary, /substitutes: 0:opencode\/zen\/fast/)
+  assert.doesNotMatch(summary, /last substitution/)
 })
 
 test("agent inspect summary calls out missing slice provider auth", () => {

@@ -82,6 +82,7 @@ pub(crate) use external_observation::{
     observed_role, text_from_content, ExternalProviderObservationPolicy,
     ObservedExternalProviderTurn, ObservedExternalProviderTurnRole,
 };
+pub(crate) use launch_contract::TurnSubstitute;
 pub use launch_contract::{
     canonical_external_provider_session_id, canonical_profile_external_provider_session_id,
     default_provider_control_capabilities, external_provider_import_model,
@@ -122,7 +123,8 @@ pub use opencode_client::{
 pub use process_info::{ProviderProcessInfo, ProviderProcessStatus};
 pub(crate) use prompt_signals::{
     classify_provider_substitutable_failure_text, classify_provider_terminal_failure_output_text,
-    classify_provider_terminal_failure_text, claude_native_stop_failure, provider_retry_status,
+    classify_provider_terminal_failure_text, claude_native_stop_failure,
+    provider_coded_failure_text, provider_retry_status, provider_turn_failure_reason,
     PROVIDER_CONNECTION_RETRY_MERGE_KEY,
 };
 pub use prompt_signals::{

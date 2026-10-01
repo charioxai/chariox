@@ -95,6 +95,9 @@ pub struct RuntimeProviderRun {
     /// Git/SSH bindings, while discovery must scrub ambient parent controls.
     #[serde(skip)]
     read_only_discovery: bool,
+    /// Runtime-only: the failed turn this run reruns on an agent substitute.
+    #[serde(skip)]
+    turn_substitute: Option<super::TurnSubstitute>,
     #[serde(default, skip_serializing_if = "AgentExecutionMode::is_build")]
     execution_mode: AgentExecutionMode,
     #[serde(default, skip_serializing_if = "AgentPermissionLevel::is_yolo")]
@@ -166,6 +169,7 @@ impl RuntimeProviderRun {
             workspace_live_sync_roots: request.workspace_live_sync_roots.clone(),
             preparation_base_path,
             read_only_discovery: false,
+            turn_substitute: request.turn_substitute.clone(),
             execution_mode: request.execution_mode.unwrap_or_default(),
             permission_level: request.permission_level.unwrap_or_default(),
             control_capabilities: default_provider_control_capabilities(
@@ -232,6 +236,7 @@ impl RuntimeProviderRun {
             workspace_live_sync_roots: Vec::new(),
             preparation_base_path: None,
             read_only_discovery: false,
+            turn_substitute: None,
             execution_mode: AgentExecutionMode::default(),
             permission_level: AgentPermissionLevel::default(),
             control_capabilities: default_provider_control_capabilities(
@@ -429,6 +434,10 @@ impl RuntimeProviderRun {
         self.execution_mode = execution_mode;
         self.permission_level = permission_level;
         self.touch_activity();
+    }
+
+    pub(crate) fn turn_substitute(&self) -> Option<&super::TurnSubstitute> {
+        self.turn_substitute.as_ref()
     }
 
     pub(crate) fn read_only_discovery(&self) -> bool {

@@ -117,9 +117,6 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
           accountProfile: agent.account_profile ?? null,
           executionMode: agent.execution_mode_override ?? null,
           permissionLevel: agent.permission_level_override ?? null,
-          primaryProvider: agent.primary_provider ?? null,
-          primaryModel: agent.primary_model ?? null,
-          primaryEffort: agent.primary_effort ?? null,
           worktreeId: agent.worktree_id ?? null,
           remoteExecution: agent.remote_execution ? {
             workerMachineId: agent.remote_execution.worker_machine_id,

@@ -315,15 +315,15 @@ fn remote_workflow_completion_preserves_worker_provider_failure_diagnostic() {
         "next review",
         PromptStatus::Queued,
     );
+    assert!(outcome.provider_failed);
     assert!(
         matches!(
             app.prompt_owner_submit_prepared_prompt(session.id(), followup, false)
                 .unwrap(),
-            PromptSubmissionOutcome::Queued { .. }
+            PromptSubmissionOutcome::Started { .. }
         ),
-        "failure settlement must reserve admission until substitute reconciliation finishes"
+        "a leased turn is not rerun on a substitute, so settlement holds no admission"
     );
-    drop(outcome);
 }
 
 #[test]

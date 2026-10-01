@@ -498,6 +498,19 @@ pub struct LaunchProviderRequest {
     pub client_interface: ProviderClientInterface,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_provider_import: Option<ExternalProviderImportMetadata>,
+    /// Runtime-only: this launch reruns one failed turn on an agent substitute.
+    #[serde(skip)]
+    pub(crate) turn_substitute: Option<TurnSubstitute>,
+}
+
+/// Marks a provider run that reruns the failed turn `prompt_id` on an agent
+/// substitute. `tried` lists the substitutes this turn has run on, in order;
+/// the last is this run's. The run serves only that turn; the next turn
+/// starts on the agent's configured profile again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TurnSubstitute {
+    pub(crate) prompt_id: String,
+    pub(crate) tried: Vec<crate::agent::AgentSubstituteProfile>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -639,6 +652,7 @@ impl LaunchProviderRequest {
             structured_endpoint: None,
             client_interface: ProviderClientInterface::Chariox,
             external_provider_import: None,
+            turn_substitute: None,
         }
     }
 
@@ -657,6 +671,18 @@ impl LaunchProviderRequest {
 
     pub fn with_owner_user_id(mut self, owner_user_id: impl Into<String>) -> Self {
         self.owner_user_id = owner_user_id.into();
+        self
+    }
+
+    /// Marks a launch that reruns one failed turn on a substitute. The agent's
+    /// saved provider sessions belong to its configured profile, so the
+    /// substitute starts a new session (`Some(empty)` suppresses them during
+    /// launch preparation) and receives the conversation as a context handoff.
+    pub(crate) fn with_turn_substitute(mut self, turn_substitute: Option<TurnSubstitute>) -> Self {
+        if turn_substitute.is_some() {
+            self.resume_state = Some(ProviderResumeState::default());
+        }
+        self.turn_substitute = turn_substitute;
         self
     }
 

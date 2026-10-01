@@ -20,14 +20,9 @@ const REMOTE_COMPLETION_HARVEST_RESPONSE_TIMEOUT: std::time::Duration =
 pub(crate) struct RemoteRuntimeProjectionOutcome {
     pub(crate) accepted: bool,
     pub(crate) completions: Vec<PromptCompletion>,
-    pub(crate) provider_failure: Option<RemoteProviderFailure>,
-}
-
-#[derive(Debug)]
-pub(crate) struct RemoteProviderFailure {
-    pub(crate) adapter_key: String,
-    pub(crate) message: String,
-    pub(crate) profile_transition: crate::runtime::prompt_state::AgentProfileTransitionClaim,
+    /// A leased workflow turn failed on the worker's provider. Substitutes
+    /// rerun only local turns, so the home settles it without one.
+    pub(crate) provider_failed: bool,
 }
 
 impl<'a> RemoteLeaseRuntime<'a> {
@@ -1026,10 +1021,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
                                 .and_then(|run| run.terminal_diagnostic().map(str::to_string))
                                 .filter(|message| !message.trim().is_empty())
                         });
-                    let failure_details = failed_provider
-                        .as_ref()
-                        .zip(provider_diagnostic.as_ref())
-                        .map(|(run, message)| (run.adapter_key().to_string(), message.clone()));
+                    let provider_failed =
+                        failed_provider.is_some() && provider_diagnostic.is_some();
                     let (failure_kind, failure_message, notice_message) = if let Some(diagnostic) =
                         provider_diagnostic
                     {
@@ -1081,31 +1074,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         projected_settled_at_ms.unwrap_or_else(crate::session::unix_epoch_ms),
                         projected_termination.clone(),
                     );
-                    let completed = if let Some((adapter_key, message)) = failure_details {
-                        let session = self.app.sessions.get_session(session_id)?;
-                        let Some((completed, profile_transition)) = self
-                            .app
-                            .prompt_state_owner()
-                            .complete_active_prompt_and_claim_profile_transition(
-                            &session,
-                            agent_id,
-                            active_prompt.id(),
-                        )?
-                        else {
-                            return Ok(outcome);
-                        };
-                        self.app
-                            .mirror_prompt_owner_agent_state(session_id, agent_id)?;
-                        outcome.provider_failure = Some(RemoteProviderFailure {
-                            adapter_key,
-                            message,
-                            profile_transition,
-                        });
-                        completed
-                    } else {
-                        self.app
-                            .prompt_owner_complete_active_prompt_only(session_id, agent_id)?
-                    };
+                    let completed = self
+                        .app
+                        .prompt_owner_complete_active_prompt_only(session_id, agent_id)?;
+                    outcome.provider_failed = provider_failed;
                     crate::transport::flow_control::clear_prompt_activity(
                         self.app,
                         provider_run_id,

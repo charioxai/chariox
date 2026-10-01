@@ -384,7 +384,7 @@ impl KernelRuntimeState {
             .to_string();
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(25);
         loop {
-            self.owned.reap_structured_prompt_jobs();
+            self.reap_structured_prompt_jobs_and_dispatch();
             let session = self.owned.session_store.get_session(session_id)?;
             let cancelling = self
                 .owned

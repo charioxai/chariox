@@ -1738,13 +1738,10 @@ async fn source_agent_substitute_change_retires_idle_materialized_pool_copies() 
             &session_id,
             source.id(),
             crate::session::DEFAULT_LOCAL_USER_ID,
-            crate::local::AgentSubstituteAction::Activate {
-                index: 0,
-                reason: Some("resource exhausted".to_string()),
-            },
+            crate::local::AgentSubstituteAction::Remove { index: 0 },
         )
         .await
-        .expect("source substitute activation should retire stale copies");
+        .expect("source substitute change should retire stale copies");
 
     let session = runtime
         .owned

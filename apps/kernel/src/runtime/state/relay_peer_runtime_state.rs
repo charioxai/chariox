@@ -926,10 +926,9 @@ impl KernelRuntimeState {
         });
         let session_id = session_id.to_string();
         let agent_id = agent_id.to_string();
-        let provider_run_id = provider_run_id.to_string();
         let projection_session_id = session_id.clone();
         let projection_agent_id = agent_id.clone();
-        let projection_provider_run_id = provider_run_id.clone();
+        let projection_provider_run_id = provider_run_id.to_string();
         let outcome = self
             .with_app_side_effect(move |app| {
                 RemoteLeaseRuntime::new(app).project_remote_runtime_projection(
@@ -947,15 +946,8 @@ impl KernelRuntimeState {
         if !outcome.accepted {
             return Ok(());
         }
-        if let Some(failure) = outcome.provider_failure {
-            self.finish_remote_provider_failure(
-                &session_id,
-                &agent_id,
-                &provider_run_id,
-                &outcome.completions,
-                failure,
-            )
-            .await?;
+        if outcome.provider_failed {
+            self.finish_remote_provider_failure(&session_id, &outcome.completions)?;
         }
         for completion in outcome.completions {
             self.inject_metaagent_turn_completion_event(&session_id, &agent_id, &completion)?;

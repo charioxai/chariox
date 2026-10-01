@@ -668,6 +668,13 @@ impl KernelRuntimeState {
             &agent_id,
             &completion.completion,
         )?;
+        if provider_run.turn_substitute().is_some()
+            && completion.completion.completed.workflow_run_id().is_none()
+        {
+            // The configured profile never saw this turn; its next turn gets it.
+            owned.prepare_turn_substitute_return_handoff(&provider_run);
+        }
+        let started_next_on_run = completion.completion.started_next.is_some();
         if let Some(dispatch) = completion.dispatch {
             if let Err(error) = self
                 .enqueue_prompt_dispatch_after_liveness(&dispatch, owned)
@@ -680,6 +687,11 @@ impl KernelRuntimeState {
                 .session_store
                 .write()
                 .clear_workflow_run_settling(session_id, workflow_run_id)?;
+        }
+        if provider_run.turn_substitute().is_some() && !started_next_on_run {
+            // The substitute served only this turn; the next starts on the agent's profile.
+            self.retire_owned_provider_run_after_terminal_failure(session_id, provider_run_id)
+                .await;
         }
         if defer_queued_prompt {
             let session_id_for_queue = session_id.to_string();

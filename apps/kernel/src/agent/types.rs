@@ -181,13 +181,6 @@ fn normalize_optional_profile(value: Option<String>) -> Option<String> {
     })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentSubstitutionRecord {
-    pub substitute_index: usize,
-    pub reason: String,
-    pub activated_at_ms: u64,
-}
-
 impl GridPosition {
     pub fn new(row: u32, col: u32, row_span: u32, col_span: u32) -> Self {
         Self {
@@ -199,7 +192,10 @@ impl GridPosition {
     }
 }
 
+/// Serialized through `AgentInstance::serialize`/`deserialize` (derived with
+/// `remote = "Self"`) so loading can migrate retired sticky-substitution state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self")]
 pub struct AgentInstance {
     id: String,
     agent_ref: String,
@@ -218,12 +214,6 @@ pub struct AgentInstance {
     effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     account_profile: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    primary_provider: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    primary_model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    primary_effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     execution_mode_override: Option<AgentExecutionMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -246,16 +236,6 @@ pub struct AgentInstance {
     remote_extension_manifest_sync: Option<RemoteExtensionManifestSyncStatus>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     substitutes: Vec<AgentSubstituteProfile>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    active_substitute_index: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    last_substitution: Option<AgentSubstitutionRecord>,
-    /// Account bound to the stored primary profile. Captured whenever the
-    /// primary profile is snapshotted so returning from a substitute restores
-    /// the exact primary account. Absent on legacy records means the default
-    /// account.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    primary_account_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     substitution_timeout_ms: Option<u64>,
     #[serde(
@@ -299,9 +279,6 @@ impl AgentInstance {
             model,
             effort,
             account_profile: None,
-            primary_provider: None,
-            primary_model: None,
-            primary_effort: None,
             execution_mode_override: None,
             permission_level_override: None,
             workspace_id: None,
@@ -313,9 +290,6 @@ impl AgentInstance {
             extension_grants: Vec::new(),
             remote_extension_manifest_sync: None,
             substitutes: Vec::new(),
-            active_substitute_index: None,
-            last_substitution: None,
-            primary_account_profile: None,
             substitution_timeout_ms: None,
             visible_in_freeform: true,
             state: AgentState::Idle,
@@ -389,36 +363,6 @@ impl AgentInstance {
 
     pub fn provider_account_profile(&self) -> &str {
         self.account_profile.as_deref().unwrap_or("default")
-    }
-
-    pub fn primary_provider(&self) -> &str {
-        self.primary_provider
-            .as_deref()
-            .unwrap_or(self.provider.as_str())
-    }
-
-    pub fn primary_model(&self) -> Option<&str> {
-        if self.primary_provider.is_some() {
-            self.primary_model.as_deref()
-        } else {
-            self.model.as_deref()
-        }
-    }
-
-    pub fn primary_effort(&self) -> Option<&str> {
-        if self.primary_provider.is_some() {
-            self.primary_effort.as_deref()
-        } else {
-            self.effort.as_deref()
-        }
-    }
-
-    pub fn primary_account_profile(&self) -> Option<&str> {
-        if self.primary_provider.is_some() {
-            self.primary_account_profile.as_deref()
-        } else {
-            self.account_profile.as_deref()
-        }
     }
 
     pub fn execution_mode_override(&self) -> Option<AgentExecutionMode> {
@@ -503,14 +447,6 @@ impl AgentInstance {
         &self.substitutes
     }
 
-    pub fn active_substitute_index(&self) -> Option<usize> {
-        self.active_substitute_index
-    }
-
-    pub fn last_substitution(&self) -> Option<&AgentSubstitutionRecord> {
-        self.last_substitution.as_ref()
-    }
-
     pub fn substitution_timeout_ms(&self) -> Option<u64> {
         self.substitution_timeout_ms
     }
@@ -558,9 +494,6 @@ impl AgentInstance {
         self.model = None;
         self.effort = None;
         self.account_profile = None;
-        self.primary_provider = None;
-        self.primary_model = None;
-        self.primary_effort = None;
         self.execution_mode_override = None;
         self.permission_level_override = None;
         self.controlled_by_metaagent_id = None;
@@ -573,8 +506,6 @@ impl AgentInstance {
         self.external_provider_import = None;
         self.extension_grants.clear();
         self.substitutes.clear();
-        self.active_substitute_index = None;
-        self.last_substitution = None;
         self.substitution_timeout_ms = None;
         self
     }
@@ -650,37 +581,6 @@ impl AgentInstance {
 
     pub fn set_account_profile(&mut self, account_profile: Option<String>) {
         self.account_profile = normalized_agent_account_profile(account_profile);
-    }
-
-    pub fn set_primary_profile(
-        &mut self,
-        provider: impl Into<String>,
-        model: Option<String>,
-        effort: Option<String>,
-    ) {
-        self.primary_provider = Some(provider.into());
-        self.primary_model = model;
-        self.primary_effort = effort;
-        self.primary_account_profile = self.account_profile.clone();
-    }
-
-    /// Directly rewrites the stored primary snapshot (used for primary-profile
-    /// edits while a substitute is active; the running substitute is untouched).
-    /// A literal `default` sentinel is normalized away so stored snapshots keep
-    /// `None` for the default account.
-    pub fn set_primary_profile_snapshot(
-        &mut self,
-        provider: impl Into<String>,
-        model: Option<String>,
-        effort: Option<String>,
-        account_profile: Option<String>,
-    ) {
-        self.primary_provider = Some(provider.into());
-        self.primary_model = model;
-        self.primary_effort = effort;
-        self.primary_account_profile =
-            normalized_agent_account_profile(account_profile.filter(|value| value != "default"));
-        self.last_activity_at_ms = crate::session::unix_epoch_ms();
     }
 
     pub fn set_execution_mode_override(&mut self, execution_mode: Option<AgentExecutionMode>) {
@@ -837,6 +737,20 @@ impl AgentInstance {
         self.revoke_extension(ExtensionKind::Connector, name);
     }
 
+    /// This agent with one substitute's execution profile. Used only to launch
+    /// the provider run that reruns a failed turn; the stored agent keeps its
+    /// configured profile.
+    pub(crate) fn with_substitute_profile(mut self, profile: &AgentSubstituteProfile) -> Self {
+        self.provider = profile.provider.clone();
+        self.model = Some(profile.model.clone());
+        self.effort = profile.variant.clone();
+        self.account_profile = normalized_agent_account_profile(profile.account_profile.clone());
+        if let Some(worktree_id) = profile.worktree_id.as_ref() {
+            self.worktree_id = Some(worktree_id.clone());
+        }
+        self
+    }
+
     pub fn add_substitute(&mut self, profile: AgentSubstituteProfile) {
         self.substitutes.push(profile);
         self.last_activity_at_ms = crate::session::unix_epoch_ms();
@@ -847,18 +761,7 @@ impl AgentInstance {
             return None;
         }
         let removed = self.substitutes.remove(index);
-        match self.active_substitute_index {
-            Some(active) if active == index => self.deactivate_substitute(),
-            Some(active) if active > index => {
-                let shifted_active = active - 1;
-                self.active_substitute_index = Some(shifted_active);
-                if let Some(record) = self.last_substitution.as_mut() {
-                    record.substitute_index = shifted_active;
-                }
-                self.last_activity_at_ms = crate::session::unix_epoch_ms();
-            }
-            _ => self.last_activity_at_ms = crate::session::unix_epoch_ms(),
-        }
+        self.last_activity_at_ms = crate::session::unix_epoch_ms();
         Some(removed)
     }
 
@@ -871,85 +774,69 @@ impl AgentInstance {
         }
         let profile = self.substitutes.remove(from_index);
         self.substitutes.insert(to_index, profile);
-        if let Some(active) = self.active_substitute_index {
-            let moved_active = if active == from_index {
-                to_index
-            } else if from_index < active && active <= to_index {
-                active - 1
-            } else if to_index <= active && active < from_index {
-                active + 1
-            } else {
-                active
-            };
-            self.active_substitute_index = Some(moved_active);
-            if let Some(record) = self.last_substitution.as_mut() {
-                record.substitute_index = moved_active;
-            }
-        }
         self.last_activity_at_ms = crate::session::unix_epoch_ms();
         true
     }
 
     pub fn clear_substitutes(&mut self) {
-        let had_active = self.active_substitute_index.is_some();
         self.substitutes.clear();
-        if had_active {
-            self.deactivate_substitute();
-        } else {
-            self.active_substitute_index = None;
-            self.last_substitution = None;
-            self.last_activity_at_ms = crate::session::unix_epoch_ms();
-        }
+        self.last_activity_at_ms = crate::session::unix_epoch_ms();
     }
 
     pub fn set_substitution_timeout_ms(&mut self, timeout_ms: Option<u64>) {
         self.substitution_timeout_ms = timeout_ms;
         self.last_activity_at_ms = crate::session::unix_epoch_ms();
     }
+}
 
-    pub fn activate_substitute(
-        &mut self,
-        index: usize,
-        reason: impl Into<String>,
-    ) -> Option<AgentSubstituteProfile> {
-        let profile = self.substitutes.get(index)?.clone();
-        if self.active_substitute_index.is_none() {
-            // Entering substitution from the primary profile: snapshot the full
-            // primary profile so returning to primary restores it exactly, even
-            // across persistence restarts.
-            self.primary_provider = Some(self.provider.clone());
-            self.primary_model = self.model.clone();
-            self.primary_effort = self.effort.clone();
-            self.primary_account_profile = self.account_profile.clone();
-        }
-        let account_profile = normalized_agent_account_profile(profile.account_profile.clone());
-        self.provider = profile.provider.clone();
-        self.model = Some(profile.model.clone());
-        self.effort = profile.variant.clone();
-        self.account_profile = account_profile;
-        self.active_substitute_index = Some(index);
-        self.last_substitution = Some(AgentSubstitutionRecord {
-            substitute_index: index,
-            reason: reason.into(),
-            activated_at_ms: crate::session::unix_epoch_ms(),
-        });
-        self.last_activity_at_ms = crate::session::unix_epoch_ms();
-        Some(profile)
+impl Serialize for AgentInstance {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        AgentInstance::serialize(self, serializer)
     }
+}
 
-    pub fn deactivate_substitute(&mut self) {
-        let was_active = self.active_substitute_index.take().is_some();
-        self.provider = self.primary_provider().to_string();
-        self.model = self.primary_model().map(str::to_string);
-        self.effort = self.primary_effort().map(str::to_string);
-        if was_active || self.primary_provider.is_some() {
-            self.account_profile = normalized_agent_account_profile(
-                self.primary_account_profile().map(str::to_string),
-            );
-        }
-        self.last_substitution = None;
-        self.last_activity_at_ms = crate::session::unix_epoch_ms();
+impl<'de> Deserialize<'de> for AgentInstance {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut value = serde_json::Value::deserialize(deserializer)?;
+        restore_legacy_substitute_primary(&mut value);
+        AgentInstance::deserialize(value).map_err(serde::de::Error::custom)
     }
+}
+
+/// Substitutes run only for the turn whose provider failed, so no agent stays
+/// on one. Before protocol 388 an agent could be persisted on a substitute with
+/// its configured profile kept in `primary_*`; load such an agent on that
+/// primary profile and drop the retired fields. Its saved provider sessions
+/// were the substitute's, so the primary starts a new one.
+fn restore_legacy_substitute_primary(value: &mut serde_json::Value) {
+    let Some(agent) = value.as_object_mut() else {
+        return;
+    };
+    let on_substitute = agent
+        .remove("active_substitute_index")
+        .is_some_and(|index| !index.is_null());
+    agent.remove("last_substitution");
+    let primary = [
+        ("primary_provider", "provider"),
+        ("primary_model", "model"),
+        ("primary_effort", "effort"),
+        ("primary_account_profile", "account_profile"),
+    ]
+    .map(|(legacy, field)| (field, agent.remove(legacy)));
+    let has_primary = primary[0]
+        .1
+        .as_ref()
+        .is_some_and(|provider| !provider.is_null());
+    if !on_substitute || !has_primary {
+        return;
+    }
+    for (field, legacy_value) in primary {
+        agent.insert(
+            field.to_string(),
+            legacy_value.unwrap_or(serde_json::Value::Null),
+        );
+    }
+    agent.remove("provider_resume_state");
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

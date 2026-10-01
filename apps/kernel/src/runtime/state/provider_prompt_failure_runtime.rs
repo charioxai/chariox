@@ -1,4 +1,4 @@
-//! Provider prompt failure forwarding, local settlement, and substitute activation.
+//! Provider prompt failure forwarding, local settlement, and substitute reruns.
 
 use super::*;
 
@@ -64,8 +64,18 @@ impl KernelRuntimeState {
             safe_message
         };
 
+        let failed_attempt = FailedProviderAttempt {
+            provider_run: &provider_run,
+            agent_id: &agent_id,
+            message,
+            safe_message: &safe_message,
+            project_failure_output,
+            record_diagnostic: expected_prompt_id.is_some(),
+            termination: provider_termination.as_ref(),
+        };
         let mut expected_active_prompt = None;
         let mut expected_completion = None;
+        let mut attempt_recorded = false;
         if let Some(expected_prompt_id) = expected_prompt_id {
             let session = owned.session_store.get_session(session_id)?;
             let Some(active_prompt) = owned
@@ -95,6 +105,15 @@ impl KernelRuntimeState {
                 self.retire_owned_provider_run_after_terminal_failure(session_id, provider_run_id)
                     .await;
                 return Ok(true);
+            }
+            // Reruns dispatch to a new provider run whose output pump can fail
+            // back into this path; keep that future off the caller's stack.
+            match Box::pin(self.rerun_failed_turn_on_substitute(&failed_attempt, &active_prompt))
+                .await?
+            {
+                SubstituteRerun::Started => return Ok(true),
+                SubstituteRerun::Exhausted => attempt_recorded = true,
+                SubstituteRerun::NotApplicable => {}
             }
             let completion = match owned
                 .fail_local_prompt_without_advance_with_termination_if_matches(
@@ -128,8 +147,6 @@ impl KernelRuntimeState {
             return Ok(true);
         }
 
-        self.clear_failed_provider_resume_state_from_message(&provider_run, message)?;
-
         let session = owned.session_store.get_session(session_id)?;
         let active_prompt = if let Some(active_prompt) = expected_active_prompt {
             active_prompt
@@ -138,32 +155,30 @@ impl KernelRuntimeState {
                 .prompt_state_owner
                 .active_prompt_for_agent(&session, &agent_id)
             else {
+                self.clear_failed_provider_resume_state_from_message(&provider_run, message)?;
                 return Ok(false);
             };
+            if active_prompt.is_external() {
+                self.clear_failed_provider_resume_state_from_message(&provider_run, message)?;
+                let _ = owned.clear_prompt_activity(provider_run_id);
+                let _ = owned.sync_focused_provider_run_if_idle(session_id);
+                let _ = owned.session_snapshot(session_id);
+                return Ok(true);
+            }
+            // Reruns dispatch to a new provider run whose output pump can fail
+            // back into this path; keep that future off the caller's stack.
+            match Box::pin(self.rerun_failed_turn_on_substitute(&failed_attempt, &active_prompt))
+                .await?
+            {
+                SubstituteRerun::Started => return Ok(true),
+                SubstituteRerun::Exhausted => attempt_recorded = true,
+                SubstituteRerun::NotApplicable => {}
+            }
             active_prompt
         };
-        if active_prompt.is_external() {
-            let _ = owned.clear_prompt_activity(provider_run_id);
-            let _ = owned.sync_focused_provider_run_if_idle(session_id);
-            let _ = owned.session_snapshot(session_id);
-            return Ok(true);
+        if !attempt_recorded {
+            self.record_failed_provider_attempt(&failed_attempt).await?;
         }
-        if expected_prompt_id.is_some() {
-            let diagnosed = owned
-                .provider_store
-                .record_terminal_diagnostic(provider_run_id, message.to_string())?;
-            owned.provider_run_projection.update(diagnosed);
-        }
-        if project_failure_output {
-            owned.record_provider_failure_output(
-                session_id,
-                provider_run_id,
-                &agent_id,
-                &safe_message,
-            );
-        }
-        self.retire_owned_provider_run_after_terminal_failure(session_id, provider_run_id)
-            .await;
         let _ = self.inject_metaagent_turn_failure_event(
             session_id,
             &agent_id,
@@ -202,23 +217,6 @@ impl KernelRuntimeState {
                 message,
             );
         }
-        // Settle the failed turn first, then choose its successor provider before
-        // preparing any queued work. Otherwise admission retries the exhausted
-        // account and can return before automatic substitution is reached.
-        if let Some(reason) = crate::provider::classify_provider_substitutable_failure_text(
-            provider_run.adapter_key(),
-            message,
-        ) {
-            let _ = self
-                .activate_substitute_after_provider_failure(
-                    session_id,
-                    &agent_id,
-                    provider_run_id,
-                    &reason,
-                    None,
-                )
-                .await;
-        }
         if workflow_failed {
             let dispatches = owned.workflow_maybe_start_next_queued_prompt(session_id);
             owned
@@ -252,6 +250,34 @@ impl KernelRuntimeState {
             }
         }
         Ok(true)
+    }
+
+    /// Keeps a failed provider attempt visible and retires its run.
+    pub(super) async fn record_failed_provider_attempt(
+        &self,
+        attempt: &FailedProviderAttempt<'_>,
+    ) -> Result<(), DaemonError> {
+        let provider_run = attempt.provider_run;
+        let session_id = provider_run.session_id();
+        self.clear_failed_provider_resume_state_from_message(provider_run, attempt.message)?;
+        if attempt.record_diagnostic {
+            let diagnosed = self
+                .owned
+                .provider_store
+                .record_terminal_diagnostic(provider_run.id(), attempt.message.to_string())?;
+            self.owned.provider_run_projection.update(diagnosed);
+        }
+        if attempt.project_failure_output {
+            self.owned.record_provider_failure_output(
+                session_id,
+                provider_run.id(),
+                attempt.agent_id,
+                attempt.safe_message,
+            );
+        }
+        self.retire_owned_provider_run_after_terminal_failure(session_id, provider_run.id())
+            .await;
+        Ok(())
     }
 
     fn clear_failed_provider_resume_state_from_message(
@@ -480,42 +506,25 @@ impl KernelRuntimeState {
         )
         .await
     }
+}
 
-    pub(super) async fn activate_substitute_after_provider_failure(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-        provider_run_id: &str,
-        reason: &str,
-        profile_transition: Option<crate::runtime::prompt_state::AgentProfileTransitionClaim>,
-    ) -> bool {
-        // Failure reconciliation is nested inside output/liveness/restart
-        // polling. Keep the account-transfer and worker-confirmation future
-        // off those callers' stacks, including when this branch is not taken.
-        match Box::pin(
-            self.activate_next_agent_substitute_after_failure_with_claim(
-                session_id,
-                agent_id,
-                reason,
-                profile_transition,
-            ),
-        )
-        .await
-        {
-            Ok(activated) => activated,
-            Err(error) => {
-                crate::logging::warn_with_fields(
-                    "daemon.provider",
-                    "automatic substitute activation after provider failure failed",
-                    serde_json::json!({
-                        "session_id": session_id,
-                        "agent_id": agent_id,
-                        "provider_run_id": provider_run_id,
-                        "error": error.to_string(),
-                    }),
-                );
-                false
-            }
-        }
-    }
+/// One provider attempt at a turn that the provider failed.
+pub(super) struct FailedProviderAttempt<'a> {
+    pub(super) provider_run: &'a crate::provider::RuntimeProviderRun,
+    pub(super) agent_id: &'a str,
+    pub(super) message: &'a str,
+    pub(super) safe_message: &'a str,
+    pub(super) project_failure_output: bool,
+    pub(super) record_diagnostic: bool,
+    pub(super) termination: Option<&'a crate::provider::ProviderRunTermination>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SubstituteRerun {
+    /// The turn is not a local provider failure with a substitute left.
+    NotApplicable,
+    /// The turn is running again on a substitute.
+    Started,
+    /// The failed attempt was recorded, but no substitute could start.
+    Exhausted,
 }

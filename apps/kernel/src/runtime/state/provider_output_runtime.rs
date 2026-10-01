@@ -16,7 +16,7 @@ impl KernelRuntimeState {
         initial_liveness_already_checked: bool,
     ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
         let owned = &self.owned;
-        owned.reap_structured_prompt_jobs();
+        self.reap_structured_prompt_jobs_and_dispatch();
         let mut provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
         let uses_structured_prompt_io = provider_run_uses_structured_output_pump(&provider_run);
         if !initial_liveness_already_checked
@@ -310,7 +310,7 @@ impl KernelRuntimeState {
     > {
         let owned = &self.owned;
         let projected_session = owned.session_projection.get(session_id);
-        owned.reap_structured_prompt_jobs();
+        self.reap_structured_prompt_jobs_and_dispatch();
         owned.ensure_attachment_in_session(session_id, attachment_id)?;
         self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
         let session = owned.session_store.get_session(session_id)?;

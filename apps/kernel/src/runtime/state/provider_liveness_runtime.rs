@@ -323,15 +323,19 @@ impl KernelRuntimeState {
             Some(termination.clone()),
         )
         .await?;
-        let started_next_prompt = self
+        let next_active_prompt = self
             .owned
             .prompt_state_owner
-            .active_prompt_for_agent(&self.owned.session_store.get_session(session_id)?, agent_id)
-            .is_some();
+            .active_prompt_for_agent(&self.owned.session_store.get_session(session_id)?, agent_id);
+        // A turn rerun on a substitute is still this run's turn, not a closed
+        // one; its rerun notice already names the exit.
+        let rerun_on_substitute = next_active_prompt
+            .as_ref()
+            .is_some_and(|prompt| prompt.id() == active_prompt.id());
         Ok(crate::app::ProviderRunExitSessionSummary {
-            had_active_prompt: true,
+            had_active_prompt: !rerun_on_substitute,
             cancelled_prompt: false,
-            started_next_prompt,
+            started_next_prompt: next_active_prompt.is_some(),
         })
     }
 }

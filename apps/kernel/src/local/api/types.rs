@@ -200,4 +200,11 @@ pub use workspace::*;
 /// Version 385 adds `RevokeAppFileGrants` (`AppFileGrantsRevoked`): the owner
 /// ends an installation's file requests and the grants its App has not
 /// imported, all of them or one request's.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 385;
+/// Version 388 makes agent substitutes per-turn only: a turn that fails with a
+/// provider error is rerun on the next substitute in order, and the next turn
+/// starts on the agent's configured profile again. `AgentSubstituteAction`
+/// loses `Activate` and `Primary`; `AgentInstance` loses `primary_provider`,
+/// `primary_model`, `primary_effort`, `primary_account_profile`,
+/// `active_substitute_index` and `last_substitution`. An agent persisted on a
+/// substitute loads on its primary profile.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 388;

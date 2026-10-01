@@ -35,6 +35,7 @@ use permission::{codex_permission_policy, workspace_live_sync_codex_permission_g
 
 pub use auth::{ProviderAuthStatus, ProviderLoginStart};
 pub use health::{codex_endpoint_is_healthy, CODEX_ENDPOINT_STARTUP_TIMEOUT};
+pub(crate) use notifications::codex_error_text;
 pub use notifications::CodexNotification;
 pub use socket_io::CodexSocket;
 pub use thread_runtime::{CodexThread, CodexThreadStartResponse};
@@ -984,6 +985,81 @@ mod tests {
                     context_tokens: None,
                     context_window: Some(128_000),
                 },
+            })
+        );
+    }
+
+    #[test]
+    fn parse_notification_frames_codex_errors_with_their_structured_code() {
+        let parse = |method: &str, params: serde_json::Value| {
+            parse_notification(JsonRpcMessage {
+                id: None,
+                method: Some(method.to_string()),
+                params: Some(params),
+                result: None,
+                error: None,
+            })
+        };
+        let at_capacity = "Selected model is at capacity. Please try a different model.";
+        assert_eq!(
+            parse(
+                "error",
+                json!({
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "willRetry": false,
+                    "error": {"message": at_capacity, "codexErrorInfo": "serverOverloaded"}
+                })
+            ),
+            Some(CodexNotification::Error {
+                message: format!("Codex error [server_overloaded]: {at_capacity}"),
+            })
+        );
+        assert_eq!(
+            parse(
+                "turn/completed",
+                json!({
+                    "threadId": "thread-1",
+                    "turn": {
+                        "id": "turn-1",
+                        "status": "failed",
+                        "error": {
+                            "message": "stream closed",
+                            "codexErrorInfo": {"httpConnectionFailed": {"httpStatusCode": 502}}
+                        }
+                    }
+                })
+            ),
+            Some(CodexNotification::TurnCompleted {
+                turn_id: "turn-1".to_string(),
+                status: "failed".to_string(),
+                error_message: Some(
+                    "Codex error [http_connection_failed]: stream closed".to_string()
+                ),
+                items: Vec::new(),
+            })
+        );
+        // The rollout spelling carries the same code.
+        assert_eq!(
+            parse(
+                "error",
+                json!({"error": {"message": at_capacity, "codex_error_info": "server_overloaded"}})
+            ),
+            Some(CodexNotification::Error {
+                message: format!("Codex error [server_overloaded]: {at_capacity}"),
+            })
+        );
+        // A retried error is progress and keeps its text as sent.
+        assert_eq!(
+            parse(
+                "error",
+                json!({
+                    "willRetry": true,
+                    "error": {"message": "Reconnecting... 1/5", "codexErrorInfo": "serverOverloaded"}
+                })
+            ),
+            Some(CodexNotification::Error {
+                message: "Reconnecting... 1/5".to_string(),
             })
         );
     }

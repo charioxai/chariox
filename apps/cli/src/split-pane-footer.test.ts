@@ -143,13 +143,12 @@ test("formatSplitPaneFooterParts includes mode and permission overrides", () => 
   )
 })
 
-test("formatSplitPaneFooterParts shows active substitute summary", () => {
+test("formatSplitPaneFooterParts counts per-turn substitutes", () => {
   const parts = formatSplitPaneFooterParts({
     ...primaryAgent,
     substitutes: [
       { provider: "codex", model: "gpt-5.4", variant: "high" },
     ],
-    active_substitute_index: 0,
   }, null, null)
   assert.deepEqual(
     parts.map((part) => ({
@@ -160,7 +159,7 @@ test("formatSplitPaneFooterParts shows active substitute summary", () => {
       { kind: "agent", text: "Planner" },
       { kind: "provider", text: "OpenAI" },
       { kind: "model", text: "GPT-5.4" },
-      { kind: "substitute", text: "sub 1: codex/gpt-5.4/high" },
+      { kind: "substitute", text: "1 sub" },
     ],
   )
 })

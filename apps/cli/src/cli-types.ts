@@ -12,7 +12,6 @@ import type { SessionHistoryTranscriptEntry as KernelSessionHistoryTranscriptEnt
 import type {
   AgentInstance as KernelAgentInstance,
   AgentSubstituteProfile as KernelAgentSubstituteProfile,
-  AgentSubstitutionRecord as KernelAgentSubstitutionRecord,
   CharioxConnectorAdapterDefinition as KernelCharioxConnectorAdapterDefinition,
   CharioxConnectorDefinition as KernelCharioxConnectorDefinition,
   CharioxCredentialConfig as KernelCharioxCredentialConfig,
@@ -290,8 +289,6 @@ export type AgentInstance = KernelAgentInstance
 export type RemoteExtensionManifestSyncStatus = KernelRemoteExtensionManifestSyncStatus
 
 export type AgentSubstituteProfile = KernelAgentSubstituteProfile
-
-export type AgentSubstitutionRecord = KernelAgentSubstitutionRecord
 
 export type PromptQueueItem = KernelPromptQueueItem
 
