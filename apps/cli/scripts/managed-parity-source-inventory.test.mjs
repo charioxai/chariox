@@ -1932,7 +1932,7 @@ for (const pinned of FINAL_ARCHIVE_DECLARATIONS) {
 test("MP-11 independent ledger covers each inspected scope without authorizing scope expansion", () => {
   assert.equal(new Set(INDEPENDENT_REVIEW_GROUPS.map(group => group.ruleId)).size, 134);
   assert.ok(INDEPENDENT_REVIEW_GROUPS.every(group => SOURCE_AUDIT_RULES.some(rule => rule.id === group.ruleId)));
-  assert.equal(SOURCE_AUDIT_RULES.length, 146);
+  assert.equal(SOURCE_AUDIT_RULES.length, 147);
   assert.equal(new Set(DEFAULT_SEMANTIC_DISPOSITIONS.map(review => review.id)).size, DEFAULT_SEMANTIC_DISPOSITIONS.length);
   const first = DEFAULT_SEMANTIC_DISPOSITIONS[0];
   assert.equal(evaluateSemanticDisposition(first.anchor, { commit: first.sourceCommit, tree: first.sourceTree }, DEFAULT_SEMANTIC_DISPOSITIONS).status, "reviewed");
@@ -2053,9 +2053,9 @@ const MP11B_SCOPE_FIXTURES = [
   {"id": "mp11b-runtime-projection-fixture", "path": "packages/kernel-client/src/session-runtime-projection.test-support.ts", "blob": "e196b7a3d2fe1ca8af77ce037f667fc3c0f93922", "excerpt": [[17, "export function workspaceLiveSyncStatus("]], "outsideLine": 37},
   {"id": "mp11b-soak-sandbox-root-guard", "path": "apps/cli/scripts/lib/browser-computer-soak-runtime.mjs", "blob": "d2041162b4ed01208f69dd2e91cbd888ec093a54", "excerpt": [[853, "export function assertSandboxCapableChromiumIdentity({"]], "outsideLine": 867},
   {"id": "mp11b-ready-machine-forced-preparation", "path": "apps/cli/src/waiting-room-controller.ts", "blob": "be39b058449d1d81ff7ff48a95b19d92dba20a23", "excerpt": [[396, "function waitingRoomManagedLaunchSelection("]], "outsideLine": 429},
-  {"id": "mp11b-ready-machine-transfer-workspace-reset", "path": "apps/cli/src/waiting-room-managed-environment-launch-controller.ts", "blob": "425614771545f3ef80e7ff14c1f04136e9336b64", "excerpt": [[257, "          const workspacePath = primaryWorkspacePath(launchTarget)"], [304, "function managedProjectPreparation("]], "outsideLine": 345},
-  {"id": "mp11b-ready-machine-launch-choice-reset", "path": "apps/cli/src/cli-waiting-room-composition.ts", "blob": "ab33e3ceb9b296663ff7d7365c1ab89a6a26e3af", "excerpt": [[547, "  const prepareManagedSessionLaunch = async ("]], "outsideLine": 637},
-  {"id": "mp11b-ready-machine-execution-worker-reset", "path": "apps/web/src/terminal/waiting-room-managed-environment-launch-controller.ts", "blob": "51c98a6e90f1e48ca1097bf6ac172f6b70caa95b", "excerpt": [[122, "    const attempt: ManagedLaunchAttempt = {"], [196, "          const selectedKernelId = waitingRoomSelectedKernelRef(this.deps.state())"]], "outsideLine": 248}
+  {"id": "mp11b-ready-machine-transfer-workspace-reset", "path": "apps/cli/src/waiting-room-managed-environment-launch-controller.ts", "blob": "d82059e8aa84243145387136fbb4375672655704", "excerpt": [[313, "function managedProjectPreparation("], [264, "          const workspacePath = primaryWorkspacePath(launchTarget)"], [323, "  const workspacePath = primaryWorkspacePath(launchTarget)"]], "outsideLine": 357},
+  {"id": "mp11b-ready-machine-launch-choice-reset", "path": "apps/cli/src/cli-waiting-room-composition.ts", "blob": "78ff8a8a8e119e7082d60bed642c5cc49c87146a", "excerpt": [[558, "  const prepareManagedSessionLaunch = async ("]], "outsideLine": 654},
+  {"id": "mp11b-ready-machine-execution-worker-reset", "path": "apps/web/src/terminal/waiting-room-managed-environment-launch-controller.ts", "blob": "05f6edbb5c5cb293ebf45b5ffc15f560ea6b5c41", "excerpt": [[384, "    const readyState = updateWaitingRoomKernelData(this.deps.state(), {"]], "outsideLine": 425}
 ];
 
 for (const pinned of MP11B_SCOPE_FIXTURES) {
@@ -2135,3 +2135,31 @@ test("MP-11 release D Cloud scopes are not missing OSS source declarations", () 
     assert.ok(!report.sourceAuditGaps.some((gap) => gap.ruleId.startsWith("impld-auto-stop-")))
   })
 })
+
+test("MP-02/MP-08/MP-11 enrolled launch adapter observation stays independently unreviewed", () => {
+  const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === "enrolled-machine-common-launch-adapter");
+  assert.ok(rule);
+  for (const blob of [rule.blob, "e".repeat(40)]) {
+    withFixture({}, (fixture) => {
+      fixture.addFile(rule.path, "export function prepareWaitingRoomEnrolledLaunch(options) { return options; }\n", "100644", blob);
+      const report = collect(fixture);
+      const candidate = report.entries.find((entry) => entry.sourceClassification?.ruleId === rule.id);
+      assert.ok(candidate);
+      assert.equal(candidate.semanticDisposition.status, "unreviewed");
+      assert.equal(candidate.sourceClassification.authoritative, false);
+      assert.equal(candidate.sourceClassification.independentDisposition, "pending");
+      assert.equal(candidate.sourceClassification.classification, blob === rule.blob
+        ? "shared_enrolled_machine_launch_adapter" : null);
+    });
+  }
+});
+
+
+test("MP-02/MP-08/MP-11 enrolled Cloud launch scopes do not require missing OSS files", () => {
+  const rules = SOURCE_AUDIT_RULES.filter(rule => rule.repository === "cloud");
+  assert.ok(rules.some(rule => rule.id === "mp11b-ready-machine-execution-worker-reset"));
+  withFixture({}, fixture => {
+    const report = collect(fixture);
+    assert.ok(!report.sourceAuditGaps.some(gap => rules.some(rule => rule.id === gap.ruleId)));
+  });
+});

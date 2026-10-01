@@ -1187,3 +1187,37 @@ final heads, commands, exit codes, resources, aggregate results and cleanup.
 Independent aggregate review, final signed provenance, effective host policy,
 real provider STOP with disk/user-state persistence and the fresh-machine MP-10
 matrix remain open. No MP acceptance item is closed by these source tests.
+
+
+## MP-02/MP-08/MP-11 enrolled-machine start follow-up (implD2, release D)
+
+Ready-machine corrections belong to parity3 `ead7d3d89` / `d0638173`.
+This lane extends those corrections to an existing enrolled machine that is
+stopped when Start begins. Previously, lifecycle reconciliation returned to
+initial transfer preparation: the CLI reloaded the original launch target and
+its Project/path defaults; Web reselected the recorded kernel and reset worker,
+Project, worktree and slice choices. Both use ordinary selected launch inputs
+once enrollment exists, while initial deployment still supplies transfer defaults.
+
+OSS runtime `2ba8a709170fcb82d1288346bef02dc7987cfb69` uses the existing consumed
+context-manifest binding, returns connection ownership without a transfer lookup,
+and routes selected Project setup through the named common launch adapter.
+Cloud runtime `c718a7a9553db941da4dc21f52e8fdf7e0a7aada` retains an existing ready
+or stopped runtime binding throughout lifecycle reconciliation. No serialized
+runtime shape or protocol version changes in these follow-up commits.
+
+MP-11 rebinds the three affected source scopes and inventories the new named
+adapter. All 21 frozen removal anchors in those scopes remain immutable
+historical reviews; their changed-source implementation observations stay
+independently pending. The external per-anchor resolution ledger binds every
+old commit/tree/blob/line to the corrected source observation. No new exception
+is added beyond signed deployment and mandatory automatic shutdown.
+
+Fail-first regressions reproduce transfer-target retrieval and recorded-kernel
+reset on the dependency sources. Final focused source suites pass OSS 95/95
+and Web 100/100, with zero skips, plus full CLI/Web type checks. These synthetic
+source tests do not establish signed-release, live provider, automatic shutdown,
+or MP-10 fresh-machine acceptance. Runtime review and deployment comparison
+remain open. Exact commands, source identities, resource samples, intermediate
+RED diagnostics and cleanup are retained under
+`/root/.codex/evidence/browser-resume-20260930/implD2/`.

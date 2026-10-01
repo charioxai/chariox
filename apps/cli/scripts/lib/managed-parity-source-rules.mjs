@@ -2788,21 +2788,29 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
   },
   {
     "id": "mp11b-ready-machine-transfer-workspace-reset",
-    "sourceCommit": "ead7d3d89a9d80377a2f9f60513715b3d3bd9780",
+    "sourceCommit": "2ba8a709170fcb82d1288346bef02dc7987cfb69",
     "path": "apps/cli/src/waiting-room-managed-environment-launch-controller.ts",
-    "blob": "425614771545f3ef80e7ff14c1f04136e9336b64",
+    "blob": "d82059e8aa84243145387136fbb4375672655704",
     "ranges": [
       [
-        245,
-        275
+        24,
+        38
       ],
       [
-        304,
-        340
+        89,
+        104
+      ],
+      [
+        247,
+        294
+      ],
+      [
+        311,
+        352
       ]
     ],
-    "classification": "initial_enrollment_transfer_defaults",
-    "rationale": "MP-02/MP-08/MP-11: This unchanged transfer-target constructor is now reachable only from initial or pending enrollment preparation. Ready launch bypasses it at waitingRoomManagedLaunchSelection. Its defaults no longer replace ordinary ready-session choices.",
+    "classification": "shared_enrolled_launch_and_initial_transfer_defaults",
+    "rationale": "MP-02/MP-08/MP-11: an existing consumed context manifest identifies enrolled machines before lifecycle reconciliation. They return the ordinary connection without reading the original launch target or binding Project setup to its primary workspace. Initial deployment still supplies transfer defaults. Source tests cover ready and stopped enrollment, no transfer-target lookup and connection ownership.",
     "anchors": [
       [
         "client_projection",
@@ -2814,22 +2822,22 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
       ]
     ],
     "openFindings": [
-      "MP-08/MP-10/MP-11: Implementation-source disposition only; independent exact-head review, signed aggregate, fresh ordinary/Path-1 comparison and cleanup acceptance remain open. Historical removal findings are not rewritten."
+      "MP-02/MP-08/MP-10/MP-11: implementation observation only; independent exact-head semantic review, signed aggregate release and fresh-machine comparison remain pending."
     ]
-  },
+  }
   {
     "id": "mp11b-ready-machine-launch-choice-reset",
-    "sourceCommit": "ead7d3d89a9d80377a2f9f60513715b3d3bd9780",
+    "sourceCommit": "2ba8a709170fcb82d1288346bef02dc7987cfb69",
     "path": "apps/cli/src/cli-waiting-room-composition.ts",
-    "blob": "ab33e3ceb9b296663ff7d7365c1ab89a6a26e3af",
+    "blob": "78ff8a8a8e119e7082d60bed642c5cc49c87146a",
     "ranges": [
       [
-        547,
-        632
+        546,
+        649
       ]
     ],
-    "classification": "initial_enrollment_transfer_defaults",
-    "rationale": "MP-02/MP-08/MP-11: The unchanged prepared-launch composition applies transfer defaults only after initial/pending enrollment. Ready launch carries no managedEnvironment input and enters common activation directly. This caller restriction is tested; unchanged historical findings remain frozen.",
+    "classification": "shared_enrolled_launch_composition",
+    "rationale": "MP-02/MP-08/MP-11: enrolled launches use the named common launch adapter and one shared Project setup callback without writing pending cwd/worktree or stripping Project/worker/slice choices. Only initial deployment applies transfer defaults. The adapter tests preserve all ordinary configuration, selected Project binding, cancellation and rollback.",
     "anchors": [
       [
         "client_projection",
@@ -2837,40 +2845,41 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
       ]
     ],
     "openFindings": [
-      "MP-08/MP-10/MP-11: Implementation-source disposition only; independent exact-head review, signed aggregate, fresh ordinary/Path-1 comparison and cleanup acceptance remain open. Historical removal findings are not rewritten."
+      "MP-02/MP-08/MP-10/MP-11: implementation observation only; independent exact-head semantic review, signed aggregate release and fresh-machine comparison remain pending."
     ]
-  },
+  }
   {
     "id": "mp11b-ready-machine-execution-worker-reset",
-    "sourceCommit": "d0638173d10e1fa6040741d72da455d9847b4322",
+    "sourceCommit": "c718a7a9553db941da4dc21f52e8fdf7e0a7aada",
     "path": "apps/web/src/terminal/waiting-room-managed-environment-launch-controller.ts",
-    "blob": "51c98a6e90f1e48ca1097bf6ac172f6b70caa95b",
+    "blob": "05f6edbb5c5cb293ebf45b5ffc15f560ea6b5c41",
     "ranges": [
       [
-        119,
-        149
+        116,
+        157
       ],
       [
-        183,
-        243
+        186,
+        259
+      ],
+      [
+        335,
+        420
       ]
     ],
-    "classification": "shared_ready_machine_launch",
-    "rationale": "MP-02/MP-08/MP-11: Initial detail readiness selects the common existing-ready route. It connects the chosen authorized kernel, keeps workspace/Project/worker/slice choices, and clears the obsolete transfer setup target. It skips getLaunchTarget/applyReadyTarget; initial deployment still receives transfer defaults.",
+    "classification": "shared_enrolled_machine_launch_after_start",
+    "rationale": "MP-02/MP-08/MP-11: a ready or stopped existing machine with a runtime enrollment binding retains ordinary selections while start reconciles. Its selected discovered kernel, worker, cwd/worktree, Project and slice survive, and the original transfer target is not requested. Initial deployment defaults remain separate. This extends parity3 ready-launch correction to stopped-machine start.",
     "anchors": [
       [
         "client_projection",
-        "attempt"
-      ],
-      [
-        "client_projection",
-        "selectedKernelId"
+        "readyState"
       ]
     ],
     "openFindings": [
-      "MP-08/MP-10/MP-11: Implementation-source disposition only; independent exact-head review, signed aggregate, fresh ordinary/Path-1 comparison and cleanup acceptance remain open. Historical removal findings are not rewritten."
-    ]
-  },
+      "MP-02/MP-08/MP-10/MP-11: implementation observation only; independent exact-head semantic review, signed aggregate release and fresh-machine comparison remain pending."
+    ],
+    "repository": "cloud"
+  }
   {
     "id": "parity3-supervisor-broker-response-owner",
     "sourceCommit": "ead7d3d89a9d80377a2f9f60513715b3d3bd9780",
@@ -3141,6 +3150,29 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
     "openFindings": [
       "MP-10/MP-11: implementation observation only; independent changed-source review, signed aggregate/fresh-machine comparison, live provider/user-state proof and cleanup remain open. Frozen removal dispositions remain tied to their original sources."
     ]
+  },
+  {
+    "id": "enrolled-machine-common-launch-adapter",
+    "sourceCommit": "2ba8a709170fcb82d1288346bef02dc7987cfb69",
+    "path": "apps/cli/src/waiting-room-enrolled-launch.ts",
+    "blob": "0dff1071c8e28b71ae6df0ecfeb2008d64ceddae",
+    "ranges": [
+      [
+        1,
+        35
+      ]
+    ],
+    "classification": "shared_enrolled_machine_launch_adapter",
+    "rationale": "MP-02/MP-08/MP-11: named adapter preserves ordinary user configuration after enrolled-machine start and routes selected Project setup through the common callback under owned cancellation/rollback. It neither reads transfer defaults nor mutates path targets.",
+    "anchors": [
+      [
+        "client_projection",
+        "prepareWaitingRoomEnrolledLaunch"
+      ]
+    ],
+    "openFindings": [
+      "MP-02/MP-08/MP-10/MP-11: independent changed-source review, signed release and fresh-machine comparison remain pending."
+    ]
   }
 ]);
 
@@ -3215,7 +3247,7 @@ export function sourceAuditGaps(files, locatedAnchors) {
   const gaps = [];
   for (const rule of SOURCE_AUDIT_RULES) {
     const file = byPath.get(rule.path);
-    const applies = [CLOUD, CLOUD_CURRENT, CLOUD_PARITY3, CLOUD_IMPLD].includes(rule.sourceCommit) ? cloud : oss;
+    const applies = (rule.repository === "cloud" || [CLOUD, CLOUD_CURRENT, CLOUD_PARITY3, CLOUD_IMPLD].includes(rule.sourceCommit)) ? cloud : oss;
     if (!file) {
       if (applies) gaps.push({ kind: "expected_source_missing", ruleId: rule.id, path: rule.path,
         auditedBlob: rule.blob, auditSourceCommit: rule.sourceCommit, authoritative: false });
