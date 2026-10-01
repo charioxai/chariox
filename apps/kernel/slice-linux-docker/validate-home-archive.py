@@ -46,6 +46,10 @@ if __name__ == "__main__":
     try:
         with tarfile.open(fileobj=sys.stdin.buffer, mode="r|") as archive:
             validate_members(archive)
+        # Read to EOF. Exiting at the end-of-archive marker can close this pipe
+        # before the decoder's writer has ended, which fails a valid archive.
+        while sys.stdin.buffer.read(1 << 16):
+            pass
     except (ValueError, tarfile.TarError, OSError):
         print("Slice restore refused an unsupported archive layout; existing private state is preserved", file=sys.stderr)
         sys.exit(1)
