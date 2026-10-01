@@ -1,5 +1,3 @@
-import { cliOnlyAppVerbs, isTuiOnlyAppCommand } from "./app-command-catalog.js"
-
 export type SessionCommandAction = "create" | "new" | "attach" | "list" | "ls" | "status" | "info" | "inspect" | "delete"
 
 export type ParsedSlashCommand =
@@ -364,10 +362,10 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
 
 export function sharedShellCommandForSlashCommand(input: string): string | null {
   const command = input.trim()
-  // Local file bytes and retained transfer IDs belong to this terminal controller.
-  const [, appVerb, appSubcommand] = /^\/app\s+(\S+)(?:\s+(\S+))?/.exec(command) ?? []
-  if (appVerb && (cliOnlyAppVerbs.has(appVerb) || isTuiOnlyAppCommand(appVerb, appSubcommand) || appVerb === "install" || appVerb === "update")) return null
-  if (/^\/app(?:\s|$)/.test(command)) return command.slice(1)
+  // `/app` runs in this terminal's App handler, never the shared shell: the
+  // shell tokenizer strips the quotes of an inbox test's JSON payload. The
+  // handler (appSlashArgs) keeps that payload exact, like the web palette.
+  if (/^\/app(?:\s|$)/.test(command)) return null
   if (command === "/settings prompts" || command.startsWith("/settings prompts ")) {
     return command.slice(1)
   }

@@ -137,7 +137,8 @@ test("file revoke reaches the kernel from the standalone CLI and TUI", async () 
       ...(operation ? { operation_id: operation } : {}) } }
     assert.deepEqual(await cliRequests(args), [request])
     assert.deepEqual(await tuiRequests(args), [request])
-    assert.equal(sharedShellCommandForSlashCommand(`/app ${args.join(" ")}`), `app ${args.join(" ")}`)
+    // Every `/app` stays in the TUI's App handler (#695), never the shared shell.
+    assert.equal(sharedShellCommandForSlashCommand(`/app ${args.join(" ")}`), null)
   }
   assert.match(tuiAppHelp().join("\n"), /file revoke INSTALLATION \[OPERATION\]/)
 })

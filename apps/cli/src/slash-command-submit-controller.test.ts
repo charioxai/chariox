@@ -1,6 +1,8 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
+import { handleAppSlashCommand } from "./app-command-handler.js"
+import { sharedShellCommandForSlashCommand } from "./commands.js"
 import {
   createSlashCommandSubmitController,
   type SlashCommandSubmitControllerDeps,
@@ -74,6 +76,47 @@ test("App slash commands work while no session is attached", async () => {
   assert.deepEqual(harness.recordedHistory(), [])
   assert.equal(harness.commandCenterClearCount(), 1)
 })
+
+for (const [label, raw, request] of [
+  ["a bare double-quoted JSON inbox payload", '/app inbox test todo mail occ-1 {"step":"request","n":1}',
+    { TestAppInboxRoute: { installation_id: "todo", route_id: "mail", occurrence_id: "occ-1", payload: { step: "request", n: 1 } } }],
+  ["a single-quoted inbox payload with spaces", `/app inbox test todo mail occ-1 '{"title":"a  b"}'`,
+    { TestAppInboxRoute: { installation_id: "todo", route_id: "mail", occurrence_id: "occ-1", payload: { title: "a  b" } } }],
+  ["a quoted route ID with spaces and a single-quoted payload", `/app inbox test todo "mail route" occ-1 '{"title":"a  b"}'`,
+    { TestAppInboxRoute: { installation_id: "todo", route_id: "mail route", occurrence_id: "occ-1", payload: { title: "a  b" } } }],
+  ["a copied next-page command", '/app list --after "todo"', { ListAppInstallations: { after: "todo", limit: null } }],
+] as const) {
+  test(`${label} reaches the kernel through the TUI's App handler, not the shared shell`, async () => {
+    const harness = createHarness({
+      attached: true,
+      // The TUI's real routing: only lines the shared shell owns go there.
+      handleSharedShellCommand: async (command) => {
+        if (sharedShellCommandForSlashCommand(command) === null) return false
+        harness.sharedCommands().push(command)
+        return true
+      },
+    })
+    const requests: unknown[] = []
+    harness.deps.handleAppCommand = command => handleAppSlashCommand({
+      sendAppRequest: async (sent) => {
+        requests.push(sent)
+        return "TestAppInboxRoute" in sent
+          ? { AppInboxOccurrenceAccepted: { installation_id: "todo", route_id: "mail", occurrence_id: "occ-1", duplicate: false } }
+          : { AppInstallationsListed: { installations: [], next_cursor: null } }
+      },
+      appendNotice: () => {},
+      flashFooter: message => assert.fail(message),
+    }, command)
+    const controller = createSlashCommandSubmitController(harness.deps)
+
+    const command = await controller.submit(raw, { allowSlashCommandSubmission: true })
+
+    assert.equal(command?.kind, "app")
+    assert.deepEqual(harness.sharedCommands(), [])
+    assert.deepEqual(requests, [request])
+    assert.deepEqual(harness.footerMessages(), [])
+  })
+}
 
 test("slash command submit dispatches Room environment commands", async () => {
   const harness = createHarness({ attached: true })

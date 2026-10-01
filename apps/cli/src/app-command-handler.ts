@@ -1,7 +1,7 @@
 import { open, readFile, rm, stat } from "node:fs/promises"
 import { basename } from "node:path"
 import { grantAppFileRequest, saveAppFileExportRequest } from "@chariox/kernel-client/ipc-requests"
-import { appCommandArgs, executeAppCommand } from "@chariox/kernel-client/shell-app-command"
+import { executeAppCommand } from "@chariox/kernel-client/shell-app-command"
 import { tokenizeShellLine } from "@chariox/kernel-client/shell-core"
 import { cliOnlyAppVerbs } from "./app-command-catalog.js"
 import type { AppDevLoop } from "./app-dev-loop.js"
@@ -18,6 +18,47 @@ export type AppCommandHandlerDeps = {
   sendAppRequest?: (request: Record<string, unknown>) => Promise<Record<string, unknown>>
   appendNotice: (message: string) => void
   flashFooter: (message: string, tone: "info" | "error") => void
+}
+
+/** `/app` arguments as the TUI sends them. Quoted words are decoded as the
+ * shell decodes them (so a copied `app list --after "todo"` works), without
+ * variable expansion, as in the web palette. An inbox test's payload is the
+ * rest of the line after its five shell words (which may quote IDs with
+ * spaces): JSON exactly as typed, so a double-quoted object keeps its quotes
+ * and spaces, or a single-quoted word decoded as the shell decoded it. */
+export function appSlashArgs(raw: string): string[] {
+  const line = raw.trim().replace(/^\/app(?:\s+|$)/, "")
+  const [words, payload] = /^inbox\s+test\s/.test(line) ? splitShellWords(line, 5) : [line, ""]
+  if (!payload) return tokenizeShellLine(line)
+  const quoted = payload.startsWith("'") ? tokenizeShellLine(payload) : null
+  return [...tokenizeShellLine(words), quoted?.length === 1 ? quoted[0]! : payload]
+}
+
+/** `line` split after its first `count` shell words, with the quoting and
+ * escapes of `tokenizeShellLine`; the rest is empty when there is none. */
+function splitShellWords(line: string, count: number): [string, string] {
+  let quote: string | null = null
+  let escaping = false
+  let inWord = false
+  let words = 0
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index]!
+    if (escaping) {
+      escaping = false
+    } else if (char === "\\" && quote !== "'") {
+      escaping = true
+    } else if (quote) {
+      if (char === quote) quote = null
+    } else if (char === "'" || char === '"') {
+      quote = char
+    } else if (/\s/.test(char)) {
+      if (inWord && ++words === count) return [line.slice(0, index), line.slice(index).trimStart()]
+      inWord = false
+      continue
+    }
+    inWord = true
+  }
+  return [line, ""]
 }
 
 export async function handleAppSlashCommand(
@@ -138,7 +179,7 @@ export async function handleAppSlashCommand(
     }
     return
   }
-  const result = await executeAppCommand(appCommandArgs(command.raw, command.args), { send: deps.sendAppRequest }, { sessionId: deps.currentAppSessionId?.() })
+  const result = await executeAppCommand(appSlashArgs(command.raw), { send: deps.sendAppRequest }, { sessionId: deps.currentAppSessionId?.() })
   if (!result.ok) {
     deps.flashFooter(result.message ?? "App command failed", "error")
     return
