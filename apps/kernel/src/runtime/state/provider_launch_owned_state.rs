@@ -1117,20 +1117,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("test root should exist");
         let previous_home = std::env::var_os("CHARIOX_HOME");
-        let previous_claude_bin = std::env::var_os("CHARIOX_CLAUDE_BIN");
-        struct RestoreEnvironment(Option<std::ffi::OsString>, Option<std::ffi::OsString>);
+        struct RestoreEnvironment(Option<std::ffi::OsString>);
         impl Drop for RestoreEnvironment {
             fn drop(&mut self) {
                 restore_env("CHARIOX_HOME", self.0.take());
-                restore_env("CHARIOX_CLAUDE_BIN", self.1.take());
             }
         }
-        let _restore = RestoreEnvironment(previous_home, previous_claude_bin);
+        let _restore = RestoreEnvironment(previous_home);
         std::env::set_var("CHARIOX_HOME", &root);
-        std::env::set_var(
-            "CHARIOX_CLAUDE_BIN",
-            std::env::current_exe().expect("test executable should resolve"),
-        );
 
         let vault_path = root.join("credentials.vault");
         let mut config = crate::config::DaemonConfig::for_tests()
@@ -1204,10 +1198,12 @@ mod tests {
         let runtime = owned_runtime_state(&app).await;
         let request = crate::provider::LaunchProviderRequest::new(
             session.id(),
-            "claude",
+            // MP-08/MP-10: forced catalog relaunch exercises the Vault policy
+            // with an inert adapter, rather than executing a test binary as Claude.
+            "dev-stub",
             "claude",
             &profile.profile_id,
-            "claude-sonnet",
+            "runtime-mcp-idle",
         )
         .with_agent_id(agent.id());
         let mut preparation = Box::pin(
