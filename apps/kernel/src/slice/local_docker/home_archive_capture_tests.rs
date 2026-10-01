@@ -74,7 +74,7 @@ exit 0
             "chariox-slice-test-home-archive-1",
             "chariox-slice-test-home",
             &self.root.join("home.tar.zst"),
-            "states",
+            "state",
             "test",
             "slice.test.archive",
         )
@@ -197,7 +197,7 @@ fn home_archive_stream_outer_failure_removes_owned_helper() {
         &record,
         &options,
         &f.root.join("home.tar.zst"),
-        "states",
+        "state",
         "test",
         "test"
     )
@@ -245,7 +245,7 @@ fn home_archive_stream_managed_delegates_before_any_tar() {
             let mut bytes = vec![0; len];
             stream.read_exact(&mut bytes).unwrap();
             let request: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-            let capture = request["kind"] == "home_archive_capture";
+            let capture = request["kind"] == "home_archive_capture" && request["scope"] == "state";
             let start = request["kind"] == "docker" && request["args"][0] == "start";
             let stdout = if capture {
                 serde_json::to_vec(&serde_json::json!({"path":"/fixture/private/home.tar.zst","sizeBytes":14,"sha256":"a".repeat(64)})).unwrap()
@@ -293,7 +293,7 @@ fn home_archive_stream_managed_delegates_before_any_tar() {
         requests[1]["container"],
         "chariox-slice-test-home-archive-1"
     );
-    assert_eq!(requests[1]["scope"], "states");
+    assert_eq!(requests[1]["scope"], "state");
     assert_eq!(requests[1]["id"], "test");
 }
 #[test]
@@ -304,7 +304,7 @@ fn managed_archive_stream_child() {
         "chariox-slice-test-home-archive-1",
         "chariox-slice-test-home",
         Path::new("/must-not-create/home.tar.zst"),
-        "states",
+        "state",
         "test",
         "test",
     )
