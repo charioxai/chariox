@@ -21,7 +21,8 @@ const cargoTargetDir = cargoTargetPath()
 const kernelBinary = absolutePathArg("--kernel-binary", path.join(cargoTargetDir, buildProfile, "chariox-kernel"))
 const clientRoot = absolutePathArg("--client-root", path.join(repoRoot, "packages", "kernel-client", "dist"))
 const dryRun = args.includes("--dry-run")
-const chunkBytes = 65_536
+// Keep each record within the kernel's live provider-output bound.
+const chunkBytes = 16_384
 const chunksPerTick = Math.ceil(bytesPerSecond / chunkBytes)
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const unwrap = (response, key) => response?.[key] ?? response
@@ -81,10 +82,16 @@ try {
   const attachmentId = attached.attachment.id
   let observedEvents = 0
   let observedRecords = 0
+  let observedBytes = 0
   client.onKernelEvent((event) => {
     if (event?.event !== "terminal_output") return
     observedEvents += 1
     observedRecords += event.records?.length ?? 0
+    for (const record of event.records ?? []) {
+      if (record.kind === "prompt_echo" && record.merge_key?.startsWith("soak-")) {
+        observedBytes += record.bytes?.length ?? 0
+      }
+    }
   })
   await client.subscribeToKernelEvents(sessionId, attachmentId)
   const launched = unwrap(await client.send(requests.launchProviderRunsRequest([{
@@ -123,6 +130,8 @@ try {
     }
     const response = unwrap(await client.send(requests.appendNativeProviderOutputBatchRequest(sessionId, attachmentId, outputs)), "TerminalOutput")
     assert.equal(response.records.length, outputs.length)
+    assert.equal(response.records.reduce((total, record) => total + (record.bytes?.length ?? 0), 0), tickBytes,
+      "kernel response truncated terminal output")
     sentBytes += tickBytes
     latencies.push(performance.now() - tickStartedAt)
     if (second % 10 === 0) cpuSamples.push(processMetric(kernel.pid))
@@ -140,7 +149,7 @@ try {
     0.95,
   )
   report = {
-    ok: peakRssMb <= maxRssMb && cpuP95Percent <= maxCpuPercent,
+    ok: peakRssMb <= maxRssMb && cpuP95Percent <= maxCpuPercent && observedBytes === sentBytes,
     buildProfile,
     cargoTargetDir,
     kernelBinary,
@@ -151,6 +160,7 @@ try {
     sentBytes,
     elapsedMs: streamElapsedMs,
     effectiveBytesPerSecond: Math.round((sentBytes * 1_000) / streamElapsedMs),
+    observedBytesPerSecond: Math.round((observedBytes * 1_000) / streamElapsedMs),
     appendLatencyMs: {
       p50: percentile(sorted, 0.5),
       p95: percentile(sorted, 0.95),
@@ -160,6 +170,9 @@ try {
     appendLatencySamplesMs: latencies,
     observedEvents,
     observedRecords,
+    observedBytes,
+    deliveryComplete: observedBytes === sentBytes,
+    deliveryFailure: observedBytes === sentBytes ? null : "terminal subscription did not deliver every accepted byte",
     cpuSamples,
     finalMetric,
     resourceBudget: {
