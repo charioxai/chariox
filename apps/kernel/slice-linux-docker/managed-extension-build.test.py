@@ -37,6 +37,23 @@ def request():
 
 
 class RequestTests(unittest.TestCase):
+    def test_mp08_mp11_build_stream_preserves_diagnostics_above_four_mib(self):
+        with tempfile.TemporaryDirectory(prefix="chariox-extension-output-") as scratch:
+            root = pathlib.Path(scratch)
+            script = root / "capture.py"
+            script.write_text("import importlib.util,os,sys\n"
+                "sys.dont_write_bytecode=True\n"
+                "spec=importlib.util.spec_from_file_location('extension',sys.argv[1]);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)\n"
+                "m.drop_user=lambda *args:None\n"
+                "code=\"import os;[(os.write(fd,b'BEGIN'+b'x'*65536+b'END')) for _ in range(80) for fd in (1,2)]\"\n"
+                "sys.exit(m.capture_build([sys.executable,'-c',code],{'HOME':'/tmp','PATH':'/usr/bin:/bin'},os.getuid(),os.getgid(),[]))\n")
+            with (root / "stdout").open("wb") as out, (root / "stderr").open("wb") as err:
+                result = subprocess.run([sys.executable, "-I", "-S", "-B", str(script), str(SOURCE)], stdout=out, stderr=err, timeout=10)
+            self.assertEqual(result.returncode, 0)
+            expected = (b"BEGIN" + b"x" * 65536 + b"END") * 80
+            for name in ["stdout", "stderr"]:
+                self.assertEqual((root / name).read_bytes(), expected, name)
+
     def test_cache_check_does_not_need_source_paths(self):
         self.assertEqual(extension.validate_request(request())["phase"], "check")
 
@@ -395,7 +412,7 @@ import importlib.util, os, pathlib, sys, time
 sys.dont_write_bytecode=True
 spec=importlib.util.spec_from_file_location("extension",sys.argv[1]);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 before=time.monotonic()
-status=m.run_namespace(lambda:m.capture_build([sys.executable,"-c",sys.argv[3]],{"HOME":"/tmp","PATH":"/usr/bin:/bin"},0,0,[],timeout=3,max_output=1024),pathlib.Path(sys.argv[2]),timeout=5)
+status=m.run_namespace(lambda:m.capture_build([sys.executable,"-c",sys.argv[3]],{"HOME":"/tmp","PATH":"/usr/bin:/bin"},0,0,[],timeout=3),pathlib.Path(sys.argv[2]),timeout=5)
 assert time.monotonic()-before<4
 assert status==int(sys.argv[4]),status
 assert not pathlib.Path(sys.argv[2]).exists()

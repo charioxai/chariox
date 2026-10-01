@@ -818,3 +818,8 @@ These source corrections close no MP acceptance item.
   Machine option. A ready environment alias resolves the same discovered kernel
   list as that Machine; deployment readiness/revision checks still gate the alias.
   Client regression: 1 RED, then 7/7 GREEN, no skips.
+- Extension output: removed the helper's 4 MiB discard budget. Both stdout and
+  stderr stream completely to the supplied private kernel log descriptors in
+  8 KiB chunks, including partial writes. The >4 MiB regression failed first;
+  Python helper suite passes 19/19 with privileged namespace fixtures enabled,
+  no skips. Builder/environment policy remains a separate open correction.

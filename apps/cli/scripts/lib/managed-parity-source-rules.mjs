@@ -1243,17 +1243,88 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
     openFindings: ["Fresh ordinary/Path-1 extension execution, independent semantic disposition and signed deployed acceptance remain pending."],
   },
   {
-    id: "path1-pinned-user-extension-helper",
-    sourceCommit: "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
-    path: "apps/kernel/slice-linux-docker/managed-extension-build.py",
-    blob: "48a185b1de6faac6a15aecd6ad8326856106eec0",
-    ranges: [[1, 524]],
-    classification: "path1_extension_build_adapter",
-    rationale: "The installed helper binds its signed context, full-sudo caller, source descriptors, cwd and protected rootless socket. Read-only context projection preserves native Docker ignore/COPY semantics. The child drops UID/capabilities before caller environment restoration and preserves the caller's existing sudo/setuid authority; endpoint, builder and shell controls remain helper-owned. Socket access adds only the pinned daemon primary or uniquely allocated subordinate GID temporarily. Caller/monitor-bound PID namespaces settle descendants; output retention is bounded without a build deadline. Cleanup reclaims dead owned empty leases before capacity admission, tolerates concurrent removal of the same lease, and still rejects unknown, unowned or nonempty entries. This adapts placement for an already root-capable user and does not establish deployed parity.",
-    anchors: [["managed_only_branch", "normalized_image_reference"], ["managed_only_branch", "validate_request"], ["managed_only_branch", "path1_user"], ["managed_only_branch", "pin_invoker"], ["managed_only_branch", "open_source"], ["managed_only_branch", "pin_cwd"], ["managed_only_branch", "daemon_socket_group"], ["managed_only_branch", "pin_socket"], ["managed_only_branch", "signed_digest"], ["managed_only_branch", "project_context"], ["managed_only_branch", "drop_user"], ["managed_only_branch", "namespace_build"], ["managed_only_branch", "main"], ["cleanup_selector", "scratch_lease"], ["cleanup_selector", "capture_build"], ["cleanup_selector", "run_namespace"]],
-    openFindings: ["Fresh ordinary/Path-1 extension execution, independent semantic disposition and signed deployed acceptance remain pending."],
-  },
-  {
+    "id": "path1-pinned-user-extension-helper",
+    "sourceCommit": "da5c5e1bab4871aa9bd186bd08892f3e627adab8",
+    "path": "apps/kernel/slice-linux-docker/managed-extension-build.py",
+    "blob": "22d027168dc10dcce770eae3e9ccdef352401097",
+    "ranges": [
+      [
+        1,
+        520
+      ]
+    ],
+    "classification": "path1_extension_build_adapter",
+    "rationale": "MP-03/MP-08/MP-11: Caller/source/cwd/socket pins, UID and capability drop, and caller-bound PID namespaces remain. Build stdout/stderr now stream completely in fixed-memory chunks to private kernel logs; no output-volume failure or discard budget remains. Builder/endpoint/startup environment selection remains an open independent removal finding. Frozen semantic conclusions do not approve this changed blob.",
+    "anchors": [
+      [
+        "managed_only_branch",
+        "normalized_image_reference"
+      ],
+      [
+        "managed_only_branch",
+        "validate_request"
+      ],
+      [
+        "managed_only_branch",
+        "path1_user"
+      ],
+      [
+        "managed_only_branch",
+        "pin_invoker"
+      ],
+      [
+        "managed_only_branch",
+        "open_source"
+      ],
+      [
+        "managed_only_branch",
+        "pin_cwd"
+      ],
+      [
+        "managed_only_branch",
+        "daemon_socket_group"
+      ],
+      [
+        "managed_only_branch",
+        "pin_socket"
+      ],
+      [
+        "managed_only_branch",
+        "signed_digest"
+      ],
+      [
+        "managed_only_branch",
+        "project_context"
+      ],
+      [
+        "managed_only_branch",
+        "drop_user"
+      ],
+      [
+        "managed_only_branch",
+        "namespace_build"
+      ],
+      [
+        "managed_only_branch",
+        "main"
+      ],
+      [
+        "cleanup_selector",
+        "scratch_lease"
+      ],
+      [
+        "cleanup_selector",
+        "capture_build"
+      ],
+      [
+        "cleanup_selector",
+        "run_namespace"
+      ]
+    ],
+    "openFindings": [
+      "MP-08/MP-11 builder/environment selection remains removal-required; independent changed-blob review and MP-10 live comparison pending."
+    ]
+  }, {
     "id": "shared-provisioner-extension-cache-and-build",
     "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
     "path": "apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh",

@@ -26,7 +26,6 @@ SUBGID = pathlib.Path("/etc/subgid")
 SCRATCH = pathlib.Path("/run/chariox-slice-extension")
 BASE_IMAGE = "chariox-slice-linux:0.1.0"
 IMAGE_GRAMMAR = json.loads(pathlib.Path(__file__).with_name("docker-image-reference.json").read_text())
-MAX_OUTPUT = 4 * 1024 * 1024
 # Linux exec caps argv+environment at 3/4 of the 8MiB _STK_LIM and
 # each entry at 32 pages. Fivefold overhead covers base64 padding/JSON
 # even for many tiny name/value pairs, plus the fixed request fields.
@@ -351,7 +350,7 @@ def drop_user(uid, gid, groups):
     # authority. Setting no_new_privileges here would narrow that caller policy.
 
 
-def capture_build(argv, environment, uid, gid, groups, timeout=None, max_output=MAX_OUTPUT, caller_cwd_fd=None):
+def capture_build(argv, environment, uid, gid, groups, timeout=None, caller_cwd_fd=None):
     def prepare_child():
         drop_user(uid, gid, groups)
         if caller_cwd_fd is not None:
@@ -365,8 +364,6 @@ def capture_build(argv, environment, uid, gid, groups, timeout=None, max_output=
         os.set_blocking(stream.fileno(), False)
         streams.register(stream, selectors.EVENT_READ)
     deadline = None if timeout is None else time.monotonic() + timeout
-    used = 0
-    truncated = False
     finished_at = None
     try:
         while streams.get_map():
@@ -384,13 +381,12 @@ def capture_build(argv, environment, uid, gid, groups, timeout=None, max_output=
                 if not data:
                     streams.unregister(key.fileobj)
                     continue
-                retained = data[:max(0, max_output - used)]
-                used += len(retained)
-                if retained:
-                    os.write(1 if key.fileobj is process.stdout else 2, retained)
-                if len(retained) < len(data) and not truncated:
-                    os.write(2, b"extension build output truncated after capture limit\n")
-                    truncated = True
+                # The kernel supplies private log descriptors. Stream all build
+                # diagnostics with fixed memory, just like ordinary provisioning.
+                view = memoryview(data)
+                target = 1 if key.fileobj is process.stdout else 2
+                while view:
+                    view = view[os.write(target, view):]
         remaining = None if deadline is None else max(0, deadline - time.monotonic())
         try:
             return process.wait(timeout=remaining)
