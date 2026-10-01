@@ -10,11 +10,14 @@ use chariox_relay::auth::RelaySubjectKind;
 use chariox_relay::protocol::RelayCallerIdentity;
 
 const PASSKEY: &str = "correct horse battery";
+const NEW_PASSKEY: &str = "Correct Horse Battery \u{c9}!";
 
 struct Fixture {
     router: CommandRouter,
     durable: DurableKernelStateStore,
     session: String,
+    /// The agent `/credential vault manage` runs for.
+    agent: String,
     vault: std::path::PathBuf,
 }
 
@@ -72,11 +75,25 @@ impl Fixture {
         }
         let session_id = session.id().to_owned();
         app.sessions_mut().restore_session(session);
+        let agent = format!("vault-agent-{:016x}", rand::random::<u64>());
+        app.agents_mut()
+            .restore_agent(crate::agent::AgentInstance::new(
+                agent.clone(),
+                "vault-agent",
+                session_id.clone(),
+                None,
+                "dev-stub",
+                None,
+                None,
+                None,
+                crate::agent::GridPosition::new(0, 0, 1, 1),
+            ));
         let durable = app.durable_state_store();
         Self {
             router: CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1),
             durable,
             session: session_id,
+            agent,
             vault: vault_path,
         }
     }
@@ -153,6 +170,80 @@ impl Fixture {
             &request,
         );
         self.router.dispatch(command, request).await
+    }
+
+    /// Runs `/credential vault manage`, chooses Change passphrase and
+    /// answers its three secret prompts through `RespondToInteraction`, as a
+    /// client does.
+    async fn change_passphrase(
+        &self,
+        entries: [&str; 3],
+    ) -> Result<(crate::secret::CharioxVaultUnlockStatus, String), DaemonError> {
+        let agent = self.agent.clone();
+        let runtime = self.router.runtime_state.clone();
+        let session = self.session.clone();
+        let manage_agent = agent.clone();
+        let manage = tokio::spawn(async move {
+            runtime
+                .manage_credential_vault_unlock(&session, &manage_agent)
+                .await
+        });
+        let answers = std::iter::once(("change_passphrase", None))
+            .chain(entries.map(|entry| ("passphrase", Some(entry))));
+        let mut answered = std::collections::BTreeSet::new();
+        for (choice, reply) in answers {
+            let prompt = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                loop {
+                    let session = self
+                        .router
+                        .runtime_state
+                        .session_snapshot(&self.session)
+                        .await;
+                    if let Some(prompt) = session
+                        .unwrap()
+                        .active_interaction_for_agent(&agent)
+                        .filter(|prompt| !answered.contains(prompt.id()))
+                    {
+                        break Some(prompt.id().to_owned());
+                    }
+                    if manage.is_finished() {
+                        break None;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("the next vault prompt should appear");
+            let Some(prompt) = prompt else { break };
+            answered.insert(prompt.clone());
+            let request = LocalDaemonRequest::RespondToInteraction(
+                crate::local::RespondToInteractionRequest {
+                    session_id: self.session.clone(),
+                    interaction_id: prompt.clone(),
+                    choice_id: choice.into(),
+                    custom_reply: reply.map(str::to_owned),
+                    passkey: None,
+                    passkey_remember_minutes: None,
+                },
+            );
+            let command =
+                KernelCommand::from_local_request(format!("answer-{prompt}"), None, None, &request);
+            self.router.dispatch(command, request).await.unwrap();
+        }
+        manage.await.unwrap()
+    }
+
+    fn rotations(&self) -> Vec<String> {
+        self.durable
+            .load_subject_events_by_kind("chariox-vault", "critical_approval.passkey_rotation", 50)
+            .unwrap()
+            .into_iter()
+            .map(|event| {
+                assert!(!event.payload.to_string().contains(PASSKEY));
+                assert!(!event.payload.to_string().contains(NEW_PASSKEY));
+                event.payload["outcome"].as_str().unwrap().to_owned()
+            })
+            .collect()
     }
 
     fn refused_with(result: Result<LocalDaemonResponse, DaemonError>, code: &str) {
@@ -600,3 +691,93 @@ async fn a_passkey_from_a_refused_class_is_neither_verified_nor_counted() {
 }
 
 mod passkey_prompts;
+#[tokio::test]
+async fn a_vault_passphrase_change_rotates_the_passkey_and_ends_remember_windows() {
+    let f = Fixture::new(true);
+    crate::secret::unlock_chariox_encrypted_vault(
+        &f.vault,
+        PASSKEY,
+        crate::secret::VaultUnlockLease::KernelShutdown,
+    )
+    .unwrap();
+    // The passkey is pinned, and a remember window is open.
+    let first = f.critical("first").await;
+    f.answer("first", "approve", Some(PASSKEY), Some(5))
+        .await
+        .unwrap();
+    assert_eq!(first.await.unwrap().choice_id.as_deref(), Some("approve"));
+
+    let differ = f.change_passphrase([PASSKEY, NEW_PASSKEY, "typo"]).await;
+    let differ = differ.unwrap_err().to_string();
+    assert!(differ.contains("differ"), "{differ}");
+    let wrong = f
+        .change_passphrase([NEW_PASSKEY, NEW_PASSKEY, NEW_PASSKEY])
+        .await;
+    let wrong = wrong.unwrap_err().to_string();
+    assert!(wrong.contains("incorrect"), "{wrong}");
+    let (status, action) = f
+        .change_passphrase([PASSKEY, NEW_PASSKEY, NEW_PASSKEY])
+        .await
+        .unwrap();
+    assert_eq!(action, "passphrase_changed");
+    assert!(status.unlocked, "the vault stays unlocked");
+
+    // The remember window ended; the old passphrase is no longer the passkey.
+    let second = f.critical("second").await;
+    Fixture::refused_with(
+        f.answer("second", "approve", None, None).await,
+        "PASSKEY_REQUIRED",
+    );
+    Fixture::refused_with(
+        f.answer("second", "approve", Some(PASSKEY), None).await,
+        "PASSKEY_REJECTED",
+    );
+    f.answer("second", "approve", Some(NEW_PASSKEY), None)
+        .await
+        .unwrap();
+    assert_eq!(second.await.unwrap().choice_id.as_deref(), Some("approve"));
+    assert_eq!(f.rotations(), ["rejected", "changed"]);
+    // And the vault opens with the new passphrase only.
+    crate::secret::lock_chariox_encrypted_vault(&f.vault).unwrap();
+    let unlock = |passphrase| {
+        crate::secret::unlock_chariox_encrypted_vault(
+            &f.vault,
+            passphrase,
+            crate::secret::VaultUnlockLease::KernelShutdown,
+        )
+    };
+    assert!(unlock(PASSKEY).is_err());
+    unlock(NEW_PASSKEY).unwrap();
+    crate::secret::lock_chariox_encrypted_vault(&f.vault).unwrap();
+}
+
+#[tokio::test]
+async fn wrong_current_passphrases_count_against_the_passkey_limit() {
+    let f = Fixture::new(true);
+    crate::secret::unlock_chariox_encrypted_vault(
+        &f.vault,
+        PASSKEY,
+        crate::secret::VaultUnlockLease::KernelShutdown,
+    )
+    .unwrap();
+    for _ in 0..5 {
+        let wrong = f
+            .change_passphrase(["guess", NEW_PASSKEY, NEW_PASSKEY])
+            .await;
+        let wrong = wrong.unwrap_err().to_string();
+        assert!(wrong.contains("incorrect"), "{wrong}");
+    }
+    // Locked out: neither a change nor a critical approval checks the passkey.
+    let limited = f
+        .change_passphrase([PASSKEY, NEW_PASSKEY, NEW_PASSKEY])
+        .await;
+    let limited = limited.unwrap_err().to_string();
+    assert!(limited.contains("PASSKEY_RATE_LIMITED"), "{limited}");
+    let _receiver = f.critical("locked").await;
+    Fixture::refused_with(
+        f.answer("locked", "approve", Some(PASSKEY), None).await,
+        "PASSKEY_RATE_LIMITED",
+    );
+    assert_eq!(f.rotations()[5..], ["rate_limited"]);
+    crate::secret::lock_chariox_encrypted_vault(&f.vault).unwrap();
+}

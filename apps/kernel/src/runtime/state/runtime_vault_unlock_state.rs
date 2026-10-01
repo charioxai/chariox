@@ -394,8 +394,140 @@ impl KernelRuntimeState {
             )
             .await?;
         let choice_id = resolution.choice_id.as_deref().unwrap_or("dismiss");
+        if choice_id == "change_passphrase" {
+            return self
+                .change_credential_vault_passphrase(session_id, agent_id, &vault_path)
+                .await;
+        }
         apply_vault_manage_choice(&vault_path, choice_id, &vault_config)
     }
+
+    /// Asks for the current passphrase and the new one twice, each in its own
+    /// secret interaction, then changes it (`change_vault_passphrase`, which
+    /// also rotates the passkey). The current passphrase is checked exactly
+    /// (no case folding), and nothing changes unless both new entries match.
+    async fn change_credential_vault_passphrase(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        vault_path: &std::path::Path,
+    ) -> Result<(crate::secret::CharioxVaultUnlockStatus, String), DaemonError> {
+        let unlock_request_lock = vault_unlock_request_lock(vault_path);
+        let _dedupe_guard = unlock_request_lock.lock().await;
+        let owner = self
+            .owned
+            .session_store
+            .get_session(session_id)?
+            .owner_user_id()
+            .to_owned();
+        let current = self
+            .vault_passphrase_change_entry(session_id, agent_id, VaultPassphraseChangeStep::Current)
+            .await?;
+        let new = self
+            .vault_passphrase_change_entry(session_id, agent_id, VaultPassphraseChangeStep::New)
+            .await?;
+        let repeat = self
+            .vault_passphrase_change_entry(session_id, agent_id, VaultPassphraseChangeStep::Repeat)
+            .await?;
+        if new.as_str() != repeat.as_str() {
+            return Err(DaemonError::LocalTransport {
+                operation: VAULT_PASSPHRASE_CHANGE,
+                message:
+                    "the two new Chariox vault passphrases differ; the passphrase is unchanged"
+                        .to_string(),
+            });
+        }
+        let status = self
+            .change_vault_passphrase(&owner, vault_path, current, new)
+            .await?;
+        crate::logging::info_with_fields(
+            "credential_vault",
+            "Chariox vault passphrase changed",
+            serde_json::json!({
+                "session_id": session_id,
+                "agent_id": agent_id,
+                "path": status.path.display().to_string(),
+            }),
+        );
+        Ok((status, "passphrase_changed".to_string()))
+    }
+
+    async fn vault_passphrase_change_entry(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        step: VaultPassphraseChangeStep,
+    ) -> Result<zeroize::Zeroizing<String>, DaemonError> {
+        let resolution = self
+            .await_vault_interaction(
+                session_id,
+                vault_passphrase_change_interaction(session_id, agent_id, step),
+                VAULT_PASSPHRASE_CHANGE,
+                "vault passphrase change",
+            )
+            .await?;
+        vault_secret_from_resolution(resolution, VAULT_PASSPHRASE_CHANGE, "passphrase change")
+    }
+}
+
+const VAULT_PASSPHRASE_CHANGE: &str = "credential_vault_change_passphrase";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VaultPassphraseChangeStep {
+    Current,
+    New,
+    Repeat,
+}
+
+fn vault_passphrase_change_interaction(
+    session_id: &str,
+    agent_id: &str,
+    step: VaultPassphraseChangeStep,
+) -> crate::session::RuntimeInteraction {
+    let (slug, label, message) = match step {
+        VaultPassphraseChangeStep::Current => (
+            "current",
+            "Current passphrase",
+            "Enter the current vault passphrase (your Chariox passkey). If you set it in the terminal before the case-preserving input fix, it is your passphrase with A-Z in lower case and without spaces or emoji.",
+        ),
+        VaultPassphraseChangeStep::New => (
+            "new",
+            "New passphrase",
+            "Enter the new vault passphrase.",
+        ),
+        VaultPassphraseChangeStep::Repeat => (
+            "repeat",
+            "Repeat new passphrase",
+            "Enter the new vault passphrase again.",
+        ),
+    };
+    crate::session::RuntimeInteraction::new(
+        format!(
+            "vault-passphrase-{slug}-{}-{}",
+            agent_id,
+            crate::session::unix_epoch_ms()
+        ),
+        agent_id,
+        crate::session::RuntimeInteractionKind::Choice,
+        crate::session::RuntimeInteractionLevel::Critical,
+        Some("Change Chariox Vault Passphrase".to_string()),
+        format!("Session `{session_id}`: {message}"),
+        vec![crate::session::RuntimeInteractionChoice::new(
+            "cancel",
+            "Cancel",
+            "cancel",
+            Some(crate::session::RuntimeInteractionChoiceStyle::Danger),
+        )],
+        Some(crate::session::RuntimeInteractionCustomChoice::secret(
+            "passphrase",
+            label,
+            Some("Passphrase".to_string()),
+            Some(1),
+            Some(512),
+        )),
+        Some(300),
+        Some("cancel".to_string()),
+    )
 }
 
 fn vault_passphrase_interaction(
@@ -496,27 +628,35 @@ fn vault_passphrase_from_resolution(
     resolution: super::PendingInteractionResolution,
     operation: &'static str,
 ) -> Result<zeroize::Zeroizing<String>, DaemonError> {
+    vault_secret_from_resolution(resolution, operation, "unlock")
+}
+
+fn vault_secret_from_resolution(
+    resolution: super::PendingInteractionResolution,
+    operation: &'static str,
+    action: &str,
+) -> Result<zeroize::Zeroizing<String>, DaemonError> {
     if resolution.status == "timed_out" {
         return Err(DaemonError::LocalTransport {
             operation,
-            message: "Chariox vault unlock timed out".to_string(),
+            message: format!("Chariox vault {action} timed out"),
         });
     }
     match resolution.choice_id.as_deref() {
         None | Some("cancel") => Err(DaemonError::LocalTransport {
             operation,
-            message: "Chariox vault unlock was cancelled".to_string(),
+            message: format!("Chariox vault {action} was cancelled"),
         }),
         Some("passphrase") => resolution
             .reply
             .map(zeroize::Zeroizing::new)
             .ok_or_else(|| DaemonError::LocalTransport {
                 operation,
-                message: "Chariox vault unlock resolved without a passphrase".to_string(),
+                message: format!("Chariox vault {action} resolved without a passphrase"),
             }),
         Some(_) => Err(DaemonError::LocalTransport {
             operation,
-            message: "Chariox vault unlock resolved without a passphrase".to_string(),
+            message: format!("Chariox vault {action} resolved without a passphrase"),
         }),
     }
 }
@@ -596,7 +736,7 @@ fn vault_manage_interaction(
         crate::session::RuntimeInteractionLevel::Info,
         Some("Chariox Vault Unlocked".to_string()),
         format!(
-            "The Chariox Vault is unlocked for session `{session_id}`. Extend the unlock window or lock it now."
+            "The Chariox Vault is unlocked for session `{session_id}`. Extend the unlock window, change the passphrase, or lock it now."
         ),
         vec![
             crate::session::RuntimeInteractionChoice::new(
@@ -609,6 +749,12 @@ fn vault_manage_interaction(
                 "extend_60m",
                 "Extend 1 hour",
                 "extend_60m",
+                Some(crate::session::RuntimeInteractionChoiceStyle::Secondary),
+            ),
+            crate::session::RuntimeInteractionChoice::new(
+                "change_passphrase",
+                "Change passphrase",
+                "change_passphrase",
                 Some(crate::session::RuntimeInteractionChoiceStyle::Secondary),
             ),
             crate::session::RuntimeInteractionChoice::new(
@@ -751,6 +897,50 @@ mod tests {
         .expect("secret custom choice should resolve the vault passphrase");
 
         assert_eq!(passphrase.as_str(), "correct horse battery staple");
+    }
+
+    #[test]
+    fn vault_manage_offers_a_passphrase_change_through_secret_prompts() {
+        let manage = vault_manage_interaction("session-1", "agent-1");
+        assert!(manage
+            .choices()
+            .iter()
+            .any(|choice| choice.id() == "change_passphrase"));
+
+        for step in [
+            VaultPassphraseChangeStep::Current,
+            VaultPassphraseChangeStep::New,
+            VaultPassphraseChangeStep::Repeat,
+        ] {
+            let interaction = vault_passphrase_change_interaction("session-1", "agent-1", step);
+            assert_eq!(
+                interaction
+                    .choices()
+                    .iter()
+                    .map(|choice| choice.id())
+                    .collect::<Vec<_>>(),
+                vec!["cancel"]
+            );
+            let custom_choice = interaction
+                .custom_choice()
+                .expect("each change step should take secret input");
+            assert_eq!(custom_choice.id(), "passphrase");
+            assert_eq!(
+                custom_choice.input_kind(),
+                crate::session::RuntimeInteractionInputKind::Secret
+            );
+        }
+        let error = vault_secret_from_resolution(
+            resolution(Some("cancel"), Some("cancel")),
+            "test",
+            "passphrase change",
+        )
+        .expect_err("cancel should stop the change");
+        assert!(matches!(
+            error,
+            DaemonError::LocalTransport { message, .. }
+                if message == "Chariox vault passphrase change was cancelled"
+        ));
     }
 
     #[test]
