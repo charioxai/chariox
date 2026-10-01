@@ -828,3 +828,8 @@ These source corrections close no MP acceptance item.
   project identical provisioner settings. The regression failed first on false.
   Production shell argument checks retain the Chromium seccomp profile for false
   and the existing opt-in capability bundle for true; no broker boundary changed.
+- CPU admission: config and broker now consume the same packaged positive
+  decimal/nanocpu policy, including fractional limits and native signed-i64
+  nanocpu bounds. Shared cases reproduced broker rejection of `0.5` and ordinary
+  acceptance of `0` before the fix. The narrow Rust harness and full-kernel CPU
+  regression pass; broker suite passes 29/29 with no skips.

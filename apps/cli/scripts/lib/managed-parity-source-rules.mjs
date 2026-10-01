@@ -63,26 +63,32 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
     "openFindings": [
       "Independent changed-blob review and MP-10 fresh-machine comparison pending."
     ]
-  },  {
+  },
+  {
     "id": "broker-slice-resource-admission",
-    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "sourceCommit": "0680c4358f84a89297411425ca7daf46f3bc3ebb",
     "path": "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
-    "blob": "d606e2c5ca6caa824d883c3a385f375101461160",
+    "blob": "519ac05c7ac7d92e308d441bf95fab26a2ea2467",
     "ranges": [
       [
-        433,
-        433
+        434,
+        434
       ],
       [
-        559,
-        561
+        560,
+        562
       ]
     ],
-    "classification": "open_managed_runtime_difference",
-    "rationale": "MP-08/MP-11: broker-only CPU validation requires a nonzero integer part; the common config accepts any nonempty CPU string and ordinary provisioning forwards it to Docker, including0.5.",
-    "anchors": [["kernel_slice_broker_control", "validateProvisioner"]],
+    "classification": "shared_docker_cpu_admission_policy",
+    "rationale": "MP-08/MP-11: Config validation and broker verification use the packaged positive decimal nanocpu policy. Shared cases include fractional CPUs, zero, invalid/nonfinite decimals, precision and native nanocpu overflow. The broker retains independent request validation; deployment does not select CPU grammar.",
+    "anchors": [
+      [
+        "kernel_slice_broker_control",
+        "validateProvisioner"
+      ]
+    ],
     "openFindings": [
-      "MP-08/MP-11 removal required: Use one positive Docker CPU grammar at common configuration admission and broker verification; cover0.5,2.5 and invalid values on both placements."
+      "Independent changed-blob review and MP-10 fresh-machine comparison pending."
     ]
   },
   {
@@ -413,7 +419,8 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
         "machineOwnsSliceWorkerRef"
       ]
     ]
-  },  {
+  },
+  {
     id: "shared-runtime-token-authority-wiring", sourceCommit: CLOUD,
     path: "apps/api/src/runtime/token-repository.ts",
     blob: "1b7dda73c1aa5e3fb8cbde6ab06bacae0b2fbd63",
@@ -601,7 +608,8 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
     "openFindings": [
       "Fresh ordinary/Path-1 runtime comparison and independent semantic disposition remain pending."
     ]
-  },  {
+  },
+  {
     "id": "hosted-slice-owner-and-token-scope",
     "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
     "path": "apps/kernel/src/runtime/slice_command_executor/lifecycle.rs",
@@ -639,7 +647,8 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
     "openFindings": [
       "Fresh ordinary/Path-1 runtime comparison and independent semantic disposition remain pending."
     ]
-  },  {
+  },
+  {
     id: "managed-bootstrap-machine-profile-shape", sourceCommit: OSS_RUNTIME,
     path: "apps/kernel/src/managed_bootstrap/cloud.rs",
     blob: "746bdf16a934fa34f30795d52e0f9e7f3896145e",

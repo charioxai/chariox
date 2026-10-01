@@ -1185,3 +1185,16 @@ test("request environment cannot override the broker build deadline", async cont
     assert.match(result.stderr, /environment/)
   }
 })
+
+test("MP-08/MP-11 broker CPU admission follows the shared positive Docker CPU cases", async context => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-cpu-policy-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const policy = JSON.parse(await readFile(join(repositoryRoot, "apps/kernel/slice-linux-docker/docker-cpu-policy.json"), "utf8"))
+  for (const [cpus, accepted] of policy.cases) {
+    const result = validate({ kind: "provisioner", action: "recover", environment: {
+      CHARIOX_SLICE_NAME: "chariox-slice-dev", CHARIOX_SLICE_ID: "slice-dev",
+      CHARIOX_SLICE_HOME_VOLUME: "chariox-slice-dev-home", CHARIOX_SLICE_DOCKER_CPUS: cpus,
+    }, files: [] }, root)
+    assert.equal(result.status === 0, accepted, `${JSON.stringify(cpus)}: ${result.stderr}`)
+  }
+})

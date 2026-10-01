@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process"
+import { isPositiveDockerCpuLimit } from "./docker-cpu-policy.mjs"
 import { isDockerImageReference } from "./docker-image-reference.mjs"
 import { HOME_ARCHIVE_PROGRESS_TIMEOUT_MS, capturePrivateHomeArchive, homeArchiveMetadataMatches, isHomeArchiveRestoreRequest } from "./managed-home-archive-stream.mjs"
 import { createHash } from "node:crypto"
@@ -556,7 +557,7 @@ function validateProvisioner(action, environment, files) {
   if (environment.CHARIOX_SLICE_DOCKER_MEMORY && !/^[1-9][0-9]{0,6}[mMgG]$/.test(environment.CHARIOX_SLICE_DOCKER_MEMORY)) {
     fail("CHARIOX_SLICE_DOCKER_MEMORY is invalid")
   }
-  if (environment.CHARIOX_SLICE_DOCKER_CPUS && !/^[1-9][0-9]*(?:\.[0-9]{1,3})?$/.test(environment.CHARIOX_SLICE_DOCKER_CPUS)) {
+  if (environment.CHARIOX_SLICE_DOCKER_CPUS !== undefined && !isPositiveDockerCpuLimit(environment.CHARIOX_SLICE_DOCKER_CPUS)) {
     fail("CHARIOX_SLICE_DOCKER_CPUS is invalid")
   }
   const diskLayerMb = environment.CHARIOX_SLICE_DISK_LAYER_MB
