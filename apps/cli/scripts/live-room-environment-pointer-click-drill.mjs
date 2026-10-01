@@ -29,7 +29,7 @@ import {
   runRoomRealProvider,
 } from "./lib/live-room-real-provider.mjs"
 import { roomProviderBrowserFixture } from "./lib/room-provider-browser-fixture.mjs"
-import { roomCompanionClickFixture } from "./lib/room-companion-click-fixture.mjs"
+import { roomCompanionClickFixture, roomClickFixtureCounterScript } from "./lib/room-companion-click-fixture.mjs"
 import { createDrillInterruption } from "./lib/drill-interruption.mjs"
 import { makeAvailablePorts, portIsAvailable } from "./lib/drill-runtime-helpers.mjs"
 import {
@@ -2733,11 +2733,11 @@ async function startFixture() {
       #browser-action-target{position:fixed;left:16px;top:16px;z-index:3}
     </style></head><body>${webKeyboardText ? '<input id="web-keyboard" type="password" autocomplete="off" aria-label="Web keyboard fixture">' : ''}${webPointerGestures ? '<input data-web-gesture id="web-selection" readonly value="Select this physical text without moving the Room browser window"><div data-web-gesture id="web-scroller"><div id="web-scroll-content"></div></div>' : ''}<main><div id="state">POINTER_CLICK_READY</div>${sharedBrowserStateFixture ? '<div id="room-browser-state">ROOM_BROWSER_STATE_PENDING</div>' : ''}${webKeyboardText ? '<div id="web-keyboard-status">WEB_KEYBOARD_WAITING</div><div id="web-keyboard-replacement-status">WEB_KEYBOARD_REPLACEMENT_WAITING</div>' : ''}${webPointerGestures ? '<div id="web-drag-status">WEB_DRAG_WAITING</div><div id="web-scroll-status">WEB_SCROLL_WAITING</div>' : ''}</main><script>
       ${browserFixture.script}
-      const clickCountStorageKey=${JSON.stringify(physicalClickStorageKey)};
-      const storedClickCount=localStorage.getItem(clickCountStorageKey);
-      let clicks=${browserFixture.initialClicks};
-      if(storedClickCount!==null){const restoredCount=Number(storedClickCount);if(Number.isSafeInteger(restoredCount)&&restoredCount>=0){clicks=restoredCount;document.querySelector("#state").textContent="POINTER_CLICK_COUNT="+clicks}}
-      document.addEventListener("click",(event)=>{if(event.target.closest("[data-web-gesture]"))return;clicks+=1;localStorage.setItem(clickCountStorageKey,String(clicks));document.body.style.background="#69d391";document.querySelector("#state").textContent="POINTER_CLICK_COUNT="+clicks})
+      ${roomClickFixtureCounterScript({
+        storageKey: physicalClickStorageKey,
+        initialClicks: browserFixture.initialClicks,
+        requestUrl: request.url,
+      })}
       ${sharedBrowserStateFixture?.pageScript() ?? ""}
       ${webPointerGestures ? `
       const selection=document.querySelector("#web-selection");
