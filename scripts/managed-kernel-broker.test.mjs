@@ -10,6 +10,7 @@ import { once } from "node:events"
 import { createConnection } from "node:net"
 import { test } from "node:test"
 import { runInNewContext } from "node:vm"
+import { dockerObjectNotFound } from "../apps/kernel/slice-linux-docker/slice-disk-quota-admission.mjs"
 import * as archivePolicy from "../apps/kernel/slice-linux-docker/managed-home-archive-stream.mjs"
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url))
@@ -764,18 +765,52 @@ process.stdout.write(readFileSync(credential))
       contentsBase64: Buffer.from("credential-bytes").toString("base64"),
     }],
   }
-  const result = spawnSync(process.execPath, [broker, "--stdio"], {
-    input: `${JSON.stringify(request)}\n`,
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      CHARIOX_SLICE_DOCKER_SHARE_ROOT: share,
-      CHARIOX_SLICE_DOCKER_BROKER_INPUT_ROOT: inputRoot,
-      CHARIOX_SLICE_DOCKER_PROVISIONER: provisioner,
-      CHARIOX_SLICE_DOCKER_HANDLE_ROOT: join(root, "handles"),
-      CHARIOX_SLICE_DOCKER_HANDLE_STATE: join(root, "handles.json"),
-    },
-  })
+  // A separate process serves Docker's exact missing-owned-container response.
+  // The broker's synchronous control call must not depend on this test loop,
+  // a real daemon, or an operational error being interpreted as absence.
+  const dockerSocket = join(root, "docker.sock")
+  const fixture = spawn(process.execPath, ["--input-type=module", "-e", `
+import http from "node:http"
+const server = http.createServer((request, response) => {
+  response.setHeader("API-Version", "1.47")
+  if (request.url === "/_ping") {
+    response.end("OK")
+  } else if (/^\\/(?:v[0-9.]+\\/)?containers\\/chariox-slice-dev\\/json$/.test(request.url)) {
+    response.writeHead(404, { "Content-Type": "application/json" })
+    response.end(JSON.stringify({ message: "No such container: chariox-slice-dev" }))
+  } else {
+    response.writeHead(500, { "Content-Type": "application/json" })
+    response.end(JSON.stringify({ message: "unexpected synthetic Docker request" }))
+  }
+})
+server.listen(process.argv[1], () => process.stdout.write("ready\\n"))
+`, dockerSocket], { stdio: ["ignore", "pipe", "pipe"] })
+  let result
+  try {
+    const [ready] = await once(fixture.stdout, "data", { signal: AbortSignal.timeout(3000) })
+    assert.equal(ready.toString(), "ready\n")
+    result = spawnSync(process.execPath, [broker, "--stdio"], {
+      input: `${JSON.stringify(request)}\n`,
+      encoding: "utf8",
+      timeout: 5000,
+      killSignal: "SIGKILL",
+      env: {
+        ...process.env,
+        DOCKER_HOST: `unix://${dockerSocket}`,
+        CHARIOX_SLICE_DOCKER_SHARE_ROOT: share,
+        CHARIOX_SLICE_DOCKER_BROKER_INPUT_ROOT: inputRoot,
+        CHARIOX_SLICE_DOCKER_PROVISIONER: provisioner,
+        CHARIOX_SLICE_DOCKER_HANDLE_ROOT: join(root, "handles"),
+        CHARIOX_SLICE_DOCKER_HANDLE_STATE: join(root, "handles.json"),
+      },
+    })
+  } finally {
+    if (fixture.exitCode === null && fixture.signalCode === null) {
+      const closed = once(fixture, "close")
+      fixture.kill("SIGTERM")
+      await closed
+    }
+  }
   const response = JSON.parse(result.stdout)
   const brokerStderr = Buffer.from(response.stderrBase64, "base64").toString()
   assert.equal(result.status, 0, `${result.stderr}${brokerStderr}`)
@@ -1028,7 +1063,7 @@ test("archive-bearing provision and restore preserve healthy progress without wi
     prepareProvisioner: async request => { await new Promise(resolve => setImmediate(resolve)); prepared++; return { environment: request.environment, handles: new Set(), newHandles: new Set() } },
     cleanupPrepared: () => { cleaned++ }, removePersistentHandles: () => {},
     spawnSync: (command, args, options) => {
-      calls.push({ command, args, timeout: options.timeout })
+      calls.push({ command, args, timeout: options.timeout, env: options.env })
       // Scale only the existing outer operation deadlines. The actual tiny
       // child, timeout executable, exit status, and cleanup are exercised.
       const child = ["-e", "setTimeout(() => process.stdout.write('restored'), 120)"]
@@ -1046,6 +1081,7 @@ test("archive-bearing provision and restore preserve healthy progress without wi
     assert.equal(Buffer.from(response.stdoutBase64, "base64").toString(), "restored")
     assert.equal(calls.at(-1).command, process.execPath)
     assert.equal(calls.at(-1).timeout, undefined)
+    assert.equal(calls.at(-1).env.CHARIOX_SLICE_BROKER_BUILD_TIMEOUT_SECONDS, "1200")
   }
   for (const [action, archive] of [["provision", undefined], ["restore-state", ""], ["recover", "/private/home"], ["status", "/private/home"], ["import-provider-auth", "/private/home"]]) {
     const response = await execute({ kind: "provisioner", action, files: [], environment: {
@@ -1057,4 +1093,94 @@ test("archive-bearing provision and restore preserve healthy progress without wi
   }
   assert.equal(prepared, 7)
   assert.equal(cleaned, prepared, "prepared filesystem handles settle on success and timeout")
+})
+
+
+test("broker control commands settle a signal-resistant process and allow the next control", async () => {
+  const source = await readFile(broker, "utf8")
+  const helper = source.slice(source.indexOf("function spawnControl("), source.indexOf("function handleIsMountpoint("))
+  assert.ok(helper, "broker controls must have a bounded execution owner")
+  const calls = []
+  const control = runInNewContext(`${helper}\nspawnControl`, {
+    spawnSync: (command, args, options) => {
+      calls.push({ command, args, options })
+      assert.equal(options.timeout, args.includes("stop") ? 30_000 : 20_000)
+      assert.equal(options.killSignal, "SIGKILL")
+      return spawnSync(process.execPath, ["-e", args.includes("stop")
+        ? "process.on('SIGTERM',()=>{}); process.stderr.write('armed'); setInterval(()=>{},1000)"
+        : "process.stdout.write('next-control')"], { ...options, timeout: 200 })
+    },
+  })
+  const stopped = control("/usr/bin/docker", ["stop", "owned"], { timeout: 30_000, encoding: "utf8" })
+  assert.equal(stopped.error?.code, "ETIMEDOUT")
+  assert.equal(stopped.signal, "SIGKILL")
+  assert.equal(stopped.stderr, "armed", "resistant producer must have started before cancellation")
+  const next = control("/usr/bin/docker", ["container", "inspect", "owned"], { encoding: "utf8" })
+  assert.equal(next.status, 0)
+  assert.equal(next.stdout, "next-control")
+  assert.equal(calls.length, 2)
+})
+
+test("broker mount admission refuses interrupted inspection and bounds stop before mutation", async () => {
+  const source = await readFile(broker, "utf8")
+  const inspect = source.slice(source.indexOf("function inspectContainerMounts("), source.indexOf("function diskQuotaMarkerPresent("))
+  const exact = source.slice(source.indexOf("function requireExactContainerMounts("), source.indexOf("function stagedSharedOutput("))
+  let result = { status: null, signal: "SIGKILL", error: { code: "ETIMEDOUT" } }
+  const calls = []
+  const check = runInNewContext(`${inspect}\n${exact}\nrequireExactContainerMounts`, {
+    spawnControl: (command, args, options) => { calls.push({ command, args, options }); return result },
+    dockerEnvironment: () => ({}), MAX_OUTPUT_BYTES: 1024,
+    dockerObjectNotFound, normalizedMounts: mounts => mounts, fail: message => { throw new Error(message) },
+  })
+  assert.throws(() => check("owned", [], true), /mount inspection failed/)
+  assert.equal(calls.length, 1, "timed out inspection cannot proceed to stop or mount mutation")
+  for (const stderr of ["Cannot connect to the Docker daemon", "permission denied", "Error: No such object: other", "Error: No such object: owned\npermission denied"]) {
+    result = { status: 1, stderr }
+    assert.throws(() => check("owned", [], true), /mount inspection failed/)
+  }
+  result = { status: 1, stderr: "Error: No such object: owned\n" }
+  assert.equal(check("owned", [], true), false, "only exact confirmed absence can skip stop")
+  result = { status: 0, stdout: "[]" }
+  assert.equal(check("owned", [], true), true)
+  assert.deepEqual(Array.from(calls.at(-1).args), ["stop", "owned"])
+  assert.equal(calls.at(-1).options.timeout, 30_000)
+  for (const name of ["handleIsMountpoint", "unmountHandle", "publishHandle", "diskQuotaMarkerPresent", "unboundedQuotaObservation"]) {
+    const body = source.slice(source.indexOf(`function ${name}(`), source.indexOf("\nfunction ", source.indexOf(`function ${name}(`) + 1))
+    assert.match(body, /spawnControl\(/, `${name} must use bounded control execution`)
+    assert.doesNotMatch(body, /spawnSync\(/)
+  }
+})
+
+
+test("broker mountpoint errors cannot become permission to remove a mounted handle", async () => {
+  const source = await readFile(broker, "utf8")
+  const body = source.slice(source.indexOf("function handleIsMountpoint("), source.indexOf("function unmountHandle("))
+  let result
+  const isMountpoint = runInNewContext(`${body}\nhandleIsMountpoint`, {
+    spawnControl: () => result, fail: message => { throw new Error(message) },
+  })
+  for (const status of [1, 2, 124, null]) {
+    result = { status }
+    assert.throws(() => isMountpoint("/owned/handle"), /failed to inspect/)
+  }
+  result = { status: 32, error: { code: "ETIMEDOUT" } }
+  assert.throws(() => isMountpoint("/owned/handle"), /failed to inspect/)
+  result = { status: 32, signal: "SIGKILL" }
+  assert.throws(() => isMountpoint("/owned/handle"), /failed to inspect/)
+  result = { status: 0 }
+  assert.equal(isMountpoint("/owned/handle"), true)
+  result = { status: 32 }
+  assert.equal(isMountpoint("/owned/handle"), false)
+})
+
+test("request environment cannot override the broker build deadline", async context => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-broker-build-policy-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  for (const value of ["0", "1", "1200", "999999"]) {
+    const result = validate({ kind: "provisioner", action: "provision", files: [], environment: {
+      CHARIOX_SLICE_NAME: "chariox-slice-dev", CHARIOX_SLICE_BROKER_BUILD_TIMEOUT_SECONDS: value,
+    } }, root)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /environment/)
+  }
 })

@@ -33,6 +33,7 @@ import { requestSliceDiskQuota, sliceDiskQuotaIdentityFromEnvironment } from "./
 import { validateSliceDiskQuotaIdentity } from "./slice-disk-quota-contract.mjs"
 import { createSliceDiskQuotaCoordinator } from "./slice-disk-quota-coordinator.mjs"
 import {
+  dockerObjectNotFound,
   readSliceDiskQuotaMarkerInspection,
   runWithSliceDiskQuotaAdmission,
 } from "./slice-disk-quota-admission.mjs"
@@ -893,16 +894,27 @@ function handleMetadata(path) {
   }
 }
 
+function spawnControl(command, args, options = {}) {
+  // Fixed broker control commands never carry archive bytes. A stalled daemon
+  // or utility must settle before admission or stable-handle mutation continues.
+  return spawnSync(command, args, {
+    ...options,
+    timeout: options.timeout ?? 20_000,
+    killSignal: "SIGKILL",
+  })
+}
+
 function handleIsMountpoint(path) {
-  const result = spawnSync("/usr/bin/mountpoint", ["-q", "--", path], { stdio: "ignore" })
+  const result = spawnControl("/usr/bin/mountpoint", ["-q", "--", path], { stdio: "ignore" })
+  if (result.error || result.signal) fail("failed to inspect persistent mount handle")
   if (result.status === 0) return true
-  if (Number.isInteger(result.status)) return false
+  if (result.status === 32) return false
   fail("failed to inspect persistent mount handle")
 }
 
 function unmountHandle(path) {
   if (!handleIsMountpoint(path)) return
-  const result = spawnSync("/usr/bin/umount", [path], { stdio: "ignore" })
+  const result = spawnControl("/usr/bin/umount", [path], { stdio: "ignore" })
   if (result.status !== 0) fail("failed to unmount persistent mount handle")
 }
 
@@ -939,7 +951,7 @@ function publishHandle(record, fd) {
   } else if (readdirSync(path).length !== 0) {
     fail("persistent mount handle directory is not empty")
   }
-  const mounted = spawnSync("/usr/bin/mount", ["--bind", "/proc/self/fd/3", path], {
+  const mounted = spawnControl("/usr/bin/mount", ["--bind", "/proc/self/fd/3", path], {
     stdio: ["ignore", "ignore", "ignore", fd],
   })
   if (mounted.status !== 0) fail("failed to publish persistent mount handle")
@@ -1220,12 +1232,16 @@ function normalizedMounts(mounts) {
 }
 
 function inspectContainerMounts(container) {
-  const result = spawnSync(
+  const result = spawnControl(
     "/usr/bin/docker",
     ["container", "inspect", "--format", "{{json .Mounts}}", container],
     { env: dockerEnvironment(), encoding: "utf8", maxBuffer: 1024 * 1024 },
   )
-  if (result.status !== 0) return undefined
+  if (result.error || result.signal) fail("Docker container mount inspection failed")
+  if (result.status !== 0) {
+    if (result.status === 1 && dockerObjectNotFound(result.stderr, "container", container)) return undefined
+    fail("Docker container mount inspection failed")
+  }
   const mounts = JSON.parse(result.stdout)
   if (!Array.isArray(mounts)) fail("Docker container mount inspection is invalid")
   return mounts
@@ -1234,14 +1250,14 @@ function inspectContainerMounts(container) {
 }
 
 function diskQuotaMarkerPresent(container) {
-  const inspectedContainer = spawnSync(
+  const inspectedContainer = spawnControl(
     "/usr/bin/docker",
     ["container", "inspect", "--format", "{{json .Config.Labels}}", container],
     { env: dockerEnvironment(), encoding: "utf8", maxBuffer: 256 * 1024, timeout: 20_000 },
   )
   if (readSliceDiskQuotaMarkerInspection(inspectedContainer, "container", container)) return true
   const volume = `${container}-home`
-  const inspectedVolume = spawnSync(
+  const inspectedVolume = spawnControl(
     "/usr/bin/docker",
     ["volume", "inspect", "--format", "{{json .Labels}}", volume],
     { env: dockerEnvironment(), encoding: "utf8", maxBuffer: 256 * 1024, timeout: 20_000 },
@@ -1263,7 +1279,7 @@ function dockerInspection(result, label) {
 }
 
 function unboundedQuotaObservation(container) {
-  const inspectedContainer = dockerInspection(spawnSync(
+  const inspectedContainer = dockerInspection(spawnControl(
     "/usr/bin/docker",
     ["container", "inspect", "--format", "{{json .}}", container],
     { env: dockerEnvironment(), encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 20_000 },
@@ -1283,7 +1299,7 @@ function unboundedQuotaObservation(container) {
     fail("managed slice home-volume mount identity is invalid")
   }
   const homeVolumeName = homeMounts[0].Name
-  const inspectedVolume = dockerInspection(spawnSync(
+  const inspectedVolume = dockerInspection(spawnControl(
     "/usr/bin/docker",
     ["volume", "inspect", "--format", "{{json .}}", homeVolumeName],
     { env: dockerEnvironment(), encoding: "utf8", maxBuffer: 256 * 1024, timeout: 20_000 },
@@ -1365,7 +1381,8 @@ function requireExactContainerMounts(container, expected, stop) {
     fail("existing managed slice bind mounts do not match the broker-owned stable handle set")
   }
   if (stop) {
-    const stopped = spawnSync("/usr/bin/docker", ["stop", container], {
+    const stopped = spawnControl("/usr/bin/docker", ["stop", container], {
+      timeout: 30_000,
       env: dockerEnvironment(),
       maxBuffer: MAX_OUTPUT_BYTES,
     })
@@ -1652,6 +1669,8 @@ async function execute(request) {
           PATH: "/usr/local/bin:/usr/bin:/bin",
           DOCKER_HOST,
           ...prepared.environment,
+          // Broker requests retain a build deadline while archive streaming uses progress.
+          CHARIOX_SLICE_BROKER_BUILD_TIMEOUT_SECONDS: "1200",
           ...(SIGNED_BUILD_CONTEXT_DIGEST
             ? { CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: SIGNED_BUILD_CONTEXT_DIGEST }
             : {}),

@@ -54,7 +54,7 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
-function dockerObjectNotFound(stderr, resourceKind, resourceName) {
+export function dockerObjectNotFound(stderr, resourceKind, resourceName) {
   const lines = String(stderr ?? "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
   if (lines.length !== 1) return false
   const name = escapeRegExp(resourceName)
