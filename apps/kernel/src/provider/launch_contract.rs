@@ -503,13 +503,14 @@ pub struct LaunchProviderRequest {
     pub(crate) turn_substitute: Option<TurnSubstitute>,
 }
 
-/// Marks a provider run that reruns the failed turn `prompt_id` on the agent's
-/// substitute at `substitute_index`. The run serves only that turn; the next
-/// turn starts on the agent's configured profile again.
+/// Marks a provider run that reruns the failed turn `prompt_id` on an agent
+/// substitute. `tried` lists the substitutes this turn has run on, in order;
+/// the last is this run's. The run serves only that turn; the next turn
+/// starts on the agent's configured profile again.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TurnSubstitute {
     pub(crate) prompt_id: String,
-    pub(crate) substitute_index: usize,
+    pub(crate) tried: Vec<crate::agent::AgentSubstituteProfile>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

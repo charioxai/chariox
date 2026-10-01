@@ -17,34 +17,29 @@ pub(crate) struct TurnSubstituteLaunch {
 }
 
 impl DaemonApp {
-    /// Launches the agent's provider on substitute `substitute_index` for the
-    /// active `prompt`, through the same workflow-aware launch path as its
-    /// first attempt. The stored agent profile never changes.
+    /// Launches the agent's provider for the active `prompt` on the last of
+    /// the substitutes `tried` in this turn, through the same workflow-aware
+    /// launch path as its first attempt. The stored agent profile never
+    /// changes.
     pub(crate) fn launch_turn_substitute_run(
         &mut self,
         session_id: &str,
         agent_id: &str,
         prompt: &PromptQueueItem,
-        substitute_index: usize,
+        tried: Vec<AgentSubstituteProfile>,
     ) -> Result<String, DaemonError> {
-        let profile = self
-            .agents
-            .get_agent(agent_id)?
-            .substitutes()
-            .get(substitute_index)
+        let profile = tried
+            .last()
             .cloned()
             .ok_or_else(|| DaemonError::LocalTransport {
                 operation: "rerun turn on substitute",
-                message: format!(
-                    "agent `{agent_id}` has no substitute {}",
-                    substitute_index + 1
-                ),
+                message: format!("no substitute was chosen for agent `{agent_id}`"),
             })?;
         self.turn_substitute_launch = Some(TurnSubstituteLaunch {
             agent_id: agent_id.to_string(),
             turn: TurnSubstitute {
                 prompt_id: prompt.id().to_string(),
-                substitute_index,
+                tried,
             },
             profile,
         });

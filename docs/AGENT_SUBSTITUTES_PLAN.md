@@ -38,7 +38,7 @@ Every provider failure of a turn reruns it on the next substitute:
 
 Not a provider failure: a user cancel or interrupt, and a turn the agent completes, whatever its text says.
 
-The rerun keeps the same active prompt. The failed attempt stays visible, its provider run is retired, and a provider run for the substitute is launched through the normal (workflow-aware) launch path and receives the turn. Substitutes are tried in order; one whose saved account is missing or confirmed exhausted is skipped with a notice. If the substitute also fails, the next one gets the turn. When none is left, the turn fails with its provider error.
+The rerun keeps the same active prompt. The failed attempt stays visible, its provider run is retired, and a provider run for the substitute is launched through the normal (workflow-aware) launch path and receives the turn. Substitutes are tried in order; one whose saved account is missing or confirmed exhausted is skipped with a notice. If the substitute also fails, the first configured substitute the turn has not tried yet gets it. The list is read at each failure, so edits made during the turn apply, and no substitute runs twice in one turn. When none is left, the turn fails with its provider error.
 
 Each rerun records a notice: `This turn runs on claude-opus-5-5 because gpt-6.1-sol failed: model at capacity (server_overloaded).`
 

@@ -74,7 +74,8 @@ impl FailingTurn {
     }
 
     /// The turn is still the same active prompt, now delivered to a live
-    /// substitute run that serves only it.
+    /// substitute run, on substitute `substitute_index` of the current list,
+    /// that serves only it.
     fn assert_rerun_on(&self, substitute_index: usize, model: &str) -> String {
         let prompt = self
             .active_prompt()
@@ -82,20 +83,20 @@ impl FailingTurn {
         assert_eq!(prompt.id(), self.prompt_id, "the same turn is rerun");
         let run = self.live_run().expect("the substitute run is live");
         assert_eq!(run.model(), model);
-        assert_eq!(
-            run.turn_substitute(),
-            Some(&TurnSubstitute {
-                prompt_id: self.prompt_id.clone(),
-                substitute_index,
-            })
-        );
-        assert_eq!(prompt.durable_delivery_provider_run_id(), Some(run.id()));
         let agent = self
             .runtime
             .owned
             .agent_store
             .get_agent(&self.agent_id)
             .unwrap();
+        let turn = run.turn_substitute().expect("the run is a substitute's");
+        assert_eq!(turn.prompt_id, self.prompt_id);
+        assert_eq!(
+            turn.tried.last(),
+            agent.substitutes().get(substitute_index),
+            "the run is on substitute {substitute_index}"
+        );
+        assert_eq!(prompt.durable_delivery_provider_run_id(), Some(run.id()));
         assert_eq!(agent.provider(), "dev-stub");
         assert_eq!(
             agent.model(),
@@ -875,7 +876,11 @@ async fn structured_substitute_turn() -> (FailingTurn, String) {
     .with_agent_id(&turn.agent_id)
     .with_turn_substitute(Some(TurnSubstitute {
         prompt_id: turn.prompt_id.clone(),
-        substitute_index: 0,
+        tried: vec![crate::agent::AgentSubstituteProfile::new(
+            "slow-structured",
+            SUBSTITUTE_A,
+            None,
+        )],
     }));
     let mut run = crate::provider::RuntimeProviderRun::new(
         "structured-substitute",
@@ -1043,5 +1048,66 @@ async fn substitute_notices_never_carry_provider_credentials() {
     assert!(
         notices.iter().all(|notice| !notice.contains(SECRET)),
         "{notices:?}"
+    );
+}
+
+impl FailingTurn {
+    async fn edit_substitutes(&self, action: crate::local::AgentSubstituteAction) {
+        self.runtime
+            .update_agent_substitutes(
+                &self.session_id,
+                &self.agent_id,
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                action,
+            )
+            .await
+            .expect("the substitute list is edited during the turn");
+    }
+}
+
+#[tokio::test]
+async fn removing_the_running_substitute_still_leaves_the_next_one_for_its_failure() {
+    let turn = failing_turn(&[
+        ("dev-stub", SUBSTITUTE_A, None),
+        ("dev-stub", SUBSTITUTE_B, None),
+    ])
+    .await;
+    turn.fail_run(&turn.failed_run_id, SERVER_OVERLOADED).await;
+    let first = turn.assert_rerun_on(0, SUBSTITUTE_A);
+
+    turn.edit_substitutes(crate::local::AgentSubstituteAction::Remove { index: 0 })
+        .await;
+    turn.fail_run(&first, "OpenCode error: upstream request failed")
+        .await;
+
+    turn.assert_rerun_on(0, SUBSTITUTE_B);
+}
+
+#[tokio::test]
+async fn reordering_substitutes_mid_turn_never_replays_a_tried_one() {
+    let turn = failing_turn(&[
+        ("dev-stub", SUBSTITUTE_A, None),
+        ("dev-stub", SUBSTITUTE_B, None),
+    ])
+    .await;
+    turn.fail_run(&turn.failed_run_id, SERVER_OVERLOADED).await;
+    let first = turn.assert_rerun_on(0, SUBSTITUTE_A);
+
+    turn.edit_substitutes(crate::local::AgentSubstituteAction::Move {
+        from_index: 0,
+        to_index: 1,
+    })
+    .await;
+    turn.fail_run(&first, "OpenCode error: upstream request failed")
+        .await;
+    let second = turn.assert_rerun_on(0, SUBSTITUTE_B);
+    turn.fail_run(&second, "OpenCode error: upstream request failed")
+        .await;
+
+    turn.assert_turn_failed();
+    assert_eq!(
+        turn.rerun_notices().len(),
+        2,
+        "{SUBSTITUTE_A} is not tried again"
     );
 }

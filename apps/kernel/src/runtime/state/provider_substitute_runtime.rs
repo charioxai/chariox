@@ -4,10 +4,12 @@ use super::provider_prompt_failure_runtime::{FailedProviderAttempt, SubstituteRe
 use super::*;
 
 impl KernelRuntimeState {
-    /// Every provider failure of a turn reruns that same turn on the agent's
-    /// next configured substitute, in order, until the list is exhausted. The
-    /// substitute serves only this turn. A user cancel is not a provider
-    /// failure; remote, external and provider-native turns are not rerun.
+    /// Every provider failure of a turn reruns that same turn on the first
+    /// configured substitute this turn has not tried yet, in list order, until
+    /// none is left. The list is read at each failure, so edits made during the
+    /// turn apply and no substitute runs twice. The substitute serves only this
+    /// turn. A user cancel is not a provider failure; remote, external and
+    /// provider-native turns are not rerun.
     pub(super) async fn rerun_failed_turn_on_substitute(
         &self,
         attempt: &FailedProviderAttempt<'_>,
@@ -34,10 +36,11 @@ impl KernelRuntimeState {
             attempt.safe_message,
             attempt.termination,
         );
-        let first = failed_run
+        let mut tried = failed_run
             .turn_substitute()
-            .map_or(0, |turn| turn.substitute_index + 1);
-        let Some(mut index) = self.owned.next_available_substitute_index(&agent, first)? else {
+            .map(|turn| turn.tried.clone())
+            .unwrap_or_default();
+        let Some(mut index) = self.owned.next_untried_substitute_index(&agent, &tried)? else {
             if failed_run.turn_substitute().is_some() {
                 self.record_turn_substitute_notice(
                     session_id,
@@ -60,6 +63,7 @@ impl KernelRuntimeState {
         self.record_failed_provider_attempt(attempt).await?;
         loop {
             let substitute = &agent.substitutes()[index];
+            tried.push(substitute.clone());
             let label = provider_profile_label(&substitute.provider, &substitute.model);
             self.record_turn_substitute_notice(
                 session_id,
@@ -75,7 +79,7 @@ impl KernelRuntimeState {
                         session_id,
                         attempt.agent_id,
                         active_prompt,
-                        index,
+                        tried.clone(),
                     )
                 })
                 .await;
@@ -112,10 +116,7 @@ impl KernelRuntimeState {
                 "could not start: {}",
                 crate::provider::sanitize_provider_diagnostic(&error.to_string())
             );
-            match self
-                .owned
-                .next_available_substitute_index(&agent, index + 1)?
-            {
+            match self.owned.next_untried_substitute_index(&agent, &tried)? {
                 Some(next) => index = next,
                 None => {
                     self.record_turn_substitute_notice(
@@ -206,12 +207,12 @@ impl KernelRuntimeOwnedState {
         );
     }
 
-    /// The first configured substitute from `start` whose saved account is still
-    /// usable for its model.
-    pub(super) fn next_available_substitute_index(
+    /// The first configured substitute not in `tried` whose saved account is
+    /// still usable for its model.
+    pub(super) fn next_untried_substitute_index(
         &self,
         agent: &crate::agent::AgentInstance,
-        start: usize,
+        tried: &[crate::agent::AgentSubstituteProfile],
     ) -> Result<Option<usize>, DaemonError> {
         let config = self.config_projection.snapshot();
         let owner = crate::account_profile::provider_account_authority_owner_user_id(
@@ -219,7 +220,10 @@ impl KernelRuntimeOwnedState {
             agent.owner_user_id(),
         );
         let now_ms = crate::session::unix_epoch_ms();
-        for (index, candidate) in agent.substitutes().iter().enumerate().skip(start) {
+        for (index, candidate) in agent.substitutes().iter().enumerate() {
+            if tried.contains(candidate) {
+                continue;
+            }
             let skipped = if candidate
                 .kernel_id
                 .as_deref()
