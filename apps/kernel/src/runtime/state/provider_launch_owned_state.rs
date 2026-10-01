@@ -1132,10 +1132,26 @@ mod tests {
             "claude-sonnet",
         )
         .with_agent_id(agent.id());
-        let prepared = runtime
-            .prepare_provider_launch_request_with_vault(request, "prepare test provider run")
+        let mut preparation = Box::pin(
+            runtime.prepare_provider_launch_request_with_vault(request, "prepare test provider run"),
+        );
+        tokio::select! {
+            result = &mut preparation => panic!("Always policy must request approval even while unlocked: {result:?}"),
+            _ = tokio::time::sleep(std::time::Duration::from_millis(25)) => {}
+        }
+        let initial_unlock = runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .expect("session should remain available")
+            .active_interaction_for_agent(agent.id())
+            .expect("initial launch should request vault approval")
+            .clone();
+        resolve_vault_passphrase_interaction(&runtime, session.id(), &initial_unlock).await;
+        let prepared = tokio::time::timeout(std::time::Duration::from_secs(2), preparation)
             .await
-            .expect("initial launch should prepare while vault is unlocked");
+            .expect("approved initial launch should finish")
+            .expect("initial launch should prepare after approval");
         let started = runtime
             .owned
             .provider_store

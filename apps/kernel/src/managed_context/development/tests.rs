@@ -1452,6 +1452,8 @@ fn import_rejects_unsafe_manifest_paths_and_archive_symlinks() {
     write_archive(&unsafe_archive, unsafe_file, &unpacked, &unsafe_manifest)
         .expect("package unsafe manifest fixture");
     let unsafe_destination = root.join("managed/unsafe-manifest");
+    fs::create_dir_all(unsafe_destination.parent().expect("destination parent"))
+        .expect("create ordinary import destination parent");
     let unsafe_error = import_development_context(DevelopmentContextImportRequest {
         archive_path: unsafe_archive.clone(),
         expected_archive_sha256: sha256_file(&unsafe_archive).expect("hash unsafe archive"),
