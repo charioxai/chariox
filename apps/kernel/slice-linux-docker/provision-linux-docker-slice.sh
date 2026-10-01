@@ -13,6 +13,15 @@ hash_stdin() {
 }
 
 runtime_source_revision() {
+  if [[ -n "${CHARIOX_SLICE_LOCAL_DEV_OWNER_UID:-}" ]]; then
+    [[ "$CHARIOX_SLICE_LOCAL_DEV_OWNER_UID" =~ ^[0-9]+$ \
+      && "${CHARIOX_SLICE_LOCAL_DEV_RUNTIME_REVISION:-}" =~ ^(sha256:)?[a-f0-9]{64}$ ]] || {
+      echo "local DEV worker runtime revision pin is unavailable" >&2
+      return 1
+    }
+    printf '%s\n' "$CHARIOX_SLICE_LOCAL_DEV_RUNTIME_REVISION"
+    return
+  fi
   if [[ "${CHARIOX_SLICE_BUILD_CONTEXT_DIGEST:-}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
     printf '%s\n' "$CHARIOX_SLICE_BUILD_CONTEXT_DIGEST"
     return

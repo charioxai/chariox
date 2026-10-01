@@ -5,7 +5,7 @@ import { validateLocalDevEnrollment, verifyLocalRootfulEngine } from "../apps/ke
 const hash = "a".repeat(64)
 const fresh = () => ({version: 1, topology: "linux-local-rootful-dev", ownerUid: 1000, ownerGid: 1000,
   engineId: "engine-test", socket: {path: "/run/docker.sock", dev: 1, ino: 2, uid: 0, gid: 107, mode: 0o660},
-  helperImageId: `sha256:${hash}`, workerImageId: `sha256:${hash}`, workerKernelHash: hash,
+  helperImageId: `sha256:${hash}`, workerImageId: `sha256:${hash}`, workerKernelHash: hash, workerRuntimeRevision: "b".repeat(64),
   sourceDigest: `sha256:${hash}`, sourceRoot: `/usr/lib/chariox/slice-local-dev/${hash}`,
   controlRoot: "/var/lib/chariox/slice-local-dev/u-1000/private/layout"})
 const info = () => ({ID: "engine-test", OSType: "linux", SecurityOptions: ["name=seccomp,profile=builtin"]})
@@ -16,7 +16,7 @@ test("explicit local DEV enrollment binds one owner and exact installed source/s
   assert.equal(validateLocalDevEnrollment(fresh(), 1000).topology, "linux-local-rootful-dev")
   for (const mutate of [r => r.topology = "managed", r => r.ownerUid = 1001,
     r => r.controlRoot += "/../layout", r => r.sourceRoot = "/tmp/source", r => r.socket.path = "tcp://localhost:2375",
-    r => r.socket.uid = 1000, r => r.socket.mode = 0o666, r => r.helperImageId = "latest", r => r.extra = true]) {
+    r => r.socket.uid = 1000, r => r.socket.mode = 0o666, r => r.helperImageId = "latest", r => r.workerRuntimeRevision = "latest", r => r.extra = true]) {
     const record = fresh(); mutate(record)
     assert.throws(() => validateLocalDevEnrollment(record, 1000), /authority is unavailable/)
   }
@@ -66,4 +66,22 @@ test("a root-owned recreated socket binds current launch inode without changing 
   assert.equal(verifyLocalRootfulEngine(record, current, info(), map, map, {dev: 1, ino: 99}).dataUid, 1001)
   assert.throws(() => verifyLocalRootfulEngine(record, current, info(), map, map, {dev: 1, ino: 2}))
   assert.throws(() => verifyLocalRootfulEngine(record, {...current, uid: 1000}, info(), map, map, {dev: 1, ino: 99}))
+})
+
+test("actual provisioner compatibility uses worker revision while first-boot provenance stays installed-source bound", async () => {
+  const {localDevRuntimeEnvironment} = await import("../apps/kernel/slice-linux-docker/protected-local-docker-authority.mjs")
+  const {readFileSync} = await import("node:fs")
+  const {spawnSync} = await import("node:child_process")
+  const source = readFileSync(new URL("../apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh", import.meta.url),"utf8")
+  const runtime = source.match(/^runtime_source_revision\(\) \{[\s\S]*?^\}/m)?.[0]
+  const compatible = source.match(/^image_runtime_compatible\(\) \{[\s\S]*?^\}/m)?.[0]
+  assert.ok(runtime && compatible)
+  const enrollment = fresh(), env = localDevRuntimeEnvironment(enrollment)
+  assert.notEqual(env.CHARIOX_SLICE_BUILD_CONTEXT_DIGEST, env.CHARIOX_SLICE_LOCAL_DEV_RUNTIME_REVISION)
+  const run = overrides => spawnSync("/bin/bash", ["-ec", `${runtime}\n${compatible}\ndocker(){ case "$*" in *runtime-source-revision*) printf '%s' '${enrollment.workerRuntimeRevision}';; *relay-peer-protocol-version*) printf '42';; *) return 1;; esac; }\nSLICE_RELAY_PEER_PROTOCOL_VERSION=42\nSLICE_RUNTIME_SOURCE_REVISION=$(runtime_source_revision)\nimage_runtime_compatible '${enrollment.workerImageId}'\nprintf '%s' "$CHARIOX_SLICE_BUILD_CONTEXT_DIGEST"`],
+    {encoding:"utf8",env:{PATH:"/usr/bin:/bin",...env,CHARIOX_SLICE_LOCAL_DEV_OWNER_UID:"1000",...overrides}})
+  const passed=run({});assert.equal(passed.status,0,passed.stderr);assert.equal(passed.stdout,enrollment.sourceDigest)
+  const refused=run({CHARIOX_SLICE_LOCAL_DEV_RUNTIME_REVISION:enrollment.sourceDigest});assert.notEqual(refused.status,0)
+  assert.notEqual(run({CHARIOX_SLICE_LOCAL_DEV_RUNTIME_REVISION:""}).status,0)
+  assert.throws(()=>localDevRuntimeEnvironment({...enrollment,workerRuntimeRevision:undefined}))
 })

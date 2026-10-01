@@ -4,6 +4,7 @@ import { recordCapturedImageProof } from "./protected-image-proof.mjs"
 import { requireSafeHomeVolume as requireSafeManagedHomeVolume } from "./protected-home-preflight.mjs"
 import { requireSafeLocalHomeVolume } from "./protected-local-home-scan.mjs"
 import { createManagedLayoutController } from "./protected-managed-layout.mjs"
+import { localDevRuntimeEnvironment } from "./protected-local-docker-authority.mjs"
 import { verifiedProtectedAuthority } from "./protected-authority.mjs"
 import { recordManagedImageProof } from "./protected-image-proof.mjs"
 import { DURABLE_LAYOUT_ROOT } from "./protected-first-boot.mjs"
@@ -1502,7 +1503,8 @@ function seedLocalDevWorkerProof() {
   if (!LOCAL_AUTHORITY) return
   const enrollment = LOCAL_AUTHORITY.enrollment
   const image = inspectDockerObject("image", enrollment.workerImageId)
-  if (image.Id !== enrollment.workerImageId || image.Config?.User !== "slice") fail("Local DEV worker image identity mismatch")
+  if (image.Id !== enrollment.workerImageId || image.Config?.User !== "slice"
+      || image.Config?.Labels?.["io.chariox.runtime-source-revision"] !== enrollment.workerRuntimeRevision) fail("Local DEV worker image identity mismatch")
   const runtime = spawnSync("/usr/bin/docker", ["run", "--rm", "--read-only", "--network", "none",
     "--cap-drop", "ALL", "--memory", "64m", "--pids-limit", "16", "--user", "0:0",
     "--entrypoint", "/usr/bin/sha256sum", enrollment.workerImageId, "/opt/chariox-slice/bin/chariox-kernel"],
@@ -1592,7 +1594,8 @@ function execute(request) {
         ...prepared.environment,
         ...(LOCAL_AUTHORITY ? {CHARIOX_SLICE_LOCAL_DEV_OWNER_UID: String(LOCAL_AUTHORITY.enrollment.ownerUid),
           CHARIOX_SLICE_LOCAL_DEV_HELPER_NAME: process.env.CHARIOX_SLICE_LOCAL_DEV_HELPER_NAME,
-          CHARIOX_SLICE_BUILD_IMAGE: "never"} : {}),
+          CHARIOX_SLICE_BUILD_IMAGE: "never",
+          ...localDevRuntimeEnvironment(LOCAL_AUTHORITY.enrollment)} : {}),
         ...(VERIFIED_BUILD_CONTEXT_DIGEST
           ? { CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: VERIFIED_BUILD_CONTEXT_DIGEST, CHARIOX_SLICE_PROTECTED_IMAGE_PROOF_ROOT: protectedLayouts.imageRoot }
           : {}),

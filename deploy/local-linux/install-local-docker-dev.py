@@ -32,6 +32,7 @@ p.add_argument('--source', required=True, type=pathlib.Path)
 p.add_argument('--user', required=True)
 p.add_argument('--worker-image', required=True)
 p.add_argument('--worker-kernel-sha256', required=True)
+p.add_argument('--worker-runtime-revision', required=True, help='Reviewed runtime-source-revision label of the immutable worker image')
 p.add_argument('--node-runtime', required=True, type=pathlib.Path)
 p.add_argument('--node-runtime-sha256', required=True)
 p.add_argument('--buildx-runtime', required=True, type=pathlib.Path)
@@ -49,6 +50,7 @@ engine = json.loads(command(['info', '--format', '{{json .}}']))
 if engine.get('OSType') != 'linux' or any(re.search('rootless|userns', x) for x in engine.get('SecurityOptions', [])): refuse('only unmapped Linux rootful engine supported')
 worker = json.loads(command(['image', 'inspect', a.worker_image]))[0]
 if worker['Id'] != a.worker_image or worker['Config']['User'] != 'slice': refuse('worker image identity/user mismatch')
+if not re.fullmatch('(sha256:)?[a-f0-9]{64}', a.worker_runtime_revision) or worker['Config'].get('Labels', {}).get('io.chariox.runtime-source-revision') != a.worker_runtime_revision: refuse('worker runtime revision pin mismatch')
 proof = command(['run', '--rm', '--read-only', '--network', 'none', '--cap-drop', 'ALL', '--memory', '64m', '--pids-limit', '16', '--user', '0:0', '--entrypoint', '/usr/bin/sha256sum', a.worker_image, '/opt/chariox-slice/bin/chariox-kernel']).split()[0]
 if proof != a.worker_kernel_sha256: refuse('actual worker runtime hash mismatch')
 source = a.source.resolve()
@@ -142,8 +144,8 @@ for child in ['homes', 'receipts', 'images', 'backups', 'share', 'handles']:
 directory(layout / 'share/.broker-private', 0o700)
 directory(layout / 'share/.broker-private/output', 0o700)
 directory(layout / 'share/.broker-private/artifacts', 0o700)
-record = {'version': 1, 'topology': 'linux-local-rootful-dev', 'ownerUid': user.pw_uid, 'ownerGid': user.pw_gid, 'engineId': engine['ID'], 'socket': {'path': '/run/docker.sock', 'dev': socket.st_dev, 'ino': socket.st_ino, 'uid': socket.st_uid, 'gid': socket.st_gid, 'mode': stat.S_IMODE(socket.st_mode)}, 'helperImageId': helper, 'workerImageId': a.worker_image, 'workerKernelHash': a.worker_kernel_sha256, 'sourceDigest': f'sha256:{digest}', 'sourceRoot': str(root), 'controlRoot': str(layout)}
+record = {'version': 1, 'topology': 'linux-local-rootful-dev', 'ownerUid': user.pw_uid, 'ownerGid': user.pw_gid, 'engineId': engine['ID'], 'socket': {'path': '/run/docker.sock', 'dev': socket.st_dev, 'ino': socket.st_ino, 'uid': socket.st_uid, 'gid': socket.st_gid, 'mode': stat.S_IMODE(socket.st_mode)}, 'helperImageId': helper, 'workerImageId': a.worker_image, 'workerKernelHash': a.worker_kernel_sha256, 'workerRuntimeRevision': a.worker_runtime_revision, 'sourceDigest': f'sha256:{digest}', 'sourceRoot': str(root), 'controlRoot': str(layout)}
 publish(pathlib.Path(f'/etc/chariox/slice-local-dev/{user.pw_uid}.json'), json.dumps(record, separators=(',', ':')).encode(), 0o644)
 launcher = f'#!/bin/sh\nexec {root}/.local-public-tools/node {root}/apps/kernel/slice-linux-docker/local-docker-broker-launch.mjs\n'.encode()
 publish(pathlib.Path(f'/usr/libexec/chariox-local-docker-broker-{user.pw_uid}'), launcher, 0o555)
-print(json.dumps({'topology': record['topology'], 'ownerUid': user.pw_uid, 'sourceDigest': record['sourceDigest'], 'helperImageId': helper, 'workerImageId': a.worker_image, 'workerKernelHash': proof}))
+print(json.dumps({'topology': record['topology'], 'ownerUid': user.pw_uid, 'sourceDigest': record['sourceDigest'], 'helperImageId': helper, 'workerImageId': a.worker_image, 'workerKernelHash': proof, 'workerRuntimeRevision': a.worker_runtime_revision}))

@@ -3,18 +3,19 @@ import { dirname, join, resolve } from "node:path"
 import { createHash } from "node:crypto"
 
 const IMAGE = /^sha256:[a-f0-9]{64}$/
+const RUNTIME_REVISION = /^(?:sha256:)?[a-f0-9]{64}$/
 const HEX = /^[a-f0-9]{64}$/
 const UINT = value => Number.isSafeInteger(value) && value >= 0
 function refuse() { throw new Error("Verified local Docker DEV authority is unavailable; existing identities and state are preserved") }
 
 export function validateLocalDevEnrollment(record, uid) {
-  const keys = ["version", "topology", "ownerUid", "ownerGid", "engineId", "socket", "helperImageId", "workerImageId", "workerKernelHash", "sourceDigest", "sourceRoot", "controlRoot"]
+  const keys = ["version", "topology", "ownerUid", "ownerGid", "engineId", "socket", "helperImageId", "workerImageId", "workerKernelHash", "workerRuntimeRevision", "sourceDigest", "sourceRoot", "controlRoot"]
   if (!record || Object.keys(record).sort().join() !== keys.sort().join()
       || record.version !== 1 || record.topology !== "linux-local-rootful-dev"
       || !UINT(uid) || record.ownerUid !== uid || !UINT(record.ownerGid)
       || typeof record.engineId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9:._-]{0,179}$/.test(record.engineId)
       || !IMAGE.test(record.helperImageId) || !IMAGE.test(record.workerImageId)
-      || !HEX.test(record.workerKernelHash) || !IMAGE.test(record.sourceDigest)) refuse()
+      || !HEX.test(record.workerKernelHash) || !RUNTIME_REVISION.test(record.workerRuntimeRevision) || !IMAGE.test(record.sourceDigest)) refuse()
   const socket = record.socket
   if (!socket || Object.keys(socket).sort().join() !== ["path", "dev", "ino", "uid", "gid", "mode"].sort().join()
       || socket.path !== "/run/docker.sock" || ![socket.dev, socket.ino, socket.uid, socket.gid, socket.mode].every(UINT)
@@ -131,4 +132,11 @@ export function verifyLocalHelperTopology(enrollment, info) {
   }
   if (required.size || !transport) refuse()
   return true
+}
+
+// Runtime compatibility and installed-helper provenance are distinct pins.
+export function localDevRuntimeEnvironment(enrollment) {
+  validateLocalDevEnrollment(enrollment, enrollment.ownerUid)
+  return {CHARIOX_SLICE_LOCAL_DEV_RUNTIME_REVISION: enrollment.workerRuntimeRevision,
+    CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: enrollment.sourceDigest}
 }
