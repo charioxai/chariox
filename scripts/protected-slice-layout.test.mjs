@@ -119,6 +119,23 @@ test("managed image proof binds actual immutable image ID to signed source conte
 })
 
 import { createManagedLayoutController, findRetainedCaptureOrigin } from "../apps/kernel/slice-linux-docker/protected-managed-layout.mjs"
+import { verifyNamespaceEntryDocuments } from "../apps/kernel/slice-linux-docker/protected-namespace-entry.mjs"
+test("daemon namespace proof pins actual maps and namespace identity without treating control UID0 as host root", () => {
+  const namespaces = Object.fromEntries(["user", "mnt", "net"].map((name, index) => [name, {dev: "4", ino: String(100 + index)}]))
+  const uidMap = "0 997 1\n1 231072 65536\n"
+  const gidMap = "0 998 1\n1 231072 65536\n"
+  const receipt = {version: 1, daemonUid: 997, daemonGid: 998, dataUid: 1001,
+    hostDataUid: 232072, uidMap, gidMap, namespaces, ancestors: [{}, {}, {}]}
+  const current = {uid: 0, gid: 0, uidMap, gidMap, namespaces,
+    subuids: "chariox-docker:231072:65536", subgids: "chariox-docker:231072:65536"}
+  assert.equal(verifyNamespaceEntryDocuments(receipt, current).dataUid, 1001)
+  for (const mutation of [value => value.uid = 997, value => value.uidMap = "0 0 4294967295",
+    value => value.namespaces.user.ino = "foreign", value => value.subuids = "chariox-docker:300000:65536"]) {
+    const changed = structuredClone(current); mutation(changed)
+    assert.throws(() => verifyNamespaceEntryDocuments(receipt, changed))
+  }
+  assert.throws(() => verifyNamespaceEntryDocuments({...receipt, dataUid: 232072}, current))
+})
 import { createHash } from "node:crypto"
 test("restore resolution binds the original transaction artifact independently of the replacement container", () => {
   const root = mkdtempSync(join(process.env.HOME, ".chariox-restore-origin-test-"))

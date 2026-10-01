@@ -1,3 +1,4 @@
+import { isVerifiedHostAncestor } from "./protected-namespace-entry.mjs"
 import { lstatSync, mkdirSync, realpathSync, writeFileSync, readFileSync, constants, openSync, closeSync, fsyncSync, chownSync } from "node:fs"
 import { join, resolve, parse } from "node:path"
 
@@ -11,7 +12,7 @@ export function verifyPrivateHostDirectory(path, owner, traversalOnly = false) {
     current = join(current, component)
     const metadata = lstatSync(current)
     if (!metadata.isDirectory() || metadata.isSymbolicLink() || (metadata.mode & 0o022) !== 0) refuse()
-    if (metadata.uid !== 0 && metadata.uid !== owner) refuse()
+    if (metadata.uid !== 0 && metadata.uid !== owner && !isVerifiedHostAncestor(current, metadata)) refuse()
   }
   const leaf = lstatSync(path)
   if (leaf.uid !== owner || (traversalOnly ? (leaf.mode & 0o777) !== 0o711 : (leaf.mode & 0o077) !== 0)) refuse()

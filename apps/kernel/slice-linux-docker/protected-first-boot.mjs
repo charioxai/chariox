@@ -9,7 +9,8 @@ import { verifyProtectedCaptureLayout } from "./protected-layout.mjs"
 import { retainFreshIdentity, requireIdentityRetention } from "./protected-identity-retention.mjs"
 import { writeProtectedLayoutReceipt } from "./protected-layout-store.mjs"
 
-export const DURABLE_LAYOUT_ROOT = "/var/lib/chariox-docker/private-layout"
+export { DURABLE_LAYOUT_ROOT } from "./protected-namespace-entry.mjs"
+import { DURABLE_LAYOUT_ROOT } from "./protected-namespace-entry.mjs"
 function refuse() { throw new Error("Protected identity retention is required before this slice can start") }
 
 export function verifyFirstBootTopology(info, privateRoot, homeVolume) {
