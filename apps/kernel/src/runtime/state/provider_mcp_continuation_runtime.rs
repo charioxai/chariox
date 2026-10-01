@@ -1,6 +1,41 @@
 use super::*;
 
 impl KernelRuntimeState {
+    pub(super) fn runtime_catalog_signature_for_agent(
+        &self,
+        agent: &crate::agent::AgentInstance,
+    ) -> Vec<(String, String, serde_json::Value)> {
+        let Some(run) = self
+            .owned
+            .provider_store
+            .get_run_for_agent(agent.session_id(), agent.id())
+        else {
+            return Vec::new();
+        };
+        let Some(token) = run.runtime_mcp_auth_token() else {
+            return Vec::new();
+        };
+        let mut tools: Vec<_> = self
+            .runtime_tool_specs_for_auth_token(token)
+            .into_iter()
+            .map(|tool| (tool.name, tool.description, tool.input_schema))
+            .collect();
+        tools.sort_by(|a, b| a.0.cmp(&b.0));
+        tools
+    }
+
+    pub(super) fn runtime_catalog_registration_changed(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        previous: &[(String, String, serde_json::Value)],
+    ) {
+        if previous != self.runtime_catalog_signature_for_agent(agent).as_slice() {
+            // Set the reload obligation before returning an already-granted
+            // registration result; the asynchronous monitor may run later.
+            self.remember_runtime_catalog_continuation(agent, "runtime tool catalog");
+        }
+    }
+
     pub(crate) fn runtime_tool_catalog_auth_tokens(&self) -> Vec<String> {
         self.owned
             .provider_store

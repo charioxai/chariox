@@ -212,7 +212,9 @@ impl KernelRuntimeState {
                     message: format!("environment `{}` is not registered", args.environment),
                 })?;
         let registry = global_script_registry()?;
+        let previous_catalog = self.runtime_catalog_signature_for_agent(agent);
         let (script, path) = registry.install(&source_path, args.name.as_deref(), &env)?;
+        self.runtime_catalog_registration_changed(agent, &previous_catalog);
         self.append_extension_registration_audit_event(
             "extension.registration.created",
             session,
@@ -274,7 +276,9 @@ impl KernelRuntimeState {
         }
         let registry = connector_registry()?;
         let adapters = connector_adapter_registry()?;
+        let previous_catalog = self.runtime_catalog_signature_for_agent(agent);
         let (connector, path) = registry.install_from_file(&source_path, &adapters)?;
+        self.runtime_catalog_registration_changed(agent, &previous_catalog);
         self.append_extension_registration_audit_event(
             "extension.registration.created",
             session,

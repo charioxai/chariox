@@ -295,3 +295,78 @@ async fn mcp_catalog_continuation_uses_kernel_attachment_after_client_detach() {
     runtime.owned.detach(&source).unwrap();
     std::fs::remove_dir_all(scratch).unwrap();
 }
+
+// MP-08/MP-10: a persistent grant does not make a newly registered definition live.
+#[tokio::test]
+async fn mcp_catalog_reregistration_marks_existing_grant_pending_synchronously() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-extfix-registration-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(
+            crate::session::CreateSessionRequest::new(
+                root.to_string_lossy(),
+                root.to_string_lossy(),
+            )
+            .with_agent_defaults(crate::session::SessionAgentDefaults::new("opencode")),
+        )
+        .unwrap();
+    app.launch_provider(
+        crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "dev-stub",
+            "dev-stub",
+            "default",
+            "default",
+        )
+        .with_agent_id(agent.id()),
+    )
+    .unwrap();
+    let agent = app
+        .agents()
+        .grant_extension(
+            agent.id(),
+            crate::extension::ExtensionGrant::script("extfix_registration", "extfix_python"),
+        )
+        .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let previous = runtime.runtime_catalog_signature_for_agent(&agent);
+    assert_eq!(
+        runtime.runtime_catalog_grant_effect(&agent, true),
+        ("now", false)
+    );
+    let source = root.join("fixture.py");
+    std::fs::write(&source, "def run() -> str:\n    \"\"\"Return a fixture result.\"\"\"\n    return 'ok'\n\ndef test_run():\n    \"\"\"Validate fixture.\"\"\"\n    assert run() == 'ok'\n").unwrap();
+    let registry = crate::script::CharioxScriptRegistry::new(vec![
+        crate::script::CharioxScriptRegistry::project_root(&root),
+    ]);
+    registry
+        .install(
+            &source,
+            Some("extfix_registration"),
+            &crate::script::CharioxEnvironmentConfig {
+                name: "extfix_python".into(),
+                runtime: crate::script::CharioxEnvironmentRuntime::Python {
+                    python: "/usr/bin/python3".into(),
+                },
+            },
+        )
+        .unwrap();
+    runtime.runtime_catalog_registration_changed(&agent, &previous);
+    assert_eq!(
+        runtime.runtime_catalog_grant_effect(&agent, true),
+        ("after_provider_reload", true),
+        "MP-08/MP-10 re-registration must report the outstanding reload"
+    );
+    runtime
+        .owned
+        .pending_provider_reloads
+        .write()
+        .remove(agent.id());
+    std::fs::remove_dir_all(root).unwrap();
+}
