@@ -45,6 +45,13 @@ mkdir -p "$BROWSER_DOWNLOAD_DIR"
 mkdir -p "$KERNEL_HOME" /tmp/chariox-slice-state
 mkdir -p "$KERNEL_HOME/daemon"
 install -d -m 0700 "$PROVIDER_HOME" "$PRIVATE_RUNTIME_ROOT"
+# A protected layout captures /home/slice, which must never hold provider state.
+# Keep the default provider accounts in the private provider home instead.
+default_provider_env=()
+if [[ -n "${CHARIOX_SLICE_PRIVATE_ROOT:-}" ]]; then
+  install -d -m 0700 "$PROVIDER_HOME/.codex" "$PROVIDER_HOME/.claude"
+  default_provider_env=(CODEX_HOME="$PROVIDER_HOME/.codex" CLAUDE_CONFIG_DIR="$PROVIDER_HOME/.claude")
+fi
 
 case "$PROVIDER_ISOLATION_PROBE" in
   0|1) ;;
@@ -152,6 +159,7 @@ fi
 KERNEL_LOCAL_AUTH_TOKEN="$(cat "$KERNEL_LOCAL_AUTH_FILE")"
 
 screen -dmS chariox-slice-kernel env \
+  "${default_provider_env[@]}" \
   CHARIOX_KERNEL_PORT="$KERNEL_PORT" \
   CHARIOX_MCP_PORT="$MCP_PORT" \
   CHARIOX_CODEX_PORT_RANGE="$CODEX_PORT_RANGE" \
