@@ -18,6 +18,22 @@ export type AppCommandHandlerDeps = {
   flashFooter: (message: string, tone: "info" | "error") => void
 }
 
+/** `/app` arguments as the TUI sends them. Quoted words are decoded as the
+ * shell decodes them (so a copied `app list --after "todo"` works), without
+ * variable expansion, as in the web palette. An inbox test's JSON payload is
+ * the rest of the line: JSON exactly as typed, so a double-quoted object keeps
+ * its quotes and spaces, or a single-quoted word decoded as the shell decoded
+ * it. */
+export function appSlashArgs(raw: string): string[] {
+  const line = raw.trim().replace(/^\/app(?:\s+|$)/, "")
+  const inboxTest = /^inbox\s+test\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S[\s\S]*)$/.exec(line)
+  if (!inboxTest) return tokenizeShellLine(line)
+  const ids = tokenizeShellLine(inboxTest.slice(1, 4).join(" "))
+  const payload = inboxTest[4]!
+  const quoted = payload.startsWith("'") ? tokenizeShellLine(payload) : null
+  return ["inbox", "test", ...ids, quoted?.length === 1 ? quoted[0]! : payload]
+}
+
 export async function handleAppSlashCommand(
   deps: AppCommandHandlerDeps,
   command: Extract<ParsedSlashCommand, { kind: "app" }>,
@@ -132,7 +148,7 @@ export async function handleAppSlashCommand(
     }
     return
   }
-  const result = await executeAppCommand(command.args, { send: deps.sendAppRequest }, { sessionId: deps.currentAppSessionId?.() })
+  const result = await executeAppCommand(appSlashArgs(command.raw), { send: deps.sendAppRequest }, { sessionId: deps.currentAppSessionId?.() })
   if (!result.ok) {
     deps.flashFooter(result.message ?? "App command failed", "error")
     return

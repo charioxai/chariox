@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { handleAppSlashCommand } from "./app-command-handler.js"
+import { parseSlashCommand, type ParsedSlashCommand } from "./commands.js"
+import { appSlashArgs, handleAppSlashCommand } from "./app-command-handler.js"
 
 test("App slash handler displays kernel installation state without session authority", async () => {
   const notices: string[] = []
@@ -88,20 +89,48 @@ test("/app file save writes an offered file to a new path and never replaces one
   }
 })
 
-test("/app inbox test sends a double-quoted JSON payload exactly as typed", async () => {
+test("/app arguments decode shell quoting but keep an inbox test payload exact", () => {
+  assert.deepEqual(appSlashArgs('/app list --after "todo"'), ["list", "--after", "todo"])
+  assert.deepEqual(appSlashArgs("/app status 'install 1'"), ["status", "install 1"])
+  assert.deepEqual(appSlashArgs("/app"), [])
+  assert.deepEqual(appSlashArgs('/app inbox test todo mail occ-1 {"title":"a  b"}'), ["inbox", "test", "todo", "mail", "occ-1", '{"title":"a  b"}'])
+  assert.deepEqual(appSlashArgs(`/app inbox test todo mail occ-1 '{"title":"a  b"}'`), ["inbox", "test", "todo", "mail", "occ-1", '{"title":"a  b"}'])
+  assert.deepEqual(appSlashArgs(`/app inbox test todo mail occ-1 '{"title":"it'\\''s"}'`), ["inbox", "test", "todo", "mail", "occ-1", `{"title":"it's"}`])
+  assert.deepEqual(appSlashArgs('/app inbox test "todo" mail occ-1 "hi"'), ["inbox", "test", "todo", "mail", "occ-1", '"hi"'])
+  // Not one quoted word: kept as typed, so the JSON check refuses it.
+  assert.deepEqual(appSlashArgs(`/app inbox test todo mail occ-1 '{}' x`), ["inbox", "test", "todo", "mail", "occ-1", "'{}' x"])
+  assert.throws(() => appSlashArgs('/app status "todo'), /unterminated quote/)
+})
+
+for (const payload of ['{"step":"request","message":"remote TUI T-05"}', `'{"step":"request","message":"remote TUI T-05"}'`]) {
+  test(`/app inbox test sends the JSON payload exactly (${payload.startsWith("'") ? "single-quoted" : "bare"})`, async () => {
+    const requests: unknown[] = []
+    const notices: string[] = []
+    const raw = `/app inbox test todo mail occ-1 ${payload}`
+    await handleAppSlashCommand({
+      sendAppRequest: async (request) => {
+        requests.push(request)
+        return { AppInboxOccurrenceAccepted: { installation_id: "todo", route_id: "mail", occurrence_id: "occ-1", duplicate: false } }
+      },
+      appendNotice: message => { notices.push(message) },
+      flashFooter: message => assert.fail(message),
+    }, parseSlashCommand(raw) as Extract<ParsedSlashCommand, { kind: "app" }>)
+    assert.deepEqual(requests, [{ TestAppInboxRoute: {
+      installation_id: "todo", route_id: "mail", occurrence_id: "occ-1", payload: { step: "request", message: "remote TUI T-05" },
+    } }])
+    assert.deepEqual(notices, ["Occurrence occ-1 on mail accepted; the App receives it shortly."])
+  })
+}
+
+test("a copied next-page command pages from the decoded installation ID", async () => {
   const requests: unknown[] = []
-  const notices: string[] = []
-  const raw = '/app inbox test todo mail occ-1 {"step":"request","message":"T-05"}'
   await handleAppSlashCommand({
     sendAppRequest: async (request) => {
       requests.push(request)
-      return { AppInboxOccurrenceAccepted: { installation_id: "todo", route_id: "mail", occurrence_id: "occ-1", duplicate: false } }
+      return { AppInstallationsListed: { installations: [], next_cursor: null } }
     },
-    appendNotice: message => { notices.push(message) },
+    appendNotice: () => {},
     flashFooter: message => assert.fail(message),
-  }, { kind: "app", raw, args: raw.slice(4).trim().split(/\s+/) })
-  assert.deepEqual(requests, [{ TestAppInboxRoute: {
-    installation_id: "todo", route_id: "mail", occurrence_id: "occ-1", payload: { step: "request", message: "T-05" },
-  } }])
-  assert.deepEqual(notices, ["Occurrence occ-1 on mail accepted; the App receives it shortly."])
+  }, parseSlashCommand('/app list --after "todo"') as Extract<ParsedSlashCommand, { kind: "app" }>)
+  assert.deepEqual(requests, [{ ListAppInstallations: { after: "todo", limit: null } }])
 })

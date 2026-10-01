@@ -363,8 +363,8 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
 export function sharedShellCommandForSlashCommand(input: string): string | null {
   const command = input.trim()
   // `/app` runs in this terminal's App handler, never the shared shell: the
-  // shell tokenizer strips the quotes of an inbox test's JSON payload, while
-  // the TUI, like the web palette, passes `/app` arguments verbatim.
+  // shell tokenizer strips the quotes of an inbox test's JSON payload. The
+  // handler (appSlashArgs) keeps that payload exact, like the web palette.
   if (/^\/app(?:\s|$)/.test(command)) return null
   if (command === "/settings prompts" || command.startsWith("/settings prompts ")) {
     return command.slice(1)
