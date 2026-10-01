@@ -2,7 +2,7 @@
 
 import { spawnSync } from "node:child_process"
 import { isDockerImageReference } from "./docker-image-reference.mjs"
-import { capturePrivateHomeArchive } from "./managed-home-archive-stream.mjs"
+import { capturePrivateHomeArchive, homeArchiveMetadataMatches } from "./managed-home-archive-stream.mjs"
 import { createHash } from "node:crypto"
 import {
   chmodSync,
@@ -59,8 +59,6 @@ const HANDLE_ROOT = resolve(process.env.CHARIOX_SLICE_DOCKER_HANDLE_ROOT ?? "/va
 const HANDLE_STATE = resolve(process.env.CHARIOX_SLICE_DOCKER_HANDLE_STATE ?? "/var/lib/chariox-docker/mount-handles.json")
 const sliceDiskQuotaCoordinator = createSliceDiskQuotaCoordinator()
 const MAX_PERSISTENT_HANDLES = 256
-const MAX_HOME_ARCHIVE_BYTES = 32 * 1024 * 1024 * 1024
-const MIN_FREE_AFTER_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
 const PROVISIONER = resolve(
   process.env.CHARIOX_SLICE_DOCKER_PROVISIONER ??
     resolve(dirname(fileURLToPath(import.meta.url)), "provision-linux-docker-slice.sh"),
@@ -719,8 +717,6 @@ async function captureHomeArchive(request) {
       args: ["exec", "-u", "root", request.container, "tar", "--zstd", "-C", "/home-src", "-cf", "-", "."],
       env: dockerEnvironment(),
       destination: staged,
-      maxBytes: MAX_HOME_ARCHIVE_BYTES,
-      minimumFreeBytes: MIN_FREE_AFTER_ARCHIVE_BYTES,
     })
     const stagedMetadata = join(staging, "metadata.json")
     const metadataFd = openSync(
@@ -790,23 +786,13 @@ function inspectManagedHomeArchive(path) {
       exactKeys(metadata, ["schemaVersion", "scope", "id", "sizeBytes", "sha256"], "managed saved home archive metadata")
       const expectedScope = relative[0] === "states" ? "state" : "backup"
       const archiveMetadata = fstatSync(archive.fd)
-      if (
-        metadata.schemaVersion !== 1 ||
-        metadata.scope !== expectedScope ||
-        metadata.id !== relative[1] ||
-        !Number.isSafeInteger(metadata.sizeBytes) ||
-        metadata.sizeBytes <= 0 ||
-        metadata.sizeBytes > MAX_HOME_ARCHIVE_BYTES ||
-        metadata.sizeBytes !== archiveMetadata.size ||
-        !/^[a-f0-9]{64}$/.test(metadata.sha256)
-      ) {
+      if (!homeArchiveMetadataMatches(metadata, expectedScope, relative[1], archiveMetadata.size)) {
         fail("managed saved home archive metadata is invalid")
       }
       const digestResult = spawnSync("/usr/bin/sha256sum", ["--", archive.path], {
         env: { PATH: "/usr/bin:/bin" },
         encoding: "utf8",
         maxBuffer: 64 * 1024,
-        timeout: 10 * 60_000,
       })
       if (digestResult.status !== 0 || !digestResult.stdout.startsWith(`${metadata.sha256} `)) {
         fail("managed saved home archive digest does not match")

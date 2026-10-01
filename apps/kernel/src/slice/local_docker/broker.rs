@@ -248,6 +248,10 @@ fn broker_is_configured() -> bool {
 
 #[cfg(unix)]
 fn execute_with_disk_evidence(request: &BrokerRequest<'_>) -> io::Result<BrokerExecution> {
+    let archive_response = matches!(
+        request,
+        BrokerRequest::HomeArchiveCapture { .. } | BrokerRequest::HomeArchiveVerify { .. }
+    );
     let request = Zeroizing::new(
         serde_json::to_vec(request)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?,
@@ -269,36 +273,48 @@ fn execute_with_disk_evidence(request: &BrokerRequest<'_>) -> io::Result<BrokerE
                 "managed slice Docker broker is unavailable",
             )
         })?;
-        connection
-            .writer
-            .write_all(&(request.len() as u32).to_be_bytes())?;
-        connection.writer.write_all(&request)?;
-        connection.writer.flush()?;
-        let mut header = [0_u8; 4];
-        connection.reader.read_exact(&mut header)?;
-        let response_len = u32::from_be_bytes(header) as usize;
-        if response_len == 0 || response_len > MAX_BROKER_RESPONSE_BYTES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "managed slice Docker broker response is invalid",
-            ));
+        let previous_read_timeout = connection.writer.read_timeout()?;
+        if archive_response {
+            connection.writer.set_read_timeout(None)?;
         }
-        let mut response = vec![0_u8; response_len];
-        connection.reader.read_exact(&mut response)?;
-        let response: BrokerResponse = serde_json::from_slice(&response)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        let decode = |value: &str| {
-            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, value)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
-        };
-        Ok(BrokerExecution {
-            output: Output {
-                status: ExitStatus::from_raw(response.status.clamp(0, 255) << 8),
-                stdout: decode(&response.stdout_base64)?,
-                stderr: decode(&response.stderr_base64)?,
-            },
-            disk_quota_evidence: response.disk_quota_evidence,
-        })
+        let result = (|| {
+            connection
+                .writer
+                .write_all(&(request.len() as u32).to_be_bytes())?;
+            connection.writer.write_all(&request)?;
+            connection.writer.flush()?;
+            let mut header = [0_u8; 4];
+            connection.reader.read_exact(&mut header)?;
+            let response_len = u32::from_be_bytes(header) as usize;
+            if response_len == 0 || response_len > MAX_BROKER_RESPONSE_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "managed slice Docker broker response is invalid",
+                ));
+            }
+            let mut response = vec![0_u8; response_len];
+            connection.reader.read_exact(&mut response)?;
+            let response: BrokerResponse = serde_json::from_slice(&response)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            let decode = |value: &str| {
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, value)
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+            };
+            Ok(BrokerExecution {
+                output: Output {
+                    status: ExitStatus::from_raw(response.status.clamp(0, 255) << 8),
+                    stdout: decode(&response.stdout_base64)?,
+                    stderr: decode(&response.stderr_base64)?,
+                },
+                disk_quota_evidence: response.disk_quota_evidence,
+            })
+        })();
+        // Restore the exact prior read timeout on success and every IO/decode
+        // failure. Archive requests never change the write timeout.
+        if archive_response {
+            connection.writer.set_read_timeout(previous_read_timeout)?;
+        }
+        result
     })();
     if result.is_err() {
         *state = None;
@@ -389,7 +405,9 @@ pub(super) fn capture_home_archive(
         }
         let captured: HomeArchiveCaptureResponse = serde_json::from_slice(&output.stdout)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        if captured.sha256.len() != 64
+        if captured.size_bytes == 0
+            || captured.size_bytes > 9_007_199_254_740_991
+            || captured.sha256.len() != 64
             || !captured
                 .sha256
                 .bytes()
@@ -437,6 +455,7 @@ pub(super) fn verify_home_archive(
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         if verified.path != path
             || verified.size_bytes == 0
+            || verified.size_bytes > 9_007_199_254_740_991
             || verified.sha256.len() != 64
             || !verified
                 .sha256
@@ -662,3 +681,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "broker_archive_policy_tests.rs"]
+mod archive_policy_tests;

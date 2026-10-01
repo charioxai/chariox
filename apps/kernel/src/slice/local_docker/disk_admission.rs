@@ -11,7 +11,6 @@ use crate::slice::SliceRecord;
 
 use super::{broker::docker_command, local_docker_container_name, LocalDockerSliceOptions};
 
-const SNAPSHOT_DISK_RESERVE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const ARCHIVE_OVERHEAD_BYTES: u64 = 16 * 1024 * 1024;
 const ARCHIVE_OVERHEAD_PERCENT: u64 = 5;
 const ARCHIVE_ENTRY_OVERHEAD_BYTES: u64 = 8 * 1024;
@@ -187,7 +186,7 @@ pub(super) fn validate_slice_snapshot_disk_admission(
     let capacity = SliceSnapshotDiskCapacity {
         host_available_bytes: host_available_space(&options.root)?,
         docker_available_bytes: measurement.docker_available_bytes,
-        reserve_bytes: SNAPSHOT_DISK_RESERVE_BYTES,
+        reserve_bytes: super::home_archive_capture::minimum_free_bytes(),
         shared_storage_pool: docker_and_state_share_filesystem(&options.root),
     };
     evaluate_slice_snapshot_disk_admission(capacity, demand).map_err(|error| {

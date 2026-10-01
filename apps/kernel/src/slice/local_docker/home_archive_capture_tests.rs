@@ -30,7 +30,8 @@ case "$1" in
   exec)
     case "$7" in
       *"/tmp/home.tar.zst"*) printf 'layer archive' > "$FAKE_ARCHIVE_LAYER" ;;
-      *"tar --zstd -cf - ."*) test -f /dev/fd/1 || exit 23 ;;
+      *"tar --zstd -cf - ."*) test -f /dev/fd/1 || test -p /dev/fd/1 || exit 23 ;;
+      -C) test "$5" = tar && test "$6" = --zstd && test "$8" = /home-src && test "$9" = -cf && test "${10}" = - ;;
       *) exit 25 ;;
     esac
     case "$FAKE_ARCHIVE_MODE" in
@@ -317,4 +318,59 @@ fn managed_archive_stream_child() {
             "a".repeat(64)
         )
     );
+}
+
+#[test]
+fn home_archive_stream_uses_direct_tar_without_login_shell() {
+    let _lock = crate::env_lock::lock();
+    let f = Fixture::new("success");
+    f.capture().unwrap();
+    assert!(f.calls().lines().any(|line| line
+        == "exec -u root chariox-slice-test-home-archive-1 tar --zstd -C /home-src -cf - ."));
+}
+
+#[test]
+fn home_archive_stream_shared_reserve_refuses_before_file_or_producer() {
+    let _lock = crate::env_lock::lock();
+    let f = Fixture::new("success");
+    assert_eq!(
+        super::super::home_archive_capture::minimum_free_bytes(),
+        2 * 1024 * 1024 * 1024
+    );
+    let result = super::super::home_archive_capture::capture_with_available_space(
+        "chariox-slice-test-home-archive-1",
+        &f.root.join("home.tar.zst"),
+        "test",
+        || Ok(0),
+    );
+    assert!(result.is_err());
+    assert!(!f.root.join("home.tar.zst").exists());
+    assert!(!f.root.join("docker.log").exists());
+}
+
+#[test]
+fn home_archive_stream_pressure_removes_partial_but_retains_previous_generation() {
+    let _lock = crate::env_lock::lock();
+    let f = Fixture::new("success");
+    let previous = f.root.join("prior.tar");
+    std::fs::write(&previous, b"prior generation").unwrap();
+    let reserve = super::super::home_archive_capture::minimum_free_bytes();
+    let mut calls = 0;
+    let result = super::super::home_archive_capture::capture_with_available_space(
+        "chariox-slice-test-home-archive-1",
+        &f.root.join("home.tar.zst"),
+        "test",
+        || {
+            calls += 1;
+            Ok(if calls < 3 {
+                reserve + 1024
+            } else {
+                reserve - 1
+            })
+        },
+    );
+    assert!(result.is_err());
+    assert!(!f.root.join("home.tar.zst").exists());
+    assert_eq!(std::fs::read(previous).unwrap(), b"prior generation");
+    assert!(calls >= 3);
 }
