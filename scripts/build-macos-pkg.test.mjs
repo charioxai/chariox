@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFileSync, existsSync, readFileSync } from 'node:fs';
+import { copyFileSync, existsSync, readdirSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir, userInfo } from 'node:os';
@@ -21,6 +21,12 @@ const INSTALLER_TOOL = 'chariox-app-runtime-install';
 const SUPPORT = 'Library/Application Support/Chariox';
 const darwin = { skip: process.platform !== 'darwin' && 'needs macOS packaging tools and BSD stat' };
 const sha256 = text => createHash('sha256').update(text).digest('hex');
+async function until(condition, ms = 15000) {
+  for (const end = Date.now() + ms; !condition();) {
+    if (Date.now() > end) throw new Error('timed out');
+    await new Promise(done => setTimeout(done, 100));
+  }
+}
 
 async function scratch(t) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'macos-pkg-')));
@@ -150,7 +156,10 @@ test('the package scripts render the pinned runtime with an empty root', async (
 });
 
 // A fake host root: the rendered scripts resolve every path, launchctl and
-// pkgutil included, below it. The stubs log their arguments.
+// pkgutil included, below it. The stubs log their arguments. The installer stub
+// keeps the real limits: install refuses a ninth generation, and cleanup refuses
+// a generation whose lease is held (.busy, or .held until bootout restarts the
+// kernel that holds it).
 async function host(t, { installerStatus = 0 } = {}) {
   const root = await scratch(t);
   const R = join(root, 'host');
@@ -159,10 +168,19 @@ async function host(t, { installerStatus = 0 } = {}) {
     await mkdir(dirname(join(R, path)), { recursive: true });
     await writeFile(join(R, path), `#!/bin/bash\nprintf '%s %s\\n' "${path.split('/').pop()}" "$*" >> '${log}'\n${body}\n`, { mode: 0o755 });
   };
-  await stub('bin/launchctl', '[ "$1" != print ]');
+  const runtimes = join(R, SUPPORT, 'AppRuntimes');
+  await stub('bin/launchctl', `[ "$1" != bootout ] || rm -f '${runtimes}'/*/.held\n[ "$1" != print ]`);
   await stub('usr/sbin/pkgutil', 'true');
-  await stub(`${PACKAGE_DIR}/chariox-app-runtime-install`,
-    `[ "$1" != cleanup ] || rm -rf "${R}/${SUPPORT}/AppRuntimes/$3"\nexit ${installerStatus}`);
+  await stub(`${PACKAGE_DIR}/chariox-app-runtime-install`, `runtimes='${runtimes}'
+case "$1" in
+  cleanup) [ ! -e "$runtimes/$3/.busy" ] && [ ! -e "$runtimes/$3/.held" ] || exit 1; rm -rf "$runtimes/$3" ;;
+  install)
+    [ ${installerStatus} = 0 ] || exit ${installerStatus}
+    if [ ! -d "$runtimes/$7" ] && [ "$(ls "$runtimes" 2>/dev/null | grep -cE '^[0-9a-f]{64}$')" -ge 8 ]; then
+      echo app_runtime_installer_limit >&2; exit 1
+    fi
+    mkdir -p "$runtimes/$7" ;;
+esac`);
   return { root, R, log, calls: () => existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [] };
 }
 
@@ -191,17 +209,23 @@ test('postinstall enrolls the pinned runtime, restarts the console user\'s kerne
   const digest = sha256('pinned\n');
   await mkdir(join(fake.R, 'dev'));
   await writeFile(join(fake.R, 'dev/console'), '');
-  for (const name of [digest, OLD, 'not-a-generation']) await mkdir(join(fake.R, SUPPORT, 'AppRuntimes', name), { recursive: true });
+  // OLD is held by the running kernel until its restart; FREE by nothing.
+  const FREE = 'c'.repeat(64);
+  for (const name of [digest, OLD, FREE, 'not-a-generation']) await mkdir(join(fake.R, SUPPORT, 'AppRuntimes', name), { recursive: true });
+  await writeFile(join(fake.R, SUPPORT, 'AppRuntimes', OLD, '.held'), '');
   const result = await postinstall(fake, digest, 'pinned\n');
   assert.equal(result.status, 0, result.stderr);
   const uid = process.getuid();
   assert.deepEqual(fake.calls(), [
+    `chariox-app-runtime-install cleanup --inventory-sha256 ${OLD}`,
+    `chariox-app-runtime-install cleanup --inventory-sha256 ${FREE}`,
     `chariox-app-runtime-install install --source ${join(fake.R, PACKAGE_DIR, `staging/runtime-${digest}`)} `
       + `--trusted-public-key-hex ${KEY} --inventory-sha256 ${digest}`,
     `launchctl bootout gui/${uid}/dev.chariox.kernel`,
     `launchctl bootstrap gui/${uid} ${join(fake.R, 'Library/LaunchAgents/dev.chariox.kernel.plist')}`,
     `chariox-app-runtime-install cleanup --inventory-sha256 ${OLD}`,
   ]);
+  assert.match(result.stdout, new RegExp(`kept App runtime ${OLD}: it is enrolled or still in use[^]*retired App runtime ${FREE}[^]*retired App runtime ${OLD}`, 'u'));
   assert.match(result.stdout, new RegExp(`started the kernel for ${userInfo().username}`, 'u'));
   assert.equal(existsSync(join(fake.R, PACKAGE_DIR, 'staging')), false);
 });
@@ -220,6 +244,22 @@ test('postinstall stops when the installer refuses and skips the agent without a
   assert.equal(success.status, 0, success.stderr);
   assert.match(success.stdout, /no user is logged in at the console/u);
   assert.equal(nobody.calls().some(call => call.startsWith('launchctl')), false);
+});
+
+test('postinstall frees unused generations before enrolling at the eight-generation limit', darwin, async t => {
+  const fake = await host(t);
+  const digest = sha256('pinned\n');
+  // Six generations stay in use; two were released since the last install.
+  for (let index = 0; index < 8; index += 1) {
+    const generation = join(fake.R, SUPPORT, 'AppRuntimes', String(index).repeat(64));
+    await mkdir(generation, { recursive: true });
+    if (index < 6) await writeFile(join(generation, '.busy'), '');
+  }
+  const result = await postinstall(fake, digest, 'pinned\n');
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /retired App runtime 6{64}[^]*retired App runtime 7{64}/u);
+  const left = readdirSync(join(fake.R, SUPPORT, 'AppRuntimes')).sort();
+  assert.deepEqual(left, [...[0, 1, 2, 3, 4, 5].map(index => String(index).repeat(64)), digest].sort());
 });
 
 test('uninstall removes what the package installed and keeps changed binaries', darwin, async t => {
@@ -257,11 +297,11 @@ test('uninstall removes what the package installed and keeps changed binaries', 
 
 const listen = () => new Promise(done => { const server = createServer().listen(0, '127.0.0.1', () => done(server)); });
 
-test('start-kernel sets the kernel environment, applies kernel.env, and stays down when its endpoint is taken', async t => {
+test('start-kernel sets the kernel environment, applies kernel.env, and waits for a taken endpoint', async t => {
   const root = await scratch(t);
   const home = join(root, 'home');
   const busy = await listen();
-  t.after(() => busy.close());
+  t.after(() => busy.listening && busy.close());
   const probe = await listen();
   const free = probe.address().port;
   await new Promise(done => probe.close(done));
@@ -280,13 +320,17 @@ test('start-kernel sets the kernel environment, applies kernel.env, and stays do
   assert.deepEqual(readFileSync(log, 'utf8').trim().split('\n'), [
     home, `CHARIOX_HOME=${home}/.chariox`, 'CHARIOX_KERNEL_HOST=127.0.0.1', `CHARIOX_KERNEL_PORT=${free}`,
     `CHARIOX_LOG_DIR=${home}/.chariox/logs`, 'CHARIOX_TOKEN_FILE=a=b c']);
-  // Exit 0, so launchd does not restart it, and the kernel never runs.
+  // Occupied, then released: the kernel waits instead of failing, and starts once the endpoint is free.
   await rm(log);
-  await env(busy.address().port);
-  const taken = spawnSync(script, [], { encoding: 'utf8', env: { HOME: home, PATH: '/usr/bin:/bin' } });
-  assert.equal(taken.status, 0, taken.stderr);
-  assert.match(readFileSync(log, 'utf8'), new RegExp(`^start-kernel: 127\\.0\\.0\\.1:${busy.address().port} is already in use; not starting`, 'u'));
+  const port = busy.address().port;
+  await env(port);
+  const waiting = spawn(script, [], { env: { HOME: home, PATH: '/usr/bin:/bin' }, stdio: 'ignore' });
+  const exited = new Promise(done => waiting.on('exit', done));
+  await until(() => existsSync(log) && readFileSync(log, 'utf8').includes(`127.0.0.1:${port} is in use; waiting for it to be free`));
   assert.doesNotMatch(readFileSync(log, 'utf8'), /CHARIOX_HOME=/u);
+  await new Promise(done => busy.close(done));
+  assert.equal(await exited, 0);
+  assert.match(readFileSync(log, 'utf8'), new RegExp(`127\\.0\\.0\\.1:${port} is free; starting the kernel\n[^]*CHARIOX_HOME=${home}/\\.chariox`, 'u'));
 });
 
 test('an unsigned package builds from a release bundle with the pinned postinstall', darwin, async t => {

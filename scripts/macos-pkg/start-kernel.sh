@@ -29,14 +29,16 @@ fi
 mkdir -p "$CHARIOX_LOG_DIR"
 log="$CHARIOX_LOG_DIR/kernel.launchd.log"
 # Every user's kernel defaults to the same endpoint, and so do their clients.
-# When something already listens there (with Fast User Switching, usually
-# another user's kernel), exit cleanly: a failed start would be retried every
-# 5 s for nothing. CHARIOX_KERNEL_PORT in kernel.env, for this user's clients
-# too, runs this user's kernel beside it.
+# While something already listens there (with Fast User Switching, usually
+# another user's kernel), wait and start once it is free: a failed kernel would
+# be restarted every 5 s, and one that exited cleanly never again.
+# CHARIOX_KERNEL_PORT in kernel.env, for this user's clients too, runs this
+# user's kernel beside the other one.
 endpoint="${CHARIOX_KERNEL_HOST}/${CHARIOX_KERNEL_PORT:-43118}"
 if (exec 3<>"/dev/tcp/$endpoint") 2>/dev/null; then
-  echo "start-kernel: ${endpoint/\//:} is already in use; not starting this kernel. Set CHARIOX_KERNEL_PORT in $env_file to run it beside the other one." >>"$log"
-  exit 0
+  echo "start-kernel: ${endpoint/\//:} is in use; waiting for it to be free. Set CHARIOX_KERNEL_PORT in $env_file to run this kernel beside the other one." >>"$log"
+  while (exec 3<>"/dev/tcp/$endpoint") 2>/dev/null; do sleep 5; done
+  echo "start-kernel: ${endpoint/\//:} is free; starting the kernel" >>"$log"
 fi
 cd "$HOME"
 exec "$R/usr/local/bin/chariox-kernel" >>"$log" 2>&1

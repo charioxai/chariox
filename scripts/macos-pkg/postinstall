@@ -11,10 +11,11 @@
 #      never read from the runtime;
 #   3. removes the staged copy, whatever the outcome;
 #   4. restarts the kernel LaunchAgent in the console user's gui domain; other
-#      users get it at their next login;
-#   5. retires runtime generations no kernel holds any more, so repeated upgrades
-#      stay under the installer's limit of eight generations.
-# A failure in step 1 or 2 fails the installation and does not restart the kernel.
+#      users get it at their next login.
+# Before step 2 and after step 4 it retires the runtime generations no kernel
+# holds any more, so repeated upgrades stay under the installer's limit of
+# eight generations. A failure in step 1 or 2 fails the installation and does
+# not restart the kernel.
 set -euo pipefail
 umask 022
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
@@ -56,6 +57,21 @@ if [ -z "$R" ]; then
   trusted "$INSTALLER" || die "$INSTALLER or a directory above it is not root's alone"
 fi
 trap 'rm -rf -- "$STAGING"' EXIT
+# cleanup refuses the enrolled generation and any whose shared lease a kernel or
+# App worker holds; those stay for a later install or the uninstaller.
+retire_unused() {
+  local generation name
+  for generation in "$RUNTIMES"/*; do
+    name=${generation##*/}
+    [ "${#name}" = 64 ] && [ "$name" != "$RUNTIME_DIGEST" ] || continue
+    case "$name" in *[!0-9a-f]*) continue ;; esac
+    if "$INSTALLER" cleanup --inventory-sha256 "$name" >/dev/null 2>&1; then
+      say "retired App runtime $name"
+    else
+      say "kept App runtime $name: it is enrolled or still in use"
+    fi
+  done
+}
 
 # 1. and 2. The runtime.
 say "Chariox $VERSION: enrolling App runtime $RUNTIME_DIGEST"
@@ -65,6 +81,9 @@ actual=$(shasum -a 256 "$inventory")
 actual=${actual%% *}
 [ "$actual" = "$RUNTIME_DIGEST" ] \
   || die "the staged runtime inventory is $actual, not the pinned $RUNTIME_DIGEST; nothing was enrolled"
+# Generations whose leases were released since the last install no longer
+# count against the limit.
+retire_unused
 "$INSTALLER" install --source "$STAGED" \
   --trusted-public-key-hex "$RUNTIME_KEY" --inventory-sha256 "$RUNTIME_DIGEST" \
   || die "chariox-app-runtime-install refused the runtime; the kernel was not restarted"
@@ -85,17 +104,6 @@ case "$console" in
     fi ;;
 esac
 
-# 5. Older generations. cleanup refuses the enrolled one and any a kernel or App
-# worker still holds (its shared lease); those stay for a later install or the
-# uninstaller.
-for generation in "$RUNTIMES"/*; do
-  name=${generation##*/}
-  [ "${#name}" = 64 ] && [ "$name" != "$RUNTIME_DIGEST" ] || continue
-  case "$name" in *[!0-9a-f]*) continue ;; esac
-  if "$INSTALLER" cleanup --inventory-sha256 "$name" >/dev/null 2>&1; then
-    say "retired App runtime $name"
-  else
-    say "kept App runtime $name: it is still in use"
-  fi
-done
+# The restart released the previous generation's lease.
+retire_unused
 say "done: Chariox $VERSION, App runtime $RUNTIME_DIGEST"
