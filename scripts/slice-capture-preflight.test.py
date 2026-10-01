@@ -23,6 +23,17 @@ def function(name):
     return source[start:end]
 
 
+lifecycle = (repo / "apps/kernel/src/runtime/slice_command_executor/lifecycle.rs").read_text()
+for name, operation in [("execute_save_slice_state_request", "slice.state.save"), ("execute_create_slice_backup_request", "slice.backup.create")]:
+    entry = lifecycle.split(f"async fn {name}(", 1)[1].split("\n}", 1)[0]
+    lookup = entry.index("resolve_slice(")
+    preflight = entry.index("require_supported_slice_capture_layout(")
+    admission = entry.index("begin_slice_operation(")
+    assert lookup < preflight < admission, "lookup must precede refusal; operations must follow it"
+recovery = source.split("fn recover_pending_local_docker_slice_backup_restore(", 1)[1].split("\n}", 1)[0]
+assert recovery.index("validate_local_docker_slice_backup(") < recovery.index("run_local_docker_slice_action(") < recovery.index("recovered_rollback_generation(")
+assert "save_local_docker" not in recovery, "startup rollback must not recapture"
+
 guard = repo / "apps/kernel/src/slice/local_docker/capture_preflight.rs"
 header = r'''
 #![allow(dead_code)]

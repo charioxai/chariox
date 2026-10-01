@@ -2324,3 +2324,74 @@ fn persisted_daemon_relay_url_maps_container_loopback_to_private_host_endpoint()
 
     assert_eq!(endpoint, local_docker_private_relay_endpoint(&record));
 }
+
+#[test]
+fn pending_restore_reuses_rollback_and_clears_quarantine_only_after_durable_resolution() {
+    let root = test_root("pending-restore-no-capture");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut options = test_options();
+    options.root = root.clone();
+    let record = test_record();
+    let prior = saved_state(root.join("prior-manifest.json").display().to_string());
+    let rollback = backup_record(root.join("rollback-manifest.json").display().to_string());
+    std::fs::write(
+        &rollback.manifest_path,
+        b"synthetic retained rollback manifest",
+    )
+    .unwrap();
+    let transaction = crate::slice::SliceBackupRestoreTransactionRecord {
+        id: "pending-synthetic".to_string(),
+        source_slice_id: record.id.clone(),
+        target_backup: backup_record(root.join("target-manifest.json").display().to_string()),
+        rollback_backup: rollback.clone(),
+        previous_saved_state: Some(prior.clone()),
+        started_at_ms: 1,
+    };
+    let store = SliceStore::default();
+    store.restore_records(vec![record.clone()]);
+    store.restore_pending_backup_restore_records(vec![transaction.clone()]);
+    let generation = state::recovered_rollback_generation(&record, &options, &transaction).unwrap();
+    assert_eq!(generation.state.image_ref, rollback.image_ref);
+    assert_eq!(
+        generation.state.home_archive_path,
+        rollback.home_archive_path
+    );
+    assert_eq!(generation.state.created_at_ms, rollback.created_at_ms);
+    assert!(store
+        .try_begin_operation(&record.id, "slice.start")
+        .is_err());
+    let resolve = |fail| {
+        store.resolve_backup_restore_transactionally(
+            &transaction.id,
+            &record.id,
+            generation.state.clone(),
+            2,
+            SliceOperationStatus::Failed,
+            Some("rolled back".to_string()),
+            |_, _| {
+                if fail {
+                    Err(crate::error::DaemonError::LocalTransport {
+                        operation: "synthetic.persist",
+                        message: "interrupted".to_string(),
+                    })
+                } else {
+                    Ok(())
+                }
+            },
+        )
+    };
+    assert!(resolve(true).is_err());
+    assert_eq!(
+        store.list_pending_backup_restores(),
+        vec![transaction.clone()]
+    );
+    assert!(std::path::Path::new(&rollback.manifest_path).exists());
+    let resolved = resolve(false).unwrap();
+    assert_eq!(resolved.status, crate::slice::SliceStatus::Stopped);
+    assert!(store.list_pending_backup_restores().is_empty());
+    assert!(store.try_begin_operation(&record.id, "slice.start").is_ok());
+    assert!(std::path::Path::new(&rollback.manifest_path).exists());
+    assert_eq!(transaction.previous_saved_state, Some(prior));
+    // Neither generation publication nor durable resolution invokes Docker.
+    let _ = std::fs::remove_dir_all(root);
+}

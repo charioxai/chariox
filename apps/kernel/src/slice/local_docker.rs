@@ -36,6 +36,7 @@ mod state;
 mod tests;
 
 use broker::docker_command;
+pub(crate) use capture_preflight::require_supported_layout as require_supported_slice_capture_layout;
 use provider_inputs::home_provider_credential_sources;
 pub(crate) use snapshot_pause::recover as recover_local_docker_snapshot_pause;
 pub(crate) use state::{

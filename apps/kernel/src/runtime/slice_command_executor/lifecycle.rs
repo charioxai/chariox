@@ -122,9 +122,10 @@ pub(super) async fn execute_save_slice_state_request(
     relay_state: Option<Arc<RwLock<RelayClientState>>>,
     request: SliceStateSaveRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    let slice = runtime_state.resolve_slice(&request.slice_ref)?;
+    crate::slice::require_supported_slice_capture_layout("slice.state.save")?;
     let operation_guard =
         runtime_state.begin_slice_operation(&request.slice_ref, "slice.state.save")?;
-    let slice = runtime_state.resolve_slice(&request.slice_ref)?;
     runtime_state.record_slice_audit_event(&slice, "state.save", "accepted", None, None)?;
     let slice = runtime_state
         .reconcile_slice_agent_attachments(&slice)
@@ -361,9 +362,10 @@ pub(super) async fn execute_create_slice_backup_request(
     config_projection: &DaemonConfigProjectionStore,
     request: CreateSliceBackupRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    let slice = runtime_state.resolve_slice(&request.slice_ref)?;
+    crate::slice::require_supported_slice_capture_layout("slice.backup.create")?;
     let _operation =
         runtime_state.begin_slice_operation(&request.slice_ref, "slice.backup.create")?;
-    let slice = runtime_state.resolve_slice(&request.slice_ref)?;
     runtime_state.record_slice_audit_event(&slice, "backup.create", "accepted", None, None)?;
     if let Err(error) = ensure_slice_has_no_active_agents(&slice, "slice.backup.create") {
         let _ = runtime_state.record_slice_audit_event(
