@@ -59,12 +59,24 @@ test("provider sandbox compatibility fails before runtime startup when its isola
 const { appendFileSync } = require("node:fs");
 const args = process.argv.slice(2);
 appendFileSync(process.env.CHARIOX_TEST_DOCKER_LOG, JSON.stringify(args) + "\\n");
-if (args[0] === "info") process.exit(0);
+if (args[0] === "info") { console.log("engine-fixture"); process.exit(0); }
 if (args[0] === "container" && args[1] === "inspect" && args.includes("-f")) {
   console.log("sha256:fixture");
   process.exit(0);
 }
 if (args[0] === "container" && args[1] === "inspect") process.exit(0);
+if (args[0] === "inspect" && !args.includes("--format") && !args.includes("-f")) {
+  console.log(JSON.stringify([{
+    Id: "a".repeat(64), Image: "fixture-image", Created: "fixture-created",
+    State: { Running: true, Paused: false, Restarting: false, Status: "running", Pid: 123, StartedAt: "fixture-started", FinishedAt: "" },
+    HostConfig: { PidMode: "" }, Config: { Env: ["HOME=/home/slice"], Labels: {
+      "io.chariox.slice.id": process.env.CHARIOX_SLICE_ID,
+      "io.chariox.slice.owner-kernel-id": process.env.CHARIOX_SLICE_OWNER_KERNEL_ID,
+      "io.chariox.slice.owner-machine-id": process.env.CHARIOX_SLICE_OWNER_MACHINE_ID,
+    } },
+  }]));
+  process.exit(0);
+}
 if (args[0] === "inspect") {
   const format = args[args.indexOf("--format") + 1] || args[args.indexOf("-f") + 1] || "";
   console.log(format.includes("HostConfig.Ulimits") ? "8192:8192" : "true");
@@ -73,6 +85,10 @@ if (args[0] === "inspect") {
 if (args[0] === "image" && args[1] === "inspect") { console.log("sha256:fixture"); process.exit(0); }
 if (args[0] === "cp") process.exit(0);
 if (args[0] === "update") process.exit(0);
+if (args[0] === "exec" && args.includes("python3")) {
+  console.log(JSON.stringify({ disposition: "clear", profileProcessCount: 0 }));
+  process.exit(0);
+}
 if (args[0] === "exec" && args.includes("bwrap")) process.exit(41);
 if (args[0] === "exec") process.exit(0);
 throw new Error("unexpected Docker operation: " + JSON.stringify(args));
@@ -89,6 +105,9 @@ throw new Error("unexpected Docker operation: " + JSON.stringify(args));
         TMPDIR: root,
         CHARIOX_TEST_DOCKER_LOG: dockerLog,
         CHARIOX_SLICE_NAME: "chariox-provider-sandbox-fixture",
+        CHARIOX_SLICE_ID: "slice-fixture",
+        CHARIOX_SLICE_OWNER_KERNEL_ID: "kernel-fixture",
+        CHARIOX_SLICE_OWNER_MACHINE_ID: "machine-fixture",
         CHARIOX_SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY: "1",
       },
     })

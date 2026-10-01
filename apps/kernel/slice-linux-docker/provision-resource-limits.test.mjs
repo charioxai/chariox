@@ -37,15 +37,31 @@ test("a reused slice starts its runtime with the current disk reserve", async ()
 const fs = require("node:fs");
 const args = process.argv.slice(2);
 fs.appendFileSync(process.env.CHARIOX_TEST_DOCKER_LOG, JSON.stringify(args) + "\\n");
-if (args[0] === "info") process.exit(0);
+if (args[0] === "info") { console.log("engine-fixture"); process.exit(0); }
 if (args[0] === "container" && args[1] === "inspect") { console.log("fixture-image"); process.exit(0); }
 if (args[0] === "image" && args[1] === "inspect") { console.log("fixture-image"); process.exit(0); }
+if (args[0] === "inspect" && !args.includes("--format") && !args.includes("-f")) {
+  console.log(JSON.stringify([{
+    Id: "a".repeat(64), Image: "fixture-image", Created: "fixture-created",
+    State: { Running: true, Paused: false, Restarting: false, Status: "running", Pid: 123, StartedAt: "fixture-started", FinishedAt: "" },
+    HostConfig: { PidMode: "" }, Config: { Env: ["HOME=/home/slice"], Labels: {
+      "io.chariox.slice.id": process.env.CHARIOX_SLICE_ID,
+      "io.chariox.slice.owner-kernel-id": process.env.CHARIOX_SLICE_OWNER_KERNEL_ID,
+      "io.chariox.slice.owner-machine-id": process.env.CHARIOX_SLICE_OWNER_MACHINE_ID,
+    } },
+  }]));
+  process.exit(0);
+}
 if (args[0] === "inspect") {
   const format = args[args.indexOf("--format") + 1] || args[args.indexOf("-f") + 1] || "";
   console.log(format.includes("HostConfig.Ulimits") ? "8192:8192" : "true");
   process.exit(0);
 }
 if (args[0] === "ps") { console.log("chariox-download-reserve-fixture"); process.exit(0); }
+if (args[0] === "exec" && args.includes("python3")) {
+  console.log(JSON.stringify({ disposition: "clear", profileProcessCount: 0 }));
+  process.exit(0);
+}
 if (args[0] === "exec" && args.includes("df")) {
   console.log("Filesystem 1024-blocks Used Available Capacity Mounted on");
   console.log("fixture 10000000 1 9999999 1% /");
@@ -67,6 +83,9 @@ throw new Error("unexpected Docker call: " + args[0]);
         CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: `sha256:${"a".repeat(64)}`,
         CHARIOX_SLICE_BUILD_IMAGE: "never",
         CHARIOX_SLICE_NAME: "chariox-download-reserve-fixture",
+        CHARIOX_SLICE_ID: "slice-fixture",
+        CHARIOX_SLICE_OWNER_KERNEL_ID: "kernel-fixture",
+        CHARIOX_SLICE_OWNER_MACHINE_ID: "machine-fixture",
         CHARIOX_SLICE_MIN_FREE_MB: "777",
       },
     })
