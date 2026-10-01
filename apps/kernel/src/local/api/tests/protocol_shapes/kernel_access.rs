@@ -1,6 +1,7 @@
 use super::*;
-use crate::local::KernelConnectionClass;
-use crate::runtime::state::critical_approval_audit_payload;
+use crate::local::{KernelConnectionClass, PasskeyPrompt, PasskeyPromptKind};
+use crate::runtime::state::{critical_approval_audit_payload, PASSKEY_ALREADY_ANSWERED};
+use crate::transport::kernel_protocol::KernelEvent;
 
 /// Exhaustive, so a new class fails to compile here until it is versioned.
 fn wire_name(class: KernelConnectionClass) -> &'static str {
@@ -16,7 +17,7 @@ fn wire_name(class: KernelConnectionClass) -> &'static str {
 
 #[test]
 fn kernel_connection_classes_and_their_audit_attribution_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 393);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 394);
     let classes = [
         KernelConnectionClass::Terminal,
         KernelConnectionClass::ExternalAgent,
@@ -68,5 +69,80 @@ fn kernel_connection_classes_and_their_audit_attribution_are_versioned() {
     assert_eq!(
         format!("{digest:x}"),
         "947eca667500d33980960f533e1e35e66ff9dc57c50189afcc1cc8671976bfa4"
+    );
+}
+
+#[test]
+fn passkey_prompts_and_their_popup_event_are_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 394);
+    let prompt = |session_alias: Option<&str>, interaction_id: &str| PasskeyPrompt {
+        kind: PasskeyPromptKind::CriticalApproval,
+        session_id: "session-1".into(),
+        session_alias: session_alias.map(str::to_owned),
+        interaction_id: interaction_id.into(),
+        title: "Approve App action".into(),
+        message: "An App asks to perform a protected action.".into(),
+        approve_choice_id: "approve".into(),
+        refuse_choice_id: "deny".into(),
+        requested_at_ms: 1_000,
+        expires_at_ms: 301_000,
+    };
+    let event = KernelEvent::PasskeyPromptsChanged {
+        prompts: vec![
+            prompt(Some("Payments"), "app_validation_op-1"),
+            prompt(None, "app_validation_op-2"),
+        ],
+    };
+    let wire = serde_json::to_value(&event).unwrap();
+    let expected = |alias: Option<&str>, interaction_id: &str| {
+        let mut value = serde_json::json!({
+            "kind": "critical_approval",
+            "session_id": "session-1",
+            "interaction_id": interaction_id,
+            "title": "Approve App action",
+            "message": "An App asks to perform a protected action.",
+            "approve_choice_id": "approve",
+            "refuse_choice_id": "deny",
+            "requested_at_ms": 1_000,
+            "expires_at_ms": 301_000,
+        });
+        if let Some(alias) = alias {
+            value["session_alias"] = serde_json::json!(alias);
+        }
+        value
+    };
+    assert_eq!(
+        wire,
+        serde_json::json!({
+            "event": "passkey_prompts_changed",
+            "prompts": [
+                expected(Some("Payments"), "app_validation_op-1"),
+                expected(None, "app_validation_op-2"),
+            ],
+        })
+    );
+    assert_eq!(
+        serde_json::from_value::<KernelEvent>(wire.clone()).unwrap(),
+        event
+    );
+    // An empty set closes every popup.
+    let closed =
+        serde_json::to_value(KernelEvent::PasskeyPromptsChanged { prompts: vec![] }).unwrap();
+    assert_eq!(
+        closed,
+        serde_json::json!({"event": "passkey_prompts_changed", "prompts": []})
+    );
+    // A later answer to an answered prompt is refused with this code.
+    assert_eq!(PASSKEY_ALREADY_ANSWERED, "PASSKEY_ALREADY_ANSWERED");
+
+    let snapshot = serde_json::json!({
+        "event": wire,
+        "closed": closed,
+        "already_answered": PASSKEY_ALREADY_ANSWERED,
+    });
+    let digest = Sha256::digest(serde_json::to_vec(&snapshot).unwrap());
+    assert_eq!(
+        format!("{digest:x}"),
+        "eb4f707985865d80b8ddc73fcf3f95534c4b6a99c30de7fbe666da5830159350"
     );
 }

@@ -265,7 +265,7 @@ pub use api::{
     AcceptAppHostActionRequest, AppHostAction,
     AppRequestErrorCode, AppUpdatePhase, AppUpdateSummary, ListAppInstallationsRequest,
 };
-pub use api::KernelConnectionClass;
+pub use api::{KernelConnectionClass, PasskeyPrompt, PasskeyPromptKind};
 pub use client::LocalDaemonClient;
 pub use harness::{run_local_harness, LocalHarnessReport};
 pub use ipc::{run_local_ipc_server, send_local_ipc_request, LocalIpcClient};

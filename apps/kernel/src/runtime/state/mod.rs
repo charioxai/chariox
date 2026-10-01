@@ -80,6 +80,9 @@ mod config_runtime_state;
 mod critical_approval_passkey;
 #[cfg(test)]
 pub(crate) use critical_approval_passkey::critical_approval_audit_payload;
+mod passkey_prompts;
+#[cfg(test)]
+pub(crate) use passkey_prompts::PASSKEY_ALREADY_ANSWERED;
 mod native_catalog_refresh;
 mod project_environment_export;
 mod project_environment_files;
@@ -136,6 +139,7 @@ pub(crate) struct KernelRuntimeState {
 struct KernelRuntimeOwnedState {
     app_control: crate::runtime::app_control::AppControlService,
     critical_approval_passkeys: critical_approval_passkey::CriticalApprovalPasskeys,
+    passkey_prompts: Arc<passkey_prompts::PasskeyPromptBoard>,
     config_projection: crate::runtime::projection::DaemonConfigProjectionStore,
     session_store: SessionStateStore,
     agent_store: AgentServiceStore,
@@ -701,6 +705,7 @@ impl KernelRuntimeState {
                     critical_approval_passkey::CriticalApprovalPasskeys::new(
                         &config_projection.snapshot().user_config.credential_vault,
                     ),
+                passkey_prompts: Arc::default(),
                 config_projection,
                 session_store,
                 agent_store,

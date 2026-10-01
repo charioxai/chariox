@@ -2565,6 +2565,35 @@ Workflow trigger and deployment direction:
   refused with `PASSKEY_NOT_ACCEPTED` before verification: it is not audited
   and does not count toward the owner's limit. Nothing else changes; which
   connections answer as terminals is unchanged until enforcement.
+- protocol 394: passkey popups (kernel access plan D1). Every passkey prompt
+  is a kernel-owned pending interaction; today each critical approval is one.
+  It is projected as a popup to every terminal connected as its owner,
+  attached to its session or not: every subscription, session or waiting
+  room, local or relayed, of a connection that may submit a passkey
+  (`terminal`, and `unauthenticated` until enforcement) carries the new event
+  `passkey_prompts_changed { prompts: [PasskeyPrompt] }` with the prompts
+  pending for that connection's user. It is sent when the subscription starts
+  (possibly empty) and whenever the set changes, and is never replayed. A
+  `PasskeyPrompt` holds only what the kernel registered: `kind`
+  (`critical_approval`), `session_id`, optional `session_alias`,
+  `interaction_id`, `title`, `message`, `approve_choice_id`,
+  `refuse_choice_id`, `requested_at_ms` and `expires_at_ms`. In a shared
+  session only the decision's owner gets it. It is answered with
+  `RespondToInteraction` on its session and interaction: the approve choice
+  with `passkey` (and optionally `passkey_remember_minutes`), or the refuse
+  choice without one, from any of the owner's terminals. The first verified
+  passkey or refusal resolves it and the prompt leaves every terminal's set;
+  a later answer is refused with `PASSKEY_ALREADY_ANSWERED` without
+  verifying, auditing or counting its passkey. Passkey answers are verified
+  one at a time and each holds its turn until its answer is applied, so of
+  two simultaneous right passkeys only the first is checked. A wrong passkey
+  answers nothing: the prompt stays open, and the failure is audited and
+  counts toward the lockout as in protocol 383. A kernel decision that
+  requires the passkey must have exactly one approve choice (marked
+  `requires_passkey`) and one refuse choice. At its deadline the prompt
+  leaves the set, a passkey sent for it is no longer checked, and the
+  decision times out to whoever raised it. Clients no longer ask for the
+  passkey inside their approval panels; it is typed only into the popup.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

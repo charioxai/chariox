@@ -237,6 +237,7 @@ async fn pruning_dead_store_tokens_closes_only_kernel_operation_responders() {
                 session_store_identity: sessions.weak_identity(),
                 kernel_operation_owner: owner,
                 kernel_operation_deadline: None,
+                passkey_prompt: None,
                 responder: Arc::new(std::sync::Mutex::new(Some(sender))),
             },
         );

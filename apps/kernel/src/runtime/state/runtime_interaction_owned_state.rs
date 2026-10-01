@@ -30,7 +30,8 @@ fn interaction_error(message: &str) -> DaemonError {
 
 impl KernelRuntimeOwnedState {
     /// The owner and operation of a pending decision whose chosen choice needs
-    /// the passkey, when the caller owns that decision.
+    /// the passkey, when the caller owns that decision and it has not expired
+    /// (its popup is closed then, so no passkey is checked for it).
     pub(super) fn passkey_gate(
         &self,
         session_id: &str,
@@ -43,6 +44,11 @@ impl KernelRuntimeOwnedState {
             .write()
             .get(interaction_id)
             .filter(|pending| pending.session_id == session_id)
+            .filter(|pending| {
+                pending
+                    .kernel_operation_deadline
+                    .is_none_or(|deadline| std::time::Instant::now() < deadline)
+            })
             .and_then(|pending| pending.kernel_operation_owner.clone())
             .filter(|owner| Some(owner.as_str()) == caller_user_id)?;
         let session = self.session_store.get_session(session_id).ok()?;
@@ -284,6 +290,11 @@ impl KernelRuntimeOwnedState {
                 operation: "resolve runtime interaction",
                 message: format!("interaction {interaction_id} was not pending"),
             })?;
+        if pending.passkey_prompt.is_some() {
+            // Every terminal closes the popup; a later answer is told why.
+            self.passkey_prompts
+                .record_answered(session_id, interaction_id);
+        }
         let _ = session.remove_active_interaction(interaction_id);
         sessions.restore_session(session);
         activity_mutation.record();
@@ -364,6 +375,9 @@ impl KernelRuntimeOwnedState {
             return self.withdraw_agent_interaction_locked(interaction_id, &pending);
         }
         self.pending_interactions.write().remove(interaction_id);
+        if pending.passkey_prompt.is_some() {
+            self.passkey_prompts.record_change();
+        }
         let activity_mutation = self.begin_managed_activity_mutation();
         let mut sessions = self.session_store.write();
         let mut session = sessions.get_session(session_id)?.clone();

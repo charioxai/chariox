@@ -334,6 +334,8 @@ struct KernelSubscription {
     session_id: String,
     attachment_id: String,
     subscription_scope: KernelSubscriptionScope,
+    /// Protocol 394: whether the subscription carries passkey prompts.
+    connection_class: KernelConnectionClass,
 }
 
 #[derive(Debug)]
@@ -1445,6 +1447,7 @@ async fn handle_incoming_payload(
                     session_id: session_id.clone(),
                     attachment_id: attachment_id.clone(),
                     subscription_scope: scope.clone(),
+                    connection_class,
                 });
                 state.watch_task = Some(tokio::spawn(run_subscription_loop(
                     Arc::clone(router),
@@ -1456,6 +1459,7 @@ async fn handle_incoming_payload(
                         session_id: session_id.clone(),
                         attachment_id: attachment_id.clone(),
                         subscription_scope: scope,
+                        connection_class,
                     },
                 )));
             }

@@ -914,6 +914,9 @@ impl ClassAuditKernel {
 }
 
 #[cfg(unix)]
+mod passkey_prompts;
+
+#[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
 async fn unsupported_slice_save_refusal_replays_without_backend_side_effects() {
     crate::test_support::isolated_env_test!();
