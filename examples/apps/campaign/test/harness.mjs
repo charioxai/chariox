@@ -103,10 +103,25 @@ export function viewNodes() {
     textContent: '', value: '', selectionStart: 0, selectionEnd: 0,
     listeners: new Map(), addEventListener(name, handler) { this.listeners.set(name, handler); },
   }]));
-  const document = { hidden: false, getElementById: id => nodes.get(id), activeElement: nodes.get('draft') };
+  const listeners = new Map();
+  const document = { hidden: false, getElementById: id => nodes.get(id), activeElement: nodes.get('draft'),
+    addEventListener: (name, handler) => listeners.set(name, handler),
+    removeEventListener: name => listeners.delete(name) };
   const stored = new Map();
   const storage = { getItem: key => stored.get(key) ?? null, setItem: (key, value) => stored.set(key, value) };
   const timers = [];
-  return { nodes, document, storage, timers, setTimer: handler => { timers.push(handler); return handler; },
+  return { nodes, document, storage, timers, listeners,
+    setTimer: (handler, delay) => {
+      const timer = () => handler();
+      timer.delay = delay;
+      timers.push(timer);
+      return timer;
+    },
+    async runTimer(delay) {
+      const index = timers.findIndex(timer => timer.delay === delay);
+      assert.notEqual(index, -1, `No timer at ${delay} ms`);
+      const [timer] = timers.splice(index, 1);
+      return timer();
+    },
     clearTimer: handler => { const index = timers.indexOf(handler); if (index >= 0) timers.splice(index, 1); } };
 }

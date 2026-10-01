@@ -45,7 +45,12 @@ SDK's buffered HTTP limit is 512 KiB before the App's smaller validation limit.
 The view uses `textContent`; packaged JavaScript remains the only view code.
 It updates campaign nodes without replacing the draft control, its selection or
 focus. The draft is stored separately in view-origin session storage. A bridge
-failure clears campaign text because the view cannot verify its expiry.
+failure clears campaign text because the view cannot verify its expiry. An
+independent expiry timer clears rendered content even while a bridge call stalls;
+visibility resume also checks expiry after suspended browser timers. View bridge
+waits end after ten seconds. Since the bridge has no cancellation API, at most
+two unresolved calls are retained; one lost reply still permits polling recovery.
+If both calls remain unanswered, reopen the App to create a new view bridge.
 
 Run on the Phase 1 Linux builder:
 

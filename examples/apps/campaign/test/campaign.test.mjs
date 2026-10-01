@@ -24,7 +24,7 @@ test('opening refresh and timed open-view refresh preserve edits and installed c
   const h = await harness(t);
   const before = await releaseDigest();
   const ui = viewNodes();
-  const view = mountCampaignView({ ...ui, bridge: { call: h.read } });
+  const view = mountCampaignView({ ...ui, bridge: { call: h.read }, now: () => h.at });
   t.after(() => view.close());
   await view.refresh();
   assert.equal(ui.nodes.get('campaign-title').textContent, 'Autumn campaign');
@@ -34,7 +34,7 @@ test('opening refresh and timed open-view refresh preserve edits and installed c
   draft.listeners.get('input')();
   h.at += REFRESH_MS;
   h.data = { ...h.data, title: 'Winter campaign', body: '<script>untrusted()</script>' };
-  await ui.timers.shift()();
+  await ui.runTimer(5000);
   assert.equal(ui.nodes.get('campaign-title').textContent, 'Winter campaign');
   assert.equal(ui.nodes.get('campaign-body').textContent, '<script>untrusted()</script>');
   assert.equal(ui.nodes.get('draft'), draft);
@@ -44,7 +44,7 @@ test('opening refresh and timed open-view refresh preserve edits and installed c
   assert.equal(h.attempts, 2);
   assert.equal(await releaseDigest(), before);
   view.close();
-  const reopened = mountCampaignView({ ...ui, bridge: { call: h.read } });
+  const reopened = mountCampaignView({ ...ui, bridge: { call: h.read }, now: () => h.at });
   t.after(() => reopened.close());
   assert.equal(draft.value, 'Keep my unfinished reply', 'Session draft survives reopening');
 });
@@ -152,7 +152,7 @@ test('invalid, oversized, executable and non-200 responses retain the last good 
 test('offline view shows cache status, hides expired data and retains its draft', async t => {
   const h = await harness(t);
   const ui = viewNodes();
-  const view = mountCampaignView({ ...ui, bridge: { call: h.read } });
+  const view = mountCampaignView({ ...ui, bridge: { call: h.read }, now: () => h.at });
   t.after(() => view.close());
   await view.refresh();
   const draft = ui.nodes.get('draft');
@@ -178,6 +178,7 @@ test('backend failure clears content and closing suppresses late responses and p
   let finish;
   const view = mountCampaignView({ ...ui, bridge: { call: () => new Promise(resolve => { finish = resolve; }) } });
   const pending = view.refresh();
+  await Promise.resolve();
   view.close();
   finish({ campaign: { title: 'late', body: 'late' }, status: 'fresh' });
   await pending;
@@ -192,11 +193,78 @@ test('hidden views stop work and repeated refreshes join the current view reques
   const view = mountCampaignView({ ...ui, bridge: { call: async () => {
     calls += 1; return { campaign: null, status: 'unavailable' };
   } } });
-  await ui.timers.shift()();
+  await ui.runTimer(5000);
   assert.equal(calls, 0);
   ui.document.hidden = false;
   await Promise.all([view.refresh(), view.refresh()]);
   assert.equal(calls, 1);
+  view.close();
+});
+
+test('displayed campaign expires during an unresolved bridge call without touching the draft', async t => {
+  const h = await harness(t);
+  h.data.endsAtMs = h.at + 1000;
+  const ui = viewNodes();
+  let stalled = false;
+  const view = mountCampaignView({ ...ui, now: () => h.at, bridge: { call: () =>
+    stalled ? new Promise(() => {}) : h.read() } });
+  t.after(() => view.close());
+  await view.refresh();
+  const draft = ui.nodes.get('draft');
+  draft.value = 'Keep this draft'; draft.selectionStart = 2; draft.selectionEnd = 6;
+  stalled = true;
+  const pending = view.refresh();
+  h.at += 1000;
+  await ui.runTimer(1000);
+  assert.equal(ui.nodes.get('campaign-body').textContent, '');
+  assert.match(ui.nodes.get('status').textContent, /expired/);
+  assert.equal(draft.value, 'Keep this draft');
+  assert.equal(draft.selectionStart, 2); assert.equal(draft.selectionEnd, 6);
+  assert.equal(ui.document.activeElement, draft);
+  await ui.runTimer(10_000);
+  await pending;
+});
+
+test('visibility resume expires content even if browser timers were suspended', async t => {
+  const h = await harness(t);
+  h.data.endsAtMs = h.at + 1000;
+  const ui = viewNodes();
+  let stalled = false;
+  const view = mountCampaignView({ ...ui, now: () => h.at, bridge: { call: () =>
+    stalled ? new Promise(() => {}) : h.read() } });
+  await view.refresh();
+  stalled = true; h.at += 2000;
+  ui.listeners.get('visibilitychange')();
+  assert.equal(ui.nodes.get('campaign-body').textContent, '');
+  assert.match(ui.nodes.get('status').textContent, /expired/);
+  view.close();
+  assert.equal(ui.listeners.size, 0);
+});
+
+test('bridge waits time out, recover after one lost reply, and cap unresolved requests', async () => {
+  const ui = viewNodes();
+  ui.document.hidden = true;
+  let calls = 0;
+  let healthy = false;
+  const view = mountCampaignView({ ...ui, now: () => 1000, bridge: { call: () => {
+    calls += 1;
+    return healthy ? Promise.resolve({ campaign: { title: 'Recovered', body: 'Current', endsAtMs: 10_000 },
+      offlineUntilMs: 10_000, status: 'fresh' }) : new Promise(() => {});
+  } } });
+  let pending = view.refresh();
+  await Promise.resolve();
+  await ui.runTimer(10_000); await pending;
+  assert.match(ui.nodes.get('status').textContent, /Could not contact/);
+  healthy = true; ui.document.hidden = false;
+  await ui.runTimer(5000);
+  assert.equal(ui.nodes.get('campaign-title').textContent, 'Recovered');
+  healthy = false;
+  pending = view.refresh();
+  await Promise.resolve();
+  await ui.runTimer(10_000); await pending;
+  const before = calls;
+  await view.refresh(); await view.refresh();
+  assert.equal(calls, before, 'At most two lost bridge calls may remain pending');
   view.close();
 });
 
