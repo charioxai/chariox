@@ -109,7 +109,7 @@ function relayActionName(action) {
   return name
 }
 
-function relayClaims({ subject, subjectKind, actions, userId = null, targets = null }) {
+function relayClaims({ subject, subjectKind, actions, userId = null, targets = null, machineId = subject }) {
   return {
     issuer: RELAY_ISSUER,
     subject,
@@ -124,7 +124,7 @@ function relayClaims({ subject, subjectKind, actions, userId = null, targets = n
     organization_id: null,
     user_id: userId,
     device_id: subject,
-    machine_id: subjectKind === 'kernel' || subjectKind === 'machine' ? subject : null,
+    machine_id: subjectKind === 'kernel' || subjectKind === 'machine' ? machineId : null,
     client_id: subjectKind === 'client' ? subject : null,
     // Local drill tokens are intentionally unbound. Production-issued tokens
     // bind this claim to the kernel's real relay key thumbprint; a fabricated
@@ -174,14 +174,16 @@ function printHelp() {
   ].join('\n'))
 }
 
-function makeChildrenEnv(ports, rootDir) {
+export function makeChildrenEnv(ports, rootDir) {
   const daemonId = `relay-drill-daemon-${process.pid}-${Date.now()}`
   const daemonAlias = `relay-drill-${process.pid}`
+  const machineId = `${daemonId}-machine`
   const daemonRelayToken = signRelayToken(relayClaims({
     subject: daemonId,
     subjectKind: 'kernel',
     actions: ['daemon_register', 'daemon_heartbeat', 'packet_route', 'peer_request', 'peer_event'],
     userId: 'local',
+    machineId,
   }))
   const clientRelayToken = signRelayToken(relayClaims({
     subject: `relay-drill-client-${process.pid}`,
@@ -211,6 +213,7 @@ function makeChildrenEnv(ports, rootDir) {
       CHARIOX_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
       CHARIOX_RELAY_TOKEN: daemonRelayToken,
       CHARIOX_DAEMON_ID: daemonId,
+      CHARIOX_MACHINE_ID: machineId,
       CHARIOX_DAEMON_ALIAS: daemonAlias,
       CHARIOX_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
       CHARIOX_SESSION_HISTORY_DIR: path.join(rootDir, 'session-history'),
@@ -607,4 +610,4 @@ async function main() {
   }
 }
 
-await main()
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main()
