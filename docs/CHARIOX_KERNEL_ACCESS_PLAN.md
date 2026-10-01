@@ -135,7 +135,7 @@ As part of a successful rotation, the kernel:
 
 1. revokes every external agent grant,
 2. ends every Phase 1 remember window,
-3. interrupts every running sudo turn, and
+3. cancels every queued sudo authorization and interrupts every running sudo turn, and
 4. appends an audit event for each revocation, plus one for the rotation.
 
 ### 4.5 Non-encrypted vault backends
@@ -188,7 +188,7 @@ Only connections on the local kernel socket can request a grant. Requests throug
 
 ### 5.4 Scope and authority
 
-Each grant, and each running sudo turn, is a kernel-side record:
+Each grant, and each queued or running sudo turn, is a kernel-side record:
 
 | Field | Meaning |
 |---|---|
@@ -224,9 +224,9 @@ The user picks a grant's lifetime in the popup, up to `grant_max_minutes`. Each 
 
 | Trigger | Notes |
 |---|---|
-| Session end | Session close, archive or delete. Interrupts a sudo turn running in it. |
-| Holder gone | Stratum 2: the connection closes (TCP loopback) or the bound process exits (Unix socket). Stratum 3: the turn yields or the user interrupts it. |
-| Explicit revoke | From any Chariox terminal, or the CLI by grant id. "Revoke all" is always available and interrupts running sudo turns. |
+| Session end | Session close, archive or delete. Cancels a queued sudo turn and interrupts a running one in it. |
+| Holder gone | Stratum 2: the connection closes (TCP loopback) or the bound process exits (Unix socket). Stratum 3: the turn yields, the user interrupts it, or the user cancels the queued `/sudo` prompt. |
+| Explicit revoke | From any Chariox terminal, or the CLI by grant id. "Revoke all" is always available; it cancels queued sudo turns and interrupts running ones. |
 | Kernel restart | Everything lives in kernel memory (section 5.7). |
 | Passkey change | Section 4.4. |
 | Expiry | Stratum 2 only, at `expires_at` unless extended. |
@@ -306,6 +306,7 @@ Today `/meta <task>` puts the focused agent into a temporary Meta mode that is d
 - `/sudo <prompt>` replaces `/meta <task>` on the focused agent, typed in a Chariox terminal.
 - Every `/sudo` raises the passkey popup (section 5.2); the Phase 1 remember window does not apply. The prompt is sent only after the passkey is verified.
 - Sudo attaches to the turn this prompt starts. If the agent is busy, the prompt waits for the current turn to yield; it is never merged into a running turn.
+- While it waits, the authorization is revocable kernel-memory state. The triggers in section 5.6 cancel it, including rotation and "revoke all", and dispatch atomically checks that it is still live before the turn starts. It is never written to the durable prompt queue, so after a kernel restart the queued `/sudo` prompt is dropped with a notice instead of restored. A focused test queues `/sudo` behind a busy turn, rotates the passkey or revokes all before dispatch, lets the busy turn finish, and checks that sudo does not start without a fresh passkey.
 - An agent cannot put itself or another agent into sudo.
 
 **External `/sudo` requests (P1). Proposed, awaiting owner confirmation.** An external agent may request a `/sudo` turn for an agent in a session it holds a grant for. The request becomes a kernel-owned pending interaction, shown as the passkey popup on every connected terminal. It names the requesting agent, the target agent and session, and the full prompt. The user types the passphrase in the popup; the external agent never sees it and learns only the outcome. If no terminal is connected, the request stays pending until it expires, then fails with a clear message. Each request needs its own passphrase entry (D2).
