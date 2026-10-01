@@ -196,6 +196,21 @@ pub fn run_from_env() -> Result<(), DaemonError> {
 
 pub(crate) fn confirmed_managed_kernel_registration_from_env(
 ) -> Result<Option<ConfirmedManagedKernelRegistration>, DaemonError> {
+    confirmed_managed_kernel_registration_with_receipt_fallback(
+        default_managed_bootstrap_receipt_path(),
+    )
+}
+
+fn confirmed_managed_kernel_registration_with_receipt_fallback(
+    default_receipt_path: std::path::PathBuf,
+) -> Result<Option<ConfirmedManagedKernelRegistration>, DaemonError> {
+    // MP-08: a co-resident managed receipt must not select an ordinary kernel.
+    // Explicit managed configuration retains the fail-closed bootstrap checks.
+    if std::env::var_os(MANAGED_PROVIDER_TOPOLOGY_ENV).is_none()
+        && std::env::var_os("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT").is_none()
+    {
+        return Ok(None);
+    }
     let Some(_) = std::env::var_os("CHARIOX_HOME")
         .filter(|value| !value.is_empty())
         .map(std::path::PathBuf::from)
@@ -205,7 +220,7 @@ pub(crate) fn confirmed_managed_kernel_registration_from_env(
     let receipt_path = std::env::var_os("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT")
         .filter(|value| !value.is_empty())
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(default_managed_bootstrap_receipt_path);
+        .unwrap_or(default_receipt_path);
     if !receipt_path.exists() {
         return Ok(None);
     }

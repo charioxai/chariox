@@ -35,6 +35,47 @@ use crate::error::DaemonError;
 mod disposable_worker;
 
 #[test]
+fn ordinary_explicit_state_ignores_host_global_managed_receipt() {
+    let _env = crate::env_lock::lock();
+    let fixture = Fixture::new("ordinary-global-receipt");
+    let _restore = EnvironmentRestoreGuard::capture([
+        "HOME",
+        "CHARIOX_HOME",
+        "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT",
+        MANAGED_PROVIDER_TOPOLOGY_ENV,
+    ]);
+    std::env::set_var("HOME", &fixture.config.process_home);
+    std::env::set_var("CHARIOX_HOME", &fixture.config.chariox_home);
+    std::env::remove_var("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT");
+    std::env::remove_var(MANAGED_PROVIDER_TOPOLOGY_ENV);
+    let fallback = fixture.root.join("host-global-receipt.json");
+    fs::write(&fallback, "not this ordinary kernel's receipt").unwrap();
+    let registration =
+        super::confirmed_managed_kernel_registration_with_receipt_fallback(fallback.clone());
+    assert!(
+        matches!(registration, Ok(None)),
+        "ordinary startup must ignore a co-resident managed receipt"
+    );
+    assert_eq!(
+        fs::read_to_string(&fallback).unwrap(),
+        "not this ordinary kernel's receipt"
+    );
+
+    std::env::set_var("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT", &fallback);
+    assert!(
+        super::confirmed_managed_kernel_registration_with_receipt_fallback(fallback.clone())
+            .is_err(),
+        "explicit managed registration must still fail closed without a topology"
+    );
+    std::env::remove_var("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT");
+    std::env::set_var(MANAGED_PROVIDER_TOPOLOGY_ENV, "invalid");
+    assert!(
+        super::confirmed_managed_kernel_registration_with_receipt_fallback(fallback).is_err(),
+        "a configured invalid topology must still fail closed"
+    );
+}
+
+#[test]
 fn path1_rebuild_freshness_must_match_the_protected_volume_identity() {
     let config = BootstrapConfig {
         process_home: PathBuf::new(),
