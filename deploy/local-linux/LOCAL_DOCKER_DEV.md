@@ -15,7 +15,7 @@ and launch. Rootless engines, alternate sockets, remote contexts and user
 namespace remapping are refused by this development path.
 
 Supply reviewed SHA-256 values for the public host Docker CLI and a standalone
-Node 22 executable. The Node input and every ancestor must be root-controlled;
+Node 22 executable, plus a verified public Buildx plugin. The Node input and every ancestor must be root-controlled;
 its loader must work on the host. Only public, hash-pinned executable bytes and
 tracked Slice source enter the immutable helper context. Docker configuration,
 provider profiles, private keys and runtime state do not enter it.
@@ -28,10 +28,14 @@ sudo python3 deploy/local-linux/install-local-docker-dev.py \
   --worker-kernel-sha256 VERIFIED_WORKER_KERNEL_SHA256 \
   --docker-cli-sha256 REVIEWED_PUBLIC_DOCKER_CLI_SHA256 \
   --node-runtime /absolute/root-controlled/public/node \
-  --node-runtime-sha256 REVIEWED_PUBLIC_NODE_SHA256
+  --node-runtime-sha256 REVIEWED_PUBLIC_NODE_SHA256 \
+  --buildx-runtime /absolute/root-controlled/public/docker-buildx \
+  --buildx-runtime-sha256 REVIEWED_PUBLIC_BUILDX_SHA256
 ```
 
-The helper build verifies the CLI hash, loader and Python/archive dependencies.
+The installer uses an isolated Docker configuration without authentication files
+and a uniquely named owned Buildx builder, removed after the build attempt.
+It does not install a global plugin or prune shared caches. The helper build verifies the CLI hash, loader and Python/archive dependencies.
 A separate no-profile probe must negotiate successfully with the enrolled
 engine before enrollment is published. The installer publishes one root-owned
 per-user launcher, immutable public source, public image/engine pins and a
