@@ -14,6 +14,7 @@ use crate::session::DEFAULT_LOCAL_USER_ID;
 #[cfg(test)]
 mod fixture_storage;
 mod projection;
+mod request_receipts;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -54,6 +55,7 @@ async fn admit_within(
 #[derive(Clone)]
 pub(crate) struct AppControlService {
     store: DurableKernelStateStore,
+    request_receipts: request_receipts::AppRequestReceipts,
     uploads: super::app_package_upload_control::AppPackageUploadControl,
     preparation: super::app_package_preparation::AppPackagePreparation,
     admission: Arc<Semaphore>,
@@ -109,7 +111,11 @@ impl AppControlService {
             admission.clone(),
             lifecycle.clone(),
         );
+        let request_receipts = request_receipts::AppRequestReceipts::new(
+            store.path().with_extension("app-command-results.jsonl"),
+        );
         Self {
+            request_receipts,
             preparation,
             #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
             installs,

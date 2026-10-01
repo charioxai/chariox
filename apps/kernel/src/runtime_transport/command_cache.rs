@@ -2,6 +2,8 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
@@ -11,6 +13,8 @@ use tokio::sync::{oneshot, Mutex};
 use crate::local::LocalDaemonRequest;
 use crate::runtime::command::KernelCommand;
 use crate::transport::kernel_protocol::{KernelOutgoingFrame, KernelTransportError};
+
+mod at_most_once;
 
 pub(crate) const COMMAND_RESULT_CACHE_LIMIT: usize = 512;
 const COMMAND_RESULT_CACHE_MAX_MEMORY_BYTES: u64 = 128 * 1024 * 1024;
@@ -26,6 +30,7 @@ struct CommandResultRetentionPolicy {
     max_memory_bytes: u64,
     max_total_bytes: Option<u64>,
     max_age_ms: Option<u64>,
+    at_most_once: bool,
 }
 
 impl CommandResultRetentionPolicy {
@@ -35,6 +40,7 @@ impl CommandResultRetentionPolicy {
             max_memory_bytes: COMMAND_RESULT_CACHE_MAX_MEMORY_BYTES,
             max_total_bytes: None,
             max_age_ms: None,
+            at_most_once: false,
         }
     }
 
@@ -44,6 +50,7 @@ impl CommandResultRetentionPolicy {
             max_memory_bytes: COMMAND_RESULT_CACHE_MAX_MEMORY_BYTES,
             max_total_bytes: Some(COMMAND_RESULT_CACHE_MAX_BYTES),
             max_age_ms: Some(COMMAND_RESULT_CACHE_MAX_AGE_MS),
+            at_most_once: false,
         }
     }
 }
@@ -194,6 +201,8 @@ pub(crate) struct CommandResultCache {
     memory_accounting: Mutex<CommandResultMemoryAccounting>,
     retention: CommandResultRetentionPolicy,
     persistence: Option<CommandResultPersistence>,
+    #[cfg(test)]
+    fail_settlement_sync: AtomicBool,
 }
 
 impl Default for CommandResultCache {
@@ -204,6 +213,8 @@ impl Default for CommandResultCache {
             memory_accounting: Mutex::new(CommandResultMemoryAccounting::default()),
             retention: CommandResultRetentionPolicy::memory(),
             persistence: None,
+            #[cfg(test)]
+            fail_settlement_sync: AtomicBool::new(false),
         }
     }
 }
@@ -213,6 +224,18 @@ impl CommandResultCache {
         Self::new_with_persistent_path_and_retention(
             path,
             CommandResultRetentionPolicy::persistent(),
+        )
+    }
+
+    /// Durable receipts never expire or evict. At capacity, refuse new identities.
+    pub(crate) fn new_at_most_once(path: impl Into<PathBuf>) -> io::Result<Self> {
+        Self::new_with_persistent_path_and_retention(
+            path,
+            CommandResultRetentionPolicy {
+                at_most_once: true,
+                max_age_ms: None,
+                ..CommandResultRetentionPolicy::persistent()
+            },
         )
     }
 
@@ -226,6 +249,8 @@ impl CommandResultCache {
             order: Mutex::new(VecDeque::new()),
             memory_accounting: Mutex::new(CommandResultMemoryAccounting::default()),
             retention,
+            #[cfg(test)]
+            fail_settlement_sync: AtomicBool::new(false),
             persistence: Some(CommandResultPersistence {
                 path: path.clone(),
                 io_lock: Mutex::new(()),
@@ -327,10 +352,15 @@ impl CommandResultCache {
             response: response.clone(),
             error: error.clone(),
         };
+        self.publish_completed_result(&command_id, &cached).await;
+        self.record_completed_order(command_id, cached).await;
+    }
+
+    async fn publish_completed_result(&self, command_id: &str, cached: &CachedCommandResult) {
         let waiters = {
             let mut results = self.results.lock().await;
             match results.insert(
-                command_id.clone(),
+                command_id.to_owned(),
                 CommandResultEntry::Completed(cached.clone()),
             ) {
                 Some(CommandResultEntry::Pending { waiters, .. }) => waiters,
@@ -340,7 +370,6 @@ impl CommandResultCache {
         for waiter in waiters {
             let _ = waiter.send(cached.clone());
         }
-        self.record_completed_order(command_id, cached).await;
     }
 
     async fn record_completed_order(&self, command_id: String, cached: CachedCommandResult) {
@@ -394,16 +423,27 @@ impl CommandResultCache {
         if next_append_bytes > COMMAND_RESULT_CACHE_MAX_PERSISTED_RECORD_BYTES {
             return Ok(());
         }
-        let compact_snapshot = if persistence.should_compact_now(next_append_bytes)? {
-            Some(self.persistable_completed_results_snapshot().await)
-        } else {
-            None
-        };
+        let compact_snapshot =
+            if !self.retention.at_most_once && persistence.should_compact_now(next_append_bytes)? {
+                Some(self.persistable_completed_results_snapshot().await)
+            } else {
+                None
+            };
         let _guard = persistence.io_lock.lock().await;
         if let Some(parent) = persistence.path.parent() {
             fs::create_dir_all(parent)?;
         }
         append_persistent_result(&persistence.path, &persisted)?;
+        if self.retention.at_most_once {
+            #[cfg(test)]
+            if self.fail_settlement_sync.swap(false, Ordering::SeqCst) {
+                return Err(io::Error::other("injected settlement sync failure"));
+            }
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&persistence.path)?
+                .sync_all()?;
+        }
         if let Some(snapshot) = compact_snapshot {
             rewrite_persistent_results(&persistence.path, &snapshot)?;
             persistence.skipped_compactions.store(0, Ordering::Release);
@@ -438,6 +478,10 @@ impl CommandResultCache {
             .saturating_add(completed_memory_bytes);
 
         let now_ms = crate::session::unix_epoch_ms();
+
+        if self.retention.at_most_once {
+            return;
+        }
 
         if let Some(max_age_ms) = self.retention.max_age_ms {
             while order.front().is_some_and(|command_id| {
@@ -694,6 +738,11 @@ fn read_persistent_results(
         let max_load_bytes =
             max_total_bytes.saturating_mul(COMMAND_RESULT_COMPACTION_FILE_GROWTH_MULTIPLIER);
         if metadata.len() > max_load_bytes {
+            if retention.at_most_once {
+                return Err(io::Error::other(
+                    "at-most-once receipts exceed the load limit",
+                ));
+            }
             return Ok(LoadedPersistentCommandResults {
                 entries: Vec::new(),
                 compact_after_load: true,
@@ -713,14 +762,23 @@ fn read_persistent_results(
         }
         let jsonl_bytes = line.as_bytes().len().saturating_add(1) as u64;
         if jsonl_bytes > COMMAND_RESULT_CACHE_MAX_PERSISTED_RECORD_BYTES {
+            if retention.at_most_once {
+                return Err(io::Error::other("oversized at-most-once receipt"));
+            }
             compact_after_load = true;
             continue;
         }
         let Ok(mut entry) = serde_json::from_str::<PersistentCommandResult>(&line) else {
+            if retention.at_most_once {
+                return Err(io::Error::other("corrupt at-most-once receipt"));
+            }
             compact_after_load = true;
             continue;
         };
         if !should_persist_completed_result(&entry.result.fingerprint) {
+            if retention.at_most_once {
+                return Err(io::Error::other("unexpected at-most-once receipt type"));
+            }
             compact_after_load = true;
             continue;
         }
@@ -760,6 +818,9 @@ fn apply_persistent_retention(
     entries: &mut Vec<PersistentCommandResultWithBytes>,
     retention: CommandResultRetentionPolicy,
 ) -> bool {
+    if retention.at_most_once {
+        return false;
+    }
     let original_len = entries.len();
     let now_ms = crate::session::unix_epoch_ms();
     if let Some(max_age_ms) = retention.max_age_ms {
@@ -844,7 +905,12 @@ fn rewrite_persistent_results(
         serde_json::to_writer(&mut file, entry).map_err(io::Error::other)?;
         file.write_all(b"\n")?;
     }
-    fs::rename(tmp_path, path)
+    file.sync_all()?;
+    fs::rename(tmp_path, path)?;
+    if let Some(parent) = path.parent() {
+        fs::File::open(parent)?.sync_all()?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

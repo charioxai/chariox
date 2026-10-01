@@ -562,3 +562,196 @@ async fn app_logs_are_owner_scoped_and_page_by_sequence() {
         }
     );
 }
+
+#[test]
+fn app_uninstall_replay_returns_receipt_without_second_generation_change() {
+    std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(uninstall_replay());
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn uninstall_replay() {
+    use crate::local::{AppRequestErrorCode, UninstallAppRequest};
+    let root = TestRoot::new();
+    let app = crate::DaemonApp::bootstrap(root.config()).unwrap();
+    let store = app.durable_state_store();
+    store
+        .mutate_app_installation(
+            "alice",
+            AppRegistryMutation::CreateAndStage {
+                installation_id: "todo-alice".into(),
+                release: ReleaseMetadata {
+                    app_id: "com.chariox.todo".into(),
+                    version: "1.0.0".into(),
+                    publisher_id: "publisher".into(),
+                    package_digest: format!("sha256:{:064x}", 1),
+                    schema_version: 1,
+                    capabilities_digest: format!("sha256:{:064x}", 2),
+                    catalog_digest: format!("sha256:{:064x}", 3),
+                    view_digest: format!("sha256:{:064x}", 4),
+                },
+                now_ms: 1,
+            },
+        )
+        .unwrap();
+    let router =
+        CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 8);
+    let cache = CommandResultCache::default();
+    let request = LocalDaemonRequest::UninstallApp(UninstallAppRequest {
+        installation_id: "todo-alice".into(),
+        expected_generation: "0".into(),
+        delete_data: false,
+    });
+    let first = dispatch(
+        &router,
+        &cache,
+        Some("alice"),
+        request.clone(),
+        "uninstall-once",
+    )
+    .await;
+    assert!(
+        matches!(&first, LocalDaemonResponse::AppInstallation { .. }),
+        "{first:?}"
+    );
+    let generation = store
+        .get_app_installation("alice", "todo-alice")
+        .unwrap()
+        .generation;
+    assert_eq!(
+        dispatch(
+            &router,
+            &cache,
+            Some("alice"),
+            request.clone(),
+            "uninstall-once"
+        )
+        .await,
+        first
+    );
+    assert_eq!(
+        store
+            .get_app_installation("alice", "todo-alice")
+            .unwrap()
+            .generation,
+        generation
+    );
+    // Owner authorization still runs before receipt lookup.
+    assert_eq!(
+        dispatch(&router, &cache, None, request.clone(), "uninstall-once").await,
+        LocalDaemonResponse::AppRequestFailed {
+            code: AppRequestErrorCode::Unauthorized
+        }
+    );
+    assert_eq!(
+        dispatch(&router, &cache, Some("bob"), request, "uninstall-once").await,
+        LocalDaemonResponse::AppRequestFailed {
+            code: AppRequestErrorCode::NotFound
+        }
+    );
+    let new = LocalDaemonRequest::UninstallApp(UninstallAppRequest {
+        installation_id: "todo-alice".into(),
+        expected_generation: generation.to_string(),
+        delete_data: false,
+    });
+    assert!(matches!(
+        dispatch(&router, &cache, Some("alice"), new, "uninstall-again").await,
+        LocalDaemonResponse::AppInstallation { .. }
+    ));
+    assert!(
+        store
+            .get_app_installation("alice", "todo-alice")
+            .unwrap()
+            .generation
+            > generation
+    );
+}
+
+#[test]
+fn rejected_app_requests_cannot_exhaust_another_owners_receipts() {
+    std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(rejected_app_requests());
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn rejected_app_requests() {
+    use crate::local::{
+        AppRequestErrorCode, AppWorkerAction, ControlAppWorkerRequest, UninstallAppRequest,
+    };
+    let root = TestRoot::new();
+    let app = crate::DaemonApp::bootstrap(root.config()).unwrap();
+    crate::durable_state::app_state::fixture_event_catalog(&app.durable_state_store());
+    let router =
+        CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 8);
+    let cache = CommandResultCache::default();
+    for n in 0..crate::runtime_transport::COMMAND_RESULT_CACHE_LIMIT {
+        let request = if n % 2 == 0 {
+            LocalDaemonRequest::ControlAppWorker(ControlAppWorkerRequest {
+                installation_id: "nonexistent".into(),
+                action: AppWorkerAction::Restart,
+            })
+        } else {
+            LocalDaemonRequest::UninstallApp(UninstallAppRequest {
+                installation_id: "installed".into(),
+                expected_generation: "1".into(),
+                delete_data: false,
+            })
+        };
+        assert_eq!(
+            dispatch(
+                &router,
+                &cache,
+                Some("bob"),
+                request,
+                &format!("rejected-{n}")
+            )
+            .await,
+            LocalDaemonResponse::AppRequestFailed {
+                code: AppRequestErrorCode::NotFound
+            }
+        );
+    }
+    let stop = LocalDaemonRequest::ControlAppWorker(ControlAppWorkerRequest {
+        installation_id: "installed".into(),
+        action: AppWorkerAction::Stop,
+    });
+    let stopped = dispatch(
+        &router,
+        &cache,
+        Some("alice"),
+        stop.clone(),
+        "authorized-stop",
+    )
+    .await;
+    assert!(matches!(&stopped, LocalDaemonResponse::AppWorker { .. }));
+    // A previously authorized receipt remains replayable while fresh App I/O
+    // admission is exhausted. No ownership/generation operation runs again.
+    let state = router.runtime_state();
+    let mut permits = Vec::new();
+    while let Ok(permit) = state.app_control().try_admit() {
+        permits.push(permit);
+    }
+    assert!(!permits.is_empty());
+    assert_eq!(
+        dispatch(&router, &cache, Some("alice"), stop, "authorized-stop").await,
+        stopped
+    );
+}

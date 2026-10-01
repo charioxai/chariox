@@ -288,6 +288,7 @@ async fn persistent_command_cache_compacts_by_age_on_load() {
     );
     rewrite_persistent_results(&path, &[old, fresh]).expect("cache fixture should write");
     let retention = CommandResultRetentionPolicy {
+        at_most_once: false,
         max_entries: COMMAND_RESULT_CACHE_LIMIT,
         max_memory_bytes: COMMAND_RESULT_CACHE_MAX_MEMORY_BYTES,
         max_total_bytes: None,
@@ -331,6 +332,7 @@ async fn persistent_command_cache_compacts_by_total_bytes() {
         second_response.clone(),
     );
     let retention = CommandResultRetentionPolicy {
+        at_most_once: false,
         max_entries: COMMAND_RESULT_CACHE_LIMIT,
         max_memory_bytes: COMMAND_RESULT_CACHE_MAX_MEMORY_BYTES,
         max_total_bytes: Some(
@@ -502,6 +504,7 @@ async fn persistent_command_cache_does_not_persist_oversized_results() {
 async fn command_cache_byte_bounds_oversized_non_persisted_results_in_memory() {
     let path = temp_cache_path("byte-bound-oversized-memory-results");
     let retention = CommandResultRetentionPolicy {
+        at_most_once: false,
         max_entries: 512,
         max_memory_bytes: 700_000,
         max_total_bytes: None,
@@ -697,4 +700,162 @@ fn persistent_result_for_test(
             fingerprint,
         },
     }
+}
+
+#[tokio::test]
+async fn at_most_once_receipts_never_evict_and_refuse_new_identity_at_capacity() {
+    let path = temp_cache_path("at-most-once-capacity");
+    let cache = CommandResultCache::new_with_persistent_path_and_retention(
+        path.clone(),
+        CommandResultRetentionPolicy {
+            max_entries: 1,
+            at_most_once: true,
+            max_age_ms: Some(0),
+            ..CommandResultRetentionPolicy::persistent()
+        },
+    )
+    .unwrap();
+    let fingerprint = CommandResultCache::fingerprint_from_bytes_for_test(b"input");
+    let response = serde_json::json!({"accepted":true});
+    assert!(matches!(
+        cache
+            .reserve_at_most_once("one", &fingerprint, response.clone())
+            .await
+            .unwrap(),
+        CommandReservation::Dispatch
+    ));
+    cache
+        .complete(
+            "one".into(),
+            fingerprint.clone(),
+            &KernelOutgoingFrame::Response {
+                request_id: "one".into(),
+                response: Box::new(Some(response.clone())),
+                error: None,
+            },
+        )
+        .await;
+    assert!(cache
+        .reserve_at_most_once("two", &fingerprint, response.clone())
+        .await
+        .is_err());
+    assert!(matches!(
+        cache
+            .reserve_at_most_once("one", &fingerprint, response.clone())
+            .await
+            .unwrap(),
+        CommandReservation::Wait(_)
+    ));
+    let restored =
+        CommandResultCache::new_with_persistent_path_and_retention(path.clone(), cache.retention)
+            .unwrap();
+    assert!(matches!(
+        restored
+            .reserve_at_most_once("one", &fingerprint, response)
+            .await
+            .unwrap(),
+        CommandReservation::Wait(_)
+    ));
+    let _ = fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn at_most_once_duplicates_wait_for_durable_settlement() {
+    let path = temp_cache_path("at-most-once-blocked-settlement");
+    let cache = std::sync::Arc::new(CommandResultCache::new_at_most_once(path.clone()).unwrap());
+    let fingerprint = CommandResultCache::fingerprint_from_bytes_for_test(b"input");
+    let unknown = serde_json::json!({"unknown":true});
+    let success = serde_json::json!({"ok":true});
+    assert!(matches!(
+        cache
+            .reserve_at_most_once("one", &fingerprint, unknown.clone())
+            .await
+            .unwrap(),
+        CommandReservation::Dispatch
+    ));
+    let mut duplicate = match cache
+        .reserve_at_most_once("one", &fingerprint, unknown.clone())
+        .await
+        .unwrap()
+    {
+        CommandReservation::Wait(wait) => wait,
+        _ => panic!("duplicate must wait"),
+    };
+    let guard = cache.persistence.as_ref().unwrap().io_lock.lock().await;
+    let task_cache = cache.clone();
+    let task_fingerprint = fingerprint.clone();
+    let task_success = success.clone();
+    let mut completion = tokio::spawn(async move {
+        task_cache
+            .complete_at_most_once("one".into(), task_fingerprint, task_success, unknown)
+            .await
+    });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(20), &mut completion)
+            .await
+            .is_err()
+    );
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(20), &mut duplicate)
+            .await
+            .is_err()
+    );
+    drop(guard);
+    completion.await.unwrap().unwrap();
+    assert_eq!(*duplicate.await.unwrap().response, Some(success.clone()));
+    let restored = CommandResultCache::new_at_most_once(path.clone()).unwrap();
+    let replay = match restored
+        .reserve_at_most_once("one", &fingerprint, serde_json::Value::Null)
+        .await
+        .unwrap()
+    {
+        CommandReservation::Wait(wait) => wait,
+        _ => panic!("settled receipt must replay"),
+    };
+    assert_eq!(*replay.await.unwrap().response, Some(success));
+    let _ = fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn at_most_once_sync_failure_reports_unknown_to_every_caller() {
+    let path = temp_cache_path("at-most-once-failed-sync");
+    let cache = CommandResultCache::new_at_most_once(path.clone()).unwrap();
+    let fingerprint = CommandResultCache::fingerprint_from_bytes_for_test(b"input");
+    let unknown = serde_json::json!({"unknown":true});
+    assert!(matches!(
+        cache
+            .reserve_at_most_once("one", &fingerprint, unknown.clone())
+            .await
+            .unwrap(),
+        CommandReservation::Dispatch
+    ));
+    let duplicate = match cache
+        .reserve_at_most_once("one", &fingerprint, unknown.clone())
+        .await
+        .unwrap()
+    {
+        CommandReservation::Wait(wait) => wait,
+        _ => panic!("duplicate must wait"),
+    };
+    cache.fail_settlement_sync.store(true, Ordering::SeqCst);
+    assert!(cache
+        .complete_at_most_once(
+            "one".into(),
+            fingerprint.clone(),
+            serde_json::json!({"ok":true}),
+            unknown.clone()
+        )
+        .await
+        .is_err());
+    assert_eq!(*duplicate.await.unwrap().response, Some(unknown.clone()));
+    let replay = match cache
+        .reserve_at_most_once("one", &fingerprint, unknown.clone())
+        .await
+        .unwrap()
+    {
+        CommandReservation::Wait(wait) => wait,
+        _ => panic!("failed settlement must never redispatch"),
+    };
+    assert_eq!(*replay.await.unwrap().response, Some(unknown));
+    let _ = fs::remove_file(path);
 }
