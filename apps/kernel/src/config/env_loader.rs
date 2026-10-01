@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-use super::identity::{load_or_create_runtime_identity, persist_runtime_display_aliases};
+use super::identity::{load_or_create_runtime_identity, load_retained_slice_identity, protected_slice_identity_required, persist_runtime_display_aliases};
 use super::{
     default_os_name, load_user_config_from_path, parse_kernel_runtime_role,
     parse_remote_lease_capacity,
@@ -24,8 +24,12 @@ impl DaemonConfig {
             .ok()
             .and_then(|value| value.parse::<u16>().ok())
             .unwrap_or(43118);
-        let runtime_identity =
-            load_or_create_runtime_identity(&kernel_websocket_host, kernel_websocket_port);
+        let runtime_identity = if protected_slice_identity_required() {
+            load_retained_slice_identity(&kernel_websocket_host, kernel_websocket_port)
+                .unwrap_or_else(|message| panic!("{message}"))
+        } else {
+            load_or_create_runtime_identity(&kernel_websocket_host, kernel_websocket_port)
+        };
         let persisted_config = load_persisted_relay_config();
         let persisted_cloud_relay = persisted_config
             .as_ref()
@@ -45,10 +49,14 @@ impl DaemonConfig {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
         let env_relay_configured = env_relay_url.is_some() || env_relay_token.is_some();
-        let daemon_id = env::var("CHARIOX_DAEMON_ID")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| runtime_identity.daemon_id.clone());
+        let daemon_id = if protected_slice_identity_required() {
+            runtime_identity.daemon_id.clone()
+        } else {
+            env::var("CHARIOX_DAEMON_ID")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| runtime_identity.daemon_id.clone())
+        };
         let event_delivery_environment_id = env::var("CHARIOX_EVENT_ENVIRONMENT_ID")
             .ok()
             .map(|value| value.trim().to_string())

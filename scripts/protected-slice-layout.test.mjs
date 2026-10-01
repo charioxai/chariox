@@ -195,7 +195,13 @@ test("managed host owner derives from the actual rootless mapping rather than co
   assert.throws(() => mappedSliceOwner({...metadata, subuids: "chariox-docker:231072:65536\nchariox-docker:331072:65536\n"}))
 })
 
-import { ensureFirstBootRetention } from "../apps/kernel/slice-linux-docker/protected-first-boot.mjs"
+import { ensureFirstBootRetention, verifyFirstBootTopology } from "../apps/kernel/slice-linux-docker/protected-first-boot.mjs"
+test("real first-boot preflight passes the declared host root into topology verification", () => {
+  const {inspect, receipt} = fixture()
+  assert.deepEqual(verifyFirstBootTopology(inspect, receipt.privateHostRoot, receipt.homeVolume),
+    {privateHostRoot: receipt.privateHostRoot, homeVolume: receipt.homeVolume})
+  assert.throws(() => verifyFirstBootTopology(inspect, "/different", receipt.homeVolume))
+})
 import { parseRuntimeHash, verifyRuntimeMetadata } from "../apps/kernel/slice-linux-docker/protected-runtime-proof.mjs"
 test("trusted initializer requires an immutable ordinary-user runtime path and exact public hash", () => {
   const paths = ["/", "/opt", "/opt/chariox-slice", "/opt/chariox-slice/bin", "/opt/chariox-slice/bin/chariox-kernel"]

@@ -39,6 +39,7 @@ const MAX_CREDENTIAL_BYTES = 2 * 1024 * 1024
 const MAX_CREDENTIAL_TOTAL_BYTES = 8 * 1024 * 1024
 const LINUX_O_PATH = 0x200000
 const PROVIDER_ACCOUNT_CREDENTIAL_PATH = /^\/home\/slice\/\.chariox\/daemon\/provider-accounts\/[A-Za-z0-9-]+\/(?:codex\/[A-Za-z0-9-]+\/codex\/auth\.json|opencode\/[A-Za-z0-9-]+\/data\/opencode\/auth\.json)$/
+const PROTECTED_PROVIDER_ACCOUNT_CREDENTIAL_PATH = /^\/var\/lib\/chariox\/slice-private\/provider-accounts\/[A-Za-z0-9-]+\/(?:codex\/[A-Za-z0-9-]+\/codex\/auth\.json|opencode\/[A-Za-z0-9-]+\/data\/opencode\/auth\.json)$/
 const SHARE_ROOT_INPUT = resolve(process.env.CHARIOX_SLICE_DOCKER_SHARE_ROOT ?? "/var/lib/chariox-slice-share")
 const SHARE_ROOT = existsSync(SHARE_ROOT_INPUT) ? realpathSync(SHARE_ROOT_INPUT) : SHARE_ROOT_INPUT
 const SOCKET_PATH = process.env.CHARIOX_SLICE_DOCKER_BROKER_SOCKET ?? "/var/lib/chariox-slice-share/.broker-private/control/control.sock"
@@ -274,7 +275,7 @@ function validateDockerExec(args) {
     args[2] === "slice" &&
     command.length === 3 &&
     exactArguments(command.slice(0, 2), ["test", "-s"]) &&
-    PROVIDER_ACCOUNT_CREDENTIAL_PATH.test(command[2])
+    (PROVIDER_ACCOUNT_CREDENTIAL_PATH.test(command[2]) || PROTECTED_PROVIDER_ACCOUNT_CREDENTIAL_PATH.test(command[2]))
   ) return
   if (args[2] === "slice" && exactArguments(command, ["gh", "auth", "token", "--hostname", "github.com"])) return
   if (
@@ -1445,6 +1446,10 @@ function inspectDockerObject(kind, reference) {
 
 function execute(request) {
   validateRequest(request)
+  if (request.kind === "docker" && request.args[0] === "exec"
+      && PROTECTED_PROVIDER_ACCOUNT_CREDENTIAL_PATH.test(request.args.at(-1))) {
+    protectedLayouts.preflight(request.args[3])
+  }
   let commitSource
   let commitParent
   if (request.kind === "docker" && request.args[0] === "commit") {

@@ -76,6 +76,112 @@ fn kernel_registry_version() -> u32 {
 const MAX_RECENT_KERNEL_IDENTITIES: usize = 16;
 const PINNED_LOCAL_KERNEL_PORTS: [u16; 3] = [43118, 43119, 44120];
 
+pub(super) fn protected_slice_identity_required() -> bool {
+    std::env::var("CHARIOX_SLICE_PRIVATE_ROOT").as_deref()
+        == Ok("/var/lib/chariox/slice-private")
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProtectedIdentityPin {
+    kernel_id: String,
+    machine_id: String,
+    relay_public_key: String,
+    host: String,
+    port: u16,
+    restoration_verified: bool,
+}
+
+// Normal protected boot never initializes or repairs private state. The host
+// first-use barrier installs this public pin only after testing its backup.
+pub(super) fn load_retained_slice_identity(host: &str, port: u16) -> Result<RuntimeIdentity, &'static str> {
+    let unavailable = "Protected slice identity is unavailable; retained state is preserved";
+    if std::env::var("CHARIOX_HOME").as_deref() != Ok("/var/lib/chariox/slice-private/kernel") {
+        return Err(unavailable);
+    }
+    let pin_path = Path::new("/opt/chariox-slice/identity-retention.json");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let metadata = fs::symlink_metadata(pin_path).map_err(|_| unavailable)?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.uid() != 0
+            || metadata.permissions().mode() & 0o222 != 0 || metadata.len() > 65536 {
+            return Err(unavailable);
+        }
+    }
+    let pin: ProtectedIdentityPin = serde_json::from_slice(&fs::read(pin_path).map_err(|_| unavailable)?)
+        .map_err(|_| unavailable)?;
+    if !pin.restoration_verified || pin.host != host || pin.port != port
+        || pin.kernel_id.is_empty() || !pin.kernel_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"_.:-".contains(&byte)) {
+        return Err(unavailable);
+    }
+    let machine: MachineIdentity = serde_json::from_slice(&fs::read(DaemonConfig::default_machine_identity_path()).map_err(|_| unavailable)?)
+        .map_err(|_| unavailable)?;
+    let registry: KernelRegistry = serde_json::from_slice(&fs::read(DaemonConfig::default_kernel_registry_path()).map_err(|_| unavailable)?)
+        .map_err(|_| unavailable)?;
+    let record: KernelIdentityRecord = serde_json::from_slice(&fs::read(default_config_dir().join("kernels").join(&pin.kernel_id).join("identity.json")).map_err(|_| unavailable)?)
+        .map_err(|_| unavailable)?;
+    retained_slice_identity_from_documents(pin, machine, registry, record, host, port)
+}
+
+fn retained_slice_identity_from_documents(pin: ProtectedIdentityPin, machine: MachineIdentity,
+    registry: KernelRegistry, record: KernelIdentityRecord, host: &str, port: u16) -> Result<RuntimeIdentity, &'static str> {
+    let unavailable = "Protected slice identity is unavailable; retained state is preserved";
+    if !pin.restoration_verified || pin.host != host || pin.port != port
+        || registry.version != 1 || registry.kernels.len() != 1 || registry.machine_id != pin.machine_id
+        || machine.machine_id != pin.machine_id || record.kernel_id != pin.kernel_id
+        || record.host != host || record.port != port || record.relay_public_key != pin.relay_public_key
+        || registry.kernels.get(&kernel_identity_key(host, port)) != Some(&record)
+        || relay_crypto::public_key_from_private_key_base64(&record.relay_private_key).map_err(|_| unavailable)? != pin.relay_public_key {
+        return Err(unavailable);
+    }
+    Ok(RuntimeIdentity {daemon_id: record.kernel_id, machine_id: machine.machine_id,
+        machine_alias: machine.machine_alias, daemon_alias: record.kernel_alias,
+        relay_public_key: record.relay_public_key, relay_private_key: record.relay_private_key})
+}
+
+#[cfg(test)]
+mod protected_retention_tests {
+    use super::*;
+
+    fn documents() -> (ProtectedIdentityPin, MachineIdentity, KernelRegistry, KernelIdentityRecord) {
+        // Ephemeral synthetic test input, never a runtime identity or account.
+        let secret = relay_crypto::generate_private_key_base64();
+        let public = relay_crypto::public_key_from_private_key_base64(&secret).unwrap();
+        let record = KernelIdentityRecord {kernel_id: "synthetic-kernel".to_string(), host: "127.0.0.1".to_string(),
+            port: 43119, relay_private_key: secret, relay_public_key: public.clone(), ..Default::default()};
+        let pin = ProtectedIdentityPin {kernel_id: record.kernel_id.clone(), machine_id: "synthetic-machine".to_string(),
+            relay_public_key: public, host: record.host.clone(), port: record.port, restoration_verified: true};
+        let machine = MachineIdentity {machine_id: pin.machine_id.clone(), machine_alias: None};
+        let registry = KernelRegistry {version: 1, machine_id: pin.machine_id.clone(), machine_alias: None,
+            kernels: BTreeMap::from([(kernel_identity_key(&record.host, record.port), record.clone())])};
+        (pin, machine, registry, record)
+    }
+
+    #[test]
+    fn protected_boot_uses_only_the_retained_selected_identity() {
+        let (pin, machine, registry, record) = documents();
+        let result = retained_slice_identity_from_documents(pin, machine, registry, record, "127.0.0.1", 43119);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().daemon_id, "synthetic-kernel");
+    }
+
+    #[test]
+    fn protected_boot_rejects_registry_machine_and_key_tampering_without_repair() {
+        for change in 0..5 {
+            let (mut pin, mut machine, mut registry, mut record) = documents();
+            match change {
+                0 => registry.kernels.clear(),
+                1 => machine.machine_id = "foreign-machine".to_string(),
+                2 => record.relay_private_key = relay_crypto::generate_private_key_base64(),
+                3 => pin.relay_public_key = "foreign-public".to_string(),
+                _ => pin.restoration_verified = false,
+            }
+            assert!(retained_slice_identity_from_documents(pin, machine, registry, record, "127.0.0.1", 43119).is_err());
+        }
+    }
+}
+
 pub(super) fn load_or_create_runtime_identity(host: &str, port: u16) -> RuntimeIdentity {
     let machine_identity = load_or_create_machine_identity();
     let endpoint_key = kernel_identity_key(host, port);
