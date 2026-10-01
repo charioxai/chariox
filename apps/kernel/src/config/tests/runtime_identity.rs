@@ -94,6 +94,56 @@ fn runtime_identity_is_stable_per_host_port() {
 }
 
 #[test]
+fn protected_environment_load_and_restart_preserve_retained_ids_and_identity_documents() {
+    let _guard = crate::env_lock::lock();
+    let directory = tempfile::tempdir().unwrap();
+    struct Restore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            for (name, value) in self.0.drain(..) {
+                unsafe { restore_env_var(name, value) };
+            }
+        }
+    }
+    let names = ["HOME", "CHARIOX_HOME", "CHARIOX_SLICE_PRIVATE_ROOT", "CHARIOX_KERNEL_HOST", "CHARIOX_KERNEL_PORT",
+        "CHARIOX_DAEMON_ID", "CHARIOX_MACHINE_ID", "CHARIOX_DAEMON_ALIAS", "CHARIOX_MACHINE_ALIAS"];
+    let _restore = Restore(names.into_iter().map(|name| (name, env::var_os(name))).collect());
+    unsafe {
+        env::set_var("HOME", directory.path());
+        env::set_var("CHARIOX_HOME", directory.path());
+        env::set_var("CHARIOX_SLICE_PRIVATE_ROOT", "/var/lib/chariox/slice-private");
+        env::set_var("CHARIOX_KERNEL_HOST", "127.0.0.1");
+        env::set_var("CHARIOX_KERNEL_PORT", "43119");
+        env::set_var("CHARIOX_DAEMON_ID", "foreign-kernel");
+        env::set_var("CHARIOX_MACHINE_ID", "foreign-machine");
+        env::set_var("CHARIOX_DAEMON_ALIAS", "display-only-kernel");
+        env::set_var("CHARIOX_MACHINE_ALIAS", "display-only-machine");
+    }
+    let registry = DaemonConfig::default_kernel_registry_path();
+    fs::create_dir_all(registry.parent().unwrap()).unwrap();
+    let sentinel = serde_json::to_vec(&serde_json::json!({"version": 1, "machine_id": "retained-machine",
+        "kernels": {"127.0.0.1:43119": {"kernel_id": "retained-kernel", "host": "127.0.0.1", "port": 43119,
+            "relay_public_key": "synthetic-public", "relay_private_key": "synthetic-private-sentinel"}}})).unwrap();
+    fs::write(&registry, &sentinel).unwrap();
+    // Exercise the same environment composition used by load_from_env twice.
+    // Only private identity loading is substituted; no runtime keys are created.
+    let load = || DaemonConfig::load_from_env_with_identity_loader(|host, port| {
+        assert_eq!((host, port), ("127.0.0.1", 43119));
+        assert!(fs::read(&registry).unwrap() == sentinel);
+        RuntimeIdentity {daemon_id: "retained-kernel".to_string(), machine_id: "retained-machine".to_string(),
+            machine_alias: None, daemon_alias: None, relay_public_key: "synthetic-public".to_string(),
+            relay_private_key: "synthetic-private-sentinel".to_string()}
+    });
+    let first = load();
+    let restarted = load();
+    assert_eq!(first.daemon_id, "retained-kernel");
+    assert_eq!(restarted.daemon_id, "retained-kernel");
+    assert_eq!(first.host_machine_id, "retained-machine");
+    assert_eq!(restarted.host_machine_id, "retained-machine");
+    assert!(fs::read(&registry).unwrap() == sentinel);
+}
+
+#[test]
 fn chariox_home_owns_config_identity_state_and_runtime_paths() {
     let _guard = crate::env_lock::lock();
     let temp_home = std::env::temp_dir().join(format!(

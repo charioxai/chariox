@@ -16,6 +16,18 @@ use super::{
 
 impl DaemonConfig {
     pub fn load_from_env() -> Self {
+        Self::load_from_env_with_identity_loader(|host, port| {
+            if protected_slice_identity_required() {
+                load_retained_slice_identity(host, port).unwrap_or_else(|message| panic!("{message}"))
+            } else {
+                load_or_create_runtime_identity(host, port)
+            }
+        })
+    }
+
+    pub(super) fn load_from_env_with_identity_loader(
+        load_identity: impl FnOnce(&str, u16) -> super::identity::RuntimeIdentity,
+    ) -> Self {
         let user_config_path = Self::default_user_config_path();
         let user_config = load_user_config_from_path(&user_config_path);
         let kernel_websocket_host =
@@ -24,12 +36,7 @@ impl DaemonConfig {
             .ok()
             .and_then(|value| value.parse::<u16>().ok())
             .unwrap_or(43118);
-        let runtime_identity = if protected_slice_identity_required() {
-            load_retained_slice_identity(&kernel_websocket_host, kernel_websocket_port)
-                .unwrap_or_else(|message| panic!("{message}"))
-        } else {
-            load_or_create_runtime_identity(&kernel_websocket_host, kernel_websocket_port)
-        };
+        let runtime_identity = load_identity(&kernel_websocket_host, kernel_websocket_port);
         let persisted_config = load_persisted_relay_config();
         let persisted_cloud_relay = persisted_config
             .as_ref()
@@ -75,12 +82,14 @@ impl DaemonConfig {
             .filter(|value| !value.is_empty())
             .or(runtime_identity.daemon_alias)
             .or_else(|| default_kernel_alias(host_machine_alias.as_deref(), kernel_websocket_port));
-        persist_runtime_display_aliases(
-            &kernel_websocket_host,
-            kernel_websocket_port,
-            host_machine_alias.as_deref(),
-            daemon_alias.as_deref(),
-        );
+        if !protected_slice_identity_required() {
+            persist_runtime_display_aliases(
+                &kernel_websocket_host,
+                kernel_websocket_port,
+                host_machine_alias.as_deref(),
+                daemon_alias.as_deref(),
+            );
+        }
         let accept_remote_leases = env::var("CHARIOX_ACCEPT_REMOTE_LEASES")
             .ok()
             .map(|value| {
@@ -171,10 +180,14 @@ impl DaemonConfig {
                 .and_then(|value| value.parse::<u64>().ok())
                 .unwrap_or(0),
             daemon_id,
-            host_machine_id: env::var("CHARIOX_MACHINE_ID")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| runtime_identity.machine_id.clone()),
+            host_machine_id: if protected_slice_identity_required() {
+                runtime_identity.machine_id.clone()
+            } else {
+                env::var("CHARIOX_MACHINE_ID")
+                    .ok()
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| runtime_identity.machine_id.clone())
+            },
             host_machine_alias,
             os_name: env::var("CHARIOX_OS_NAME")
                 .ok()
