@@ -1131,7 +1131,6 @@ pub(crate) fn apply_managed_provider_isolation(
             }
         }
 
-        append_managed_namespace_environment(&mut args, request);
         let mut environment_remove = managed_provider_isolation_env_remove();
         environment_remove.extend(launch.pty_env.keys().filter_map(|name| {
             (name.starts_with("GIT_CONFIG_KEY_") || name.starts_with("GIT_CONFIG_VALUE_"))
@@ -1155,6 +1154,10 @@ pub(crate) fn apply_managed_provider_isolation(
                 launch.pty_env_remove.push(name);
             }
         }
+        // bwrap applies --setenv/--unsetenv in order. The scrub above removes
+        // the isolation marker among the inherited controls, so the namespace
+        // environment, including the marker, must be set after it.
+        append_managed_namespace_environment(&mut args, request);
         // Account paths are scrubbed from the inherited kernel environment,
         // then restored only to their validated, namespace-local destinations.
         // This keeps an inherited XDG_RUNTIME_DIR (or provider-specific home)
@@ -3386,6 +3389,25 @@ mod tests {
         }
         let prepared = prepared.expect("managed runtime-home ancestor launch should assemble");
         let prepared_args = &prepared.pty_args;
+        // bwrap applies environment operations in order: the isolation marker
+        // must survive the inherited-control scrub.
+        let separator = prepared_args
+            .iter()
+            .position(|arg| arg == "--")
+            .unwrap_or(prepared_args.len());
+        let marker_operations = prepared_args[..separator]
+            .windows(2)
+            .filter(|window| {
+                (window[0] == "--setenv" || window[0] == "--unsetenv")
+                    && window[1] == MANAGED_PROVIDER_ISOLATION_MARKER_ENV
+            })
+            .map(|window| window[0].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            marker_operations.last(),
+            Some(&"--setenv"),
+            "managed isolation marker must be set after the control scrub: {marker_operations:?}"
+        );
         let selected_bind = prepared_args
             .windows(3)
             .enumerate()
