@@ -568,3 +568,16 @@ test("capture requires a paused or stopped source and rejects every other writab
     assert.throws(() => controller.requireQuiescedHome(container))
   } finally { rmSync(root, {recursive: true}) }
 })
+
+test("retained identity discovery skips the kernel active registry directory", async () => {
+  const {retainedIdentityPaths} = await import("../apps/kernel/slice-linux-docker/protected-managed-layout.mjs")
+  const parent = mkdtempSync(join(process.env.HOME, ".chariox-identity-paths-test-"))
+  try {
+    const kernels = join(parent, "kernel/kernels")
+    mkdirSync(join(kernels, "kernel-synthetic"), {recursive: true, mode: 0o700})
+    mkdirSync(join(kernels, "active"), {mode: 0o700})
+    writeFileSync(join(kernels, "active/kernel-synthetic.json"), "synthetic registration", {mode: 0o600})
+    writeFileSync(join(kernels, "registry.json"), "synthetic registry", {mode: 0o600})
+    assert.deepEqual(retainedIdentityPaths(parent), ["kernel/kernels/kernel-synthetic/identity.json", "kernel/kernels/registry.json"])
+  } finally { rmSync(parent, {recursive: true}) }
+})
