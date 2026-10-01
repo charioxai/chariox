@@ -2026,7 +2026,7 @@ async function launchComputerSecretAgent() {
   const ready = await waitFor(async () => {
     const candidate = interruption.guardClient(new LocalIpcClient(workerRelayUrl, {
       relayAuthToken: workerRelayToken,
-      targetDaemonAlias: slice.worker_kernel_ref,
+      targetDaemonId: slice.worker_kernel_ref,
     }))
     try {
       const current = unwrap(
