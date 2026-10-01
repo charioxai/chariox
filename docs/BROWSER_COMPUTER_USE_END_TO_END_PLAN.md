@@ -1682,6 +1682,21 @@ timeline as functional evidence. Performance comparison waits for Milestone 10.
 Every test and drill must own an explicit cleanup ledger. Cleanup runs on
 success, assertion failure, timeout, interruption, and provider failure.
 
+Provider profiles, refreshed child homes, and their saved states are durable
+assets under the credential-retention protocol, not temporary drill artifacts.
+Official-provider Room drills retain their private kernel runtime under
+`~/.chariox/dev/provider-runtimes/browser-computer/`, its named home volume,
+and saved-state images and archives. Stop these slices; do not delete or reset
+them during final cleanup. `RETENTION.json` and the public cleanup projection
+record the owner, run, and retained locations. Keep execution records private
+and publish only allowlisted evidence. A persistence drill may remove the
+original home volume only after checking its saved archive and manifest; the
+saved copy and restored home remain protected. Never dispose of a machine
+holding the only current credential profile or backup.
+
+The removal list below applies to disposable fixtures and temporary transfers;
+exclude these durable assets and all other protected credential stores.
+
 Clean up all drill-owned:
 
 - Docker containers, images created only for the drill, volumes, and networks

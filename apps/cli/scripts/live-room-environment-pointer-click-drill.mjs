@@ -4,6 +4,7 @@ import assert from "node:assert/strict"
 import { assertRoomDrillCompletedActionNotice } from "./lib/room-drill-action-notice.mjs"
 import { validatePrebuiltSliceImage } from "./lib/prebuilt-slice-image.mjs"
 import { roomTuiPtyInvocation } from "./lib/room-tui-pty.mjs"
+import { createRetainedRoomRuntime, stopOrDeleteRoomSlice, roomCleanupComplete, verifyRetainedRoomArchive, roomDrillLeakScanRoots } from "./lib/room-provider-retention.mjs"
 import { spawn } from "node:child_process"
 import { createHash } from "node:crypto"
 import { createWriteStream } from "node:fs"
@@ -92,6 +93,7 @@ assert.ok(Number.isSafeInteger(sliceMemoryMb) && sliceMemoryMb > 0 && sliceMemor
   "CHARIOX_ROOM_DRILL_MEMORY_MB must be a positive u32 number of MiB")
 const companionOnly = process.env.CHARIOX_ROOM_DRILL_FOCUS === "web-companion"
 let realProviderOptions = roomRealProviderOptions(process.env)
+if (realProviderOptions) process.umask(0o077)
 const sharedBrowserReconnect = process.env.CHARIOX_ROOM_DRILL_SHARED_BROWSER_RECONNECT === "1"
 if (companionOnly && !process.env.CHARIOX_ROOM_DRILL_COORDINATION_DIR?.trim()) {
   throw new Error("web-companion focus requires CHARIOX_ROOM_DRILL_COORDINATION_DIR")
@@ -115,7 +117,8 @@ const webKeyboardText = process.env.CHARIOX_ROOM_DRILL_WEB_KEYBOARD === "1"
   : null
 const webKeyboardReplacementText = webKeyboardText ? `ime-${runId}-日本語` : null
 const webPointerGestures = process.env.CHARIOX_ROOM_DRILL_WEB_GESTURES === "1"
-const evidenceRoot = path.join(
+const retainedProviderRoot = realProviderOptions ? await createRetainedRoomRuntime({ runId }) : null
+const publicEvidenceRoot = path.join(
   os.homedir(),
   ".codex",
   "evidence",
@@ -123,6 +126,9 @@ const evidenceRoot = path.join(
   "computer-secret-room-e2e",
   stamp,
 )
+// Real-provider execution records can contain account diagnostics or provider output.
+// Keep them with the private durable runtime; publish only the cleanup projection.
+const evidenceRoot = retainedProviderRoot ? path.join(retainedProviderRoot, "execution-record") : publicEvidenceRoot
 const containerName = `chariox-slice-${runId}`
 const homeVolume = `${containerName}-home`
 const userCredentialId = `${runId}-user-computer`
@@ -219,9 +225,8 @@ const directDaemonEnvironmentNames = [
   "CHARIOX_RELAY_TOKEN",
   "CHARIOX_SESSION_HISTORY_DIR",
 ]
-const tempRootPromise = realProviderOptions
-  ? mkdir(path.join(os.homedir(), ".chariox", "dev", "browser-computer-use"), { recursive: true })
-    .then(() => mkdtemp(path.join(os.homedir(), ".chariox", "dev", "browser-computer-use", "room-provider-")))
+const tempRootPromise = retainedProviderRoot
+  ? Promise.resolve(retainedProviderRoot)
   : mkdtemp(path.join(os.tmpdir(), "chariox-room-pointer-"))
 const children = []
 let localForwarding = null
@@ -255,10 +260,13 @@ await interruption.run(async () => {
 }, cleanup, (error) => { failure = error })
 
 if (failure) {
-  console.error(failure?.stack ?? String(failure))
+  console.error(retainedProviderRoot
+    ? `Official provider drill failed; private diagnostics retained at ${retainedProviderRoot}`
+    : failure?.stack ?? String(failure))
   process.exitCode = 1
 } else {
-  console.log(JSON.stringify({ status: "passed", evidenceRoot }, null, 2))
+  console.log(JSON.stringify({ status: "passed", evidenceRoot: publicEvidenceRoot,
+    ...(retainedProviderRoot ? { retainedProviderRoot } : {}) }, null, 2))
 }
 
 async function run() {
@@ -1146,7 +1154,7 @@ async function exerciseRoomKeyboard(activityController, activityNotices) {
   }
   const tempRoot = await tempRootPromise
   const keyboardValues = [keyboardText, keyboardReplacementText, keyboardAfterRepeat]
-  await assertNoPlaintextSecretInTree(tempRoot, keyboardValues)
+  await assertNoPlaintextSecretInDrillState(tempRoot, keyboardValues)
   await assertNoPlaintextSecretInTree(evidenceRoot, keyboardValues)
 
   return {
@@ -1364,7 +1372,7 @@ async function exerciseRoomComputerCancellation(activityController, activityNoti
     )
   }
   const tempRoot = await tempRootPromise
-  await assertNoPlaintextSecretInTree(tempRoot, [cancellationText, takeoverCancellationText])
+  await assertNoPlaintextSecretInDrillState(tempRoot, [cancellationText, takeoverCancellationText])
   await assertNoPlaintextSecretInTree(evidenceRoot, [cancellationText, takeoverCancellationText])
 
   return {
@@ -1827,7 +1835,7 @@ async function exerciseRoomClipboard(activityController, activityNotices) {
     assertRetainedClipboardEvidenceIsRedacted(released, value)
   }
   const tempRoot = await tempRootPromise
-  await assertNoPlaintextSecretInTree(tempRoot, clipboardValues)
+  await assertNoPlaintextSecretInDrillState(tempRoot, clipboardValues)
   await assertNoPlaintextSecretInTree(evidenceRoot, clipboardValues)
 
   return {
@@ -1980,7 +1988,7 @@ async function exerciseComputerSecretInput() {
   assert.ok(automationNoticeTexts(remoteNotice).some((notice) => noticePattern.test(notice)))
 
   const tempRoot = await tempRootPromise
-  await assertNoPlaintextSecretInTree(tempRoot, [userSecret, vaultPassphrase])
+  await assertNoPlaintextSecretInDrillState(tempRoot, [userSecret, vaultPassphrase])
   await assertNoPlaintextSecretInTree(evidenceRoot, [userSecret, vaultPassphrase])
 
   await client.send(requests.deleteCredentialSecretRequest(userCredentialId))
@@ -2156,6 +2164,11 @@ function assertNoSecretProperties(value, label) {
   }
   visit(value, [])
   assert.deepEqual(forbidden, [], `${label} exposed secret-bearing properties: ${forbidden.join(", ")}`)
+}
+
+async function assertNoPlaintextSecretInDrillState(stateRoot, secrets) {
+  for (const root of roomDrillLeakScanRoots({ stateRoot, evidenceRoot, publicEvidenceRoot,
+    retain: retainedProviderRoot !== null })) await assertNoPlaintextSecretInTree(root, secrets)
 }
 
 async function assertNoPlaintextSecretInTree(root, secrets) {
@@ -2881,8 +2894,14 @@ async function runSharedBrowserPersistence({ companion, before }) {
         requests.saveSliceStateRequest(sliceId, mode, scope),
       ), 600_000, "SaveSliceState shutdown"), "SliceStateSaved"),
       verifySavedStateArtifacts: async state => {
-        await access(state.home_archive_path)
-        await access(state.manifest_path)
+        if (retainedProviderRoot) {
+          const verified = await verifyRetainedRoomArchive(state)
+          await writeFile(path.join(retainedProviderRoot, "saved-home-verification.json"),
+            `${JSON.stringify({ stateId: state.id, ...verified }, null, 2)}\n`, { mode: 0o600 })
+        } else {
+          await access(state.home_archive_path)
+          await access(state.manifest_path)
+        }
         await docker(["image", "inspect", state.image_ref])
       },
       stopSlice: async sliceId => unwrap(await withTimeout(client.send(requests.stopSliceRequest(sliceId)),
@@ -3320,7 +3339,10 @@ async function cleanup() {
     }
   }
   if (client && requests && slice) {
-    await withTimeout(client.send(requests.deleteSliceRequest(slice.id)), 30_000, "cleanup DeleteSlice")
+    await stopOrDeleteRoomSlice({ retain: retainedProviderRoot !== null,
+      stop: () => withTimeout(client.send(requests.stopSliceRequest(slice.id)), 30_000, "cleanup StopSlice"),
+      remove: () => withTimeout(client.send(requests.deleteSliceRequest(slice.id)), 30_000, "cleanup DeleteSlice"),
+    })
       .catch((error) => { failure ??= error })
   }
   await client?.close?.()
@@ -3335,15 +3357,17 @@ async function cleanup() {
   // was still provisioning when interrupted. Otherwise a late container can
   // appear after cleanup has already removed its predecessor.
   await docker(["rm", "-f", containerName]).catch(() => undefined)
-  await docker(["volume", "rm", "-f", homeVolume]).catch(() => undefined)
+  if (!retainedProviderRoot) await docker(["volume", "rm", "-f", homeVolume]).catch(() => undefined)
   try {
-    await assertNoPlaintextSecretInTree(tempRoot, sensitiveValues)
+    await assertNoPlaintextSecretInDrillState(tempRoot, sensitiveValues)
     await assertNoPlaintextSecretInTree(evidenceRoot, sensitiveValues)
   } catch (error) {
     leakedEvidence = true
     failure ??= error
-    await rm(evidenceRoot, { recursive: true, force: true })
-    await mkdir(evidenceRoot, { recursive: true, mode: 0o700 })
+    if (!retainedProviderRoot) {
+      await rm(evidenceRoot, { recursive: true, force: true })
+      await mkdir(evidenceRoot, { recursive: true, mode: 0o700 })
+    }
   }
   let fixtureWorkspaceRemoved = fixtureWorkspaceLease == null
   if (fixtureWorkspaceLease) {
@@ -3358,7 +3382,7 @@ async function cleanup() {
       failure ??= error
     }
   }
-  await rm(tempRoot, { recursive: true, force: true })
+  if (!retainedProviderRoot) await rm(tempRoot, { recursive: true, force: true })
   const after = await resourceSnapshot("after").catch(() => ({ label: "after", at: new Date().toISOString() }))
   resources.push(after)
   const containerGone = (await runCommand("docker", ["container", "inspect", containerName], 20_000)).code !== 0
@@ -3375,14 +3399,17 @@ async function cleanup() {
     volumeGone,
     fixtureWorkspaceRemoved,
     tempRootRemoved,
+    ...(retainedProviderRoot ? {
+      providerStateRetained: !tempRootRemoved, homeVolumeRetained: slice == null || !volumeGone,
+      retainedProviderRoot, retainedHomeVolume: volumeGone ? null : homeVolume,
+    } : {}),
     listenersReleased: occupiedPorts.length === 0,
     plaintextSecretLeak: leakedEvidence,
     occupiedPorts,
     resource: after,
   }
   await writeFile(path.join(evidenceRoot, "cleanup.json"), `${JSON.stringify(cleanupResult, null, 2)}\n`)
-  if ((!containerGone || !volumeGone || !fixtureWorkspaceRemoved || !tempRootRemoved || occupiedPorts.length > 0)
-      && failure == null) {
+  if (!roomCleanupComplete(cleanupResult, retainedProviderRoot !== null) && failure == null) {
     failure = new Error(`drill cleanup failed: ${JSON.stringify(cleanupResult)}`)
   }
   if (result && failure == null) {
@@ -3391,6 +3418,17 @@ async function cleanup() {
     result.cleanup = cleanupResult
     result.artifacts = await evidenceArtifacts()
     await writeFile(path.join(evidenceRoot, "result.json"), `${JSON.stringify(result, null, 2)}\n`)
+  }
+  if (retainedProviderRoot) {
+    await mkdir(publicEvidenceRoot, { recursive: true, mode: 0o700 })
+    await writeFile(path.join(publicEvidenceRoot, "provider-retention.json"), `${JSON.stringify({
+      status: failure == null ? "passed" : "failed",
+      retainedProviderRoot,
+      cleanup: { containerGone, listenersReleased: occupiedPorts.length === 0,
+        providerStateRetained: !tempRootRemoved, homeVolumeRetained: slice == null || !volumeGone,
+        homeVolume: volumeGone ? null : homeVolume },
+      executionRecords: "private; not copied to evidence",
+    }, null, 2)}\n`, { mode: 0o600 })
   }
   if (failure) {
     await writeFile(
