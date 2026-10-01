@@ -97,6 +97,11 @@ extern "C" fn cleanup_test_locks() {
     }
 }
 
+// The macOS pkg builder requires this contract in the release kernel before
+// installing root-owned 0444 locks. Keep it in the runtime diagnostic so it
+// survives release linking without a second capability/protocol path.
+const PROVISIONED_LOCK_CONTRACT: &str = "chariox.docker-admission-locks.read-only.v1";
+
 fn provisioning_help(macos: bool) -> &'static str {
     if macos {
         "on macOS, install the Chariox pkg or run sudo /usr/bin/python3 deploy/local-macos/install-docker-admission-locks.py from a checkout to install the boot LaunchDaemon; for an installed pkg, run sudo /usr/bin/python3 /usr/local/libexec/chariox/provision-docker-admission-locks.py"
@@ -107,7 +112,7 @@ fn provisioning_help(macos: bool) -> &'static str {
 
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, format!(
-        "{message}; {}; if a legacy lock is unsafe, stop all kernels sharing Docker before administrator repair; never replace a live lock",
+        "{message} [{PROVISIONED_LOCK_CONTRACT}]; {}; if a legacy lock is unsafe, stop all kernels sharing Docker before administrator repair; never replace a live lock",
         provisioning_help(cfg!(target_os = "macos"))
     ))
 }
@@ -180,6 +185,67 @@ mod tests {
         assert!(invalid("unsafe lock")
             .to_string()
             .contains("stop all kernels"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn provisioned_root_lock_uses_kernel_opener_as_ordinary_uid() {
+        use std::os::unix::process::CommandExt;
+        if let Some(path) = std::env::var_os("CHARIOX_ADMISSION_TEST_LOCK") {
+            let lock = open_for_owner(Path::new(&path), 0).unwrap();
+            assert_eq!(unsafe { libc::geteuid() }, 65534);
+            let flags = unsafe { libc::fcntl(lock.as_raw_fd(), libc::F_GETFL) };
+            assert_eq!(flags & libc::O_ACCMODE, libc::O_RDONLY);
+            assert!(std::fs::remove_file(Path::new(&path)).is_err());
+            if std::env::var_os("CHARIOX_ADMISSION_TEST_HELD").is_some() {
+                assert!(lock.try_lock_exclusive().is_err());
+            } else {
+                lock.try_lock_exclusive().unwrap();
+            }
+            return;
+        }
+        if unsafe { libc::geteuid() } != 0 {
+            return; // Cross-UID proof runs on the disposable root builder.
+        }
+        let fixture = Fixture::new();
+        let provisioned = std::process::Command::new("python3")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../deploy/local-linux/provision-docker-admission-locks.py"
+            ))
+            .arg("--root")
+            .arg(&fixture.0)
+            .output()
+            .unwrap();
+        assert!(
+            provisioned.status.success(),
+            "{}",
+            String::from_utf8_lossy(&provisioned.stderr)
+        );
+        let path = fixture.0.join("tmp/chariox-docker-memory-admission.lock");
+        let held = open_for_owner(&path, 0).unwrap();
+        held.lock_exclusive().unwrap();
+        let probe = |blocked| {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args(["--exact", "slice::local_docker::admission_lock::tests::provisioned_root_lock_uses_kernel_opener_as_ordinary_uid"])
+                .uid(65534)
+                .gid(65534)
+                .env("CHARIOX_ADMISSION_TEST_LOCK", &path)
+                .env_remove("CHARIOX_ADMISSION_TEST_HELD");
+            if blocked {
+                command.env("CHARIOX_ADMISSION_TEST_HELD", "1");
+            }
+            let result = command.output().unwrap();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        };
+        probe(true);
+        drop(held);
+        probe(false);
     }
 
     struct Fixture(PathBuf);
