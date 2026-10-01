@@ -1,5 +1,6 @@
 //! Retained owners for approved first installs and active-generation restarts.
 //! Data migrations and terminal approval projection remain separate duties.
+mod authority_check;
 mod first_install;
 mod manual_stop;
 mod operations;

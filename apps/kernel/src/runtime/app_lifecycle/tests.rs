@@ -724,3 +724,5 @@ fn idle_stop_keeps_the_catalog_dormant_skips_recovery_and_restarts_on_demand() {
     assert!(!control.is_app_dormant("alice", "installed"));
     service.shutdown_blocking().unwrap();
 }
+
+mod admission;

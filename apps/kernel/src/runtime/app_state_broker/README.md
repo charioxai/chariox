@@ -37,8 +37,10 @@ uses the existing peer's at most sixteen broker handlers, bounded by the lifecyc
 four live workers, rather than an additional task or mailbox. The global pool still
 admits at most eight blocking operations. Cancellation or expiry removes the waiter
 before blocking work starts. Full peer-handler capacity still returns BUSY.
-The blocking closure owns the permit through writer completion even if its async
-caller is dropped. Budget
+Storage takes shared admission before the snapshot read fence, matching snapshots'
+exclusive-fence order. Both waits observe cancellation and the original deadline.
+The blocking closure owns the permit and read fence through writer completion even
+if its async caller is dropped. Budget
 checks occur before enqueue, on dequeue and after SQLite writer-lock acquisition.
 Cancellation after transaction admission does not promise rollback.
 

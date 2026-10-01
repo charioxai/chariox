@@ -19,7 +19,7 @@ use chariox_app_runtime::{
 };
 use serde_json::{json, Value};
 use std::sync::Arc;
-use tokio::sync::Semaphore;
+use tokio::sync::{RwLock, Semaphore};
 
 #[derive(Clone)]
 pub(crate) struct AppStorageBroker {
@@ -27,6 +27,7 @@ pub(crate) struct AppStorageBroker {
     owner: String,
     catalog: Arc<EventCatalog>,
     admission: Arc<Semaphore>,
+    fence: Arc<RwLock<()>>,
     #[cfg(test)]
     budget_observer: Option<Arc<dyn Fn() + Send + Sync>>,
 }
@@ -39,12 +40,14 @@ impl AppStorageBroker {
         trusted_owner: String,
         catalog: Arc<EventCatalog>,
         admission: Arc<Semaphore>,
+        fence: Arc<RwLock<()>>,
     ) -> Self {
         Self {
             store,
             owner: trusted_owner,
             catalog,
             admission,
+            fence,
             #[cfg(test)]
             budget_observer: None,
         }
@@ -71,6 +74,14 @@ impl AppStorageBroker {
             _ = tokio::time::sleep_until(request.deadline) => return Err(errors::stopped(AppOperationStopped::Deadline)),
             permit = self.admission.clone().acquire_owned() => permit.map_err(|_| errors::unavailable())?,
         };
+        // Snapshots take admission before the exclusive fence. Waiting storage
+        // must use the same order so it cannot prevent a snapshot from finishing.
+        let write = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(errors::stopped(AppOperationStopped::Cancelled)),
+            _ = tokio::time::sleep_until(request.deadline) => return Err(errors::stopped(AppOperationStopped::Deadline)),
+            write = self.fence.clone().read_owned() => write,
+        };
         budget.check().map_err(errors::stopped)?;
         let service = self.clone();
         let result = tokio::task::spawn_blocking(move || {
@@ -78,6 +89,7 @@ impl AppStorageBroker {
             // Writer-side budget checks stop newly starting expired work; once
             // a commit starts we await its actual outcome, without rollback claims.
             let _permit = permit;
+            let _write = write;
             service
                 .store
                 .execute_app_state(&service.owner, service.catalog, operation, budget)
