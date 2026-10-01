@@ -1732,13 +1732,15 @@ mod tests {
             "{}-feature",
             repo.file_name().and_then(|name| name.to_str()).unwrap()
         ));
-        let request =
-            crate::session::CreateSessionRequest::new("workspace", repo.display().to_string())
-                .with_worktree_placement(crate::agent::GitWorktreePlacement {
-                    target_directory: Some(target.display().to_string()),
-                    branch: Some("feature/session-placement".to_string()),
-                    from_ref: Some("HEAD".to_string()),
-                });
+        let request = crate::session::CreateSessionRequest::new(
+            repo.display().to_string(),
+            repo.display().to_string(),
+        )
+        .with_worktree_placement(crate::agent::GitWorktreePlacement {
+            target_directory: Some(target.display().to_string()),
+            branch: Some("feature/session-placement".to_string()),
+            from_ref: Some("HEAD".to_string()),
+        });
 
         let adjusted = prepare_local_session_worktree_placement(request)
             .expect("session placement should create git worktree");
