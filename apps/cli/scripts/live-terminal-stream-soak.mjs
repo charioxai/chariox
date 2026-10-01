@@ -66,6 +66,10 @@ const kernel = spawn(kernelBinary, [], {
 })
 let client
 let report
+let interrupted = false
+const interrupt = () => { interrupted = true }
+process.on("SIGINT", interrupt)
+process.on("SIGTERM", interrupt)
 
 try {
   await waitForKernel(port)
@@ -101,6 +105,7 @@ try {
   const cpuSamples = []
   let sentBytes = 0
   for (let second = 0; second < durationSeconds; second += 1) {
+    if (interrupted) throw new Error("stream soak interrupted")
     const tickDeadline = startedAt + (second + 1) * 1_000
     const tickStartedAt = performance.now()
     const remaining = Math.min(bytesPerSecond, durationSeconds * bytesPerSecond - sentBytes)
@@ -175,6 +180,8 @@ try {
   await mkdir(path.dirname(output), { recursive: true })
   await writeFile(output, `${JSON.stringify({ ...report, cleanup }, null, 2)}\n`)
   await rm(root, { recursive: true, force: true })
+  process.off("SIGINT", interrupt)
+  process.off("SIGTERM", interrupt)
   if (cleanup.remaining.length) process.exitCode = 1
 }
 console.log(JSON.stringify({ ...report, output }, null, 2))
