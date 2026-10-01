@@ -176,7 +176,8 @@ impl CriticalApprovalPasskeys {
     /// vault file is re-keyed and its outcome after. If recording the outcome
     /// fails, the pin is dropped from memory, so the next check settles the
     /// recorded move from the vault file. Without a pin yet, the new key is
-    /// pinned once the file is re-keyed, as an unlock would pin it.
+    /// pinned once the file is re-keyed, as an unlock would pin it. Once the
+    /// boot vault is re-keyed, every remember window ends.
     fn change_passphrase(
         &self,
         durable: &DurableKernelStateStore,
@@ -204,15 +205,19 @@ impl CriticalApprovalPasskeys {
                 Ok(())
             },
         );
-        // Record the outcome as the vault file shows it, as `settle` does
-        // after a crash: a failed write may still have replaced the file.
-        let outcome = next.filter(|_| passkey).and_then(|next| {
-            if next.matches_vault_file(vault) {
-                Some(next)
-            } else {
-                previous.clone()
-            }
-        });
+        // The vault file decides the outcome, as `settle` does after a crash:
+        // a write can fail after the new file is in place. A committed change
+        // ends every remember window, even if it then reports an error.
+        let attempted = next.is_some();
+        let committed = next.filter(|next| next.matches_vault_file(vault));
+        let outcome = if !passkey {
+            None
+        } else if committed.is_some() {
+            self.end_remember_windows();
+            committed
+        } else {
+            previous.clone().filter(|_| attempted)
+        };
         if let Some(verifier) = outcome {
             let recorded = append_pin_event(durable, PIN_EVENT, &verifier).is_ok();
             *self.pinned.lock().expect("passkey verifier poisoned") = recorded.then_some(verifier);
@@ -352,7 +357,6 @@ impl KernelRuntimeState {
             Ok(Some(status)) => {
                 if passkey {
                     presence.record_success(owner, Instant::now(), None);
-                    presence.end_remember_windows();
                 }
                 audit("changed")?;
                 Ok(status)
@@ -620,6 +624,28 @@ mod tests {
         // A later replacement of the vault file does not move the recorded pin.
         crate::secret::create_chariox_encrypted_vault_for_test(&f.vault, "planted").unwrap();
         assert!(f.accepts(NEW) && !f.accepts("planted"));
+    }
+
+    #[test]
+    fn a_rotation_whose_write_fails_after_the_rename_still_moves_the_pin() {
+        let f = Fixture::pinned();
+        let kernel = f.kernel();
+        kernel.record_success("owner", Instant::now(), Some(5));
+        crate::secret::fail_next_vault_write_after_rename_for_test();
+        let error = kernel
+            .change_passphrase(&f.durable, &f.vault, true, OLD, NEW)
+            .expect_err("the failed directory sync is reported");
+        assert!(error.to_string().contains("was changed"), "{error}");
+        // The new file is in use, so the pin follows it and windows end.
+        assert!(kernel
+            .pinned(&f.durable)
+            .unwrap()
+            .unwrap()
+            .verify(NEW)
+            .unwrap());
+        assert!(f.accepts(NEW) && !f.accepts(OLD));
+        assert!(f.vault_opens_with(NEW));
+        assert!(!kernel.remembered("owner", Instant::now()));
     }
 
     #[test]
