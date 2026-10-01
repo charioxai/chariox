@@ -137,8 +137,9 @@ impl LocalDockerSliceOptions {
                 .map(expand_user_path_for_slice),
             saved_home_archive: None,
             allow_unconfined_seccomp: linux.allow_unconfined_seccomp.unwrap_or(false),
-            allow_provider_sandbox_compatibility: managed_docker_broker_configured()
-                || linux.allow_provider_sandbox_compatibility.unwrap_or(false),
+            allow_provider_sandbox_compatibility: linux
+                .allow_provider_sandbox_compatibility
+                .unwrap_or(false),
             memory_mb: Some(
                 linux
                     .memory_mb
@@ -362,7 +363,14 @@ pub fn run_local_docker_slice_action(
                 log_path.display()
             ),
         })?;
-    extension_build::prepare(&mut command, record, action_name, options, &log_file, &stderr_log)?;
+    extension_build::prepare(
+        &mut command,
+        record,
+        action_name,
+        options,
+        &log_file,
+        &stderr_log,
+    )?;
     let mut disk_quota_evidence = None;
     let status =
         if let Some(output) = broker::run_provisioner(&command, action_name, &broker_inputs) {
@@ -1086,7 +1094,10 @@ fn configure_local_docker_slice_command(
     }
     command
         .env("CHARIOX_SLICE_HOSTNAME", local_docker_hostname(record))
-        .env("CHARIOX_SLICE_DOCKER_IMAGE", image::selected_image(record, options))
+        .env(
+            "CHARIOX_SLICE_DOCKER_IMAGE",
+            image::selected_image(record, options),
+        )
         .env(
             "CHARIOX_SLICE_BUILD_IMAGE",
             options.build_image.as_env_value(),

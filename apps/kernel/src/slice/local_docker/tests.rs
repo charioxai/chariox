@@ -2610,3 +2610,39 @@ fn persisted_daemon_relay_url_maps_container_loopback_to_private_host_endpoint()
 
     assert_eq!(endpoint, local_docker_private_relay_endpoint(&record));
 }
+
+#[cfg(unix)]
+#[test]
+fn mp08_mp11_slice_sandbox_option_is_independent_of_broker_placement() {
+    let _guard = crate::env_lock::lock();
+    let name = "CHARIOX_SLICE_DOCKER_BROKER_REQUIRED";
+    let previous = std::env::var_os(name);
+    let mut config = DaemonConfig::for_tests();
+    for selected in [false, true] {
+        config
+            .user_config
+            .slices
+            .linux
+            .allow_provider_sandbox_compatibility = Some(selected);
+        std::env::remove_var(name);
+        let ordinary = LocalDockerSliceOptions::from_config(&config);
+        std::env::set_var(name, "1");
+        let managed = LocalDockerSliceOptions::from_config(&config);
+        // Restore before assertions so a RED test cannot contaminate the suite.
+        match &previous {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
+        }
+        assert_eq!(ordinary.allow_provider_sandbox_compatibility, selected);
+        assert_eq!(managed.allow_provider_sandbox_compatibility, selected);
+        let record = test_record();
+        let mut a = Command::new("unused");
+        let mut b = Command::new("unused");
+        configure_local_docker_slice_command(&mut a, &record, None, &ordinary, true).unwrap();
+        configure_local_docker_slice_command(&mut b, &record, None, &managed, true).unwrap();
+        assert_eq!(
+            a.get_envs().collect::<Vec<_>>(),
+            b.get_envs().collect::<Vec<_>>()
+        );
+    }
+}

@@ -823,3 +823,8 @@ These source corrections close no MP acceptance item.
   8 KiB chunks, including partial writes. The >4 MiB regression failed first;
   Python helper suite passes 19/19 with privileged namespace fixtures enabled,
   no skips. Builder/environment policy remains a separate open correction.
+- Explicit slice sandbox option (also MP-01): removed the broker-selected
+  override. Both placements preserve false/true from the common config and
+  project identical provisioner settings. The regression failed first on false.
+  Production shell argument checks retain the Chromium seccomp profile for false
+  and the existing opt-in capability bundle for true; no broker boundary changed.

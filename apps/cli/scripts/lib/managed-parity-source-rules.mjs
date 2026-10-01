@@ -43,17 +43,17 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
   },
   {
     "id": "placement-selected-slice-sandbox-policy",
-    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "sourceCommit": "c86033afd14a13ca5cdf71842583cbbe3f5b7867",
     "path": "apps/kernel/src/slice/local_docker.rs",
-    "blob": "7a9b862181d42ac5a987903700818c31a45b55e1",
+    "blob": "7ae6cc5b83e1b6da6d4975d6ad2134b3c3ac4ea3",
     "ranges": [
       [
         124,
-        153
+        154
       ]
     ],
-    "classification": "open_managed_runtime_difference",
-    "rationale": "MP-08/MP-11: broker configuration forces provider sandbox compatibility on even when the common user option is false; ordinary placement preserves the option. This changes container capabilities/seccomp/AppArmor, not signed host activation.",
+    "classification": "shared_explicit_slice_sandbox_policy",
+    "rationale": "MP-01/MP-08/MP-11: Common user config controls provider sandbox compatibility on ordinary and broker placements. Broker discovery no longer forces opt-in. False and true project identical settings and production container security arguments; explicit inner-slice isolation remains intact.",
     "anchors": [
       [
         "kernel_slice_broker_control",
@@ -61,10 +61,9 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
       ]
     ],
     "openFindings": [
-      "MP-08/MP-11 removal required: Honor one common slice option/capability negotiation on both placements; compare generated Docker security arguments with false and true options."
+      "Independent changed-blob review and MP-10 fresh-machine comparison pending."
     ]
-  },
-  {
+  },  {
     "id": "broker-slice-resource-admission",
     "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
     "path": "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
