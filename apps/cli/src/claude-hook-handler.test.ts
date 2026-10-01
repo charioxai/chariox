@@ -6,7 +6,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import test from "node:test"
 
-import { claudeHookSettings, writeClaudeHookHandler } from "./native-tui/claude-hook-handler.js"
+import { claudeHookSettings, claudeHookShellCommand, writeClaudeHookHandler } from "./native-tui/claude-hook-handler.js"
 import { startClaudePermissionBridge } from "./native-tui/claude-permission-bridge.js"
 
 type PermissionContractCase = {
@@ -82,6 +82,22 @@ test("Claude hook generators obey the shared immediate permission contract", asy
 test("Claude native settings register the permission hook", () => {
   const settings = claudeHookSettings("/tmp/claude-hook-handler.mjs")
   assert.equal(settings.hooks.PermissionRequest[0]!.matcher, "*")
+})
+
+test("Claude hooks run through Node from source and through the release executable otherwise", () => {
+  const handler = "/tmp/claude hooks/handler.mjs"
+  assert.equal(claudeHookShellCommand(handler, { version: undefined, executable: "/usr/bin/bun" }), "node '/tmp/claude hooks/handler.mjs'")
+  const release = claudeHookShellCommand(handler, { version: "0.2.0", executable: "/opt/chariox/bin/chariox" })
+  assert.equal(release, "'/opt/chariox/bin/chariox' __claude-hook '/tmp/claude hooks/handler.mjs'")
+  assert.equal(claudeHookSettings(handler, release).hooks.UserPromptSubmit[0]!.hooks[0]!.command, release)
+})
+
+test("Claude hook commands pass installation paths to the shell literally", () => {
+  const executable = "/opt/chariox-$USER/`id`/it's/chariox"
+  const handler = "/tmp/$(id)/hook's.mjs"
+  const command = claudeHookShellCommand(handler, { version: "0.2.0", executable })
+  const argv = execFileSync("/bin/sh", ["-c", `printf '%s\\n' ${command}`], { encoding: "utf8", env: { USER: "intruder" } })
+  assert.deepEqual(argv.trimEnd().split("\n"), [executable, "__claude-hook", handler])
 })
 
 test("Claude permission bridge preserves event-specific allow and deny response shapes", async () => {

@@ -1,5 +1,8 @@
 import { writeFile } from "node:fs/promises"
 
+import { claudeHookCommand, releaseVersion } from "../release-build.js"
+import { shellQuote } from "./launch-environment.js"
+
 export async function writeClaudeHookHandler(file: string) {
   await writeFile(file, `#!/usr/bin/env node
 import { appendFileSync, existsSync, readFileSync, unlinkSync } from "node:fs"
@@ -104,8 +107,18 @@ if (eventName === "UserPromptSubmit") {
 `, "utf8")
 }
 
-export function claudeHookSettings(handlerPath: string) {
-  const command = `node ${JSON.stringify(handlerPath)}`
+// Claude runs each hook as a shell command. From source, Node runs the handler;
+// the release executable has no Node beside it, so it runs the handler itself.
+export function claudeHookShellCommand(
+  handlerPath: string,
+  release: { version: string | undefined, executable: string } = { version: releaseVersion, executable: process.execPath },
+): string {
+  return release.version === undefined
+    ? `node ${shellQuote(handlerPath)}`
+    : `${shellQuote(release.executable)} ${claudeHookCommand} ${shellQuote(handlerPath)}`
+}
+
+export function claudeHookSettings(handlerPath: string, command = claudeHookShellCommand(handlerPath)) {
   return {
     hooks: {
       UserPromptSubmit: [{ hooks: [{ type: "command", command }] }],
