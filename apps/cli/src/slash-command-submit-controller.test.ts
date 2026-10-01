@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
+import { sharedShellCommandForSlashCommand } from "./commands.js"
 import {
   createSlashCommandSubmitController,
   type SlashCommandSubmitControllerDeps,
@@ -73,6 +74,28 @@ test("App slash commands work while no session is attached", async () => {
   assert.deepEqual(harness.calls(), ["app:journal install-1"])
   assert.deepEqual(harness.recordedHistory(), [])
   assert.equal(harness.commandCenterClearCount(), 1)
+})
+
+test("an App inbox test with a double-quoted JSON payload reaches the App handler verbatim", async () => {
+  const harness = createHarness({
+    attached: true,
+    // The TUI's real routing: only lines the shared shell owns go there.
+    handleSharedShellCommand: async (command) => {
+      if (sharedShellCommandForSlashCommand(command) === null) return false
+      harness.sharedCommands().push(command)
+      return true
+    },
+  })
+  harness.deps.handleAppCommand = command => { harness.calls().push(`app:${JSON.stringify(command.args)}`) }
+  const controller = createSlashCommandSubmitController(harness.deps)
+
+  const command = await controller.submit('/app inbox test todo mail occ-1 {"step":"request","n":1}', {
+    allowSlashCommandSubmission: true,
+  })
+
+  assert.equal(command?.kind, "app")
+  assert.deepEqual(harness.sharedCommands(), [])
+  assert.deepEqual(harness.calls(), [`app:${JSON.stringify(["inbox", "test", "todo", "mail", "occ-1", '{"step":"request","n":1}'])}`])
 })
 
 test("slash command submit dispatches Room environment commands", async () => {

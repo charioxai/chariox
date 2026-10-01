@@ -87,3 +87,21 @@ test("/app file save writes an offered file to a new path and never replaces one
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test("/app inbox test sends a double-quoted JSON payload exactly as typed", async () => {
+  const requests: unknown[] = []
+  const notices: string[] = []
+  const raw = '/app inbox test todo mail occ-1 {"step":"request","message":"T-05"}'
+  await handleAppSlashCommand({
+    sendAppRequest: async (request) => {
+      requests.push(request)
+      return { AppInboxOccurrenceAccepted: { installation_id: "todo", route_id: "mail", occurrence_id: "occ-1", duplicate: false } }
+    },
+    appendNotice: message => { notices.push(message) },
+    flashFooter: message => assert.fail(message),
+  }, { kind: "app", raw, args: raw.slice(4).trim().split(/\s+/) })
+  assert.deepEqual(requests, [{ TestAppInboxRoute: {
+    installation_id: "todo", route_id: "mail", occurrence_id: "occ-1", payload: { step: "request", message: "T-05" },
+  } }])
+  assert.deepEqual(notices, ["Occurrence occ-1 on mail accepted; the App receives it shortly."])
+})

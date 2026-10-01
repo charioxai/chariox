@@ -72,16 +72,32 @@ test("parseSlashCommand parses the kernel notification center namespace", () => 
   ), true)
 })
 
-test("App slash commands preserve arguments and delegate to the shared shell", () => {
+test("App slash commands keep their arguments verbatim and stay in the TUI's App handler", () => {
   const input = "/app list --after install-1 --limit 10"
   const parsed = parseSlashCommand(input)!
   assert.deepEqual(parsed, { kind: "app", raw: input, args: ["list", "--after", "install-1", "--limit", "10"] })
   assert.equal(shouldClearCommandCenterForSlashCommand(parsed), true)
-  assert.equal(sharedShellCommandForSlashCommand(input), input.slice(1))
   assert.deepEqual(parseSlashCommand("/app\tstatus install-1")?.kind, "app")
   assert.equal(parseSlashCommand("/application list"), null)
   assert.equal(sharedShellCommandForSlashCommand("/application list"), null)
-  for (const command of ['/app install "local App.cxapp"', '/app update install-1 "local App.cxapp"', "/app operation", "/app cancel", '/app dev "./my app"', "/app dev stop"]) {
+  const inboxTest = '/app inbox test todo mail occ-1 {"step":"request","n":1}'
+  assert.deepEqual(parseSlashCommand(inboxTest), {
+    kind: "app",
+    raw: inboxTest,
+    args: ["inbox", "test", "todo", "mail", "occ-1", '{"step":"request","n":1}'],
+  })
+  for (const command of [
+    input,
+    "/app",
+    inboxTest,
+    "/app inbox test todo mail occ-1 '{\"step\":\"spend\"}'",
+    '/app install "local App.cxapp"',
+    '/app update install-1 "local App.cxapp"',
+    "/app operation",
+    "/app cancel",
+    '/app dev "./my app"',
+    "/app dev stop",
+  ]) {
     assert.equal(sharedShellCommandForSlashCommand(command), null, command)
   }
 })
