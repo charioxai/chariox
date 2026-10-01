@@ -581,11 +581,19 @@ async fn slice_backup_restore_interruption_after_container_creation_rolls_back_o
     let partial_runtime = root.path().join("partial-target-runtime");
     let recovered_runtime = root.path().join("recovered-rollback-runtime");
     std::fs::create_dir_all(&bin).expect("fixture bin should create");
-    std::fs::write(
-        root.path().join("slice-command-guard.py"),
-        include_str!("../../slice-linux-docker/slice-command-guard.py"),
-    )
-    .expect("restore fixture should include its provisioner's archive verifier");
+    for (name, contents) in [
+        (
+            "slice-command-guard.py",
+            include_str!("../../slice-linux-docker/slice-command-guard.py"),
+        ),
+        (
+            "home-archive-policy.json",
+            include_str!("../../slice-linux-docker/home-archive-policy.json"),
+        ),
+    ] {
+        std::fs::write(root.path().join(name), contents)
+            .expect("restore fixture should include its provisioner's archive verifier and policy");
+    }
     std::fs::write(
         &docker,
         r#"#!/bin/sh
