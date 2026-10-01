@@ -585,6 +585,40 @@ test("prompt acknowledgments alone remain incomplete and are cleaned up", async 
   assert.ok(kernel.sent.some((request) => request.ListRoomEnvironmentActionHistory?.session_id === "session-e"))
 })
 
+test("cleanup accepts protocol 369's omitted empty per-agent prompt map", async () => {
+  const kernel = fakeKernel()
+  let clock = 1_000
+  const client = { async send(request) {
+    const response = await kernel.client.send(request)
+    if (request.GetSessionState) delete response.SessionState.session.prompt_states
+    return response
+  } }
+  const capture = await runDrillEScenario({
+    client, requests: requestBuilders(), options: options(),
+    now: () => clock, sleep: async (ms) => { clock += ms },
+  })
+  assert.equal(capture.cleanup.status, "passed")
+  assert.ok(capture.cleanup.submittedPrompts.every((entry) => entry.cleanupStatus === "settled"))
+})
+
+test("cleanup rejects a session that omits every prompt inventory field", async () => {
+  const kernel = fakeKernel()
+  let clock = 1_000
+  const client = { async send(request) {
+    const response = await kernel.client.send(request)
+    if (request.GetSessionState) {
+      for (const key of ["prompt_states", "active_prompt", "queued_prompts"]) delete response.SessionState.session[key]
+    }
+    return response
+  } }
+  const capture = await runDrillEScenario({
+    client, requests: requestBuilders(), options: options(),
+    now: () => clock, sleep: async (ms) => { clock += ms },
+  })
+  assert.equal(capture.cleanup.status, "failed")
+  assert.ok(capture.cleanup.failures.some((entry) => entry.code === "owned_prompt_state_projection_missing"))
+})
+
 test("missing named agent fails preflight before prompts and still detaches", async () => {
   const kernel = fakeKernel({ sessionAgentIds: ["agent-a", "agent-b"] })
   await assert.rejects(runDrillEScenario({

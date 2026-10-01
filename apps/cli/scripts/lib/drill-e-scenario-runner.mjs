@@ -226,9 +226,14 @@ function promptInventory(session) {
 }
 
 function hasPromptInventory(session) {
-  return Boolean(session && (
-    session.prompt_states && typeof session.prompt_states === "object"
-  ))
+  if (!session) return false
+  if (Object.hasOwn(session, "prompt_states")) {
+    return Boolean(session.prompt_states && typeof session.prompt_states === "object"
+      && !Array.isArray(session.prompt_states))
+  }
+  // The kernel omits an empty per-agent map, but always serializes the legacy
+  // active/queued fields. Their presence distinguishes idle from missing state.
+  return Object.hasOwn(session, "active_prompt") && Array.isArray(session.queued_prompts)
 }
 
 function cleanupFailure(cleanup, code, fields = {}) {
