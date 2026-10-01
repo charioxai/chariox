@@ -1,3 +1,4 @@
+import "./managed-provisioner-progress.test.mjs"
 import "./managed-home-archive-digest.test.mjs"
 import assert from "node:assert/strict"
 import { access, chmod, mkdtemp, mkdir, readFile, readdir, readlink, rename, rm, symlink, writeFile } from "node:fs/promises"
