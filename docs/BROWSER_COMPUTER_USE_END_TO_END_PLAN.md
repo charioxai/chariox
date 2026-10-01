@@ -598,6 +598,80 @@ buildx builder/host and shell startup overrides cannot redirect image production
 Ignored override names receive a diagnostic without their values. This decision
 does not weaken the managed socket boundary or close MP-08/MP-10/MP-11 acceptance.
 
+## Locked decisions for 2026-10-01: Project environment layer
+
+These owner-locked decisions extend M28 and the MP-08 parity contract. MP-10
+acceptance and MP-11 source inventory remain open until exact-head evidence and
+review establish the complete behavior, including local slices and managed machines.
+
+1. Source kernel = any kernel holding the Project (laptop, server, or
+   Chariox-managed). A managed kernel can seed another managed machine. There
+   is no "local kernel" concept.
+2. Once per Project, a utility agent on the official provider path inspects the
+   Project and produces a kernel-owned **Project environment manifest**: every
+   environment variable, secret and config file the Project needs (name, secret
+   classification defaulting to secret when unsure, usage evidence file/line,
+   value locator on the source such as git-ignored env file + key, direnv
+   `.envrc`, shell profile/login environment for that workspace, or Vault entry,
+   and status found/missing/problem), plus toolchain/package/service hints. The
+   manifest never contains secret values.
+3. The agent identifies names and locators; the kernel's deterministic resolver
+   reads values. Secret values go directly into the Vault (target-sealed on
+   transfer) and never pass through the model, Cloud or relay plaintext.
+   Non-secret values and allowed config files travel with the M28 development
+   layer and are materialized at the same relative paths (mode 0600) and
+   injected into provider launches, terminals and setup/validation for that
+   Project. Local slices and managed machines use the same layer (MP-08 parity).
+4. Missing or problematic entries are reported once as a kernel
+   RuntimeInteraction projected to TUI and Web, naming each variable and where
+   it is used; values the user supplies are stored in the Vault and reused for
+   every later export.
+5. The manifest is stored with the Project and bound to an evidence digest
+   (lockfiles, env examples, config schemas, code-reference index). Every export
+   first brings the source kernel's manifest up to date: with an unchanged
+   digest it is reused with no agent run; with a changed digest an incremental
+   agent pass covers only the differences and the user is asked only about new
+   missing entries. Values are re-resolved from their locators by the kernel
+   at every export, so the transferred values are current.
+6. There is no ongoing synchronization between kernels. After export, each
+   kernel's copy of the Project and its manifest evolve independently and may
+   drift; the user may evolve the Project differently on different machines.
+   A later export from any kernel (including a managed one to a new machine)
+   uses that kernel's own refreshed manifest.
+7. Values are captured only for names the Project references; never printed or
+   logged; removed from a machine when it is deleted; every transfer and sync
+   is auditable. This audit requirement does not authorize ongoing cross-kernel
+   synchronization.
+
+### MP-08 / MP-10 / MP-11 owner additions (2026-10-01)
+
+Private overlay selection is kernel-owned and determined by the official-provider
+utility, including ambiguous files. Each decision includes a one-line reason.
+Reproducible cache/build artifacts stay excluded; secret-looking files travel only
+through the sealed Vault layer; needed private project files can be included.
+Optional `.charioxignore` expert overrides and Conductor `.worktreeinclude` remain
+supported, but Chariox never creates `.charioxignore` for users. Workspace Live Sync
+uses the same selection. Selection refreshes at export time, with no synchronization
+between independent kernels.
+
+The first export presents one collapsed **Ready to move <project> to <machine>**
+review through the shared RuntimeInteraction contract. Rows cover Code, Environment,
+Needs you, Files and Setup. Actions are **Looks good, continue**, **Change something...**
+and **Details**. Details shows reasons and allows item flips. Free-text changes rerun
+the utility and highlight revised items. Secret values stay masked; missing values
+can be supplied to Vault or skipped, with missing names carried into setup context.
+Unchanged exports reuse saved setup without a review; changed exports review only
+new decisions. Unattended launches apply utility decisions and publish an adjustable
+post-launch summary. The target Environment panel explains imported decisions and
+allows later adjustments while the source is reachable.
+
+Provider-neutral personal instructions belong to the Chariox user kernel context,
+travel with that context, and use existing hidden provider context bridges. Provider
+home transfer carries credentials only, never provider configuration files.
+
+The reserved builder's slice-port flock is retired. A host-port collision recreates
+the lane-owned slice and retries at most three times.
+
 ## Product and architecture decisions
 
 ### One Room environment

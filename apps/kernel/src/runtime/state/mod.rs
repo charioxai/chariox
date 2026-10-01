@@ -38,6 +38,11 @@ mod context_handoff;
 use context_handoff::*;
 mod computer_secret_input_runtime_state;
 mod config_runtime_state;
+mod project_environment_export;
+mod project_environment_manifest;
+mod project_environment_remote;
+mod project_environment_placement;
+mod project_environment_review;
 mod provider_output_deadline_store;
 mod provider_reload;
 use provider_output_deadline_store::ProviderOutputDeadlineStore;
@@ -182,6 +187,7 @@ struct KernelRuntimeOwnedState {
     slice_private_relay_connectors: Arc<Mutex<BTreeMap<String, SlicePrivateRelayConnector>>>,
     workflow_publication_runtimes:
         crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore,
+    project_environment_placements: project_environment_placement::ProjectEnvironmentPlacements,
     project_environment_setups: project_environment_setup::ProjectEnvironmentSetupStore,
 }
 
@@ -726,6 +732,7 @@ impl KernelRuntimeState {
                 slice_private_relay_connectors: Arc::new(Mutex::new(BTreeMap::new())),
                 workflow_publication_runtimes:
                     crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore::default(),
+                project_environment_placements: Default::default(),
                 project_environment_setups,
             },
         };

@@ -40,6 +40,11 @@ pub fn run_codex_utility_prompt(
     } else {
         client
     };
+    let client = if policy.is_metadata_only() {
+        client.with_metadata_only_discovery()
+    } else {
+        client
+    };
     let mut socket = client.connect_initialized()?;
     let mut next_request_id = 1;
     let cwd = run

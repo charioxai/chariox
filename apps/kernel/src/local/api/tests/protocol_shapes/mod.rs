@@ -17,6 +17,7 @@ mod managed_context;
 mod managed_environment;
 mod native_spawn_slice;
 mod project_environment_setup;
+mod project_environment_manifest;
 mod prompt_settings;
 mod provider_account_credential;
 mod provider_usage_activity;

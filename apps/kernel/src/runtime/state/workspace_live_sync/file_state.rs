@@ -246,9 +246,10 @@ pub(in crate::runtime::state) fn workspace_live_sync_reject_ignored_path(
 ) -> Result<(), DaemonError> {
     let normalized = workspace_live_sync_normalized_relative_path(path)?;
     if workspace_live_sync_force_excluded_path(&normalized)
-        || workspace_live_sync_ignore_patterns(workspace_root)?
-            .iter()
-            .any(|pattern| workspace_live_sync_ignore_pattern_matches(pattern, &normalized))
+        || crate::workspace_live_sync_ignore::user_rules_exclude_path(
+            &normalized,
+            &workspace_live_sync_ignore_patterns(workspace_root)?,
+        )
     {
         return Err(DaemonError::LocalTransport {
             operation,
@@ -264,32 +265,7 @@ pub(in crate::runtime::state) fn workspace_live_sync_reject_ignored_path(
 fn workspace_live_sync_ignore_patterns(
     workspace_root: &PathBuf,
 ) -> Result<Vec<String>, DaemonError> {
-    let ignore_path = workspace_root.join(".charioxignore");
-    if !ignore_path.exists() {
-        let seed = match std::fs::read_to_string(workspace_root.join(".gitignore")) {
-            Ok(contents) => contents,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(error) => {
-                return Err(DaemonError::LocalTransport {
-                    operation: "workspace_live_sync_ignore",
-                    message: format!("failed to read `.gitignore`: {error}"),
-                });
-            }
-        };
-        std::fs::write(&ignore_path, seed).map_err(|error| DaemonError::LocalTransport {
-            operation: "workspace_live_sync_ignore",
-            message: format!("failed to initialize `.charioxignore`: {error}"),
-        })?;
-    }
-    let contents =
-        std::fs::read_to_string(&ignore_path).map_err(|error| DaemonError::LocalTransport {
-            operation: "workspace_live_sync_ignore",
-            message: format!("failed to read `.charioxignore`: {error}"),
-        })?;
-    Ok(contents
-        .lines()
-        .filter_map(workspace_live_sync_normalize_ignore_pattern)
-        .collect())
+    Ok(crate::workspace_live_sync_ignore::workspace_live_sync_user_ignore_patterns(workspace_root))
 }
 
 fn workspace_live_sync_normalized_relative_path(path: &PathBuf) -> Result<String, DaemonError> {
@@ -314,60 +290,4 @@ fn workspace_live_sync_normalized_relative_path(path: &PathBuf) -> Result<String
 
 fn workspace_live_sync_force_excluded_path(path: &str) -> bool {
     crate::workspace_live_sync_ignore::workspace_live_sync_force_excluded_path(path)
-}
-
-fn workspace_live_sync_normalize_ignore_pattern(line: &str) -> Option<String> {
-    let trimmed = line.trim();
-    if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('!') {
-        return None;
-    }
-    let directory = trimmed.ends_with('/');
-    let mut pattern = trimmed
-        .trim_start_matches('/')
-        .trim_end_matches('/')
-        .split('/')
-        .filter(|part| !part.is_empty() && *part != ".")
-        .collect::<Vec<_>>()
-        .join("/");
-    if pattern.is_empty() {
-        return None;
-    }
-    if directory {
-        pattern.push('/');
-    }
-    Some(pattern)
-}
-
-fn workspace_live_sync_ignore_pattern_matches(pattern: &str, path: &str) -> bool {
-    let directory_pattern = pattern.ends_with('/');
-    let pattern = pattern.trim_end_matches('/');
-    if pattern.is_empty() {
-        return false;
-    }
-    if pattern.contains('/') {
-        return workspace_live_sync_wildcard_match(pattern, path)
-            || path
-                .strip_prefix(pattern)
-                .is_some_and(|suffix| suffix.starts_with('/'))
-            || (directory_pattern && path == pattern);
-    }
-    path.split('/')
-        .any(|part| workspace_live_sync_wildcard_match(pattern, part))
-}
-
-fn workspace_live_sync_wildcard_match(pattern: &str, value: &str) -> bool {
-    if pattern == value {
-        return true;
-    }
-    let Some((head, tail)) = pattern.split_once('*') else {
-        return false;
-    };
-    if !value.starts_with(head) {
-        return false;
-    }
-    let remainder = &value[head.len()..];
-    if !tail.contains('*') {
-        return tail.is_empty() || remainder.ends_with(tail);
-    }
-    (0..=remainder.len()).any(|index| workspace_live_sync_wildcard_match(tail, &remainder[index..]))
 }

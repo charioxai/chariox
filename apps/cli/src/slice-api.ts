@@ -1,3 +1,4 @@
+import { sendWithProtocolMinimum } from "./protocol-minimum-diagnostic.js"
 import type { LocalIpcClient } from "./ipc.js"
 import type {
   SliceBackupRecord,
@@ -62,7 +63,12 @@ export async function getSlice(client: LocalIpcClient, sliceRef: string): Promis
 }
 
 export async function startSlice(client: LocalIpcClient, sliceRef: string): Promise<SliceRecord> {
-  const response = await client.send<Record<string, unknown>>(startSliceRequest(sliceRef))
+  const response = await sendWithProtocolMinimum<Record<string, unknown>>(
+    client.send.bind(client), startSliceRequest(sliceRef, true), {
+      capability: "MP-08 / MP-10 / MP-11 Project export review", requestVariant: "StartSlice",
+      unknownField: "interactive", minimumProtocolVersion: 371,
+    },
+  )
   return expectVariant<{ slice: SliceRecord }>(response, "SliceStarted").slice
 }
 

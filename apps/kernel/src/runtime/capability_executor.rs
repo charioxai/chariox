@@ -37,7 +37,8 @@ pub(crate) async fn execute_capability_request(
                                     context.worktree_root,
                                     request.working_directory,
                                 )
-                                .with_timeout_ms(request.timeout_ms.unwrap_or(5_000)),
+                                .with_timeout_ms(request.timeout_ms.unwrap_or(5_000))
+                                .with_environment(context.environment),
                             )
                             .map(|result| LocalDaemonResponse::ShellCommandCompleted { result })
                     })

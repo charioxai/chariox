@@ -484,6 +484,7 @@ impl CommandRouter {
         let rollback_private_key = target_private_key.clone();
         let import_provider_account_target = provider_account_target.clone();
         let import_git_credential_target = git_credential_target.clone();
+        let environment_target = completion_config.clone();
         let imported = run_import_blocking(move || {
             apply_managed_context_package(ManagedContextPackageApplicationRequest {
                 transfer_id: ready.transfer_id,
@@ -499,6 +500,7 @@ impl CommandRouter {
                 },
                 development_destination_root: ready.destination_root,
                 target_private_key,
+                project_environment_target: Some(environment_target),
                 provider_account_target: Some(import_provider_account_target),
                 git_credential_target: import_git_credential_target,
             })

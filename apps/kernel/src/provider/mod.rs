@@ -283,11 +283,17 @@ pub(crate) fn provider_run_uses_runtime_structured_utility_prompt(
 pub(crate) enum ProviderUtilityExecutionPolicy {
     ExistingRun,
     ReadOnlyDiscovery,
+    /// MP-08: No source reads, commands, MCPs, host instructions or prior thread.
+    MetadataOnlyDiscovery,
 }
 
 impl ProviderUtilityExecutionPolicy {
+    pub(crate) fn is_metadata_only(self) -> bool {
+        matches!(self, Self::MetadataOnlyDiscovery)
+    }
+
     pub(crate) fn is_read_only_discovery(self) -> bool {
-        matches!(self, Self::ReadOnlyDiscovery)
+        matches!(self, Self::ReadOnlyDiscovery | Self::MetadataOnlyDiscovery)
     }
 }
 

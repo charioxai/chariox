@@ -91,7 +91,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Version 63 requires the leased setup worker to receive a home persistence
 /// acknowledgment before validating a utility-generated Project definition.
 /// Version 64 binds signed daemon admission to the canonical kernel subject.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 64;
+/// Version 65 installs an authenticated selected Project environment on a leased worker.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 65;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
@@ -882,6 +883,12 @@ pub enum RelayPeerRequest {
         context: RemoteNativeInteractionContext,
         interaction: crate::session::RuntimeInteraction,
     },
+    InstallLeasedProjectEnvironment {
+        context: RemoteSkillSyncContext,
+        layer: crate::managed_context::development::DevelopmentProjectEnvironment,
+        /// Source workspace -> mounted repository basename; never arbitrary target paths.
+        workspace_directories: std::collections::BTreeMap<String, String>,
+    },
     EnsureRemoteSkillPackages {
         context: RemoteSkillSyncContext,
         packages: Vec<CharioxSkillPackage>,
@@ -1123,6 +1130,9 @@ pub enum RelayPeerResponse {
     NativeInteractionResolved {
         resolution: crate::provider::ProviderNativeInteractionResolution,
     },
+    LeasedProjectEnvironmentInstalled {
+        project_id: String,
+    },
     RemoteSkillPackagesEnsured {
         materialized: Vec<RemoteSkillMaterialization>,
     },
@@ -1196,8 +1206,8 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     #[test]
-    fn leased_prompt_cancellation_requires_exact_prompt_and_run_at_protocol_64() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 64);
+    fn leased_prompt_cancellation_requires_exact_prompt_and_run_at_protocol_65() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 65);
         let request = RelayPeerRequest::CancelLeasedPrompt {
             leased_agent_id: "leased-agent-1".to_string(),
             home_prompt_id: "home-prompt-1".to_string(),
@@ -1233,8 +1243,8 @@ mod tests {
     }
 
     #[test]
-    fn remote_room_browser_capability_manifest_is_versioned_at_protocol_64() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 64);
+    fn remote_room_browser_capability_manifest_is_versioned_at_protocol_65() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 65);
         let request = RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
             leased_agent_id: "leased-agent-1".to_string(),
             remote_extension_manifest: crate::extension::RemoteExtensionManifest {
@@ -1256,7 +1266,7 @@ mod tests {
 
     #[test]
     fn leased_completion_provider_termination_shape_is_versioned() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 64);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 65);
         let completion = RelayProjectedCompletion {
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1_234,
@@ -1321,8 +1331,8 @@ mod tests {
     }
 
     #[test]
-    fn leased_project_setup_target_resolution_is_versioned_at_protocol_64() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 64);
+    fn leased_project_setup_target_resolution_is_versioned_at_protocol_65() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 65);
         let request = RelayPeerRequest::ResolveLeasedProjectEnvironmentSetupTarget {
             leased_agent_id: "leased-agent-1".to_string(),
             home_session_id: "home-session-1".to_string(),
@@ -1365,8 +1375,8 @@ mod tests {
     }
 
     #[test]
-    fn project_environment_setup_relay_shapes_round_trip_at_protocol_64() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 64);
+    fn project_environment_setup_relay_shapes_round_trip_at_protocol_65() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 65);
         let definition = crate::session::ProjectEnvironmentDefinition {
             schema_version: 1,
             origin: crate::session::ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
@@ -1540,8 +1550,8 @@ mod tests {
     }
 
     #[test]
-    fn leased_prompt_receipt_query_and_steer_reconciliation_are_versioned_at_protocol_64() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 64);
+    fn leased_prompt_receipt_query_and_steer_reconciliation_are_versioned_at_protocol_65() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 65);
         let request = RelayPeerRequest::GetLeasedPromptReceipt {
             leased_agent_id: "leased-agent-1".to_string(),
             home_prompt_id: "home-prompt-1".to_string(),

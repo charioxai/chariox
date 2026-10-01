@@ -2246,12 +2246,21 @@ impl KernelRuntimeState {
             &execution.project_id,
             &worker_id,
         )?;
-        let environment = worker_validation_environment_with_home_and_definition(
+        let mut environment = worker_validation_environment_with_home_and_definition(
             provider_run,
             Some(preparation_home.path()),
             Some(&workspace_root),
             definition,
         );
+        let project_inputs = crate::project_environment::project_launch_environment(
+            &config,
+            &execution.project_id,
+            &execution.workspace_id,
+            &workspace_root,
+        )?;
+        for (name, value) in project_inputs.iter() {
+            environment.insert(name.to_string(), value.to_string());
+        }
         Ok(WorkerExecutionContext {
             worker_id,
             platform,

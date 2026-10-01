@@ -31,6 +31,7 @@ pub enum LocalDaemonResponse {
     ProjectArchived { project: RuntimeProject, sessions: Vec<RuntimeSession>, },
     ProjectDeleted { project: RuntimeProject, sessions: Vec<RuntimeSession>, },
     ProjectRestored { project: RuntimeProject, sessions: Vec<RuntimeSession>, },
+    ProjectEnvironmentManifest { manifest: Option<crate::project_environment::ProjectEnvironmentManifest>, },
     ProjectEnvironmentSetupStarted { status: ProjectEnvironmentSetupStatus, },
     ProjectEnvironmentSetupStatus { status: ProjectEnvironmentSetupStatus, },
     ProjectEnvironmentSetupCancelled { status: ProjectEnvironmentSetupStatus, },

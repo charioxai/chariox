@@ -49,6 +49,10 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
         &dispatch.prompt_id,
         "submission_dispatching_verified",
     );
+    let environment_agent = state.owned.agent_store.get_agent(&dispatch.agent_id)?;
+    state
+        .ensure_slice_project_environment(&environment_agent)
+        .await?;
     let mut attempt = 0_u32;
     let mut provider_credential_retry_used = false;
     let mut binding_refresh_used = false;

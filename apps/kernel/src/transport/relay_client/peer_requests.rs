@@ -1557,6 +1557,38 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::InstallLeasedProjectEnvironment {
+            context,
+            layer,
+            workspace_directories,
+        } => {
+            if context.home_kernel_id != from_daemon_id
+                || layer.sealed.values.sender_public_key != requester_public_key
+            {
+                return RelayRequestOutcome {
+                    encrypted_response: None,
+                    error: Some(relay_error(
+                        "unauthorized",
+                        "Project environment sender mismatch",
+                        false,
+                    )),
+                };
+            }
+            match router
+                .relay_install_project_environment(context, layer, workspace_directories)
+                .await
+            {
+                Ok(project_id) => {
+                    RelayPeerResponse::LeasedProjectEnvironmentInstalled { project_id }
+                }
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    }
+                }
+            }
+        }
         RelayPeerRequest::EnsureRemoteSkillPackages { context, packages } => {
             let ensured = router
                 .relay_ensure_remote_skill_packages(context, packages)
@@ -2115,7 +2147,8 @@ fn lease_resource(request: &RelayPeerRequest) -> Option<LeaseResource<'_>> {
         | RelayPeerRequest::RetryLeasedProjectEnvironmentSetup {
             leased_agent_id, ..
         } => Some(LeaseResource::LeasedAgent(leased_agent_id)),
-        RelayPeerRequest::EnsureRemoteSkillPackages { context, .. } => {
+        RelayPeerRequest::InstallLeasedProjectEnvironment { context, .. }
+        | RelayPeerRequest::EnsureRemoteSkillPackages { context, .. } => {
             Some(LeaseResource::LeasedAgent(&context.leased_agent_id))
         }
         RelayPeerRequest::CheckRemoteMcpAvailability { context, .. } => {
@@ -4831,6 +4864,7 @@ mod tests {
             },
             development_destination_root: recovery_ready.destination_root,
             target_private_key,
+            project_environment_target: None,
             provider_account_target: None,
             git_credential_target: None,
         })

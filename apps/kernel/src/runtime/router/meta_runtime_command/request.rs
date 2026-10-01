@@ -115,6 +115,7 @@ pub(super) fn meta_slice_request(args: &[String]) -> Result<LocalDaemonRequest, 
             }
             Ok(LocalDaemonRequest::GetSlice(SliceRefRequest {
                 slice_ref: slice_ref.clone(),
+                interactive: false,
             }))
         }
         Some("start") => meta_slice_ref_request(args, "start", LocalDaemonRequest::StartSlice),
@@ -193,6 +194,7 @@ fn meta_slice_ref_request(
     }
     Ok(request(SliceRefRequest {
         slice_ref: slice_ref.clone(),
+        interactive: false,
     }))
 }
 

@@ -30,6 +30,7 @@ pub(crate) mod process_spawn;
 pub(crate) mod prompt_assembly;
 pub mod prompt_transcript;
 pub mod provider;
+pub mod project_environment;
 pub(crate) mod provider_output_policy;
 pub mod pty;
 mod publication_provider_accounts;

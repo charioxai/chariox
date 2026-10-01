@@ -424,6 +424,7 @@ async fn create_slice_preserves_selkies_selection_and_read_only_capabilities() {
     );
     let request = LocalDaemonRequest::GetSlice(crate::local::SliceRefRequest {
         slice_ref: slice.id.clone(),
+        interactive: false,
     });
     let command = KernelCommand::from_local_request("get-selkies-slice", None, None, &request);
     let LocalDaemonResponse::Slice { slice: persisted } = router

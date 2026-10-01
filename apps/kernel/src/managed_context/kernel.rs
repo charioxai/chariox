@@ -140,6 +140,9 @@ pub struct KernelScriptSnapshot {
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum KernelExtensionDependency {
+    UserRules {
+        body: String,
+    },
     Environment {
         name: String,
         runtime: PortableEnvironmentRuntime,
@@ -300,6 +303,10 @@ impl fmt::Debug for KernelScriptSnapshot {
 impl fmt::Debug for KernelExtensionDependency {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::UserRules { body } => formatter
+                .debug_struct("UserRules")
+                .field("bytes", &body.len())
+                .finish(),
             Self::Environment { name, runtime } => formatter
                 .debug_struct("Environment")
                 .field("name", name)

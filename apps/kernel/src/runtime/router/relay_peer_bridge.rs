@@ -506,6 +506,17 @@ impl CommandRouter {
         .await
     }
 
+    pub(crate) async fn relay_install_project_environment(
+        &self,
+        context: crate::transport::relay_peer::RemoteSkillSyncContext,
+        layer: crate::managed_context::development::DevelopmentProjectEnvironment,
+        workspace_directories: std::collections::BTreeMap<String, String>,
+    ) -> Result<String, DaemonError> {
+        self.runtime_state
+            .install_leased_project_environment(context, layer, workspace_directories)
+            .await
+    }
+
     pub(crate) async fn relay_ensure_remote_skill_packages(
         &self,
         context: crate::transport::relay_peer::RemoteSkillSyncContext,

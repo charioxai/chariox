@@ -9,7 +9,7 @@ fn plain_workspace_launch_and_relay_shapes_are_versioned() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 371);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        64
+        65
     );
     let local = crate::local::ManagedContextRepositoryLaunchTarget {
         workspace_kind: DevelopmentWorkspaceKind::Directory,
@@ -85,7 +85,10 @@ fn local_daemon_managed_context_outbound_shape_is_versioned() {
     };
     let snapshot = serde_json::json!([
         LocalDaemonRequest::StartManagedContextTransfer(
-            crate::local::StartManagedContextTransferRequest { ticket },
+            crate::local::StartManagedContextTransferRequest {
+                ticket,
+                interactive: false
+            },
         ),
         LocalDaemonRequest::GetManagedContextTransferStatus(
             crate::local::GetManagedContextTransferStatusRequest {

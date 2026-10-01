@@ -1087,7 +1087,9 @@ pub(crate) fn run_opencode_utility_prompt(
     let client = OpenCodeClient::new(run.id(), &base_url)?;
     client.wait_until_healthy(Duration::from_secs(30))?;
     let allow_native_writes = opencode_workspace_live_sync_native_writes_allowed(run);
-    let session_permission = if policy.is_read_only_discovery() {
+    let session_permission = if policy.is_metadata_only() {
+        Some(serde_json::json!([{ "permission": "*", "pattern": "*", "action": "deny" }]))
+    } else if policy.is_read_only_discovery() {
         Some(opencode_read_only_permission_rules())
     } else if run.requires_workspace_live_sync() {
         Some(opencode_workspace_live_sync_permission_rules(

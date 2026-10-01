@@ -98,6 +98,10 @@ pub struct RuntimeProviderRun {
     /// Git/SSH bindings, while discovery must scrub ambient parent controls.
     #[serde(skip)]
     read_only_discovery: bool,
+    #[serde(skip)]
+    metadata_only_discovery: bool,
+    #[serde(skip)]
+    project_environment_revision: Option<String>,
     #[serde(default, skip_serializing_if = "AgentExecutionMode::is_build")]
     execution_mode: AgentExecutionMode,
     #[serde(default, skip_serializing_if = "AgentPermissionLevel::is_yolo")]
@@ -168,6 +172,8 @@ impl RuntimeProviderRun {
             workspace_live_sync_roots: request.workspace_live_sync_roots.clone(),
             preparation_base_path,
             read_only_discovery: false,
+            metadata_only_discovery: false,
+            project_environment_revision: request.project_environment_revision.clone(),
             execution_mode: request.execution_mode.unwrap_or_default(),
             permission_level: request.permission_level.unwrap_or_default(),
             control_capabilities: default_provider_control_capabilities(
@@ -235,6 +241,8 @@ impl RuntimeProviderRun {
             workspace_live_sync_roots: Vec::new(),
             preparation_base_path: None,
             read_only_discovery: false,
+            metadata_only_discovery: false,
+            project_environment_revision: None,
             execution_mode: AgentExecutionMode::default(),
             permission_level: AgentPermissionLevel::default(),
             control_capabilities: default_provider_control_capabilities(
@@ -424,6 +432,66 @@ impl RuntimeProviderRun {
         self.execution_mode = execution_mode;
         self.permission_level = permission_level;
         self.touch_activity();
+    }
+
+    pub(crate) fn project_environment_revision(&self) -> Option<&str> { self.project_environment_revision.as_deref() }
+
+    pub(crate) fn metadata_only_discovery(&self) -> bool {
+        self.metadata_only_discovery
+    }
+
+    /// MP-08: Ephemeral utility clone only; never persist or mutate the ordinary run.
+    pub(crate) fn set_metadata_only_discovery(&mut self, directory: PathBuf) {
+        self.metadata_only_discovery = true;
+        self.read_only_discovery = true;
+        self.working_directory = Some(directory);
+        self.resume_state = ProviderResumeState::default();
+        self.mcp_servers.clear();
+        self.runtime_mcp_server_url = None;
+        self.runtime_mcp_auth_token = None;
+        self.provider_config_overrides.clear();
+        self.pty_env.retain(|name, _| {
+            matches!(
+                name.as_str(),
+                "HOME"
+                    | "PATH"
+                    | "CODEX_HOME"
+                    | "CLAUDE_CONFIG_DIR"
+                    | "XDG_DATA_HOME"
+                    | "XDG_CONFIG_HOME"
+                    | "XDG_STATE_HOME"
+                    | "OPENCODE_CONFIG_DIR"
+                    | "TERM"
+                    | "COLORTERM"
+            )
+        });
+        if self.adapter_key() == "claude" {
+            self.pty_args = vec![
+                "-p".into(),
+                "--input-format".into(),
+                "stream-json".into(),
+                "--output-format".into(),
+                "stream-json".into(),
+                "--verbose".into(),
+                "--tools".into(),
+                "".into(),
+                "--strict-mcp-config".into(),
+                "--setting-sources".into(),
+                "".into(),
+                "--disable-slash-commands".into(),
+                "--permission-mode".into(),
+                "plan".into(),
+            ];
+            if self.model != "default" {
+                self.pty_args.extend([
+                    "--model".into(),
+                    self.model
+                        .strip_prefix("claude/")
+                        .unwrap_or(&self.model)
+                        .to_string(),
+                ]);
+            }
+        }
     }
 
     pub(crate) fn read_only_discovery(&self) -> bool {

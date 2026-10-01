@@ -26,6 +26,7 @@ mod managed_context;
 mod managed_environment;
 mod metaagent;
 mod project_environment_setup;
+mod project_environment_manifest;
 mod prompt_control;
 mod prompt_settings;
 mod provider_control;
@@ -58,6 +59,7 @@ pub use managed_context::*;
 pub use managed_environment::*;
 pub use metaagent::*;
 pub use project_environment_setup::*;
+pub use project_environment_manifest::*;
 pub use prompt_control::*;
 pub use prompt_settings::*;
 pub use provider_control::*;
@@ -117,5 +119,6 @@ pub use workspace::*;
 /// Version 368 adds Cloud-coordinated managed release update requests.
 /// Version 369 coordinates canonical signed relay daemon identity admission.
 /// Version 370 drains pending terminal output and projects managed runtime start observations.
-/// Version 371 adds native process identity to authenticated product status.
+/// Version 371 adds native process identity to authenticated product status and
+/// the value-free Project environment layer and inputs (MP-08).
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 371;

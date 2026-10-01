@@ -1,3 +1,4 @@
+import type { ProjectEnvironmentReview } from "./project-environment-review.js"
 import type { ExtensionGrant } from "./kernel-types-extensions.js"
 import type { ExternalProviderImportMetadata, RuntimeSession } from "./kernel-types-session.js"
 import type { PromptAttachmentPart, RuntimeProviderRun } from "./kernel-types-provider.js"
@@ -119,6 +120,7 @@ export type AgentForkPayload = {
 }
 
 export type RuntimeInteraction = {
+  project_environment_review?: ProjectEnvironmentReview | null
   id: string
   agent_id: string
   kind: "choice" | "permission"

@@ -1024,3 +1024,21 @@ arguments, environments or account files; the helper receives a minimal public
 environment. Collection and permission probes retain the provider user. Missing
 sudo, ambiguous owners, changed identities or unsigned executable substitutions
 fail closed. A helper success alone does not establish MP-10 matrix acceptance.
+
+## MP-08 Project environment layer continuation (2026-10-01)
+
+The 686-based envlayer2 lane adds ordinary kernel modules under
+`apps/kernel/src/project_environment/` for value-free manifests, evidence binding,
+deterministic resolution, scoped Vault capture, export-time refresh, target sealing
+and private materialization. They contain no managed-placement policy fork and no
+ongoing cross-kernel synchronization. The source utility metadata schema rejects
+invented names/locators and value fields. The shared protocol-371 manifest query
+is kernel-authorized and exposes metadata only; shared client types and the request
+builder serve Web and TUI.
+
+This is foundation/source evidence, not acceptance. Official-provider metadata-only
+discovery execution, automatic M28 and slice export/import integration, provider and
+terminal/setup injection, missing-input RuntimeInteraction orchestration, lifecycle
+cleanup wiring and the two-fresh-slice fixture still require implementation and
+exact-head validation. MP-08, MP-10 and MP-11 remain open. No existing 686 release
+or slice result is relabeled as evidence for this lane's new runtime.

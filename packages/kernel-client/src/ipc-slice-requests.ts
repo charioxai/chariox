@@ -68,8 +68,8 @@ export function getSliceRequest(sliceRef: string) {
   return { GetSlice: { slice_ref: sliceRef } }
 }
 
-export function startSliceRequest(sliceRef: string) {
-  return { StartSlice: { slice_ref: sliceRef } }
+export function startSliceRequest(sliceRef: string, interactive = false) {
+  return { StartSlice: { slice_ref: sliceRef, ...(interactive ? { interactive: true } : {}) } }
 }
 
 export function stopSliceRequest(sliceRef: string) {

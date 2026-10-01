@@ -336,6 +336,7 @@ impl KernelRuntimeState {
                         .await?;
                 }
                 if state.remote_agent_is_home_managed_slice(&agent) {
+                    state.ensure_slice_project_environment(&agent).await?;
                     state.ensure_remote_skill_packages_for_agent(&agent).await?;
                 }
                 let mut relay_config = state.owned.config_projection.snapshot();

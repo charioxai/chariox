@@ -42,8 +42,8 @@ export type ManagedContextLaunchTarget = {
       }
 }
 
-export function startManagedContextTransferRequest(ticket: ManagedContextTransferTicket) {
-  return { StartManagedContextTransfer: { ticket } } as const
+export function startManagedContextTransferRequest(ticket: ManagedContextTransferTicket, interactive = false) {
+  return { StartManagedContextTransfer: { ticket, ...(interactive ? { interactive: true } : {}) } } as const
 }
 
 export function getManagedContextTransferStatusRequest(contextId: string) {

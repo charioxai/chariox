@@ -89,25 +89,13 @@ impl ReplicaFileRefresh {
 }
 
 fn portable_account_paths(provider: &str) -> Result<Vec<PathBuf>, DaemonError> {
-    let mut paths = match provider {
-        "codex" => vec![
-            PathBuf::from("codex/auth.json"),
-            PathBuf::from("codex/config.toml"),
-        ],
-        "claude" => vec![
-            PathBuf::from("claude/settings.json"),
-            PathBuf::from("claude/stats-cache.json"),
-        ],
+    let paths = match provider {
+        "codex" => vec![PathBuf::from("codex/auth.json")],
+        // Claude's credential backend owns its auth-file refresh transaction.
+        "claude" => Vec::new(),
         "opencode" => vec![PathBuf::from("data/opencode/auth.json")],
         _ => return Err(unsupported_provider(provider)),
     };
-    if provider == "opencode" {
-        paths.extend(
-            OPENCODE_CONFIG_FILES
-                .iter()
-                .map(|name| Path::new("config/opencode").join(name)),
-        );
-    }
     Ok(paths)
 }
 

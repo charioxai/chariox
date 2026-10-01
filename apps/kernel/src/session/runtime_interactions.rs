@@ -177,6 +177,8 @@ pub struct RuntimeInteraction {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     default_on_timeout: Option<String>,
     requested_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    project_environment_review: Option<crate::project_environment::ProjectEnvironmentReview>,
 }
 
 impl RuntimeInteraction {
@@ -205,7 +207,16 @@ impl RuntimeInteraction {
             timeout_sec,
             default_on_timeout,
             requested_at_ms: unix_epoch_ms(),
+            project_environment_review: None,
         }
+    }
+
+    pub fn with_project_environment_review(
+        mut self,
+        review: crate::project_environment::ProjectEnvironmentReview,
+    ) -> Self {
+        self.project_environment_review = Some(review);
+        self
     }
 
     pub fn id(&self) -> &str {

@@ -12,6 +12,7 @@ use crate::session::CreateSessionRequest;
 mod git_observation;
 mod mcp_availability;
 mod native_provider;
+mod project_environment;
 mod projection;
 mod prompt_attachments;
 mod prompt_lifecycle;

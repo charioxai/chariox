@@ -18,6 +18,8 @@ pub struct RunShellCommandRequest {
     pub worktree_root: PathBuf,
     pub working_directory: Option<PathBuf>,
     pub timeout_ms: u64,
+    #[serde(skip)]
+    pub(crate) environment: crate::provider::ProviderCredentialEnvironment,
 }
 
 impl RunShellCommandRequest {
@@ -37,7 +39,16 @@ impl RunShellCommandRequest {
             worktree_root,
             working_directory,
             timeout_ms: DEFAULT_TIMEOUT_MS,
+            environment: Default::default(),
         }
+    }
+
+    pub(crate) fn with_environment(
+        mut self,
+        environment: crate::provider::ProviderCredentialEnvironment,
+    ) -> Self {
+        self.environment = environment;
+        self
     }
 
     pub fn with_timeout_ms(mut self, timeout_ms: u64) -> Self {
@@ -75,6 +86,9 @@ impl ShellCommandService {
         command.current_dir(&working_directory);
         for name in crate::provider::managed_provider_control_env_remove() {
             command.env_remove(name);
+        }
+        for (name, value) in request.environment.iter() {
+            command.env(name, value);
         }
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());

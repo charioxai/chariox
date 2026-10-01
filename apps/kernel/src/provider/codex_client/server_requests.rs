@@ -33,29 +33,49 @@ impl CodexClient {
             json!({
                 "provider_run_id": self.provider_run_id,
                 "method": method,
-                "params": message.params,
+                "params": if self.metadata_only_discovery { Value::Null } else { message.params.clone().unwrap_or(Value::Null) },
             }),
         );
-        let result = match method {
-            "item/commandExecution/requestApproval" => {
-                self.command_execution_approval_response(message)?
+        let result = if self.metadata_only_discovery {
+            match method {
+                "item/permissions/requestApproval" => json!({"permissions": {}, "scope": "turn"}),
+                "mcpServer/elicitation/request" => {
+                    json!({"action": "decline", "content": null, "_meta": null})
+                }
+                "item/tool/call" => json!({"success": false, "contentItems": []}),
+                "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
+                    json!({"decision": "decline"})
+                }
+                "execCommandApproval" | "applyPatchApproval" => json!({"decision": "denied"}),
+                _ => {
+                    return Err(self.protocol_error(
+                        "metadata_discovery_request",
+                        "unexpected metadata discovery request".into(),
+                    ))
+                }
             }
-            "item/fileChange/requestApproval" => self.file_change_approval_response(message)?,
-            "execCommandApproval" => self.exec_command_approval_response(message)?,
-            "applyPatchApproval" => self.apply_patch_approval_response(message)?,
-            "item/permissions/requestApproval" => self.permissions_approval_response(message),
-            "mcpServer/elicitation/request" => self.respond_to_mcp_elicitation(message),
-            "item/tool/call" => self.respond_to_dynamic_tool_call(message)?,
-            _ => {
-                crate::logging::warn_with_fields(
-                    "daemon.provider.codex",
-                    "unhandled codex server request",
-                    json!({
-                        "provider_run_id": self.provider_run_id,
-                        "method": method,
-                    }),
-                );
-                return Ok(false);
+        } else {
+            match method {
+                "item/commandExecution/requestApproval" => {
+                    self.command_execution_approval_response(message)?
+                }
+                "item/fileChange/requestApproval" => self.file_change_approval_response(message)?,
+                "execCommandApproval" => self.exec_command_approval_response(message)?,
+                "applyPatchApproval" => self.apply_patch_approval_response(message)?,
+                "item/permissions/requestApproval" => self.permissions_approval_response(message),
+                "mcpServer/elicitation/request" => self.respond_to_mcp_elicitation(message),
+                "item/tool/call" => self.respond_to_dynamic_tool_call(message)?,
+                _ => {
+                    crate::logging::warn_with_fields(
+                        "daemon.provider.codex",
+                        "unhandled codex server request",
+                        json!({
+                            "provider_run_id": self.provider_run_id,
+                            "method": method,
+                        }),
+                    );
+                    return Ok(false);
+                }
             }
         };
         let payload = json!({

@@ -89,7 +89,8 @@ impl KernelRuntimeOwnedState {
             request,
             runtime_mcp_url,
         )?;
-        self.attach_provider_account_credentials(request)
+        let request = self.attach_provider_account_credentials(request)?;
+        self.attach_project_environment(request)
     }
 
     pub(super) fn prepare_workflow_provider_launch_request(
@@ -102,9 +103,10 @@ impl KernelRuntimeOwnedState {
             runtime_mcp_url,
         )?;
         if self.provider_launch_request_uses_vaulted_account_credential(&request)? {
-            return Ok(request);
+            return self.attach_project_environment(request);
         }
-        self.attach_provider_account_credentials(request)
+        let request = self.attach_provider_account_credentials(request)?;
+        self.attach_project_environment(request)
     }
 
     fn prepare_provider_launch_request_without_account_credentials(
@@ -262,6 +264,60 @@ impl KernelRuntimeOwnedState {
             mcp_servers,
         )?);
         request = crate::app::apply_metaagent_launch_policy(request, agent.as_ref());
+        Ok(request)
+    }
+
+    fn attach_project_environment(
+        &self,
+        mut request: crate::provider::LaunchProviderRequest,
+    ) -> Result<crate::provider::LaunchProviderRequest, DaemonError> {
+        let session = self.session_store.get_session(&request.session_id)?;
+        if let Some(directory) = request.working_directory.as_deref() {
+            // A metadata utility executes in a neutral directory outside the Project.
+            let is_agent_worktree = request
+                .agent_id
+                .as_deref()
+                .and_then(|id| self.agent_store.get_agent(id).ok())
+                .and_then(|agent| agent.worktree_id().map(std::path::PathBuf::from))
+                .is_some_and(|worktree| worktree == directory);
+            if directory == std::path::Path::new(session.worktree_id()) || is_agent_worktree {
+                let config = self.config_projection.snapshot();
+                request.project_environment_revision = crate::project_environment::ProjectEnvironmentStore::new(&config.private_runtime_state_root()).load(session.project_id())?.map(|state| state.manifest.evidence_digest);
+                let environment = crate::project_environment::project_launch_environment(
+                    &config,
+                    session.project_id(),
+                    session.workspace_id(),
+                    directory,
+                )?;
+                let missing = crate::project_environment::project_missing_inputs(
+                    &config,
+                    session.project_id(),
+                    session.workspace_id(),
+                )?;
+                if !missing.is_empty() {
+                    request.provider_account_env.insert(
+                        "CHARIOX_PROJECT_MISSING_INPUTS".into(),
+                        serde_json::to_string(&missing).expect("missing names encode"),
+                    );
+                }
+                for (name, value) in environment.iter() {
+                    if request
+                        .provider_credential_env
+                        .iter()
+                        .any(|(existing, _)| existing == name)
+                    {
+                        return Err(DaemonError::LocalTransport {
+                            operation: "Project environment",
+                            message: "Project input conflicts with provider credential binding"
+                                .into(),
+                        });
+                    }
+                    request
+                        .provider_credential_env
+                        .insert(name, zeroize::Zeroizing::new(value.to_string()));
+                }
+            }
+        }
         Ok(request)
     }
 
@@ -1141,7 +1197,8 @@ mod tests {
         )
         .with_agent_id(agent.id());
         let mut preparation = Box::pin(
-            runtime.prepare_provider_launch_request_with_vault(request, "prepare test provider run"),
+            runtime
+                .prepare_provider_launch_request_with_vault(request, "prepare test provider run"),
         );
         tokio::select! {
             result = &mut preparation => panic!("Always policy must request approval even while unlocked: {result:?}"),

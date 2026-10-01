@@ -531,6 +531,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
     match request {
         LocalDaemonRequest::CreateSession(_) => "session.create",
         LocalDaemonRequest::ListProjects(_) => "project.list",
+        LocalDaemonRequest::GetProjectEnvironmentManifest(_) => "project.environment_manifest.get",
         LocalDaemonRequest::RenameProject(_) => "project.rename",
         LocalDaemonRequest::UpdateProjectWorkspaces(_) => "project.workspaces.update",
         LocalDaemonRequest::ArchiveProject(_) => "project.archive",

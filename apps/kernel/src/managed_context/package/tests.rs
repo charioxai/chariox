@@ -83,6 +83,7 @@ fn explicit_empty_package_applies_a_real_development_context_without_kernel_stat
         expected_binding: binding,
         development_destination_root: root.join("managed/project"),
         target_private_key: "unused-for-explicit-empty".to_string(),
+        project_environment_target: None,
         provider_account_target: None,
         git_credential_target: None,
     })
@@ -235,6 +236,7 @@ fn package_applies_without_a_development_component_when_the_plan_selects_empty()
         expected_binding: binding,
         development_destination_root: fixture.root.join("unused-development"),
         target_private_key: "unused-for-empty-context".to_string(),
+        project_environment_target: None,
         provider_account_target: None,
         git_credential_target: None,
     })
@@ -290,7 +292,9 @@ fn package_manifest_carries_a_near_cloud_limit_plan() {
 
 #[test]
 fn provider_account_package_round_trips_replays_without_overwrite_and_rolls_back() {
+    let _lock = crate::env_lock::lock();
     let fixture = PackageFixture::new("provider-account");
+    let _provider_homes = FixtureProviderHomes::new(&fixture.root.join("target-home"));
     let source_registry =
         ProviderAccountProfileRegistry::open(fixture.root.join("source/registry.json"))
             .expect("open source account registry");
@@ -353,6 +357,7 @@ fn provider_account_package_round_trips_replays_without_overwrite_and_rolls_back
         },
         development_destination_root: fixture.root.join("unused-development"),
         target_private_key: "unused-for-empty-context".to_string(),
+        project_environment_target: None,
         provider_account_target: Some(provider_target.clone()),
         git_credential_target: None,
     };
@@ -540,6 +545,7 @@ esac
         },
         development_destination_root: fixture.root.join("unused-development"),
         target_private_key: "unused-for-empty-context".to_string(),
+        project_environment_target: None,
         provider_account_target: None,
         git_credential_target: Some(target.clone()),
     };
@@ -689,6 +695,7 @@ fn receipt_capacity_is_rejected_before_context_publication() {
         expected_binding: binding,
         development_destination_root: destination.clone(),
         target_private_key: "unused-before-preflight".to_string(),
+        project_environment_target: None,
         provider_account_target: None,
         git_credential_target: None,
     };
@@ -929,5 +936,35 @@ impl PackageFixture {
 
     fn cleanup(&self) {
         fs::remove_dir_all(&self.root).expect("remove package fixture");
+    }
+}
+
+// MP-08 / MP-10 / MP-11: Native-default fixture migration must never use runner profiles.
+struct FixtureProviderHomes(Vec<(&'static str, Option<std::ffi::OsString>)>);
+impl FixtureProviderHomes {
+    fn new(home: &Path) -> Self {
+        let mut previous = Vec::new();
+        for (name, suffix) in [
+            ("CODEX_HOME", ".codex"),
+            ("CLAUDE_CONFIG_DIR", ".claude"),
+            ("XDG_CONFIG_HOME", ".config"),
+            ("XDG_DATA_HOME", ".local/share"),
+            ("XDG_STATE_HOME", ".local/state"),
+            ("OPENCODE_CONFIG_DIR", ".config/opencode"),
+        ] {
+            previous.push((name, std::env::var_os(name)));
+            std::env::set_var(name, home.join(suffix));
+        }
+        Self(previous)
+    }
+}
+impl Drop for FixtureProviderHomes {
+    fn drop(&mut self) {
+        for (name, previous) in self.0.drain(..) {
+            match previous {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
     }
 }

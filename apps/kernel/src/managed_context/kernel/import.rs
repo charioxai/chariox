@@ -326,6 +326,7 @@ fn validate_total_snapshot_file_count(snapshot: &KernelContextSnapshot) -> Resul
         .dependencies
         .iter()
         .map(|dependency| match dependency {
+            KernelExtensionDependency::UserRules { .. } => 1,
             KernelExtensionDependency::Environment {
                 runtime:
                     PortableEnvironmentRuntime::Python { files, .. }
@@ -440,6 +441,12 @@ fn validate_dependencies(snapshot: &KernelContextSnapshot) -> Result<(), DaemonE
             ));
         }
         match dependency {
+            KernelExtensionDependency::UserRules { body } => {
+                if body.len() > 64 * 1024 || body.contains('\0') {
+                    return Err(import_error("user rules exceed bounds"));
+                }
+                file_count += 1;
+            }
             KernelExtensionDependency::Environment { name, runtime } => {
                 crate::mcp::validate_registry_name(name, "environment name")?;
                 let files = match runtime {
@@ -722,6 +729,9 @@ fn materialize_dependencies(
     let user_root = staging.join("user");
     for dependency in &snapshot.payload.dependencies {
         match dependency {
+            KernelExtensionDependency::UserRules { body } => {
+                write_package_file(&user_root, "user-rules.md", body.as_bytes(), false, budget)?;
+            }
             KernelExtensionDependency::Environment { name, runtime } => {
                 materialize_environment(name, runtime, staging, final_user_root, budget)?;
             }
@@ -983,6 +993,7 @@ fn validate_environment_manifest(
 
 fn dependency_identity(dependency: &KernelExtensionDependency) -> (u8, &str) {
     match dependency {
+        KernelExtensionDependency::UserRules { .. } => (3, "user-rules"),
         KernelExtensionDependency::Environment { name, .. } => (0, name),
         KernelExtensionDependency::UserConnectorAdapter { name, .. } => (1, name),
         KernelExtensionDependency::BundledConnectorAdapter { name, .. } => (1, name),

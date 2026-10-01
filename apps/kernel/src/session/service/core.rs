@@ -1,4 +1,6 @@
 use super::*;
+#[path = "leased_project.rs"]
+mod leased_project;
 use crate::session::{WorkflowEventDeliveryReceipt, WorkflowPublicationSnapshot};
 use std::path::Path;
 

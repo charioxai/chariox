@@ -152,6 +152,7 @@ impl CommandRouter {
                     Arc::clone(&self.relay_state),
                     self.managed_context_outbound.clone(),
                     self.provider_account_profiles.clone(),
+                    self.runtime_state.clone(),
                     caller_user_id,
                     request.clone(),
                 )
@@ -241,6 +242,12 @@ impl CommandRouter {
                 )
                 .await
                 .map(Some);
+            }
+            LocalDaemonRequest::GetProjectEnvironmentManifest(request) => {
+                return self
+                    .runtime_state
+                    .get_project_environment_manifest(request.clone(), caller_user_id)
+                    .map(Some);
             }
             request @ (LocalDaemonRequest::StartProjectEnvironmentSetup(_)
             | LocalDaemonRequest::GetProjectEnvironmentSetupStatus(_)

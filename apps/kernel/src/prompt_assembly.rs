@@ -216,6 +216,27 @@ impl PromptTemplateRegistry {
         Self { root }
     }
 
+    fn user_rules(&self) -> Result<Option<String>, DaemonError> {
+        let root = std::env::var_os("CHARIOX_CAPABILITY_ISOLATION_ROOT")
+            .filter(|value| !value.is_empty())
+            .map(|root| PathBuf::from(root).join("user"))
+            .or_else(|| self.root.parent().map(Path::to_path_buf));
+        let Some(root) = root else {
+            return Ok(None);
+        };
+        let path = root.join("user-rules.md");
+        match fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Ok(metadata)
+                if metadata.is_file()
+                    && !metadata.file_type().is_symlink()
+                    && metadata.len() <= 64 * 1024 => {}
+            _ => return Err(prompt_settings_error("invalid user rules", "user-rules.md")),
+        }
+        let body = crate::project_environment::read_user_rules_file(&root)?;
+        Ok(Some(body))
+    }
+
     pub(crate) fn list_settings(&self) -> Result<Vec<PromptSettingRecord>, DaemonError> {
         self.materialize_bundled_defaults()?;
         bundled_templates()
@@ -836,6 +857,16 @@ impl PromptAssemblyService {
         let mut manifest = PromptManifest::current();
 
         self.push_template("runtime/base", &mut hidden_fragments, &mut manifest)?;
+        if let Some(rules) = self.registry.user_rules()? {
+            hidden_fragments.push(format!(
+                "<chariox-user-rules>\n{rules}\n</chariox-user-rules>"
+            ));
+        }
+        if let Some(missing) = run.pty_env().get("CHARIOX_PROJECT_MISSING_INPUTS") {
+            if let Ok(names) = serde_json::from_str::<Vec<String>>(missing) {
+                hidden_fragments.push(format!("Project setup continues with these inputs missing or left behind: {}. Ask for a value only when the current task needs it; never guess or print secret values.", names.join(", ")));
+            }
+        }
         if current_kernel_is_slice() {
             self.push_template("runtime/slice", &mut hidden_fragments, &mut manifest)?;
         }
@@ -1432,6 +1463,24 @@ mod tests {
         assert!(error
             .to_string()
             .contains("required prompt template `runtime/base` missing"));
+    }
+
+    #[test]
+    fn mp08_mp10_user_rules_use_existing_hidden_prompt_path() {
+        let _guard = env_lock::lock();
+        let old = std::env::var_os("CHARIOX_CAPABILITY_ISOLATION_ROOT");
+        std::env::remove_var("CHARIOX_CAPABILITY_ISOLATION_ROOT");
+        let root = temp_prompt_root("mp08-user-rules");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("user-rules.md"), "Prefer clear Project names.").unwrap();
+        let registry = PromptTemplateRegistry::new(root.join("prompts"));
+        registry.materialize_bundled_defaults().unwrap();
+        let envelope = PromptAssemblyService::new(registry).assemble_provider_turn(&test_run(false), "Visible request", None, Vec::new(), PromptAssemblyMode::NormalProviderTurn).unwrap();
+        assert!(envelope.hidden_system_context.contains("<chariox-user-rules>"));
+        assert!(envelope.hidden_system_context.contains("Prefer clear Project names."));
+        assert_eq!(envelope.visible_user_prompt, "Visible request");
+        fs::remove_dir_all(root).unwrap();
+        if let Some(old) = old {std::env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", old);}
     }
 
     #[test]

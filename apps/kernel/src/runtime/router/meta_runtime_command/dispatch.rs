@@ -532,6 +532,7 @@ impl CommandRouter {
             };
             let start_request = LocalDaemonRequest::StartSlice(SliceRefRequest {
                 slice_ref: slice.id.clone(),
+                interactive: false,
             });
             let start_response = match Box::pin(self.dispatch(
                 meta_kernel_command(provider_run, metaagent, &start_request),

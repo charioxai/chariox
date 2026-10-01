@@ -50,7 +50,7 @@ impl Drop for ProfileFixture {
 }
 
 #[test]
-fn claude_account_export_includes_refresh_credentials_and_settings() {
+fn mp08_mp10_claude_account_export_carries_credentials_only() {
     let source = ProfileFixture::new();
     let profile = source
         .registry
@@ -74,10 +74,13 @@ fn claude_account_export_includes_refresh_credentials_and_settings() {
     let exported = source
         .registry
         .export_materialization("owner", "claude", &profile.profile_id)
-        .expect("Claude credentials and settings should remain portable");
-    assert_eq!(exported.files.len(), 2);
+        .expect("MP-08 / MP-10: only Claude credentials should travel");
+    assert_eq!(exported.files.len(), 1);
     assert_eq!(exported.files[0].relative_path, ".credentials.json");
-    assert_eq!(exported.files[1].relative_path, "settings.json");
+    assert!(!exported
+        .files
+        .iter()
+        .any(|file| file.relative_path == "settings.json"));
 }
 
 #[test]
@@ -117,13 +120,16 @@ fn claude_deployment_requires_refresh_credentials_before_materialization() {
         .registry
         .export_materialization("owner", "claude", &profile.profile_id)
         .expect("materialized account should remain transferable");
-    assert_eq!(export.files.len(), 2);
+    assert_eq!(export.files.len(), 1);
     assert_eq!(export.files[0].relative_path, ".credentials.json");
-    assert_eq!(export.files[1].relative_path, "settings.json");
+    assert!(!export
+        .files
+        .iter()
+        .any(|file| file.relative_path == "settings.json"));
 }
 
 #[test]
-fn claude_account_export_preserves_the_ordinary_transfer_size_budget() {
+fn mp08_mp10_claude_account_export_ignores_large_provider_state() {
     let source = ProfileFixture::new();
     let profile = source
         .registry
@@ -149,9 +155,9 @@ fn claude_account_export_preserves_the_ordinary_transfer_size_budget() {
         .registry
         .export_materialization("owner", "claude", &profile.profile_id)
         .expect("ordinary Claude state keeps the existing transfer budget");
-    assert_eq!(export.files.len(), 2);
+    assert_eq!(export.files.len(), 1);
     assert_eq!(export.files[0].relative_path, ".credentials.json");
-    assert_eq!(export.files[1].relative_path, "stats-cache.json");
+    assert!(!export.files.iter().any(|file| file.relative_path == "stats-cache.json"));
     let managed = source
         .registry
         .export_managed_context_materialization("owner", "claude", &profile.profile_id)
@@ -191,7 +197,7 @@ fn opencode_account_export_is_independent_of_local_session_database_size() {
 }
 
 #[test]
-fn opencode_account_round_trip_preserves_portable_config_without_runtime_data() {
+fn mp08_mp10_opencode_account_round_trip_carries_credentials_only() {
     let source = ProfileFixture::new();
     fs::write(
         source.path("XDG_DATA_HOME", "opencode/auth.json"),
@@ -233,18 +239,7 @@ fn opencode_account_round_trip_preserves_portable_config_without_runtime_data() 
         .iter()
         .map(|file| file.relative_path.as_str())
         .collect();
-    assert_eq!(
-        paths,
-        [
-            "data/opencode/auth.json",
-            "config/opencode/config",
-            "config/opencode/config.json",
-            "config/opencode/opencode.json",
-            "config/opencode/opencode.jsonc",
-            "config/opencode/tui.json",
-            "config/opencode/tui.jsonc"
-        ]
-    );
+    assert_eq!(paths, ["data/opencode/auth.json"]);
     let worker =
         ProviderAccountProfileRegistry::open(source.root.join("worker/accounts.json")).unwrap();
     let imported = worker
@@ -258,15 +253,7 @@ fn opencode_account_round_trip_preserves_portable_config_without_runtime_data() 
         b"fixture-auth"
     );
     for name in config_names {
-        assert_eq!(
-            fs::read_to_string(
-                Path::new(&environment["XDG_CONFIG_HOME"])
-                    .join("opencode")
-                    .join(name)
-            )
-            .unwrap(),
-            name
-        );
+        assert!(!Path::new(&environment["XDG_CONFIG_HOME"]).join("opencode").join(name).exists());
     }
     assert!(!Path::new(&environment["XDG_STATE_HOME"])
         .join("opencode/prompt-history.jsonl")
@@ -280,7 +267,6 @@ fn opencode_account_round_trip_preserves_portable_config_without_runtime_data() 
 fn opencode_portable_files_still_obey_the_transfer_size_limit() {
     for (variable, relative) in [
         ("XDG_DATA_HOME", "opencode/auth.json"),
-        ("XDG_CONFIG_HOME", "opencode/opencode.jsonc"),
     ] {
         let source = ProfileFixture::new();
         fs::File::create(source.path(variable, relative))

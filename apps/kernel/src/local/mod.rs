@@ -66,7 +66,7 @@ pub use api::{
     GetManagedContextLaunchTargetRequest, GetManagedContextTransferStatusRequest,
     GetManagedEnvironmentReimagePreflightRequest, GetManagedEnvironmentRequest,
     GetMcpServerRequest, GetMetaagentTurnBlobRequest, GetMetaagentTurnOverviewRequest,
-    GetProjectEnvironmentSetupStatusRequest, GetPromptInputHistoryRequest, GetPromptSettingRequest,
+    GetProjectEnvironmentManifestRequest, GetProjectEnvironmentSetupStatusRequest, GetPromptInputHistoryRequest, GetPromptSettingRequest,
     GetProviderAuthStatusRequest, GetProviderCatalogRequest, GetProviderCommandCatalogsRequest,
     GetProviderLoginStatusRequest, GetProviderRunRequest, GetRoomEnvironmentEventsRequest,
     GetRoomEnvironmentResourceInventoryRequest, GetRoomEnvironmentStateRequest, GetScriptRequest,

@@ -2098,6 +2098,7 @@ mod tests {
         let started = dispatch_public(
             &home_router,
             LocalDaemonRequest::StartManagedContextTransfer(StartManagedContextTransferRequest {
+                interactive: false,
                 ticket: ticket.clone(),
             }),
         )
