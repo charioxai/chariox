@@ -7,19 +7,25 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # The Path-1 extension helper supplies only its pinned local socket. Caller
 # Docker config and credential helpers remain available after it drops UID.
 docker() {
-  if [[ -n "${CHARIOX_SLICE_MANAGED_DOCKER_HOST:-}" ]]; then
-    command /usr/bin/docker --host "$CHARIOX_SLICE_MANAGED_DOCKER_HOST" "$@"
-  else
-    command docker "$@"
+  # Interactive terminals retain their inherited TTY and user-controlled wait.
+  if [[ "$1" == exec && " $* " == *" -it "* ]]; then
+    if [[ -n "${CHARIOX_SLICE_MANAGED_DOCKER_HOST:-}" ]]; then
+      command /usr/bin/docker --host "$CHARIOX_SLICE_MANAGED_DOCKER_HOST" "$@"
+    else
+      command docker "$@"
+    fi
+    return
   fi
+  # Raw noninteractive Docker calls are control operations; builds opt in below.
+  run_with_timeout 30 docker "$@"
 }
 
 hash_stdin() {
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum | awk '{ print $1 }'
+    run_with_timeout 20 sha256sum | awk '{ print $1 }'
     return
   fi
-  shasum -a 256 | awk '{ print $1 }'
+  run_with_timeout 20 shasum -a 256 | awk '{ print $1 }'
 }
 
 runtime_source_revision() {
@@ -29,15 +35,15 @@ runtime_source_revision() {
   fi
   (
     cd "$REPO_ROOT"
-    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-      git ls-files --cached --others --exclude-standard \
+    if run_with_timeout 20 git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      run_with_timeout 20 git ls-files --cached --others --exclude-standard \
         Cargo.toml Cargo.lock \
         adapters/rust \
         apps/aegs-dummy apps/kernel apps/relay \
         examples/workflow-code \
         packages/aegs-sdk packages/event-protocol
     else
-      find \
+      run_with_timeout 20 find \
         Cargo.toml Cargo.lock \
         adapters/rust \
         apps/aegs-dummy apps/kernel apps/relay \
@@ -47,13 +53,8 @@ runtime_source_revision() {
         ! -path '*/target/*' \
         ! -path '*/node_modules/*' \
         | LC_ALL=C sort
-    fi \
-      | while IFS= read -r path; do
-          [[ -f "$path" ]] || continue
-          printf '%s ' "$path"
-          hash_stdin < "$path"
-        done
-  ) | hash_stdin
+    fi
+  ) | python3 "$SCRIPT_DIR/slice-command-guard.py" digest-paths "$REPO_ROOT"
 }
 
 SLICE_NAME="${CHARIOX_SLICE_NAME:-chariox-slice-linux}"
@@ -126,7 +127,6 @@ SLICE_ACCOUNT_PROFILE="${CHARIOX_SLICE_ACCOUNT_PROFILE:-default}"
 SLICE_ACCOUNT_ROOT="/home/slice/.chariox/daemon/provider-accounts/$SLICE_ACCOUNT_OWNER"
 SLICE_PROVIDER_HOME="/home/slice/.chariox/provider-home"
 SLICE_RELAY_PEER_PROTOCOL_VERSION="$(sed -nE 's/^pub const RELAY_PEER_PROTOCOL_VERSION: u32 = ([0-9]+);$/\1/p' "$REPO_ROOT/apps/kernel/src/transport/relay_peer.rs" | head -n 1)"
-SLICE_RUNTIME_SOURCE_REVISION="$(runtime_source_revision)"
 
 log() {
   printf '[slice-linux] %s\n' "$*" >&2
@@ -143,13 +143,13 @@ disk_quota_enabled() {
 
 apply_home_disk_quota() {
   disk_quota_enabled || return 0
-  /usr/bin/node "$SCRIPT_DIR/slice-disk-quota-client.mjs" apply_home \
+  run_guarded_command unbounded -- /usr/bin/node "$SCRIPT_DIR/slice-disk-quota-client.mjs" apply_home \
     || fail "failed to apply and verify the persistent-home hard quota before restore or start"
 }
 
 apply_layer_disk_quota() {
   disk_quota_enabled || return 0
-  /usr/bin/node "$SCRIPT_DIR/slice-disk-quota-client.mjs" apply_layer \
+  run_guarded_command unbounded -- /usr/bin/node "$SCRIPT_DIR/slice-disk-quota-client.mjs" apply_layer \
     || fail "failed to apply and verify the writable-layer hard quota before start"
 }
 
@@ -176,74 +176,46 @@ if [[ ! "$SLICE_APPARMOR_PROFILE" =~ ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$ ]]; the
   fail "CHARIOX_SLICE_APPARMOR_PROFILE is invalid"
 fi
 
+run_guarded_command() {
+  local mode="$1"
+  shift
+  local seconds=""
+  if [[ "$mode" == run ]]; then
+    seconds="$1"
+    shift
+  fi
+  [[ "$1" == -- ]] || return 64
+  shift
+  local command="$1"
+  shift
+  if [[ "$command" == docker ]]; then
+    if [[ -n "${CHARIOX_SLICE_MANAGED_DOCKER_HOST:-}" ]]; then
+      command=/usr/bin/docker
+      set -- --host "$CHARIOX_SLICE_MANAGED_DOCKER_HOST" "$@"
+    else
+      command="$(type -P docker)" || return 127
+    fi
+  fi
+  if [[ "$mode" == run ]]; then
+    python3 "$SCRIPT_DIR/slice-command-guard.py" run "$seconds" -- "$command" "$@"
+  else
+    python3 "$SCRIPT_DIR/slice-command-guard.py" unbounded -- "$command" "$@"
+  fi
+}
+
 run_with_timeout() {
   local seconds="$1"
   shift
-  local timeout_marker="${TMPDIR:-/tmp}/chariox-slice-timeout.$$.$RANDOM"
-  rm -f "$timeout_marker"
-  "$@" &
-  local child=$!
-  (
-    local elapsed=0
-    while (( elapsed < seconds )); do
-      sleep 1
-      elapsed=$((elapsed + 1))
-    done
-    if kill -0 "$child" >/dev/null 2>&1; then
-      : >"$timeout_marker"
-      kill "$child" >/dev/null 2>&1 || true
-      sleep 2
-      kill -9 "$child" >/dev/null 2>&1 || true
-    fi
-  ) &
-  local watchdog=$!
-  local status=0
-  wait "$child" || status=$?
-  kill "$watchdog" >/dev/null 2>&1 || true
-  wait "$watchdog" 2>/dev/null || true
-  if [[ -f "$timeout_marker" ]]; then
-    rm -f "$timeout_marker"
-    log "managed slice Docker operation timed out after ${seconds}s"
-    return 124
-  fi
-  rm -f "$timeout_marker"
-  return "$status"
+  run_guarded_command run "$seconds" -- "$@"
 }
 
 run_with_file_stdin_timeout() {
-  local seconds="$1"
-  local input_file="$2"
+  local seconds="$1" input_file="$2"
   shift 2
-  local timeout_marker="${TMPDIR:-/tmp}/chariox-slice-timeout.$$.$RANDOM"
-  rm -f "$timeout_marker"
-  "$@" <"$input_file" &
-  local child=$!
-  (
-    local elapsed=0
-    while (( elapsed < seconds )); do
-      sleep 1
-      elapsed=$((elapsed + 1))
-    done
-    if kill -0 "$child" >/dev/null 2>&1; then
-      : >"$timeout_marker"
-      kill "$child" >/dev/null 2>&1 || true
-      sleep 2
-      kill -9 "$child" >/dev/null 2>&1 || true
-    fi
-  ) &
-  local watchdog=$!
-  local status=0
-  wait "$child" || status=$?
-  kill "$watchdog" >/dev/null 2>&1 || true
-  wait "$watchdog" 2>/dev/null || true
-  if [[ -f "$timeout_marker" ]]; then
-    rm -f "$timeout_marker"
-    log "managed slice Docker operation timed out after ${seconds}s"
-    return 124
-  fi
-  rm -f "$timeout_marker"
-  return "$status"
+  run_with_timeout "$seconds" "$@" < "$input_file"
 }
+
+SLICE_RUNTIME_SOURCE_REVISION="$(runtime_source_revision)"
 
 usage() {
   cat <<EOF
@@ -287,7 +259,7 @@ volume_inspect_reports_not_found() {
 
 saved_home_archive_identity() {
   local identity
-  identity="$(hash_stdin < "$SLICE_SAVED_HOME_ARCHIVE")" || return 1
+  identity="$(python3 "$SCRIPT_DIR/slice-command-guard.py" digest "$SLICE_SAVED_HOME_ARCHIVE")" || return 1
   [[ "$identity" =~ ^[a-f0-9]{64}$ ]] || return 1
   printf '%s\n' "$identity"
 }
@@ -395,7 +367,7 @@ prepare_home_volume() {
 }
 
 machine_id_hex() {
-  printf '%s' "$SLICE_MACHINE_ID" | sha256sum | awk '{ print substr($1, 1, 32) }'
+  printf '%s' "$SLICE_MACHINE_ID" | hash_stdin | cut -c 1-32
 }
 
 configure_stable_machine_identity() {
@@ -673,17 +645,29 @@ docker_target_arch() {
   esac
 }
 
+run_build_command() {
+  # Only the broker injects this trusted child marker. Extension and ordinary
+  # builds keep their existing wait; log silence is not evidence of a stall.
+  if [[ -n "${CHARIOX_SLICE_BROKER_BUILD_TIMEOUT_SECONDS:-}" ]]; then
+    [[ "$CHARIOX_SLICE_BROKER_BUILD_TIMEOUT_SECONDS" == 1200 ]] \
+      || fail "invalid broker build deadline"
+    run_with_timeout 1200 "$@"
+  else
+    run_guarded_command unbounded -- "$@"
+  fi
+}
+
 docker_build() {
   if docker buildx version >/dev/null 2>&1; then
     if [[ -n "${CHARIOX_SLICE_MANAGED_DOCKER_HOST:-}" ]]; then
-      docker buildx build --builder default --load "$@"
+      run_build_command docker buildx build --builder default --load "$@"
     else
-      docker buildx build --load "$@"
+      run_build_command docker buildx build --load "$@"
     fi
     return
   fi
   if [[ -z "${CHARIOX_SLICE_MANAGED_DOCKER_HOST:-}" ]] && command -v docker-buildx >/dev/null 2>&1; then
-    docker-buildx build --load "$@"
+    run_build_command docker-buildx build --load "$@"
     return
   fi
   fail "Docker Buildx is required to build the slice runtime image"
@@ -1410,7 +1394,7 @@ import_github_auth() {
       log "GitHub auth has no explicit managed credential input; skipping"
       return 0
     fi
-  elif ! gh auth token --hostname "$SLICE_GITHUB_HOST" >"$token_tmp" 2>/dev/null || [[ ! -s "$token_tmp" ]]; then
+  elif ! run_with_timeout 30 gh auth token --hostname "$SLICE_GITHUB_HOST" >"$token_tmp" 2>/dev/null || [[ ! -s "$token_tmp" ]]; then
       rm -f "$token_tmp"
       log "GitHub auth is not configured on the kernel host; skipping"
       return 0
@@ -1583,11 +1567,14 @@ print_status() {
 }
 
 stop_container() {
-  if ! docker ps -a --format '{{.Names}}' | grep -Fxq "$SLICE_NAME"; then
+  local all_names running_names
+  all_names="$(docker ps -a --format '{{.Names}}')" || fail "failed to inspect containers before stop"
+  if ! grep -Fxq "$SLICE_NAME" <<< "$all_names"; then
     log "container $SLICE_NAME does not exist"
     return 0
   fi
-  if docker ps --format '{{.Names}}' | grep -Fxq "$SLICE_NAME"; then
+  running_names="$(docker ps --format '{{.Names}}')" || fail "failed to inspect running containers before stop"
+  if grep -Fxq "$SLICE_NAME" <<< "$running_names"; then
     log "stopping slice processes in $SLICE_NAME"
     docker exec -u slice "$SLICE_NAME" bash -lc "
       screen -S chariox-slice-relay -X quit >/dev/null 2>&1 || true
@@ -1604,13 +1591,17 @@ stop_container() {
 
 destroy_container() {
   stop_container
-  if docker ps -a --format '{{.Names}}' | grep -Fxq "$SLICE_NAME"; then
+  local all_names volume_inspection
+  all_names="$(docker ps -a --format '{{.Names}}')" || fail "failed to inspect containers before removal"
+  if grep -Fxq "$SLICE_NAME" <<< "$all_names"; then
     log "removing container $SLICE_NAME"
     docker rm "$SLICE_NAME" >/dev/null
   fi
-  if docker volume inspect "$SLICE_HOME_VOLUME" >/dev/null 2>&1; then
+  if volume_inspection="$(docker volume inspect "$SLICE_HOME_VOLUME" 2>&1)"; then
     log "removing volume $SLICE_HOME_VOLUME"
     docker volume rm "$SLICE_HOME_VOLUME" >/dev/null
+  elif ! grep -Eqi 'no such volume|volume .* not found' <<< "$volume_inspection"; then
+    fail "failed to inspect home volume before removal"
   fi
 }
 
