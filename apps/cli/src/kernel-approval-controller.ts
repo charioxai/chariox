@@ -4,6 +4,9 @@ import type { InteractionPasskeyProof } from "./ipc-requests.js"
 /** Optional remember window after a verified passkey: off, 5 or 15 minutes. */
 export const PASSKEY_REMEMBER_MINUTES = [0, 5, 15] as const
 const PASSKEY_MAX_LENGTH = 512
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/
+const PASSKEY_PASTE_REFUSED = `Paste not added: a passkey is one line of at most ${PASSKEY_MAX_LENGTH} characters, without control characters.`
+const PASSKEY_INPUT_REFUSED = "The passkey was cleared: the input held a terminal control sequence. Enter it again."
 
 /** Fixed text for the kernel's passkey refusals; other errors stay generic. */
 const PASSKEY_REFUSALS: Record<string, string> = {
@@ -29,6 +32,24 @@ export type KernelApprovalKey = {
   defaultPrevented?: boolean
   preventDefault(): void
   stopPropagation(): void
+}
+
+export type KernelApprovalPaste = {
+  text: string
+  /** The paste as the terminal sent it, before OpenTUI strips ANSI codes. */
+  rawText?: string | null
+  preventDefault(): void
+  stopPropagation(): void
+}
+
+/** The text a key press types into the passkey, exactly as typed: its
+ * `sequence` keeps case, shifted symbols and characters outside the BMP. A
+ * kitty key without associated text falls back to its one-character name. */
+function passkeyKeyText(event: KernelApprovalKey): string {
+  if (event.sequence && !CONTROL_CHARACTERS.test(event.sequence)) return event.sequence
+  if (event.name === "space") return " "
+  if (Array.from(event.name).length !== 1 || CONTROL_CHARACTERS.test(event.name)) return ""
+  return event.shift ? event.name.toLocaleUpperCase() : event.name
 }
 
 export type KernelApprovalView = {
@@ -76,6 +97,8 @@ export function createKernelApprovalController(deps: {
   let entry: { interactionId: string; choiceId: string; value: string; remember: number } | null = null
   // This terminal's own remember window; the kernel remains the authority.
   let rememberedUntil = 0
+  // Set for the rest of one terminal read after a refused control sequence.
+  let refusingInput = false
   const view = (): KernelApprovalView => {
     const items = kernelApprovals(deps.getSession())
     index = Math.min(index, Math.max(0, items.length - 1))
@@ -83,7 +106,7 @@ export function createKernelApprovalController(deps: {
     if (entry && entry.interactionId !== interaction?.id) entry = null
     return { open, count: items.length, index, interaction,
       selected, pending: pending !== null, connected: deps.connected(), error,
-      passkey: entry ? { length: entry.value.length, rememberMinutes: entry.remember } : null }
+      passkey: entry ? { length: Array.from(entry.value).length, rememberMinutes: entry.remember } : null }
   }
   const render = () => { if (!disposed) deps.onView(view()) }
   const close = () => {
@@ -184,19 +207,34 @@ export function createKernelApprovalController(deps: {
     render()
   }
   const passkeyKey = (event: KernelApprovalKey) => {
-    if (!entry) return
+    if (!entry || refusingInput) return
     if (event.name === "escape") { entry = null; error = null; render(); return }
     if (event.name === "return" || event.name === "enter") { void submitPasskey(); return }
     if (event.name === "tab") { cycleRemember(); return }
-    if (event.name === "backspace") { entry.value = entry.value.slice(0, -1); render(); return }
-    const typed = event.sequence && event.sequence.length === 1 && event.sequence >= " "
-      ? event.sequence
-      : event.name === "space" ? " "
-      : event.name.length === 1 ? (event.shift ? event.name.toUpperCase() : event.name) : ""
-    if (typed && entry.value.length < PASSKEY_MAX_LENGTH) { entry.value += typed; render() }
+    if (event.name === "backspace") { entry.value = Array.from(entry.value).slice(0, -1).join(""); render(); return }
+    const typed = passkeyKeyText(event)
+    if (typed && Array.from(entry.value + typed).length <= PASSKEY_MAX_LENGTH) { entry.value += typed; render() }
+  }
+  // A paste is added exactly as sent, without a trailing line break, or
+  // refused whole: OpenTUI strips ANSI codes from `text`, so the raw paste
+  // decides. It never reaches the prompt while the panel is open.
+  const handlePaste = (event: KernelApprovalPaste): boolean => {
+    if (!open) return false
+    event.preventDefault()
+    event.stopPropagation()
+    if (!entry) return true
+    const text = (event.rawText ?? event.text).replace(/(?:\r\n|\r|\n)+$/, "")
+    if (CONTROL_CHARACTERS.test(text) || Array.from(entry.value + text).length > PASSKEY_MAX_LENGTH) {
+      error = PASSKEY_PASTE_REFUSED
+    } else {
+      entry.value += text
+      error = null
+    }
+    render()
+    return true
   }
   return {
-    sync, view, show, close, choose, submitPasskey, cycleRemember,
+    sync, view, show, close, choose, submitPasskey, cycleRemember, handlePaste,
     isOpen: () => open,
     ownsInput: () => open || claimedInputTurn,
     dispose() { disposed = true; epoch += 1; close() },
@@ -211,6 +249,16 @@ export function createKernelApprovalController(deps: {
       if (event.eventType === "release" || event.eventType === "repeat") return true
       if (event.name === "f8" || (event.name === "escape" && !entry)) {
         if (open) close(); else show()
+        return true
+      }
+      // An escape sequence that is no key is styled text pasted without
+      // bracketed paste: refuse that input rather than drop its codes.
+      if (entry && !event.name && event.sequence && CONTROL_CHARACTERS.test(event.sequence)) {
+        entry.value = ""
+        error = PASSKEY_INPUT_REFUSED
+        refusingInput = true
+        queueMicrotask(() => { refusingInput = false })
+        render()
         return true
       }
       if (event.ctrl || event.meta || event.alt) return true
