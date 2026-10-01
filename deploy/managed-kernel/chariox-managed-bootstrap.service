@@ -46,6 +46,9 @@ RestartMaxDelaySec=5min
 KillMode=control-group
 NoNewPrivileges=true
 PrivateTmp=true
+# Share the host admission inodes despite the private temporary namespace.
+BindPaths=/tmp/chariox-docker-memory-admission.lock
+BindPaths=/tmp/chariox-docker-disk-admission.lock
 ProtectSystem=strict
 ProtectHome=read-only
 # bubblewrap needs to mount a fresh /proc inside each provider PID namespace.

@@ -1,6 +1,6 @@
 use std::fmt;
 #[cfg(unix)]
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
@@ -15,8 +15,6 @@ const SNAPSHOT_DISK_RESERVE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const ARCHIVE_OVERHEAD_BYTES: u64 = 16 * 1024 * 1024;
 const ARCHIVE_OVERHEAD_PERCENT: u64 = 5;
 const ARCHIVE_ENTRY_OVERHEAD_BYTES: u64 = 8 * 1024;
-#[cfg(unix)]
-const UNIX_DISK_ADMISSION_LOCK_PATH: &str = "/tmp/chariox-docker-disk-admission.lock";
 const WINDOWS_DISK_ADMISSION_LOCK_NAME: &str = r"Global\CharioxDockerDiskAdmission";
 static PROCESS_DISK_ADMISSION_LOCK: Mutex<()> = Mutex::new(());
 
@@ -334,30 +332,12 @@ fn nearest_existing_ancestor(path: &Path) -> Option<&Path> {
 #[cfg(unix)]
 fn acquire_disk_admission_lock() -> Result<DiskAdmissionLock, DaemonError> {
     let path = disk_admission_lock_path();
-    let mut options = OpenOptions::new();
-    options.read(true).write(true).create(true).truncate(false);
-    use std::os::unix::fs::OpenOptionsExt;
-    options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    let file = options.open(&path).map_err(|error| {
+    let file = super::admission_lock::open(&path).map_err(|error| {
         disk_measurement_error(&format!(
             "failed to open Docker disk admission lock {}: {error}",
             path.display()
         ))
     })?;
-    if !file
-        .metadata()
-        .map_err(|error| {
-            disk_measurement_error(&format!(
-                "failed to inspect Docker disk admission lock {}: {error}",
-                path.display()
-            ))
-        })?
-        .is_file()
-    {
-        return Err(disk_measurement_error(
-            "Docker disk admission lock is not a regular file",
-        ));
-    }
     FileExt::lock_exclusive(&file).map_err(|error| {
         disk_measurement_error(&format!(
             "failed to lock Docker disk admission at {}: {error}",
@@ -369,7 +349,7 @@ fn acquire_disk_admission_lock() -> Result<DiskAdmissionLock, DaemonError> {
 
 #[cfg(unix)]
 fn disk_admission_lock_path() -> PathBuf {
-    PathBuf::from(UNIX_DISK_ADMISSION_LOCK_PATH)
+    super::admission_lock::path("disk")
 }
 
 #[cfg(windows)]

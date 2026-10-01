@@ -249,6 +249,11 @@ install_all() {
     if [[ "$after" == "$before" ]]; then say "unchanged runtime $after (re-verified)"; else say "enrolled runtime $after (was $before)"; fi
   fi
 
+  # Preserve the host-wide admission inode shared with older root kernels.
+  # These contain no data; ordinary kernels flock the read-only descriptor.
+  act "provision host-wide Docker admission locks" \
+    python3 "$here/provision-docker-admission-locks.py" --root "${R:-/}"
+
   # 2. Root binaries and the helper's unit.
   put "$stage/chariox-app-runtime-install" "$RUNTIME_INSTALLER" 0755 || true
   put "$stage/chariox-app-storage" "$HELPER" 0755 && restart=1

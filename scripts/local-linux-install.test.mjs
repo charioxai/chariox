@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { existsSync, readdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -185,6 +185,15 @@ test("local Linux root install is idempotent, merges owners and uninstalls", { s
       await readFile(join(repositoryRoot, "deploy/managed-kernel/chariox-app-storage.service"), "utf8"))
     assert.ok(existsSync(p(h, "var/lib/chariox-local-install/linger-1000")))
 
+    const admissionLocks = ["memory", "disk"].map((resource) => p(h, `tmp/chariox-docker-${resource}-admission.lock`))
+    const admissionInodes = []
+    for (const lock of admissionLocks) {
+      const metadata = await stat(lock)
+      assert.equal(metadata.mode & 0o777, 0o444)
+      assert.equal(metadata.size, 0)
+      admissionInodes.push(metadata.ino)
+    }
+
     await h.reset("systemctl")
     const again = h.install(["alice"])
     assert.equal(again.status, 0, again.out)
@@ -193,6 +202,7 @@ test("local Linux root install is idempotent, merges owners and uninstalls", { s
     assert.match(again.out, /unchanged .*app-storage\.json/)
     assert.match(again.out, /unchanged chariox-app-storage\.service \(running\)/)
     assert.doesNotMatch(await h.log("systemctl"), /restart|start /)
+    assert.deepEqual(await Promise.all(admissionLocks.map(async (lock) => (await stat(lock)).ino)), admissionInodes)
 
     const second = h.install(["bob"])
     assert.equal(second.status, 0, second.out)
