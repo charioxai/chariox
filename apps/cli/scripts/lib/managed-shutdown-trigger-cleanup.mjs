@@ -1,3 +1,4 @@
+import { recordShutdownFailure } from "./managed-shutdown-trigger-failure.mjs"
 import { writeCaptureOutput } from "../path1-provider-rebuild-capture.mjs"
 import { SHUTDOWN_TRIGGER_LIMITS, requireValue } from "./managed-shutdown-trigger-config.mjs"
 import { exactOperation, projectSummary, requireOperationHistory, responseBody } from "./managed-shutdown-trigger-observation.mjs"
@@ -53,7 +54,8 @@ export async function cleanupManagedShutdownCapture({ deps, options, context, ca
           finalDeadline)
         requireValue(deleted.summary.observedState === "deleted", "target deletion is not observed")
       }
-    } catch {
+    } catch (error) {
+      recordShutdownFailure(capture, "cleanup", error, now().toISOString())
       context.cleanupFailed = true
     }
   }

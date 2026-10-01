@@ -678,3 +678,25 @@ test("interrupting a required user action still deletes the one created target",
   assert.deepEqual(incomplete.requiredUserActions.map(({ action }) => action), ["start_agent_via_normal_path"])
   assert.equal(incomplete.requiredUserActions[0].completedAt, undefined)
 })
+
+test('MP-09 failed capture retains safe stage diagnostics without external error contents', async t => {
+  const root = await scratch(t), output = join(root, 'diagnostic.json'), product = fakeProductPath({ includeHistory: false })
+  await assert.rejects(runManagedShutdownTrigger(parseArguments(argumentsFor(output)), {
+    client: { send: product.send, close: async () => {} }, requests: product.requests, send: product.send,
+    pause: async () => {}, id: () => 'run-diagnostic',
+  }), /no acceptance verdict/)
+  const capture = JSON.parse(await readFile(output, 'utf8'))
+  assert.equal(capture.failures[0].stage, 'workflow')
+  assert.equal(capture.failures[0].invariant, 'managed operation history is unavailable')
+  assert.equal(capture.failures[1].stage, 'cleanup')
+  assert.equal('passed' in capture, false)
+})
+
+test('MP-09 failure diagnostics discard external messages, stacks and token-like codes', async t => {
+  const { recordShutdownFailure } = await import('./lib/managed-shutdown-trigger-failure.mjs')
+  const capture = {}, secret = 'fixture-sensitive-token-must-never-enter-evidence'
+  recordShutdownFailure(capture, 'workflow', Object.assign(new Error(secret), { code: secret, name: secret }), baseTime)
+  assert.equal(JSON.stringify(capture).includes(secret), false)
+  assert.equal(capture.failures[0].invariant, 'unclassified_failure')
+  assert.equal(capture.failures[0].code, null)
+})

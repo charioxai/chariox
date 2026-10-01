@@ -1,3 +1,4 @@
+import { recordShutdownFailure } from "./managed-shutdown-trigger-failure.mjs"
 import { randomUUID } from "node:crypto"
 import { createInterface } from "node:readline/promises"
 import { stdin, stderr } from "node:process"
@@ -178,7 +179,8 @@ export async function runManagedShutdownTrigger(options, deps) {
       pause,
       waitForAction,
     })
-  } catch {
+  } catch (error) {
+    recordShutdownFailure(capture, "workflow", error, now().toISOString())
     context.workflowFailed = true
   }
 
