@@ -42,7 +42,7 @@ import {
 } from "./slice-disk-quota-admission.mjs"
 
 const MAX_FRAME_BYTES = 12 * 1024 * 1024
-const MAX_OUTPUT_BYTES = 4 * 1024 * 1024
+const MAX_OUTPUT_BYTES = 64 * 1024
 const MAX_CREDENTIAL_BYTES = 2 * 1024 * 1024
 const MAX_CREDENTIAL_TOTAL_BYTES = 8 * 1024 * 1024
 const LINUX_O_PATH = 0x200000
@@ -55,7 +55,7 @@ const BROKER_INPUT_ROOT = resolve(
   process.env.CHARIOX_SLICE_DOCKER_BROKER_INPUT_ROOT ?? "/run/chariox-slice-broker/input",
 )
 const BROKER_OUTPUT_ROOT = resolve(
-  process.env.CHARIOX_SLICE_DOCKER_BROKER_OUTPUT_ROOT ?? "/var/lib/chariox-slice-share/.broker-private/output",
+  process.env.CHARIOX_SLICE_DOCKER_BROKER_OUTPUT_ROOT ?? join(SHARE_ROOT, ".broker-private/output"),
 )
 const BROKER_ARTIFACT_ROOT = resolve(
   process.env.CHARIOX_SLICE_DOCKER_BROKER_ARTIFACT_ROOT ?? "/var/lib/chariox-slice-share/.broker-private/artifacts",
@@ -1555,7 +1555,7 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
 }
 
 function spawnBounded(command, args, options) {
-  return runBrokerCommand(command, args, { ...options, signal: brokerLifetime.signal })
+  return runBrokerCommand(command, args, { ...options, signal: brokerLifetime.signal, logRoot: join(BROKER_OUTPUT_ROOT, "logs") })
 }
 
 function provisionerQuotaRequest(environment) {

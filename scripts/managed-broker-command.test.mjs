@@ -5,8 +5,10 @@ import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { runBrokerCommand } from "../apps/kernel/slice-linux-docker/managed-broker-command.mjs"
 
-for (const progress of [false,true]) test(`MP-08 MP-10 MP-11 owned broker command permits ${progress ? "healthy" : "silent"} producers`, async () => {
- const result=await runBrokerCommand("/usr/bin/python3",["-c",progress ? "import time;[(print('progress',flush=True),time.sleep(.1)) for _ in range(4)]" : "import time;time.sleep(.4);print('finished')"],{env:process.env,maxBuffer:4096})
+for (const progress of [false,true]) test(`MP-08 MP-10 MP-11 owned broker command permits ${progress ? "healthy" : "silent"} producers`, async context => {
+ const logRoot=await mkdtemp(join(tmpdir(),"chariox-broker-lifetime-"))
+ context.after(()=>rm(logRoot,{recursive:true,force:true}))
+ const result=await runBrokerCommand("/usr/bin/python3",["-c",progress ? "import time;[(print('progress',flush=True),time.sleep(.1)) for _ in range(4)]" : "import time;time.sleep(.4);print('finished')"],{env:process.env,maxBuffer:4096,logRoot})
  assert.equal(result.status,0,result.stderr.toString())
  assert.match(result.stdout.toString(),progress ? /progress/ : /finished/)
 })
@@ -21,7 +23,7 @@ pid=os.fork()
 if pid==0: time.sleep(1000)
 else:
  pathlib.Path(${JSON.stringify(marker)}).write_text(str(os.getpid())+' '+str(pid))
- time.sleep(1000)`],{env:process.env,maxBuffer:4096,signal:controller.signal})
+ time.sleep(1000)`],{env:process.env,maxBuffer:4096,logRoot:root,signal:controller.signal})
  let pids
  try {
   const until=Date.now()+3000
@@ -34,4 +36,25 @@ else:
   const state=await readFile(`/proc/${pid}/stat`,"utf8").catch(()=>undefined)
   assert(!state || state.split(") ")[1].startsWith("Z "),`owned producer ${pid} survived`)
  }
+})
+
+test("MP-08 MP-11 verbose successful producer keeps complete private logs and bounded summaries", async context => {
+ const root=await mkdtemp(join(tmpdir(),"chariox-broker-output-"))
+ context.after(()=>rm(root,{recursive:true,force:true}))
+ const count=5*1024*1024+137
+ const result=await runBrokerCommand("/usr/bin/python3",["-c",`import os;os.write(1,b'x'*${count});os.write(2,b'y'*${count})`],{env:process.env,maxBuffer:65536,logRoot:root})
+ assert.equal(result.status,0,result.stderr.toString())
+ assert(result.stdout.length<=65536)
+ assert(result.stderr.length<70000)
+ const {readdir,stat}=await import("node:fs/promises")
+ const [directory]=await readdir(root)
+ const logs=join(root,directory)
+ for(const [name,byte] of [["stdout.log",120],["stderr.log",121]]) {
+  const content=await readFile(join(logs,name))
+  assert.equal(content.length,count)
+  assert(content.every(value=>value===byte))
+  assert.equal((await stat(join(logs,name))).mode&0o777,0o600)
+ }
+ assert.equal((await stat(logs)).mode&0o777,0o700)
+ assert.match(result.stderr.toString(),/complete diagnostics/)
 })

@@ -968,13 +968,15 @@ cat "$CHARIOX_SLICE_WORKSPACE_SOURCE/value"
   assert.equal(Buffer.from(response.stdoutBase64, "base64").toString(), "safe")
 })
 
-test("managed slice broker recovers after an oversized command output", async (context) => {
+test("MP-08 MP-11 broker verbose success preserves the next request", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-broker-output-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const share = join(root, "share")
   await mkdir(share)
   const provisioner = join(root, "provisioner.sh")
-  await writeFile(provisioner, "#!/bin/sh\nif [ \"$1\" = provision ]; then head -c 5242880 /dev/zero; else printf valid; fi\n")
+  await writeFile(provisioner, `#!/bin/sh
+if [ -e "\${0}.once" ]; then printf valid; else touch "\${0}.once"; head -c 5242880 /dev/zero; fi
+`)
   await chmod(provisioner, 0o755)
   const base = {
     kind: "provisioner",
@@ -988,7 +990,7 @@ test("managed slice broker recovers after an oversized command output", async (c
     files: [],
   }
   const result = spawnSync(process.execPath, [broker, "--stdio"], {
-    input: `${JSON.stringify({ ...base, action: "provision" })}\n${JSON.stringify({ ...base, action: "stop" })}\n`,
+    input: `${JSON.stringify({ ...base, action: "stop" })}\n${JSON.stringify({ ...base, action: "stop" })}\n`,
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
     env: {
@@ -1000,7 +1002,9 @@ test("managed slice broker recovers after an oversized command output", async (c
   assert.equal(result.status, 0, result.stderr)
   const responses = result.stdout.trim().split("\n").map(JSON.parse)
   assert.equal(responses.length, 2)
-  assert.equal(responses[0].status, 125)
+  assert.equal(responses[0].status, 0)
+  assert(Buffer.from(responses[0].stdoutBase64,"base64").length <= 65536)
+  assert.match(Buffer.from(responses[0].stderrBase64,"base64").toString(),/complete diagnostics/)
   assert.equal(responses[1].status, 0)
   assert.equal(Buffer.from(responses[1].stdoutBase64, "base64").toString(), "valid")
 })
@@ -1063,7 +1067,7 @@ test("MP-08 MP-10 MP-11 all provisioner requests use common owned lifetime", asy
     },
     prepareProvisioner: async request => { await new Promise(resolve => setImmediate(resolve)); prepared++; return { environment: request.environment, handles: new Set(), newHandles: new Set() } },
     cleanupPrepared: () => { cleaned++ }, removePersistentHandles: () => {},
-    brokerLifetime: new AbortController(),
+    brokerLifetime: new AbortController(), BROKER_OUTPUT_ROOT: "/synthetic/logs", join,
     runBrokerCommand: async (command, args, options) => {
       calls.push({ command, args, timeout: options.timeout, env: options.env })
       return spawnSync(command, ["-e", "setTimeout(() => process.stdout.write('restored'), 120)"], options)
