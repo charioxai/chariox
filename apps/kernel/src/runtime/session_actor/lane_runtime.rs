@@ -107,8 +107,7 @@ impl SessionRuntime {
             .await?;
         let terminal_caller = command.is_terminal_caller() && caller_metaagent_id.is_none();
         let connection_class = command.caller.connection_class;
-        let external_grant_id = (connection_class == Some(KernelConnectionClass::ExternalAgent))
-            .then(|| command.caller.caller_id.clone());
+        let external_grant_id = command.external_grant_id();
         let command_id = command.command_id;
         let command_type = command.command_type;
         match lane.try_send(SessionCommandEnvelope {
