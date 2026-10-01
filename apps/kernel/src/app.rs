@@ -7,6 +7,8 @@ mod config_runtime;
 mod daemon_lifecycle;
 mod durable_runtime_state;
 mod external_provider_session_discovery;
+#[cfg(test)]
+mod room_environment_durability_tests;
 pub(crate) use external_provider_session_discovery::find_external_provider_prompt_recovery_match;
 mod external_provider_sessions;
 mod history_access;
@@ -350,7 +352,10 @@ impl DaemonApp {
             prompt_activity: PromptActivityStore::default(),
             prompt_workspace_claims: PromptWorkspaceClaimStore::default(),
             prompt_state_owner: PromptStateOwner::default(),
-            sessions: SessionStateStore::new(SessionService::new(&config)),
+            sessions: SessionStateStore::new(
+                SessionService::new(&config)
+                    .with_room_environment_durability(durable_state.clone()),
+            ),
             history,
             operational_history,
             durable_state,

@@ -64,6 +64,7 @@ mod room_browser_controller;
 mod room_browser_manifest_sync;
 mod room_computer_observation;
 mod room_display;
+mod room_environment_health;
 mod room_environment_placement;
 mod room_environment_state;
 mod room_screenshot;
@@ -105,6 +106,7 @@ struct KernelRuntimeOwnedState {
     environment_execution_gates: environment_execution_gate::EnvironmentExecutionGates,
     computer_input_executions:
         crate::runtime::computer_input_execution::ComputerInputExecutionStore,
+    room_environment_health_probes: Arc<room_environment_health::RoomEnvironmentHealthProbes>,
     browser_controller_generations:
         Arc<std::sync::Mutex<BTreeMap<String, (u64, bool)>>>,
     session_projection: crate::runtime::projection::SessionStateProjectionStore,
@@ -648,6 +650,7 @@ impl KernelRuntimeState {
                 environment_execution_gates: Default::default(),
                 computer_input_executions:
                     crate::runtime::computer_input_execution::ComputerInputExecutionStore::default(),
+                room_environment_health_probes: Arc::new(room_environment_health::RoomEnvironmentHealthProbes::default()),
                 browser_controller_generations: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
                 session_projection,
                 agent_runtime_projection,

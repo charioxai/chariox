@@ -18,8 +18,9 @@ impl SessionService {
                 session_id: session_id.to_string(),
             });
         }
-        self.room_environments
-            .create(session_id, environment_id, viewport)
+        self.mutate_room_environment(session_id, |environments| {
+            environments.create(session_id, environment_id, viewport)
+        })
     }
 
     pub(crate) fn room_environment_snapshot(
@@ -67,7 +68,9 @@ impl SessionService {
                 session_id: session_id.to_string(),
             });
         }
-        self.room_environments.start(session_id, viewport)
+        self.mutate_room_environment(session_id, |environments| {
+            environments.start(session_id, viewport)
+        })
     }
 
     pub(crate) fn stop_room_environment(
@@ -79,7 +82,7 @@ impl SessionService {
                 session_id: session_id.to_string(),
             });
         }
-        self.room_environments.stop(session_id)
+        self.mutate_room_environment(session_id, |environments| environments.stop(session_id))
     }
 
     pub(crate) fn begin_stop_room_environment(
@@ -91,7 +94,9 @@ impl SessionService {
                 session_id: session_id.to_string(),
             });
         }
-        self.room_environments.begin_stop(session_id)
+        self.mutate_room_environment(session_id, |environments| {
+            environments.begin_stop(session_id)
+        })
     }
 
     pub(crate) fn complete_stop_room_environment(
@@ -103,7 +108,9 @@ impl SessionService {
                 session_id: session_id.to_string(),
             });
         }
-        self.room_environments.complete_stop(session_id)
+        self.mutate_room_environment(session_id, |environments| {
+            environments.complete_stop(session_id)
+        })
     }
 
     pub(crate) fn retry_room_environment(
@@ -115,7 +122,7 @@ impl SessionService {
                 session_id: session_id.to_string(),
             });
         }
-        self.room_environments.retry(session_id)
+        self.mutate_room_environment(session_id, |environments| environments.retry(session_id))
     }
 
     pub(crate) fn transition_room_environment(
@@ -128,7 +135,9 @@ impl SessionService {
                 session_id: session_id.to_string(),
             });
         }
-        self.room_environments.transition(session_id, lifecycle)
+        self.mutate_room_environment(session_id, |environments| {
+            environments.transition(session_id, lifecycle)
+        })
     }
 
     pub(crate) fn update_room_environment_component_health(
@@ -143,12 +152,9 @@ impl SessionService {
                 session_id: session_id.to_string(),
             });
         }
-        self.room_environments.update_component_health(
-            session_id,
-            component,
-            state,
-            diagnostic_code,
-        )
+        self.mutate_room_environment(session_id, |environments| {
+            environments.update_component_health(session_id, component, state, diagnostic_code)
+        })
     }
 
     pub(crate) fn update_room_environment_viewport_as_actor(
@@ -163,12 +169,9 @@ impl SessionService {
                 session_id: session_id.to_string(),
             });
         }
-        self.room_environments.update_viewport_as_actor(
-            session_id,
-            actor,
-            expected_revision,
-            viewport,
-        )
+        self.mutate_room_environment(session_id, |environments| {
+            environments.update_viewport_as_actor(session_id, actor, expected_revision, viewport)
+        })
     }
 
     pub(crate) fn update_room_environment_pointer_as_actor(
@@ -184,13 +187,15 @@ impl SessionService {
                 session_id: session_id.to_string(),
             });
         }
-        self.room_environments.update_pointer_as_actor(
-            session_id,
-            actor,
-            runtime_generation,
-            viewport_revision,
-            position,
-        )
+        self.mutate_room_environment(session_id, |environments| {
+            environments.update_pointer_as_actor(
+                session_id,
+                actor,
+                runtime_generation,
+                viewport_revision,
+                position,
+            )
+        })
     }
 
     pub(crate) fn reconcile_room_environment_actors(
@@ -203,7 +208,9 @@ impl SessionService {
                 session_id: session_id.to_string(),
             });
         }
-        self.room_environments.reconcile_actors(session_id, actors)
+        self.mutate_room_environment(session_id, |environments| {
+            environments.reconcile_actors(session_id, actors)
+        })
     }
 
     pub(crate) fn reconcile_room_environment_controller_tabs(
@@ -217,11 +224,9 @@ impl SessionService {
                 session_id: session_id.to_string(),
             });
         }
-        self.room_environments.reconcile_controller_tabs(
-            session_id,
-            tabs,
-            focused_runtime_target_id,
-        )
+        self.mutate_room_environment(session_id, |environments| {
+            environments.reconcile_controller_tabs(session_id, tabs, focused_runtime_target_id)
+        })
     }
 
     pub(crate) fn room_environment_controller_tab_binding(
@@ -265,13 +270,15 @@ impl SessionService {
                 session_id: session_id.to_string(),
             });
         }
-        self.room_environments.register_element_references(
-            session_id,
-            tab_id,
-            runtime_generation,
-            document_revision,
-            controller_node_refs,
-        )
+        self.mutate_room_environment(session_id, |environments| {
+            environments.register_element_references(
+                session_id,
+                tab_id,
+                runtime_generation,
+                document_revision,
+                controller_node_refs,
+            )
+        })
     }
 
     pub(crate) fn resolve_room_environment_element_reference(
@@ -298,7 +305,9 @@ impl SessionService {
                 session_id: session_id.to_string(),
             });
         }
-        self.room_environments.submit_action(session_id, request)
+        self.mutate_room_environment(session_id, |environments| {
+            environments.submit_action(session_id, request)
+        })
     }
 
     pub(crate) fn existing_room_environment_action(
@@ -325,8 +334,9 @@ impl SessionService {
                 session_id: session_id.to_string(),
             });
         }
-        self.room_environments
-            .finish_action(session_id, action_id, terminal)
+        self.mutate_room_environment(session_id, |environments| {
+            environments.finish_action(session_id, action_id, terminal)
+        })
     }
 
     pub(crate) fn begin_room_environment_browser_controller_recovery(
@@ -338,8 +348,9 @@ impl SessionService {
                 session_id: session_id.to_string(),
             });
         }
-        self.room_environments
-            .begin_browser_controller_recovery(session_id)
+        self.mutate_room_environment(session_id, |environments| {
+            environments.begin_browser_controller_recovery(session_id)
+        })
     }
 
     pub(crate) fn complete_room_environment_browser_controller_recovery(
@@ -351,8 +362,9 @@ impl SessionService {
                 session_id: session_id.to_string(),
             });
         }
-        self.room_environments
-            .complete_browser_controller_recovery(session_id)
+        self.mutate_room_environment(session_id, |environments| {
+            environments.complete_browser_controller_recovery(session_id)
+        })
     }
 
     pub(crate) fn request_room_environment_takeover_as_actor(
@@ -366,8 +378,9 @@ impl SessionService {
                 session_id: session_id.to_string(),
             });
         }
-        self.room_environments
-            .request_takeover_as_actor(session_id, actor, target)
+        self.mutate_room_environment(session_id, |environments| {
+            environments.request_takeover_as_actor(session_id, actor, target)
+        })
     }
 
     pub(crate) fn release_room_environment_input(
@@ -381,8 +394,9 @@ impl SessionService {
                 session_id: session_id.to_string(),
             });
         }
-        self.room_environments
-            .release_input(session_id, actor_id, target)
+        self.mutate_room_environment(session_id, |environments| {
+            environments.release_input(session_id, actor_id, target)
+        })
     }
 
     pub(crate) fn cancel_room_environment_action_as_actor(
@@ -396,7 +410,8 @@ impl SessionService {
                 session_id: session_id.to_string(),
             });
         }
-        self.room_environments
-            .cancel_action_as_actor(session_id, actor, action_id)
+        self.mutate_room_environment(session_id, |environments| {
+            environments.cancel_action_as_actor(session_id, actor, action_id)
+        })
     }
 }

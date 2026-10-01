@@ -331,6 +331,7 @@ impl DaemonApp {
         self.restore_local_kernel_external_provider_attachments();
         self.reconcile_restored_slice_agent_attachments()?;
         self.reconcile_restored_runtime_state_after_restart()?;
+        self.sessions.write().restore_room_environments()?;
         crate::logging::info_with_fields(
             "durable_state.restore",
             "restored durable kernel state",

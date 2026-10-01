@@ -236,7 +236,7 @@ impl KernelRuntimeState {
                 session_id,
                 EnvironmentComponent::BrowserController,
                 EnvironmentComponentHealthState::Ready,
-                None,
+                Some("controller_recovered"),
             )
             .map_err(|error| environment_runtime_error("browser_controller.recover", error))?;
             self.update_room_environment_component_health(

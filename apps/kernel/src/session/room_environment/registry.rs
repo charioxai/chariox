@@ -13,6 +13,15 @@ pub(crate) struct RoomEnvironmentRegistry {
 }
 
 impl RoomEnvironmentRegistry {
+    pub(crate) fn environment(&self, session_id: &str) -> Option<&RoomEnvironment> {
+        self.environments_by_session.get(session_id)
+    }
+
+    pub(crate) fn restore(&mut self, environment: RoomEnvironment) {
+        self.environments_by_session
+            .insert(environment.snapshot().session_id, environment);
+    }
+
     pub(crate) fn new() -> Self {
         Self::default()
     }

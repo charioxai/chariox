@@ -236,6 +236,7 @@ pub(crate) struct EnvironmentTabRuntimeBinding {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnvironmentError {
+    DurableStateUnavailable,
     BrowserImportRecoveryRequired,
     BrowserImportRecoveryStateUnavailable,
     InvalidViewport,
@@ -349,6 +350,7 @@ pub enum EnvironmentError {
 impl EnvironmentError {
     pub fn code(&self) -> &'static str {
         match self {
+            Self::DurableStateUnavailable => "environment_durable_state_unavailable",
             Self::BrowserImportRecoveryRequired => "environment_browser_import_recovery_required",
             Self::BrowserImportRecoveryStateUnavailable => {
                 "environment_browser_import_recovery_state_unavailable"

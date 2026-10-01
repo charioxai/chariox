@@ -1,5 +1,6 @@
 mod action;
 mod action_ledger;
+mod durability;
 mod elements;
 mod event;
 mod event_log;

@@ -17,6 +17,7 @@ use crate::error::DaemonError;
 
 pub(crate) mod browser_import;
 mod owner;
+pub(crate) mod room_environment;
 pub(crate) mod worker_prompt_receipts;
 pub(crate) mod worker_steer_receipts;
 pub(crate) mod workflow_runtime;
@@ -123,6 +124,7 @@ struct DurableWriteRequest {
 
 #[derive(Debug)]
 enum DurableWriteOperation {
+    RoomEnvironment(room_environment::RoomEnvironmentWrite),
     BrowserImport(browser_import::ImportStateWrite),
     Event {
         event_id: String,
@@ -1359,6 +1361,9 @@ fn commit_durable_write_batch(
     let mut failure = None;
     for request in &batch {
         let result = match &request.operation {
+            DurableWriteOperation::RoomEnvironment(write) => {
+                room_environment::apply(&transaction, write)
+            }
             DurableWriteOperation::BrowserImport(write) => {
                 browser_import::apply(&transaction, write)
             }
@@ -1650,6 +1655,13 @@ fn write_entity_checkpoint(
 }
 
 const DURABLE_STATE_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS durable_room_environments (
+    owner_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY (owner_id, session_id)
+);
+
 CREATE TABLE IF NOT EXISTS durable_browser_import (
     environment_id TEXT PRIMARY KEY,
     request_id TEXT NOT NULL,
