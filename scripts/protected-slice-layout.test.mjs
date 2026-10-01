@@ -41,6 +41,35 @@ test("known credential roots refuse while browser/workspace data stays supported
   assert.doesNotThrow(() => requireSupportedHomeEntries([".chariox/browser/chromium/Cookies", "Downloads/synthetic.txt"]))
 })
 
+test("protected GitHub config is a private environment path, never a captured home alias", async () => {
+  const {readFile, mkdtemp, mkdir, writeFile, rm, lstat} = await import("node:fs/promises")
+  const {spawnSync} = await import("node:child_process")
+  const root = await mkdtemp(join(process.env.HOME, ".chariox-github-capture-test-"))
+  try {
+    const home = join(root, "home"), privateHome = join(root, "private"), bin = join(root, "bin")
+    for (const path of [home, privateHome, bin]) await mkdir(path, {mode: 0o700})
+    await writeFile(join(bin, "gh"), '#!/bin/sh\nmkdir -p "$GH_CONFIG_DIR"\nprintf synthetic-auth-marker > "$GH_CONFIG_DIR/hosts.yml"\n', {mode: 0o700})
+    const source = await readFile(new URL("../apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh", import.meta.url), "utf8")
+    const body = source.split("import_github_auth() {")[1].split("remove_github_auth() {")[0]
+    const command = body.slice(body.indexOf('  run_with_file_stdin_timeout 90'), body.indexOf('  rm -f "$token_tmp"', body.indexOf('  run_with_file_stdin_timeout 90')))
+      .replaceAll("/home/slice", home)
+    const wrapper = `run_with_file_stdin_timeout() { local command="\${@: -1}"; PATH="$SYNTHETIC_BIN:/usr/bin:/bin" bash -c "$command"; }\n${command}`
+    const result = spawnSync("bash", ["-c", wrapper], {encoding:"utf8", env:{...process.env, SYNTHETIC_BIN:bin,
+      SLICE_PRIVATE_HOST_ROOT:privateHome, SLICE_PROVIDER_HOME:privateHome, SLICE_NAME:"synthetic", SLICE_GITHUB_HOST:"synthetic.invalid", GH_CONFIG_DIR:join(privateHome,".config/gh"), token_tmp:"unused-synthetic"}})
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal((await lstat(join(privateHome,".config/gh/hosts.yml"))).isFile(),true)
+    await assert.rejects(lstat(join(home,".config/gh")), {code:"ENOENT"})
+    assert.doesNotThrow(() => requireSupportedHomeEntries([".config", ".gitconfig"]))
+    assert.equal(PRIVATE_ENVIRONMENT.GH_CONFIG_DIR, `${PRIVATE_ROOT}/provider-home/.config/gh`)
+    assert.deepEqual(verify(fixture()), {privateHostRoot:"/protected/synthetic",homeVolume:"synthetic-home"})
+    const archive = spawnSync("tar", ["-cf", "-", "-C", home, "."])
+    assert.equal(archive.status,0,archive.stderr.toString())
+    assert.equal(archive.stdout.includes(Buffer.from("synthetic-auth-marker")),false)
+    const checked = spawnSync("python3", [new URL("../apps/kernel/slice-linux-docker/validate-home-archive.py", import.meta.url).pathname], {input:archive.stdout,encoding:"utf8"})
+    assert.equal(checked.status,0,checked.stderr)
+  } finally { await rm(root,{recursive:true}) }
+})
+
 import { mkdtempSync, rmSync, symlinkSync } from "node:fs"
 import { join } from "node:path"
 import { preparePrivateHostRoot } from "../apps/kernel/slice-linux-docker/protected-host-root.mjs"
@@ -214,6 +243,33 @@ test("fresh controller binds exact image/mount receipt and refuses missing same-
     assert.equal(existsSync(identity), false, "missing identity must not be generated")
     assert.equal(existsSync(privateRoot), true, "retained private root must remain")
   } finally { rmSync(parent, {recursive: true}) }
+})
+
+test("provider auth layout retains legacy paths and refuses unreceipted private mounts", () => {
+  const root = mkdtempSync(join(process.env.HOME, ".chariox-provider-layout-test-"))
+  try {
+    const container = "chariox-slice-synthetic-auth"
+    let info = {Id:"synthetic", Mounts:[], Config:{Env:[]}}
+    const docker = args => args[0] === "ps" ? {status:0,stdout:`${container}\n`} : {status:0,stdout:JSON.stringify([info])}
+    const controller = createManagedLayoutController({root,sourceDigest:`sha256:${"b".repeat(64)}`,docker,dataOwner:process.getuid()})
+    assert.equal(controller.providerAuthProtected(container),false)
+    info.Mounts.push({Destination:PRIVATE_ROOT})
+    assert.throws(() => controller.providerAuthProtected(container))
+    info = {Id:"synthetic",Mounts:[],Config:{Env:[`CHARIOX_SLICE_PRIVATE_ROOT=${PRIVATE_ROOT}`]}}
+    assert.throws(() => controller.providerAuthProtected(container))
+    info = null
+    assert.throws(() => controller.providerAuthProtected(container))
+  } finally { rmSync(root,{recursive:true}) }
+})
+
+test("provider auth layout broker request requires the exact owned-container contract", () => {
+  const path = new URL("../apps/kernel/slice-linux-docker/managed-docker-broker.mjs",import.meta.url).pathname
+  const valid = {kind:"provider_auth_layout",container:"chariox-slice-synthetic-auth"}
+  const check = request => spawnSync(process.execPath,[path,"--validate-request"],{input:JSON.stringify(request),encoding:"utf8"})
+  assert.equal(check(valid).status,0)
+  for (const request of [{...valid,container:"foreign"},{...valid,path:"/private"},{...valid,container:"chariox-helper"}]) {
+    assert.notEqual(check(request).status,0)
+  }
 })
 
 import { retainFreshIdentity } from "../apps/kernel/slice-linux-docker/protected-identity-retention.mjs"

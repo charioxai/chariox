@@ -115,6 +115,8 @@ export function isVerifiedHostAncestor(path, metadata) {
   const receipt = readNamespaceEntry()
   const anchor = receipt.ancestors.find(record => record.path === path)
   return anchor?.hostUid === 0 && metadata.uid === 65534
+    && String(metadata.dev) === anchor.dev && String(metadata.ino) === anchor.ino
+    && (metadata.mode & 0o777) === anchor.mode
 }
 if (process.argv[1]?.endsWith("/protected-namespace-entry.mjs")) {
   try { if (process.argv[2] !== "--prepare") refuse(); prepareNamespaceEntry(process.argv[3]) }

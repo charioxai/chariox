@@ -904,6 +904,7 @@ ensure_container() {
         -e "HOME=/home/slice"
         -e "CHARIOX_HOME=$SLICE_KERNEL_HOME"
         -e "CHARIOX_MANAGED_PROVIDER_HOME=$SLICE_PROVIDER_HOME"
+        -e "GH_CONFIG_DIR=$SLICE_PROVIDER_HOME/.config/gh"
         -e "CHARIOX_SLICE_PRIVATE_ROOT=$SLICE_PRIVATE_ROOT"
         -v "$SLICE_PRIVATE_HOST_ROOT:$SLICE_PRIVATE_ROOT"
         -v "$SLICE_PRIVATE_HOST_ROOT/nssdb:/home/slice/.local/share/pki/nssdb"
@@ -1405,7 +1406,7 @@ import_github_auth() {
     install -d -m 0700 \"\$HOME/.config/gh\" '/home/slice/.config'
     gh auth login --hostname '$SLICE_GITHUB_HOST' --git-protocol https --with-token >/dev/null
     gh auth setup-git --hostname '$SLICE_GITHUB_HOST' >/dev/null
-    if [[ ! -e '/home/slice/.config/gh' ]]; then
+    if [[ -z '$SLICE_PRIVATE_HOST_ROOT' && ! -e '/home/slice/.config/gh' ]]; then
       ln -s \"$SLICE_PROVIDER_HOME/.config/gh\" '/home/slice/.config/gh'
     fi
     if ! HOME='/home/slice' git config --global --get-all include.path 2>/dev/null \
@@ -1476,7 +1477,7 @@ provider_login_command() {
       printf '%s\n' "CLAUDE_CONFIG_DIR='$SLICE_ACCOUNT_ROOT/claude/$SLICE_ACCOUNT_PROFILE/claude' claude auth login"
       ;;
     github)
-      printf '%s\n' "export HOME='$SLICE_PROVIDER_HOME' && install -d -m 0700 \"\$HOME/.config/gh\" '/home/slice/.config' && gh auth login --hostname '$SLICE_GITHUB_HOST' --git-protocol https --web && gh auth setup-git --hostname '$SLICE_GITHUB_HOST' && { [[ -e '/home/slice/.config/gh' ]] || ln -s '$SLICE_PROVIDER_HOME/.config/gh' '/home/slice/.config/gh'; } && { HOME='/home/slice' git config --global --get-all include.path 2>/dev/null | grep -Fxq '$SLICE_PROVIDER_HOME/.gitconfig' || HOME='/home/slice' git config --global --add include.path '$SLICE_PROVIDER_HOME/.gitconfig'; }"
+      printf '%s\n' "export HOME='$SLICE_PROVIDER_HOME' && install -d -m 0700 \"\$HOME/.config/gh\" '/home/slice/.config' && gh auth login --hostname '$SLICE_GITHUB_HOST' --git-protocol https --web && gh auth setup-git --hostname '$SLICE_GITHUB_HOST' && { [[ -n '$SLICE_PRIVATE_HOST_ROOT' || -e '/home/slice/.config/gh' ]] || ln -s '$SLICE_PROVIDER_HOME/.config/gh' '/home/slice/.config/gh'; } && { HOME='/home/slice' git config --global --get-all include.path 2>/dev/null | grep -Fxq '$SLICE_PROVIDER_HOME/.gitconfig' || HOME='/home/slice' git config --global --add include.path '$SLICE_PROVIDER_HOME/.gitconfig'; }"
       ;;
     *)
       fail "unsupported slice provider login: $SLICE_LOGIN_PROVIDER"

@@ -246,6 +246,14 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
                 || record.homeSource.startsWith(`${mount.Source}/`)))))) refuse()
       }
     },
+    providerAuthProtected(container) {
+      const record = receipt(container)
+      if (record) { this.preflight(container); return true }
+      const info = containerInfo(container)
+      if (!info || info.Mounts?.some(mount => mount.Destination === PRIVATE_ROOT)
+          || info.Config?.Env?.some(value => value.startsWith("CHARIOX_SLICE_PRIVATE_ROOT="))) refuse()
+      return false
+    },
     preflight(container) {
       const record = receipt(container)
       if (!record) refuse()

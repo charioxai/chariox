@@ -2,6 +2,30 @@ use super::*;
 use crate::slice::{CreateSliceInput, SliceOperationStatus, SliceStore};
 
 #[test]
+fn provider_auth_inspection_paths_follow_verified_layout_and_account() {
+    let account = LocalDockerProviderAccount {
+        owner_path_component: "owner-synthetic".to_string(),
+        profile_id: "profile-synthetic".to_string(),
+        environment: Default::default(),
+    };
+    assert_eq!(provider_auth_paths(Some(&account),true),
+        ("/var/lib/chariox/slice-private/provider-accounts/owner-synthetic/codex/profile-synthetic/codex/auth.json".to_string(),
+         "/var/lib/chariox/slice-private/provider-accounts/owner-synthetic/opencode/profile-synthetic/data/opencode/auth.json".to_string()));
+    assert_eq!(
+        provider_auth_paths(None, true).0,
+        "/var/lib/chariox/slice-private/provider-accounts/local-user/codex/default/codex/auth.json"
+    );
+    assert_eq!(provider_auth_paths(Some(&account),false).0,"/home/slice/.chariox/daemon/provider-accounts/owner-synthetic/codex/profile-synthetic/codex/auth.json");
+    assert_eq!(
+        provider_auth_paths(None, false),
+        (
+            "/home/slice/.codex/auth.json".to_string(),
+            "/home/slice/.local/share/opencode/auth.json".to_string()
+        )
+    );
+}
+
+#[test]
 fn selected_broker_credential_replaces_default_and_missing_selection_clears_it() {
     let mut inputs = vec![broker::ProvisionerInput {
         environment: "CHARIOX_SLICE_CODEX_AUTH",
@@ -119,6 +143,8 @@ fn github_auth_import_is_shared_by_the_agent_and_slice_user() {
     assert!(
         import.contains("ln -s \\\"$SLICE_PROVIDER_HOME/.config/gh\\\" '/home/slice/.config/gh'")
     );
+    assert!(import.contains("-z '$SLICE_PRIVATE_HOST_ROOT' && ! -e '/home/slice/.config/gh'"));
+    assert!(provisioner.contains("GH_CONFIG_DIR=$SLICE_PROVIDER_HOME/.config/gh"));
 }
 
 pub(super) fn test_record() -> SliceRecord {
