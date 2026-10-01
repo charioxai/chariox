@@ -2382,3 +2382,75 @@ fn persisted_daemon_relay_url_maps_container_loopback_to_private_host_endpoint()
 
     assert_eq!(endpoint, local_docker_private_relay_endpoint(&record));
 }
+
+#[cfg(unix)]
+#[test]
+fn release_kernel_finds_its_installed_slice_build_context_without_a_source_tree() {
+    use std::os::unix::fs::symlink;
+
+    let root = test_root("release-slice-build-context");
+    let prefix = root.join("chariox-0.2.0-linux-x64");
+    let kernel = prefix.join("bin/chariox-kernel");
+    let link = root.join("local-bin/chariox-kernel");
+    let system = root.join("usr/lib/chariox/slice-build-context");
+    std::fs::create_dir_all(prefix.join("bin")).expect("bundle bin should create");
+    std::fs::create_dir_all(root.join("local-bin")).expect("link directory should create");
+    std::fs::write(&kernel, "").expect("kernel should write");
+    symlink(&kernel, &link).expect("kernel link should create");
+    let provisioner = "apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh";
+    let bundled = std::fs::canonicalize(&prefix)
+        .expect("prefix should canonicalize")
+        .join("share/chariox/slice-build-context")
+        .join(provisioner);
+    let system_wide = system.join(provisioner);
+    let install = |script: &Path| {
+        std::fs::create_dir_all(script.parent().expect("provisioner has a parent"))
+            .expect("context should create");
+        std::fs::write(script, "").expect("provisioner should write");
+    };
+
+    // The system-wide context is the one the managed broker path already uses.
+    assert_eq!(
+        Path::new(SYSTEM_SLICE_BUILD_CONTEXT).join(SLICE_DOCKER_PROVISIONER),
+        Path::new(MANAGED_SLICE_DOCKER_PROVISIONER)
+    );
+
+    // With no installed context, the error names both places and the override,
+    // and never falls back to the source tree the kernel was built from.
+    let error = installed_slice_script(Some(&kernel), &system)
+        .expect_err("a release kernel without a context should refuse")
+        .to_string();
+    assert!(error.contains(&bundled.display().to_string()), "{error}");
+    assert!(
+        error.contains(&system_wide.display().to_string()),
+        "{error}"
+    );
+    assert!(
+        error.contains("CHARIOX_SLICE_DOCKER_PROVISIONER"),
+        "{error}"
+    );
+    assert!(!error.contains(env!("CARGO_MANIFEST_DIR")), "{error}");
+
+    // The system-wide context serves a kernel installed without its own.
+    install(&system_wide);
+    assert_eq!(
+        installed_slice_script(Some(&kernel), &system).expect("system context"),
+        system_wide
+    );
+    assert_eq!(
+        installed_slice_script(None, &system).expect("system context"),
+        system_wide
+    );
+
+    // The bundle's own context comes first, also through a link to the kernel.
+    install(&bundled);
+    assert_eq!(
+        installed_slice_script(Some(&kernel), &system).expect("bundled context"),
+        bundled
+    );
+    assert_eq!(
+        installed_slice_script(Some(&link), &system).expect("bundled context"),
+        bundled
+    );
+    std::fs::remove_dir_all(root).expect("fixture root should remove");
+}
