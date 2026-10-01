@@ -4,15 +4,17 @@ import { TextareaRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { RuntimeInteraction, RuntimeSession } from "./cli-types.js"
 import { createFocusedInteractionChoiceController } from "./focused-interaction-choice-controller.js"
+import { routeInteractionPastes } from "./interaction-paste-routing.js"
 
 // The prompt textarea routes its key presses to the focused interaction (its
-// onKeyDown), and pastes reach the interaction through the renderer's global
-// paste listener (usePaste), as in cli-input-routing-composition.ts. These
-// run OpenTUI's own terminal parser over the bytes a terminal sends.
+// onKeyDown), and pastes reach the interaction through routeInteractionPastes,
+// as in cli-input-routing-composition.ts. These run OpenTUI's own terminal
+// parser over the bytes a terminal sends.
 for (const kittyKeyboard of [false, true]) {
   test(`a vault passphrase typed and pasted in the TUI keeps its case (kitty keyboard ${kittyKeyboard})`, async () => {
     const harness = await createTestRenderer({ width: 80, height: 8, useThread: false, kittyKeyboard })
     const replies = new Map<string, string>()
+    const flashes: string[] = []
     const editing = new Set<string>(["vault-unlock"])
     const answers: Array<string | null> = []
     const controller = createFocusedInteractionChoiceController({
@@ -33,16 +35,15 @@ for (const kittyKeyboard of [false, true]) {
         return session
       },
       applySessionState: () => {},
-      flashFooter: () => {},
+      flashFooter: (message) => { flashes.push(message) },
     })
     const prompt = new TextareaRenderable(harness.renderer, {
       width: 40,
       height: 1,
       onKeyDown: (key) => { controller.handleKey(key) },
     })
-    const paste = (event: Parameters<typeof controller.handlePaste>[0]) => { controller.handlePaste(event) }
     harness.renderer.root.add(prompt)
-    harness.renderer.keyInput.on("paste", paste)
+    const stopPastes = routeInteractionPastes(harness.renderer.keyInput, controller.handlePaste, () => false)
     const send = (bytes: string) => { harness.renderer.stdin.emit("data", Buffer.from(bytes)) }
     try {
       prompt.focus()
@@ -60,6 +61,9 @@ for (const kittyKeyboard of [false, true]) {
       }
       send("\u{1D11E}")
       await harness.mockInput.pasteBracketedText("Pa$te Ünï\n")
+      // OpenTUI strips ANSI codes from a paste; the raw paste is refused.
+      await harness.mockInput.pasteBracketedText("Ab\u001b[31mCd")
+      assert.equal(flashes.length, 1)
 
       assert.equal(prompt.plainText, "", "no secret text reaches the prompt")
       assert.equal(replies.get("vault-unlock"), "Co!@ é\u{1D11E}Pa$te Ünï")
@@ -69,7 +73,7 @@ for (const kittyKeyboard of [false, true]) {
       assert.deepEqual(answers, ["Co!@ é\u{1D11E}Pa$te Ünï"])
       assert.equal(prompt.plainText, "")
     } finally {
-      harness.renderer.keyInput.off("paste", paste)
+      stopPastes()
       harness.renderer.destroy()
     }
   })

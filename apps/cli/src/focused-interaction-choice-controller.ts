@@ -24,6 +24,8 @@ export type FocusedInteractionChoiceKeyEvent = {
 
 export type FocusedInteractionChoicePasteEvent = {
   text: string
+  /** The paste as the terminal sent it, before OpenTUI strips ANSI codes. */
+  rawText?: string | null
   defaultPrevented?: boolean
   preventDefault?: () => void
   stopPropagation?: () => void
@@ -212,7 +214,7 @@ export function createFocusedInteractionChoiceController(
     }
     event.preventDefault?.()
     event.stopPropagation?.()
-    const text = interactionCustomReplyPasteText(event.text)
+    const text = interactionCustomReplyPasteText(event.rawText ?? event.text)
     if (text === null) {
       deps.flashFooter("paste not added: a reply is one line without control characters", "error")
       return true

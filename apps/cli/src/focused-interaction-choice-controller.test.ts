@@ -177,6 +177,18 @@ test("focused interaction paste refuses multi-line text without passing it on", 
   assert.equal(harness.footerMessages().at(-1)?.tone, "error")
 })
 
+test("focused interaction paste refuses a paste whose raw text held ANSI codes", () => {
+  const harness = createHarness({ interaction: interactionFixture({ customInputKind: "secret", maxLength: 64 }) })
+  harness.selectedIndexes.set("interaction-1", 2)
+  harness.customEditing.add("interaction-1")
+
+  // OpenTUI strips the escape sequence from `text`; the raw paste keeps it.
+  assert.equal(harness.controller.handlePaste({ text: "AbCd", rawText: "Ab\u001b[31mCd" }), true)
+
+  assert.equal(harness.customReplies.has("interaction-1"), false)
+  assert.equal(harness.footerMessages().at(-1)?.tone, "error")
+})
+
 test("focused interaction paste leaves other pastes to the prompt", () => {
   const harness = createHarness()
   assert.equal(harness.controller.handlePaste({ text: "prompt text" }), false)
