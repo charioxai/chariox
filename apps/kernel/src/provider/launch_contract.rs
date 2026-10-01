@@ -673,6 +673,18 @@ impl LaunchProviderRequest {
         self
     }
 
+    /// Marks a launch that reruns one failed turn on a substitute. The agent's
+    /// saved provider sessions belong to its configured profile, so the
+    /// substitute starts a new session (`Some(empty)` suppresses them during
+    /// launch preparation) and receives the conversation as a context handoff.
+    pub(crate) fn with_turn_substitute(mut self, turn_substitute: Option<TurnSubstitute>) -> Self {
+        if turn_substitute.is_some() {
+            self.resume_state = Some(ProviderResumeState::default());
+        }
+        self.turn_substitute = turn_substitute;
+        self
+    }
+
     pub fn with_working_directory(mut self, working_directory: PathBuf) -> Self {
         self.working_directory = Some(working_directory);
         self

@@ -44,6 +44,8 @@ Each rerun records a notice: `This turn runs on claude-opus-5-5 because gpt-6.1-
 
 The substitute's provider run serves only that turn. It is retired when the turn completes, and any later turn that would reuse it moves to a fresh run of the agent's configured profile. The substitute run never writes its profile or resume state into the agent.
 
+The substitute always starts a new provider session; it never resumes the agent's saved sessions, which belong to the configured profile. For a conversational turn, the substitute receives the conversation as a context handoff, and once it completes the turn, the configured profile's next turn (submitted or queued) receives a bounded handoff with the substitute's answer. This holds even when the substitute differs from the primary only in account or effort. Workflow turns carry their own context and get no handoff.
+
 There are no retries, backoff, parked states or automatic return-to-primary state in the kernel: the next turn simply starts on the primary.
 
 Not covered: remote (leased) agents, provider-native TUI turns, and failures before a turn reaches its provider (a prompt dispatch or provider launch that fails).

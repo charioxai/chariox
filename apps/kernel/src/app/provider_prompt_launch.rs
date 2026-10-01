@@ -65,7 +65,7 @@ impl DaemonApp {
         if let Some(worktree_id) = agent.worktree_id() {
             request = request.with_working_directory(PathBuf::from(worktree_id));
         }
-        request.turn_substitute = turn_substitute;
+        request = request.with_turn_substitute(turn_substitute);
         let provider_run = self.launch_provider_detached(request)?;
         Ok(provider_run.id().to_string())
     }

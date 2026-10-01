@@ -89,9 +89,12 @@ impl KernelRuntimeState {
                         if let Ok(substitute_run) =
                             self.owned.provider_store.get_run(&provider_run_id)
                         {
-                            self.owned.prepare_provider_switch_context_handoff(
+                            self.owned.prepare_turn_substitute_context_handoff(
                                 failed_run,
-                                &substitute_run,
+                                Some(substitute_run.id()),
+                                substitute_run.provider(),
+                                substitute_run.account_profile(),
+                                Some(substitute_run.model()),
                             );
                         }
                     }
@@ -194,8 +197,9 @@ impl KernelRuntimeOwnedState {
         } else {
             agent.provider_account_profile().to_string()
         };
-        self.prepare_agent_profile_context_handoff(
+        self.prepare_turn_substitute_context_handoff(
             substitute_run,
+            None,
             agent.provider(),
             &account,
             agent.model(),

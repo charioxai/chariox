@@ -240,6 +240,5 @@ fn workflow_provider_request(
     {
         request = request.with_working_directory(working_directory);
     }
-    request.turn_substitute = turn_substitute;
-    Ok(request)
+    Ok(request.with_turn_substitute(turn_substitute))
 }

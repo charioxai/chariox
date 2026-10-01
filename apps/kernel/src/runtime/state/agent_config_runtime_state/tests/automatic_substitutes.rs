@@ -652,16 +652,16 @@ async fn a_turn_queued_behind_a_substitute_turn_starts_on_the_primary() {
     );
 }
 
-#[tokio::test]
-async fn the_substitute_and_the_next_primary_turn_see_the_conversation() {
-    let turn = failing_turn(&[("dev-stub", SUBSTITUTE_A, None)]).await;
+/// The substitute receives the conversation it never saw, and the primary's
+/// next turn receives the substitute's answer.
+async fn assert_conversation_crosses_the_substitute(turn: &FailingTurn, substitute_model: &str) {
     turn.record_history(None, "Which file holds the parser?");
     turn.record_history(Some(&turn.failed_run_id), "The parser lives in parse.rs.");
     turn.record_history(None, "review this change");
 
     turn.fail_run(&turn.failed_run_id, SERVER_OVERLOADED).await;
 
-    let substitute = turn.assert_rerun_on(0, SUBSTITUTE_A);
+    let substitute = turn.assert_rerun_on(0, substitute_model);
     assert!(
         turn.provider_inputs(&substitute)
             .contains("The parser lives in parse.rs."),
@@ -689,6 +689,7 @@ async fn the_substitute_and_the_next_primary_turn_see_the_conversation() {
         .get_run(&next_run)
         .unwrap();
     assert_eq!(next_run.model(), PRIMARY_MODEL);
+    assert!(next_run.turn_substitute().is_none());
 
     let next_prompt = turn.runtime.owned.prompt_with_pending_context_handoff(
         &turn.session_id,
@@ -700,6 +701,74 @@ async fn the_substitute_and_the_next_primary_turn_see_the_conversation() {
     assert!(
         next_prompt.contains("Proposed fix: rename parse_all to parse."),
         "the primary's next turn carries the substitute's answer: {next_prompt}"
+    );
+}
+
+#[tokio::test]
+async fn the_substitute_and_the_next_primary_turn_see_the_conversation() {
+    let turn = failing_turn(&[("dev-stub", SUBSTITUTE_A, None)]).await;
+    assert_conversation_crosses_the_substitute(&turn, SUBSTITUTE_A).await;
+}
+
+#[tokio::test]
+async fn a_substitute_differing_only_in_effort_still_hands_the_conversation_over() {
+    let turn = failing_turn(&[]).await;
+    turn.runtime
+        .owned
+        .agent_store
+        .add_agent_substitute(
+            &turn.agent_id,
+            crate::agent::AgentSubstituteProfile::new(
+                "dev-stub",
+                PRIMARY_MODEL,
+                Some("low".to_string()),
+            ),
+        )
+        .expect("configured substitute");
+    assert_conversation_crosses_the_substitute(&turn, PRIMARY_MODEL).await;
+}
+
+#[tokio::test]
+async fn a_substitute_on_another_account_never_resumes_the_primary_session() {
+    let turn = failing_turn(&[("dev-stub", PRIMARY_MODEL, Some("backup-account"))]).await;
+    let primary_session =
+        crate::provider::ProviderResumeState::from_codex_thread_id("primary-thread");
+    turn.runtime
+        .owned
+        .agent_store
+        .set_agent_runtime_profile_with_account_profile(
+            &turn.agent_id,
+            "dev-stub",
+            Some(PRIMARY_MODEL.to_string()),
+            None,
+            None,
+            primary_session.clone(),
+        )
+        .unwrap();
+
+    turn.fail_run(&turn.failed_run_id, SERVER_OVERLOADED).await;
+
+    let substitute = turn.assert_rerun_on(0, PRIMARY_MODEL);
+    let substitute = turn
+        .runtime
+        .owned
+        .provider_store
+        .get_run(&substitute)
+        .unwrap();
+    assert_eq!(substitute.account_profile(), "backup-account");
+    assert!(
+        substitute.resume_state().is_empty(),
+        "the substitute starts its own provider session"
+    );
+    assert_eq!(
+        turn.runtime
+            .owned
+            .agent_store
+            .get_agent(&turn.agent_id)
+            .unwrap()
+            .provider_resume_state(),
+        &primary_session,
+        "the configured profile keeps its session"
     );
 }
 
