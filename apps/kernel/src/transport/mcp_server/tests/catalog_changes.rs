@@ -205,3 +205,81 @@ async fn mcp_catalog_post_notifies_before_result_and_negotiates_supported_versio
     );
     assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 371);
 }
+
+// MP-08/MP-10: fallback discovery does not depend on a provider GET stream.
+#[tokio::test]
+async fn mcp_catalog_monitor_tracks_changes_without_get_stream() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-extfix-monitor-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let _cleanup = Scratch(root.clone());
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            root.to_string_lossy(),
+            root.to_string_lossy(),
+        ))
+        .unwrap();
+    app.launch_provider(
+        crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "dev-stub",
+            "dev-stub",
+            "default",
+            "default",
+        )
+        .with_agent_id(agent.id()),
+    )
+    .unwrap();
+    let agents = app.agents().clone();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 8);
+    let mut monitor = super::super::catalog::CatalogMonitor::new(&router);
+    let environment = crate::script::CharioxEnvironmentConfig {
+        name: "extfix_python".into(),
+        runtime: crate::script::CharioxEnvironmentRuntime::Python {
+            python: "/usr/bin/python3".into(),
+        },
+    };
+    let registry = crate::script::CharioxScriptRegistry::new(vec![
+        crate::script::CharioxScriptRegistry::project_root(&root),
+    ]);
+    let source = root.join("fixture.py");
+    std::fs::write(&source, "def run() -> str:\n    \"\"\"Return a fixture result.\"\"\"\n    return 'ok'\n\ndef test_run():\n    \"\"\"Validate fixture.\"\"\"\n    assert run() == 'ok'\n").unwrap();
+    registry
+        .install(&source, Some("extfix_tool"), &environment)
+        .unwrap();
+    assert_eq!(monitor.refresh(&router), 0);
+    agents
+        .grant_extension(
+            agent.id(),
+            crate::extension::ExtensionGrant::script("extfix_tool", "extfix_python"),
+        )
+        .unwrap();
+    assert_eq!(
+        monitor.refresh(&router),
+        1,
+        "MP-08/MP-10 grant must be detected without GET"
+    );
+    assert_eq!(monitor.refresh(&router), 0);
+    registry.uninstall("extfix_tool").unwrap();
+    assert_eq!(
+        monitor.refresh(&router),
+        1,
+        "MP-08/MP-10 removal must be detected without GET"
+    );
+    registry
+        .install(&source, Some("extfix_tool"), &environment)
+        .unwrap();
+    assert_eq!(monitor.refresh(&router), 1);
+    agents
+        .revoke_extension(
+            agent.id(),
+            crate::extension::ExtensionKind::Script,
+            "extfix_tool",
+        )
+        .unwrap();
+    assert_eq!(monitor.refresh(&router), 1);
+}

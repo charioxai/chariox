@@ -9,6 +9,52 @@ use tokio::sync::{broadcast, mpsc};
 
 use super::*;
 
+pub(super) struct CatalogMonitor {
+    changes: broadcast::Receiver<()>,
+    catalogs: std::collections::BTreeMap<String, Value>,
+}
+
+impl CatalogMonitor {
+    pub(super) fn new(router: &CommandRouter) -> Self {
+        let mut monitor = Self {
+            changes: changes().subscribe(),
+            catalogs: Default::default(),
+        };
+        monitor.observe_running(router);
+        monitor
+    }
+
+    pub(super) async fn changed(&mut self) {
+        let _ = self.changes.recv().await; // lag also requires comparing current catalogs
+    }
+
+    pub(super) fn observe_running(&mut self, router: &CommandRouter) {
+        // Seed new runs before their first MCP request; do not erase a pending
+        // difference for existing runs when a concurrent HTTP connection arrives.
+        for token in router.runtime_tool_catalog_auth_tokens() {
+            self.catalogs
+                .entry(token.clone())
+                .or_insert_with(|| snapshot(router, &token));
+        }
+    }
+
+    pub(super) fn refresh(&mut self, router: &CommandRouter) -> usize {
+        let mut changed = 0;
+        let tokens = router.runtime_tool_catalog_auth_tokens();
+        self.catalogs.retain(|token, _| tokens.contains(token));
+        for token in tokens {
+            let next = snapshot(router, &token);
+            if let Some(previous) = self.catalogs.insert(token.clone(), next.clone()) {
+                if previous != next {
+                    router.runtime_tool_catalog_changed_for_auth_token(&token);
+                    changed += 1;
+                }
+            }
+        }
+        changed
+    }
+}
+
 fn changes() -> &'static broadcast::Sender<()> {
     static CHANGES: OnceLock<broadcast::Sender<()>> = OnceLock::new();
     CHANGES.get_or_init(|| broadcast::channel(64).0)
@@ -78,7 +124,6 @@ pub(super) fn stream_response(
                 break; // ended/replaced provider token loses its stream too
             }
             let bytes = if next != catalog {
-                router.runtime_tool_catalog_changed_for_auth_token(&token);
                 catalog = next;
                 Bytes::from(event(&notification()))
             } else if heartbeat_due {

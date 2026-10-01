@@ -42,14 +42,15 @@ pub(crate) async fn run_mcp_http_server_on_listener(
     router: Arc<CommandRouter>,
     listener: TcpListener,
 ) -> Result<(), DaemonError> {
+    let mut catalogs = catalog::CatalogMonitor::new(&router);
     loop {
-        let (stream, _) = listener
-            .accept()
-            .await
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "accept runtime mcp",
-                message: error.to_string(),
-            })?;
+        let (stream, _) = tokio::select! {
+            accepted = listener.accept() => accepted.map_err(|error| DaemonError::LocalTransport {
+                operation: "accept runtime mcp", message: error.to_string(),
+            })?,
+            _ = catalogs.changed() => { catalogs.refresh(&router); continue; }
+        };
+        catalogs.observe_running(&router);
         let router = Arc::clone(&router);
         tokio::spawn(async move {
             let io = TokioIo::new(stream);

@@ -1,6 +1,16 @@
 use super::*;
 
 impl KernelRuntimeState {
+    pub(crate) fn runtime_tool_catalog_auth_tokens(&self) -> Vec<String> {
+        self.owned
+            .provider_store
+            .list_runs()
+            .into_iter()
+            .filter(|run| run.state() != crate::provider::ProviderRunState::Ended)
+            .filter_map(|run| run.runtime_mcp_auth_token().map(str::to_string))
+            .collect()
+    }
+
     pub(crate) fn runtime_tool_catalog_changed_for_auth_token(&self, auth_token: &str) {
         for run in self
             .owned

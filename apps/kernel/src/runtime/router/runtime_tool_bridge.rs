@@ -2,6 +2,10 @@ use super::CommandRouter;
 use crate::error::DaemonError;
 
 impl CommandRouter {
+    pub(crate) fn runtime_tool_catalog_auth_tokens(&self) -> Vec<String> {
+        self.runtime_state.runtime_tool_catalog_auth_tokens()
+    }
+
     pub(crate) fn runtime_tool_catalog_changed_for_auth_token(&self, token: &str) {
         self.runtime_state
             .runtime_tool_catalog_changed_for_auth_token(token);

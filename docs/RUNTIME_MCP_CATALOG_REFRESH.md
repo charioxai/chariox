@@ -8,7 +8,9 @@ stream compares only its authenticated effective catalog (names, descriptions
 and schemas); unrelated or identical grants produce no notification. Changes
 emit `notifications/tools/list_changed`, without tool or agent data. A
 catalog-changing tool call also emits the notification before its result on its
-POST SSE stream. Slow connections have bounded queues; disconnect and token
+POST SSE stream. A server-owned catalog monitor also detects effective changes
+for running providers without a GET stream and schedules the same fallback.
+Slow connections have bounded queues; disconnect and token
 retirement close their stream ownership.
 
 OpenCode 1.18.23 refreshes definitions using its official notification handler:
