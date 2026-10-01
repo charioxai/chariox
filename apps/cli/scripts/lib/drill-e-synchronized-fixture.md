@@ -1,5 +1,9 @@
 # MP-08/MP-10 synchronized Drill E fixture
 
+Experimental harness: rooms5 release B validation remains RED. The shell
+barrier does not guarantee native MCP submission overlap. Do not use these
+source checks as Drill E acceptance evidence.
+
 The fixture and `runDrillEScenario({ synchronization })` coordinate three real
 Room agents through their normal kernel-managed provider harnesses. They change
 no kernel protocol, controller timeout, node bound, provider adapter, or input
@@ -64,3 +68,11 @@ submission. Read preflight reconciliation is a global controller barrier; an
 independent held action can delay later read admission. The fixture must record
 RED when the measured cohorts do not overlap. No guaranteed-overlap claim is
 supported by the readiness barrier alone.
+
+The final B run observed 107 ms of same-tab read overlap; independent work
+started after the first read ended. A click on the background fixture tab
+failed at `Input.dispatchMouseEvent` with `browser_cdp_timeout`, although its
+foreground warmup succeeded. The deeper Chromium/input cause is unproven.
+Neither queued-mutation takeover nor all four verifier checks passed. Continue
+with synchronization at actual native tool dispatch and investigate the
+background-tab input seam before claiming guaranteed overlap.
