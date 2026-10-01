@@ -156,7 +156,8 @@ OpenCode-specific structured adapter contract:
 
 - prompt submit maps to the provider session prompt operation
 - `/<provider> ...` command invoke maps to the provider session command operation
-- turn abort maps to the provider session abort operation
+- turn abort maps to the provider session abort operation and retains the provider session
+- after abort, unscoped session errors settle a follow-up immediately only with matching current-prompt assistant evidence; if the accepted current user has no assistant and remains observably idle for five seconds, the kernel closes the stalled turn with an uncorrelated-error diagnostic
 - provider lifecycle and output state are consumed from the provider event stream rather than inferred from PTY EOF or PTY idleness
 - later providers such as Claude Code and Codex should fit behind the same daemon/client contract after the OpenCode-first cycle is closed
 

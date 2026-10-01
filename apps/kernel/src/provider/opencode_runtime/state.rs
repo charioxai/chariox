@@ -51,6 +51,8 @@ pub(crate) struct OpenCodeRuntimeState {
     pub(super) active_user_message_id: Option<String>,
     active_prompt_submitted_at: Option<Instant>,
     pub(super) session_errors_require_prompt_match: bool,
+    unmatched_session_error: Option<String>,
+    unmatched_session_error_idle_since: Option<Instant>,
 }
 
 impl OpenCodeRuntimeState {
@@ -77,6 +79,8 @@ impl OpenCodeRuntimeState {
             active_user_message_id: None,
             active_prompt_submitted_at: None,
             session_errors_require_prompt_match: false,
+            unmatched_session_error: None,
+            unmatched_session_error_idle_since: None,
         }
     }
 
@@ -96,6 +100,30 @@ impl OpenCodeRuntimeState {
         self.active_user_message_id = Some(user_message_id);
         self.active_terminal_assistant_message_id = None;
         self.active_prompt_submitted_at = Some(Instant::now());
+        self.unmatched_session_error = None;
+        self.unmatched_session_error_idle_since = None;
+    }
+
+    pub(super) fn note_unmatched_session_error(&mut self, message: String) {
+        if self.active_user_message_id.is_some() {
+            self.unmatched_session_error = Some(message);
+        }
+    }
+
+    pub(super) fn unmatched_session_error_after_idle_grace(
+        &mut self,
+        current_user_without_assistant_is_idle: bool,
+        grace: Duration,
+    ) -> Option<String> {
+        if !current_user_without_assistant_is_idle {
+            self.unmatched_session_error_idle_since = None;
+            return None;
+        }
+        let message = self.unmatched_session_error.as_ref()?;
+        let idle_since = self
+            .unmatched_session_error_idle_since
+            .get_or_insert_with(Instant::now);
+        (idle_since.elapsed() >= grace).then(|| message.clone())
     }
 
     pub(super) fn active_prompt_has_elapsed(&self, duration: Duration) -> bool {
@@ -140,6 +168,8 @@ impl OpenCodeRuntimeState {
         self.active_user_message_id = None;
         self.active_terminal_assistant_message_id = None;
         self.active_prompt_submitted_at = None;
+        self.unmatched_session_error = None;
+        self.unmatched_session_error_idle_since = None;
         self.last_status = Some("idle".into());
         self.baseline_existing_messages(messages);
     }

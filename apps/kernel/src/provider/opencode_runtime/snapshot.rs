@@ -67,6 +67,24 @@ pub(super) fn opencode_messages_have_empty_active_assistant(
     })
 }
 
+pub(super) fn opencode_messages_have_active_user_without_assistant(
+    state: &OpenCodeRuntimeState,
+    messages: &[OpenCodeMessage],
+) -> bool {
+    let Some(active_user_message_id) = state.active_user_message_id.as_deref() else {
+        return false;
+    };
+    messages.iter().any(|message| {
+        message.info.session_id == state.session_id
+            && message.info.role == "user"
+            && message.info.id == active_user_message_id
+    }) && !messages.iter().any(|message| {
+        message.info.session_id == state.session_id
+            && message.info.role == "assistant"
+            && state.message_belongs_to_active_prompt(&message.info.id)
+    })
+}
+
 pub(super) fn refresh_opencode_message_metadata(
     state: &mut OpenCodeRuntimeState,
     provider_run_id: &str,
