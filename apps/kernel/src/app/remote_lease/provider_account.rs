@@ -440,14 +440,14 @@ exit 2
         let materialization = |contents_base64: &str| ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
                 owner_user_id: "owner-a".to_string(),
-                provider: "claude".to_string(),
+                provider: "codex".to_string(),
                 profile_id: "work".to_string(),
                 label: "Work".to_string(),
                 origin: crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated,
                 is_default: false,
             },
             files: vec![crate::account_profile::ProviderAccountMaterializationFile {
-                relative_path: "settings.json".to_string(),
+                relative_path: "auth.json".to_string(),
                 contents_base64: contents_base64.to_string(),
             }],
             generated_at_ms: 1,
@@ -461,13 +461,15 @@ exit 2
             .unwrap();
         let environment = app
             .provider_account_profile_registry()
-            .resolve_environment("owner-a", "claude", "work")
+            .resolve_environment("owner-a", "codex", "work")
             .unwrap();
-        let claude_config_dir = std::path::Path::new(&environment["CLAUDE_CONFIG_DIR"]);
-        let settings_path = claude_config_dir.join("settings.json");
-        let provider_state_path = claude_config_dir.join("provider-owned-state.json");
-        std::fs::write(&settings_path, br#"{"source":"worker"}"#).unwrap();
+        let provider_config_dir = std::path::Path::new(&environment["CODEX_HOME"]);
+        let settings_path = provider_config_dir.join("config.toml");
+        let provider_state_path = provider_config_dir.join("provider-owned-state.json");
+        std::fs::write(&settings_path, b"model = \"worker-model\"\n").unwrap();
         std::fs::write(&provider_state_path, b"worker-state").unwrap();
+        let auth_path = provider_config_dir.join("auth.json");
+        std::fs::write(&auth_path, br#"{"token":"worker"}"#).unwrap();
 
         RemoteLeaseRuntime::new(&mut app)
             .ensure_remote_provider_account(
@@ -476,9 +478,10 @@ exit 2
             )
             .unwrap();
 
+        assert_eq!(std::fs::read(&auth_path).unwrap(), br#"{"token":"worker"}"#);
         assert_eq!(
             std::fs::read(&settings_path).unwrap(),
-            br#"{"source":"worker"}"#
+            b"model = \"worker-model\"\n"
         );
         assert_eq!(
             std::fs::read(&provider_state_path).unwrap(),

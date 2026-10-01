@@ -7521,7 +7521,7 @@ mod tests {
             (
                 "context-claude-extra",
                 with_extra_file,
-                "managed-context credential allowlist",
+                "provider homes transfer credentials only",
             ),
         ] {
             let (target_root, target) = fixture();
