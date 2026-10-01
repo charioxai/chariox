@@ -894,8 +894,7 @@ ensure_container() {
     prepare_home_volume
     if [[ "${CHARIOX_SLICE_OWNED_WORKSPACE:-0}" == "1" ]]; then
       if docker volume inspect "$SLICE_WORKSPACE_SOURCE" >/dev/null 2>&1; then
-        [[ "$(docker volume inspect --format '{{index .Labels "org.chariox.local.owner-slice"}}' "$SLICE_WORKSPACE_SOURCE")" == "$SLICE_ID" ]] || fail "foreign owned workspace volume"
-        [[ "$(docker volume inspect --format '{{index .Labels "org.chariox.local.owner-uid"}}' "$SLICE_WORKSPACE_SOURCE")" == "$SLICE_WORKSPACE_OWNER" ]] || fail "foreign owned workspace owner"
+        require_owned_workspace_volume
       else
         docker volume create --label "org.chariox.local.owner-slice=$SLICE_ID" \
           --label "org.chariox.local.owner-uid=$SLICE_WORKSPACE_OWNER" "$SLICE_WORKSPACE_SOURCE" >/dev/null \
@@ -1613,6 +1612,20 @@ stop_container() {
   fi
 }
 
+require_owned_workspace_volume() {
+  [[ "$(docker volume inspect --format '{{index .Labels "org.chariox.local.owner-slice"}}' "$SLICE_WORKSPACE_SOURCE")" == "$SLICE_ID" ]] || fail "foreign owned workspace volume"
+  [[ "$(docker volume inspect --format '{{index .Labels "org.chariox.local.owner-uid"}}' "$SLICE_WORKSPACE_SOURCE")" == "$SLICE_WORKSPACE_OWNER" ]] || fail "foreign owned workspace owner"
+}
+
+# Only explicit deletion removes the owned workspace; restore and recreation keep it.
+remove_owned_workspace_volume() {
+  [[ "${CHARIOX_SLICE_OWNED_WORKSPACE:-0}" == "1" ]] || return 0
+  docker volume inspect "$SLICE_WORKSPACE_SOURCE" >/dev/null 2>&1 || return 0
+  require_owned_workspace_volume
+  log "removing volume $SLICE_WORKSPACE_SOURCE"
+  docker volume rm "$SLICE_WORKSPACE_SOURCE" >/dev/null
+}
+
 destroy_container() {
   stop_container
   if docker ps -a --format '{{.Names}}' | grep -Fxq "$SLICE_NAME"; then
@@ -1691,6 +1704,7 @@ main() {
     destroy)
       require_docker
       destroy_container
+      remove_owned_workspace_volume
       ;;
     import-provider-auth)
       require_docker
