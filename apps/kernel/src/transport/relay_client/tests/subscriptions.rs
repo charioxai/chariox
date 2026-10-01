@@ -986,11 +986,10 @@ async fn relay_replay_after_runtime_recreation_filters_historical_resume_and_res
         None,
         Arc::clone(&restarted_runtime),
         true,
-        crate::transport::passkey_prompt_feed::PasskeyPromptFeed::new(
-            crate::local::KernelConnectionClass::Terminal,
-            crate::session::DEFAULT_LOCAL_USER_ID,
-        ),
-        crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
+        crate::transport::relay_client::subscriptions::RelaySubscriber {
+            user_id: crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
+            connection_class: crate::local::KernelConnectionClass::Terminal,
+        },
     ));
     // Protocol 394: a terminal's subscription starts with its passkey prompts.
     let prompts = tokio::time::timeout(

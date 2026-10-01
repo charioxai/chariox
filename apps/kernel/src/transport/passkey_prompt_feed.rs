@@ -32,7 +32,8 @@ impl PasskeyPromptFeed {
         let sequence = router.passkey_prompt_change_sequence();
         let now_ms = crate::session::unix_epoch_ms();
         if let Some(sent) = &self.sent {
-            if sequence == self.sequence && sent.iter().all(|prompt| now_ms < prompt.expires_at_ms) {
+            if sequence == self.sequence && sent.iter().all(|prompt| now_ms < prompt.expires_at_ms)
+            {
                 return None;
             }
         }
