@@ -497,5 +497,7 @@ test("MP-08 MP-10 controller recovery is actionable when a TUI attaches after th
   environment.health = [{ component: "browser_controller", state: "ready", diagnostic_code: "controller_recovered" }]
   const harness = activityHarness([{ RoomEnvironmentState: { environment } }])
   await harness.controller.synchronize()
-  assert.match(harness.notices[0], /browser_controller ready.*retry interrupted browser actions/)
+  const notice = harness.notices[0]
+  assert.ok(notice)
+  assert.match(notice, /browser_controller ready.*retry interrupted browser actions/)
 })
