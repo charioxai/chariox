@@ -57,14 +57,9 @@ export function waitingRoomLaunchMachineOptions<TMachine extends WaitingRoomLaun
     managedEnvironments?: readonly WaitingRoomLaunchManagedEnvironmentInput[]
   } = {},
 ): WaitingRoomLaunchMachineOption<TMachine>[] {
-  const managedMachineIds = new Set(
-    (remote.managedEnvironments ?? []).flatMap((environment) => (
-      environment.runtimeMachineId ? [environment.runtimeMachineId] : []
-    )),
-  )
   return [
     { id: "local", label: "local", machine: null, managedEnvironment: null },
-    ...(remote.machines ?? []).filter((machine) => !managedMachineIds.has(machine.machine_id)).map((machine) => ({
+    ...(remote.machines ?? []).map((machine) => ({
       id: machine.machine_id,
       label: machine.registry_alias ?? machine.machine_alias ?? machine.display_name ?? machine.machine_id,
       machine,
@@ -116,18 +111,7 @@ export function waitingRoomLaunchKernelOptions<TKernel extends WaitingRoomLaunch
     const environment = remote.managedEnvironments
       ?.find((candidate) => candidate.environmentId === managedEnvironmentId)
     if (!environment || !managedEnvironmentIsReady(environment)) return []
-    const kernel = (remote.kernels ?? []).find((candidate) => (
-      candidate.kernel_id === environment.runtimeKernelId
-      && candidate.machine_id === environment.runtimeMachineId
-    ))
-    return kernel
-      ? [{
-          id: kernel.kernel_id,
-          label: kernel.relay_alias ?? kernel.kernel_alias ?? kernel.kernel_id,
-          machineId: kernel.machine_id,
-          kernel,
-        }]
-      : []
+    machineRef = environment.runtimeMachineId!
   }
   if (machineRef === NEW_MANAGED_MACHINE_REF) return []
   return (remote.kernels ?? [])

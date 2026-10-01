@@ -1932,9 +1932,16 @@ test("MP-11 independent ledger covers each inspected scope without authorizing s
   assert.equal(evaluateSemanticDisposition(first.anchor, { commit: first.sourceCommit, tree: first.sourceTree }, DEFAULT_SEMANTIC_DISPOSITIONS).status, "reviewed");
   for (const group of INDEPENDENT_REVIEW_GROUPS) {
     const rule = SOURCE_AUDIT_RULES.find(rule => rule.id === group.ruleId);
-    assert.equal(group.sourceCommit, rule.sourceCommit);
     assert.equal(group.path, rule.path);
-    assert.equal(group.blob, rule.blob);
+    if (group.blob === rule.blob) {
+      assert.equal(group.sourceCommit, rule.sourceCommit);
+    } else {
+      // MP-08/MP-11 fixes do not inherit frozen independent approval.
+      for (const anchor of group.anchors) {
+        const changed = { path: rule.path, blob: rule.blob };
+        assert.equal(evaluateSemanticDisposition(changed, { commit: rule.sourceCommit, tree: group.sourceTree }, DEFAULT_SEMANTIC_DISPOSITIONS).status, "unreviewed");
+      }
+    }
     assert.ok(group.anchors.length > 0);
   }
   for (const review of DEFAULT_SEMANTIC_DISPOSITIONS) {

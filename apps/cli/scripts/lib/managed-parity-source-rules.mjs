@@ -510,14 +510,30 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
     anchors: [],
   },
   {
-    id: "managed-waiting-room-placement-projection", sourceCommit: OSS_RUNTIME,
-    path: "packages/kernel-client/src/waiting-room-runtime-placement.ts",
-    blob: "62c0b0329376ca6d3cc9cdb5fb5f755b3d07f311",
-    classification: "deployment_control_client_projection",
-    rationale: "Waiting-room managed options project server lifecycle and exact machine/kernel readiness/revision bindings. Once ready, the projection selects the ordinary canonical kernel; it supplies no provider prompt/session authority or worker execution fork.",
-    anchors: [["client_projection", "waitingRoomLaunchMachineOptions"], ["client_projection", "waitingRoomLaunchKernelOptions"], ["client_projection", "waitingRoomLaunchPlacement"]],
-  },
-  {
+    "id": "managed-waiting-room-placement-projection",
+    "sourceCommit": "f14ded556968ca16b7d50b48125fb21ef5be2bb3",
+    "path": "packages/kernel-client/src/waiting-room-runtime-placement.ts",
+    "blob": "0efadb2fd07a1c1401df3863aa429ef42cd01677",
+    "classification": "shared_enrolled_machine_client_projection",
+    "rationale": "MP-08/MP-11: Ordinary discovered Machines remain visible. Ready environment aliases use the same account-authorized Machine kernel list; pending/deleted/revision-mismatched aliases still fail readiness. Frozen removal dispositions remain historical; changed source requires independent review and MP-10 comparison.",
+    "anchors": [
+      [
+        "client_projection",
+        "waitingRoomLaunchMachineOptions"
+      ],
+      [
+        "client_projection",
+        "waitingRoomLaunchKernelOptions"
+      ],
+      [
+        "client_projection",
+        "waitingRoomLaunchPlacement"
+      ]
+    ],
+    "openFindings": [
+      "Independent exact-blob disposition and MP-10 fresh-machine comparison pending."
+    ]
+  }, {
     "id": "shared-provider-utility-capture-budget",
     "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
     "path": "apps/kernel/src/local/provider_requests/catalog/probe_capture.rs",

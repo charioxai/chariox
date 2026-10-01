@@ -806,3 +806,15 @@ the full campaign. This command does not provision, rebuild or modify services.
   `/tmp` operations, Cloud/relay retirement, cleanup, and resource samples.
 - Full Swift behavior and tests, live provider behavior, structured errors,
   runtime session/history parity, and every managed auto-stop scenario.
+
+## MP-08/MP-11 parity implementation lane (2026-10-01)
+
+Source fixes below have focused red/green regressions in the parity lane's
+external evidence. Frozen independent dispositions above remain bound to OSS
+686; changed blobs require new independent review and MP-10 live comparison.
+These source corrections close no MP acceptance item.
+
+- Ready-machine discovery: enrolled managed Machines retain the ordinary
+  Machine option. A ready environment alias resolves the same discovered kernel
+  list as that Machine; deployment readiness/revision checks still gate the alias.
+  Client regression: 1 RED, then 7/7 GREEN, no skips.
