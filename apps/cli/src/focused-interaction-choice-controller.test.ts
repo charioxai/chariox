@@ -111,6 +111,82 @@ test("focused interaction choice key handling edits custom replies", () => {
   assert.equal(harness.layoutCount(), 1)
 })
 
+test("focused interaction secret replies keep the typed case and are submitted exactly", async () => {
+  const harness = createHarness({ interaction: interactionFixture({ customInputKind: "secret", maxLength: 64 }) })
+  harness.selectedIndexes.set("interaction-1", 2)
+  harness.customEditing.add("interaction-1")
+
+  for (const event of [
+    { name: "p", shift: true, sequence: "P" },
+    { name: "a", sequence: "a" },
+    { name: "1", shift: true, sequence: "!" },
+    { name: "space", sequence: " " },
+    { name: "ü", sequence: "ü" },
+    { name: "x", shift: true, sequence: "\u001b[120;2u" },
+  ]) {
+    assert.equal(harness.controller.handleKey(event), true, event.name)
+  }
+  assert.equal(harness.customReplies.get("interaction-1"), "Pa! üX")
+
+  assert.equal(await harness.controller.submitChoice(), true)
+  assert.equal(harness.responses().at(-1)?.customReply, "Pa! üX")
+})
+
+test("focused interaction paste goes into the custom reply, never the prompt", () => {
+  const harness = createHarness({ interaction: interactionFixture({ customInputKind: "secret", maxLength: 64 }) })
+  harness.selectedIndexes.set("interaction-1", 2)
+  harness.customEditing.add("interaction-1")
+  harness.customReplies.set("interaction-1", "Ab")
+  const events: string[] = []
+
+  const handled = harness.controller.handlePaste({
+    text: "Cd!@# Ünïcode\u{1F511}\n",
+    preventDefault: () => events.push("prevent"),
+    stopPropagation: () => events.push("stop"),
+  })
+
+  assert.equal(handled, true)
+  assert.deepEqual(events, ["prevent", "stop"])
+  assert.equal(harness.customReplies.get("interaction-1"), "AbCd!@# Ünïcode\u{1F511}")
+  assert.equal(harness.renderCount(), 1)
+})
+
+test("focused interaction paste starts the reply on a selected secret choice", () => {
+  const harness = createHarness({ interaction: interactionFixture({ customInputKind: "secret", maxLength: 64 }) })
+  harness.selectedIndexes.set("interaction-1", 2)
+
+  assert.equal(harness.controller.handlePaste({ text: "MixedCase" }), true)
+
+  assert.equal(harness.customEditing.has("interaction-1"), true)
+  assert.equal(harness.customReplies.get("interaction-1"), "MixedCase")
+})
+
+test("focused interaction paste refuses multi-line text without passing it on", () => {
+  const harness = createHarness({ interaction: interactionFixture({ customInputKind: "secret", maxLength: 64 }) })
+  harness.selectedIndexes.set("interaction-1", 2)
+  harness.customEditing.add("interaction-1")
+  const events: string[] = []
+
+  assert.equal(harness.controller.handlePaste({
+    text: "first\nsecond",
+    preventDefault: () => events.push("prevent"),
+  }), true)
+
+  assert.deepEqual(events, ["prevent"])
+  assert.equal(harness.customReplies.has("interaction-1"), false)
+  assert.equal(harness.footerMessages().at(-1)?.tone, "error")
+})
+
+test("focused interaction paste leaves other pastes to the prompt", () => {
+  const harness = createHarness()
+  assert.equal(harness.controller.handlePaste({ text: "prompt text" }), false)
+  harness.selectedIndexes.set("interaction-1", 2)
+  assert.equal(harness.controller.handlePaste({ text: "not secret, not editing" }), false)
+  harness.customEditing.add("interaction-1")
+  assert.equal(harness.controller.handlePaste({ text: "taken", defaultPrevented: true }), false)
+  assert.equal(harness.customReplies.has("interaction-1"), false)
+})
+
 function createHarness(options: {
   interaction?: RuntimeInteraction | null
   attached?: boolean
@@ -195,6 +271,7 @@ function createHarness(options: {
 
 function interactionFixture(options: {
   customInputKind?: "text" | "secret" | null
+  maxLength?: number
 } = {}): RuntimeInteraction {
   return {
     id: "interaction-1",
@@ -210,7 +287,7 @@ function interactionFixture(options: {
       id: "custom",
       label: "Custom",
       min_length: 2,
-      max_length: 10,
+      max_length: options.maxLength ?? 10,
       ...(options.customInputKind !== undefined ? { input_kind: options.customInputKind } : {}),
     },
     requested_at_ms: 1,

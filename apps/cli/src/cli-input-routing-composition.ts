@@ -1,5 +1,5 @@
 import { parseKeypress } from "@opentui/core"
-import { useKeyboard } from "@opentui/solid"
+import { useKeyboard, usePaste } from "@opentui/solid"
 
 import { createCliStdinKeyController } from "./cli-stdin-key-controller.js"
 import { createFocusedInteractionChoiceController } from "./focused-interaction-choice-controller.js"
@@ -499,6 +499,11 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   const submitFocusedInteractionChoice = focusedInteractionChoiceController.submitChoice
   const cycleFocusedInteractionChoice = focusedInteractionChoiceController.cycleChoice
   const handleFocusedInteractionKey = focusedInteractionChoiceController.handleKey
+  usePaste((event) => {
+    if (!deps.kernelApprovalOwnsInput?.()) {
+      focusedInteractionChoiceController.handlePaste(event)
+    }
+  })
 
   const globalKeyboardShortcutController = createGlobalKeyboardShortcutController({
     handleKernelApprovalKey: (event) => deps.handleKernelApprovalKey?.(event) ?? false,
