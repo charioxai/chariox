@@ -2,7 +2,7 @@
 
 import { spawnSync } from "node:child_process"
 import { isDockerImageReference } from "./docker-image-reference.mjs"
-import { capturePrivateHomeArchive, homeArchiveMetadataMatches } from "./managed-home-archive-stream.mjs"
+import { capturePrivateHomeArchive, homeArchiveMetadataMatches, isHomeArchiveRestoreRequest } from "./managed-home-archive-stream.mjs"
 import { createHash } from "node:crypto"
 import {
   chmodSync,
@@ -1532,7 +1532,10 @@ function cleanupPrepared(prepared) {
   if (prepared.output?.stagingDirectory) rmSync(prepared.output.stagingDirectory, { recursive: true, force: true })
 }
 
-function spawnBounded(command, args, options) {
+function spawnBounded(command, args, options, archiveRestore = false) {
+  // Ordinary saved-home provisioning waits for verification and restore to
+  // finish. Keep shared per-step deadlines, without a managed-only outer cap.
+  if (archiveRestore) return spawnSync(command, args, { ...options, killSignal: "SIGKILL" })
   if (process.platform === "linux") {
     return spawnSync(
       "/usr/bin/timeout",
@@ -1656,7 +1659,7 @@ async function execute(request) {
             ? { CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: SIGNED_BUILD_CONTEXT_DIGEST }
             : {}),
         }
-      return spawnBounded(command, args, { env, maxBuffer: MAX_OUTPUT_BYTES })
+      return spawnBounded(command, args, { env, maxBuffer: MAX_OUTPUT_BYTES }, isHomeArchiveRestoreRequest(request))
     }
     const containerName = request.kind === "docker" ? request.args[1] : undefined
     const isDockerStartOrUnpause = request.kind === "docker" && ["start", "unpause"].includes(request.args[0])

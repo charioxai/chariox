@@ -78,3 +78,53 @@ fn archive_policy_response_deadlines_preserve_healthy_archive_progress() {
     assert_eq!(read, Some(Duration::from_millis(50)));
     assert_eq!(write, Some(Duration::from_millis(75)));
 }
+
+#[test]
+fn archive_policy_restore_response_deadlines_are_request_specific() {
+    let _lock = crate::env_lock::lock();
+    let archive_environment = BTreeMap::from([(
+        "CHARIOX_SLICE_SAVED_HOME_ARCHIVE".to_string(),
+        "/private/synthetic/home.tar.zst".to_string(),
+    )]);
+    for action in ["provision", "restore-state"] {
+        let request = BrokerRequest::Provisioner {
+            action,
+            environment: &archive_environment,
+            files: &[],
+        };
+        for valid in [true, false] {
+            let (success, read, write) = exchange(&request, valid);
+            assert_eq!(
+                success, valid,
+                "{action} must wait for healthy archive verification and restore"
+            );
+            assert_eq!(read, Some(Duration::from_millis(50)));
+            assert_eq!(write, Some(Duration::from_millis(75)));
+        }
+    }
+    let empty_environment = BTreeMap::from([(
+        "CHARIOX_SLICE_SAVED_HOME_ARCHIVE".to_string(),
+        String::new(),
+    )]);
+    let missing_environment = BTreeMap::new();
+    for (action, environment) in [
+        ("provision", &empty_environment),
+        ("restore-state", &missing_environment),
+        ("recover", &archive_environment),
+        ("status", &archive_environment),
+        ("import-provider-auth", &archive_environment),
+    ] {
+        let request = BrokerRequest::Provisioner {
+            action,
+            environment,
+            files: &[],
+        };
+        let (success, read, write) = exchange(&request, true);
+        assert!(
+            !success,
+            "{action} without archive restore keeps the prior deadline"
+        );
+        assert_eq!(read, Some(Duration::from_millis(50)));
+        assert_eq!(write, Some(Duration::from_millis(75)));
+    }
+}

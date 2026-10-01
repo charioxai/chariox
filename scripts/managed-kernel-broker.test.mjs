@@ -8,6 +8,8 @@ import { createHash } from "node:crypto"
 import { once } from "node:events"
 import { createConnection } from "node:net"
 import { test } from "node:test"
+import { runInNewContext } from "node:vm"
+import * as archivePolicy from "../apps/kernel/slice-linux-docker/managed-home-archive-stream.mjs"
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url))
 const broker = join(
@@ -1000,4 +1002,58 @@ test("managed slice broker removes its endpoint after the supervisor claims it",
   lease.end()
   const [status] = await once(child, "exit")
   assert.equal(status, 0)
+})
+
+
+test("archive-bearing provision and restore preserve healthy progress without widening other deadlines", async () => {
+  const source = await readFile(broker, "utf8")
+  const spawnSource = source.slice(source.indexOf("function spawnBounded("), source.indexOf("\nfunction provisionerQuotaRequest("))
+  const executeSource = source.slice(source.indexOf("async function execute(request)"), source.indexOf("\nfunction errorResponse("))
+  const calls = []
+  let prepared = 0
+  let cleaned = 0
+  const execute = runInNewContext(`${spawnSource}\n${executeSource}\nexecute`, {
+    ...archivePolicy, process, Buffer, Set,
+    PROVISIONER: process.execPath, DOCKER_HOST: "unix:///synthetic/unused", SIGNED_BUILD_CONTEXT_DIGEST: "", MAX_OUTPUT_BYTES: 1024,
+    validateRequest: () => {},
+    provisionerQuotaRequest: () => ({ identity: { containerName: "synthetic-owned" } }),
+    diskQuotaMarkerPresent: () => false,
+    requestSliceDiskQuota: async () => ({ bounded: false }),
+    exactKeys: () => {},
+    sliceDiskQuotaCoordinator: {
+      withContainerLock: async (_name, run) => run({}),
+      assertUnbounded: async () => undefined,
+    },
+    prepareProvisioner: request => { prepared++; return { environment: request.environment, handles: new Set(), newHandles: new Set() } },
+    cleanupPrepared: () => { cleaned++ }, removePersistentHandles: () => {},
+    spawnSync: (command, args, options) => {
+      calls.push({ command, args, timeout: options.timeout })
+      // Scale only the existing outer operation deadlines. The actual tiny
+      // child, timeout executable, exit status, and cleanup are exercised.
+      const child = ["-e", "setTimeout(() => process.stdout.write('restored'), 120)"]
+      if (command === "/usr/bin/timeout") {
+        return spawnSync(command, ["--signal=TERM", "--kill-after=0.01s", "0.05s", process.execPath, ...child], { ...options, timeout: 80 })
+      }
+      return spawnSync(command, child, { ...options, ...(options.timeout ? { timeout: 80 } : {}) })
+    },
+  })
+  for (const action of ["provision", "restore-state"]) {
+    const response = await execute({ kind: "provisioner", action, files: [], environment: {
+      CHARIOX_SLICE_NAME: "synthetic-owned", CHARIOX_SLICE_SAVED_HOME_ARCHIVE: "/private/synthetic/home.tar.zst",
+    } })
+    assert.equal(response.status, 0, `${action} must let the healthy restore complete`)
+    assert.equal(Buffer.from(response.stdoutBase64, "base64").toString(), "restored")
+    assert.equal(calls.at(-1).command, process.execPath)
+    assert.equal(calls.at(-1).timeout, undefined)
+  }
+  for (const [action, archive] of [["provision", undefined], ["restore-state", ""], ["recover", "/private/home"], ["status", "/private/home"], ["import-provider-auth", "/private/home"]]) {
+    const response = await execute({ kind: "provisioner", action, files: [], environment: {
+      CHARIOX_SLICE_NAME: "synthetic-owned", ...(archive !== undefined ? { CHARIOX_SLICE_SAVED_HOME_ARCHIVE: archive } : {}),
+    } })
+    assert.notEqual(response.status, 0, `${action}/${archive} keeps its outer deadline`)
+    assert.equal(calls.at(-1).command, "/usr/bin/timeout")
+    assert.equal(calls.at(-1).timeout, 21 * 60_000)
+  }
+  assert.equal(prepared, 7)
+  assert.equal(cleaned, prepared, "prepared filesystem handles settle on success and timeout")
 })

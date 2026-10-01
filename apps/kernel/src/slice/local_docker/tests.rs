@@ -311,7 +311,7 @@ case "$*" in
   *" du -sb /home-src") printf '1048576 /home-src\n' ;;
   *" find /home-src -printf . | wc -c") printf '1\n' ;;
   *" df -B1 --output=avail /tmp") cat "$DOCKER_CAPACITY" ;;
-  *"tar --zstd -cf - .") printf 'known-good-home' ;;
+  *"tar --zstd -C /home-src -cf - .") printf 'known-good-home' ;;
 esac
 exit 0
 "#,
@@ -453,12 +453,7 @@ case "$*" in
     exit 0
     ;;
   "stop chariox-slice-dev") rm -f "$DOCKER_RUNNING"; exit 0 ;;
-  cp\ *)
-    destination=
-    for argument in "$@"; do destination=$argument; done
-    printf 'fixture home archive' > "$destination"
-    exit 0
-    ;;
+  *"tar --zstd -C /home-src -cf - .") printf 'fixture home archive'; exit 0 ;;
 esac
 exit 0
 "##,
@@ -551,7 +546,7 @@ exit 0
         .rfind("commit chariox-slice-dev ")
         .expect("image capture should occur after container stop");
     let home_capture = calls
-        .rfind("tar --zstd -cf /tmp/home.tar.zst .")
+        .rfind("tar --zstd -C /home-src -cf - .")
         .expect("home archive should be captured");
     assert!(screen_stop < kernel_shutdown);
     assert!(kernel_shutdown < container_stop);
@@ -1603,11 +1598,50 @@ fn local_docker_slice_mounts_only_development_repositories() {
 }
 
 #[cfg(unix)]
+fn browser_admission_docker_fixture(root: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(root).unwrap();
+    let path = root.join("browser-fixture.py");
+    std::fs::write(
+        &path,
+        r#"#!/usr/bin/env python3
+import json,os,sys
+args=sys.argv[1:]
+if args == ['info','--format','{{.ID}}']:
+    print('synthetic-docker-engine')
+elif args and args[0] == 'inspect' and not any(flag in args for flag in ['-f','--format']):
+    running=os.path.exists(os.environ['DOCKER_RUNNING']) if 'DOCKER_RUNNING' in os.environ else True
+    print(json.dumps([{
+        'Id':'a'*64,'Image':'sha256:'+'b'*64,'Created':'2026-09-30T00:00:00Z',
+        'Config':{'Env':['HOME=/home/slice'],'Labels':{
+            'io.chariox.slice.id':os.environ['CHARIOX_SLICE_ID'],
+            'io.chariox.slice.owner-kernel-id':os.environ['CHARIOX_SLICE_OWNER_KERNEL_ID'],
+            'io.chariox.slice.owner-machine-id':os.environ['CHARIOX_SLICE_OWNER_MACHINE_ID']}},
+        'HostConfig':{'PidMode':'private'},
+        'State':{'Running':running,'Paused':False,'Restarting':False,'Pid':321 if running else 0,
+                 'Status':'running' if running else 'exited','StartedAt':'2026-09-30T00:01:00Z',
+                 'FinishedAt':'2026-09-30T00:02:00Z'}}]))
+elif args and args[0] == 'exec' and any('profileProcessCount' in arg for arg in args):
+    print(json.dumps({'disposition':'clear','profileProcessCount':0}))
+elif args == ['system','dial-stdio']:
+    sys.stdin.buffer.read()
+    sys.stdout.buffer.write(b'HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n')
+else:
+    sys.exit(1)
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    path
+}
+
+#[cfg(unix)]
 #[test]
 fn existing_slice_runtime_forwards_managed_workspace_roots() {
     use std::os::unix::fs::PermissionsExt;
 
     let root = test_root("existing-slice-workspace-roots");
+    let browser_fixture = browser_admission_docker_fixture(&root);
     let bin = root.join("bin");
     let docker = bin.join("docker");
     let log = root.join("docker.log");
@@ -1616,6 +1650,7 @@ fn existing_slice_runtime_forwards_managed_workspace_roots() {
         &docker,
         r#"#!/bin/sh
 printf '%s\n' "$*" >> "$DOCKER_LOG"
+if "$BROWSER_FIXTURE" "$@"; then exit 0; fi
 if [ "$1" = "container" ] && [ "$2" = "inspect" ]; then
   if [ "${3:-}" = "-f" ]; then
     printf 'sha256:fixture\n'
@@ -1662,6 +1697,10 @@ exit 0
         .env("PATH", path)
         .env("TMPDIR", &root)
         .env("DOCKER_LOG", &log)
+        .env("BROWSER_FIXTURE", &browser_fixture)
+        .env("CHARIOX_SLICE_ID", "synthetic-slice")
+        .env("CHARIOX_SLICE_OWNER_KERNEL_ID", "synthetic-owner-kernel")
+        .env("CHARIOX_SLICE_OWNER_MACHINE_ID", "synthetic-owner-machine")
         .env("CHARIOX_SLICE_NAME", "saved-slice")
         .env("CHARIOX_SLICE_DOCKER_IMAGE", "fixture")
         .env("CHARIOX_SLICE_BASE_IMAGE", "fixture")
@@ -1709,6 +1748,7 @@ fn failed_save_recovery_starts_only_the_existing_container() {
     use std::os::unix::fs::PermissionsExt;
 
     let root = test_root("failed-save-recovery");
+    let browser_fixture = browser_admission_docker_fixture(&root);
     let bin = root.join("bin");
     let docker = bin.join("docker");
     let log = root.join("docker.log");
@@ -1718,6 +1758,7 @@ fn failed_save_recovery_starts_only_the_existing_container() {
         &docker,
         r#"#!/bin/sh
 printf '%s\n' "$*" >> "$DOCKER_LOG"
+if "$BROWSER_FIXTURE" "$@"; then exit 0; fi
 if [ "$1" = "container" ] && [ "$2" = "inspect" ]; then
   exit 0
 fi
@@ -1761,6 +1802,10 @@ exit 0
         .env("PATH", path)
         .env("TMPDIR", &root)
         .env("DOCKER_LOG", &log)
+        .env("BROWSER_FIXTURE", &browser_fixture)
+        .env("CHARIOX_SLICE_ID", "synthetic-slice")
+        .env("CHARIOX_SLICE_OWNER_KERNEL_ID", "synthetic-owner-kernel")
+        .env("CHARIOX_SLICE_OWNER_MACHINE_ID", "synthetic-owner-machine")
         .env("DOCKER_RUNNING", &running)
         .env("CHARIOX_SLICE_NAME", "saved-slice")
         .env("CHARIOX_SLICE_DOCKER_IMAGE", "prior-saved-image")
@@ -1804,6 +1849,7 @@ fn backup_restore_replaces_the_slice_in_order_and_leaves_it_stopped() {
     use std::os::unix::fs::PermissionsExt;
 
     let root = test_root("backup-restore-order");
+    let browser_fixture = browser_admission_docker_fixture(&root);
     let bin = root.join("bin");
     let docker = bin.join("docker");
     let log = root.join("docker.log");
@@ -1820,6 +1866,7 @@ fn backup_restore_replaces_the_slice_in_order_and_leaves_it_stopped() {
         &docker,
         r#"#!/bin/sh
 printf '%s\n' "$*" >> "$DOCKER_LOG"
+if "$BROWSER_FIXTURE" "$@"; then exit 0; fi
 if [ "$1" = "info" ]; then
   exit 0
 fi
@@ -1948,6 +1995,10 @@ exit 0
             .env("PATH", &path)
             .env("TMPDIR", &root)
             .env("DOCKER_LOG", &log)
+            .env("BROWSER_FIXTURE", &browser_fixture)
+            .env("CHARIOX_SLICE_ID", "synthetic-slice")
+            .env("CHARIOX_SLICE_OWNER_KERNEL_ID", "synthetic-owner-kernel")
+            .env("CHARIOX_SLICE_OWNER_MACHINE_ID", "synthetic-owner-machine")
             .env("DOCKER_CONTAINER", &container)
             .env("DOCKER_RUNNING", &running)
             .env("DOCKER_VOLUME", &volume)

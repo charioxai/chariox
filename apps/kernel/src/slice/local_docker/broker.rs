@@ -248,10 +248,20 @@ fn broker_is_configured() -> bool {
 
 #[cfg(unix)]
 fn execute_with_disk_evidence(request: &BrokerRequest<'_>) -> io::Result<BrokerExecution> {
-    let archive_response = matches!(
-        request,
-        BrokerRequest::HomeArchiveCapture { .. } | BrokerRequest::HomeArchiveVerify { .. }
-    );
+    let archive_response = match request {
+        BrokerRequest::HomeArchiveCapture { .. } | BrokerRequest::HomeArchiveVerify { .. } => true,
+        BrokerRequest::Provisioner {
+            action,
+            environment,
+            ..
+        } => {
+            matches!(*action, "provision" | "restore-state")
+                && environment
+                    .get("CHARIOX_SLICE_SAVED_HOME_ARCHIVE")
+                    .is_some_and(|path| !path.is_empty())
+        }
+        _ => false,
+    };
     let request = Zeroizing::new(
         serde_json::to_vec(request)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?,

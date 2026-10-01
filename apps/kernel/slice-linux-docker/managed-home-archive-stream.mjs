@@ -9,6 +9,14 @@ if (Object.keys(policy).sort().join(",") !== "minimumFreeBytes,schemaVersion"
     || policy.minimumFreeBytes < 0) throw new Error("invalid home archive policy")
 export const HOME_ARCHIVE_MINIMUM_FREE_BYTES = policy.minimumFreeBytes
 
+// Match only operations that actually verify and restore a saved home. Other
+// provisioner actions retain their existing operation deadlines.
+export function isHomeArchiveRestoreRequest(request) {
+  return request.kind === "provisioner" && ["provision", "restore-state"].includes(request.action)
+    && typeof request.environment?.CHARIOX_SLICE_SAVED_HOME_ARCHIVE === "string"
+    && request.environment.CHARIOX_SLICE_SAVED_HOME_ARCHIVE.length > 0
+}
+
 export function homeArchiveMetadataMatches(metadata, scope, id, sizeBytes) {
   return metadata.schemaVersion === 1 && metadata.scope === scope && metadata.id === id
     && Number.isSafeInteger(metadata.sizeBytes) && metadata.sizeBytes > 0
