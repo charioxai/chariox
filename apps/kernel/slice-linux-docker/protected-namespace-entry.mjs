@@ -1,4 +1,4 @@
-import { constants, fstatSync, lstatSync, statSync, readFileSync, openSync, closeSync, writeFileSync, fsyncSync, renameSync, mkdirSync, realpathSync } from "node:fs"
+import { constants, fstatSync, lstatSync, statSync, readFileSync, openSync, closeSync, writeFileSync, fsyncSync, renameSync, mkdirSync, chmodSync, realpathSync } from "node:fs"
 import { join, parse } from "node:path"
 import { spawnSync } from "node:child_process"
 
@@ -61,7 +61,8 @@ export function prepareNamespaceEntry(targetPid) {
   const maps = {uidMap: readFileSync(`${proc}/uid_map`, "utf8"), gidMap: readFileSync(`${proc}/gid_map`, "utf8"),
     daemonUid, daemonGid, processUid, subuids: readFileSync("/etc/subuid", "utf8"), subgids: readFileSync("/etc/subgid", "utf8")}
   const hostDataUid = mappedSliceOwner(maps)
-  try { mkdirSync(DURABLE_LAYOUT_ROOT, {mode: 0o711}) } catch (error) { if (error.code !== "EEXIST") throw error }
+  // Exact mode despite the service umask; the check below requires 0711.
+  try { mkdirSync(DURABLE_LAYOUT_ROOT, {mode: 0o711}); chmodSync(DURABLE_LAYOUT_ROOT, 0o711) } catch (error) { if (error.code !== "EEXIST") throw error }
   const ancestors = ancestry(DURABLE_LAYOUT_ROOT, daemonUid)
   if (ancestors.at(-1).hostUid !== daemonUid || ancestors.at(-1).mode !== 0o711) refuse()
   const sinkAncestors = ancestry(MANAGED_ARCHIVE_ROOT, daemonUid)

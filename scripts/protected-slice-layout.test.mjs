@@ -568,3 +568,24 @@ test("capture requires a paused or stopped source and rejects every other writab
     assert.throws(() => controller.requireQuiescedHome(container))
   } finally { rmSync(root, {recursive: true}) }
 })
+
+test("managed layout directories keep their exact modes under the broker service umask", () => {
+  const parent = mkdtempSync(join(process.env.HOME, ".chariox-layout-umask-test-"))
+  const previous = process.umask(0o007) // chariox-slice-broker.service sets UMask=0007
+  try {
+    const root = join(parent, "durable")
+    const docker = args => {
+      if (args[0] === "ps" || args[0] === "volume") return {status: 0, stdout: ""}
+      throw new Error("unexpected synthetic Docker operation")
+    }
+    const controller = createManagedLayoutController({root, sourceDigest: `sha256:${"b".repeat(64)}`, docker, dataOwner: process.getuid()})
+    const privateRoot = controller.prepare("provision", {CHARIOX_SLICE_NAME: "chariox-slice-synthetic", CHARIOX_SLICE_ID: "slice-synthetic"})
+    assert.equal(existsSync(privateRoot), true)
+    assert.equal(lstatSync(root).mode & 0o777, 0o711)
+    assert.equal(lstatSync(join(root, "homes")).mode & 0o777, 0o711)
+  } finally {
+    process.umask(previous)
+    rmSync(parent, {recursive: true})
+  }
+})
+

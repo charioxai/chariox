@@ -1,4 +1,4 @@
-import { mkdirSync, existsSync, readdirSync, lstatSync } from "node:fs"
+import { mkdirSync, chmodSync, existsSync, readdirSync, lstatSync } from "node:fs"
 import { join } from "node:path"
 import { preparePrivateHostRoot, verifyPrivateHostDirectory } from "./protected-host-root.mjs"
 import { readProtectedLayoutReceipt, writeProtectedLayoutReceipt, requireRetainedRuntimeIdentity } from "./protected-layout-store.mjs"
@@ -49,7 +49,10 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
     if (!trusted) refuse()
     for (const path of [root, homeRoot, receiptRoot, imageRoot, backupRoot]) {
       const traversalOnly = path === root || path === homeRoot
-      try { mkdirSync(path, {mode: traversalOnly ? 0o711 : 0o700}) } catch (error) { if (error.code !== "EEXIST") throw error }
+      const mode = traversalOnly ? 0o711 : 0o700
+      // mkdir applies the process umask (the broker unit's UMask=0007 turns 0711
+      // into 0710), so give directories created here their exact mode.
+      try { mkdirSync(path, {mode}); chmodSync(path, mode) } catch (error) { if (error.code !== "EEXIST") throw error }
       verifyPrivateHostDirectory(path, controlOwner, traversalOnly)
     }
   }
