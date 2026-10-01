@@ -175,6 +175,9 @@ test("actual runtime attaches a viewer, starts Selkies, starts a normal TUI, the
   const tui = await runtime.startTui(null, { id: "local-tui", route: "local" })
   assert.equal(spawnCalls.length, 1)
   assert.equal(spawnCalls[0][0], "script")
+  const commandArgs = spawnCalls[0][1]
+  if (process.platform === "linux") assert.match(commandArgs[commandArgs.indexOf("--command") + 1], /^'bun' /)
+  else assert.equal(commandArgs[2], "bun")
   assert.ok(spawnCalls[0][1].join(" ").includes("--session"))
   assert.ok(spawnCalls[0][1].join(" ").includes("room-1"))
   assert.ok(spawnCalls[0][1].join(" ").includes("runtime-test-123-local-tui"))

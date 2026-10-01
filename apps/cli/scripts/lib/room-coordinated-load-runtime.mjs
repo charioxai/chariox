@@ -215,6 +215,7 @@ export async function createRoomCoordinatedLoadRuntime({ plan, repoRoot, runDire
         : ["--relay-url", plan.relay.url, "--relay-token-env", plan.relay.tokenEnv,
             "--target-daemon-id", plan.relay.targetDaemonId]
       const args = [
+        "bun",
         cliPath,
         ...connectionArgs,
         "--automation-socket", automationSocket,
