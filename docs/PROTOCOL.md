@@ -561,6 +561,7 @@ Current session-management semantics:
 - `session.create` accepts an optional alias
 - deleting the currently attached session invalidates the attachment and the client should transition to an unattached "no session" state instead of forcing process exit
 - `session.delete` is a real delete operation: after runtime teardown the session is removed from the daemon registry and can no longer be listed, resolved, or reattached
+- teardown removes the session's kernel agents. Provider-owned conversations remain saved in the provider profile and return to the external provider session inventory for import into a new session; waiting rooms should label these as saved provider conversations, not unattached live agents
 - if a session reference is ambiguous, the daemon rejects it with a structured ambiguity error
 
 Current agent-management semantics:
