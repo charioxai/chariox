@@ -3134,6 +3134,7 @@ impl ProviderAccountProfileRegistry {
                 && stored.public.profile_id == profile_id
         }) {
             existing.public.label = materialization.profile.label.clone();
+            existing.label_is_automatic = Some(false);
             existing.public.origin = materialization.profile.origin;
             existing.public.is_default = materialization.profile.is_default;
             existing.public.auth_state = ProviderAccountAuthState::Unknown;
@@ -7310,6 +7311,36 @@ mod tests {
             r#"{"token":"source"}"#
         );
 
+        let observed = target
+            .update_observation(
+                "owner-a",
+                "codex",
+                "default",
+                ProviderAccountAuthState::Authenticated,
+                Some("alice@example.test".to_string()),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(observed.label, "Source default");
+        drop(target);
+        let target =
+            ProviderAccountProfileRegistry::open(target_root.join("accounts.json")).unwrap();
+        let observed = target
+            .update_observation(
+                "owner-a",
+                "codex",
+                "default",
+                ProviderAccountAuthState::Authenticated,
+                Some("bob@example.test".to_string()),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(observed.label, "Source default");
+
         fs::write(&imported_auth, br#"{"token":"rotated-on-target"}"#).unwrap();
         target
             .materialize_managed_context_replica(
@@ -7335,6 +7366,22 @@ mod tests {
             .unwrap();
         assert!(restored_environment["CODEX_HOME"].contains("home/.codex"));
         assert!(!imported_auth.exists());
+        let observed = target
+            .update_observation(
+                "owner-a",
+                "codex",
+                "default",
+                ProviderAccountAuthState::Authenticated,
+                Some("restored@example.test".to_string()),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            observed.label, "restored",
+            "rollback restores automatic naming ownership"
+        );
         target
             .rollback_managed_context_replica("owner-a", &receipt)
             .unwrap();
