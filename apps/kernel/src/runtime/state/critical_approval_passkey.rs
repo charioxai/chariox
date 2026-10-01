@@ -120,7 +120,9 @@ impl CriticalApprovalPasskeys {
     /// the boot vault file carries the new verifier's salt, which only that
     /// passphrase change wrote. Both sides were set by someone holding the
     /// passkey, so the file can only choose between them. The outcome is
-    /// recorded, so this runs once.
+    /// recorded, so this runs once, but a new file only once its rename is
+    /// durable: until the vault directory syncs, it is used in this process
+    /// and the move stays unsettled, as after an unsynced change.
     fn settle(
         &self,
         durable: &DurableKernelStateStore,
@@ -129,17 +131,21 @@ impl CriticalApprovalPasskeys {
         let moved: PinMove = serde_json::from_value(payload).map_err(|error| {
             passkey_error(PASSKEY_UNAVAILABLE, &format!("passkey pin move: {error}"))
         })?;
-        let verifier = if self
+        let Some(vault) = self
             .boot_vault
             .as_deref()
-            .is_some_and(|vault| moved.next.matches_vault_file(vault))
-        {
-            moved.next
-        } else {
-            moved.previous
+            .filter(|vault| moved.next.matches_vault_file(vault))
+        else {
+            append_pin_event(durable, PIN_EVENT, &moved.previous)?;
+            return Ok(moved.previous);
         };
-        append_pin_event(durable, PIN_EVENT, &verifier)?;
-        Ok(verifier)
+        if crate::secret::sync_chariox_encrypted_vault(vault).is_ok() {
+            append_pin_event(durable, PIN_EVENT, &moved.next)?;
+        } else {
+            self.unsynced
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        Ok(moved.next)
     }
 
     /// Pins `verifier` durably unless one is pinned already.
@@ -693,6 +699,25 @@ mod tests {
             .change_passphrase(&f.durable, &f.vault, true, OLD, NEW)
             .is_err());
         assert!(f.accepts(NEW) && !f.accepts(OLD));
+    }
+
+    #[test]
+    fn a_restart_records_an_unsynced_rotation_only_once_its_rename_is_durable() {
+        let f = Fixture::pinned();
+        let before = std::fs::read(&f.vault).unwrap();
+        crate::secret::fail_next_vault_dir_sync_for_test();
+        assert!(f
+            .kernel()
+            .change_passphrase(&f.durable, &f.vault, true, OLD, NEW)
+            .is_err());
+        // A restart sees the new file but cannot sync its directory: it uses
+        // the new pin and records nothing...
+        crate::secret::fail_next_vault_dir_sync_for_test();
+        assert!(f.accepts(NEW));
+        // ...so a crash that then loses the rename still settles on the old
+        // file.
+        std::fs::write(&f.vault, &before).unwrap();
+        assert!(f.accepts(OLD) && !f.accepts(NEW));
     }
 
     #[test]
