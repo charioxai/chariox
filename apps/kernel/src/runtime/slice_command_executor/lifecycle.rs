@@ -123,7 +123,7 @@ pub(super) async fn execute_save_slice_state_request(
     request: SliceStateSaveRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let slice = runtime_state.resolve_slice(&request.slice_ref)?;
-    crate::slice::require_supported_slice_capture_layout("slice.state.save")?;
+    crate::slice::require_supported_slice_capture_layout(&slice, "slice.state.save")?;
     let operation_guard =
         runtime_state.begin_slice_operation(&request.slice_ref, "slice.state.save")?;
     runtime_state.record_slice_audit_event(&slice, "state.save", "accepted", None, None)?;
@@ -363,7 +363,7 @@ pub(super) async fn execute_create_slice_backup_request(
     request: CreateSliceBackupRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let slice = runtime_state.resolve_slice(&request.slice_ref)?;
-    crate::slice::require_supported_slice_capture_layout("slice.backup.create")?;
+    crate::slice::require_supported_slice_capture_layout(&slice, "slice.backup.create")?;
     let _operation =
         runtime_state.begin_slice_operation(&request.slice_ref, "slice.backup.create")?;
     runtime_state.record_slice_audit_event(&slice, "backup.create", "accepted", None, None)?;

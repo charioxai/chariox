@@ -109,8 +109,16 @@ SLICE_LOGIN_PROVIDER="${CHARIOX_SLICE_LOGIN_PROVIDER:-codex}"
 SLICE_AUTH_PROVIDER="${CHARIOX_SLICE_AUTH_PROVIDER:-all}"
 SLICE_ACCOUNT_OWNER="${CHARIOX_SLICE_ACCOUNT_OWNER:-local-user}"
 SLICE_ACCOUNT_PROFILE="${CHARIOX_SLICE_ACCOUNT_PROFILE:-default}"
+SLICE_PRIVATE_HOST_ROOT="${CHARIOX_SLICE_PRIVATE_HOST_ROOT:-}"
+SLICE_PRIVATE_ROOT="/var/lib/chariox/slice-private"
+SLICE_KERNEL_HOME="/home/slice/.chariox"
 SLICE_ACCOUNT_ROOT="/home/slice/.chariox/daemon/provider-accounts/$SLICE_ACCOUNT_OWNER"
 SLICE_PROVIDER_HOME="/home/slice/.chariox/provider-home"
+if [[ -n "$SLICE_PRIVATE_HOST_ROOT" ]]; then
+  SLICE_KERNEL_HOME="$SLICE_PRIVATE_ROOT/kernel"
+  SLICE_ACCOUNT_ROOT="$SLICE_PRIVATE_ROOT/provider-accounts/$SLICE_ACCOUNT_OWNER"
+  SLICE_PROVIDER_HOME="$SLICE_PRIVATE_ROOT/provider-home"
+fi
 SLICE_RELAY_PEER_PROTOCOL_VERSION="$(sed -nE 's/^pub const RELAY_PEER_PROTOCOL_VERSION: u32 = ([0-9]+);$/\1/p' "$REPO_ROOT/apps/kernel/src/transport/relay_peer.rs" | head -n 1)"
 SLICE_RUNTIME_SOURCE_REVISION="$(runtime_source_revision)"
 
@@ -275,18 +283,27 @@ restore_saved_home_volume() {
   log "restoring saved home archive $SLICE_SAVED_HOME_ARCHIVE into volume $SLICE_HOME_VOLUME"
   run_with_timeout 30 docker rm -f "$helper" >/dev/null 2>&1 || true
   if run_with_timeout 60 docker create --name "$helper" --user root \
+    --memory 512m --cpus 1 --pids-limit 64 --network none \
+    --label "io.chariox.home-restore-helper=$helper" \
     -v "$SLICE_HOME_VOLUME:/home-dst" \
     "$SLICE_IMAGE" \
     sleep infinity >/dev/null; then :; else status=$?; fi
   if (( status == 0 )); then
     if run_with_timeout 60 docker start "$helper" >/dev/null; then :; else status=$?; fi
   fi
-  if (( status == 0 )); then
-    if run_with_timeout 120 docker cp -L "$SLICE_SAVED_HOME_ARCHIVE" "$helper:/tmp/home.tar.zst"; then :; else status=$?; fi
-  fi
-  if (( status == 0 )); then
-    if run_with_timeout 120 docker exec -u root "$helper" \
-      bash -lc "set -euo pipefail; find /home-dst -mindepth 1 -maxdepth 1 -exec rm -rf {} +; cd /home-dst; tar --zstd -xf /tmp/home.tar.zst; chown -R slice:slice /home-dst"; then :; else status=$?; fi
+  if [[ -n "${CHARIOX_SLICE_PRIVATE_HOST_ROOT:-}" ]]; then
+    if (( status == 0 )); then
+      if run_with_timeout 1300 node "$REPO_ROOT/apps/kernel/slice-linux-docker/protected-home-restore.mjs" \
+        "$helper" "$SLICE_HOME_VOLUME" "$SLICE_SAVED_HOME_ARCHIVE"; then :; else status=$?; fi
+    fi
+  else
+    if (( status == 0 )); then
+      if run_with_timeout 120 docker cp -L "$SLICE_SAVED_HOME_ARCHIVE" "$helper:/tmp/home.tar.zst"; then :; else status=$?; fi
+    fi
+    if (( status == 0 )); then
+      if run_with_timeout 120 docker exec -u root "$helper" \
+        bash -lc "set -euo pipefail; find /home-dst -mindepth 1 -maxdepth 1 -exec rm -rf {} +; cd /home-dst; tar --zstd -xf /tmp/home.tar.zst; chown -R slice:slice /home-dst"; then :; else status=$?; fi
+    fi
   fi
   if run_with_timeout 30 docker rm -f "$helper" >/dev/null 2>&1; then :; else cleanup_status=$?; fi
   if (( status != 0 )); then return "$status"; fi
@@ -297,6 +314,10 @@ restore_saved_home_volume() {
 prepare_home_volume() {
   local inspect_output
   if inspect_output="$(run_with_timeout 20 docker volume inspect "$SLICE_HOME_VOLUME" 2>&1)"; then
+    if [[ -n "${CHARIOX_SLICE_RESTORE_GENERATION:-}" ]]; then
+      node "$REPO_ROOT/apps/kernel/slice-linux-docker/protected-home-generation.mjs" --require-ready \
+        || fail "restored home generation is incomplete; previous home is preserved"
+    fi
     log "preserving existing home volume $SLICE_HOME_VOLUME; saved home archive is only used for an initial restore"
     return 0
   fi
@@ -599,6 +620,9 @@ require_saved_state_compatibility() {
     log "saved state image $SLICE_IMAGE is runtime-compatible and Selkies-capable"
     return 0
   fi
+  if [[ -n "$SLICE_PRIVATE_HOST_ROOT" ]]; then
+    fail "protected saved state requires its original compatible image; existing identity and saved state are preserved"
+  fi
   if saved_state_image_compatible "$SLICE_BASE_IMAGE"; then
     log "saved state migration: restoring $SLICE_SAVED_HOME_ARCHIVE on Selkies-capable runtime image $SLICE_BASE_IMAGE; home volume state is preserved"
     SLICE_IMAGE="$SLICE_BASE_IMAGE"
@@ -646,6 +670,9 @@ build_standard_runtime_image() {
       -f "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/Dockerfile" \
       -t "$image" \
       "$REPO_ROOT"
+    if [[ -n "${CHARIOX_SLICE_PRIVATE_HOST_ROOT:-}" ]]; then
+      node "$REPO_ROOT/apps/kernel/slice-linux-docker/protected-image-proof.mjs" --record-standard-build "$image"
+    fi
     return
   fi
   docker_build \
@@ -657,6 +684,9 @@ build_standard_runtime_image() {
     -f "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/Dockerfile" \
     -t "$image" \
     "$REPO_ROOT"
+  if [[ -n "${CHARIOX_SLICE_PRIVATE_HOST_ROOT:-}" ]]; then
+    node "$REPO_ROOT/apps/kernel/slice-linux-docker/protected-image-proof.mjs" --record-standard-build "$image"
+  fi
 }
 
 ensure_runtime_base_image() {
@@ -718,6 +748,9 @@ build_image() {
     fi
     ensure_runtime_base_image
     if ! docker image inspect "$SLICE_IMAGE" >/dev/null 2>&1; then
+      if [[ -n "$SLICE_PRIVATE_HOST_ROOT" ]]; then
+        fail "protected saved state image is missing; existing identity and saved state are preserved"
+      fi
       log "saved state image $SLICE_IMAGE is missing; restoring the saved home archive on $SLICE_BASE_IMAGE"
       SLICE_IMAGE="$SLICE_BASE_IMAGE"
     fi
@@ -869,6 +902,19 @@ ensure_container() {
       -v "$SLICE_WORKSPACE_SOURCE:/workspace:$SLICE_WORKSPACE_MOUNT_MODE"
       --add-host "host.docker.internal:host-gateway"
     )
+    if [[ -n "$SLICE_PRIVATE_HOST_ROOT" ]]; then
+      # The trusted host provisioner prepares and verifies this retained root.
+      # Existing legacy containers are not retrofitted or migrated here.
+      docker_create_args+=(
+        -e "HOME=/home/slice"
+        -e "CHARIOX_HOME=$SLICE_KERNEL_HOME"
+        -e "CHARIOX_MANAGED_PROVIDER_HOME=$SLICE_PROVIDER_HOME"
+        -e "CHARIOX_SLICE_PRIVATE_ROOT=$SLICE_PRIVATE_ROOT"
+        -v "$SLICE_PRIVATE_HOST_ROOT:$SLICE_PRIVATE_ROOT"
+        -v "$SLICE_PRIVATE_HOST_ROOT/nssdb:/home/slice/.local/share/pki/nssdb"
+        --tmpfs /tmp/chariox-slice-state:rw,nosuid,nodev,noexec,mode=0700,uid=1001,gid=1001
+      )
+    fi
     if [[ "$SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY" == "1" ]]; then
       # The worker kernel launches providers through an inner bubblewrap user,
       # PID, and mount namespace. Docker's default seccomp, AppArmor, and
@@ -999,7 +1045,25 @@ recover_existing_container() {
   refresh_slice_support_files
 }
 
+ensure_protected_runtime_barrier() {
+  if [[ -n "${CHARIOX_SLICE_PRIVATE_HOST_ROOT:-}" ]]; then
+    # This reserved runtime tree is installed by the signed provisioner. Keep
+    # ordinary slice applications from replacing code after its hash is pinned.
+    # Legacy layouts are deliberately untouched.
+    run_with_timeout 30 docker exec -u root "$SLICE_NAME" sh -ec '
+      for path in / /opt /opt/chariox-slice /opt/chariox-slice/bin /opt/chariox-slice/bin/chariox-kernel; do
+        test ! -L "$path" || exit 1
+      done
+      chown -hR root:root /opt/chariox-slice
+      find /opt/chariox-slice -type d -exec chmod 0755 {} +
+      find /opt/chariox-slice -type f -exec chmod go-w {} +
+    ' || fail "protected runtime ownership could not be established"
+    node "$REPO_ROOT/apps/kernel/slice-linux-docker/protected-first-boot.mjs"
+  fi
+}
+
 start_slice_services() {
+  ensure_protected_runtime_barrier
   if [[ "$SLICE_IMPORT_PROVIDER_AUTH" == "1" ]]; then
     import_provider_auth
   fi
@@ -1037,6 +1101,13 @@ exec_slice_with_timeout() {
   local seconds="$1"
   shift
   local relay_env_args=()
+  if [[ -n "$SLICE_PRIVATE_HOST_ROOT" ]]; then
+    relay_env_args+=(
+      -e "CHARIOX_HOME=$SLICE_KERNEL_HOME"
+      -e "CHARIOX_MANAGED_PROVIDER_HOME=$SLICE_PROVIDER_HOME"
+      -e "CHARIOX_SLICE_PRIVATE_ROOT=$SLICE_PRIVATE_ROOT"
+    )
+  fi
   # Forward a provisioner-supplied binding, including partial values so kernel
   # boot validation rejects incomplete identities rather than running unbound.
   local binding_name
@@ -1424,13 +1495,15 @@ start_provider_login() {
   local safe_provider
   safe_provider="$(printf '%s' "$SLICE_LOGIN_PROVIDER" | tr -c 'A-Za-z0-9_.-' '-')"
   local session_name="chariox-slice-login-${safe_provider}"
-  local log_file="/opt/chariox-slice/logs/provider-login-${safe_provider}.log"
+  local login_logs="/opt/chariox-slice/logs"
+  if [[ -n "$SLICE_PRIVATE_HOST_ROOT" ]]; then login_logs="$SLICE_PRIVATE_ROOT/runtime/logs"; fi
+  local log_file="$login_logs/provider-login-${safe_provider}.log"
   local command_text
   command_text="$(provider_login_command)"
   log "starting $SLICE_LOGIN_PROVIDER login in $session_name"
   run_with_timeout 30 docker exec -u slice "$SLICE_NAME" bash -lc "
     set -euo pipefail
-    mkdir -p /opt/chariox-slice/logs
+    mkdir -p '$login_logs'
     rm -f '$log_file'
     screen -S '$session_name' -X quit >/dev/null 2>&1 || true
     screen -dmS '$session_name' bash -lc \"set +e; $command_text 2>&1 | tee -a '$log_file'; printf '\\n[chariox] provider login exited with status %s\\n' \\\${PIPESTATUS[0]} | tee -a '$log_file'; exec bash\"
@@ -1524,6 +1597,27 @@ destroy_container() {
   fi
 }
 
+restore_slice_state() {
+  require_docker
+  [[ -n "$SLICE_SAVED_HOME_ARCHIVE" ]] || fail "restore-state requires a saved home archive"
+  build_image
+  if [[ -n "${CHARIOX_SLICE_RESTORE_GENERATION:-}" ]]; then
+    # Materialize and durably verify the fresh generation while the old
+    # container/home still exist. Never remove retained previous data here.
+    prepare_home_volume
+    node "$REPO_ROOT/apps/kernel/slice-linux-docker/protected-home-generation.mjs" --require-ready \
+      || fail "restored home generation is incomplete; previous home is preserved"
+    stop_container
+    if container_exists; then run_with_timeout 30 docker rm "$SLICE_NAME" >/dev/null; fi
+  else
+    destroy_container
+  fi
+  ensure_container
+  ensure_protected_runtime_barrier
+  stop_container
+  log "saved slice state restored; container remains stopped"
+}
+
 main() {
   local action="${1:-provision}"
   case "$action" in
@@ -1550,13 +1644,7 @@ main() {
       log "provision completed; use status or logs actions for diagnostics"
       ;;
     restore-state)
-      require_docker
-      [[ -n "$SLICE_SAVED_HOME_ARCHIVE" ]] || fail "restore-state requires a saved home archive"
-      build_image
-      destroy_container
-      ensure_container
-      stop_container
-      log "saved slice state restored; container remains stopped"
+      restore_slice_state
       ;;
     recover)
       require_docker
@@ -1626,6 +1714,9 @@ main() {
       require_docker
       ensure_container
       require_slice_free_space "runtime" /home/slice /tmp
+      if [[ -n "${CHARIOX_SLICE_PRIVATE_HOST_ROOT:-}" ]]; then
+        node "$REPO_ROOT/apps/kernel/slice-linux-docker/protected-first-boot.mjs"
+      fi
       exec_slice /opt/chariox-slice/start-runtime.sh
       ;;
     start-providers)

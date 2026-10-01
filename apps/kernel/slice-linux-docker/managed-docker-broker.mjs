@@ -1,5 +1,10 @@
 #!/usr/bin/env node
 
+import { recordCapturedImageProof } from "./protected-image-proof.mjs"
+import { requireSafeHomeVolume } from "./protected-home-preflight.mjs"
+import { createManagedLayoutController } from "./protected-managed-layout.mjs"
+import { managedRootlessSliceOwner } from "./protected-rootless-owner.mjs"
+import { DURABLE_LAYOUT_ROOT } from "./protected-first-boot.mjs"
 import { spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import {
@@ -34,6 +39,7 @@ const MAX_CREDENTIAL_BYTES = 2 * 1024 * 1024
 const MAX_CREDENTIAL_TOTAL_BYTES = 8 * 1024 * 1024
 const LINUX_O_PATH = 0x200000
 const PROVIDER_ACCOUNT_CREDENTIAL_PATH = /^\/home\/slice\/\.chariox\/daemon\/provider-accounts\/[A-Za-z0-9-]+\/(?:codex\/[A-Za-z0-9-]+\/codex\/auth\.json|opencode\/[A-Za-z0-9-]+\/data\/opencode\/auth\.json)$/
+const PROTECTED_PROVIDER_ACCOUNT_CREDENTIAL_PATH = /^\/var\/lib\/chariox\/slice-private\/provider-accounts\/[A-Za-z0-9-]+\/(?:codex\/[A-Za-z0-9-]+\/codex\/auth\.json|opencode\/[A-Za-z0-9-]+\/data\/opencode\/auth\.json)$/
 const SHARE_ROOT_INPUT = resolve(process.env.CHARIOX_SLICE_DOCKER_SHARE_ROOT ?? "/var/lib/chariox-slice-share")
 const SHARE_ROOT = existsSync(SHARE_ROOT_INPUT) ? realpathSync(SHARE_ROOT_INPUT) : SHARE_ROOT_INPUT
 const SOCKET_PATH = process.env.CHARIOX_SLICE_DOCKER_BROKER_SOCKET ?? "/var/lib/chariox-slice-share/.broker-private/control/control.sock"
@@ -73,6 +79,17 @@ function signedBuildContextDigest() {
 }
 
 const SIGNED_BUILD_CONTEXT_DIGEST = signedBuildContextDigest()
+const protectedLayouts = createManagedLayoutController({
+  root: DURABLE_LAYOUT_ROOT, sourceDigest: process.platform === "linux" && process.getuid() === 0
+    && DOCKER_HOST === "unix:///run/chariox-docker/docker.sock" ? SIGNED_BUILD_CONTEXT_DIGEST : undefined,
+  dataOwner: () => {
+    if (DOCKER_HOST !== "unix:///run/chariox-docker/docker.sock") fail("protected slice layout requires the verified managed Docker engine")
+    return managedRootlessSliceOwner()
+  },
+  docker: args => spawnSync("/usr/bin/docker", args, {
+    env: dockerEnvironment(), encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 60_000,
+  }),
+})
 const persistentHandleDescriptors = new Map()
 let persistentHandleRecords
 const ACTIONS = new Set([
@@ -259,7 +276,7 @@ function validateDockerExec(args) {
     args[2] === "slice" &&
     command.length === 3 &&
     exactArguments(command.slice(0, 2), ["test", "-s"]) &&
-    PROVIDER_ACCOUNT_CREDENTIAL_PATH.test(command[2])
+    (PROVIDER_ACCOUNT_CREDENTIAL_PATH.test(command[2]) || PROTECTED_PROVIDER_ACCOUNT_CREDENTIAL_PATH.test(command[2]))
   ) return
   if (args[2] === "slice" && exactArguments(command, ["gh", "auth", "token", "--hostname", "github.com"])) return
   if (
@@ -626,6 +643,17 @@ function validateRequest(request) {
     validateProvisioner(request.action, request.environment, request.files)
     return
   }
+  if (request?.kind === "capture_preflight") {
+    exactKeys(request, ["kind", "container"], "slice capture preflight request")
+    validateResource(request.container, "slice capture container")
+    return
+  }
+  if (request?.kind === "home_restore_resolve") {
+    exactKeys(request, ["kind", "container", "path"], "home restore resolution")
+    validateSliceContainer(request.container, "home restore container")
+    managedHomeArchiveCoordinates(request.path)
+    return
+  }
   if (request?.kind === "home_archive_capture") {
     exactKeys(request, ["kind", "container", "scope", "id"], "home archive capture request")
     validateResource(request.container, "home archive container")
@@ -684,18 +712,10 @@ function artifactDirectory(scope, id) {
 }
 
 function captureHomeArchive(request) {
-  const sizeResult = spawnSync(
-    "/usr/bin/docker",
-    ["exec", "-u", "root", request.container, "stat", "-c", "%s", "/tmp/home.tar.zst"],
-    { env: dockerEnvironment(), encoding: "utf8", maxBuffer: 64 * 1024, timeout: 30_000 },
-  )
-  if (sizeResult.status !== 0 || !/^[1-9][0-9]*\n?$/.test(sizeResult.stdout)) fail("slice home archive size is unavailable")
-  const expectedSize = Number(sizeResult.stdout.trim())
-  if (!Number.isSafeInteger(expectedSize) || expectedSize > MAX_HOME_ARCHIVE_BYTES) fail("slice home archive exceeds its size limit")
-  const filesystem = statfsSync(BROKER_ARTIFACT_ROOT, { bigint: true })
-  const available = filesystem.bavail * filesystem.bsize
-  if (available < BigInt(expectedSize) + BigInt(MIN_FREE_AFTER_ARCHIVE_BYTES)) fail("insufficient space for slice home archive")
-
+  const owner = request.container.match(/^(chariox-slice-[A-Za-z0-9_.:-]+)-home-archive-[0-9]+$/)?.[1]
+  if (!owner) fail("slice home capture helper ownership is invalid")
+  const layout = protectedLayouts.preflight(owner)
+  protectedLayouts.requireQuiescedHome(owner)
   const scopeRoot = artifactScopeRoot(request.scope)
   mkdirSync(scopeRoot, { recursive: true, mode: 0o700 })
   chmodSync(scopeRoot, 0o700)
@@ -707,31 +727,19 @@ function captureHomeArchive(request) {
   chmodSync(staging, 0o700)
   const staged = join(staging, "home.tar.zst")
   try {
-    const copied = spawnSync(
-      "/usr/bin/docker",
-      ["cp", `${request.container}:/tmp/home.tar.zst`, staged],
-      { env: dockerEnvironment(), maxBuffer: MAX_OUTPUT_BYTES, timeout: 10 * 60_000 },
-    )
-    if (copied.status !== 0) fail("failed to capture slice home archive")
+    const captured = spawnSync(process.execPath,
+      [join(dirname(fileURLToPath(import.meta.url)), "protected-home-capture.mjs"), request.container, layout.homeVolume, staged],
+      {env: dockerEnvironment(), encoding: "utf8", maxBuffer: 64 * 1024, timeout: 11 * 60_000})
+    if (captured.status !== 0) fail("slice home capture was refused; existing saved state is preserved")
+    const result = JSON.parse(captured.stdout)
+    exactKeys(result, ["sizeBytes", "sha256"], "protected home capture result")
+    const expectedSize = result.sizeBytes
+    const digest = result.sha256
     const metadata = lstatSync(staged)
-    if (metadata.isSymbolicLink() || !metadata.isFile() || metadata.nlink !== 1 || metadata.size !== expectedSize) {
-      fail("captured slice home archive is invalid")
-    }
-    chmodSync(staged, 0o600)
-    const stagedFd = openSync(staged, constants.O_RDONLY | constants.O_NOFOLLOW)
-    try {
-      fsyncSync(stagedFd)
-    } finally {
-      closeSync(stagedFd)
-    }
-    const digestResult = spawnSync("/usr/bin/sha256sum", ["--", staged], {
-      env: { PATH: "/usr/bin:/bin" },
-      encoding: "utf8",
-      maxBuffer: 64 * 1024,
-      timeout: 10 * 60_000,
-    })
-    const digest = digestResult.stdout?.match(/^([a-f0-9]{64})\s/)?.[1]
-    if (digestResult.status !== 0 || !digest) fail("failed to digest slice home archive")
+    if (!Number.isSafeInteger(expectedSize) || expectedSize <= 0 || expectedSize > MAX_HOME_ARCHIVE_BYTES
+        || !/^[a-f0-9]{64}$/.test(digest) || !metadata.isFile() || metadata.isSymbolicLink()
+        || metadata.nlink !== 1 || metadata.size !== expectedSize || metadata.uid !== process.getuid()
+        || (metadata.mode & 0o077) !== 0) fail("captured slice home archive is invalid")
     const stagedMetadata = join(staging, "metadata.json")
     const metadataFd = openSync(
       stagedMetadata,
@@ -757,6 +765,7 @@ function captureHomeArchive(request) {
     fsyncDirectory(identityRoot)
     fsyncDirectory(scopeRoot)
     const finalPath = join(destination, "home.tar.zst")
+    protectedLayouts.recordCapture(owner, digest)
     return { path: finalPath, sizeBytes: expectedSize, sha256: digest }
   } finally {
     rmSync(staging, { recursive: true, force: true })
@@ -826,7 +835,8 @@ function inspectManagedHomeArchive(path) {
 }
 
 function verifyManagedHomeArchive(path) {
-  return inspectManagedHomeArchive(path).archive
+  const {archive, metadata} = inspectManagedHomeArchive(path)
+  return {...archive, digest: metadata.sha256}
 }
 
 function verifyHomeArchive(request) {
@@ -1195,7 +1205,11 @@ function dockerEnvironment() {
 function expectedProvisionerMounts(environment) {
   const container = environment.CHARIOX_SLICE_NAME
   const mode = environment.CHARIOX_SLICE_WORKSPACE_MOUNT_MODE ?? "rw"
-  const mounts = []
+  const mounts = environment.CHARIOX_SLICE_PRIVATE_HOST_ROOT
+    ? [
+      {destination: "/var/lib/chariox/slice-private", source: environment.CHARIOX_SLICE_PRIVATE_HOST_ROOT, rw: true},
+      {destination: "/home/slice/.local/share/pki/nssdb", source: join(environment.CHARIOX_SLICE_PRIVATE_HOST_ROOT, "nssdb"), rw: true},
+    ] : []
   if (environment.CHARIOX_SLICE_WORKSPACE) {
     const targets = ["/workspace"]
     const mountCount = Number(environment.CHARIOX_SLICE_DEVELOPMENT_MOUNT_COUNT ?? "0")
@@ -1223,13 +1237,13 @@ function expectedProvisionerMounts(environment) {
 
 function recordedContainerMounts(container) {
   loadPersistentHandles()
-  return persistentHandleRecords
+  return [...protectedLayouts.privateMounts(container), ...persistentHandleRecords
     .filter((record) => record.container === container)
     .flatMap((record) => record.targets.map((destination) => ({
       destination,
       rw: record.rw,
       source: join(HANDLE_ROOT, record.handle),
-    })))
+    })))]
 }
 
 function normalizedMounts(mounts) {
@@ -1302,6 +1316,13 @@ function prepareDocker(args) {
   const prepared = [...args]
   const descriptors = []
   let output
+  if (prepared[0] === "create" && prepared.length === 20) {
+    const suffix = /-(?:disk-admission-[a-f0-9]{16}|home-archive-[0-9]{1,20})$/.exec(prepared[2])
+    if (suffix) {
+      const container = prepared[2].slice(0, suffix.index)
+      prepared[16] = `${protectedLayouts.homeVolume(container)}:/home-src:ro`
+    }
+  }
   if (prepared[0] === "cp") {
     const hostIndex = prepared[1].includes(":") ? 2 : 1
     const hostPath = prepared[hostIndex]
@@ -1316,10 +1337,16 @@ function prepareDocker(args) {
 
 function prepareProvisioner(request) {
   const environment = { ...request.environment }
+  const privateRoot = protectedLayouts.prepare(request.action, environment)
+  if (privateRoot) {
+    environment.CHARIOX_SLICE_PRIVATE_HOST_ROOT = privateRoot
+    environment.CHARIOX_SLICE_HOME_VOLUME = protectedLayouts.homeVolume(environment.CHARIOX_SLICE_NAME)
+  }
   const descriptors = []
   const handles = new Set()
   const newHandles = new Set()
   let inputDirectory
+  let restoreDigest
   try {
     const provisionsContainer = new Set(["provision", "restore-state"]).has(request.action)
     if (provisionsContainer) {
@@ -1366,6 +1393,7 @@ function prepareProvisioner(request) {
           : pinnedSharedPath(value, name, "file")
         descriptors.push(pinned.fd)
         environment[name] = pinned.path
+        if (name === "CHARIOX_SLICE_SAVED_HOME_ARCHIVE") restoreDigest = pinned.digest
       }
     }
     const mountCount = provisionsContainer
@@ -1388,6 +1416,7 @@ function prepareProvisioner(request) {
       handles.add(persistent.handle)
       if (persistent.created) newHandles.add(persistent.handle)
     }
+    if (restoreDigest) protectedLayouts.beginRestore(environment, restoreDigest, request.action)
     if (request.action === "import-provider-auth") {
       mkdirSync(BROKER_INPUT_ROOT, { recursive: true, mode: 0o700 })
       chmodSync(BROKER_INPUT_ROOT, 0o700)
@@ -1428,8 +1457,43 @@ function spawnBounded(command, args, options) {
   return spawnSync(command, args, { ...options, timeout: 20 * 60_000, killSignal: "SIGKILL" })
 }
 
+function inspectDockerObject(kind, reference) {
+  const result = spawnSync("/usr/bin/docker", [kind, "inspect", reference],
+    {env: dockerEnvironment(), encoding: "utf8", timeout: 30_000, maxBuffer: 1024 * 1024})
+  if (result.status !== 0) fail("managed slice capture provenance is unavailable")
+  const records = JSON.parse(result.stdout)
+  if (!Array.isArray(records) || records.length !== 1) fail("managed slice capture provenance is unavailable")
+  return records[0]
+}
+
 function execute(request) {
   validateRequest(request)
+  if (request.kind === "docker" && request.args[0] === "exec"
+      && PROTECTED_PROVIDER_ACCOUNT_CREDENTIAL_PATH.test(request.args.at(-1))) {
+    protectedLayouts.preflight(request.args[3])
+  }
+  let commitSource
+  let commitParent
+  if (request.kind === "docker" && request.args[0] === "commit") {
+    const layout = protectedLayouts.preflight(request.args[1])
+    protectedLayouts.requireQuiescedHome(request.args[1])
+    requireSafeHomeVolume({volume: layout.homeVolume,
+      docker: args => spawnSync("/usr/bin/docker", args, {env: dockerEnvironment(), timeout: 30_000, maxBuffer: 1024 * 1024})})
+    commitSource = inspectDockerObject("container", request.args[1])
+    commitParent = inspectDockerObject("image", commitSource.Image)
+  }
+  if (request.kind === "capture_preflight") {
+    const layout = protectedLayouts.preflight(request.container)
+    requireSafeHomeVolume({volume: layout.homeVolume,
+      docker: args => spawnSync("/usr/bin/docker", args, {env: dockerEnvironment(), timeout: 30_000, maxBuffer: 1024 * 1024})})
+    return {status: 0, stdoutBase64: "", stderrBase64: ""}
+  }
+  if (request.kind === "home_restore_resolve") {
+    const {archive, metadata} = inspectManagedHomeArchive(request.path)
+    try { protectedLayouts.resolveRestore(request.container, metadata.sha256) }
+    finally { closeSync(archive.fd) }
+    return {status: 0, stdoutBase64: "", stderrBase64: ""}
+  }
   if (request.kind === "home_archive_capture") {
     const captured = captureHomeArchive(request)
     return { status: 0, stdoutBase64: Buffer.from(JSON.stringify(captured)).toString("base64"), stderrBase64: "" }
@@ -1465,10 +1529,15 @@ function execute(request) {
         DOCKER_HOST,
         ...prepared.environment,
         ...(SIGNED_BUILD_CONTEXT_DIGEST
-          ? { CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: SIGNED_BUILD_CONTEXT_DIGEST }
+          ? { CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: SIGNED_BUILD_CONTEXT_DIGEST, CHARIOX_SLICE_PROTECTED_IMAGE_PROOF_ROOT: protectedLayouts.imageRoot }
           : {}),
       }
     const result = spawnBounded(command, args, { env, maxBuffer: MAX_OUTPUT_BYTES })
+    if (commitSource && result.status === 0) {
+      const captured = inspectDockerObject("image", request.args[2])
+      recordCapturedImageProof(protectedLayouts.imageRoot, SIGNED_BUILD_CONTEXT_DIGEST,
+        commitParent, commitSource, captured)
+    }
     if (request.kind === "docker" && prepared.output && result.status === 0) {
       publishStagedOutput(prepared.output)
     }
@@ -1477,6 +1546,7 @@ function execute(request) {
     }
     if (request.kind === "provisioner" && new Set(["provision", "restore-state"]).has(request.action)) {
       if (result.status === 0) {
+        protectedLayouts.complete(prepared.environment)
         removePersistentHandles(
           (record) => record.container === request.environment.CHARIOX_SLICE_NAME && !prepared.handles.has(record.handle),
         )

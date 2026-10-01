@@ -36,12 +36,13 @@ mod state;
 mod tests;
 
 use broker::docker_command;
-pub(crate) use capture_preflight::require_supported_layout as require_supported_slice_capture_layout;
+pub(crate) use capture_preflight::require_verified_layout as require_supported_slice_capture_layout;
 use provider_inputs::home_provider_credential_sources;
 pub(crate) use snapshot_pause::recover as recover_local_docker_snapshot_pause;
 pub(crate) use state::{
     cleanup_replaced_saved_state_generation, recover_pending_local_docker_slice_backup_restore,
     remove_local_docker_slice_backup_best_effort, restore_local_docker_slice_backup,
+    resolve_protected_home_restore_retention,
     SliceBackupRestoreResolution,
 };
 pub use state::{

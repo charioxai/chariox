@@ -2,7 +2,15 @@
 set -Eeuo pipefail
 
 ROOT="${CHARIOX_SLICE_ROOT:-/opt/chariox-slice}"
+PRIVATE_RUNTIME_ROOT="$ROOT/private"
+if [[ -n "${CHARIOX_SLICE_PRIVATE_ROOT:-}" ]]; then
+  PRIVATE_RUNTIME_ROOT="$CHARIOX_SLICE_PRIVATE_ROOT/runtime"
+fi
+KERNEL_HOME="${CHARIOX_HOME:-$HOME/.chariox}"
 LOGS="$ROOT/logs"
+if [[ -n "${CHARIOX_SLICE_PRIVATE_ROOT:-}" ]]; then
+  LOGS="$CHARIOX_SLICE_PRIVATE_ROOT/runtime/logs"
+fi
 KERNEL_PORT="${CHARIOX_SLICE_KERNEL_PORT:-43119}"
 MCP_PORT="${CHARIOX_SLICE_MCP_PORT:-43120}"
 CODEX_PORT_RANGE="${CHARIOX_SLICE_CODEX_PORT_RANGE:-43260-43279}"
@@ -26,7 +34,7 @@ SLICE_ID="${CHARIOX_SLICE_ID:-}"
 SLICE_OWNER_KERNEL_ID="${CHARIOX_SLICE_OWNER_KERNEL_ID:-}"
 SLICE_OWNER_MACHINE_ID="${CHARIOX_SLICE_OWNER_MACHINE_ID:-}"
 SLICE_OWNER_PUBLIC_KEY="${CHARIOX_SLICE_OWNER_PUBLIC_KEY:-}"
-CAPABILITY_ISOLATION_ROOT="${CHARIOX_SLICE_CAPABILITY_ISOLATION_ROOT:-$HOME/.chariox/managed-capabilities}"
+CAPABILITY_ISOLATION_ROOT="${CHARIOX_SLICE_CAPABILITY_ISOLATION_ROOT:-$KERNEL_HOME/managed-capabilities}"
 BROWSER_DOWNLOAD_DIR="${CHARIOX_BROWSER_DOWNLOAD_DIR:-$HOME/Downloads}"
 BROWSER_UPLOAD_ROOTS="${CHARIOX_BROWSER_UPLOAD_ROOTS:-/workspace:$BROWSER_DOWNLOAD_DIR}"
 PROVIDER_HOME="${CHARIOX_MANAGED_PROVIDER_HOME:-$HOME/.chariox/provider-home}"
@@ -34,9 +42,9 @@ PROVIDER_ISOLATION_PROBE="${CHARIOX_MANAGED_PROVIDER_ISOLATION_PROBE:-0}"
 mkdir -p "$LOGS"
 mkdir -p "$CAPABILITY_ISOLATION_ROOT"
 mkdir -p "$BROWSER_DOWNLOAD_DIR"
-mkdir -p "$HOME/.chariox" /tmp/chariox-slice-state
-mkdir -p "$HOME/.chariox/daemon"
-install -d -m 0700 "$PROVIDER_HOME" "$ROOT/private"
+mkdir -p "$KERNEL_HOME" /tmp/chariox-slice-state
+mkdir -p "$KERNEL_HOME/daemon"
+install -d -m 0700 "$PROVIDER_HOME" "$PRIVATE_RUNTIME_ROOT"
 
 case "$PROVIDER_ISOLATION_PROBE" in
   0|1) ;;
@@ -58,10 +66,10 @@ wait_for_screen_session() {
   return 1
 }
 
-if [[ ! -f "$HOME/.chariox/config.toml" ]]; then
-  cat >"$HOME/.chariox/config.toml" <<'EOF'
+if [[ ! -f "$KERNEL_HOME/config.toml" ]]; then
+  cat >"$KERNEL_HOME/config.toml" <<EOF
 [state]
-path = "/home/slice/.chariox/daemon/kernel.db"
+path = "$KERNEL_HOME/daemon/kernel.db"
 
 [credential_vault]
 backend = "process_memory"
@@ -81,8 +89,8 @@ if [[ -z "$CLOUD_RELAY_CONFIG_JSON" && -n "$CLOUD_RELAY_CONFIG_PATH" && -f "$CLO
 fi
 
 if [[ -n "$CLOUD_RELAY_CONFIG_JSON" ]]; then
-  printf '%s' "$CLOUD_RELAY_CONFIG_JSON" >"$HOME/.chariox/daemon/config.json"
-  chmod 600 "$HOME/.chariox/daemon/config.json"
+  printf '%s' "$CLOUD_RELAY_CONFIG_JSON" >"$KERNEL_HOME/daemon/config.json"
+  chmod 600 "$KERNEL_HOME/daemon/config.json"
 fi
 
 PROVIDER_BRIDGE_READY_FILE="/tmp/chariox-slice-provider-bridge-ready.json"
@@ -123,7 +131,7 @@ else
   kernel_relay_env=(CHARIOX_RELAY_URL="$RELAY_URL" CHARIOX_RELAY_TOKEN="$RELAY_TOKEN")
 fi
 
-KERNEL_LOCAL_AUTH_FILE="$ROOT/private/kernel-local-auth.token"
+KERNEL_LOCAL_AUTH_FILE="$PRIVATE_RUNTIME_ROOT/kernel-local-auth.token"
 umask 077
 dd if=/dev/urandom bs=48 count=1 status=none | base64 | tr -d '\n' >"$KERNEL_LOCAL_AUTH_FILE"
 chmod 600 "$KERNEL_LOCAL_AUTH_FILE"

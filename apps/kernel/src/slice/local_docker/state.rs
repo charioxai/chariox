@@ -69,7 +69,7 @@ fn save_local_docker_slice_state_inner(
     quiesce: SliceSnapshotQuiesce,
     retain_replaced_state: bool,
 ) -> Result<LocalDockerSavedStateGeneration, DaemonError> {
-    super::capture_preflight::require_supported_layout("slice.state.save")?;
+    super::capture_preflight::require_verified_layout(record, "slice.state.save")?;
     ensure_local_docker_state_target(record, "slice.state.save")?;
     ensure_host_docker_ready()?;
     let state_id = active_state_id(record);
@@ -412,7 +412,13 @@ pub(crate) fn restore_local_docker_slice_backup(
         },
         || save_local_docker_slice_state_retaining_replaced(record, options),
         |generation, resolution| {
-            persist_restore_resolution(&transaction, &generation.state, resolution)
+            persist_restore_resolution(&transaction, &generation.state, resolution)?;
+            let artifact = match resolution {
+                SliceBackupRestoreResolution::Restored => &transaction.target_backup,
+                SliceBackupRestoreResolution::RolledBack => &transaction.rollback_backup,
+            };
+            resolve_protected_home_restore_retention(record, &artifact.home_archive_path);
+            Ok(())
         },
         || {
             super::run_local_docker_slice_action(
@@ -429,6 +435,20 @@ pub(crate) fn restore_local_docker_slice_backup(
         || remove_local_docker_slice_backup_best_effort(&rollback),
     )?;
     Ok(generation.state)
+}
+
+pub(crate) fn resolve_protected_home_restore_retention(
+    record: &SliceRecord,
+    archive_path: &str,
+) {
+    // Invoke only after durable transaction resolution, for either restored or
+    // rolled-back state. Failure retains references and never triggers another
+    // rollback after publication.
+    if broker::resolve_home_restore(&local_docker_container_name(record), archive_path)
+        .is_err()
+    {
+        tracing::warn!("protected home restore retention resolution remains pending");
+    }
 }
 
 pub(super) fn restore_local_docker_slice_backup_with_rollback<T>(
@@ -578,7 +598,7 @@ fn create_local_docker_slice_backup_inner(
     name: Option<&str>,
     quiesce: SliceSnapshotQuiesce,
 ) -> Result<SliceBackupRecord, DaemonError> {
-    super::capture_preflight::require_supported_layout("slice.backup.create")?;
+    super::capture_preflight::require_verified_layout(record, "slice.backup.create")?;
     ensure_local_docker_state_target(record, "slice.backup.create")?;
     ensure_host_docker_ready()?;
     let backup_id = backup_id(record, name);
@@ -936,7 +956,7 @@ fn docker_commit_container(
     image_ref: &str,
     operation: &'static str,
 ) -> Result<(), DaemonError> {
-    super::capture_preflight::require_supported_layout(operation)?;
+    super::capture_preflight::require_verified_layout(record, operation)?;
     let container = local_docker_container_name(record);
     let status = docker_command()
         .args(["commit", &container, image_ref])
@@ -965,7 +985,7 @@ fn archive_local_docker_home_volume(
     archive_id: &str,
     operation: &'static str,
 ) -> Result<(PathBuf, u64, String), DaemonError> {
-    super::capture_preflight::require_supported_layout(operation)?;
+    super::capture_preflight::require_verified_layout(record, operation)?;
     let volume = format!("{}-home", local_docker_container_name(record));
     let helper = format!(
         "{}-home-archive-{}",
@@ -1020,6 +1040,17 @@ fn archive_local_docker_home_volume_with_helper(
             operation,
             message: format!("docker start home archive helper `{helper}` failed with {status}"),
         });
+    }
+    if broker::configured() {
+        return broker::capture_home_archive(helper, archive_scope, archive_id)
+            .map_err(|_| DaemonError::LocalTransport {
+                operation,
+                message: "protected slice home capture failed; existing saved state is preserved".to_string(),
+            })?
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation,
+                message: "protected slice home capture is unavailable".to_string(),
+            });
     }
     let output = docker_command()
         .args([

@@ -16,6 +16,18 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
         println!("{}", chariox_kernel::local::LOCAL_DAEMON_PROTOCOL_VERSION);
         return Ok(());
     }
+    if std::env::args_os().nth(1).as_deref()
+        == Some(std::ffi::OsStr::new("--prepare-protected-slice-identity"))
+    {
+        let port = std::env::args().nth(2).and_then(|value| value.parse::<u16>().ok())
+            .ok_or_else(|| chariox_kernel::DaemonError::LocalTransport {
+                operation: "prepare protected slice identity",
+                message: "a valid local kernel port is required".to_string(),
+            })?;
+        let proof = chariox_kernel::config::prepare_protected_slice_identity("127.0.0.1", port)?;
+        println!("{}", proof);
+        return Ok(());
+    }
     chariox_kernel::slice::initialize_managed_docker_broker();
     chariox_kernel::runtime_transport::initialize_kernel_local_auth_from_env()?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
