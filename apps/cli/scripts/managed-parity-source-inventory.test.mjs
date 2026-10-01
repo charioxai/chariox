@@ -4,10 +4,12 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import { INDEPENDENT_REVIEW_GROUPS } from "./lib/managed-parity-semantic-reviews.mjs";
 import { SOURCE_AUDIT_RULES } from "./lib/managed-parity-source-rules.mjs";
 import {
   collectSourceInventory,
   DEFAULT_SOURCE_REF,
+  DEFAULT_SEMANTIC_DISPOSITIONS,
   DEFAULT_REVIEWED_PREDICATES,
   evaluateSemanticDisposition,
   INVENTORY_SCHEMA,
@@ -212,7 +214,8 @@ test("exactly pinned source fixture retains historical anchors without semantic 
     assert.equal(report.summary.pendingReviewedPredicates, 3);
     assert.deepEqual(report.reviewedPredicates.map(({ status }) => status), ["pending_independent_review", "pending_independent_review", "pending_independent_review"]);
     assert.equal(report.summary.unreviewed, report.summary.candidateCount);
-    assert.equal(report.semanticReviews.length, 0);
+    assert.equal(report.semanticReviews.length, DEFAULT_SEMANTIC_DISPOSITIONS.length);
+    assert.ok(report.semanticReviews.every(review => review.status === "pending_source_review"));
     assert.equal(report.status, "fail", "source-role hints and historical identities do not approve semantic dispositions");
     assert.ok(report.entries.some((entry) => entry.category === "managed_env_selector"));
     assert.ok(report.entries.some((entry) => entry.category === "cleanup_selector"));
@@ -221,7 +224,10 @@ test("exactly pinned source fixture retains historical anchors without semantic 
 
 test("production and test sources are scanned while this inventory tool is excluded", () => {
   withFixture({}, (fixture) => {
+    const ledgerPath = "apps/cli/scripts/lib/managed-parity-semantic-reviews.mjs";
+    fixture.addFile(ledgerPath, 'const selector = "CHARIOX_MANAGED_REVIEW_DATA";\n');
     const report = collect(fixture);
+    assert.ok(!report.entries.some(entry => entry.path === ledgerPath), "MP-11 review data is part of the tool, not audited runtime source");
     assert.ok(report.entries.some((entry) => entry.path === "apps/cli/scripts/live-managed-selector.sh"
       && entry.selector === "CHARIOX_MANAGED_CLI_SCRIPT_SELECTOR"));
     assert.equal(report.entries.some((entry) => entry.path === "apps/cli/scripts/managed-parity-source-inventory.mjs"), false);
@@ -861,7 +867,7 @@ test("an inspected blob gets only provisional grouping and never independent app
       .every((entry) => entry.semanticDisposition.gateEffect === "fail_closed"));
     assert.equal(report.status, "fail");
     assert.equal(report.summary.allowedReleaseDeployment, 0);
-    assert.equal(report.inventoryTool.modules.length, 6);
+    assert.equal(report.inventoryTool.modules.length, 7);
     assert.match(report.inventoryTool.bundleSha256, /^[a-f0-9]{64}$/);
   });
 });
@@ -1914,5 +1920,65 @@ for (const pinned of FINAL_ARCHIVE_DECLARATIONS) {
       assert.equal(group?.classification, null);
       assert.equal(group?.independentDisposition, "pending");
     });
+  });
+}
+
+
+// MP-11: frozen independent conclusions may bind only the reviewed source.
+test("MP-11 independent ledger covers each inspected scope without authorizing scope expansion", () => {
+  assert.equal(new Set(INDEPENDENT_REVIEW_GROUPS.map(group => group.ruleId)).size, SOURCE_AUDIT_RULES.length);
+  assert.equal(new Set(DEFAULT_SEMANTIC_DISPOSITIONS.map(review => review.id)).size, DEFAULT_SEMANTIC_DISPOSITIONS.length);
+  const first = DEFAULT_SEMANTIC_DISPOSITIONS[0];
+  assert.equal(evaluateSemanticDisposition(first.anchor, { commit: first.sourceCommit, tree: first.sourceTree }, DEFAULT_SEMANTIC_DISPOSITIONS).status, "reviewed");
+  for (const group of INDEPENDENT_REVIEW_GROUPS) {
+    const rule = SOURCE_AUDIT_RULES.find(rule => rule.id === group.ruleId);
+    assert.equal(group.sourceCommit, rule.sourceCommit);
+    assert.equal(group.path, rule.path);
+    assert.equal(group.blob, rule.blob);
+    assert.ok(group.anchors.length > 0);
+  }
+  for (const review of DEFAULT_SEMANTIC_DISPOSITIONS) {
+    const source = { commit: review.sourceCommit, tree: review.sourceTree };
+    const result = evaluateSemanticDisposition(review.anchor, source, [review]);
+    assert.equal(result.disposition, review.disposition);
+    assert.equal(result.gateEffect, review.disposition === "removal_required" ? "fail" : "reviewed");
+    for (const field of ["path", "blob", "line", "column", "symbol", "category", "selector", "contextHash"]) {
+      const value = review.anchor[field];
+      const changed = typeof value === "number" ? value + 1 : `${value ?? ""}-changed`;
+      assert.equal(evaluateSemanticDisposition({ ...review.anchor, [field]: changed }, source, [review]).status, "unreviewed", `${review.id}: ${field} drift`);
+    }
+    for (const field of ["commit", "tree"]) {
+      assert.equal(evaluateSemanticDisposition(review.anchor, { ...source, [field]: "f".repeat(40) }, [review]).status, "unreviewed");
+    }
+  }
+});
+
+const MP11_NEW_RULE_EXCERPTS = {
+  "broker-runtime-output-budget": [[42, "const MAX_OUTPUT_BYTES = 4 * 1024 * 1024"], [1581, "async function execute(request) {"], [1678, "return spawnBounded(command, args, { env, maxBuffer: MAX_OUTPUT_BYTES }, false)"]],
+  "placement-selected-slice-sandbox-policy": [[125, "pub fn from_config(config: &DaemonConfig) -> Self {"], [140, "allow_provider_sandbox_compatibility: managed_docker_broker_configured()"]],
+  "broker-slice-resource-admission": [[433, "function validateProvisioner(action, environment, files) {"], [559, 'if (environment.CHARIOX_SLICE_DOCKER_CPUS) fail("CHARIOX_SLICE_DOCKER_CPUS is invalid")']],
+  "placement-selected-kernel-dumpability": [[126, "pub fn initialize() {"], [150, "if configured && !make_process_nondumpable() {"], [213, "fn make_process_nondumpable() -> bool {"], [214, "libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0)"]],
+  "broker-provisioner-environment-projection": [[341, "fn provisioner_environment(command: &Command) -> BTreeMap<String, String> {"], [346, 'if !name.starts_with("CHARIOX_SLICE_") {']],
+};
+
+for (const [ruleId, excerpt] of Object.entries(MP11_NEW_RULE_EXCERPTS)) {
+  test(`MP-08/MP-11 new rule ${ruleId} retains candidates on blob drift without granting disposition`, () => {
+    const rule = SOURCE_AUDIT_RULES.find(rule => rule.id === ruleId);
+    const lines = Array.from({ length: Math.max(...excerpt.map(([line]) => line)) }, () => "");
+    for (const [line, source] of excerpt) lines[line - 1] = source;
+    const source = `${lines.join("\n")}\n`;
+    let inspectedCount;
+    for (const blob of [rule.blob, "e".repeat(40)]) {
+      withFixture({}, fixture => {
+        fixture.addFile(rule.path, source, "100644", blob);
+        const candidates = collect(fixture).entries.filter(entry => entry.sourceClassification?.ruleId === ruleId);
+        assert.ok(candidates.length > 0);
+        assert.ok(candidates.every(entry => entry.sourceClassification.status === (blob === rule.blob ? "source_inspected" : "source_drift")));
+        assert.ok(candidates.every(entry => entry.semanticDisposition.status === "unreviewed"), "fixture identity/context cannot reuse real-source reviews");
+        for (const [, symbol] of rule.anchors) assert.ok(candidates.some(entry => entry.symbol === symbol && entry.candidateOrigin === "manual_source_rule"));
+        if (blob === rule.blob) inspectedCount = candidates.length;
+        else assert.equal(candidates.length, inspectedCount);
+      });
+    }
   });
 }

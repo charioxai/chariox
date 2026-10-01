@@ -10,6 +10,7 @@ import { fragmentSourceViews, fragmentMatchAnchor } from "./lib/managed-parity-f
 import { stripCaddyComments } from "./lib/managed-parity-caddy-source.mjs";
 import { stripPostgresComments } from "./lib/managed-parity-sql-source.mjs";
 import { patchSourceViews } from "./lib/managed-parity-patch-source.mjs";
+import { FROZEN_SEMANTIC_REVIEWS } from "./lib/managed-parity-semantic-reviews.mjs";
 import { sourceRuleCandidates, sourceClassification, groupSourceClassifications, sourceAuditGaps } from "./lib/managed-parity-source-rules.mjs";
 
 export const INVENTORY_SCHEMA = "chariox.managed-parity.source-inventory.v2";
@@ -21,6 +22,7 @@ export const DEFAULT_SOURCE_REF = "HEAD";
 const INVENTORY_TOOL_PATH = "apps/cli/scripts/managed-parity-source-inventory.mjs";
 const INVENTORY_TOOL_MODULES = [
   ["./managed-parity-source-inventory.mjs", INVENTORY_TOOL_PATH],
+  ["./lib/managed-parity-semantic-reviews.mjs", "apps/cli/scripts/lib/managed-parity-semantic-reviews.mjs"],
   ["./lib/managed-parity-patch-source.mjs", "apps/cli/scripts/lib/managed-parity-patch-source.mjs"],
   ["./lib/managed-parity-source-rules.mjs", "apps/cli/scripts/lib/managed-parity-source-rules.mjs"],
   ["./lib/managed-parity-fragment-source.mjs", "apps/cli/scripts/lib/managed-parity-fragment-source.mjs"],
@@ -378,9 +380,10 @@ const SEMANTIC_DISPOSITIONS = new Set([
 // are not semantic approvals because they contain no independent reviewer
 // metadata. New approvals must bind the complete current source/candidate
 // anchor and the review that authorized the classification.
-export const DEFAULT_SEMANTIC_DISPOSITIONS = Object.freeze([]);
+export const DEFAULT_SEMANTIC_DISPOSITIONS = FROZEN_SEMANTIC_REVIEWS;
 
 const OWNED_DIRTY_PATHS = new Set([
+  "apps/cli/scripts/lib/managed-parity-semantic-reviews.mjs",
   "apps/cli/scripts/lib/managed-parity-patch-source.mjs",
   "apps/cli/scripts/lib/managed-parity-source-rules.mjs",
   "apps/cli/scripts/lib/managed-parity-fragment-source.mjs",
@@ -392,6 +395,7 @@ const OWNED_DIRTY_PATHS = new Set([
 ]);
 
 const SELF_EXCLUDED_PATHS = new Set([
+  "apps/cli/scripts/lib/managed-parity-semantic-reviews.mjs",
   "apps/cli/scripts/lib/managed-parity-patch-source.mjs",
   "apps/cli/scripts/lib/managed-parity-source-rules.mjs",
   "apps/cli/scripts/lib/managed-parity-fragment-source.mjs",

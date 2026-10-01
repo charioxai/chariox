@@ -7,6 +7,140 @@ const CLOUD = "06cd95fda1fc07f9dd37a12727f6ed4e5a4adeb2";
 const CLOUD_CURRENT = "06cd95fda1fc07f9dd37a12727f6ed4e5a4adeb2";
 export const SOURCE_AUDIT_RULES = Object.freeze([
   {
+    "id": "broker-runtime-output-budget",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
+    "blob": "d606e2c5ca6caa824d883c3a385f375101461160",
+    "ranges": [
+      [
+        42,
+        42
+      ],
+      [
+        1581,
+        1663
+      ],
+      [
+        1678,
+        1678
+      ]
+    ],
+    "classification": "open_managed_runtime_difference",
+    "rationale": "MP-08/MP-11: broker runtime commands buffer at most4MiB through spawnSync; ordinary provisioner output streams to kernel logs. Output volume can fail managed builds even when the ordinary command completes.",
+    "anchors": [
+      [
+        "kernel_slice_broker_control",
+        "MAX_OUTPUT_BYTES"
+      ],
+      [
+        "kernel_slice_broker_control",
+        "execute"
+      ]
+    ],
+    "openFindings": [
+      "MP-08/MP-11 removal required: Use shared streaming/log retention policy with bounded response summaries; exercise successful output above4MiB on both placements without buffering the full stream."
+    ]
+  },
+  {
+    "id": "placement-selected-slice-sandbox-policy",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "apps/kernel/src/slice/local_docker.rs",
+    "blob": "7a9b862181d42ac5a987903700818c31a45b55e1",
+    "ranges": [
+      [
+        124,
+        153
+      ]
+    ],
+    "classification": "open_managed_runtime_difference",
+    "rationale": "MP-08/MP-11: broker configuration forces provider sandbox compatibility on even when the common user option is false; ordinary placement preserves the option. This changes container capabilities/seccomp/AppArmor, not signed host activation.",
+    "anchors": [
+      [
+        "kernel_slice_broker_control",
+        "from_config"
+      ]
+    ],
+    "openFindings": [
+      "MP-08/MP-11 removal required: Honor one common slice option/capability negotiation on both placements; compare generated Docker security arguments with false and true options."
+    ]
+  },
+  {
+    "id": "broker-slice-resource-admission",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
+    "blob": "d606e2c5ca6caa824d883c3a385f375101461160",
+    "ranges": [
+      [
+        433,
+        433
+      ],
+      [
+        559,
+        561
+      ]
+    ],
+    "classification": "open_managed_runtime_difference",
+    "rationale": "MP-08/MP-11: broker-only CPU validation requires a nonzero integer part; the common config accepts any nonempty CPU string and ordinary provisioning forwards it to Docker, including0.5.",
+    "anchors": [["kernel_slice_broker_control", "validateProvisioner"]],
+    "openFindings": [
+      "MP-08/MP-11 removal required: Use one positive Docker CPU grammar at common configuration admission and broker verification; cover0.5,2.5 and invalid values on both placements."
+    ]
+  },
+  {
+    "id": "placement-selected-kernel-dumpability",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "apps/kernel/src/slice/local_docker/broker.rs",
+    "blob": "125a471ee52b117481cf69fcf14a34859195bd59",
+    "ranges": [
+      [
+        126,
+        156
+      ],
+      [
+        212,
+        219
+      ]
+    ],
+    "classification": "open_managed_runtime_difference",
+    "rationale": "MP-08/MP-11: only a broker-configured kernel calls PR_SET_DUMPABLE=0, changing core/ptrace diagnostics for the host kernel. This does not prove that executed providers inherit the setting.",
+    "anchors": [
+      [
+        "kernel_slice_broker_control",
+        "initialize"
+      ],
+      [
+        "kernel_slice_broker_control",
+        "make_process_nondumpable"
+      ]
+    ],
+    "openFindings": [
+      "MP-08/MP-11 removal required: Adopt one explicit common kernel control-memory/diagnostics policy; test kernel dumpability in both placements and separately test provider exec behavior."
+    ]
+  },
+  {
+    "id": "broker-provisioner-environment-projection",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "apps/kernel/src/slice/local_docker/broker.rs",
+    "blob": "125a471ee52b117481cf69fcf14a34859195bd59",
+    "ranges": [
+      [
+        341,
+        362
+      ]
+    ],
+    "classification": "open_managed_runtime_difference",
+    "rationale": "MP-08/MP-11: broker serializes only explicit Command environment overrides; ordinary commands also inherit environment. Documented pids/nofile/free-space tuning is neither explicitly projected by the kernel nor admitted by the broker.",
+    "anchors": [
+      [
+        "kernel_slice_broker_control",
+        "provisioner_environment"
+      ]
+    ],
+    "openFindings": [
+      "MP-08/MP-11 removal required: Move documented tuning into common typed options and project/admit the same values in both adapters; compare pids/nofile/free-space admission with nondefault settings."
+    ]
+  },
+  {
     "id": "shared-private-home-archive-dispatch",
     "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
     "path": "apps/kernel/src/slice/local_docker/state.rs",

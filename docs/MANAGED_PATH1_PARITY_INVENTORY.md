@@ -15,7 +15,97 @@ new boot/machine/enrollment/relay identities, reviewed release, absence of old
 runtime residue, and retirement of the prior identity before the parity matrix
 or remaining acceptance gates run.
 
-## Final source refresh (2026-10-01)
+## Independent MP-11 source review (2026-10-01)
+
+The independent MP-11 lane reviewed the original 90 scopes against their actual
+pinned Git blobs, then added five scopes found during out-of-scope pattern
+triage. Sources remain OSS `686ec57d5e46cdd46e723155b7eb89f6f25202a2`
+(tree `60dadc622701c79c63ef5d3bb6c5ff1006244aac`) and Cloud
+`06cd95fda1fc07f9dd37a12727f6ed4e5a4adeb2`
+(tree `d67400efc1591db7a7f47572517cae3264277f47`). The review tool is based on
+`d1018422ddc15e0ebdde748ec08e631ed08d3fe9`; that tool identity is separate
+from the reviewed runtime identity.
+
+`apps/cli/scripts/lib/managed-parity-semantic-reviews.mjs` records the lane's
+independent rationale per scope and frozen candidate anchors through the
+scanner's existing disposition mechanism. Each record binds commit, tree,
+path, blob, line, column, symbol, category, selector and context hash, with a
+unique review ID. Records never derive approvals from live source or rule
+classification. All 493 line-context hashes were checked against the pinned
+blobs. These are this lane's source conclusions, not an external service review
+or a credential-preserving live comparison.
+
+| MP-11 exact scan | Candidates | Reviewed scoped | Removal required | Unreviewed |
+| --- | ---: | ---: | ---: | ---: |
+| OSS 686 | 6,194 | 421 | 37 | 5,773 |
+| Cloud 06cd95fd | 2,859 | 72 | 0 | 2,787 |
+| Total | 9,053 | 493 | 37 | 8,560 |
+
+The eight additional candidates are explicit declaration anchors, not changes
+to either frozen runtime. All 95 scopes have independent dispositions with no
+missing declarations, blob drift or unapplied same-source reviews. The 456
+other reviewed anchors describe common behavior, explicit shared slice
+isolation, negative sandbox guards, six test-evidence anchors, or the two
+permitted exceptions: 74 signed-deployment anchors and 28 mandatory-shutdown
+anchors. Shared hosted authentication also covers ordinary enrolled hosts;
+explicit Docker-slice isolation is not an additional Path-1 host exception.
+Reviews for the other repository remain `pending_source_review` in each
+individual report; the three historical predicates still lack independent
+metadata. Both reports fail closed.
+
+### Open MP-08/MP-11 removal findings
+
+Paths below are relative to `apps/kernel/` unless a full path is shown. These
+are reachable source differences; no ordinary-success/managed-failure live
+regression is claimed. Signed deployment does not cover user slice builds,
+mutable archive verification, post-enrollment kernel discovery or diagnostics.
+
+| MP-08/MP-11 finding and first seam | Concrete proposed correction |
+| --- | --- |
+| Runtime lifetime: `slice-linux-docker/managed-docker-broker.mjs:1549,1673`, `slice/local_docker/broker.rs:36,207`, and provisioner `:664`. Broker nonarchive commands retain 20/21-minute ceilings and broker builds inject 1,200 seconds; ordinary builds wait under owned cancellation. | Remove placement-selected total deadlines; use one common operation ownership/cancellation policy. Compare long healthy and silent builds plus interrupted producer settlement (also MP-10). |
+| Preverification cancellation: `slice/local_docker/state.rs:231,990` versus broker `:774,795` and `managed-home-archive-digest.mjs:6`. Ordinary hashing blocks; managed hashing has asynchronous inactivity cancellation. | Use one descriptor-pinned, bounded-memory progress/cancellation supervisor before restore on both placements. The shared second-reader restore guard already has common policy; it does not fix this earlier seam. |
+| Builder/environment selection: `managed-extension-build.py:36,418` and provisioner `:676`. Managed helper strips client builder/endpoint/startup settings and forces `--builder default`; ordinary uses Docker's configured selection. | Define and honor common engine/builder settings after user privilege drop; compare nondefault local builders and credential helpers. Keep privileged helper initialization controls separate from ordinary user settings. |
+| Extension output: `managed-extension-build.py:29,354`. Managed helper drains but discards output after 4 MiB; ordinary command guard streams it. | Apply one common streaming/log-retention policy with bounded summaries; preserve equivalent user-visible build diagnostics above 4 MiB. |
+| Broker output: `managed-docker-broker.mjs:42,1678`. Synchronous 4 MiB capture can fail a verbose runtime command; ordinary streams command output to logs. | Stream owned output to private logs and bound response summaries. Compare successful producers emitting more than 4 MiB without retaining the whole stream in memory. |
+| Forced slice sandbox option: `slice/local_docker.rs:140` feeds provisioner `:951`. Managed placement overrides false and adds capabilities/unconfined security settings; ordinary requires opt-in. | Honor one common slice option/capability negotiation, then compare generated container security arguments with false and true settings (also MP-01). |
+| CPU admission: `managed-docker-broker.mjs:559` versus `config/slices.rs:97` and `slice/local_docker.rs:1186`. Broker grammar rejects `0.5`; ordinary config forwards it to Docker. | Share positive Docker CPU validation at config admission and broker verification; compare fractional and invalid values. |
+| Environment projection: `slice/local_docker/broker.rs:341` serializes explicit overrides only; broker allowlist `:115` omits documented pids/nofile/free-space tuning from provisioner `:80,81,98`. Ordinary commands inherit those settings. | Promote documented tuning to common typed options and explicitly project/admit the same values in both adapters; compare nondefault settings. |
+| Kernel dumpability: `slice/local_docker/broker.rs:150,213`. Only broker-configured kernels apply `PR_SET_DUMPABLE=0`. This finding concerns kernel core/ptrace diagnostics, not assumed provider exec inheritance. | Adopt one explicit common kernel control-memory/diagnostics policy; compare kernel dumpability and separately check provider exec behavior. |
+| Ready-machine kernel projection: `packages/kernel-client/src/waiting-room-runtime-placement.ts:67,114`. Managed selection hides the ordinary machine entry and exposes only its recorded home kernel; ordinary selection lists all discovered machine kernels. | Project ready enrolled machines through the common account-authorized kernel list. Retain pending creation/deployment choices without narrowing post-enrollment discovery. |
+
+### MP-11 out-of-scope triage and validation
+
+Every originally unscoped candidate (8,562) was assigned an investigation
+pattern. This is triage, not semantic approval; two existing candidates moved
+into new scopes, and the eight new declaration anchors are scoped separately.
+All 8,560 remaining candidates stay unreviewed.
+
+| MP-11 investigation pattern | OSS | Cloud |
+| --- | ---: | ---: |
+| Test/fixture regions | 2,842 | 1,273 |
+| Validation tooling | 624 | 1 |
+| Explicit inner-slice topology | 276 | 0 |
+| Shared-host topology | 41 | 0 |
+| Deployment/enrollment candidates | 424 | 99 |
+| Shutdown/retirement candidates | 43 | 211 |
+| Provider/filesystem runtime | 179 | 7 |
+| Slice/broker runtime | 112 | 117 |
+| Control-plane/client projection | 122 | 347 |
+| Other client/protocol projection | 181 | 83 |
+| Publication/config fragments | 0 | 34 |
+| Common runtime/other source | 931 | 615 |
+
+Focused scanner validation passes 103/103 without skips. New tests retain all
+five new scopes on blob drift and check every frozen review against each
+anchor dimension and commit/tree drift. Removal dispositions remain failing;
+fixture sources cannot reuse current-source approvals. No runtime protocol,
+provider process, infrastructure or deployment changed. Exact reports,
+per-candidate triage, source excerpts, command/resource/cleanup receipts and
+checksums are retained in the reserved builder's external MP-11 lane evidence.
+MP-01 through MP-11 remain open pending fixes, remaining independent source
+review and the canonical fresh-machine acceptance matrix.
+
+## Provisional source refresh (2026-10-01)
 
 This checkpoint binds the published draft heads: OSS
 `686ec57d5e46cdd46e723155b7eb89f6f25202a2` (tree
