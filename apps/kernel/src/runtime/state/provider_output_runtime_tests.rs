@@ -326,6 +326,11 @@ async fn mcp_catalog_reregistration_marks_existing_grant_pending_synchronously()
         .with_agent_id(agent.id()),
     )
     .unwrap();
+    // The inert launch selects dev-stub; restore the provider policy under test
+    // without launching or authenticating an official provider in this unit test.
+    app.agents()
+        .update_agent_profile(agent.id(), Some("opencode".into()), None, None)
+        .unwrap();
     let agent = app
         .agents()
         .grant_extension(
@@ -333,6 +338,7 @@ async fn mcp_catalog_reregistration_marks_existing_grant_pending_synchronously()
             crate::extension::ExtensionGrant::script("extfix_registration", "extfix_python"),
         )
         .unwrap();
+    assert_eq!(agent.provider(), "opencode");
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
     let previous = runtime.runtime_catalog_signature_for_agent(&agent);
