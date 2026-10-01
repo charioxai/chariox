@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 import importlib.util
+import io
 from pathlib import Path
+import subprocess
+import sys
 import tarfile
 import unittest
 
@@ -36,6 +39,29 @@ class ArchiveMetadataTests(unittest.TestCase):
         for members in [[member("synthetic", tarfile.CHRTYPE)], [member("synthetic", tarfile.FIFOTYPE)], [member("duplicate"), member("duplicate")], [unsafe]]:
             with self.assertRaises(ValueError):
                 module.validate_members(members)
+
+
+class ArchiveStreamTests(unittest.TestCase):
+    def test_validator_reads_its_input_to_eof(self):
+        # The broker pipes the decoder into the validator and fails if the
+        # validator closes its input first, so a valid archive must be drained.
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode="w") as writer:
+            entry = tarfile.TarInfo("synthetic")
+            entry.size = 9
+            writer.addfile(entry, io.BytesIO(b"synthetic"))
+        stream = archive.getvalue() + bytes(1 << 20)
+        process = subprocess.Popen([sys.executable, str(path)], stdin=subprocess.PIPE,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            for offset in range(0, len(stream), 1 << 16):
+                process.stdin.write(stream[offset:offset + (1 << 16)])
+            process.stdin.close()
+        except BrokenPipeError:
+            self.fail("validator closed its input before EOF")
+        finally:
+            process.wait(timeout=30)
+        self.assertEqual(process.returncode, 0)
 
 
 if __name__ == "__main__":
