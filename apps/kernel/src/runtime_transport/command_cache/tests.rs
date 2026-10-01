@@ -254,6 +254,7 @@ async fn persistent_command_cache_compacts_by_age_on_load() {
     );
     rewrite_persistent_results(&path, &[old, fresh]).expect("cache fixture should write");
     let retention = CommandResultRetentionPolicy {
+        at_most_once: false,
         max_entries: COMMAND_RESULT_CACHE_LIMIT,
         max_memory_bytes: COMMAND_RESULT_CACHE_MAX_MEMORY_BYTES,
         max_total_bytes: None,
@@ -297,6 +298,7 @@ async fn persistent_command_cache_compacts_by_total_bytes() {
         second_response.clone(),
     );
     let retention = CommandResultRetentionPolicy {
+        at_most_once: false,
         max_entries: COMMAND_RESULT_CACHE_LIMIT,
         max_memory_bytes: COMMAND_RESULT_CACHE_MAX_MEMORY_BYTES,
         max_total_bytes: Some(
@@ -468,6 +470,7 @@ async fn persistent_command_cache_does_not_persist_oversized_results() {
 async fn command_cache_byte_bounds_oversized_non_persisted_results_in_memory() {
     let path = temp_cache_path("byte-bound-oversized-memory-results");
     let retention = CommandResultRetentionPolicy {
+        at_most_once: false,
         max_entries: 512,
         max_memory_bytes: 700_000,
         max_total_bytes: None,
@@ -663,4 +666,61 @@ fn persistent_result_for_test(
             fingerprint,
         },
     }
+}
+
+#[tokio::test]
+async fn at_most_once_receipts_never_evict_and_refuse_new_identity_at_capacity() {
+    let path = temp_cache_path("at-most-once-capacity");
+    let cache = CommandResultCache::new_with_persistent_path_and_retention(
+        path.clone(),
+        CommandResultRetentionPolicy {
+            max_entries: 1,
+            at_most_once: true,
+            max_age_ms: Some(0),
+            ..CommandResultRetentionPolicy::persistent()
+        },
+    )
+    .unwrap();
+    let fingerprint = CommandResultCache::fingerprint_from_bytes_for_test(b"input");
+    let response = serde_json::json!({"accepted":true});
+    assert!(matches!(
+        cache
+            .reserve_at_most_once("one", &fingerprint, response.clone())
+            .await
+            .unwrap(),
+        CommandReservation::Dispatch
+    ));
+    cache
+        .complete(
+            "one".into(),
+            fingerprint.clone(),
+            &KernelOutgoingFrame::Response {
+                request_id: "one".into(),
+                response: Box::new(Some(response.clone())),
+                error: None,
+            },
+        )
+        .await;
+    assert!(cache
+        .reserve_at_most_once("two", &fingerprint, response.clone())
+        .await
+        .is_err());
+    assert!(matches!(
+        cache
+            .reserve_at_most_once("one", &fingerprint, response.clone())
+            .await
+            .unwrap(),
+        CommandReservation::Wait(_)
+    ));
+    let restored =
+        CommandResultCache::new_with_persistent_path_and_retention(path.clone(), cache.retention)
+            .unwrap();
+    assert!(matches!(
+        restored
+            .reserve_at_most_once("one", &fingerprint, response)
+            .await
+            .unwrap(),
+        CommandReservation::Wait(_)
+    ));
+    let _ = fs::remove_file(path);
 }

@@ -68,6 +68,24 @@ impl KernelRuntimeState {
             return Some(failed(AppRequestErrorCode::InvalidRequest));
         }
         let installation = installation.clone();
+        if matches!(
+            request,
+            LocalDaemonRequest::ControlAppWorker(_) | LocalDaemonRequest::UninstallApp(_)
+        ) {
+            let state = self.clone();
+            let input = request.clone();
+            let execute_owner = owner.clone();
+            return Some(
+                self.app_control()
+                    .execute_once(&owner, command, request, move || async move {
+                        state
+                            .app_control_response(execute_owner, installation, input)
+                            .await
+                            .unwrap_or_else(failed)
+                    })
+                    .await,
+            );
+        }
         Some(
             self.app_control_response(owner, installation, request.clone())
                 .await

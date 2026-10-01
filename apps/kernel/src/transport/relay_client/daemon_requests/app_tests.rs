@@ -532,3 +532,116 @@ async fn app_logs_are_owner_scoped_and_page_by_sequence() {
         }
     );
 }
+
+#[test]
+fn app_uninstall_replay_returns_receipt_without_second_generation_change() {
+    std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(uninstall_replay());
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn uninstall_replay() {
+    use crate::local::{AppRequestErrorCode, UninstallAppRequest};
+    let root = TestRoot::new();
+    let app = crate::DaemonApp::bootstrap(root.config()).unwrap();
+    let store = app.durable_state_store();
+    store
+        .mutate_app_installation(
+            "alice",
+            AppRegistryMutation::CreateAndStage {
+                installation_id: "todo-alice".into(),
+                release: ReleaseMetadata {
+                    app_id: "com.chariox.todo".into(),
+                    version: "1.0.0".into(),
+                    publisher_id: "publisher".into(),
+                    package_digest: format!("sha256:{:064x}", 1),
+                    schema_version: 1,
+                    capabilities_digest: format!("sha256:{:064x}", 2),
+                    catalog_digest: format!("sha256:{:064x}", 3),
+                    view_digest: format!("sha256:{:064x}", 4),
+                },
+                now_ms: 1,
+            },
+        )
+        .unwrap();
+    let router =
+        CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 8);
+    let cache = CommandResultCache::default();
+    let request = LocalDaemonRequest::UninstallApp(UninstallAppRequest {
+        installation_id: "todo-alice".into(),
+        expected_generation: "0".into(),
+        delete_data: false,
+    });
+    let first = dispatch(
+        &router,
+        &cache,
+        Some("alice"),
+        request.clone(),
+        "uninstall-once",
+    )
+    .await;
+    assert!(
+        matches!(&first, LocalDaemonResponse::AppInstallation { .. }),
+        "{first:?}"
+    );
+    let generation = store
+        .get_app_installation("alice", "todo-alice")
+        .unwrap()
+        .generation;
+    assert_eq!(
+        dispatch(
+            &router,
+            &cache,
+            Some("alice"),
+            request.clone(),
+            "uninstall-once"
+        )
+        .await,
+        first
+    );
+    assert_eq!(
+        store
+            .get_app_installation("alice", "todo-alice")
+            .unwrap()
+            .generation,
+        generation
+    );
+    // Owner authorization still runs before receipt lookup.
+    assert_eq!(
+        dispatch(&router, &cache, None, request.clone(), "uninstall-once").await,
+        LocalDaemonResponse::AppRequestFailed {
+            code: AppRequestErrorCode::Unauthorized
+        }
+    );
+    assert_eq!(
+        dispatch(&router, &cache, Some("bob"), request, "uninstall-once").await,
+        LocalDaemonResponse::AppRequestFailed {
+            code: AppRequestErrorCode::NotFound
+        }
+    );
+    let new = LocalDaemonRequest::UninstallApp(UninstallAppRequest {
+        installation_id: "todo-alice".into(),
+        expected_generation: generation.to_string(),
+        delete_data: false,
+    });
+    assert!(matches!(
+        dispatch(&router, &cache, Some("alice"), new, "uninstall-again").await,
+        LocalDaemonResponse::AppInstallation { .. }
+    ));
+    assert!(
+        store
+            .get_app_installation("alice", "todo-alice")
+            .unwrap()
+            .generation
+            > generation
+    );
+}
