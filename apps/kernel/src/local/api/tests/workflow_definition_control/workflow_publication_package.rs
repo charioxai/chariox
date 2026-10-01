@@ -702,7 +702,7 @@ fn local_request_api_exports_agent_app_publication_package() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-agent-app", "worktree-agent-app"),
+            harness.fixture_session_request("workspace-agent-app"),
         ))
         .expect("session create should succeed")
     {
@@ -1315,7 +1315,7 @@ fn workflow_node_add_rejects_metaagents() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-meta-workflow", "worktree-meta-workflow"),
+            harness.fixture_session_request("workspace-meta-workflow"),
         ))
         .expect("session create should succeed")
     {

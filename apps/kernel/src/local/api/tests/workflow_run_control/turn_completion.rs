@@ -36,7 +36,7 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-ack", "worktree-ack"),
+            harness.fixture_session_request("workspace-ack"),
         ))
         .expect("session create should succeed")
     {
@@ -426,7 +426,7 @@ fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-mailbox", "worktree-mailbox"),
+            harness.fixture_session_request("workspace-mailbox"),
         ))
         .expect("session create should succeed")
     {

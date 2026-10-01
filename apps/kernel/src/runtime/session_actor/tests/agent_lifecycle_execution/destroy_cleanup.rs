@@ -2,19 +2,22 @@ use super::*;
 
 #[tokio::test]
 async fn local_destroy_agent_uses_owned_runtime_state_without_app_lock() {
+    let worktree = crate::test_support::TestWorktree::new(
+        "local_destroy_agent_uses_owned_runtime_state_without_app_lock",
+    );
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
     ));
     let (session_id, agent_id, provider_run_id, terminal_stream, cursor_key) = {
         let mut app_locked = app.lock().await;
         let (session, default_agent) = crate::app::KernelSessionService::new(&mut app_locked)
-            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .create_session(worktree.session_request())
             .expect("session should be created");
         let extra_agent = crate::app::KernelSessionService::new(&mut app_locked)
             .spawn_agent(
                 CreateAgentRequest::new(session.id(), "dev-stub")
                     .with_alias("destroy-me")
-                    .with_worktree("worktree"),
+                    .with_worktree(worktree.path().display().to_string()),
             )
             .expect("extra agent should be created");
         let provider_run =

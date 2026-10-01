@@ -100,7 +100,7 @@ fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs_inner(provider
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-1"),
+            harness.fixture_session_request("workspace-1"),
         ))
         .expect("session create should succeed")
     {
@@ -408,7 +408,7 @@ fn local_request_api_enqueues_into_a_disabled_workflow_queue_without_launching_i
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-disabled-queue", "worktree-disabled-queue"),
+            harness.fixture_session_request("workspace-disabled-queue"),
         ))
         .expect("session create should succeed")
     {
@@ -518,7 +518,7 @@ fn stopping_workflow_dispatches_next_queued_workflow_prompt_inner() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-queued-after-stop", "worktree-queued-after-stop"),
+            harness.fixture_session_request("workspace-queued-after-stop"),
         ))
         .expect("session should create")
     {
@@ -767,7 +767,7 @@ fn local_request_api_queues_concurrent_invocations_for_one_endpoint_inner() {
     let harness = std::sync::Arc::new(LocalRouterTestHarness::new());
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-concurrent-launch", "worktree-concurrent-launch"),
+            harness.fixture_session_request("workspace-concurrent-launch"),
         ))
         .expect("session create should succeed")
     {
@@ -920,10 +920,7 @@ fn local_request_api_two_workflow_multi_node_collision_drill_inner() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new(
-                "workspace-concurrency-audit-drill",
-                "worktree-concurrency-audit-drill",
-            ),
+            harness.fixture_session_request("workspace-concurrency-audit-drill"),
         ))
         .expect("session create should succeed")
     {
@@ -1313,10 +1310,7 @@ fn local_request_api_serializes_two_workflows_sharing_an_agent_inner() {
     let harness = std::sync::Arc::new(LocalRouterTestHarness::new());
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new(
-                "workspace-shared-agent-workflows",
-                "worktree-shared-agent-workflows",
-            ),
+            harness.fixture_session_request("workspace-shared-agent-workflows"),
         ))
         .expect("session create should succeed")
     {
@@ -1500,7 +1494,7 @@ fn local_request_api_runs_independent_workflows_concurrently_inner() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-independent-workflows", "worktree-root"),
+            harness.fixture_session_request("workspace-independent-workflows"),
         ))
         .expect("session create should succeed")
     {
