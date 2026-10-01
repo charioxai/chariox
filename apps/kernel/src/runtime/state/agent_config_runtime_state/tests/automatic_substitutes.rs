@@ -105,6 +105,39 @@ impl FailingTurn {
         run.id().to_string()
     }
 
+    fn record_history(&self, provider_run_id: Option<&str>, text: &str) {
+        let entry = match provider_run_id {
+            Some(provider_run_id) => crate::history::SessionHistoryEntry::provider_output(
+                &self.session_id,
+                provider_run_id,
+                Some(&self.agent_id),
+                crate::terminal::TerminalOutputKind::ProviderOutput,
+                None,
+                text,
+            ),
+            None => crate::history::SessionHistoryEntry::user_prompt(
+                &self.session_id,
+                "substitute-test",
+                &self.agent_id,
+                text,
+            ),
+        };
+        self.runtime
+            .owned
+            .append_operational_history_entry(&entry, None, None, None);
+    }
+
+    fn provider_inputs(&self, provider_run_id: &str) -> String {
+        self.runtime
+            .owned
+            .terminal_stream
+            .input_records()
+            .into_iter()
+            .filter(|record| record.provider_run_id == provider_run_id)
+            .map(|record| String::from_utf8_lossy(&record.bytes).into_owned())
+            .collect()
+    }
+
     fn assert_turn_failed(&self) {
         assert!(self.active_prompt().is_none(), "the turn must fail");
         let settlement = self
@@ -616,5 +649,109 @@ async fn a_turn_queued_behind_a_substitute_turn_starts_on_the_primary() {
             .unwrap()
             .state(),
         ProviderRunState::Ended
+    );
+}
+
+#[tokio::test]
+async fn the_substitute_and_the_next_primary_turn_see_the_conversation() {
+    let turn = failing_turn(&[("dev-stub", SUBSTITUTE_A, None)]).await;
+    turn.record_history(None, "Which file holds the parser?");
+    turn.record_history(Some(&turn.failed_run_id), "The parser lives in parse.rs.");
+    turn.record_history(None, "review this change");
+
+    turn.fail_run(&turn.failed_run_id, SERVER_OVERLOADED).await;
+
+    let substitute = turn.assert_rerun_on(0, SUBSTITUTE_A);
+    assert!(
+        turn.provider_inputs(&substitute)
+            .contains("The parser lives in parse.rs."),
+        "the substitute receives the conversation it never saw"
+    );
+    turn.record_history(
+        Some(&substitute),
+        "Proposed fix: rename parse_all to parse.",
+    );
+    turn.runtime
+        .settle_owned_provider_prompt(&turn.session_id, &substitute, true, false, true)
+        .await
+        .expect("the substitute completes the turn");
+    let next_run = turn
+        .runtime
+        .with_app_side_effect(|app| {
+            app.ensure_prompt_provider_run_for_agent(&turn.session_id, &turn.agent_id)
+        })
+        .await
+        .expect("the next turn launches its provider");
+    let next_run = turn
+        .runtime
+        .owned
+        .provider_store
+        .get_run(&next_run)
+        .unwrap();
+    assert_eq!(next_run.model(), PRIMARY_MODEL);
+
+    let next_prompt = turn.runtime.owned.prompt_with_pending_context_handoff(
+        &turn.session_id,
+        &turn.agent_id,
+        "substitute-test",
+        &next_run,
+        "implement that solution",
+    );
+    assert!(
+        next_prompt.contains("Proposed fix: rename parse_all to parse."),
+        "the primary's next turn carries the substitute's answer: {next_prompt}"
+    );
+}
+
+#[tokio::test]
+async fn a_queued_follow_up_reaches_the_primary_with_the_substitute_answer() {
+    let turn = failing_turn(&[("dev-stub", SUBSTITUTE_A, None)]).await;
+    turn.record_history(None, "review this change");
+    turn.fail_run(&turn.failed_run_id, SERVER_OVERLOADED).await;
+    let substitute = turn.assert_rerun_on(0, SUBSTITUTE_A);
+    turn.record_history(
+        Some(&substitute),
+        "Proposed fix: rename parse_all to parse.",
+    );
+    turn.runtime
+        .with_app_side_effect(|app| {
+            let attachment = crate::app::KernelSessionService::new(app).attach(
+                crate::attachment::AttachRequest::new(
+                    &turn.session_id,
+                    "follow-up-client",
+                    crate::attachment::ClientCapabilityLevel::FullTerminal,
+                ),
+            )?;
+            app.prompt_owner_submit_prepared_prompt(
+                &turn.session_id,
+                crate::session::PromptQueueItem::new(
+                    "follow-up",
+                    attachment.id(),
+                    &turn.agent_id,
+                    "implement that solution",
+                    crate::session::PromptStatus::Queued,
+                ),
+                false,
+            )
+        })
+        .await
+        .unwrap();
+
+    turn.runtime
+        .settle_owned_provider_prompt(&turn.session_id, &substitute, true, false, true)
+        .await
+        .expect("the substitute completes the turn");
+
+    let follow_up = turn.active_prompt().expect("the follow-up starts");
+    let primary_run = follow_up
+        .durable_delivery_provider_run_id()
+        .expect("the follow-up is dispatched")
+        .to_string();
+    assert_ne!(primary_run, substitute);
+    let delivered = turn.provider_inputs(&primary_run);
+    assert!(
+        delivered.contains("implement that solution")
+            && delivered.contains("Proposed fix: rename parse_all to parse."),
+        "the follow-up reaches the primary with the substitute's answer: {delivered}"
     );
 }

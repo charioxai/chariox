@@ -661,6 +661,12 @@ impl KernelRuntimeState {
             &agent_id,
             &completion.completion,
         )?;
+        if provider_run.turn_substitute().is_some()
+            && completion.completion.completed.workflow_run_id().is_none()
+        {
+            // The configured profile never saw this turn; its next turn gets it.
+            owned.prepare_turn_substitute_return_handoff(&provider_run);
+        }
         let started_next_on_run = completion.completion.started_next.is_some();
         if let Some(dispatch) = completion.dispatch {
             if let Err(error) = self

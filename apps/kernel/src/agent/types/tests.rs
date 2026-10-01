@@ -39,20 +39,21 @@ fn agent_persisted_on_a_substitute_loads_on_its_primary_profile() {
         "agent_ref": "agent-1",
         "session_id": "session-1",
         "alias": null,
-        "provider": "claude",
-        "model": "claude-opus-5-5",
+        "provider": "codex",
+        "model": "gpt-5.4",
         "effort": "max",
-        "account_profile": "claude-personal",
+        "account_profile": "codex-personal",
         "primary_provider": "codex",
         "primary_model": "gpt-6.1-sol",
         "primary_effort": "high",
         "primary_account_profile": "codex-work",
         "substitutes": [
-            {"provider": "claude", "model": "claude-opus-5-5", "variant": "max",
-             "account_profile": "claude-personal"}
+            {"provider": "codex", "model": "gpt-5.4", "variant": "max",
+             "account_profile": "codex-personal"}
         ],
         "active_substitute_index": 0,
         "last_substitution": {"substitute_index": 0, "reason": "usage limit", "activated_at_ms": 1},
+        "provider_resume_state": {"codex_thread_id": "substitute-account-thread"},
         "state": "Idle",
         "is_processing": false,
         "position": {"row": 0, "col": 0, "row_span": 1, "col_span": 1},
@@ -66,6 +67,10 @@ fn agent_persisted_on_a_substitute_loads_on_its_primary_profile() {
     assert_eq!(restored.model(), Some("gpt-6.1-sol"));
     assert_eq!(restored.effort(), Some("high"));
     assert_eq!(restored.account_profile(), Some("codex-work"));
+    assert!(
+        restored.provider_resume_state().is_empty(),
+        "the substitute's provider session never resumes under the primary"
+    );
     assert_eq!(restored.substitutes().len(), 1, "the fallback list is kept");
     let reserialized = serde_json::to_value(&restored).expect("agent serializes");
     for retired in [
@@ -88,11 +93,16 @@ fn legacy_primary_snapshot_without_an_active_substitute_does_not_revert_later_ed
     current["primary_provider"] = serde_json::json!("opencode");
     current["primary_model"] = serde_json::json!("deepseek-v4-pro");
     current["last_substitution"] = serde_json::Value::Null;
+    current["provider_resume_state"] = serde_json::json!({"codex_thread_id": "primary-thread"});
 
     let restored: AgentInstance = serde_json::from_value(current).expect("agent loads");
 
     assert_eq!(restored.provider(), "codex");
     assert_eq!(restored.model(), Some("gpt-6.1-sol"));
+    assert!(
+        !restored.provider_resume_state().is_empty(),
+        "the configured profile keeps its own provider session"
+    );
 }
 
 #[test]

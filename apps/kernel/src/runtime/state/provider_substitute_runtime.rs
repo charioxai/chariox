@@ -17,6 +17,9 @@ impl KernelRuntimeState {
         if active_prompt.status() == crate::session::PromptStatus::Cancelling
             || active_prompt.is_external()
             || !failed_run.client_interface().is_chariox()
+            || failed_run
+                .turn_substitute()
+                .is_some_and(|turn| turn.prompt_id != active_prompt.id())
         {
             return Ok(SubstituteRerun::NotApplicable);
         }
@@ -81,6 +84,17 @@ impl KernelRuntimeState {
                     // The failed attempt's turn tracking ends here; the turn
                     // continues on the substitute run.
                     let _ = self.owned.clear_prompt_activity(failed_run.id());
+                    if active_prompt.workflow_run_id().is_none() {
+                        // A conversation's substitute starts from its history.
+                        if let Ok(substitute_run) =
+                            self.owned.provider_store.get_run(&provider_run_id)
+                        {
+                            self.owned.prepare_provider_switch_context_handoff(
+                                failed_run,
+                                &substitute_run,
+                            );
+                        }
+                    }
                     let dispatch =
                         self.turn_rerun_dispatch(session_id, &provider_run_id, active_prompt)?;
                     if let Err(error) = self.enqueue_prompt_dispatch(&dispatch).await {
@@ -156,6 +170,38 @@ impl KernelRuntimeState {
 }
 
 impl KernelRuntimeOwnedState {
+    /// Hands a conversational turn answered by a substitute to the agent's
+    /// configured profile, which starts the next turn.
+    pub(super) fn prepare_turn_substitute_return_handoff(
+        &self,
+        substitute_run: &crate::provider::RuntimeProviderRun,
+    ) {
+        let Some(agent) = substitute_run
+            .agent_instance_id()
+            .and_then(|agent_id| self.agent_store.get_agent(agent_id).ok())
+        else {
+            return;
+        };
+        let account = if crate::provider::canonical_provider_family(agent.provider()).is_some() {
+            let owner = crate::account_profile::provider_account_authority_owner_user_id(
+                &self.config_projection.snapshot(),
+                agent.owner_user_id(),
+            );
+            self.provider_account_profiles
+                .get(&owner, agent.provider(), agent.provider_account_profile())
+                .map(|account| account.profile_id)
+                .unwrap_or_else(|_| agent.provider_account_profile().to_string())
+        } else {
+            agent.provider_account_profile().to_string()
+        };
+        self.prepare_agent_profile_context_handoff(
+            substitute_run,
+            agent.provider(),
+            &account,
+            agent.model(),
+        );
+    }
+
     /// The first configured substitute from `start` whose saved account is still
     /// usable for its model.
     pub(super) fn next_available_substitute_index(
