@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict"
+import { createRoomWebFaultControl } from "./lib/room-web-fault-control.mjs"
+import { roomWebFaultHandlers } from "./lib/room-web-fault-runtime.mjs"
 import { assertRoomDrillCompletedActionNotice } from "./lib/room-drill-action-notice.mjs"
 import { validatePrebuiltSliceImage } from "./lib/prebuilt-slice-image.mjs"
 import { roomTuiPtyInvocation } from "./lib/room-tui-pty.mjs"
@@ -245,6 +247,7 @@ let requests = null
 let failure = null
 let result = null
 let companionResult = null
+let pollWebFault = null
 let secretAgent = null
 let secretProviderRun = null
 let sourceIdentity = null
@@ -309,6 +312,7 @@ async function run() {
   await seedConfig(tempRoot)
 
   let relayGeneration = 0
+  let relayQueueCapacity = 1024
   let relay = null
   const startRelayGeneration = async () => {
     const logName = relayGeneration === 0 ? "relay.log" : `relay-reconnect-${relayGeneration}.log`
@@ -319,6 +323,7 @@ async function run() {
         ...process.env,
         CHARIOX_RELAY_HOST: "127.0.0.1",
         CHARIOX_RELAY_PORT: String(relayPort),
+        CHARIOX_RELAY_OUTGOING_QUEUE_CAPACITY: String(relayQueueCapacity),
         CHARIOX_RELAY_SCOPED_ISSUER: relayScopedIssuer,
         CHARIOX_RELAY_SCOPED_HMAC_SECRET: relayScopedSecret,
       },
@@ -368,7 +373,7 @@ async function run() {
     XDG_STATE_HOME: path.join(tempRoot, "xdg-state"),
     XDG_CACHE_HOME: path.join(tempRoot, "xdg-cache"),
   }
-  const kernel = spawn(kernelBinary, [], {
+  let kernel = spawn(kernelBinary, [], {
     cwd: repoRoot,
     env: kernelEnv,
     stdio: ["ignore", "pipe", "pipe"],
@@ -384,6 +389,35 @@ async function run() {
     import(pathToFileURL(path.join(repoRoot, "apps", "cli", "dist", "room-environment-activity-controller.js")).href),
   ])
   requests = importedRequests
+  if (process.env.CHARIOX_ROOM_DRILL_WEB_FAULTS === "1") {
+    pollWebFault = createRoomWebFaultControl({
+      directory: process.env.CHARIOX_ROOM_DRILL_COORDINATION_DIR,
+      handlers: roomWebFaultHandlers({
+        getRelay: () => relay, terminateChild,
+        startRelay: async (capacity = 1024) => {
+          assert.ok(!relay || relay.exitCode !== null || relay.signalCode !== null, "fault relay is already running")
+          relayQueueCapacity = capacity; relayGeneration += 1; relay = await startRelayGeneration()
+          return { generation: relayGeneration, capacity }
+        },
+        stopKernel: () => terminateChild(kernel),
+        restartKernel: async () => {
+          assert.ok(kernel.exitCode !== null || kernel.signalCode !== null, "fault kernel is already running")
+          const nextLog = createWriteStream(path.join(evidenceRoot, "kernel-restarted.log"), { flags: "a" })
+          kernel = spawn(kernelBinary, [], { cwd: repoRoot, env: kernelEnv, stdio: ["ignore", "pipe", "pipe"] })
+          kernel.stdout.pipe(nextLog); kernel.stderr.pipe(nextLog); kernel.once("exit", () => nextLog.end()); children.push(kernel)
+          await waitForTcpPort("127.0.0.1", kernelPort, 60_000, "restarted kernel unavailable")
+          client.close(); observerClient.close()
+          client = interruption.guardClient(new LocalIpcClient(`ws://127.0.0.1:${kernelPort}/kernel`))
+          observerClient = interruption.guardClient(new LocalIpcClient(`ws://127.0.0.1:${kernelPort}/kernel`))
+          await client.send(requests.attachToSessionRequest(sessionId, `${runId}-restarted-observer`))
+          return { restarted: true }
+        },
+        docker, containerName, sliceScreen,
+        getLocalAutomation: () => localAutomation, getRemoteAutomation: () => remoteAutomation,
+        getClient: () => client, requests, getSessionId: () => sessionId,
+      }),
+    })
+  }
   client = await waitFor(async () => {
     const candidate = interruption.guardClient(new LocalIpcClient(`ws://127.0.0.1:${kernelPort}/kernel`))
     try {
@@ -2304,6 +2338,7 @@ async function runCompanionIfConfigured({ environment, localNoticeIds, remoteNot
     activityController,
     localNoticeIds,
     remoteNoticeIds,
+    pollFault: async () => { await pollWebFault?.() },
     readTuiNotices: async () => {
       const [local, remote] = await Promise.all([localAutomation.send("snapshot"), remoteAutomation.send("snapshot")])
       return { local: automationNoticeEntries(local), remote: automationNoticeEntries(remote) }
