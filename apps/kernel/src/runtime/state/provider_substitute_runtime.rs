@@ -31,7 +31,7 @@ impl KernelRuntimeState {
         let mut failed_label = provider_profile_label(failed_run.provider(), failed_run.model());
         let mut reason = crate::provider::provider_turn_failure_reason(
             failed_run.adapter_key(),
-            attempt.message,
+            attempt.safe_message,
             attempt.termination,
         );
         let first = failed_run

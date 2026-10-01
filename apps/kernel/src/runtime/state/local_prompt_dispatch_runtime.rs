@@ -3617,7 +3617,7 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         {
             let owned = &self.owned;
-            owned.reap_structured_prompt_jobs();
+            self.reap_structured_prompt_jobs_and_dispatch();
             self.reconcile_provider_run_exit(&dispatch.session_id, &dispatch.provider_run_id)
                 .await?;
             let provider_run = owned
@@ -3678,6 +3678,14 @@ impl KernelRuntimeState {
                 format!("Prompt cancellation dispatch failed after acknowledgement: {error}"),
             );
             Err(error)
+        }
+    }
+
+    /// Reaps finished structured prompt jobs and dispatches the follow-ups an
+    /// abort acknowledgement left to the dispatcher.
+    pub(super) fn reap_structured_prompt_jobs_and_dispatch(&self) {
+        for dispatch in self.owned.reap_structured_prompt_jobs() {
+            self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
         }
     }
 
@@ -3789,7 +3797,7 @@ impl KernelRuntimeState {
                             .wait_for_change_after(completion_sequence)
                             .await;
                         completion_sequence = completion_signal.sequence();
-                        state.owned.reap_structured_prompt_jobs();
+                        state.reap_structured_prompt_jobs_and_dispatch();
                         let prompt_is_still_cancelling = state
                             .owned
                             .provider_store

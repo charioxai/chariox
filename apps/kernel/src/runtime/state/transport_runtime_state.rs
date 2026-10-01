@@ -97,7 +97,7 @@ impl KernelRuntimeState {
                 .provider_output_deadlines
                 .take_due_provider_run_ids(now_ms),
         );
-        self.owned.reap_structured_prompt_jobs();
+        self.reap_structured_prompt_jobs_and_dispatch();
         let mut pumped_provider_run_ids = Vec::with_capacity(ready_provider_run_ids.len());
         for provider_run_id in ready_provider_run_ids {
             let Ok(provider_run) = self.owned.provider_store.get_run(&provider_run_id) else {

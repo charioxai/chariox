@@ -218,17 +218,19 @@ pub(crate) fn provider_turn_failure_reason(
     message: &str,
     termination: Option<&super::ProviderRunTermination>,
 ) -> String {
-    let detail = message.trim();
+    // The reason is published in notices and history, so it is built only
+    // from redacted text.
+    let detail = super::sanitize_provider_diagnostic(message);
     let detail = detail
         .strip_prefix("Provider prompt dispatch failed: ")
-        .unwrap_or(detail);
+        .unwrap_or(&detail);
     if let Some(code) = provider_failure_code(detail) {
         return format!("{} ({code})", provider_failure_code_description(code));
     }
     if let Some(termination) = termination.filter(|termination| {
         termination.category != super::ProviderRunTerminationCategory::ExplicitProviderError
     }) {
-        return termination.reason.clone();
+        return super::sanitize_provider_diagnostic(&termination.reason);
     }
     let detail = detail
         .strip_prefix("Provider reported a substitutable resource limit: ")
@@ -447,6 +449,18 @@ mod tests {
             .starts_with("The reviewer wrote"),
             "a code is read only from the kernel's leading frame"
         );
+    }
+
+    #[test]
+    fn turn_failure_reason_never_carries_credentials() {
+        let reason = provider_turn_failure_reason(
+            "codex",
+            "Provider prompt dispatch failed: upstream failed \
+             Authorization: Bearer sk-live-0123456789abcdef",
+            None,
+        );
+        assert!(reason.starts_with("upstream failed"), "{reason}");
+        assert!(!reason.contains("sk-live-0123456789abcdef"), "{reason}");
     }
 
     #[test]

@@ -962,3 +962,86 @@ async fn a_follow_up_queued_behind_a_cancelled_structured_substitute_reaches_the
 
     turn.assert_follow_up_on_the_primary(&substitute);
 }
+
+#[tokio::test]
+async fn a_follow_up_promoted_by_a_structured_abort_acknowledgement_reaches_the_primary() {
+    let (turn, substitute) = structured_substitute_turn().await;
+    turn.queue_follow_up().await;
+    let session = turn
+        .runtime
+        .owned
+        .session_store
+        .get_session(&turn.session_id)
+        .unwrap();
+    turn.runtime
+        .owned
+        .prompt_state_owner
+        .begin_cancelling_active_prompt(&session, &turn.agent_id)
+        .expect("the user cancels the substitute's turn");
+    let completion = turn
+        .runtime
+        .owned
+        .provider_store
+        .run_actor_completion_signal();
+    let sequence = completion.sequence();
+    turn.runtime
+        .owned
+        .provider_store
+        .enqueue_structured_prompt_abort(turn.session_id.clone(), substitute.clone())
+        .expect("the abort is sent");
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        completion.wait_for_change_after(sequence),
+    )
+    .await
+    .expect("the provider acknowledges the abort");
+
+    // The acknowledgement settles the cancelled turn; no terminal event follows.
+    turn.runtime.reap_structured_prompt_jobs_and_dispatch();
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !turn
+        .active_prompt()
+        .and_then(|prompt| {
+            prompt
+                .durable_delivery_provider_run_id()
+                .map(str::to_string)
+        })
+        .filter(|run| run != &substitute)
+        .is_some_and(|run| {
+            turn.provider_inputs(&run)
+                .contains("implement that solution")
+        })
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the follow-up is never dispatched"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    turn.assert_follow_up_on_the_primary(&substitute);
+}
+
+#[tokio::test]
+async fn substitute_notices_never_carry_provider_credentials() {
+    const SECRET: &str = "sk-live-0123456789abcdef";
+    let failure =
+        format!("Provider prompt dispatch failed: upstream failed Authorization: Bearer {SECRET}");
+    let turn = failing_turn(&[("dev-stub", SUBSTITUTE_A, None)]).await;
+
+    turn.fail_run(&turn.failed_run_id, &failure).await;
+    let substitute = turn.assert_rerun_on(0, SUBSTITUTE_A);
+    turn.fail_run(&substitute, &failure).await;
+
+    let notices = turn.notices();
+    assert!(notices
+        .iter()
+        .any(|notice| notice.starts_with("This turn runs on ")));
+    assert!(notices
+        .iter()
+        .any(|notice| notice.starts_with("No substitute is left for this turn")));
+    assert!(
+        notices.iter().all(|notice| !notice.contains(SECRET)),
+        "{notices:?}"
+    );
+}

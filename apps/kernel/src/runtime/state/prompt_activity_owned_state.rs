@@ -54,7 +54,12 @@ impl KernelRuntimeOwnedState {
         }
     }
 
-    pub(super) fn reap_structured_prompt_jobs(&self) {
+    /// Applies finished structured prompt jobs. Returns the follow-ups that an
+    /// abort acknowledgement promoted but left to the dispatcher (a turn
+    /// substitute's next turn, which moves to the configured profile); see
+    /// `KernelRuntimeState::reap_structured_prompt_jobs_and_dispatch`.
+    pub(super) fn reap_structured_prompt_jobs(&self) -> Vec<crate::app::KernelPromptDispatch> {
+        let mut follow_ups = Vec::new();
         self.provider_store
             .apply_finished_provider_run_selection_sync_jobs();
         for finished in self
@@ -272,14 +277,19 @@ impl KernelRuntimeOwnedState {
                             let _ = self.workflow_cancel_prompt(&finished.session_id, &prompt);
                         }
                     }
-                    let _ = self.finalize_local_prompt_cancellation_with_queued_advance(
-                        &finished.session_id,
-                        agent_id,
-                        Some(&finished.provider_run_id),
-                    );
+                    if let Ok(cancellation) = self
+                        .finalize_local_prompt_cancellation_with_queued_advance(
+                            &finished.session_id,
+                            agent_id,
+                            Some(&finished.provider_run_id),
+                        )
+                    {
+                        follow_ups.extend(cancellation.dispatch);
+                    }
                 }
             }
         }
+        follow_ups
     }
 
     fn prepare_failed_prompt_resume_invalidation(
