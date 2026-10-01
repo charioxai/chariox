@@ -118,7 +118,7 @@ test("managed image proof binds actual immutable image ID to signed source conte
   } finally { rmSync(root, {recursive: true}) }
 })
 
-import { createManagedLayoutController } from "../apps/kernel/slice-linux-docker/protected-managed-layout.mjs"
+import { createManagedLayoutController, findRetainedCaptureOrigin } from "../apps/kernel/slice-linux-docker/protected-managed-layout.mjs"
 import { createHash } from "node:crypto"
 test("restore resolution binds the original transaction artifact independently of the replacement container", () => {
   const root = mkdtempSync(join(process.env.HOME, ".chariox-restore-origin-test-"))
@@ -134,6 +134,13 @@ test("restore resolution binds the original transaction artifact independently o
     const origin = {version: 1, sliceId: key, container, containerId: "older-captured-container",
       homeVolume: `${container}-older-home`, digest: archiveDigest}
     writeProtectedLayoutReceipt(originRoot, key, origin)
+    const pendingPath = join(originRoot, `.${"d".repeat(64)}.123.pending`)
+    writeFileSync(pendingPath, "synthetic interrupted public metadata", {mode: 0o600})
+    assert.deepEqual(findRetainedCaptureOrigin(originRoot, container, archiveDigest), origin)
+    assert.equal(readFileSync(pendingPath, "utf8"), "synthetic interrupted public metadata")
+    chmodSync(pendingPath, 0o644)
+    assert.throws(() => findRetainedCaptureOrigin(originRoot, container, archiveDigest))
+    chmodSync(pendingPath, 0o600)
     const generations = createHomeGenerationStore(root)
     const pending = generations.begin({container, oldHomeVolume: `${container}-home`,
       oldContainerId: "recent-container", archiveDigest, imageId, targetOrigin: origin})

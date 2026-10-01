@@ -14,6 +14,28 @@ function identifier(value) { return typeof value === "string" && /^[A-Za-z0-9][A
 function refuse() { throw new Error("Protected slice layout is unavailable; existing identity and saved state are preserved") }
 function originKey(containerId, digest) { return createHash("sha256").update(`${containerId}\0${digest}`).digest("hex") }
 
+export function findRetainedCaptureOrigin(directory, container, digest) {
+  verifyPrivateHostDirectory(directory, process.getuid())
+  const names = readdirSync(directory)
+  if (names.length > 10_000) refuse()
+  for (const name of names.sort()) {
+    if (/^\.[a-f0-9]{64}\.[1-9][0-9]*\.pending$/.test(name)) {
+      // An interrupted public receipt is not an origin. Retain it for recovery;
+      // ignore only the exact protected writer's regular-file metadata.
+      const pending = lstatSync(join(directory, name))
+      if (!pending.isFile() || pending.isSymbolicLink() || pending.nlink !== 1
+          || pending.uid !== process.getuid() || (pending.mode & 0o077) !== 0
+          || pending.size > 64 * 1024) refuse()
+      continue
+    }
+    if (!/^[a-f0-9]{64}\.json$/.test(name)) refuse()
+    const origin = readProtectedLayoutReceipt(directory, name.slice(0, -5))
+    if ((container === undefined || origin.container === container) && origin.digest === digest
+        && name === `${originKey(origin.containerId, digest)}.json`) return origin
+  }
+  refuse()
+}
+
 export function createManagedLayoutController({root, sourceDigest, docker, dataOwner}) {
   const controlOwner = process.getuid()
   const homeRoot = join(root, "homes")
@@ -39,17 +61,7 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
     return readProtectedLayoutReceipt(receiptRoot, container)
   }
   function captureOrigin(container, digest) {
-    const directory = join(root, "capture-origins")
-    verifyPrivateHostDirectory(directory, controlOwner)
-    const names = readdirSync(directory)
-    if (names.length > 10_000) refuse()
-    for (const name of names.sort()) {
-      if (!/^[a-f0-9]{64}\.json$/.test(name)) refuse()
-      const origin = readProtectedLayoutReceipt(directory, name.slice(0, -5))
-      if ((container === undefined || origin.container === container) && origin.digest === digest
-          && name === `${originKey(origin.containerId, digest)}.json`) return origin
-    }
-    refuse()
+    return findRetainedCaptureOrigin(join(root, "capture-origins"), container, digest)
   }
   function containerInfo(container) {
     const inventory = docker(["ps", "-a", "--format", "{{.Names}}"])
