@@ -23,7 +23,7 @@ Every grant, extension and `/sudo` needs the passkey, typed only into a kernel-o
 - **D4. No inheritance.** Agents spawned by a sudoagent or an external agent are normal agents.
 - **D5. Extension.** An external agent's access can be extended before it expires, so a legitimate agent is not cut short.
 - **D6. Access strata.** (1) Chariox terminals: the human. (2) External agents: only the local kernel on the same machine, with session-scoped access granted by the user. This is the Chariox server endpoint that external agents connect to today, where they can act as the user. (3) Sudoagents: one turn. (4) Future and out of scope: the Chariox assistant, or root agent, with access to the whole Chariox system and all of the user's kernels across machines, which it discovers through Chariox Cloud. Chariox terminals will later gain the same Cloud-based kernel discovery. The design must leave room for this stratum.
-- **D7. Retire the agent-terminal MCP.** External agents use only the access path of this plan: a grant through the popup. The external agent-terminal MCP of PR #15, which was never merged or tested, is superseded and is cleaned up (section 9, step 0).
+- **D7. Retire the agent-terminal MCP.** External agents use only the access path of this plan: a grant through the popup. The external agent-terminal MCP of PR #15, which was never merged or tested, is superseded and is cleaned up (section 9.2, PR 0).
 - **D8. External agents may request `/sudo`** (lead proposal P1, confirmed). The request appears as the terminal popup, and the passkey is typed only there (section 7.1).
 - **D9. No tokens; external agent access is per process** (P3, confirmed): "we don't do the token thing and instead once an external agent tries to connect, we show passphrase, and allow that PID to connect for as long as access has been granted". The kernel authorizes the requesting process, as the OS identifies it, for the granted session until expiry (extendable), revocation or process exit. Its OS descendants count as the same agent; Chariox agents it spawns do not (D4). This needs the Unix socket endpoint, which is part of the core external-agent step (section 6).
 - **D10. Cloud manages everything system-wide** (P4, confirmed as the direction): "Anything system-wide, including all kernels, should be managed by Cloud." The root agent's authorization builds on the Phase 2 P2.13 account-level authenticator (section 5.1).
@@ -129,7 +129,7 @@ Argon2id is deliberately slow and memory-hungry. Verification runs on a blocking
 
 The Phase 1 limiter applies to every passkey check, including the new ones in this plan (access grants, extensions, `/sudo` entry): 5 failures, then an exponential lockout capped at 15 minutes. It is per owner and held in kernel memory, so a kernel restart clears it.
 
-A same-user process can deliberately send wrong passkeys to lock the owner out for up to 15 minutes. That is a denial of service, not a bypass, and the cap bounds it. Once terminals carry their own credential (step 2 in section 9), attempts can be counted per credential class, so failures from other connections do not lock out the TUI.
+A same-user process can deliberately send wrong passkeys to lock the owner out for up to 15 minutes. That is a denial of service, not a bypass, and the cap bounds it. Counting per connection class would not help: under D11 an agent can present the terminal token, so classes cannot separate its guesses from the human's (section 9.1).
 
 ### 4.4 Rotation
 
@@ -156,7 +156,7 @@ The passkey belongs to the vault of the kernel that verifies it. For a remote or
 
 | Stratum | Who | Reaches | Authority | Granted by | Ends |
 |---|---|---|---|---|---|
-| 1. Chariox terminals | The human, at the TUI, web, remote TUI, and native clients later | Its kernel, locally or through the relay | The owner's. Passkey popups appear here (section 5.2). | The human-surface credential (section 9, step 2) | Disconnect |
+| 1. Chariox terminals | The human, at the TUI, web, remote TUI, and native clients later | Its kernel, locally or through the relay | The owner's. Passkey popups appear here (section 5.2). | The step 1 local token (#701), or the relay (section 9.1) | Disconnect |
 | 2. External agents | An agent Chariox did not launch, such as a provider CLI in the user's own shell | Only the local kernel on the same machine, through its Unix socket (D9) | The user's within one session, without critical approvals (section 5.4) | The passkey popup (section 5.3) | Expiry unless extended, revocation, or process exit |
 | 3. Sudoagents | A Chariox agent running one `/sudo` turn | Its kernel | The user's on its kernel, including critical approvals, with no cap (D14) | `/sudo` and the passkey popup | The turn yields or is interrupted |
 | 4. Root agent (future) | The Chariox assistant | All of the user's kernels, discovered through Chariox Cloud | The whole Chariox system | Cloud, building on the P2.13 account-level authenticator (D10) | Future design |
@@ -186,7 +186,7 @@ The popup shows what the kernel itself established, not what the requester claim
 
 Five minutes before a grant expires, the kernel shows the popup "access for <agent> expires in 5 minutes, extend?" (D5). Extending needs the passkey and starts a new term. If nobody extends it, the grant expires.
 
-Only the local Unix socket carries grants. Over TCP loopback an external agent can only request access, and the kernel answers with a pointer to the Unix socket (section 6.3). Requests through the relay, from kernel peers, or from Apps are refused. A requester can have one pending request at a time.
+Only the local Unix socket carries grants. Over TCP loopback an access request is answered with a pointer to the Unix socket (section 6.3). Requests through the relay, from kernel peers, or from Apps are refused. A requester can have one pending request at a time.
 
 ### 5.4 Scope and authority
 
@@ -258,7 +258,7 @@ The 2026-09-30 draft weighed three ways to keep a token within its scope: (a) bi
 
 ### 6.1 Process identity
 
-The kernel identifies the connecting process through the OS, which works only on Unix domain sockets: `getpeereid` and `LOCAL_PEERTOKEN` on macOS (the audit token avoids PID reuse), and `SO_PEERCRED` plus a pidfd or the process start time on Linux, so a reused PID cannot inherit a grant. The kernel already has a Unix socket IPC server (`apps/kernel/src/local/ipc.rs`, socket mode 0600 in a 0700 directory) that the running kernel does not start today. This milestone makes it the external-agent endpoint and adds peer identification and a peer UID check.
+The kernel identifies the connecting process through the OS, which works only on Unix domain sockets: `getpeereid` and `LOCAL_PEERTOKEN` on macOS (the audit token avoids PID reuse), and `SO_PEERCRED` plus a pidfd or the process start time on Linux, so a reused PID cannot inherit a grant. The kernel already prepares a Unix socket for local IPC (`apps/kernel/src/local/ipc.rs`, mode 0600 in a 0700 directory), but the running kernel does not start that request/response server today. This milestone serves the kernel websocket protocol there instead and adds peer identification and a peer UID check (section 9.2, PR 5).
 
 - **External agents.** The grant binds to the requesting process: the external agent itself. When the request comes from a helper, such as a `chariox` CLI run by the agent's shell tool, the helper names the agent process among its OS ancestors; the kernel verifies the ancestry, and the popup shows the executable and pid it will authorize. A requester that names a broad ancestor, such as a terminal emulator or a login shell, shows it in the popup. Later connections are accepted from that process and its OS descendants, checked with the same PID-reuse protection, so CLI calls from the agent's own shell tools work. Chariox agents it spawns through the kernel do not inherit (D4).
 - **Kernel-launched agents.** For shell-level CLI access from a sudo turn, the kernel creates a dedicated OS session (`setsid`) at each provider launch and tracks the descendant identities it launched, with PID-reuse protection. Process-group or shared OS-session membership alone is not an identity: on Linux any process in the same session can `setpgid` into another group. A negative test has a sibling agent's process join the target's group and try to use its authority.
@@ -273,7 +273,7 @@ Every request type needs a correct scope mapping, and a missing or wrong mapping
 
 ### 6.3 TCP loopback
 
-The kernel cannot reliably identify the process behind a TCP loopback connection: mapping it to a PID through the OS socket table is racy and platform-specific. A grant is therefore never usable over TCP. An external agent there can only request access, and the kernel answers with a pointer to the Unix socket. This is the simpler of the two options. The other, binding a grant to that one TCP connection, would add a second binding and lifecycle, and would not cover the per-command CLI, which opens a new connection each time.
+The kernel cannot reliably identify the process behind a TCP loopback connection: mapping it to a PID through the OS socket table is racy and platform-specific. A grant is therefore never usable over TCP. An access request there is answered with a pointer to the Unix socket, and once enforcement ships (section 9.2, PR 7) a TCP connection without the token is refused with that pointer. This is the simpler of the two options. The other, binding a grant to that one TCP connection, would add a second binding and lifecycle, and would not cover the per-command CLI, which opens a new connection each time.
 
 ## 7. The sudoagent
 
@@ -324,7 +324,7 @@ Shell-level `chariox` CLI calls from the turn carry sudo only once process ident
 | Client | Credential to the kernel | Passkey prompt | Change |
 |---|---|---|---|
 | Web via relay | Cloud session, then relay end-to-end encryption; the kernel sees a `RelayClient` with a user id | The popup (section 5.2), end-to-end encrypted to the kernel | Shows the popup for every passkey prompt, and the live grants and sudo turns with revoke. The browser never holds a grant. |
-| TUI (local) | The local-kernel auth token (step 1), later a human-surface credential (step 2) | The popup, shaped like the hot-keys popup | Shows the popup, sudo state and live grants. |
+| TUI (local) | The step 1 local token (#701) | The popup, shaped like the hot-keys popup | Shows the popup, sudo state and live grants. |
 | Remote TUI | Relay, like the web | The popup, end-to-end encrypted | Same as the web. |
 | CLI commands | The token file when the user runs them; the external agent's grant, over the Unix socket, when run from its shell tools | Never typed in the CLI | A command that needs the passkey raises the request and waits while the user answers the popup in a terminal. With no terminal connected it fails when the request expires. |
 | External agents | None of their own; the local Unix socket only | Never | Request grants and `/sudo` turns. Grants are bound to the agent's process (section 6). |
@@ -334,22 +334,78 @@ Shell-level `chariox` CLI calls from the turn carry sudo only once process ident
 
 The same local-token pattern is used for package actions in `docs/DEPLOYED_WORKFLOWS_THREAT_MODEL.md` (random kernel auth, authenticated handshake, token removed before provider launch). This plan brings it to the laptop kernel.
 
-## 9. Migration steps
+## 9. Migration: PR breakdown
 
-Each step ships on its own and leaves the system working. Steps 3 to 7 change serialized protocol shapes, so each needs a future protocol version under the Protocol Change Rule.
+Each PR ships on its own and leaves the system working. A PR that changes a serialized protocol shape takes the next reserved protocol number when it is implemented, under the Protocol Change Rule; this plan does not pick numbers.
+
+### 9.1 Connection classes
+
+From PR 2 the kernel assigns every connection one class from this fixed vocabulary, and audit events name it.
+
+| Class | Identified by | May submit a passkey | Authority |
+|---|---|---|---|
+| `terminal` | The step 1 local token (#701) on TCP loopback, which every `LocalIpcClient` (TUI, CLI, native TUIs, `chariox-shell`) sends; or a relay client with a user id (web, remote TUI) | Yes, only in answer to a popup (D1) | Stratum 1 |
+| `external_agent` | A Unix socket peer process, or one of its OS descendants, holding a D9 grant | No | Stratum 2 |
+| `kernel_agent` | The per-run runtime MCP bearer on the MCP listener; from PR 10 also its process tree on the Unix socket | No | Its tools; sudo for one turn (stratum 3) |
+| `host` | `CHARIOX_KERNEL_LOCAL_AUTH_TOKEN(_FILE)`, held by the host controller of managed and hosted workers | No | Unchanged |
+| `relay_peer` | Peer identity and relay keys | No | Unchanged; never receives grants |
+| `unauthenticated` | Neither a token nor a grant | No, except on TCP until PR 7 | On TCP until PR 7: today's treatment, logged. On the Unix socket: only an access request. On TCP from PR 7: refused with a pointer to the Unix socket. |
+
+- **The human-surface credential is the #701 token.** There is no separate file. Terminals and the CLI share it, and under D11 a same-user agent that reads it is accepted as a terminal; the passkey still guards everything dangerous.
+- **Passkeys.** Only `terminal` connections may submit a passkey. A `passkey` field from any other class is refused before verification and does not count toward the limiter.
+- **No per-class lockout.** Under D11 an agent can present the terminal token, so classes cannot separate its guesses from the human's. The single per-owner limiter of Phase 1 stays (section 4.3).
+- **`is_terminal_caller`** keeps its transport-source logic until PR 7, which switches it to the `terminal` class in the same change that refuses connections without the token. Clients without the token, such as iOS and drills with an isolated `CHARIOX_HOME`, are therefore never demoted before PR 6 has given them the token.
+
+### 9.2 The PRs
 
 0. **Retire #15 (D7).** PR #15 ("feat: external agent terminal MCP peer", branch `codex/agent-terminal-runtime`, one commit `95137ee73`) is open and was never merged. It adds the stdio MCP server `chariox-agent-terminal` and `chariox-shell agent-terminal`, whose `chariox_execute` tool reaches every registry kernel request over the unauthenticated loopback socket with no auth of its own. It also adds `GetTerminalOperationRegistry` and `TerminalOperationRegistry`, a `PromptSource` on `SubmitPrompt`, generated `contracts.json` and `parity_manifest.json`, and the docs `AGENT_TERMINAL.md` and `AGENT_TERMINAL_VALIDATION.md`. Main and `apps/p1-app-bound-copy` contain none of it, so nothing is removed from main.
    - Close #15 with a pointer to this plan, archive the branch as a git bundle, then delete `codex/agent-terminal-runtime`.
    - Closing and deleting need the owner's go-ahead. The same commit bundles unrelated changes (it removes `ListPromptSettings` and `GetPromptSetting`, rewrites `session/runtime_session/workflows.rs` and edits `ci.yml`), which must first be confirmed unwanted.
    - These stay, because other features use them: the per-run runtime MCP listener (`transport/mcp_server.rs`, `generate_runtime_mcp_auth_token`), `GetTerminalCommandCatalog`, `chariox-shell` and the `LocalIpcClient` in `@chariox/kernel-client`, and `prompt_origin: "external"`, which observes provider sessions run outside Chariox.
-1. **Local-kernel auth token (option A), defense in depth.** On start, the laptop kernel writes a random token to a 0600 file in its state directory and accepts it on the handshake `Authorization` header, as managed workers already do. The TUI and CLI read the file. At first, connections without it are accepted but logged. This stops other OS users once enforced, and prepares every client. Same-user agents can read the file (D11).
-2. **Human-surface credentials.** The kernel records the stratum of each connection (host token, Chariox terminal, external agent, kernel-launched agent), counts passkey failures per class, and attributes audit events to it. `is_terminal_caller` becomes a statement about credential class rather than transport source.
-3. **Passkey popups.** The kernel-owned pending interaction of section 5.2, projected to every connected terminal and closed everywhere once resolved. Critical approvals move to it at this step; Apps Phase 1 keeps its approval panel (D13).
-4. **External agent grants on the Unix socket.** Start the Unix socket endpoint with peer identification and a peer UID check (section 6.1). Then add requests, the popup, process binding, session scoping with deny by default, lifetime, extension, revocation and audit. Over TCP loopback an external agent can only request access (section 6.3). Grants are optional at first: connections without one keep working as today.
-5. **Restrict the local sockets.** A connection with neither a terminal credential nor a grant can only request access. Old clients get a clear upgrade message instead of a bare refusal. Managed workers are unaffected.
-6. **`/sudo`.** One-turn sudo (section 7) ships alongside `/meta`, with the notice on `/meta`, critical approvals by sudo turns (D3) and external `/sudo` requests (D8).
-7. **Retire `/meta`.** Remove it from the catalog, the CLI and the tool set after one release.
-8. **Shell-level CLI access for sudo turns.** Process identity for kernel-launched agents (section 6.1): a dedicated OS session per provider launch and tracked descendants. Until then, a sudo turn reaches the kernel through its MCP tools.
+1. **Local token in log mode. Shipped as #701 (`d9926f39a`).** The laptop kernel writes `<state>/kernel-local-auth/<port>.token` (0600 in a 0700 directory, a fresh `chx_kat_`-prefixed token at each start) and accepts it on `Authorization`. Missing and wrong tokens are still admitted and logged. `LocalIpcClient` sends it; iOS and drills with an isolated `CHARIOX_HOME` do not yet (PR 6). No protocol change.
+2. **Connection classes and audit attribution.**
+   - Scope: assign the classes of section 9.1 at admission (`external_agent` from PR 5), record them on the caller and in traces, and add them to `critical_approval.passkey` and later audit events. Refuse a passkey from `kernel_agent`, `host` and `relay_peer`. `is_terminal_caller` is unchanged.
+   - Depends on: PR 1. Protocol: yes, for the class vocabulary in audit events. Clients: decode the new field where audit events are shown.
+   - Tests: each credential (token, none, wrong, relay, MCP bearer, host token) maps to its class; audit events carry it; a passkey from a refused class does not touch the limiter; a protocol snapshot.
+   - Must not break: tokenless clients keep today's treatment; the Phase 1 critical approval contract and its audit outcomes.
+3. **Passkey popups (D1, D13, D15).**
+   - Scope: the kernel-owned pending interaction of section 5.2 for every passkey prompt. Critical approvals move to it, and the Phase 1 hidden-input prompts are removed in the same PR.
+   - Depends on: PR 2. Protocol: yes. Clients: the TUI popup shaped like the hot-keys popup, and the web and remote TUI dialog. Native clients follow later (D1).
+   - Tests: every owner terminal gets the popup, attached to the session or not; the first correct answer resolves it and every terminal closes it; a later answer gets "already answered"; a wrong passkey keeps it open and counts; with no terminal it expires with a message; a shared session shows it only on the host's terminals; deny needs no passkey.
+   - Must not break: the Phase 1 contract (passkey required, remember window, audit outcomes, end-to-end encryption to remote kernels), and Apps Phase 1, which keeps its panel until this ships (D13).
+4. **Passkey rotation (section 4.4).**
+   - Scope: the authenticated rotation operation, with the old and new passphrase entered in a popup, a crash-safe update of the vault and the pin, and the revocations of section 4.4. PRs 5 and 8 register their grants and sudo turns with it as they land.
+   - Depends on: PR 3. Protocol: yes. Clients: terminals render the rotation popup.
+   - Tests: a wrong old passkey is refused and counted; a crash between the vault and pin updates recovers to one consistent passphrase; replacing the vault file or its configured path still never rotates the pin; remember windows end; audit events.
+   - Must not break: the pinned verifier and `a_swapped_vault_path_or_file_cannot_supply_the_passkey`; the vault unlock state.
+5. **Unix socket and external agent grants (D5, D9, D15, D16).**
+   - Scope: serve the kernel websocket protocol on a Unix listener at `local_socket_path`, prepared as `apps/kernel/src/local/ipc.rs` does (0600 socket, 0700 directory). It replaces the unused request/response server there. Peer identification: `getpeereid` and `LOCAL_PEERTOKEN` on macOS; `SO_PEERCRED` plus a pidfd or the start time on Linux; other UIDs are refused. Then grants (sections 5.3 to 5.8 and 6): the request and popup, holder verification through the named ancestor, OS descendants, session scoping with deny by default, lifetime and the extension popup, revocation including process exit and idle subscriptions, and audit. On TCP an access request gets a pointer to the Unix socket. macOS and Linux only (open question 5).
+   - Depends on: PRs 2 and 3, and PR 4 for the rotation hook. Protocol: yes (access request, grant events, list and revoke).
+   - Clients: `LocalIpcClient` gains `ws+unix://` endpoints. `chariox access request --session <id>` names the holder with `--holder-pid`, which defaults to the CLI's grandparent: the agent, when the CLI runs from its shell tool. Terminals list grants with revoke and show the extension popup.
+   - Tests: the popup shows the OS-reported executable and pid; a descendant is accepted, a sibling and a reused PID are refused; process exit, expiry and revoke end the grant at once, idle subscribers included; extension; a request type without a decided scope fails a test; on a shared session only the host can grant; a grant cannot answer a critical approval; agents a holder spawns get nothing (D4).
+   - Must not break: TCP terminals with the token, tokenless clients in log mode, the MCP listener, managed workers.
+6. **The token for every first-party client.**
+   - Scope: drill helpers that start a kernel under a private `CHARIOX_HOME` pass that home (or `XDG_STATE_HOME`) to their clients. The iOS simulator client reads the token file named by `SIMCTL_CHILD_CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE` at each connection and sends it on loopback URLs only; if the simulator cannot read host files, it takes the value from `SIMCTL_CHILD_CHARIOX_KERNEL_LOCAL_AUTH_TOKEN` instead. Devices use the relay.
+   - Depends on: PR 1. Protocol: no.
+   - Tests: the drill suite in log mode logs no missing-token warning from a first-party client; an iOS unit test sends the header on loopback and never elsewhere.
+   - Must not break: relay and remote clients, which never receive the token.
+7. **Enforcement.**
+   - Scope: `KernelLocalAuth::admit` refuses a missing or wrong local token with 401 and a body that names the token file and the Unix socket. An `unauthenticated` Unix socket connection can only request access. `is_terminal_caller` switches to the `terminal` class in this PR.
+   - Depends on: PRs 2, 5 and 6, plus a log-mode run that shows no first-party client without the token. Protocol: yes. Clients: `LocalIpcClient` turns the 401 into a clear error; minimum supported versions rise where clients rely on the new behavior.
+   - Tests: tokenless and wrong-token TCP upgrades get the 401 and its message; with the token everything works; `is_terminal_caller` follows the class; host-token kernels behave as before.
+   - Must not break: managed and hosted workers, relay and remote clients, the MCP listener, and the publication gateway the kernel spawns.
+8. **`/sudo` (section 7).**
+   - Scope: `/sudo <prompt>` with the popup; the queued authorization; elevation of the run's MCP identity for one turn; kernel-wide authority (D14); critical approvals with receipts naming the turn and the `/sudo` entry (D16); external `/sudo` requests from grant holders (D8); the notice on `/meta`; hooks for rotation, revoke all and session end.
+   - Depends on: PRs 2 and 3; PR 5 for external requests; PR 4 for the rotation hook. Protocol: yes (catalog command, interaction and receipt shapes).
+   - Clients: the `/sudo` entry, sudo state and running turns with revoke in the TUI and web; `chariox sudo request --agent <id>` over the Unix socket for external agents.
+   - Tests: sudo ends at yield and on interrupt, with no time expiry; the queued-sudo test of section 7.1; a restart drops a queued `/sudo`; a critical approval answered with the receipt; a grant cannot answer one; spawned agents get no sudo; an external request's popup names the requester, target and prompt.
+   - Must not break: `/meta` for one release, running Meta tasks, routine approvals.
+9. **Retire `/meta`.** One release after PR 8: remove it from the catalog, the CLI and the tool set, with `apps/cli/src/command-center.test.ts` updated, and point `/meta` users to `/sudo`. Protocol: yes. The one decision left is open question 2: how long the alias lasts, and whether a delegation-only mode survives under another name.
+10. **Shell-level CLI for sudo turns (section 6.1).**
+    - Scope: a dedicated OS session (`setsid`) per provider launch, and kernel-tracked descendants with PID-reuse protection, so Unix socket connections from a sudo turn's process tree carry sudo.
+    - Depends on: PRs 5 and 8. Protocol: no.
+    - Tests: the CLI run from the turn's shell has sudo, and loses it after yield; a sibling agent's process that joins the target's process group is refused.
+    - Must not break: provider launch, the Seatbelt profile, managed isolation, and environment scrubbing.
 
 ## 10. Threat model
 
@@ -378,7 +434,7 @@ Each step ships on its own and leaves the system working. Steps 3 to 7 change se
 | Attack | Mitigation |
 |---|---|
 | A same-user agent answers a critical approval | Phase 1: the passkey is required at approval time; agents never see it. After this milestone, only a Chariox terminal with the passkey, or a sudo turn the human started with the passkey (D3), can answer. A grant never can (D16). |
-| A same-user agent acts as the owner in other ways | Steps 1 to 5 require credentials and send agents through grants, which are bound to a process and scoped to one session. A same-user agent that deliberately reads the terminal credential file can still pose as a terminal; that is accepted (D11), because every dangerous action needs the passkey. |
+| A same-user agent acts as the owner in other ways | PRs 1 to 7 (section 9.2) require credentials and send agents through grants, which are bound to a process and scoped to one session. A same-user agent that deliberately reads the terminal credential file can still pose as a terminal; that is accepted (D11), because every dangerous action needs the passkey. |
 | Another OS user connects to loopback | Step 1 token in a 0600 file; the 0600 Unix socket with a peer UID check. |
 | A browser page drives the kernel over loopback | #618 refuses any upgrade with an `Origin` header. |
 | A compromised relay reads or replays the passkey | End-to-end encryption; the relay sees ciphertext only. Passkey fields are zeroized after use. Grants are local only and never cross the relay. |
@@ -390,13 +446,13 @@ Each step ships on its own and leaves the system working. Steps 3 to 7 change se
 | Request flooding: an agent fills the terminals with popups | One pending request per requester; requests expire; refusals are audited. |
 | Prompt spoofing: an agent shows a fake passkey prompt in its transcript or its own UI | The passkey is typed only into kernel-owned popups with a distinct look, never inline in agent output, a CLI prompt or an external agent's UI. The docs tell users never to type it anywhere else. |
 | Online guessing of the passkey | 5 failures, then exponential lockout capped at 15 minutes; one Argon2id verification at a time. |
-| An agent locks the owner out with wrong guesses | A DoS bounded at 15 minutes; per-class counting after step 2. |
+| An agent locks the owner out with wrong guesses | A DoS bounded at 15 minutes. |
 | A secret leaks into logs or transcripts | Grants and sudo issue no bearer token, and the passkey is never logged or recorded. |
 
 ### 10.4 Residual risks
 
 - **Memory and input capture.** A same-user process that can read the kernel's memory, attach a debugger, or log keystrokes can capture the passkey. On macOS keystroke capture needs a TCC permission; under X11 on Linux any client can read keystrokes. This plan does not address it.
-- **No isolation (D11, D12).** Same-user agents can read local files. They can read the step 1 token file and pose as a terminal for everything except passkey prompts, and read the vault file to guess the passkey offline, slowed only by Argon2id; passphrase strength matters more now that it gates approvals and sudo (open question 3). They can also read per-run MCP bearers from providers' MCP configurations; during a sudo turn that bearer carries sudo authority until the turn yields. This is accepted: the passkey is the hard boundary for everything dangerous, namely critical approvals, grants, extensions and `/sudo`. Steps 1 and 5 still stop other OS users and keep well-behaved agents on the grant path.
+- **No isolation (D11, D12).** Same-user agents can read local files. They can read the step 1 token file and pose as a terminal for everything except passkey prompts, and read the vault file to guess the passkey offline, slowed only by Argon2id; passphrase strength matters more now that it gates approvals and sudo (open question 3). They can also read per-run MCP bearers from providers' MCP configurations; during a sudo turn that bearer carries sudo authority until the turn yields. This is accepted: the passkey is the hard boundary for everything dangerous, namely critical approvals, grants, extensions and `/sudo`. The local token and the Unix socket's peer UID check still stop other OS users, and well-behaved agents use the grant path.
 - **Proxying.** An authorized agent can deliberately act as a proxy for another process: forward its requests over its own connections, or run it inside its own process tree. No mechanism can stop that, and the audit attributes everything to the authorized agent. The same holds for an external agent's own sub-agents and helpers, which the kernel cannot tell apart from it; D4 covers agents spawned through the kernel.
 - **Sudo turn breadth.** A sudo turn can approve critical actions, including payments, in any session on its kernel for as long as it runs, and a misbehaving or prompt-injected agent can misuse that within the turn. The owner accepted this with no cap (D14). The bounds are one turn, the user's ability to interrupt it, and receipts that name the turn and the `/sudo` entry.
 - **Phase 1 remember window.** Within it a human at a terminal approves without retyping the passkey, and so can a same-user agent posing as a terminal (D11); that is the accepted cost of opting in. It is off by default, lasts at most 15 minutes, and never applies to `/sudo`, grants or extensions.
