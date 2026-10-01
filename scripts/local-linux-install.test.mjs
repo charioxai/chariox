@@ -52,11 +52,12 @@ printf '%s\\n' ${passwd.map((line) => `'${line}'`).join(" ")} | awk -F: -v key="
   await script(join(bin, "systemctl"), `#!/bin/sh
 echo "$*" >> "$HARNESS_STATE/systemctl"
 case "$*" in
+  "show chariox-app-storage.service -p MainPID --value") echo 123 ;;
   "show user@"*) echo "\${HARNESS_DELEGATE:-cpu memory pids}" ;;
   "is-enabled --quiet chariox-app-storage.service") test -e "$HARNESS_STATE/enabled" ;;
   "is-active --quiet chariox-app-storage.service") test -e "$HARNESS_STATE/active" ;;
   "enable --quiet chariox-app-storage.service") touch "$HARNESS_STATE/enabled" ;;
-  "start chariox-app-storage.service"|"restart chariox-app-storage.service") touch "$HARNESS_STATE/active" ;;
+  "start chariox-app-storage.service"|"restart chariox-app-storage.service") mkdir -p "$CHARIOX_LOCAL_INSTALL_ROOT/proc/123"; cp "$CHARIOX_LOCAL_INSTALL_ROOT/usr/libexec/chariox-app-storage" "$CHARIOX_LOCAL_INSTALL_ROOT/proc/123/exe"; touch "$HARNESS_STATE/active" ;;
   "stop chariox-app-storage.service") rm -f "$HARNESS_STATE/active" ;;
   "disable --now --quiet chariox-app-storage.service") rm -f "$HARNESS_STATE/active" "$HARNESS_STATE/enabled" ;;
   daemon-reload) ;;
@@ -108,7 +109,7 @@ printf '{"revision":1,"inventorySha256":"%s"}\\n' "$7" > "$CHARIOX_LOCAL_INSTALL
       "--runtime-key", KEY, "--runtime-digest", digest, ...extra], env)
   const log = async (name) => (existsSync(join(state, name)) ? readFile(join(state, name), "utf8") : "")
   const reset = (name) => rm(join(state, name), { force: true })
-  return { base, root, pkg, runtime, digest, run, install, log, reset }
+  return { base, root, bin, pkg, runtime, digest, run, install, log, reset }
 }
 
 const p = (h, path) => join(h.root, path)
@@ -297,4 +298,44 @@ test("shipped AppArmor attachments compile with the real parser", { skip: !linux
   if (available.error?.code === "ENOENT") return t.skip("apparmor_parser unavailable")
   const result = spawnSync("apparmor_parser", ["-Q", join(repositoryRoot, "deploy/local-linux/chariox-app-bwrap.apparmor")], { encoding: "utf8" })
   assert.equal(result.status, 0, result.stderr || result.stdout)
+})
+
+test("interrupted helper publication resumes activation even with identical inputs", { skip: !linux }, async () => {
+  const h = await harness()
+  try {
+    assert.equal(h.install(["alice"]).status, 0)
+    await script(join(h.pkg, "chariox-app-storage"), "#!/bin/sh\necho helper v2\n")
+    const parser = join(h.bin, "apparmor_parser")
+    const original = await readFile(parser, "utf8")
+    await script(parser, "#!/bin/sh\nexit 1\n")
+    await writeFile(p(h, "sys/kernel/security/apparmor/profiles"), "")
+    await h.reset("systemctl")
+    const failed = h.install(["bob"])
+    assert.equal(failed.status, 1, failed.out)
+    assert.match(await readFile(p(h, "usr/libexec/chariox-app-storage"), "utf8"), /v2/)
+    assert.deepEqual((await owners(h)).map((owner) => owner.uid), [1000, 1001])
+    const marker = p(h, "var/lib/chariox-local-install/helper-restart-pending")
+    assert.ok(existsSync(marker))
+    assert.doesNotMatch(await h.log("systemctl"), /^restart /m)
+    await script(parser, original)
+    const dry = h.install(["bob"], ["--dry-run"])
+    assert.equal(dry.status, 0, dry.out)
+    assert.ok(existsSync(marker))
+    const resumed = h.install(["bob"])
+    assert.equal(resumed.status, 0, resumed.out)
+    assert.match(await h.log("systemctl"), /^restart chariox-app-storage\.service$/m)
+    assert.equal(existsSync(marker), false)
+    // A pre-marker installer can leave the old running ELF after replacing disk.
+    await writeFile(p(h, "proc/123/exe"), "old running helper\n")
+    await h.reset("systemctl")
+    const legacy = h.install(["bob"])
+    assert.equal(legacy.status, 0, legacy.out)
+    assert.match(await h.log("systemctl"), /^restart chariox-app-storage\.service$/m)
+    assert.equal(existsSync(marker), false)
+    await h.reset("systemctl")
+    assert.equal(h.install(["bob"]).status, 0)
+    assert.doesNotMatch(await h.log("systemctl"), /^restart /m)
+  } finally {
+    await rm(h.base, { recursive: true, force: true })
+  }
 })

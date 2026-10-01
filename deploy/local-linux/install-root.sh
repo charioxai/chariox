@@ -54,6 +54,7 @@ APPARMOR_PROFILES=$R/sys/kernel/security/apparmor/profiles
 LINGER=$R/var/lib/systemd/linger
 # Lingering this script enabled, one file per uid, so uninstall reverts only that.
 STATE=$R/var/lib/chariox-local-install
+RESTART_PENDING=$STATE/helper-restart-pending
 SERVICE=chariox-app-storage.service
 
 say() { printf '[chariox-install] %s\n' "$*"; }
@@ -120,12 +121,28 @@ for user in "${users[@]}"; do
   owner_specs+=("$uid:$gid:/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service/app.slice/chariox-kernel.service/apps:$home/.chariox/state/kernel.db")
 done
 
+# Persist the obligation before replacing any helper startup input.
+restart_obligation() {
+  (( dry_run )) && return 0
+  python3 - "$RESTART_PENDING" <<'PY_MARKER'
+import os, sys
+path = sys.argv[1]
+os.makedirs(os.path.dirname(path), mode=0o755, exist_ok=True)
+fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+os.fsync(fd)
+os.close(fd)
+fd = os.open(os.path.dirname(path), os.O_RDONLY | os.O_DIRECTORY)
+os.fsync(fd)
+os.close(fd)
+PY_MARKER
+}
+
 # enrollment install SPEC... | enrollment remove UID...: merge into or remove from
 # the helper's owners. Exit 0 when the file changed (or would), 10 when unchanged.
 enrollment() {
-  python3 - "$ENROLLMENT" "$dry_run" "$@" <<'PY'
+  python3 - "$ENROLLMENT" "$dry_run" "$RESTART_PENDING" "$@" <<'PY'
 import json, os, sys, tempfile
-path, dry_run, mode, args = sys.argv[1], sys.argv[2] == "1", sys.argv[3], sys.argv[4:]
+path, dry_run, marker, mode, args = sys.argv[1], sys.argv[2] == "1", sys.argv[3], sys.argv[4], sys.argv[5:]
 schema = "chariox.app-storage-enrollment.v1"
 current = {"schema": schema, "owners": []}
 if os.path.exists(path):
@@ -151,6 +168,14 @@ updated = {"schema": schema, "owners": owners}
 if json.dumps(updated, sort_keys=True) == before:
     print(f"[chariox-install] unchanged {path}")
     sys.exit(10)
+if not dry_run and mode == "install":
+    os.makedirs(os.path.dirname(marker), mode=0o755, exist_ok=True)
+    fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    os.fsync(fd)
+    os.close(fd)
+    fd = os.open(os.path.dirname(marker), os.O_RDONLY | os.O_DIRECTORY)
+    os.fsync(fd)
+    os.close(fd)
 verb = "would " if dry_run else ""
 if not owners:
     print(f"[chariox-install] {verb}remove {path} (no owners left)")
@@ -187,6 +212,7 @@ put() {
     say "unchanged $dest"
     return 1
   fi
+  if [[ ${4:-} == restart ]]; then restart_obligation || die "cannot persist helper activation obligation"; fi
   act "install $dest" install -D -o root -g root -m "$mode" -- "$source" "$dest.chariox-new"
   (( dry_run )) || mv -f -- "$dest.chariox-new" "$dest" || die "failed to install $dest"
 }
@@ -255,8 +281,8 @@ install_all() {
 
   # 2. Root binaries and the helper's unit.
   put "$stage/chariox-app-runtime-install" "$RUNTIME_INSTALLER" 0755 || true
-  put "$stage/chariox-app-storage" "$HELPER" 0755 && restart=1
-  if put "$here/../managed-kernel/chariox-app-storage.service" "$UNIT" 0644; then
+  put "$stage/chariox-app-storage" "$HELPER" 0755 restart && restart=1
+  if put "$here/../managed-kernel/chariox-app-storage.service" "$UNIT" 0644 restart; then
     restart=1
     act "reload systemd units" systemctl daemon-reload
   fi
@@ -285,6 +311,21 @@ install_all() {
     fi
   done
 
+  # Recover pre-marker interrupted installs too: compare the running ELF, not
+  # the replaced pathname. An unavailable PID/executable also requires activation.
+  if systemctl is-active --quiet "$SERVICE"; then
+    local main_pid
+    main_pid=$(systemctl show "$SERVICE" -p MainPID --value)
+    if [[ ! $main_pid =~ ^[1-9][0-9]*$ ]] || ! cmp -s -- "$HELPER" "$R/proc/$main_pid/exe"; then
+      restart=1
+      restart_obligation
+    fi
+  fi
+  # Retry daemon-reload too: a previous unit replacement may have failed before it.
+  if [[ -e "$RESTART_PENDING" ]]; then
+    restart=1
+    act "reload systemd units for pending helper activation" systemctl daemon-reload
+  fi
   # 6. The helper.
   systemctl is-enabled --quiet "$SERVICE" 2>/dev/null || act "enable $SERVICE" systemctl enable --quiet "$SERVICE"
   if ! systemctl is-active --quiet "$SERVICE"; then
@@ -296,6 +337,7 @@ install_all() {
     say "unchanged $SERVICE (running)"
   fi
   (( dry_run )) || systemctl is-active --quiet "$SERVICE" || die "$SERVICE is not running; see journalctl -u $SERVICE"
+  (( dry_run )) || rm -f -- "$RESTART_PENDING"
   say "done: runtime $(enrolled_runtime); ${users[*]} can now run a kernel with install-user.sh, without root"
 }
 
