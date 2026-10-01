@@ -205,7 +205,7 @@ exec /usr/bin/python3 "$8" "$9" "\${10}" --stdio
   assert.equal((await stat(join(archiveDirectory, "metadata.json"))).mode & 0o777, 0o600)
   const calls = (await readFile(operations, "utf8")).trim().split("\n").map(JSON.parse)
   assert.equal(calls.some(args => args[0] === "volume" && ["rm", "create"].includes(args[1])), false, "failure occurs before any home-volume mutation")
-  child.stdin.write(JSON.stringify({ kind: "docker", args: ["image", "inspect", "registry.example/progress:verified"] })+"\n")
+  child.stdin.write(JSON.stringify({ kind: "docker", args: ["image", "inspect", "--format", "{{.Id}}", "registry.example/progress:verified"] })+"\n")
   await waitFor(() => stdout.trim().split("\n").length === 2)
   const next = JSON.parse(stdout.trim().split("\n")[1])
   assert.equal(next.status, 0, Buffer.from(next.stderrBase64, "base64").toString())
