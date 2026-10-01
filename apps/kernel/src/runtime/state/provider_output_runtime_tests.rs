@@ -234,10 +234,13 @@ async fn mcp_catalog_continuation_uses_kernel_attachment_after_client_detach() {
     std::fs::create_dir_all(&scratch).unwrap();
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            scratch.to_string_lossy(),
-            scratch.to_string_lossy(),
-        ))
+        .create_session(
+            crate::session::CreateSessionRequest::new(
+                scratch.to_string_lossy(),
+                scratch.to_string_lossy(),
+            )
+            .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
+        )
         .unwrap();
     let attachment = app
         .attach(crate::attachment::AttachRequest::for_user(

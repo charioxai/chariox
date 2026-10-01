@@ -15,14 +15,18 @@ OpenCode 1.18.23 refreshes definitions using its official notification handler:
 [versioned MCP handler](https://github.com/anomalyco/opencode/blob/v1.18.23/packages/opencode/src/mcp/index.ts).
 Codex 0.159.3 only logs the notification:
 [versioned client handler](https://github.com/openai/codex/blob/rust-v0.159.3/codex-rs/rmcp-client/src/logging_client_handler.rs).
-Codex, Claude and unverified providers therefore report
+OpenCode definition refresh is asynchronous; the reserved-builder API drill
+completed its active turn without invoking the newly granted tool. Handler
+existence alone therefore does not establish immediate active-turn visibility.
+Codex, OpenCode, Claude and unverified providers conservatively report
 `effective=after_provider_reload`, `requires_provider_restart=true` for runtime
 script/connector grants. The existing kernel provider reload and durable resume
 path refreshes the conversation after the active turn, with the existing
-kernel-owned continuation. An idle catalog change reloads without replaying an
+kernel-owned automation attachment through normal prompt admission, so
+disconnecting the original client cannot cancel continuation ownership. An idle catalog change reloads without replaying an
 already completed prompt. No provider SDK, visible PTY injection, or alternative
-prompt authority is added. OpenCode reports `effective=now`, using the MCP
-notification path. Skill body grants retain their immediate behavior; external
+prompt authority is added. Notifications remain available to official provider
+clients; immediate grant claims require verified active-turn behavior. Skill body grants retain their immediate behavior; external
 MCP configuration grants retain their existing reload behavior.
 
 MP-08/MP-10 wire compatibility: local daemon version 371 binds this MCP behavior

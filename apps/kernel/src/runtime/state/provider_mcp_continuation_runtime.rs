@@ -211,7 +211,9 @@ impl KernelRuntimeState {
             .provider_store
             .get_run_for_agent(&continuation.session_id, &continuation.agent_id)
             .and_then(|run| {
-                if crate::provider::provider_run_reuses_run_for_mcp_continuation_reload(&run) {
+                if !crate::provider::provider_runtime_catalog_requires_reload(run.provider())
+                    && crate::provider::provider_run_reuses_run_for_mcp_continuation_reload(&run)
+                {
                     None
                 } else {
                     Some(run.id().to_string())
