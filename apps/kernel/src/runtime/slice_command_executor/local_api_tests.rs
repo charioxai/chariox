@@ -50,7 +50,7 @@ impl Drop for SliceDockerEnv {
 
 #[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
-async fn save_api_rejects_reconciled_running_provider_before_snapshot_or_park() {
+async fn save_api_rejects_unsupported_layout_before_snapshot_or_park() {
     use std::os::unix::fs::PermissionsExt;
 
     let _environment_lock = SLICE_DOCKER_ENV_LOCK
@@ -102,17 +102,17 @@ async fn save_api_rejects_reconciled_running_provider_before_snapshot_or_park() 
     let error = result.expect_err("a running attached provider must reject SaveSliceState");
     assert!(error
         .to_string()
-        .contains("cannot save slice while agents are running"));
-    assert!(error.to_string().contains(&agent_id));
+        .contains("unavailable because this storage layout"));
+    assert!(!error.to_string().contains(&agent_id));
 
     let app = app.lock().await;
     let saved = app
         .slices()
         .resolve(&slice.id)
         .expect("slice should remain available");
-    assert!(
-        saved.agent_ids.iter().any(|attached| attached == &agent_id),
-        "save admission must see the canonical agent restored by stale-attachment reconciliation"
+    assert_eq!(
+        saved.agent_ids, slice.agent_ids,
+        "unsupported capture admission must not reconcile or mutate attachments"
     );
     assert_eq!(saved.status, crate::slice::SliceStatus::Running);
     assert_eq!(saved.saved_state_ref, None);
@@ -153,6 +153,12 @@ async fn save_api_rejects_reconciled_running_provider_before_snapshot_or_park() 
             .as_deref(),
         Some(worker_run_id.as_str())
     );
+    drop(app);
+    let reconciled = runtime
+        .reconcile_slice_agent_attachments(&slice)
+        .await
+        .expect("independent attachment reconciliation should remain supported");
+    assert!(reconciled.agent_ids.contains(&agent_id));
 }
 
 #[cfg(unix)]

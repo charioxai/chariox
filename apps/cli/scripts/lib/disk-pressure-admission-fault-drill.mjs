@@ -7,13 +7,13 @@ export const DISK_PRESSURE_ADMISSION_TEST_NAME =
   "slice::local_docker::tests::disk_pressure_admission_fault_probe"
 
 const PROBE_PREFIX = "CHARIOX_DISK_PRESSURE_PROBE:"
-const PROBE_SCHEMA = "chariox.disk_pressure_admission_probe.v1"
+const PROBE_SCHEMA = "chariox.disk_pressure_admission_probe.v2"
 const EXPECTED_RESERVE_BYTES = 2 * 1024 * 1024 * 1024
 const BOOLEAN_FIELDS = Object.freeze([
-  "activeStateRemainsConsistent",
-  "admissionClosesBeforeEnospc",
+  "independentAdmissionRejectsLowCapacity",
+  "independentAdmissionAcceptsRecoveredCapacity",
   "lastKnownGoodPreserved",
-  "resourceRecoveryRecorded",
+  "unsupportedCaptureRefusesBeforeMutation",
 ])
 
 export function buildDiskPressureAdmissionCargoArgs() {
