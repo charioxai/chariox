@@ -1361,7 +1361,7 @@ function prepareProvisioner(request) {
     environment.CHARIOX_SLICE_LOCAL_DEV_OWNER_UID = String(LOCAL_AUTHORITY.enrollment.ownerUid)
     environment.CHARIOX_SLICE_LOCAL_DEV_HELPER_NAME = process.env.CHARIOX_SLICE_LOCAL_DEV_HELPER_NAME
     environment.CHARIOX_SLICE_LOCAL_DEV_SOCKET_IDENTITY = process.env.CHARIOX_SLICE_LOCAL_DEV_SOCKET_IDENTITY
-    environment.CHARIOX_SLICE_LOCAL_DEV_OWNED_WORKSPACE = "1"
+    environment.CHARIOX_SLICE_OWNED_WORKSPACE = "1"
     environment.CHARIOX_SLICE_BUILD_IMAGE = "never"
     if (["provision", "restore-state"].includes(request.action) && !environment.CHARIOX_SLICE_SAVED_HOME_ARCHIVE) {
       const requested = environment.CHARIOX_SLICE_DOCKER_IMAGE
@@ -1369,6 +1369,10 @@ function prepareProvisioner(request) {
       environment.CHARIOX_SLICE_DOCKER_IMAGE = LOCAL_AUTHORITY.enrollment.workerImageId
       environment.CHARIOX_SLICE_BASE_IMAGE = LOCAL_AUTHORITY.enrollment.workerImageId
     }
+  } else if (!environment.CHARIOX_SLICE_WORKSPACE) {
+    // Without a development publication the provisioner would bind the signed
+    // build context as /workspace; a managed slice gets its own volume instead.
+    environment.CHARIOX_SLICE_OWNED_WORKSPACE = "1"
   }
   const privateRoot = protectedLayouts.prepare(request.action, environment)
   if (privateRoot) {

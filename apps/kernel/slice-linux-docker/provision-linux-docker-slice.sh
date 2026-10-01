@@ -76,13 +76,15 @@ SLICE_HOME_VOLUME="${CHARIOX_SLICE_HOME_VOLUME:-${SLICE_NAME}-home}"
 SLICE_SAVED_HOME_ARCHIVE="${CHARIOX_SLICE_SAVED_HOME_ARCHIVE:-}"
 SLICE_WORKSPACE="${CHARIOX_SLICE_WORKSPACE:-$REPO_ROOT}"
 SLICE_WORKSPACE_SOURCE="${CHARIOX_SLICE_WORKSPACE_SOURCE:-$SLICE_WORKSPACE}"
-if [[ "${CHARIOX_SLICE_LOCAL_DEV_OWNED_WORKSPACE:-0}" == "1" ]]; then
-  # The trusted local broker rejects explicit host/development mounts. Its
-  # absent-workspace case gets an owned Docker volume, never the source context.
-  [[ -z "${CHARIOX_SLICE_WORKSPACE:-}" && -z "${CHARIOX_SLICE_WORKSPACE_SOURCE:-}" ]] || fail "local DEV workspace authority mismatch"
+if [[ "${CHARIOX_SLICE_OWNED_WORKSPACE:-0}" == "1" ]]; then
+  # The broker sets this when a slice has no host/development workspace (always
+  # for the trusted local broker): it gets an owned Docker volume, never the
+  # source context.
+  [[ -z "${CHARIOX_SLICE_WORKSPACE:-}" && -z "${CHARIOX_SLICE_WORKSPACE_SOURCE:-}" ]] || fail "owned workspace authority mismatch"
   SLICE_WORKSPACE="/workspace"
   SLICE_WORKSPACE_SOURCE="${SLICE_NAME}-workspace"
 fi
+SLICE_WORKSPACE_OWNER="${CHARIOX_SLICE_LOCAL_DEV_OWNER_UID:-managed}"
 SLICE_DEVELOPMENT_MOUNT_COUNT="${CHARIOX_SLICE_DEVELOPMENT_MOUNT_COUNT:-0}"
 SLICE_WORKSPACE_MOUNT_MODE="${CHARIOX_SLICE_WORKSPACE_MOUNT_MODE:-rw}"
 SLICE_ALLOW_UNCONFINED_SECCOMP="${CHARIOX_SLICE_ALLOW_UNCONFINED_SECCOMP:-0}"
@@ -895,14 +897,14 @@ ensure_container() {
   else
     log "creating container $SLICE_NAME"
     prepare_home_volume
-    if [[ "${CHARIOX_SLICE_LOCAL_DEV_OWNED_WORKSPACE:-0}" == "1" ]]; then
+    if [[ "${CHARIOX_SLICE_OWNED_WORKSPACE:-0}" == "1" ]]; then
       if docker volume inspect "$SLICE_WORKSPACE_SOURCE" >/dev/null 2>&1; then
-        [[ "$(docker volume inspect --format '{{index .Labels "org.chariox.local.owner-slice"}}' "$SLICE_WORKSPACE_SOURCE")" == "$SLICE_ID" ]] || fail "foreign local DEV workspace volume"
-        [[ "$(docker volume inspect --format '{{index .Labels "org.chariox.local.owner-uid"}}' "$SLICE_WORKSPACE_SOURCE")" == "$CHARIOX_SLICE_LOCAL_DEV_OWNER_UID" ]] || fail "foreign local DEV workspace owner"
+        [[ "$(docker volume inspect --format '{{index .Labels "org.chariox.local.owner-slice"}}' "$SLICE_WORKSPACE_SOURCE")" == "$SLICE_ID" ]] || fail "foreign owned workspace volume"
+        [[ "$(docker volume inspect --format '{{index .Labels "org.chariox.local.owner-uid"}}' "$SLICE_WORKSPACE_SOURCE")" == "$SLICE_WORKSPACE_OWNER" ]] || fail "foreign owned workspace owner"
       else
         docker volume create --label "org.chariox.local.owner-slice=$SLICE_ID" \
-          --label "org.chariox.local.owner-uid=$CHARIOX_SLICE_LOCAL_DEV_OWNER_UID" "$SLICE_WORKSPACE_SOURCE" >/dev/null \
-          || fail "local DEV workspace creation failed"
+          --label "org.chariox.local.owner-uid=$SLICE_WORKSPACE_OWNER" "$SLICE_WORKSPACE_SOURCE" >/dev/null \
+          || fail "owned workspace creation failed"
       fi
     fi
     local docker_create_args=(
@@ -1090,9 +1092,9 @@ ensure_protected_runtime_barrier() {
 }
 
 start_slice_services() {
-  if [[ "${CHARIOX_SLICE_LOCAL_DEV_OWNED_WORKSPACE:-0}" == "1" ]]; then
+  if [[ "${CHARIOX_SLICE_OWNED_WORKSPACE:-0}" == "1" ]]; then
     run_with_timeout 30 docker exec -u root "$SLICE_NAME" chown 1001:1001 /workspace \
-      || fail "local DEV workspace ownership failed"
+      || fail "owned workspace ownership failed"
   fi
   ensure_protected_runtime_barrier
   if [[ "$SLICE_IMPORT_PROVIDER_AUTH" == "1" ]]; then
