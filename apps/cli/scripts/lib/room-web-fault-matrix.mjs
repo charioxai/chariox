@@ -132,6 +132,7 @@ export async function runRoomWebFaultMatrix({ page, client, ready, coordinationD
     const row = { fault, boundary, status: 'running', startedAt: new Date().toISOString(), assertions: [], errors: [] }
     rows.push(row); await report()
     let pending = null
+    let queueBurst = null
     let faultApplied = false
     let faultSettled = false
     const check = (value, message) => { if (value) row.assertions.push(message); else row.errors.push(message) }
@@ -158,6 +159,20 @@ export async function runRoomWebFaultMatrix({ page, client, ready, coordinationD
       else if (fault === 'controller') row.trigger = await control('controller_stop')
       else row.trigger = await control('relay_queue')
       faultApplied = true
+      if (fault === 'queue') {
+        await observerReady()
+        row.queueBurstStartedAt = new Date().toISOString()
+        queueBurst = (async () => {
+          const values = []
+          const deadline = Date.now() + 8000
+          do {
+            values.push(...await Promise.all(Array.from({ length: 128 }, () => client.send(requests.getRoomEnvironmentStateRequest(ready.sessionId), { timeoutMs: 8000 }).then(() => 'ok', error => /backpressure|queue.*full|no available capacity/i.test(error.message) ? 'backpressure' : 'other-error'))))
+            await sleep(200)
+          } while (Date.now() < deadline)
+          row.queueBurstFinishedAt = new Date().toISOString()
+          return values
+        })()
+      }
       if (fault === 'expired' || fault === 'stale-identity') await control('relay_start')
       // Observe degraded projection while the injected seam remains unhealthy.
       await sleep(fault === 'controller' ? 2000 : 5000)
@@ -168,6 +183,7 @@ export async function runRoomWebFaultMatrix({ page, client, ready, coordinationD
         check((row.identityFault?.[fault] ?? 0) > (identityBefore?.[fault] ?? 0), 'faulted identity was sent on a real Web relay handshake')
       }
       row.webFault = await webSnapshot(`${label}-fault`)
+      row.faultSnapshotAt = new Date().toISOString()
       row.clientsFault = await control('clients')
       if (fault === 'controller') {
         row.controllerFaultState = await control('state')
@@ -185,7 +201,7 @@ export async function runRoomWebFaultMatrix({ page, client, ready, coordinationD
       if (fault === 'kernel') check(row.clientsFault.local.daemonDisconnected === true, 'local TUI shows kernel disconnect')
       if (['relay', 'kernel'].includes(fault)) check(row.clientsFault.remote.daemonDisconnected === true, 'remote TUI shows disconnect')
       if (fault === 'queue') {
-        const burst = await Promise.all(Array.from({ length: 128 }, () => client.send({ GetRoomEnvironmentState: { session_id: ready.sessionId } }, { timeoutMs: 8000 }).then(() => 'ok', error => /backpressure|queue.*full/i.test(error.message) ? 'backpressure' : 'other-error')))
+        const burst = await queueBurst
         row.queueResponses = Object.fromEntries(['ok', 'backpressure', 'other-error'].map(key => [key, burst.filter(value => value === key).length]))
         const healthUrl = new URL(ready.relayUrl); healthUrl.protocol = 'http:'; healthUrl.pathname = '/health'
         row.relayHealth = await fetch(healthUrl).then(value => value.json())
@@ -238,6 +254,7 @@ export async function runRoomWebFaultMatrix({ page, client, ready, coordinationD
       check(row.webRecovery.timeOrigin === original.timeOrigin && row.webRecovery.shellSame, 'recovery retained terminal shell')
       row.status = row.errors.length ? 'RED' : 'GREEN'
     } catch (error) {
+      if (queueBurst) await queueBurst.catch(() => undefined)
       if (pending) row.operationResponse = await Promise.race([pending, sleep(1000).then(() => ({ pending: true }))])
       row.status = faultApplied ? 'RED' : 'BLOCKED'
       row.faultApplied = faultApplied
