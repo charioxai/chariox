@@ -344,6 +344,12 @@ mod tests {
                 .to_string(),
             Vec::new(),
         );
+        let registry = crate::mcp::CharioxMcpRegistry::new(vec![
+            crate::mcp::CharioxMcpRegistry::user_root().expect("worker registry root"),
+        ]);
+        registry
+            .install(&mcp)
+            .expect("matching worker-local MCP should install");
         let required = RequiredRemoteMcp {
             definition_hash: mcp.definition_hash().expect("hash should compute"),
             config: mcp,

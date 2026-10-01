@@ -95,18 +95,18 @@ fn provider_batch_launch_accepts_multiple_agents_with_one_kernel_request() {
 }
 
 async fn provider_batch_launch_accepts_multiple_agents_with_one_kernel_request_inner() {
+    let batch_worktree_0 = crate::test_support::TestWorktree::new(
+        "provider_batch_launch_accepts_multiple_agents_with_one_kernel_request_inner-0",
+    );
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, first_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-batch",
-            "worktree-batch",
-        ))
+        .create_session(batch_worktree_0.session_request())
         .expect("session should be created");
     let second_agent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
                 .with_alias("batch-launch-agent")
-                .with_worktree("worktree-batch"),
+                .with_worktree(batch_worktree_0.path().to_string_lossy()),
         )
         .expect("second agent should be created");
     let session_id = session.id().to_string();
@@ -354,18 +354,18 @@ fn provider_batch_launch_accepts_mixed_sessions_with_one_kernel_request() {
 }
 
 async fn provider_batch_launch_accepts_mixed_sessions_with_one_kernel_request_inner() {
+    let batch_worktree_0 = crate::test_support::TestWorktree::new(
+        "provider_batch_launch_accepts_mixed_sessions_with_one_kernel_request_inner-0",
+    );
+    let batch_worktree_1 = crate::test_support::TestWorktree::new(
+        "provider_batch_launch_accepts_mixed_sessions_with_one_kernel_request_inner-1",
+    );
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (first_session, first_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-batch-mixed-1",
-            "worktree-batch-mixed-1",
-        ))
+        .create_session(batch_worktree_0.session_request())
         .expect("first session should be created");
     let (second_session, second_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-batch-mixed-2",
-            "worktree-batch-mixed-2",
-        ))
+        .create_session(batch_worktree_1.session_request())
         .expect("second session should be created");
     let first_session_id = first_session.id().to_string();
     let second_session_id = second_session.id().to_string();
@@ -461,9 +461,12 @@ fn get_provider_run_uses_warmed_projection_without_app_lock() {
 }
 
 async fn get_provider_run_uses_warmed_projection_without_app_lock_inner() {
+    let fixture_worktree_0 = crate::test_support::TestWorktree::new(
+        "get_provider_run_uses_warmed_projection_without_app_lock_inner",
+    );
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .create_session(fixture_worktree_0.session_request())
         .expect("session should be created");
     let session_id = session.id().to_string();
     let agent_id = agent.id().to_string();
@@ -567,11 +570,14 @@ fn provider_run_projection_tracks_async_launch_completion() {
 }
 
 async fn provider_run_projection_tracks_async_launch_completion_inner() {
+    let fixture_worktree_0 = crate::test_support::TestWorktree::new(
+        "provider_run_projection_tracks_async_launch_completion_inner",
+    );
     let mut config = DaemonConfig::for_tests();
     config.provider_runtime_init_delay_ms = 25;
     let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .create_session(fixture_worktree_0.session_request())
         .expect("session should be created");
     let session_id = session.id().to_string();
     let agent_id = agent.id().to_string();

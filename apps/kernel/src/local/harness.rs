@@ -25,10 +25,17 @@ pub struct LocalHarnessReport {
 }
 
 pub fn run_local_harness(app: DaemonApp) -> Result<LocalHarnessReport, DaemonError> {
+    let worktree = env::current_dir().map_err(|error| DaemonError::LocalTransport {
+        operation: "local harness working directory",
+        message: error.to_string(),
+    })?;
     let client = LocalDaemonClient::new(app)?;
 
     let session = match client.send(LocalDaemonRequest::CreateSession(
-        CreateSessionRequest::new("workspace-harness", "worktree-harness"),
+        CreateSessionRequest::new(
+            worktree.display().to_string(),
+            worktree.display().to_string(),
+        ),
     ))? {
         LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
         _ => unreachable!("create-session must return SessionCreated"),

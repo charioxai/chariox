@@ -180,6 +180,8 @@ pub(super) async fn handle_incoming_envelope(
             let active_dynamic_relay = active_dynamic_relay
                 .map(|(relay_url, relay_token)| (relay_url.to_string(), relay_token.to_string()));
             tokio::spawn(async move {
+                #[cfg(test)]
+                let response_kind = test_peer_response_kind(&router, &encrypted_request);
                 let relay_response = handle_daemon_peer_request(
                     &router,
                     &state,
@@ -192,8 +194,10 @@ pub(super) async fn handle_incoming_envelope(
                 #[cfg(test)]
                 let relay_response = {
                     let mut relay_response = relay_response;
-                    if let Some(forget_receipts) =
-                        state.write().await.test_take_lost_peer_response_payload()
+                    if let Some(forget_receipts) = state
+                        .write()
+                        .await
+                        .test_take_lost_peer_response_payload(response_kind)
                     {
                         if forget_receipts {
                             router
@@ -584,4 +588,38 @@ mod tests {
             Ok(RelayEnvelope::Close { .. })
         ));
     }
+}
+
+#[cfg(test)]
+fn test_peer_response_kind(
+    router: &CommandRouter,
+    request: &chariox_relay::protocol::EncryptedRelayPayload,
+) -> super::connection_state::TestPeerResponseKind {
+    use super::connection_state::TestPeerResponseKind;
+    use crate::transport::relay_peer::RelayPeerRequest;
+    use crate::transport::room_browser_controller::RoomBrowserControllerCommand;
+    crate::transport::relay_crypto::decrypt_payload_for_private_key(
+        &router.relay_private_key(),
+        request,
+    )
+    .ok()
+    .and_then(|payload| serde_json::from_slice::<RelayPeerRequest>(&payload.plaintext).ok())
+    .map(|request| match request {
+        RelayPeerRequest::RoomBrowserController {
+            command:
+                RoomBrowserControllerCommand::Tab { .. }
+                | RoomBrowserControllerCommand::History { .. }
+                | RoomBrowserControllerCommand::Navigate { .. }
+                | RoomBrowserControllerCommand::Dialog { .. }
+                | RoomBrowserControllerCommand::Action { .. }
+                | RoomBrowserControllerCommand::Upload { .. }
+                | RoomBrowserControllerCommand::Permission { .. }
+                | RoomBrowserControllerCommand::ConfigureDownloads { .. },
+            ..
+        } => TestPeerResponseKind::BrowserMutation,
+        RelayPeerRequest::SubmitLeasedPrompt { .. } => TestPeerResponseKind::LeasedPrompt,
+        RelayPeerRequest::SteerLeasedPrompt { .. } => TestPeerResponseKind::LeasedSteer,
+        _ => TestPeerResponseKind::Other,
+    })
+    .unwrap_or(TestPeerResponseKind::Other)
 }

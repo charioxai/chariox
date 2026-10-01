@@ -174,9 +174,14 @@ exit 0
     super::super::state::write_state_manifest(&manifest, &prior).unwrap();
     let prior_manifest = std::fs::read(&manifest).unwrap();
     let started = Instant::now();
-    let result = with_test_progress_timeout(Duration::from_millis(70), || {
-        super::super::state::save_local_docker_slice_state_live(&record, &options)
-    });
+    let result = super::super::disk_admission::with_test_disk_admission_lock_path(
+        &fixture.root.join("engine.lock"),
+        || {
+            with_test_progress_timeout(Duration::from_millis(70), || {
+                super::super::state::save_local_docker_slice_state_live(&record, &options)
+            })
+        },
+    );
     assert!(
         matches!(result, Err(DaemonError::LocalTransport { ref message, .. }) if message.contains("made no progress")),
         "{result:?}"

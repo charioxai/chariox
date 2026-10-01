@@ -114,14 +114,10 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str) {
         let relay = fixture.worker.app.lock().await.relay_client_state();
         for forget in [false, true] {
             let before = physical_count(fixture, counter);
-            if forget {
-                relay
-                    .write()
-                    .await
-                    .test_lose_next_peer_response_payload_and_forget_action_receipts();
-            } else {
-                relay.write().await.test_lose_next_peer_response_payload();
-            }
+            relay
+                .write()
+                .await
+                .test_lose_next_browser_mutation_response(forget);
             let result = execute_admitted(fixture, agent, tab, kind).await;
             if forget {
                 let error = result.expect_err("missing proof cannot repeat a physical action");

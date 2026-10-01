@@ -2492,7 +2492,7 @@ mod tests {
                     worker_provider_run_id: provider_run_id.clone(),
                     phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
                     target_home_prompt_id: None,
-                    execution_lease_id: None,
+                    execution_lease_id: Some(lease.id.clone()),
                 }),
             }
         );
@@ -2532,7 +2532,7 @@ mod tests {
                     worker_provider_run_id: provider_run_id.clone(),
                     phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
                     target_home_prompt_id: None,
-                    execution_lease_id: None,
+                    execution_lease_id: Some(lease.id.clone()),
                 }),
             }
         );

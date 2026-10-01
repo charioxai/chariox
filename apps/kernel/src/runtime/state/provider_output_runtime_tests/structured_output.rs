@@ -383,6 +383,11 @@ async fn structured_output_batch_fans_out_chunks_with_one_terminal_notification(
 
 #[tokio::test]
 async fn structured_output_usage_resolves_the_cloud_owners_local_account_authority() {
+    let _environment = crate::env_lock::lock();
+    let provider_home = crate::test_support::TestWorktree::new("synthetic-claude-account");
+    std::env::set_var("HOME", provider_home.path());
+    std::env::set_var("CHARIOX_HOME", provider_home.path().join(".chariox"));
+
     let worktree = crate::test_support::TestWorktree::new("structured-output-cloud-owner");
     let cloud_owner_user_id = "cloud-owner";
     let mut config = crate::config::DaemonConfig::for_tests();
@@ -407,6 +412,20 @@ async fn structured_output_usage_resolves_the_cloud_owners_local_account_authori
             cloud_owner_user_id,
         ))
         .expect("cloud owner should attach");
+    let environment = app
+        .provider_account_profile_registry()
+        .resolve_environment(crate::session::DEFAULT_LOCAL_USER_ID, "claude", "default")
+        .expect("local authority profile should resolve");
+    std::fs::create_dir_all(provider_home.path().join(".claude")).unwrap();
+    std::fs::write(
+        &environment
+            .get("CLAUDE_CONFIG_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| provider_home.path().join(".claude"))
+            .join(".credentials.json"),
+        br#"{"claudeAiOauth":{"refreshToken":"synthetic-refresh-token"}}"#,
+    )
+    .unwrap();
     let run = app
         .launch_provider(
             crate::provider::LaunchProviderRequest::new(

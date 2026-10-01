@@ -28,7 +28,6 @@ mod disk_admission;
 mod extension_build;
 mod home_archive_capture;
 mod home_archive_verify;
-mod tuning;
 mod image;
 mod memory_admission;
 mod provider_inputs;
@@ -36,6 +35,7 @@ mod snapshot_pause;
 mod state;
 #[cfg(test)]
 mod tests;
+mod tuning;
 
 use broker::docker_command;
 use provider_inputs::home_provider_credential_sources;

@@ -221,7 +221,7 @@ async fn ordinary_lease_caller_binding_survives_restart_and_rejects_spoofs_async
     state_worker
         .write()
         .await
-        .test_lose_next_peer_response_payload();
+        .test_lose_next_leased_steer_response();
     assert!(
         send_peer_request_via_relay(
             &app_home,

@@ -32,6 +32,9 @@ pub(crate) fn ensure_codex_account_endpoint(
     account_profile: &str,
     environment: BTreeMap<String, String>,
 ) -> Result<String, DaemonError> {
+    // Launch planning also takes the environment lock. Acquire it before the
+    // endpoint map, matching callers that hold it through daemon shutdown.
+    let _environment = crate::env_lock::lock();
     let key = format!("{owner_user_id}\0{account_profile}");
     let endpoints = CODEX_ACCOUNT_ENDPOINTS.get_or_init(|| Mutex::new(BTreeMap::new()));
     let mut endpoints = endpoints

@@ -1329,6 +1329,33 @@ impl<'a> RemoteLeaseRuntime<'a> {
     }
 
     #[cfg(test)]
+    pub(crate) fn set_execution_lease_home_kernel_for_test(
+        &mut self,
+        lease_id: &str,
+        home_kernel_id: &str,
+    ) {
+        self.app
+            .execution_leases
+            .get_mut(lease_id)
+            .expect("fixture lease should exist")
+            .home_kernel_id = home_kernel_id.to_string();
+        self.app
+            .execution_lease_callers
+            .get_mut(lease_id)
+            .expect("fixture lease caller should exist")
+            .home_kernel_id = home_kernel_id.to_string();
+        for (id, agent) in &self.app.leased_agents {
+            if agent.lease_id == lease_id {
+                self.app
+                    .leased_agent_callers
+                    .get_mut(id)
+                    .expect("fixture leased caller should exist")
+                    .home_kernel_id = home_kernel_id.to_string();
+            }
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn clear_active_home_prompt_projection_for_test(&mut self, leased_agent_id: &str) {
         if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
             agent.active_home_prompt_id = None;

@@ -695,6 +695,7 @@ mod tests {
                 "slice-save-state-future-slices",
                 "slice-backup",
                 "slice-backup-name",
+                "slice-backup-restore",
                 "slice-reset-state",
                 "slice-start",
                 "slice-stop",

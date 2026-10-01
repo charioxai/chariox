@@ -281,6 +281,7 @@ fn default_user_config_rejects_test_persistence_paths() {
 #[test]
 fn operational_history_path_expands_home() {
     let _environment = crate::env_lock::lock();
+    std::env::remove_var("CHARIOX_HOME");
     let mut config = DaemonConfig::new("daemon", "machine", "tester");
     config.user_config.history.operational.path = Some("~/.chariox/custom/history.db".to_string());
 
@@ -292,6 +293,7 @@ fn operational_history_path_expands_home() {
 #[test]
 fn durable_state_path_expands_home() {
     let _environment = crate::env_lock::lock();
+    std::env::remove_var("CHARIOX_HOME");
     let mut config = DaemonConfig::new("daemon", "machine", "tester");
     config.user_config.state.path = Some("~/.chariox/custom/state.db".to_string());
 
@@ -303,6 +305,7 @@ fn durable_state_path_expands_home() {
 #[test]
 fn event_counter_paths_expand_state_home_before_parent() {
     let _environment = crate::env_lock::lock();
+    std::env::remove_var("CHARIOX_HOME");
     let mut config = DaemonConfig::new("daemon", "machine", "tester");
     config.user_config.state.path = Some("~/.chariox/custom/state.db".to_string());
 

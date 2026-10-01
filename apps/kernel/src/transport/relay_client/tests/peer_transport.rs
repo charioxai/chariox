@@ -581,14 +581,14 @@ async fn proxied_peer_requests_are_handled_through_relay() {
     else {
         panic!("relay error should retain structured metadata: {missing_lease:?}");
     };
-    assert_eq!(code, "leased_agent_not_found");
+    assert_eq!(code, "unauthorized");
     assert!(!retryable);
     let diagnostic = missing_lease.to_string();
     assert!(
-        diagnostic.contains("leased_agent_not_found"),
+        diagnostic.contains("unauthorized"),
         "real relay error code should survive peer transport: {missing_lease:?}"
     );
-    assert!(diagnostic.contains("leased agent"));
+    assert!(diagnostic.contains("unauthorized"), "{diagnostic}");
     assert!(!diagnostic.contains("relay-secret-canary"));
 
     let _ = shutdown_a_tx.send(true);

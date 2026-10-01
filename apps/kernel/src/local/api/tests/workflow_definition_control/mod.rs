@@ -76,6 +76,7 @@ fn workflow_code_test_sha256_hex(bytes: &[u8]) -> String {
 }
 
 struct PublicationTestGraph {
+    _worktree: Option<crate::test_support::TestWorktree>,
     session_id: String,
     agent_id: String,
     workflow_id: String,
@@ -86,12 +87,11 @@ fn create_publication_test_graph(
     harness: &LocalRouterTestHarness,
     label: &str,
 ) -> PublicationTestGraph {
-    create_publication_test_graph_in_workspace(
-        harness,
-        label,
-        &format!("workspace-{label}"),
-        &format!("worktree-{label}"),
-    )
+    let worktree = crate::test_support::TestWorktree::new(label);
+    let path = worktree.path().display().to_string();
+    let mut graph = create_publication_test_graph_in_workspace(harness, label, &path, &path);
+    graph._worktree = Some(worktree);
+    graph
 }
 
 fn create_publication_test_graph_in_workspace(
@@ -190,6 +190,7 @@ fn create_publication_test_graph_in_workspace(
         _ => panic!("unexpected local response"),
     };
     PublicationTestGraph {
+        _worktree: None,
         session_id: session.id().to_string(),
         agent_id: agent.id().to_string(),
         workflow_id: workflow.id().to_string(),

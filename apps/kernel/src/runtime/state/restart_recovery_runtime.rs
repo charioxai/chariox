@@ -1754,7 +1754,7 @@ mod tests {
                 None,
             )
             .expect("dispatching phase should be durable before send");
-        runtime
+        let queued_submission = runtime
             .owned
             .submit_remote_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
                 session_id: session.id().to_string(),
@@ -1799,7 +1799,16 @@ mod tests {
         );
         assert!(active.durable_delivery_reconciliation_pending());
         assert_eq!(queued.len(), 1, "successor must not be promoted");
-        assert_eq!(queued[0].id(), "queued-after-uncertain-orphaned-workflow");
+        let crate::session::PromptSubmissionOutcome::Queued {
+            prompt: expected_queued,
+        } = queued_submission
+            .expect("remote binding should produce queued admission")
+            .outcome
+        else {
+            panic!("successor should queue");
+        };
+        assert_eq!(queued[0].id(), expected_queued.id());
+        assert_eq!(queued[0].prompt(), "successor must stay queued");
     }
 
     #[tokio::test]

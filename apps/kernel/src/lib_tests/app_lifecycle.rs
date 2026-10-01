@@ -61,10 +61,13 @@ fn ending_session_via_app_removes_runtime_attachments() {
 
 #[test]
 fn failed_kernel_prompt_abort_finalizes_cancelling_prompt() {
+    let worktree = crate::test_support::TestWorktree::new(
+        "failed_kernel_prompt_abort_finalizes_cancelling_prompt",
+    );
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(AttachRequest::new(
@@ -121,11 +124,14 @@ fn failed_kernel_prompt_abort_finalizes_cancelling_prompt() {
 
 #[test]
 fn shutdown_cleanup_preserves_sessions_and_clears_runtime_state() {
+    let worktree = crate::test_support::TestWorktree::new(
+        "shutdown_cleanup_preserves_sessions_and_clears_runtime_state",
+    );
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let session = app
         .sessions_mut()
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(AttachRequest::new(

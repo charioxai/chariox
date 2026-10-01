@@ -966,3 +966,24 @@ mod runtime_change_signal_tests {
 
 #[cfg(test)]
 mod workspace_live_sync_external_change_notice_tests;
+
+// Exercise the actual post-lock worker submission seam from caller contract tests.
+#[cfg(test)]
+impl KernelRuntimeState {
+    pub(crate) async fn submit_remote_prompt_to_worker_for_test(
+        &self,
+        dispatch: &mut crate::app::KernelRemotePromptDispatch,
+    ) -> Result<String, DaemonError> {
+        self.owned.mark_active_prompt_delivery(
+            &dispatch.session_id,
+            &dispatch.agent_id,
+            &dispatch.prompt_id,
+            crate::session::DurablePromptDeliveryPhase::Dispatching,
+            None,
+            None,
+        )?;
+        remote_prompt_worker_submission_runtime::submit_remote_prompt_to_worker_with_binding_refresh(
+            self, dispatch, dispatch.prompt.clone(), Vec::new(),
+        ).await
+    }
+}

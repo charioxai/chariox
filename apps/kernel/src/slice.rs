@@ -4,8 +4,8 @@ mod local_docker;
 mod model;
 mod ports;
 mod store;
-mod worker_identity;
 mod worker_context;
+mod worker_identity;
 pub(crate) use worker_context::{
     current_slice_worker_id, recorded_slice_for_worker, retained_slice_attachment_matches,
     slice_worker_id_for_config,
@@ -1048,11 +1048,13 @@ mod tests {
     #[test]
     fn local_docker_slice_port_check_reports_busy_ports() {
         let store = SliceStore::default();
-        let slice = store
+        let mut slice = store
             .create("kernel-1", "machine-1", create_input("dev"))
             .expect("slice should create");
+        let listener =
+            TcpListener::bind(("127.0.0.1", 0)).expect("MP-10 fixture must own its busy port");
+        slice.local_docker_ports.as_mut().unwrap().relay = listener.local_addr().unwrap().port();
         let ports = LocalDockerSlicePorts::for_record(&slice);
-        let _listener = TcpListener::bind(("127.0.0.1", ports.relay)).ok();
 
         let error = ensure_local_docker_slice_ports_available(&slice)
             .expect_err("busy port should be reported before provisioning");

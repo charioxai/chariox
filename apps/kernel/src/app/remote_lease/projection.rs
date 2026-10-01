@@ -405,7 +405,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     .is_some_and(|replay| replay.provider_run_id == provider_run_id);
         let explicit_completion_waiting = explicit_completion_waiting_for_output
             || explicit_completion_waiting_for_prompt_settlement;
-        let explicit_completion_already_projected = leased_agent
+        let completion_already_projected = leased_agent
             .replayable_completion
             .as_ref()
             .filter(|replay| replay.provider_run_id == provider_run_id)
@@ -467,8 +467,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
         if completions.is_empty()
             && !backing_prompt_active
             && !explicit_completion_waiting
-            && !((requires_explicit_completion || provider_run_failed)
-                && explicit_completion_already_projected)
+            && !((requires_explicit_completion || provider_run_failed || provider_run_ended)
+                && completion_already_projected)
             && (settled_quiet
                 || (requires_explicit_completion && provider_run_has_projected_output)
                 || provider_run_ended
@@ -588,6 +588,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             && completions.is_empty()
             && prompts.is_empty()
             && !provider_run_changed
+            && !(replay_settled_completion && provider_run.is_some())
         {
             return Ok(None);
         }
@@ -1658,6 +1659,34 @@ mod explicit_completion_tests {
         assert!(RemoteLeaseRuntime::new(&mut app)
             .drain_leased_runtime_projection(&leased_agent.id, run.id(), false)
             .expect("unchanged provider state drain should succeed")
+            .is_none());
+
+        // An unsolicited snapshot can arrive before the home dispatch ACK and be
+        // rejected by the run fence. Explicit recovery must still supply the
+        // authoritative run even though the worker already drained that snapshot.
+        let recovered = RemoteLeaseRuntime::new(&mut app)
+            .drain_leased_runtime_projection_with_recovery(&leased_agent.id, run.id(), false, true)
+            .expect("exact-run recovery should succeed")
+            .expect("recovery must replay the current provider snapshot");
+        let RelayPeerEvent::LeasedRuntimeProjection {
+            provider_run,
+            prompts,
+            output_chunks,
+            notices,
+            completions,
+            ..
+        } = recovered.1;
+        assert_eq!(
+            provider_run.unwrap().state(),
+            crate::provider::ProviderRunState::Running
+        );
+        assert!(prompts.is_empty());
+        assert!(output_chunks.is_empty());
+        assert!(notices.is_empty());
+        assert!(completions.is_empty());
+        assert!(RemoteLeaseRuntime::new(&mut app)
+            .drain_leased_runtime_projection(&leased_agent.id, run.id(), false)
+            .unwrap()
             .is_none());
 
         run.mark_parked();

@@ -63,6 +63,18 @@ fn start_stub(runtime: &KernelRuntimeState, session: &str, agent: &str) -> Strin
 #[tokio::test]
 async fn manual_substitute_activation_and_reset_retire_old_runs() {
     let (app, runtime, session, agent) = configured_runtime().await;
+    let worktree = crate::test_support::TestWorktree::new("substitute-launch");
+    runtime
+        .owned
+        .agent_store
+        .update_agent_config(
+            &agent,
+            None,
+            None,
+            None,
+            Some(Some(worktree.path().display().to_string())),
+        )
+        .expect("substitute launch fixture should retain a real workspace");
     for action in [
         AgentSubstituteAction::Activate {
             index: 0,
@@ -289,6 +301,18 @@ async fn removing_or_clearing_active_substitute_retires_its_run() {
 async fn workflow_rotation_does_not_copy_another_providers_adapter() {
     for fresh in [false, true] {
         let (_app, runtime, session, agent) = configured_runtime().await;
+        let worktree = crate::test_support::TestWorktree::new("substitute-launch");
+        runtime
+            .owned
+            .agent_store
+            .update_agent_config(
+                &agent,
+                None,
+                None,
+                None,
+                Some(Some(worktree.path().display().to_string())),
+            )
+            .expect("substitute launch fixture should retain a real workspace");
         let old = start_stub(&runtime, &session, &agent);
         runtime
             .owned

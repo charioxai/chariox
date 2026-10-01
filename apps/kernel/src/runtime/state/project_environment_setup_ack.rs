@@ -697,7 +697,7 @@ mod tests {
             )
             .is_err());
 
-        store
+        let acknowledged = store
             .acknowledge_home_definition_persistence(
                 &execution.operation_id,
                 1,
@@ -718,6 +718,108 @@ mod tests {
             )
             .await
             .unwrap();
+        assert!(store.update(&execution.operation_id, 1, |entry| {
+            entry.status.phase = ProjectEnvironmentSetupPhase::Ready;
+        }));
+        assert_eq!(
+            store
+                .acknowledge_home_definition_persistence(
+                    &execution.operation_id,
+                    1,
+                    "lease-1",
+                    &execution.session_id,
+                    &execution.agent_id,
+                    &execution.project_id,
+                    &digest,
+                )
+                .expect("MP-08/MP-10 an exact persisted ACK must replay after worker Ready"),
+            acknowledged
+        );
+        for (attempt, lease, session, agent, project, digest) in [
+            (
+                2,
+                "lease-1",
+                execution.session_id.as_str(),
+                execution.agent_id.as_str(),
+                execution.project_id.as_str(),
+                digest.as_str(),
+            ),
+            (
+                1,
+                "other-lease",
+                execution.session_id.as_str(),
+                execution.agent_id.as_str(),
+                execution.project_id.as_str(),
+                digest.as_str(),
+            ),
+            (
+                1,
+                "lease-1",
+                "other-session",
+                execution.agent_id.as_str(),
+                execution.project_id.as_str(),
+                digest.as_str(),
+            ),
+            (
+                1,
+                "lease-1",
+                execution.session_id.as_str(),
+                "other-agent",
+                execution.project_id.as_str(),
+                digest.as_str(),
+            ),
+            (
+                1,
+                "lease-1",
+                execution.session_id.as_str(),
+                execution.agent_id.as_str(),
+                "other-project",
+                digest.as_str(),
+            ),
+            (
+                1,
+                "lease-1",
+                execution.session_id.as_str(),
+                execution.agent_id.as_str(),
+                execution.project_id.as_str(),
+                "sha256:wrong",
+            ),
+        ] {
+            assert!(
+                store
+                    .acknowledge_home_definition_persistence(
+                        &execution.operation_id,
+                        attempt,
+                        lease,
+                        session,
+                        agent,
+                        project,
+                        digest,
+                    )
+                    .is_err(),
+                "MP-08/MP-10 Ready ACK replay must retain every identity fence"
+            );
+        }
+        let unacknowledged = ProjectEnvironmentSetupStore::default();
+        unacknowledged.begin(execution.clone()).unwrap();
+        assert!(unacknowledged.update(&execution.operation_id, 1, |entry| {
+            entry.status.phase = ProjectEnvironmentSetupPhase::Ready;
+            entry.status.definition_digest = Some(digest.clone());
+        }));
+        assert!(
+            unacknowledged
+                .acknowledge_home_definition_persistence(
+                    &execution.operation_id,
+                    1,
+                    "lease-1",
+                    &execution.session_id,
+                    &execution.agent_id,
+                    &execution.project_id,
+                    &digest,
+                )
+                .is_err(),
+            "MP-08/MP-10 Ready without an accepted ACK must fail closed"
+        );
     }
 
     #[tokio::test]

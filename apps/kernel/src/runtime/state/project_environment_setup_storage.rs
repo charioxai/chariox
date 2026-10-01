@@ -129,6 +129,8 @@ pub(in crate::runtime::state) struct ProjectEnvironmentSetupStore {
     durable_state_store: Option<DurableKernelStateStore>,
     execution_settled: Arc<tokio::sync::Notify>,
     ordering_gates: Arc<Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    provider_context_gates:
+        Arc<Mutex<BTreeMap<(String, String), std::sync::Weak<tokio::sync::Mutex<()>>>>>,
 }
 
 pub(super) struct SetupExecutionGuard {
@@ -211,6 +213,7 @@ impl Default for ProjectEnvironmentSetupStore {
             durable_state_store: None,
             execution_settled: Arc::new(tokio::sync::Notify::new()),
             ordering_gates: Arc::new(Mutex::new(BTreeMap::new())),
+            provider_context_gates: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 }
@@ -225,6 +228,7 @@ impl ProjectEnvironmentSetupStore {
             durable_state_store: Some(durable_state_store.clone()),
             execution_settled: Arc::new(tokio::sync::Notify::new()),
             ordering_gates: Arc::new(Mutex::new(BTreeMap::new())),
+            provider_context_gates: Arc::new(Mutex::new(BTreeMap::new())),
         };
         let events =
             match durable_state_store.load_events_by_kind("project.environment_setup.updated") {
@@ -1207,9 +1211,7 @@ impl ProjectEnvironmentSetupStore {
             || entry.cancel_requested
             || matches!(
                 entry.status.phase,
-                ProjectEnvironmentSetupPhase::Ready
-                    | ProjectEnvironmentSetupPhase::Failed
-                    | ProjectEnvironmentSetupPhase::Cancelled
+                ProjectEnvironmentSetupPhase::Failed | ProjectEnvironmentSetupPhase::Cancelled
             )
             || entry.execution.remote_leased_agent_id.as_deref() != Some(lease_id)
             || entry.execution.session_id != home_session_id
@@ -1250,6 +1252,13 @@ impl ProjectEnvironmentSetupStore {
                 ));
             }
             return Ok(acknowledgment);
+        }
+        // Validation may reach Ready before a replayed ACK arrives. Only the
+        // exact previously accepted ACK may replay past that terminal boundary.
+        if entry.status.phase == ProjectEnvironmentSetupPhase::Ready {
+            return Err(setup_error(
+                "ready setup has no accepted home definition acknowledgment to replay",
+            ));
         }
         if entry.status.phase == ProjectEnvironmentSetupPhase::Validating {
             return Err(setup_error(
@@ -1428,6 +1437,44 @@ impl ProjectEnvironmentSetupStore {
             .entry(operation_id.to_string())
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone()
+    }
+
+    // Setup temporarily rebinds and restores the agent's provider process. Keep
+    // that context owned by one operation through validation and restoration.
+    pub(super) async fn lock_provider_context(
+        &self,
+        execution: &SetupExecution,
+        attempt: u32,
+    ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        let gate = {
+            let mut gates = self.provider_context_gates.lock().unwrap();
+            gates.retain(|_, gate| gate.strong_count() > 0);
+            let key = (
+                execution.execution_session_id.clone(),
+                execution.execution_agent_id.clone(),
+            );
+            if let Some(gate) = gates.get(&key).and_then(std::sync::Weak::upgrade) {
+                gate
+            } else {
+                let gate = Arc::new(tokio::sync::Mutex::new(()));
+                gates.insert(key, Arc::downgrade(&gate));
+                gate
+            }
+        };
+        let acquisition = gate.lock_owned();
+        tokio::pin!(acquisition);
+        loop {
+            let changed = self.execution_settled.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self.is_cancelled(&execution.operation_id, attempt) {
+                return None;
+            }
+            tokio::select! {
+                guard = &mut acquisition => return Some(guard),
+                _ = changed => {}
+            }
+        }
     }
 
     pub(super) fn begin_execution(

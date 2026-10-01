@@ -487,7 +487,7 @@ impl<'a> KernelAgentService<'a> {
                     home_prompt_id,
                 )?;
             let Some(active) = next_candidate else {
-                continue;
+                return Ok(None);
             };
             let active =
                 self.prepare_promoted_queued_prompt_start(session_id, agent_id, active.id())?;
@@ -580,7 +580,9 @@ impl<'a> KernelAgentService<'a> {
                 prompt_id,
             )?
             else {
-                continue;
+                // The expected candidate can disappear before promotion. Do not
+                // spin under the app lock when authoritative state cannot admit it.
+                return Ok(None);
             };
             let active =
                 self.prepare_promoted_remote_prompt_start(session_id, agent_id, &active)?;
@@ -916,6 +918,33 @@ mod tests {
                 },
             )
             .expect("agent should bind to remote execution");
+
+        let missing = PromptQueueItem::new(
+            "missing-candidate",
+            attachment.id(),
+            agent.id(),
+            "not queued",
+            PromptStatus::Queued,
+        );
+        assert!(KernelAgentService::new(&mut app)
+            .advance_next_queued_prompt_remote(
+                session.id(),
+                agent.id(),
+                "worker-kernel-1",
+                "leased-agent-1",
+                None,
+                None,
+                Some(&missing)
+            )
+            .unwrap()
+            .is_none());
+        assert!(app
+            .take_deferred_workflow_remote_prompt_dispatches()
+            .is_empty());
+        assert!(app
+            .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+            .unwrap()
+            .is_none());
 
         let first = PromptQueueItem::new(
             app.sessions_mut().reserve_prompt_id(),

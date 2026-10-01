@@ -211,7 +211,7 @@ async fn accepted_queued_steer_receipt_reconciles_after_worker_restart_without_r
     state_worker
         .write()
         .await
-        .test_lose_next_peer_response_payload();
+        .test_lose_next_leased_prompt_response();
     assert!(
         send_peer_request_via_relay(
             &app_home,
@@ -268,7 +268,7 @@ async fn accepted_queued_steer_receipt_reconciles_after_worker_restart_without_r
     state_worker
         .write()
         .await
-        .test_lose_next_peer_response_payload();
+        .test_lose_next_leased_steer_response();
     assert!(
         send_peer_request_via_relay(
             &app_home,

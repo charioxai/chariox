@@ -49,6 +49,17 @@ impl Desktop {
         };
         let image = std::env::var("CHARIOX_SELKIES_TEST_IMAGE")
             .expect("explicit packaged test image required");
+        let port_lock = std::env::var_os("CHARIOX_TEST_SLICE_PORT_LOCK").map(|path| {
+            let lock = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(path)
+                .unwrap();
+            fs2::FileExt::lock_exclusive(&lock).unwrap();
+            lock
+        });
         desktop.checked(&[
             "run", "--rm", "--init", "--detach", "--name", &desktop.name,
             "--user", "1000:1000", "--network", "none", "--cpus", "1",
@@ -57,6 +68,11 @@ impl Desktop {
             "--env", "HOME=/tmp/chariox-encrypted-test", "--env", "XDG_RUNTIME_DIR=/tmp/chariox-encrypted-test",
             &image, "sh", "-c", "mkdir -p /tmp/chariox-encrypted-test && exec Xvfb :93 -screen 0 640x480x24 -nolisten tcp -ac",
         ]).await;
+        // docker run has completed: the container is started and any host ports
+        // are bound. These desktop fixtures use --network none and publish none.
+        if let Some(lock) = port_lock {
+            fs2::FileExt::unlock(&lock).unwrap();
+        }
         for _ in 0..30 {
             let output = desktop
                 .docker()

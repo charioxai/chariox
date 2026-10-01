@@ -1450,7 +1450,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
             state_worker
                 .write()
                 .await
-                .test_lose_next_peer_response_payload();
+                .test_lose_next_leased_steer_response();
         }
         let dispatch_router = Arc::clone(&router);
         let dispatch =
@@ -2536,7 +2536,7 @@ async fn remote_machine_agents_cancel_prompts_through_the_home_session_async() {
     } = router
         .dispatch(forced_cancellation_command, forced_cancellation_request)
         .await
-        .expect("a repeated remote cancellation should force settlement")
+        .expect("a repeated remote cancellation should preserve the existing intent")
     else {
         panic!("repeated remote cancellation should return prompt state");
     };
@@ -2553,8 +2553,97 @@ async fn remote_machine_agents_cancel_prompts_through_the_home_session_async() {
 
     assert_eq!(
         forced_cancellation.prompt.status(),
-        crate::session::PromptStatus::Cancelled
+        crate::session::PromptStatus::Cancelling
     );
+    let binding = app_home
+        .lock()
+        .await
+        .agents()
+        .get_agent(&remote_agent_id)
+        .unwrap()
+        .remote_execution()
+        .unwrap()
+        .clone();
+    {
+        let mut worker = app_worker.lock().await;
+        let leased = crate::app::RemoteLeaseRuntime::new(&mut worker)
+            .leased_agent_snapshot_for_test(&binding.leased_agent_id)
+            .expect("worker must retain the exact execution lease");
+        assert_eq!(leased.lease_id, binding.execution_lease_id);
+        if let Some(active) = worker
+            .prompt_owner_active_prompt_for_agent(
+                &leased.backing_session_id,
+                &leased.backing_agent_id,
+            )
+            .unwrap()
+        {
+            assert_eq!(active.status(), crate::session::PromptStatus::Cancelling);
+            assert_eq!(leased.active_home_prompt_id.as_deref(), Some(prompt.id()));
+            // The normal output pump may already have completed cancellation.
+            // Finish the fixture only while the same worker prompt is still owned.
+            crate::app::RemoteLeaseRuntime::new(&mut worker)
+                .complete_leased_prompt(&binding.leased_agent_id)
+                .expect("authoritative worker completion should settle cancellation");
+        }
+    }
+    let receipt_deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let receipt = {
+            let mut worker = app_worker.lock().await;
+            crate::app::RemoteLeaseRuntime::new(&mut worker)
+                .leased_prompt_receipt(&binding.leased_agent_id, prompt.id())
+                .unwrap()
+                .expect("worker must retain the exact prompt receipt")
+        };
+        assert_eq!(receipt.home_prompt_id, prompt.id());
+        assert_eq!(
+            receipt.execution_lease_id.as_deref(),
+            Some(binding.execution_lease_id.as_str())
+        );
+        if receipt.phase == crate::transport::relay_peer::LeasedPromptReceiptPhase::Completed {
+            break;
+        }
+        if Instant::now() >= receipt_deadline {
+            let mut worker = app_worker.lock().await;
+            let leased = crate::app::RemoteLeaseRuntime::new(&mut worker)
+                .leased_agent_snapshot_for_test(&binding.leased_agent_id)
+                .unwrap();
+            let active = worker
+                .prompt_owner_active_prompt_for_agent(
+                    &leased.backing_session_id,
+                    &leased.backing_agent_id,
+                )
+                .unwrap()
+                .map(|p| (p.id().to_string(), p.status(), p.created_at_ms()));
+            let replay = leased
+                .replayable_completion
+                .as_ref()
+                .map(|c| (&c.provider_run_id, &c.home_prompt_id, &c.message_id));
+            let current_run = worker
+                .providers()
+                .get_run_for_agent(&leased.backing_session_id, &leased.backing_agent_id)
+                .map(|r| r.id().to_string());
+            let settlement = worker
+                .completed_git_turn_snapshot_store()
+                .latest_projection_for_agent(&leased.backing_session_id, &leased.backing_agent_id)
+                .map(|p| (p.provider_run_id, p.prompt_id));
+            panic!("MP-08/MP-10 worker must publish authoritative completion: {receipt:?}; active={active:?}, home={:?}, started={:?}, replay={replay:?}, keys={:?}, current_run={current_run:?}, settlement={settlement:?}",
+                leased.active_home_prompt_id, leased.active_home_prompt_started_at_ms, leased.projected_completion_keys);
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+    for _ in 0..200 {
+        if app_home
+            .lock()
+            .await
+            .prompt_owner_active_prompt_for_agent(&session_id, &remote_agent_id)
+            .unwrap()
+            .is_none()
+        {
+            break;
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
     assert!(app_home
         .lock()
         .await

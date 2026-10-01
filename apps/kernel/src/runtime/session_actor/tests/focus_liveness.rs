@@ -2,9 +2,12 @@ use super::*;
 
 #[test]
 fn focus_does_not_disturb_multi_agent_provider_liveness() {
+    let fixture_worktree_0 = crate::test_support::TestWorktree::new(
+        "focus_does_not_disturb_multi_agent_provider_liveness",
+    );
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, default_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .create_session(fixture_worktree_0.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(AttachRequest::new(

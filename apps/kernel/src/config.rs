@@ -289,6 +289,10 @@ impl DaemonConfig {
     }
 
     pub fn for_tests() -> Self {
+        // Test-state paths must not capture another fixture's temporary TMPDIR
+        // while its environment guard owns and will remove that directory.
+        #[cfg(test)]
+        let _environment = crate::env_lock::lock();
         static TEST_SOCKET_COUNTER: AtomicU64 = AtomicU64::new(0);
 
         let index = TEST_SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;

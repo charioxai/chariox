@@ -48,20 +48,23 @@ impl Drop for ControllerMcpFixture {
 
 #[tokio::test]
 async fn mcp_tools_list_exposes_slice_tools_only_for_slice_provider_tokens() {
+    let worktree = crate::test_support::TestWorktree::new(
+        "mcp_tools_list_exposes_slice_tools_only_for_slice_provider_tokens",
+    );
     let mut config = DaemonConfig::for_tests();
     config.host_machine_id = "slice:slice-test".to_string();
     config.user_config.providers.workspace_live_sync.mode =
         crate::config::WorkspaceLiveSyncMode::Tracked;
     let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
     let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should exist");
     let agent_id = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
                 .with_alias("agent-a")
                 .with_model("test-model")
-                .with_worktree("worktree-1"),
+                .with_worktree(worktree.path().display().to_string()),
         )
         .expect("agent should spawn")
         .id()
@@ -195,6 +198,9 @@ fn mcp_tools_call_dispatches_slice_screen_fallbacks_inside_slice_kernel() {
 
 #[cfg(unix)]
 async fn mcp_tools_call_dispatches_slice_screen_fallbacks_inside_slice_kernel_inner() {
+    let worktree = crate::test_support::TestWorktree::new(
+        "mcp_tools_call_dispatches_slice_screen_fallbacks_inside_slice_kernel_inner",
+    );
     use std::os::unix::fs::PermissionsExt;
 
     let _guard = crate::env_lock::lock();
@@ -227,14 +233,14 @@ async fn mcp_tools_call_dispatches_slice_screen_fallbacks_inside_slice_kernel_in
         crate::config::WorkspaceLiveSyncMode::Tracked;
     let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
     let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should exist");
     let agent_id = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
                 .with_alias("agent-a")
                 .with_model("test-model")
-                .with_worktree("worktree-1"),
+                .with_worktree(worktree.path().display().to_string()),
         )
         .expect("agent should spawn")
         .id()
@@ -713,16 +719,17 @@ done
         crate::config::CredentialVaultBackend::ProcessMemory;
     config.user_config.providers.workspace_live_sync.mode =
         crate::config::WorkspaceLiveSyncMode::Tracked;
+    let worktree = crate::test_support::TestWorktree::new("mcp-room-browser");
     let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
     let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should exist");
     let agent_id = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
                 .with_alias("agent-a")
                 .with_model("test-model")
-                .with_worktree("worktree-1"),
+                .with_worktree(worktree.path().to_string_lossy()),
         )
         .expect("agent should spawn")
         .id()
@@ -1206,7 +1213,7 @@ done
     );
     assert!(recovered_actor_ids
         .contains(crate::session::agent_environment_actor_id(&agent_id).as_str()));
-    assert_eq!(recovered_environment.actions.len(), 4);
+    assert_eq!(recovered_environment.actions.len(), 7);
     assert!(recovered_environment
         .actions
         .iter()
@@ -1629,10 +1636,13 @@ done
             .map(|action| action.kind.as_str())
             .collect::<Vec<_>>(),
         vec![
+            "browser_status",
+            "browser_find",
             "fill",
             "click",
             "submit",
             "secret_input",
+            "browser_status",
             "fill",
             "dialog",
             "download_configure",
@@ -1647,7 +1657,7 @@ done
     }));
     assert_eq!(
         std::fs::read_to_string(&controller_log).expect("controller log should exist"),
-        "reconcile\nsnapshot\nreconcile\nsnapshot\nfill\nclick\nsubmit\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nsecret-frame-target\nfill\nreconcile\ndialog-dismiss\nreconcile\ndownloads\nreconcile\nupload\nreconcile\npermission-denied\nreconcile\nevents\nreconcile\nnavigate\nreconcile\nreconcile\nwait-selector\nreconcile\nwait-idle\n"
+        "reconcile\nsnapshot\nreconcile\nsnapshot\nfill\nclick\nsubmit\nreconcile\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nsecret-frame-target\nfill\nreconcile\ndialog-dismiss\nreconcile\ndownloads\nreconcile\nupload\nreconcile\npermission-denied\nreconcile\nevents\nreconcile\nnavigate\nreconcile\nreconcile\nwait-selector\nreconcile\nwait-idle\n"
     );
     assert!(
         !std::fs::read_to_string(&controller_log)

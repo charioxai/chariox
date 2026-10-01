@@ -1875,8 +1875,28 @@ mod tests {
 
     #[tokio::test]
     async fn claude_headless_ack_failure_retires_poisoned_provider_run() {
+        let _environment = crate::env_lock::lock();
+        let provider_home = crate::test_support::TestWorktree::new("synthetic-claude-account");
+        std::env::set_var("HOME", provider_home.path());
+        std::env::set_var("CHARIOX_HOME", provider_home.path().join(".chariox"));
+
         let (_worktree, runtime, session_id, agent_id, source_id, provider_run, dispatch) =
             runtime_with_claude_headless_active_prompt().await;
+        let environment = runtime
+            .owned
+            .provider_account_profiles
+            .resolve_environment(crate::session::DEFAULT_LOCAL_USER_ID, "claude", "default")
+            .expect("test Claude profile should resolve");
+        std::fs::create_dir_all(provider_home.path().join(".claude")).unwrap();
+        std::fs::write(
+            &environment
+                .get("CLAUDE_CONFIG_DIR")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| provider_home.path().join(".claude"))
+                .join(".credentials.json"),
+            br#"{"claudeAiOauth":{"refreshToken":"synthetic-refresh-token"}}"#,
+        )
+        .unwrap();
         let PromptSubmissionOutcome::Queued {
             prompt: queued_prompt,
         } = runtime

@@ -3177,7 +3177,7 @@ mod tests {
                 panic!("managed home workspace launch assembly should succeed: {error}");
             }
         };
-        let prepared_args = prepared.pty_args.clone();
+        let mut prepared_args = prepared.pty_args.clone();
         let selected_text = selected.display().to_string();
         let home_mask = prepared_args
             .windows(2)
@@ -3222,6 +3222,24 @@ mod tests {
             "managed launch should preserve the selected workspace as cwd"
         );
 
+        // The host's /home/chariox can be private to another operator. Preserve the
+        // exact assembly assertions above, then provide the same fixture bytes from
+        // a traversable source for the bounded unprivileged execution probe.
+        let accessible_source = PathBuf::from("/home").join(format!(
+            "chariox-ktests-source-{}-{:x}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir(&accessible_source).unwrap();
+        std::fs::set_permissions(&accessible_source, std::fs::Permissions::from_mode(0o777))
+            .unwrap();
+        std::fs::copy(
+            selected.join("selected.txt"),
+            accessible_source.join("selected.txt"),
+        )
+        .unwrap();
+        prepared_args[selected_bind + 1] = accessible_source.display().to_string();
+
         let bwrap = prepared
             .pty_program
             .as_deref()
@@ -3255,11 +3273,12 @@ mod tests {
             stderr.trim()
         );
         assert_eq!(
-            std::fs::read_to_string(selected.join("selected-write"))
+            std::fs::read_to_string(accessible_source.join("selected-write"))
                 .expect("selected workspace should receive provider write"),
             "provider"
         );
         assert!(!sibling.join("selected-write").exists());
+        let _ = std::fs::remove_dir_all(&accessible_source);
         let _ = std::fs::remove_dir_all(&home_root);
         let _ = std::fs::remove_dir_all(&scratch);
     }

@@ -668,6 +668,28 @@ fn source_kernel_package_round_trips_with_identity_bindings() {
 #[test]
 fn receipt_capacity_is_rejected_before_context_publication() {
     let _env_guard = crate::env_lock::lock();
+    const CHILD: &str = "CHARIOX_TEST_RECEIPT_CAPACITY_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        // The oversized environment value intentionally exceeds exec limits.
+        // Confine that fault to the child so unrelated Git/provider fixtures can run.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "managed_context::package::tests::receipt_capacity_is_rejected_before_context_publication",
+                "--exact", "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .expect("MP-08/MP-10 receipt capacity child should start");
+        assert!(
+            output.status.success()
+                && String::from_utf8_lossy(&output.stdout)
+                    .contains("test result: ok. 1 passed; 0 failed"),
+            "MP-08/MP-10 receipt capacity child failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
     let fixture = PackageFixture::new("receipt-capacity");
     let exported = export_managed_context_package(fixture.export_request(
         ManagedContextPackageKernel::FromKernel(Box::new(fixture.kernel_snapshot())),

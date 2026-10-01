@@ -214,6 +214,10 @@ pub struct DaemonApp {
 
 impl DaemonApp {
     pub fn bootstrap(config: DaemonConfig) -> Result<Self, DaemonError> {
+        // Bootstrap also resolves ambient provider homes and writes their files.
+        // Keep those test reads/writes inside the fixture environment boundary.
+        #[cfg(test)]
+        let _environment = crate::env_lock::lock();
         let bootstrap_started = Instant::now();
         let validate_started = Instant::now();
         config.validate()?;

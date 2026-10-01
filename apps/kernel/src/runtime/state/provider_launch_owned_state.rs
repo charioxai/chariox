@@ -444,7 +444,8 @@ mod tests {
             profile.profile_id,
             "gpt-5.6-luna",
         )
-        .with_agent_id(agent.id());
+        .with_agent_id(agent.id())
+        .with_workspace_live_sync_mode(crate::config::WorkspaceLiveSyncMode::Tracked);
 
         let _env = crate::env_lock::lock();
         let previous_isolation = std::env::var_os(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV);
@@ -461,10 +462,7 @@ mod tests {
         }
 
         assert_eq!(prepared.provider_account_env, environment);
-        assert_eq!(
-            prepared.workspace_live_sync_roots,
-            vec![primary.clone(), supporting.clone()]
-        );
+        assert_eq!(prepared.workspace_live_sync_roots, vec![primary.clone()]);
         for name in ["OPENAI_API_KEY", "CODEX_API_KEY"] {
             assert!(prepared
                 .provider_env_remove
@@ -648,7 +646,8 @@ mod tests {
             "default",
             "model",
         )
-        .with_agent_id(runtime_agent.id());
+        .with_agent_id(runtime_agent.id())
+        .with_workspace_live_sync_mode(crate::config::WorkspaceLiveSyncMode::Tracked);
 
         let _env = crate::env_lock::lock();
         let previous_isolation = std::env::var_os(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV);
@@ -664,7 +663,8 @@ mod tests {
                 "default",
                 "model",
             )
-            .with_agent_id(unregistered_agent.id()),
+            .with_agent_id(unregistered_agent.id())
+            .with_workspace_live_sync_mode(crate::config::WorkspaceLiveSyncMode::Tracked),
             "http://127.0.0.1:43120/mcp".to_string(),
         );
         let traversal = runtime.owned.prepare_provider_launch_request(
@@ -676,6 +676,7 @@ mod tests {
                 "model",
             )
             .with_agent_id(runtime_agent.id())
+            .with_workspace_live_sync_mode(crate::config::WorkspaceLiveSyncMode::Tracked)
             .with_working_directory(instance_worktree.join("..").join("unregistered")),
             "http://127.0.0.1:43120/mcp".to_string(),
         );
@@ -693,6 +694,7 @@ mod tests {
                     "model",
                 )
                 .with_agent_id(runtime_agent.id())
+                .with_workspace_live_sync_mode(crate::config::WorkspaceLiveSyncMode::Tracked)
                 .with_working_directory(link),
                 "http://127.0.0.1:43120/mcp".to_string(),
             )
@@ -722,7 +724,7 @@ mod tests {
             (
                 "lexical traversal",
                 &traversal.workspace_live_sync_roots,
-                &unregistered_worktree,
+                &instance_worktree.join("..").join("unregistered"),
             ),
         ] {
             assert!(
@@ -1156,6 +1158,13 @@ mod tests {
                 "Vaulted continuation Claude",
             )
             .expect("managed Claude profile should create");
+        crate::test_support::authenticate_provider_account(
+            &app.provider_account_profile_registry(),
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "claude",
+            &profile.profile_id,
+        )
+        .expect("synthetic continuation account should be authenticated");
         let agent = crate::app::KernelSessionService::new(&mut app)
             .spawn_agent(
                 crate::agent::CreateAgentRequest::new(session.id(), "claude")
@@ -1346,7 +1355,29 @@ mod tests {
             }
         })
         .await
-        .expect("MCP continuation should resume after the agent becomes idle");
+        .unwrap_or_else(|_| {
+            let session = runtime
+                .owned
+                .session_store
+                .get_session(session.id())
+                .unwrap();
+            let run = runtime
+                .owned
+                .provider_store
+                .get_run_for_agent(session.id(), agent.id());
+            panic!(
+                "MCP continuation should resume; run={:?}, interaction={:?}, pending={}",
+                run.map(|r| r.state()),
+                session
+                    .active_interaction_for_agent(agent.id())
+                    .map(|i| i.title()),
+                runtime
+                    .owned
+                    .pending_mcp_continuations
+                    .write()
+                    .contains_key(agent.id())
+            );
+        });
 
         let _ = crate::secret::lock_chariox_encrypted_vault(&vault_path);
         let _ = crate::secret::clear_vault_secret_process_cache();

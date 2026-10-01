@@ -3195,12 +3195,17 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     };
     assert!(!autonomously_recovered.1);
     assert_eq!(autonomously_recovered.0.attempt, 1);
-    assert!(matches!(
-        autonomously_recovered.0.phase,
-        ProjectEnvironmentSetupPhase::Preparing
-            | ProjectEnvironmentSetupPhase::Validating
-            | ProjectEnvironmentSetupPhase::Ready
-    ));
+    assert!(
+        matches!(
+            autonomously_recovered.0.phase,
+            ProjectEnvironmentSetupPhase::Preparing
+                | ProjectEnvironmentSetupPhase::Validating
+                | ProjectEnvironmentSetupPhase::Ready
+        ),
+        "autonomous recovery must carry worker progress: {:?}; provider trace: {}",
+        autonomously_recovered.0,
+        provider_fixture.diagnostics()
+    );
 
     let recovered_missing_operation = get_setup_status(
         &runtime,
@@ -3932,10 +3937,22 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     // Rebootstrap the same worker from the same durable state path. No setup
     // entry is fabricated: the public Cancel above persisted the worker's
     // attempt-one state, which this fresh app must restore.
-    let restarted_worker_app = Arc::new(tokio::sync::Mutex::new(
-        crate::DaemonApp::bootstrap(config_worker.clone())
-            .expect("worker should restore its durable setup state"),
-    ));
+    let release_deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    let restored_worker = loop {
+        match crate::DaemonApp::bootstrap(config_worker.clone()) {
+            Ok(app) => break app,
+            Err(crate::error::DaemonError::LocalTransport {
+                operation: "durable_state.acquire_owner",
+                message,
+            }) if message == "durable state is already owned by another kernel"
+                && tokio::time::Instant::now() < release_deadline =>
+            {
+                tokio::task::yield_now().await;
+            }
+            Err(error) => panic!("worker should restore its durable setup state: {error}"),
+        }
+    };
+    let restarted_worker_app = Arc::new(tokio::sync::Mutex::new(restored_worker));
     let restarted_worker_router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
         Arc::clone(&restarted_worker_app),
         1,

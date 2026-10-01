@@ -378,7 +378,6 @@ mod tests {
     use crate::app::KernelSessionService;
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::provider::LaunchProviderRequest;
-    use crate::session::CreateSessionRequest;
 
     #[test]
     fn app_unexpected_provider_exit_marks_active_agent_error() {
@@ -391,14 +390,13 @@ mod tests {
     }
 
     fn assert_app_provider_exit_state(cancelling: bool) {
+        let fixture_worktree_0 =
+            crate::test_support::TestWorktree::new("assert_app_provider_exit_state");
         let mut app =
             crate::test_support::bootstrap_authenticated_app(crate::DaemonConfig::for_tests())
                 .expect("daemon should boot");
         let (session, agent) = KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new(
-                "workspace-app-unexpected-exit",
-                "worktree-app-unexpected-exit",
-            ))
+            .create_session(fixture_worktree_0.session_request())
             .expect("session should create");
         let attachment = KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(

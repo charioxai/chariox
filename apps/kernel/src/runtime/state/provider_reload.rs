@@ -38,12 +38,20 @@ struct ProviderLaunchFingerprint {
     permission_level: crate::provider::AgentPermissionLevel,
 }
 
+// Environment removal is a set. Provider isolation sorts it during launch.
+fn normalized_env_removals(names: &[String]) -> Vec<String> {
+    let mut names = names.to_vec();
+    names.sort();
+    names.dedup();
+    names
+}
+
 impl ProviderLaunchFingerprint {
     fn from_run(run: &crate::provider::RuntimeProviderRun) -> Self {
         Self {
             runtime_mcp_server_url: run.runtime_mcp_server_url().map(str::to_string),
             mcp_servers: run.mcp_servers().to_vec(),
-            provider_env_remove: run.pty_env_remove().to_vec(),
+            provider_env_remove: normalized_env_removals(run.pty_env_remove()),
             provider_config_overrides: run.provider_config_overrides().clone(),
             write_access_mode: run.write_access_mode(),
             execution_mode: run.execution_mode(),
@@ -58,7 +66,7 @@ impl ProviderLaunchFingerprint {
                 .as_ref()
                 .map(|binding| binding.server_url.clone()),
             mcp_servers: request.mcp_servers.clone(),
-            provider_env_remove: request.provider_env_remove.clone(),
+            provider_env_remove: normalized_env_removals(&request.provider_env_remove),
             provider_config_overrides: request.provider_config_overrides.clone(),
             write_access_mode: request.write_access_mode,
             execution_mode: request.execution_mode.unwrap_or_default(),
@@ -357,6 +365,14 @@ mod tests {
         active_agent_provider_run_ids_for_session, policy_reload_launch_request,
         provider_reload_snapshot_is_still_current,
     };
+
+    #[test]
+    fn provider_reload_environment_removal_fingerprint_is_order_independent() {
+        let a = super::normalized_env_removals(&["A".into(), "B".into(), "A".into()]);
+        let b = super::normalized_env_removals(&["B".into(), "A".into()]);
+        assert_eq!(a, b);
+        assert_ne!(a, super::normalized_env_removals(&["A".into()]));
+    }
 
     #[test]
     fn provider_reload_uses_only_durable_resume_state() {

@@ -14,10 +14,31 @@ use super::{broker::docker_command, local_docker_container_name, LocalDockerSlic
 const ARCHIVE_OVERHEAD_BYTES: u64 = 16 * 1024 * 1024;
 const ARCHIVE_OVERHEAD_PERCENT: u64 = 5;
 const ARCHIVE_ENTRY_OVERHEAD_BYTES: u64 = 8 * 1024;
-#[cfg(unix)]
+#[cfg(all(unix, not(test)))]
 const UNIX_DISK_ADMISSION_LOCK_PATH: &str = "/tmp/chariox-docker-disk-admission.lock";
 const WINDOWS_DISK_ADMISSION_LOCK_NAME: &str = r"Global\CharioxDockerDiskAdmission";
 static PROCESS_DISK_ADMISSION_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
+thread_local! {
+    static TEST_DISK_ADMISSION_PATH: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn with_test_disk_admission_lock_path<T>(
+    path: &Path,
+    operation: impl FnOnce() -> T,
+) -> T {
+    struct Restore(Option<PathBuf>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TEST_DISK_ADMISSION_PATH.with(|value| *value.borrow_mut() = self.0.take());
+        }
+    }
+    let previous = TEST_DISK_ADMISSION_PATH.with(|value| value.replace(Some(path.to_owned())));
+    let _restore = Restore(previous);
+    operation()
+}
 
 pub(super) struct SliceDiskAdmissionGuard {
     _process: MutexGuard<'static, ()>,
@@ -332,7 +353,19 @@ fn nearest_existing_ancestor(path: &Path) -> Option<&Path> {
 
 #[cfg(unix)]
 fn acquire_disk_admission_lock() -> Result<DiskAdmissionLock, DaemonError> {
+    #[cfg(not(test))]
     let path = disk_admission_lock_path();
+    #[cfg(test)]
+    // Each test process owns a synthetic Docker engine. Preserve intra-engine
+    // coordination without waiting for other test processes or the real engine.
+    let path = TEST_DISK_ADMISSION_PATH
+        .with(|value| value.borrow().clone())
+        .unwrap_or_else(|| {
+            std::env::temp_dir().join(format!(
+                "chariox-test-docker-disk-admission-{}.lock",
+                std::process::id()
+            ))
+        });
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);
     use std::os::unix::fs::OpenOptionsExt;
@@ -366,7 +399,7 @@ fn acquire_disk_admission_lock() -> Result<DiskAdmissionLock, DaemonError> {
     Ok(file)
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(test)))]
 fn disk_admission_lock_path() -> PathBuf {
     PathBuf::from(UNIX_DISK_ADMISSION_LOCK_PATH)
 }
@@ -526,17 +559,23 @@ mod tests {
         use std::sync::{mpsc, Arc};
         use std::time::Duration;
 
+        let _environment = crate::env_lock::lock();
+        let fixture = crate::test_support::TestWorktree::new("disk-admission-coordination");
+        let first_path = fixture.path().join("engine.lock");
+        let second_path = first_path.clone();
         let (first_entered_tx, first_entered_rx) = mpsc::channel();
         let (release_first_tx, release_first_rx) = mpsc::channel();
         let first = std::thread::spawn(move || {
-            with_slice_snapshot_disk_admission(|_| {
-                first_entered_tx
-                    .send(())
-                    .expect("first slice should report admission");
-                release_first_rx
-                    .recv()
-                    .expect("first slice should be released");
-                Ok(())
+            with_test_disk_admission_lock_path(&first_path, || {
+                with_slice_snapshot_disk_admission(|_| {
+                    first_entered_tx
+                        .send(())
+                        .expect("first slice should report admission");
+                    release_first_rx
+                        .recv()
+                        .expect("first slice should be released");
+                    Ok(())
+                })
             })
             .expect("first slice should complete");
         });
@@ -551,10 +590,12 @@ mod tests {
             second_started_tx
                 .send(())
                 .expect("second slice should start waiting");
-            with_slice_snapshot_disk_admission(|_| {
-                // Production starts source quiescence only after this closure is entered.
-                second_entered_in_thread.store(true, Ordering::SeqCst);
-                Ok(())
+            with_test_disk_admission_lock_path(&second_path, || {
+                with_slice_snapshot_disk_admission(|_| {
+                    // Production starts source quiescence only after this closure is entered.
+                    second_entered_in_thread.store(true, Ordering::SeqCst);
+                    Ok(())
+                })
             })
             .expect("second slice should complete");
         });

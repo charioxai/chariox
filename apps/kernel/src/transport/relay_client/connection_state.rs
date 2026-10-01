@@ -40,13 +40,29 @@ pub struct RelayClientState {
         BTreeMap<String, oneshot::Sender<Option<RelayError>>>,
     pub(super) display_streams: BTreeMap<String, mpsc::Sender<RelayDisplayTunnelClientEvent>>,
     #[cfg(test)]
-    lose_next_peer_response_payload: Option<bool>,
+    lose_next_peer_response_payload: Option<TestPeerResponseLoss>,
     #[cfg(test)]
     test_authenticated_peer_request_observer:
         Option<mpsc::UnboundedSender<TestPeerRequestObservation>>,
     managed_slice_activation_expectations: BTreeMap<String, ManagedSliceRelayActivationExpectation>,
     pending_managed_slice_activation_confirmation:
         Option<PendingManagedSliceActivationConfirmation>,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct TestPeerResponseLoss {
+    forget_action_receipts: bool,
+    target: TestPeerResponseKind,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TestPeerResponseKind {
+    Other,
+    BrowserMutation,
+    LeasedPrompt,
+    LeasedSteer,
 }
 
 #[cfg(test)]
@@ -476,13 +492,30 @@ impl RelayClientState {
     }
 
     #[cfg(test)]
-    pub(crate) fn test_lose_next_peer_response_payload(&mut self) {
-        self.lose_next_peer_response_payload = Some(false);
+    pub(crate) fn test_lose_next_leased_prompt_response(&mut self) {
+        self.lose_next_peer_response_payload = Some(TestPeerResponseLoss {
+            forget_action_receipts: false,
+            target: TestPeerResponseKind::LeasedPrompt,
+        });
     }
 
     #[cfg(test)]
-    pub(crate) fn test_lose_next_peer_response_payload_and_forget_action_receipts(&mut self) {
-        self.lose_next_peer_response_payload = Some(true);
+    pub(crate) fn test_lose_next_leased_steer_response(&mut self) {
+        self.lose_next_peer_response_payload = Some(TestPeerResponseLoss {
+            forget_action_receipts: false,
+            target: TestPeerResponseKind::LeasedSteer,
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_lose_next_browser_mutation_response(
+        &mut self,
+        forget_action_receipts: bool,
+    ) {
+        self.lose_next_peer_response_payload = Some(TestPeerResponseLoss {
+            forget_action_receipts,
+            target: TestPeerResponseKind::BrowserMutation,
+        });
     }
 
     #[cfg(test)]
@@ -574,8 +607,17 @@ impl RelayClientState {
     }
 
     #[cfg(test)]
-    pub(super) fn test_take_lost_peer_response_payload(&mut self) -> Option<bool> {
-        self.lose_next_peer_response_payload.take()
+    pub(super) fn test_take_lost_peer_response_payload(
+        &mut self,
+        kind: TestPeerResponseKind,
+    ) -> Option<bool> {
+        let loss = self.lose_next_peer_response_payload.as_ref()?;
+        if loss.target != kind {
+            return None;
+        }
+        self.lose_next_peer_response_payload
+            .take()
+            .map(|loss| loss.forget_action_receipts)
     }
 }
 
@@ -1096,4 +1138,47 @@ mod tests {
             .display_tunnel("publication-expired", 0)
             .is_none());
     }
+}
+
+#[test]
+fn peer_response_fault_waits_for_the_intended_request() {
+    let mut state = RelayClientState::default();
+    for forget in [false, true] {
+        state.test_lose_next_browser_mutation_response(forget);
+        assert_eq!(
+            state.test_take_lost_peer_response_payload(TestPeerResponseKind::Other),
+            None,
+            "MP-08/MP-11 unrelated replies must not consume the fault"
+        );
+        assert_eq!(
+            state.test_take_lost_peer_response_payload(TestPeerResponseKind::BrowserMutation),
+            Some(forget)
+        );
+        assert_eq!(
+            state.test_take_lost_peer_response_payload(TestPeerResponseKind::BrowserMutation),
+            None
+        );
+    }
+    state.test_lose_next_leased_steer_response();
+    assert_eq!(
+        state.test_take_lost_peer_response_payload(TestPeerResponseKind::LeasedPrompt),
+        None
+    );
+    assert_eq!(
+        state.test_take_lost_peer_response_payload(TestPeerResponseKind::Other),
+        None
+    );
+    assert_eq!(
+        state.test_take_lost_peer_response_payload(TestPeerResponseKind::LeasedSteer),
+        Some(false)
+    );
+    state.test_lose_next_leased_prompt_response();
+    assert_eq!(
+        state.test_take_lost_peer_response_payload(TestPeerResponseKind::LeasedSteer),
+        None
+    );
+    assert_eq!(
+        state.test_take_lost_peer_response_payload(TestPeerResponseKind::LeasedPrompt),
+        Some(false)
+    );
 }

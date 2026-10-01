@@ -1122,6 +1122,9 @@ impl KernelRuntimeState {
 
     async fn run_project_environment_setup(&self, execution: SetupExecution, attempt: u32) {
         let store = &self.owned.project_environment_setups;
+        let Some(_provider_context) = store.lock_provider_context(&execution, attempt).await else {
+            return;
+        };
         if store.is_cancelled(&execution.operation_id, attempt) {
             return;
         }
@@ -2482,6 +2485,71 @@ mod tests {
             persist_project_definition: true,
             remote_leased_agent_id: None,
         }
+    }
+
+    #[tokio::test]
+    async fn worker_setups_serialize_provider_context_and_cancel_waiters_without_blocking_other_agents(
+    ) {
+        let store = ProjectEnvironmentSetupStore::default();
+        let first = execution();
+        let mut second = first.clone();
+        second.operation_id = "setup-2".into();
+        let mut other = first.clone();
+        other.operation_id = "setup-other-agent".into();
+        other.execution_agent_id = "agent-2".into();
+        for request in [&first, &second, &other] {
+            store.begin(request.clone()).unwrap();
+        }
+        let first_guard = store.lock_provider_context(&first, 1).await.unwrap();
+        let second_execution = store.begin_execution(&second.operation_id, 1).unwrap();
+        let mut waiting = Box::pin(store.lock_provider_context(&second, 1));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut waiting)
+                .await
+                .is_err()
+        );
+        let other_guard = tokio::time::timeout(
+            Duration::from_secs(1),
+            store.lock_provider_context(&other, 1),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        store
+            .cancel(
+                &second.operation_id,
+                &second.session_id,
+                &second.owner_user_id,
+            )
+            .unwrap();
+        assert!(tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .unwrap()
+            .is_none());
+        drop(second_execution);
+        assert_eq!(
+            store
+                .wait_for_cancellation(&second.operation_id, &second.owner_user_id)
+                .await
+                .unwrap()
+                .phase,
+            ProjectEnvironmentSetupPhase::Cancelled
+        );
+        let mut successor = first.clone();
+        successor.operation_id = "setup-successor".into();
+        store.begin(successor.clone()).unwrap();
+        let mut waiting = Box::pin(store.lock_provider_context(&successor, 1));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut waiting)
+                .await
+                .is_err()
+        );
+        drop(first_guard);
+        let successor_guard = tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .unwrap()
+            .unwrap();
+        drop((other_guard, successor_guard));
     }
 
     #[test]
