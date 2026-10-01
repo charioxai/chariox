@@ -15,6 +15,7 @@ import {
   buildIdleSoakPaths,
   parseIdleAuthenticatedBrowserSoakArgs,
   validateIdleSoakDetachContract,
+  validateIdleSoakProvenance,
   validateCompletedIdleSoakResult,
 } from "./idle-authenticated-browser-soak.mjs"
 import {
@@ -568,3 +569,22 @@ function idleTestProvenance(source) {
     networkNamespace: { exclusive: true, namespace: "net:[42]", foreignPids: [], unreadablePids: [], mismatchedOwnedPids: [] },
   }
 }
+
+
+test("idle provenance accepts only the exact computed runtime-content digest", () => {
+  const source = { commit: "a".repeat(40), tree: "b".repeat(40), branch: "test", dirty: false, runtimeSourceRevision: "1".repeat(64) }
+  const provenance = idleTestProvenance(source)
+  provenance.image.sourceRevision = source.runtimeSourceRevision
+  provenance.runtimeImage.sourceRevision = source.runtimeSourceRevision
+  assert.doesNotThrow(() => validateIdleSoakProvenance(provenance, source))
+  const wrong = structuredClone(provenance)
+  wrong.image.sourceRevision = "2".repeat(64)
+  wrong.runtimeImage.sourceRevision = wrong.image.sourceRevision
+  assert.throws(() => validateIdleSoakProvenance(wrong, source), /verified immutable image/)
+  const wrongSource = structuredClone(provenance)
+  wrongSource.source.runtimeSourceRevision = "2".repeat(64)
+  assert.throws(() => validateIdleSoakProvenance(wrongSource, source), /exact clean commit/)
+  const unverified = structuredClone(provenance)
+  unverified.image.signature.verified = false
+  assert.throws(() => validateIdleSoakProvenance(unverified, source), /Cosign/)
+})

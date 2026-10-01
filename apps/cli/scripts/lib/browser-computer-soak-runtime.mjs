@@ -17,6 +17,7 @@ import {
   buildSoakPaths,
   detachedLaunchSummary,
   gateFingerprint,
+  imageSourceMatches,
   validateCompletedSoakResult,
   validateGatePrerequisites,
 } from "./browser-computer-soak.mjs"
@@ -126,7 +127,7 @@ export async function resolveVerifiedImage({ imageRef, signatureKey, engine = "d
     : candidates.find((entry) => entry.slice(0, entry.lastIndexOf("@")) === repository)
   if (!identity) throw new Error("image engine RepoDigest does not match the configured repository")
   const sourceRevision = inspected?.Config?.Labels?.["io.chariox.runtime-source-revision"]
-  if (!/^[0-9a-f]{40}$/.test(sourceRevision ?? "")) throw new Error("verified image is missing its source revision label")
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sourceRevision ?? "")) throw new Error("verified image is missing its source revision label")
   const digest = identity.slice(identity.lastIndexOf("@") + 1)
   const keyBytes = await readKey(signatureKey).catch(() => { throw new Error("image signature key unavailable") })
   if (!Buffer.isBuffer(keyBytes) || keyBytes.length === 0 || keyBytes.length > 64 * 1024) throw new Error("image signature key is empty or unreasonably large")
@@ -162,7 +163,7 @@ export async function inspectDigestBoundRuntime({ containerId, image, source }, 
   if (!/^[0-9a-f]{12,64}$/.test(containerId ?? "")) {
     throw new Error("runtime container identity is required")
   }
-  if (image?.sourceRevision !== source?.commit) {
+  if (!imageSourceMatches(image?.sourceRevision, source)) {
     throw new Error("verified image source revision does not match the clean source commit")
   }
   const environment = buildSanitizedChildEnvironment(baseEnvironment, engineConnectionEnvironment(baseEnvironment))
@@ -184,7 +185,7 @@ export async function inspectDigestBoundRuntime({ containerId, image, source }, 
     throw new Error("runtime image does not match the verified image digest and engine image ID")
   }
   const sourceRevision = inspected?.Config?.Labels?.["io.chariox.runtime-source-revision"]
-  if (!/^[0-9a-f]{40}$/.test(sourceRevision ?? "") || sourceRevision !== image.sourceRevision) {
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sourceRevision ?? "") || sourceRevision !== image.sourceRevision) {
     throw new Error("runtime source revision does not match the clean source commit")
   }
   return { containerId: inspected.Id, imageId: inspected.Image, identity: inspected.Config.Image, sourceRevision, running: true }
@@ -1490,18 +1491,25 @@ export async function captureSourceIdentity(repoRoot, {
   baseEnvironment = process.env,
 } = {}) {
   const run = (command, args, options) => runHostHelper(command, args, options, { exec, baseEnvironment })
-  const [{ stdout: commit }, { stdout: tree }, { stdout: branch }, { stdout: status }] = await Promise.all([
+  const [{ stdout: commit }, { stdout: tree }, { stdout: branch }, { stdout: status }, { stdout: runtimeSourceRevision }] = await Promise.all([
     run("git", ["-c", `safe.directory=${repoRoot}`, "rev-parse", "HEAD"], { cwd: repoRoot, timeout: 10_000 }),
     run("git", ["-c", `safe.directory=${repoRoot}`, "rev-parse", "HEAD^{tree}"], { cwd: repoRoot, timeout: 10_000 }),
     run("git", ["-c", `safe.directory=${repoRoot}`, "branch", "--show-current"], { cwd: repoRoot, timeout: 10_000 }),
     run("git", ["-c", `safe.directory=${repoRoot}`, "status", "--short"], { cwd: repoRoot, timeout: 10_000 }),
+    // Use the provisioner's exact path inventory and digest implementation.
+    // Pass the repository as a shell argument; never interpolate a path into code.
+    run("bash", ["-o", "pipefail", "-c",
+      'git -c safe.directory="$1" -C "$1" ls-files --cached --others --exclude-standard Cargo.toml Cargo.lock adapters/rust apps/aegs-dummy apps/kernel apps/relay examples/workflow-code packages/aegs-sdk packages/event-protocol | python3 "$1/apps/kernel/slice-linux-docker/slice-command-guard.py" digest-paths "$1"',
+      "soak-runtime-source", repoRoot], { cwd: repoRoot, timeout: 60_000 }),
   ])
-  return { commit: commit.trim(), tree: tree.trim(), branch: branch.trim(), dirty: status.trim() !== "" }
+  if (!/^[0-9a-f]{64}$/.test(runtimeSourceRevision.trim())) throw new Error("could not identify the slice runtime source digest")
+  return { commit: commit.trim(), tree: tree.trim(), branch: branch.trim(), dirty: status.trim() !== "", runtimeSourceRevision: runtimeSourceRevision.trim() }
 }
 
 async function assertSourceUnchanged(repoRoot, expected) {
   const observed = await captureSourceIdentity(repoRoot)
-  if (observed.dirty || observed.commit !== expected?.commit || observed.tree !== expected?.tree || observed.branch !== expected?.branch) {
+  if (observed.dirty || observed.commit !== expected?.commit || observed.tree !== expected?.tree || observed.branch !== expected?.branch
+    || observed.runtimeSourceRevision !== expected?.runtimeSourceRevision) {
     throw new Error("source changed after provenance capture")
   }
 }
