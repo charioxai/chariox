@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict"
+import { assertRoomDrillCompletedActionNotice } from "./lib/room-drill-action-notice.mjs"
 import { validatePrebuiltSliceImage } from "./lib/prebuilt-slice-image.mjs"
 import { roomTuiPtyInvocation } from "./lib/room-tui-pty.mjs"
 import { spawn } from "node:child_process"
@@ -583,6 +584,7 @@ async function run() {
     `pointer movement leaked into remote TUI notices: ${remoteNoticesAfterPointers.join(" | ")}`,
   )
 
+  const clickActivityBaseline = activityNotices.length
   const idempotencyKey = `${runId}-click`
   const click = unwrap(await client.send(requests.submitRoomEnvironmentActionRequest(
     sessionId,
@@ -593,10 +595,14 @@ async function run() {
   )), "RoomEnvironmentActionSubmitted")
   assert.equal(actionState(click.environment, click.action_id), "completed")
   assert.equal(await activityController.synchronize(), true)
-  assert.match(activityNotices.at(-1), /^Room action #\d+: Local user · computer pointer_click · desktop(?:, tab [^ ·]+)? · completed$/)
+  const clickNoticePattern = assertRoomDrillCompletedActionNotice({
+    action: click.environment.actions.find((action) => action.action_id === click.action_id),
+    actionId: click.action_id, kind: "pointer_click", actorLabel: "Local user",
+    notices: activityNotices, baseline: clickActivityBaseline,
+  })
   await Promise.all([
-    waitForLocalNotice(/^Room action #\d+: Local user · computer pointer_click · desktop(?:, tab [^ ·]+)? · completed$/),
-    waitForRemoteNotice(/^Room action #\d+: Local user · computer pointer_click · desktop(?:, tab [^ ·]+)? · completed$/),
+    waitForLocalNotice(clickNoticePattern),
+    waitForRemoteNotice(clickNoticePattern),
   ])
   await waitForBrowserText("POINTER_CLICK_COUNT=1", 20_000, "physical click did not reach the fixture")
   await screenshot("after-click")
@@ -1006,6 +1012,7 @@ async function executeAgentPointerAction({
   activityController,
   activityNotices,
 }) {
+  const activityBaseline = activityNotices.length
   const localBaseline = new Set(automationNoticeIds(await localAutomation.send("snapshot")))
   const remoteBaseline = new Set(automationNoticeIds(await remoteAutomation.send("snapshot")))
   const response = await mcpToolCall(secretProviderRun, "slice_mouse", args)
@@ -1029,9 +1036,11 @@ async function executeAgentPointerAction({
     (candidate) => candidate.action_id === response.content?.action_id,
   )
   validate(action, response.content?.actor_id)
-  const noticePattern = new RegExp(`^Room action #\\d+: .+ · computer ${expectedKind} · desktop(?:, tab [^ ·]+)? · completed$`)
   assert.equal(await activityController.synchronize(), true)
-  assert.match(activityNotices.at(-1), noticePattern)
+  const noticePattern = assertRoomDrillCompletedActionNotice({
+    action, actionId: response.content.action_id, kind: expectedKind,
+    notices: activityNotices, baseline: activityBaseline,
+  })
   await Promise.all([
     waitForTuiNoticeAfter(localAutomation, "local", noticePattern, localBaseline, 20_000),
     waitForTuiNoticeAfter(remoteAutomation, "remote", noticePattern, remoteBaseline, 20_000),
@@ -1591,6 +1600,7 @@ async function executeAgentKeyboardAction({
   activityController,
   activityNotices,
 }) {
+  const activityBaseline = activityNotices.length
   const localBaseline = new Set(automationNoticeIds(await localAutomation.send("snapshot")))
   const remoteBaseline = new Set(automationNoticeIds(await remoteAutomation.send("snapshot")))
   const response = await mcpToolCall(secretProviderRun, "slice_keyboard", args)
@@ -1619,9 +1629,11 @@ async function executeAgentKeyboardAction({
     (candidate) => candidate.action_id === response.content?.action_id,
   )
   validate(action, response.content?.actor_id)
-  const noticePattern = new RegExp(`^Room action #\\d+: .+ · computer ${expectedKind} · desktop(?:, tab [^ ·]+)? · completed$`)
   assert.equal(await activityController.synchronize(), true)
-  assert.match(activityNotices.at(-1), noticePattern)
+  const noticePattern = assertRoomDrillCompletedActionNotice({
+    action, actionId: response.content.action_id, kind: expectedKind,
+    notices: activityNotices, baseline: activityBaseline,
+  })
   await Promise.all([
     waitForTuiNoticeAfter(localAutomation, "local", noticePattern, localBaseline, 20_000),
     waitForTuiNoticeAfter(remoteAutomation, "remote", noticePattern, remoteBaseline, 20_000),
@@ -1647,6 +1659,7 @@ async function exerciseRoomClipboard(activityController, activityNotices) {
     "human clipboard read must require desktop takeover",
   )
 
+  const agentActivityBaseline = activityNotices.length
   const agentLocalBaseline = new Set(automationNoticeIds(await localAutomation.send("snapshot")))
   const agentRemoteBaseline = new Set(automationNoticeIds(await remoteAutomation.send("snapshot")))
   const agentWrite = await mcpToolCall(secretProviderRun, "slice_clipboard_write", {
@@ -1670,9 +1683,11 @@ async function exerciseRoomClipboard(activityController, activityNotices) {
     actorId: agentWrite.content?.actor_id,
     clipboardText: agentClipboardText,
   })
-  const noticePattern = /^Room action #\d+: .+ · computer clipboard_write · desktop(?:, tab [^ ·]+)? · completed$/
   assert.equal(await activityController.synchronize(), true)
-  assert.match(activityNotices.at(-1), noticePattern)
+  const noticePattern = assertRoomDrillCompletedActionNotice({
+    action: agentAction, actionId: agentWrite.content.action_id, kind: "clipboard_write",
+    notices: activityNotices, baseline: agentActivityBaseline,
+  })
   await Promise.all([
     waitForTuiNoticeAfter(
       localAutomation,
@@ -1719,6 +1734,7 @@ async function exerciseRoomClipboard(activityController, activityNotices) {
     "rejected agent clipboard write must not enter the Action ledger",
   )
 
+  const humanActivityBaseline = activityNotices.length
   const humanLocalBaseline = new Set(automationNoticeIds(await localAutomation.send("snapshot")))
   const humanRemoteBaseline = new Set(automationNoticeIds(await remoteAutomation.send("snapshot")))
   const humanWrite = unwrap(
@@ -1740,19 +1756,22 @@ async function exerciseRoomClipboard(activityController, activityNotices) {
   })
   assert.equal(await readPhysicalClipboard(), humanClipboardText)
   assert.equal(await activityController.synchronize(), true)
-  assert.match(activityNotices.at(-1), noticePattern)
+  const humanNoticePattern = assertRoomDrillCompletedActionNotice({
+    action: humanAction, actionId: humanWrite.action_id, kind: "clipboard_write",
+    notices: activityNotices, baseline: humanActivityBaseline,
+  })
   await Promise.all([
     waitForTuiNoticeAfter(
       localAutomation,
       "local",
-      noticePattern,
+      humanNoticePattern,
       humanLocalBaseline,
       20_000,
     ),
     waitForTuiNoticeAfter(
       remoteAutomation,
       "remote",
-      noticePattern,
+      humanNoticePattern,
       humanRemoteBaseline,
       20_000,
     ),
