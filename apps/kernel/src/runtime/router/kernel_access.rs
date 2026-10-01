@@ -5,6 +5,26 @@ use crate::runtime::command::{command_caller_user_id, KernelCommand};
 use crate::runtime::kernel_access::error;
 
 impl CommandRouter {
+    pub(super) fn authorize_external_request(
+        &self,
+        command: &KernelCommand,
+        request: &mut LocalDaemonRequest,
+    ) -> Result<(), DaemonError> {
+        if command.caller.connection_class == Some(KernelConnectionClass::ExternalAgent) {
+            let session = self
+                .runtime_state
+                .authorize_external_request(&command.caller.caller_id, request)?;
+            // Resolve once against authority, then dispatch the exact ID. An
+            // alias collision or concurrent rename cannot switch the target.
+            match request {
+                LocalDaemonRequest::ResolveSession(request) => request.session_ref = session,
+                LocalDaemonRequest::DeleteSession(request) => request.session_ref = session,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn kernel_local_socket_path(&self) -> std::path::PathBuf {
         self.config_projection.snapshot().local_socket_path
     }

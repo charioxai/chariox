@@ -63,8 +63,12 @@ pub(super) async fn admit_frame(
             let response = runtime_state.request_kernel_access(peer, request).await;
             let (response, error) = match response {
                 Ok(grant) => {
-                    *bound_grant.lock().expect("bound grant poisoned") =
-                        Some(grant.grant_id.clone());
+                    // A socket never changes authority after its first admission.
+                    // Existing subscriptions and queued deliveries retain that grant.
+                    bound_grant
+                        .lock()
+                        .expect("bound grant poisoned")
+                        .get_or_insert_with(|| grant.grant_id.clone());
                     (
                         Some(
                             serde_json::to_value(
@@ -93,27 +97,60 @@ pub(super) async fn admit_frame(
         });
         return Err(());
     }
-    let grant = runtime_state.access_grant_for(peer, None);
-    let allowed = grant.as_ref().is_some_and(|grant| match frame {
-        KernelIncomingFrame::Request { request, .. } => runtime_state
-            .authorize_external_request(&grant.summary.grant_id, request)
-            .is_ok(),
-        KernelIncomingFrame::Subscribe {
-            session_id,
-            attachment_id,
-            subscription_scope,
-            ..
-        } => {
-            session_id == &grant.summary.session_id
-                && kernel_subscription_scope(subscription_scope.as_deref())
-                    != KernelSubscriptionScope::WaitingRoomInventory
-                && router
-                    .session_id_for_attachment_access(attachment_id)
-                    .as_deref()
-                    == Some(session_id.as_str())
+    let (grant, allowed) = {
+        let mut binding = bound_grant.lock().expect("bound grant poisoned");
+        let mut candidates = runtime_state.access_grants_for(peer);
+        let in_session = |session: &str| match frame {
+            KernelIncomingFrame::Request { request, .. } => {
+                runtime_state.external_request_in_session(session, request)
+            }
+            KernelIncomingFrame::Subscribe { session_id, .. } => session_id == session,
+            KernelIncomingFrame::Unsubscribe { .. } => true,
+        };
+        candidates.retain(|grant| {
+            binding
+                .as_ref()
+                .is_none_or(|id| id == &grant.summary.grant_id)
+        });
+        let grant = candidates
+            .iter()
+            .find(|grant| in_session(&grant.summary.session_id))
+            // Keep a matching identity for policy refusal and its sampled audit,
+            // even when the request names no authorized session.
+            .or_else(|| candidates.first())
+            .cloned();
+        let allowed = grant.as_ref().is_some_and(|grant| match frame {
+            KernelIncomingFrame::Request { request, .. } => runtime_state
+                .authorize_external_request(&grant.summary.grant_id, request)
+                .is_ok(),
+            KernelIncomingFrame::Subscribe {
+                session_id,
+                attachment_id,
+                subscription_scope,
+                ..
+            } => {
+                session_id == &grant.summary.session_id
+                    && kernel_subscription_scope(subscription_scope.as_deref())
+                        != KernelSubscriptionScope::WaitingRoomInventory
+                    && router
+                        .session_id_for_attachment_access(attachment_id)
+                        .as_deref()
+                        == Some(session_id.as_str())
+            }
+            KernelIncomingFrame::Unsubscribe { .. } => true,
+        });
+        if allowed {
+            binding.get_or_insert_with(|| {
+                grant
+                    .as_ref()
+                    .expect("allowed grant")
+                    .summary
+                    .grant_id
+                    .clone()
+            });
         }
-        KernelIncomingFrame::Unsubscribe { .. } => true,
-    });
+        (grant, allowed)
+    };
     if !allowed {
         let request_id = match frame {
             KernelIncomingFrame::Request { request_id, .. }
@@ -127,7 +164,6 @@ pub(super) async fn admit_frame(
         return Err(());
     }
     let grant = grant.expect("allowed grant");
-    *bound_grant.lock().expect("bound grant poisoned") = Some(grant.summary.grant_id.clone());
     let mut caller = router
         .local_command_caller(
             KernelCommandSource::LocalIpc,

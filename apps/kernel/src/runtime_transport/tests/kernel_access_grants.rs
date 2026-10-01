@@ -38,7 +38,16 @@ fn kernel_access_child_server() {
             for id in [SESSION, "other-session"] {
                 let mut session = crate::session::RuntimeSession::new(
                     id,
-                    Some(id.into()),
+                    // A valid alias can collide with another session's ID.
+                    // Scoping must use the same ID-first resolver as dispatch.
+                    Some(
+                        if id == SESSION {
+                            "other-session"
+                        } else {
+                            "other-alias"
+                        }
+                        .into(),
+                    ),
                     "workspace",
                     "worktree",
                     "machine",
@@ -178,6 +187,23 @@ fn kernel_access_client_child() {
                         String::from_utf8_lossy(&child.stderr)
                     );
                     println!("ACCESS {}", serde_json::json!({"descendant": true}));
+                } else if line == "second-session" {
+                    let (mut second, _) = client_async("ws://localhost/kernel",
+                        tokio::net::UnixStream::connect(Path::new(&root).join("run/k.sock")).await.unwrap()).await.unwrap();
+                    second.send(Message::Text(frame(serde_json::json!({"GetSessionState":{"session_id":"other-session"}})).to_string().into())).await.unwrap();
+                    let state = response(&mut second, "request").await;
+                    assert!(state["error"].is_null(), "{state}");
+                    second.send(Message::Text(frame(serde_json::json!({"ListSessions":null})).to_string().into())).await.unwrap();
+                    let list = response(&mut second, "request").await;
+                    let sessions = list["response"]["SessionsListed"]["sessions"].as_array().unwrap();
+                    assert_eq!(sessions.len(), 1, "{list}");
+                    assert_eq!(sessions[0]["id"], "other-session");
+                    second.send(Message::Text(frame(serde_json::json!({"AttachToSession":{"session_id":"other-session","client_id":"second-session","capability_level":"FullTerminal"}})).to_string().into())).await.unwrap();
+                    let attached = response(&mut second, "request").await;
+                    let attachment = attached["response"]["SessionAttached"]["attachment"]["id"].as_str().unwrap();
+                    second.send(Message::Text(serde_json::json!({"type":"subscribe","request_id":"second-subscribe","session_id":"other-session","attachment_id":attachment}).to_string().into())).await.unwrap();
+                    assert!(response(&mut second, "second-subscribe").await["error"].is_null());
+                    println!("ACCESS {{\"second_session\":true}}");
                 } else if line == "next" {
                     loop {
                         let next = timeout(Duration::from_secs(5), socket.next())
@@ -367,12 +393,16 @@ struct Kernel {
 }
 impl Kernel {
     async fn start() -> Self {
+        Self::start_with_order("").await
+    }
+    async fn start_with_order(order: &str) -> Self {
         // Keep macOS's 104-byte sockaddr_un limit, including the temporary prefix.
         let root = std::env::temp_dir().join(format!("a{:08x}", rand::random::<u32>()));
         std::fs::create_dir(&root).unwrap();
         let child = Command::new(std::env::current_exe().unwrap())
             .args(["kernel_access_child_server", "--ignored", "--nocapture"])
             .env("CHARIOX_ACCESS_TEST_ROOT", &root)
+            .env("CHARIOX_ACCESS_TEST_GRANT_ORDER", order)
             .env("CHARIOX_HOME", &root)
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
@@ -421,19 +451,26 @@ impl Kernel {
         response(&mut self.tcp, "request").await
     }
     async fn prompts(&mut self) -> Vec<Value> {
+        self.prompts_for(SESSION).await
+    }
+    async fn prompts_for(&mut self, session: &str) -> Vec<Value> {
         // The owner snapshots include active interactions. The popup feed uses this same board.
         let response = self
-            .request(serde_json::json!({"GetSessionState":{"session_id":SESSION}}))
+            .request(serde_json::json!({"GetSessionState":{"session_id":session}}))
             .await;
+        assert!(response["error"].is_null(), "{response}");
         response["response"]["SessionState"]["session"]["active_interactions"]
             .as_array()
-            .unwrap()
-            .clone()
+            .cloned()
+            .unwrap_or_default()
     }
     async fn access_prompt(&mut self, suffix: &str) -> String {
+        self.access_prompt_for(SESSION, suffix).await
+    }
+    async fn access_prompt_for(&mut self, session: &str, suffix: &str) -> String {
         timeout(Duration::from_secs(10), async {
             loop {
-                for prompt in self.prompts().await {
+                for prompt in self.prompts_for(session).await {
                     if let Some(id) = prompt["id"].as_str() {
                         if id.ends_with(suffix) {
                             return id.into();
@@ -586,6 +623,8 @@ async fn kernel_access_grants_identify_holder_descendants_and_refuse_sibling_sco
     assert!(forged_holder["error"].is_object(), "{forged_holder}");
     let grant_id = grant(&mut kernel, &mut holder).await;
     assert!(holder.request(get.clone())["error"].is_null());
+    let own_ref = holder.request(serde_json::json!({"ResolveSession":{"session_ref":"access-s"}}));
+    assert!(own_ref["error"].is_null(), "{own_ref}");
     // A sibling presents no credential; knowing the public grant id changes nothing.
     assert_eq!(
         sibling.request(get)["error"]["code"],
@@ -765,4 +804,65 @@ async fn kernel_access_grants_process_exit_session_end_and_no_terminal_timeout()
     assert!(end["error"].is_null(), "{end}");
     holder.command("next");
     assert_eq!(holder.result()["closed"], true);
+}
+
+#[tokio::test]
+async fn kernel_access_overlapping_grants_keep_subscriptions_bound_and_select_by_session() {
+    for order in ["ancestor-first", "descendant-first"] {
+        let mut kernel = Kernel::start_with_order(order).await;
+        let mut helper = Client::start(&kernel.root);
+        // The test process is the holder; helper, descendant and kernel are separate processes.
+        let ancestor_id = grant_for_holder(&mut kernel, &mut helper, std::process::id()).await;
+        let mut descendant = Client::start(&kernel.root);
+        descendant.subscribe();
+        // Approve its own session B grant on the socket already subscribed to A.
+        descendant.send(serde_json::json!({"RequestKernelAccess": {
+            "session_id":"other-session", "holder_pid":0
+        }}));
+        let prompt = kernel.access_prompt_for("other-session", "-grant").await;
+        let approved = kernel
+            .request(serde_json::json!({"RespondToInteraction": {
+                "session_id":"other-session", "interaction_id":prompt,
+                "choice_id":"approve", "passkey":PASSKEY
+            }}))
+            .await;
+        assert!(approved["error"].is_null(), "{approved}");
+        let granted = descendant.result();
+        assert!(granted["error"].is_null(), "{granted}");
+        let descendant_id = granted["response"]["KernelAccessGranted"]["grant"]["grant_id"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            ancestor_id.as_str() < descendant_id,
+            order == "ancestor-first"
+        );
+        assert_eq!(
+            descendant
+                .request(serde_json::json!({"GetSessionState":{"session_id":"other-session"}}))
+                ["error"]["code"],
+            "kernel_access_denied"
+        );
+        // A fresh socket selects B even when the inherited A grant sorts first.
+        // Both clients are descendants of A's holder. Use B's exact same OS
+        // process via a second connection in the client helper.
+        descendant.command("second-session");
+        assert_eq!(descendant.result()["second_session"], true);
+        kernel
+            .request(serde_json::json!({"RevokeKernelAccessGrant":{"grant_id":ancestor_id}}))
+            .await;
+        descendant.command("next");
+        assert_eq!(descendant.result()["closed"], true, "{order}");
+        let grants = kernel
+            .request(serde_json::json!({"ListKernelAccessGrants":{}}))
+            .await;
+        assert_eq!(
+            grants["response"]["KernelAccessGrantsListed"]["grants"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        descendant.command("second-session");
+        assert_eq!(descendant.result()["second_session"], true);
+    }
 }

@@ -2627,6 +2627,13 @@ Workflow trigger and deployment direction:
   revokes all of them. Expiry, explicit revoke, holder exit, session end,
   passkey rotation, and kernel shutdown revoke authority. Idle subscriptions,
   queued commands, cached replies, and event replay check live authority.
+  A Unix connection binds to its first approved or admitted grant and never
+  switches authority. Session references resolve once to an authorized session
+  ID before dispatch. A later approval on that socket creates a grant for
+  use on a fresh connection; existing subscriptions and queued frames keep
+  their original grant. Fresh connections select an eligible grant matching
+  the requested session. For unscoped requests, a holder's own grant takes
+  precedence over inherited grants.
   Grants stay in memory and do not survive a restart. Durable grant events
   record metadata and outcomes; terminal-answer and passkey verification
   events correlate by interaction id. They contain no passkey or bearer.

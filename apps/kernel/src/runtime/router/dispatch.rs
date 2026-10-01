@@ -16,14 +16,9 @@ impl CommandRouter {
     pub(crate) async fn dispatch(
         &self,
         command: KernelCommand,
-        request: LocalDaemonRequest,
+        mut request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        if command.caller.connection_class
-            == Some(crate::local::KernelConnectionClass::ExternalAgent)
-        {
-            self.runtime_state
-                .authorize_external_request(&command.caller.caller_id, &request)?;
-        }
+        self.authorize_external_request(&command, &mut request)?;
         if let Some(response) = self.dispatch_kernel_access(&command, &request)? {
             return Ok(response);
         }
