@@ -24,9 +24,6 @@ test("buildCliAutomationSnapshot projects session and interaction state for auto
     account_profile: "work",
     execution_mode_override: "plan",
     permission_level_override: "required",
-    primary_provider: "opencode",
-    primary_model: "sonnet",
-    primary_effort: "medium",
     worktree_id: "/worker/repo",
     remote_execution: {
       worker_machine_id: "machine-1",
@@ -161,9 +158,6 @@ test("buildCliAutomationSnapshot projects session and interaction state for auto
     accountProfile: "work",
     executionMode: "plan",
     permissionLevel: "required",
-    primaryProvider: "opencode",
-    primaryModel: "sonnet",
-    primaryEffort: "medium",
     worktreeId: "/worker/repo",
     remoteExecution: {
       workerMachineId: "machine-1",

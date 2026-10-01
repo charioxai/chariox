@@ -637,13 +637,6 @@ impl AgentService {
         if account_profile.is_some() {
             agent.set_account_profile(account_profile);
         }
-        if agent.active_substitute_index().is_none() {
-            agent.set_primary_profile(
-                provider.to_string(),
-                agent.model().map(str::to_string),
-                agent.effort().map(str::to_string),
-            );
-        }
         agent.set_provider_resume_state(resume_state);
         Ok(agent.clone())
     }
@@ -729,29 +722,6 @@ impl AgentService {
         if let Some(effort) = effort {
             agent.set_effort(effort);
         }
-        agent.set_primary_profile(
-            agent.provider().to_string(),
-            agent.model().map(str::to_string),
-            agent.effort().map(str::to_string),
-        );
-        Ok(agent.clone())
-    }
-
-    pub fn set_agent_primary_profile_snapshot(
-        &mut self,
-        agent_id: &str,
-        provider: &str,
-        model: Option<String>,
-        effort: Option<String>,
-        account_profile: Option<String>,
-    ) -> Result<AgentInstance, DaemonError> {
-        let agent = self
-            .store
-            .get_mut(agent_id)
-            .ok_or_else(|| DaemonError::AgentNotFound {
-                agent_id: agent_id.to_string(),
-            })?;
-        agent.set_primary_profile_snapshot(provider, model, effort, account_profile);
         Ok(agent.clone())
     }
 
@@ -871,41 +841,6 @@ impl AgentService {
                 agent_id: agent_id.to_string(),
             })?;
         agent.set_substitution_timeout_ms(timeout_ms);
-        Ok(agent.clone())
-    }
-
-    pub fn activate_agent_substitute(
-        &mut self,
-        agent_id: &str,
-        index: usize,
-        reason: impl Into<String>,
-    ) -> Result<(AgentInstance, AgentSubstituteProfile), DaemonError> {
-        let agent = self
-            .store
-            .get_mut(agent_id)
-            .ok_or_else(|| DaemonError::AgentNotFound {
-                agent_id: agent_id.to_string(),
-            })?;
-        let profile = agent.activate_substitute(index, reason).ok_or_else(|| {
-            DaemonError::LocalTransport {
-                operation: "activate agent substitute",
-                message: format!("agent `{agent_id}` has no substitute at index {index}"),
-            }
-        })?;
-        Ok((agent.clone(), profile))
-    }
-
-    pub fn deactivate_agent_substitute(
-        &mut self,
-        agent_id: &str,
-    ) -> Result<AgentInstance, DaemonError> {
-        let agent = self
-            .store
-            .get_mut(agent_id)
-            .ok_or_else(|| DaemonError::AgentNotFound {
-                agent_id: agent_id.to_string(),
-            })?;
-        agent.deactivate_substitute();
         Ok(agent.clone())
     }
 

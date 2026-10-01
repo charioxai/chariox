@@ -70,52 +70,6 @@ impl Drop for AgentProfileTransitionClaim {
 }
 
 impl PromptStateOwner {
-    pub(crate) fn complete_active_prompt_and_claim_profile_transition(
-        &self,
-        session: &RuntimeSession,
-        agent_id: &str,
-        expected_prompt_id: &str,
-    ) -> Result<Option<(PromptQueueItem, AgentProfileTransitionClaim)>, DaemonError> {
-        let mut owner = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let key = PromptStateKey::new(session.id(), agent_id);
-        if owner
-            .ensure_agent_state(session, agent_id)
-            .active_prompt
-            .as_ref()
-            .map(PromptQueueItem::id)
-            != Some(expected_prompt_id)
-        {
-            return Ok(None);
-        }
-        if owner.profile_transitions.contains_key(&key) {
-            return Err(DaemonError::LocalTransport {
-                operation: "settle prompt for agent profile transition",
-                message: "the agent already has a profile change in progress".to_string(),
-            });
-        }
-        let mut completed = owner
-            .ensure_agent_state(session, agent_id)
-            .active_prompt
-            .take()
-            .expect("exact active prompt checked under owner lock");
-        completed.set_status(PromptStatus::Completed);
-        let identity = Arc::new(());
-        owner
-            .profile_transitions
-            .insert(key.clone(), identity.clone());
-        Ok(Some((
-            completed,
-            AgentProfileTransitionClaim {
-                state: self.state.clone(),
-                key,
-                identity,
-            },
-        )))
-    }
-
     pub(crate) fn claim_idle_agent_profile_transition(
         &self,
         session: &RuntimeSession,
@@ -154,111 +108,11 @@ impl PromptStateOwner {
             identity,
         })
     }
-
-    /// Serialize a list-only profile edit without requiring the current turn to stop.
-    /// New prompt admission waits briefly behind the edit, while an already active turn
-    /// remains authoritative and is not disturbed.
-    pub(crate) fn claim_agent_profile_list_edit(
-        &self,
-        session: &RuntimeSession,
-        agent_id: &str,
-    ) -> Result<AgentProfileTransitionClaim, DaemonError> {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let key = PromptStateKey::new(session.id(), agent_id);
-        if state.profile_transitions.contains_key(&key) {
-            return Err(DaemonError::LocalTransport {
-                operation: "update agent profile",
-                message: "the agent already has a profile change in progress".to_string(),
-            });
-        }
-        let identity = Arc::new(());
-        state
-            .profile_transitions
-            .insert(key.clone(), identity.clone());
-        Ok(AgentProfileTransitionClaim {
-            state: self.state.clone(),
-            key,
-            identity,
-        })
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn exact_prompt_completion_reserves_profile_before_admitting_followup() {
-        let owner = PromptStateOwner::default();
-        let session =
-            RuntimeSession::new("room", None, "workspace", "worktree", "machine", "kernel");
-        let first = PromptQueueItem::new(
-            "failed-turn",
-            "client",
-            "agent-1",
-            "first",
-            PromptStatus::Queued,
-        );
-        assert!(matches!(
-            owner
-                .submit_prepared_prompt(&session, first, false)
-                .unwrap(),
-            PromptSubmissionOutcome::Started { .. }
-        ));
-        assert!(owner
-            .complete_active_prompt_and_claim_profile_transition(&session, "agent-1", "stale-turn")
-            .unwrap()
-            .is_none());
-        assert_eq!(
-            owner
-                .active_prompt_for_agent(&session, "agent-1")
-                .unwrap()
-                .id(),
-            "failed-turn"
-        );
-
-        let (completed, claim) = owner
-            .complete_active_prompt_and_claim_profile_transition(&session, "agent-1", "failed-turn")
-            .unwrap()
-            .unwrap();
-        assert_eq!(completed.id(), "failed-turn");
-        assert_eq!(completed.status(), PromptStatus::Completed);
-        assert!(owner.active_prompt_for_agent(&session, "agent-1").is_none());
-        assert!(matches!(
-            owner
-                .submit_prepared_prompt(
-                    &session,
-                    PromptQueueItem::new(
-                        "followup",
-                        "client",
-                        "agent-1",
-                        "second",
-                        PromptStatus::Queued
-                    ),
-                    false,
-                )
-                .unwrap(),
-            PromptSubmissionOutcome::Queued { .. }
-        ));
-        assert!(owner
-            .activate_next_queued_prompt_with_prompt_id(
-                &session,
-                "agent-1",
-                None,
-                "must-not-start".into(),
-            )
-            .unwrap()
-            .is_none());
-        let next = claim
-            .finish_and_activate_next(&session, "agent-1", "next-turn".into())
-            .unwrap()
-            .unwrap();
-        assert_eq!(next.id(), "next-turn");
-        assert_eq!(next.prompt(), "second");
-    }
 
     #[test]
     fn profile_completion_reserves_oldest_prompt_before_new_admission() {

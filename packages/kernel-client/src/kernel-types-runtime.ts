@@ -325,9 +325,6 @@ export type AgentInstance = {
   model: string | null
   effort?: string | null
   account_profile?: string | null
-  primary_provider?: string | null
-  primary_model?: string | null
-  primary_effort?: string | null
   execution_mode_override?: "build" | "plan" | null
   permission_level_override?: "required" | "yolo" | null
   workspace_id?: string | null
@@ -342,10 +339,8 @@ export type AgentInstance = {
   } | null
   extension_grants?: ExtensionGrant[]
   remote_extension_manifest_sync?: RemoteExtensionManifestSyncStatus | null
+  /** Tried in order, each for one turn whose provider failed (protocol 388). */
   substitutes?: AgentSubstituteProfile[]
-  active_substitute_index?: number | null
-  last_substitution?: AgentSubstitutionRecord | null
-  primary_account_profile?: string | null
   substitution_timeout_ms?: number | null
   visible_in_freeform?: boolean
   external_provider_import?: ExternalProviderImportMetadata | null
@@ -375,12 +370,6 @@ export type AgentSubstituteProfile = {
   account_profile?: string | null
   kernel_id?: string | null
   worktree_id?: string | null
-}
-
-export type AgentSubstitutionRecord = {
-  substitute_index: number
-  reason: string
-  activated_at_ms: number
 }
 
 export type PromptQueueItem = {

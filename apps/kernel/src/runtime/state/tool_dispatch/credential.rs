@@ -635,7 +635,7 @@ impl KernelRuntimeState {
                     credential_from_runtime_input(args.credential)?,
                     Some(agent.id()),
                     &context.home_session_id,
-                    agent.primary_provider(),
+                    agent.provider(),
                     Some(&context.worker_provider_run_id),
                 );
                 let registry = crate::credential::CharioxCredentialRegistry::user()?;
@@ -869,7 +869,7 @@ impl KernelRuntimeState {
             credential_from_runtime_input(args.credential)?,
             Some(agent.id()),
             &context.home_session_id,
-            agent.primary_provider(),
+            agent.provider(),
             Some(&context.worker_provider_run_id),
         );
         match &credential.source {

@@ -4,7 +4,6 @@ import test from "node:test"
 import type {
   AgentInstance,
   ProviderAccountProfile,
-  RuntimeProviderRun,
   RuntimeSession,
 } from "./cli-types.js"
 import {
@@ -12,20 +11,14 @@ import {
   handleAgentSubstituteCommand,
 } from "./agent-substitute-command-handlers.js"
 
-test("agent substitute summary marks active substitutes and timeout", () => {
+test("agent substitute summary lists the fallback order and timeout", () => {
   assert.equal(formatAgentSubstituteSummary(agent({
-    active_substitute_index: 1,
-    last_substitution: {
-      substitute_index: 1,
-      reason: "Provider reported a substitutable resource limit: Insufficient balance",
-      activated_at_ms: 1_700_000_000_000,
-    },
     substitution_timeout_ms: 1500,
     substitutes: [
       { provider: "codex", model: "gpt-5.4", variant: "high" },
       { provider: "claude", model: "sonnet" },
     ],
-  })), "agent-1 substitutes (2, timeout 1500ms):\n- 0: codex/gpt-5.4/high\n* 1: claude/sonnet\nlast substitution: Provider reported a substitutable resource limit: Insufficient balance")
+  })), "agent-1 substitutes (2, timeout 1500ms):\n- 0: codex/gpt-5.4/high\n- 1: claude/sonnet")
 })
 
 test("agent substitute add parses profile flags and applies update", async () => {
@@ -37,8 +30,6 @@ test("agent substitute add parses profile flags and applies update", async () =>
   await handleAgentSubstituteCommand({
     sessionState: () => currentSession,
     focusedAgentId: () => currentAgent.id,
-    currentModelId: () => "gpt-5.4",
-    currentVariantId: () => "high",
     flashFooter: (message) => { flashedMessage = message },
     updateAgentSubstitutes: async (_sessionId, _agentId, action) => {
       appliedAction = action
@@ -46,9 +37,6 @@ test("agent substitute add parses profile flags and applies update", async () =>
     },
     applySessionState: () => {},
     refreshAgentPanes: async () => {},
-    launchAgentProviderRun: async () => providerRun(),
-    setProviderRunState: () => {},
-    refreshSessionState: async () => currentSession,
     resolveSessionAgent: () => ({ agent: currentAgent, error: null }),
     formatAgentLabel: (entry) => entry?.agent_ref ?? "",
   }, ["substitute", "add", "codex", "gpt-5.4", "--variant", "high", "--kernel", "kernel-1"])
@@ -66,7 +54,7 @@ test("agent substitute add parses profile flags and applies update", async () =>
   assert.equal(flashedMessage, "agent-1 substitute added: codex/gpt-5.4/high")
 })
 
-test("agent substitute move reorders the fallback chain and reset returns to starter", async () => {
+test("agent substitute move reorders the fallback chain", async () => {
   const currentAgent = agent({
     provider: "claude",
     model: "claude-opus-4-8",
@@ -80,8 +68,6 @@ test("agent substitute move reorders the fallback chain and reset returns to sta
   const makeDeps = () => ({
     sessionState: () => currentSession,
     focusedAgentId: () => currentAgent.id,
-    currentModelId: () => "claude-opus-4-8",
-    currentVariantId: () => "high",
     flashFooter: () => {},
     updateAgentSubstitutes: async (_sessionId: string, _agentId: string, action: Record<string, unknown>) => {
       actions.push(action)
@@ -89,19 +75,14 @@ test("agent substitute move reorders the fallback chain and reset returns to sta
     },
     applySessionState: () => {},
     refreshAgentPanes: async () => {},
-    launchAgentProviderRun: async () => providerRun(),
-    setProviderRunState: () => {},
-    refreshSessionState: async () => currentSession,
     resolveSessionAgent: () => ({ agent: currentAgent, error: null }),
     formatAgentLabel: (entry: AgentInstance | null | undefined) => entry?.agent_ref ?? "",
   })
 
   await handleAgentSubstituteCommand(makeDeps(), ["substitute", "move", "1", "0"])
-  await handleAgentSubstituteCommand(makeDeps(), ["substitute", "reset"])
 
   assert.deepEqual(actions, [
     { Move: { from_index: 1, to_index: 0 } },
-    { Primary: {} },
   ])
 })
 
@@ -114,8 +95,6 @@ test("agent substitute add resolves an account alias to the stable profile id", 
   await handleAgentSubstituteCommand({
     sessionState: () => currentSession,
     focusedAgentId: () => currentAgent.id,
-    currentModelId: () => "gpt-5.4",
-    currentVariantId: () => "high",
     flashFooter: (message) => { flashedMessage = message },
     updateAgentSubstitutes: async (_sessionId, _agentId, action) => {
       appliedAction = action
@@ -123,9 +102,6 @@ test("agent substitute add resolves an account alias to the stable profile id", 
     },
     applySessionState: () => {},
     refreshAgentPanes: async () => {},
-    launchAgentProviderRun: async () => providerRun(),
-    setProviderRunState: () => {},
-    refreshSessionState: async () => currentSession,
     resolveSessionAgent: () => ({ agent: currentAgent, error: null }),
     formatAgentLabel: (entry) => entry?.agent_ref ?? "",
     listProviderAccountProfiles: async () => [
@@ -156,8 +132,6 @@ test("agent substitute add rejects unknown account aliases without updating", as
   await handleAgentSubstituteCommand({
     sessionState: () => currentSession,
     focusedAgentId: () => currentAgent.id,
-    currentModelId: () => "gpt-5.4",
-    currentVariantId: () => "high",
     flashFooter: (message) => { flashedMessage = message },
     updateAgentSubstitutes: async () => {
       updateCalls += 1
@@ -165,9 +139,6 @@ test("agent substitute add rejects unknown account aliases without updating", as
     },
     applySessionState: () => {},
     refreshAgentPanes: async () => {},
-    launchAgentProviderRun: async () => providerRun(),
-    setProviderRunState: () => {},
-    refreshSessionState: async () => currentSession,
     resolveSessionAgent: () => ({ agent: currentAgent, error: null }),
     formatAgentLabel: (entry) => entry?.agent_ref ?? "",
     listProviderAccountProfiles: async () => [
@@ -192,8 +163,6 @@ test("agent substitute add rejects a dangling account flag without updating", as
     await handleAgentSubstituteCommand({
       sessionState: () => currentSession,
       focusedAgentId: () => currentAgent.id,
-      currentModelId: () => "gpt-5.4",
-      currentVariantId: () => "high",
       flashFooter: (message) => { flashedMessage = message },
       updateAgentSubstitutes: async () => {
         updateCalls += 1
@@ -201,9 +170,6 @@ test("agent substitute add rejects a dangling account flag without updating", as
       },
       applySessionState: () => {},
       refreshAgentPanes: async () => {},
-      launchAgentProviderRun: async () => providerRun(),
-      setProviderRunState: () => {},
-      refreshSessionState: async () => currentSession,
       resolveSessionAgent: () => ({ agent: currentAgent, error: null }),
       formatAgentLabel: (entry) => entry?.agent_ref ?? "",
     }, args)
@@ -214,44 +180,6 @@ test("agent substitute add rejects a dangling account flag without updating", as
     )
   }
   assert.equal(updateCalls, 0)
-})
-
-test("agent substitute activate launches with the substitute's own account profile", async () => {
-  const activatedAgent = agent({
-    account_profile: "primary-account",
-    active_substitute_index: 0,
-    substitutes: [
-      { provider: "codex", model: "gpt-5.4", account_profile: "codex-work-internal" },
-    ],
-  })
-  const currentSession = session({ agents: [activatedAgent] })
-  let launchedAccountProfile: string | undefined
-  let flashedMessage = ""
-
-  await handleAgentSubstituteCommand({
-    sessionState: () => currentSession,
-    focusedAgentId: () => activatedAgent.id,
-    currentModelId: () => "gpt-5.4",
-    currentVariantId: () => "high",
-    flashFooter: (message) => { flashedMessage = message },
-    updateAgentSubstitutes: async () => ({ agent: activatedAgent, session: currentSession }),
-    applySessionState: () => {},
-    refreshAgentPanes: async () => {},
-    launchAgentProviderRun: async (_provider, _model, _variant, _agentId, accountProfile) => {
-      launchedAccountProfile = accountProfile
-      return { ...providerRun(), account_profile: accountProfile ?? "default" }
-    },
-    setProviderRunState: () => {},
-    refreshSessionState: async () => currentSession,
-    resolveSessionAgent: () => ({ agent: activatedAgent, error: null }),
-    formatAgentLabel: (entry) => entry?.agent_ref ?? "",
-    listProviderAccountProfiles: async () => [
-      providerAccount({ profile_id: "codex-work-internal", label: "Work" }),
-    ],
-  }, ["substitute", "activate", "0"])
-
-  assert.equal(launchedAccountProfile, "codex-work-internal")
-  assert.equal(flashedMessage, "agent-1 activated substitute 0: codex/gpt-5.4 · account Work")
 })
 
 function agent(overrides: Partial<AgentInstance> = {}): AgentInstance {
@@ -322,20 +250,4 @@ function providerAccount(
     },
     ...overrides,
   } as ProviderAccountProfile
-}
-
-function providerRun(): RuntimeProviderRun {
-  return {
-    id: "run-1",
-    session_id: "session-1",
-    agent_instance_id: "agent-1",
-    adapter_key: "codex",
-    provider: "codex",
-    account_profile: "default",
-    model: "gpt-5.4",
-    variant: "high",
-    usage_tokens_total: null,
-    state: "Running",
-    started_at_ms: 0,
-  }
 }

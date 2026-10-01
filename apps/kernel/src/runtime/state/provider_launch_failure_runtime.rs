@@ -1,7 +1,7 @@
 //! Provider launch failure recovery.
 //!
-//! Owns notices, failed run cleanup, remote leased workflow failure forwarding, and automatic
-//! substitute activation after a provider run fails before it becomes ready.
+//! Owns notices, failed run cleanup, and remote leased workflow failure forwarding after a
+//! provider run fails before it becomes ready.
 
 use super::*;
 
@@ -308,33 +308,6 @@ impl KernelRuntimeState {
                 );
             }
             let _ = owned.session_snapshot(started.run.session_id());
-        }
-        if let (Some(agent_id), Some(reason)) = (
-            started.run.agent_instance_id(),
-            crate::provider::classify_provider_substitutable_failure_text(
-                started.run.adapter_key(),
-                &error.to_string(),
-            ),
-        ) {
-            if let Err(substitute_error) = self
-                .activate_next_agent_substitute_after_failure(
-                    started.run.session_id(),
-                    agent_id,
-                    &reason,
-                )
-                .await
-            {
-                crate::logging::warn_with_fields(
-                    "daemon.provider",
-                    "automatic substitute activation after launch failure failed",
-                    serde_json::json!({
-                        "session_id": started.run.session_id(),
-                        "agent_id": agent_id,
-                        "provider_run_id": started.run.id(),
-                        "error": substitute_error.to_string(),
-                    }),
-                );
-            }
         }
     }
 }

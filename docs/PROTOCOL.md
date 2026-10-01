@@ -400,8 +400,8 @@ Version 25 also removes the separate `ForwardWorkflowProviderFailure` request an
 its acknowledgement. Workers settle failed leased turns locally without waiting
 for a home RPC. The existing runtime projection carries the terminal diagnostic
 and correlated, replayable completion. The home settles only the matching active
-turn, reserves agent admission, releases the failed workflow's workspace claim,
-and confirms the selected substitute on the worker before advancing queued work.
+turn and releases the failed workflow's workspace claim; queued work is preserved.
+Since protocol 388 a leased turn is not rerun on a substitute.
 Rejected profile acknowledgements preserve the queue. Delayed managed projections
 cannot re-establish a cleared worker-run binding after a profile change.
 
@@ -2098,6 +2098,24 @@ Workflow trigger and deployment direction:
   (the pinned releases' are re-read from the release store and re-verified);
   `plan` is `null` when the workflow uses no App. Only the publication's owner
   may preview.
+- protocol 388: agent substitutes are per-turn only. When a provider fails a
+  turn — an error result, a structured error code (Codex `codexErrorInfo`,
+  Claude `StopFailure`, OpenCode session errors), the provider process exiting
+  mid-turn, or a provider timeout the kernel detects — the kernel reruns that
+  same turn, as the same active prompt, on the agent's next configured
+  substitute in order, and on the one after it if that also fails. A user
+  cancel is not a provider failure, and a turn that completes is never rerun
+  whatever its text says. Each rerun records a notice naming the cause, for
+  example `This turn runs on claude-opus-5-5 because gpt-6.1-sol failed: model
+  at capacity (server_overloaded).`; when no substitute is left the turn fails
+  with its provider error. The substitute's provider run serves only that turn:
+  the next turn starts on the agent's configured profile, and the agent's
+  profile never changes. `AgentSubstituteAction` loses `Activate` and
+  `Primary`; `AgentInstance` loses `primary_provider`, `primary_model`,
+  `primary_effort`, `primary_account_profile`, `active_substitute_index` and
+  `last_substitution`. An agent persisted on a substitute by an older kernel
+  loads on its primary profile. Remote (leased) agents are not rerun on a
+  substitute.
 - App-bound local deployments (P1.20, no request or response shape change): a
   bound `local_runtime` deployment of a publication with a pinned App plan
   runs as a pinned independent copy on the owner's kernel, not in the source

@@ -162,19 +162,6 @@ impl KernelRuntimeState {
                 source_agent.substitution_timeout_ms(),
             )?;
         }
-        if let Some(index) = source_agent.active_substitute_index() {
-            if index < forked_agent.substitutes().len() {
-                forked_agent = self
-                    .owned
-                    .agent_store
-                    .activate_agent_substitute(
-                        forked_agent.id(),
-                        index,
-                        "forked from source agent",
-                    )?
-                    .0;
-            }
-        }
 
         let launch_request = crate::local::LaunchProviderRunRequest {
             session_id: request.session_id.clone(),

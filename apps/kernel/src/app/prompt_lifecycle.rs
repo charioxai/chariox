@@ -273,6 +273,7 @@ pub(crate) struct KernelPromptOwnerSubmission {
     pub(crate) outcome: PromptSubmissionOutcome,
 }
 
+#[derive(Clone)]
 pub(crate) struct KernelPromptDispatch {
     pub(crate) session_id: String,
     pub(crate) provider_run_id: String,
@@ -417,17 +418,20 @@ impl DaemonApp {
             return Ok(());
         };
         let run = self.providers.get_run(&provider_run_id)?;
-        self.agents.set_agent_runtime_profile_durably(
-            &self.durable_state,
-            &agent_id,
-            run.provider(),
-            Some(run.model().to_string()),
-            run.variant().map(str::to_string),
-            Some(run.account_profile().to_string()),
-            acknowledgement.resume_state.clone(),
-            Some(run.id()),
-            Some("prompt_delivery_acknowledged"),
-        )?;
+        // A substitute run reruns one turn; it never becomes the agent's profile.
+        if run.turn_substitute().is_none() {
+            self.agents.set_agent_runtime_profile_durably(
+                &self.durable_state,
+                &agent_id,
+                run.provider(),
+                Some(run.model().to_string()),
+                run.variant().map(str::to_string),
+                Some(run.account_profile().to_string()),
+                acknowledgement.resume_state.clone(),
+                Some(run.id()),
+                Some("prompt_delivery_acknowledged"),
+            )?;
+        }
         let run = self
             .providers
             .apply_prompt_submit_acknowledgement(&provider_run_id, &acknowledgement)?;

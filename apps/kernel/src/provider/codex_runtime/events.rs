@@ -491,7 +491,7 @@ fn codex_turn_error_message(turn: &Value) -> Option<String> {
         .or_else(|| error.get("details"))
         .and_then(Value::as_str)
         .filter(|message| !message.is_empty())
-        .map(str::to_string)
+        .map(|message| crate::provider::codex_client::codex_error_text(error, message))
 }
 
 fn trace_codex_tool_item(label: &str, item: &Value) {

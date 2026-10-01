@@ -11,7 +11,6 @@ import {
   focusAgentRequest,
   getProviderRunRequest,
   getSessionStateRequest,
-  launchProviderRunRequest,
   launchProviderRunsRequest,
   listRemoteMachineKernelsRequest,
   listSlicesRequest,
@@ -582,39 +581,7 @@ async function executeAgentSubstituteCommand(
     const payload = await update({ SetTimeout: { timeout_ms: timeoutMs ?? null } })
     return { ok: true, message: `${formatAgentRef(payload.agent)} substitute timeout: ${timeoutMs == null ? "default" : `${timeoutMs}ms`}`, data: payload }
   }
-  if (subcommand === "activate") {
-    const index = Number.parseInt(filteredArgs[0] ?? "", 10)
-    if (!Number.isFinite(index)) {
-      return { ok: false, message: "usage: agent substitute activate <index> [--agent a]" }
-    }
-    const payload = await update({ Activate: { index, reason: "manual" } })
-    const profile = payload.agent.substitutes?.[index]
-    if (!profile) {
-      return { ok: false, message: `${formatAgentRef(payload.agent)} substitute ${index} is not available`, data: payload }
-    }
-    const response = await deps.client.send(launchProviderRunRequest(
-      sessionId,
-      profile.provider,
-      "default",
-      profile.model,
-      profile.variant ?? "",
-      payload.agent.id,
-    ))
-    return { ok: true, message: `${formatAgentRef(payload.agent)} activated substitute ${index}: ${profile.provider}/${profile.model}`, data: { ...payload, launch: response }, contextUpdates: { agentId: payload.agent.id } }
-  }
-  if (subcommand === "primary" || subcommand === "reset") {
-    const payload = await update({ Primary: {} })
-    const response = await deps.client.send(launchProviderRunRequest(
-      sessionId,
-      payload.agent.provider,
-      "default",
-      payload.agent.model ?? context.model,
-      payload.agent.effort ?? context.effort,
-      payload.agent.id,
-    ))
-    return { ok: true, message: `${formatAgentRef(payload.agent)} reset to starter profile`, data: { ...payload, launch: response }, contextUpdates: { agentId: payload.agent.id } }
-  }
-  return { ok: false, message: "usage: agent substitute list|add|remove|move|clear|timeout|activate|reset" }
+  return { ok: false, message: "usage: agent substitute list|add|remove|move|clear|timeout" }
 }
 
 function resourceResult(

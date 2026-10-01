@@ -10,7 +10,8 @@ impl DaemonApp {
         session_id: &str,
         agent_id: &str,
     ) -> Result<String, DaemonError> {
-        let agent = self.agents.get_agent(agent_id)?;
+        self.retire_finished_turn_substitute_run(session_id, agent_id)?;
+        let (agent, turn_substitute) = self.agent_launch_profile(self.agents.get_agent(agent_id)?);
         self.provider_account_profiles.require_agent_authenticated(
             &self.config,
             &agent,
@@ -64,6 +65,7 @@ impl DaemonApp {
         if let Some(worktree_id) = agent.worktree_id() {
             request = request.with_working_directory(PathBuf::from(worktree_id));
         }
+        request.turn_substitute = turn_substitute;
         let provider_run = self.launch_provider_detached(request)?;
         Ok(provider_run.id().to_string())
     }

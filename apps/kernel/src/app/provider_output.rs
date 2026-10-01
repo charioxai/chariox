@@ -1004,7 +1004,11 @@ impl<'a> ProviderOutputPumpContext<'a> {
         let Some(resume_state) = poll_result.resolved_resume_state.as_ref() else {
             return Ok(());
         };
-        let Some(agent_id) = provider_run.agent_instance_id() else {
+        // A substitute run reruns one turn; it never becomes the agent's profile.
+        let Some(agent_id) = provider_run
+            .agent_instance_id()
+            .filter(|_| provider_run.turn_substitute().is_none())
+        else {
             return Ok(());
         };
         let durable_state_store = self.app.durable_state_store();

@@ -5,7 +5,7 @@ use crate::session::{
 
 #[test]
 fn agent_workflow_shapes_are_versioned_and_record_their_origin() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 367);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 388);
 
     let request = LocalDaemonRequest::CreateAgentWorkflow(CreateAgentWorkflowRequest {
         session_id: "session-1".into(),
@@ -54,5 +54,65 @@ fn agent_workflow_shapes_are_versioned_and_record_their_origin() {
     assert_eq!(
         serde_json::to_value(&workflow).unwrap()["origin"],
         serde_json::json!({"source_agent_id": "agent-1", "reason": "trigger", "surface": "web", "created_at_ms": 7})
+    );
+}
+
+/// Protocol 388: substitutes rerun one failed turn, so there is no action to
+/// select one and no active-substitute state on the agent.
+#[test]
+fn agent_substitute_shape_is_per_turn_only() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 388);
+
+    for retired in [
+        serde_json::json!({"Activate": {"index": 0, "reason": "manual"}}),
+        serde_json::json!({"Primary": {}}),
+    ] {
+        assert!(
+            serde_json::from_value::<AgentSubstituteAction>(retired.clone()).is_err(),
+            "{retired} is retired"
+        );
+    }
+    for action in [
+        serde_json::json!({"Remove": {"index": 0}}),
+        serde_json::json!({"Move": {"from_index": 1, "to_index": 0}}),
+        serde_json::json!({"Clear": {}}),
+        serde_json::json!({"SetTimeout": {"timeout_ms": 30000}}),
+    ] {
+        let parsed = serde_json::from_value::<AgentSubstituteAction>(action.clone())
+            .expect("list action parses");
+        assert_eq!(serde_json::to_value(parsed).unwrap(), action);
+    }
+
+    let mut agent = crate::agent::AgentInstance::new(
+        "agent-1",
+        "agent-1",
+        "session-1",
+        None,
+        "codex",
+        Some("gpt-6.1-sol".into()),
+        Some("high".into()),
+        None,
+        crate::agent::GridPosition::new(0, 0, 1, 1),
+    );
+    agent.add_substitute(crate::agent::AgentSubstituteProfile::new(
+        "claude",
+        "claude-opus-5-5",
+        None,
+    ));
+    let encoded = serde_json::to_value(&agent).expect("agent encodes");
+    let fields = encoded.as_object().expect("agent is an object");
+    for retired in [
+        "primary_provider",
+        "primary_model",
+        "primary_effort",
+        "primary_account_profile",
+        "active_substitute_index",
+        "last_substitution",
+    ] {
+        assert!(!fields.contains_key(retired), "{retired} is retired");
+    }
+    assert_eq!(
+        encoded.pointer("/substitutes/0"),
+        Some(&serde_json::json!({"provider": "claude", "model": "claude-opus-5-5"}))
     );
 }

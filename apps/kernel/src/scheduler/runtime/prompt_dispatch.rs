@@ -178,6 +178,7 @@ pub(super) fn ensure_workflow_provider_run_for_agent(
     if fresh_context {
         app.end_provider_run_for_workflow_context_flush(session_id, agent_id)?;
     }
+    app.retire_finished_turn_substitute_run(session_id, agent_id)?;
     if let Some(run) = app.providers().get_run_for_agent(session_id, agent_id) {
         if run.workflow_tools_enabled() {
             let provider_run_id = app.ensure_prompt_provider_run_for_agent(session_id, agent_id)?;
@@ -210,7 +211,7 @@ fn workflow_provider_request(
     agent_id: &str,
     fresh_context: bool,
 ) -> Result<LaunchProviderRequest, DaemonError> {
-    let agent = app.agents().get_agent(agent_id)?;
+    let (agent, turn_substitute) = app.agent_launch_profile(app.agents().get_agent(agent_id)?);
     let provider = crate::provider::provider_id_for_launch(agent.provider());
     let adapter_key = crate::provider::adapter_key_for_provider(provider);
     let session = app.sessions().get_session(session_id)?;
@@ -239,5 +240,6 @@ fn workflow_provider_request(
     {
         request = request.with_working_directory(working_directory);
     }
+    request.turn_substitute = turn_substitute;
     Ok(request)
 }

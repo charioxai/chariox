@@ -287,17 +287,14 @@ fn bound_agent_labels(
 fn agent_provider_account_references(
     agent: &crate::agent::AgentInstance,
 ) -> impl Iterator<Item = (&str, &str)> {
-    std::iter::once((agent.provider(), agent.provider_account_profile()))
-        .chain(std::iter::once((
-            agent.primary_provider(),
-            agent.primary_account_profile().unwrap_or("default"),
-        )))
-        .chain(agent.substitutes().iter().map(|profile| {
+    std::iter::once((agent.provider(), agent.provider_account_profile())).chain(
+        agent.substitutes().iter().map(|profile| {
             (
                 profile.provider.as_str(),
                 profile.account_profile.as_deref().unwrap_or("default"),
             )
-        }))
+        }),
+    )
 }
 
 fn account_profile_reference_matches(
@@ -387,7 +384,6 @@ mod tests {
             AgentSubstituteProfile::new("opencode", "deepseek-v4-pro", Some("high".into()))
                 .with_account_profile(Some("substitute-account".to_string())),
         );
-        agent.activate_substitute(0, "manual");
         session.set_agents(vec![agent]);
 
         assert_eq!(
@@ -398,7 +394,7 @@ mod tests {
                 |account_profile| account_profile == "starter-account",
             ),
             vec!["reviewer".to_string()],
-            "the saved starter remains an account binding while a substitute is active",
+            "the configured profile is an account binding",
         );
         assert_eq!(
             bound_agent_labels(

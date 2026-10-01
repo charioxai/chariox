@@ -43,6 +43,7 @@ mod remote_workspace_live_sync_fanout;
 mod session_runtime;
 mod terminal_fanout;
 pub(crate) mod terminal_input;
+mod turn_substitute;
 mod workflow_design_events;
 pub(crate) mod workflow_runtime;
 mod workflow_workspace_claims;
@@ -130,8 +131,7 @@ pub(crate) use provider_run_read::ProviderRunReadService;
 pub(crate) use remote_lease::ProviderCleanupFailurePoint;
 pub(crate) use remote_lease::{
     LeaseCallerBinding, LeasedAgentCleanupPhase, LeasedProjectEnvironmentSetupTarget,
-    PreparedLeasedProviderRun, RemoteLeaseRuntime, RemoteProviderFailure,
-    REMOTE_EXECUTION_LEASE_MAX_LIFETIME_MS,
+    PreparedLeasedProviderRun, RemoteLeaseRuntime, REMOTE_EXECUTION_LEASE_MAX_LIFETIME_MS,
 };
 
 pub struct DaemonApp {
@@ -206,6 +206,7 @@ pub struct DaemonApp {
     slices: crate::slice::SliceStore,
     next_execution_lease_number: u64,
     next_leased_agent_number: u64,
+    turn_substitute_launch: Option<turn_substitute::TurnSubstituteLaunch>,
 }
 
 impl DaemonApp {
@@ -385,6 +386,7 @@ impl DaemonApp {
             slices: crate::slice::SliceStore::default(),
             next_execution_lease_number: 0,
             next_leased_agent_number: 0,
+            turn_substitute_launch: None,
             started_at_ms: crate::session::unix_epoch_ms(),
             relay_client_state: Arc::new(tokio::sync::RwLock::new(
                 RelayClientState::with_pinned_peer_public_keys(

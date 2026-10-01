@@ -498,6 +498,18 @@ pub struct LaunchProviderRequest {
     pub client_interface: ProviderClientInterface,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_provider_import: Option<ExternalProviderImportMetadata>,
+    /// Runtime-only: this launch reruns one failed turn on an agent substitute.
+    #[serde(skip)]
+    pub(crate) turn_substitute: Option<TurnSubstitute>,
+}
+
+/// Marks a provider run that reruns the failed turn `prompt_id` on the agent's
+/// substitute at `substitute_index`. The run serves only that turn; the next
+/// turn starts on the agent's configured profile again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TurnSubstitute {
+    pub(crate) prompt_id: String,
+    pub(crate) substitute_index: usize,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -639,6 +651,7 @@ impl LaunchProviderRequest {
             structured_endpoint: None,
             client_interface: ProviderClientInterface::Chariox,
             external_provider_import: None,
+            turn_substitute: None,
         }
     }
 

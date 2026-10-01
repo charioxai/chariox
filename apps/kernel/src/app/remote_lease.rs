@@ -20,7 +20,6 @@ mod provider_run;
 mod relay_context;
 mod skill_sync;
 
-pub(crate) use projection::RemoteProviderFailure;
 pub(crate) use prompt_lifecycle::PreparedLeasedProviderRun;
 
 // Keep only small worker-generated IDs, not completed agents or prompt history.
