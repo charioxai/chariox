@@ -18,7 +18,12 @@ const ownerPublicKey = Buffer.concat([Buffer.from([4]), Buffer.alloc(64, 1)]).to
 const sliceRuntimeLogScript = `
 set -eu
 found=0
-for file in /opt/chariox-slice/logs/*.log /home/slice/.local/state/chariox/logs/*.ndjson; do
+case "$2" in
+  protected) runtime=/var/lib/chariox/slice-private/runtime/logs; kernel=/var/lib/chariox/slice-private/kernel/logs ;;
+  legacy) runtime=/opt/chariox-slice/logs; kernel=/home/slice/.local/state/chariox/logs ;;
+  *) exit 64 ;;
+esac
+for file in "$runtime"/*.log "$kernel"/*.ndjson; do
   [ -f "$file" ] || continue
   found=1
   printf '\\n=== %s ===\\n' "$file"
@@ -360,6 +365,7 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
     sliceRuntimeLogScript,
     "slice-runtime-logs",
     "200",
+    "legacy",
   ]
   const localDockerSource = await readFile(
     join(repositoryRoot, "apps/kernel/src/slice/local_docker.rs"),
@@ -379,6 +385,10 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
   assert.equal(canonicalRuntimeLogScript, sliceRuntimeLogScript)
   assert.equal(brokerRuntimeLogScriptLiteral, canonicalTemplateLiteral)
   assert.equal(validate({ kind: "docker", args: runtimeLogs }, share).status, 0)
+  const protectedRuntimeLogs = [...runtimeLogs.slice(0, -1), "protected"]
+  assert.equal(validate({ kind: "docker", args: protectedRuntimeLogs }, share).status, 0)
+  assert.equal(validate({ kind: "docker", args: [...runtimeLogs.slice(0, -1), "/private/arbitrary"] }, share).status, 1)
+
   const injectedRuntimeLogs = validate({
     kind: "docker",
     args: runtimeLogs.map((argument, index) => (
@@ -873,4 +883,27 @@ test("managed slice broker removes its endpoint after the supervisor claims it",
   lease.end()
   const [status] = await once(child, "exit")
   assert.equal(status, 0)
+})
+
+
+test("runtime log script selects protected and legacy roots without mixing them", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-log-layout-"))
+  try {
+    for (const directory of ["protected-runtime", "protected-kernel", "legacy-runtime", "legacy-kernel"]) {
+      await mkdir(join(root, directory))
+      await writeFile(join(root, directory, directory.endsWith("runtime") ? "synthetic.log" : "synthetic.ndjson"), directory + "\n")
+    }
+    const script = sliceRuntimeLogScript
+      .replaceAll("/var/lib/chariox/slice-private/runtime/logs", join(root, "protected-runtime"))
+      .replaceAll("/var/lib/chariox/slice-private/kernel/logs", join(root, "protected-kernel"))
+      .replaceAll("/opt/chariox-slice/logs", join(root, "legacy-runtime"))
+      .replaceAll("/home/slice/.local/state/chariox/logs", join(root, "legacy-kernel"))
+    for (const layout of ["protected", "legacy"]) {
+      const result = spawnSync("sh", ["-c", script, "slice-runtime-logs", "200", layout], {encoding: "utf8"})
+      assert.equal(result.status, 0, result.stderr)
+      assert.match(result.stdout, new RegExp(layout + "-runtime"))
+      assert.match(result.stdout, new RegExp(layout + "-kernel"))
+      assert(!result.stdout.includes(layout === "protected" ? "legacy-" : "protected-"))
+    }
+  } finally { await rm(root, {recursive: true, force: true}) } // Only newly created synthetic logs.
 })

@@ -59,7 +59,10 @@ fn protected_slice_accounts_and_github_remain_inside_selected_namespace() {
     let kernel = private.join("kernel");
     let nss = private.join("nssdb");
     let workspace = root.join("workspace");
-    for directory in [&home, &selected, &sibling, &kernel, &nss, &workspace] {
+    let nss_alias = root.join(".local/share/pki/nssdb");
+    for directory in [
+        &home, &selected, &sibling, &kernel, &nss, &nss_alias, &workspace,
+    ] {
         std::fs::create_dir_all(directory).expect("synthetic directories");
     }
     std::fs::create_dir_all(home.join(".config/gh")).expect("synthetic GitHub config");
@@ -68,6 +71,8 @@ fn protected_slice_accounts_and_github_remain_inside_selected_namespace() {
     std::fs::write(sibling.join("auth.json"), "sibling-synthetic-account").unwrap();
     std::fs::write(kernel.join("private-sentinel"), "synthetic-kernel-private").unwrap();
     std::fs::write(nss.join("private-sentinel"), "synthetic-nss-private").unwrap();
+    std::fs::write(nss_alias.join("private-sentinel"), "synthetic-nss-private").unwrap();
+    std::fs::write(root.join(".local/ordinary-user-data"), "ordinary-synthetic").unwrap();
     std::fs::write(
         home.join(".config/gh/hosts.yml"),
         "synthetic-github-account",
@@ -109,24 +114,42 @@ test ! -r "$1/provider-accounts/person-a/codex/profile/auth.json"
 test ! -r "$1/provider-accounts/person-b/codex/profile/auth.json"
 test ! -r "$1/kernel/private-sentinel"
 test ! -r "$1/nssdb/private-sentinel"
+test ! -r "$2/.local/share/pki/nssdb/private-sentinel"
+test "$(cat "$2/.local/ordinary-user-data")" = ordinary-synthetic
 test -z "${CHARIOX_SLICE_PRIVATE_ROOT+x}"
 test "$(/home/chariox/bin/gh auth status | head -n 1)" = username=synthetic
 printf 'protocol=https\nhost=synthetic.invalid\n\n' | git credential fill | grep -qx password=synthetic
 printf 'PROTECTED_ACCOUNT_AND_GITHUB_BOUNDARY_PASS\n'
 "#;
-    let launch = managed_isolated_utility_launch(
+    let mut launch = managed_isolated_utility_launch(
         "/bin/sh",
         vec![
             "-ec".into(),
             script.into(),
             "protected-account-probe".into(),
             private.display().to_string(),
+            root.display().to_string(),
         ],
         BTreeMap::from([("CODEX_HOME".into(), selected.display().to_string())]),
         Some(workspace.clone()),
         "protected-account-boundary",
     )
     .expect("namespace launch");
+    // Model the actual NSS second mount at the namespace boundary, after
+    // .local has been exposed and immediately before its credential mask.
+    let mask = launch
+        .pty_args
+        .windows(2)
+        .position(|args| args[0] == "--tmpfs" && args[1] == nss_alias.display().to_string())
+        .expect("NSS alias mask follows runtime .local bind");
+    launch.pty_args.splice(
+        mask..mask,
+        [
+            "--bind".to_string(),
+            nss.display().to_string(),
+            nss_alias.display().to_string(),
+        ],
+    );
     let output = command_from_provider_launch(launch)
         .expect("namespace command")
         .output()
@@ -150,6 +173,7 @@ printf 'PROTECTED_ACCOUNT_AND_GITHUB_BOUNDARY_PASS\n'
             script.into(),
             "protected-account-negative".into(),
             private.display().to_string(),
+            root.display().to_string(),
         ],
         BTreeMap::from([("CODEX_HOME".into(), selected.display().to_string())]),
         Some(workspace.clone()),
@@ -203,14 +227,16 @@ printf 'PROTECTED_ACCOUNT_AND_GITHUB_BOUNDARY_PASS\n'
         .status()
         .unwrap()
         .success());
-    println!("PROTECTED_ACCOUNT_ISOLATION_PROBE:{}", serde_json::json!({
-        "schema": "chariox.protected_account_isolation_probe.v1",
-        "actualNamespaceExecuted": true, "selectedAccountReadable": true,
-        "originalAccountTreeHidden": true, "siblingAccountHidden": true,
-        "kernelAndNssHidden": true, "privateRootControlScrubbed": true,
-        "maskRemovalNegativeFailed": true, "ambientGitHubAndGitWorked": true,
-        "explicitGitHubWorked": true, "preLoginDirectoryMayBeAbsent": true,
-        "outsideHomeAmbientGitHubRefused": true,
-    }));
-
+    println!(
+        "PROTECTED_ACCOUNT_ISOLATION_PROBE:{}",
+        serde_json::json!({
+            "schema": "chariox.protected_account_isolation_probe.v1",
+            "actualNamespaceExecuted": true, "selectedAccountReadable": true,
+            "originalAccountTreeHidden": true, "siblingAccountHidden": true,
+            "kernelAndNssHidden": true, "namespaceNssSecondMountHidden": true, "privateRootControlScrubbed": true,
+            "maskRemovalNegativeFailed": true, "ambientGitHubAndGitWorked": true,
+            "explicitGitHubWorked": true, "preLoginDirectoryMayBeAbsent": true,
+            "outsideHomeAmbientGitHubRefused": true,
+        })
+    );
 }
