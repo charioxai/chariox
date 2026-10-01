@@ -25,10 +25,18 @@ impl PasskeyPromptFeed {
     }
 
     /// The event to send now: the user's current prompts, at the start and
-    /// whenever they differ from the last ones sent.
+    /// whenever they differ from the last ones sent. They are looked up again
+    /// only after a change or once a sent prompt reached its expiry.
     pub(crate) fn next_event(&mut self, router: &CommandRouter) -> Option<KernelEvent> {
         let user_id = self.user_id.as_deref()?;
-        self.sequence = router.passkey_prompt_change_sequence();
+        let sequence = router.passkey_prompt_change_sequence();
+        let now_ms = crate::session::unix_epoch_ms();
+        if let Some(sent) = &self.sent {
+            if sequence == self.sequence && sent.iter().all(|prompt| now_ms < prompt.expires_at_ms) {
+                return None;
+            }
+        }
+        self.sequence = sequence;
         let prompts = router.passkey_prompts_for(user_id);
         if self.sent.as_ref() == Some(&prompts) {
             return None;
