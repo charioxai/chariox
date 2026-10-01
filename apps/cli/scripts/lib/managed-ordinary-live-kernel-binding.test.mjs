@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
 import { EventEmitter, once } from "node:events"
-import { readFile as readRealFile, realpath as realRealpath, unlink } from "node:fs/promises"
+import { mkdtemp, readFile as readRealFile, realpath as realRealpath, rm, unlink } from "node:fs/promises"
 import { createServer } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -377,11 +377,10 @@ test("a caller asserted kernel ID cannot replace the live IPC identity", async (
 test("Linux /proc socket owner and executable digest match the fixture process (unit conformance only)", {
   skip: process.platform !== "linux",
 }, async () => {
-  const socketPath = join(tmpdir(), `chariox-proc-owner-${process.pid}-${Date.now()}.sock`)
+  // MP-10: keep the socket name below Linux's limit with a task-scoped TMPDIR.
+  const socketRoot = await mkdtemp(join(tmpdir(), "proc-"))
+  const socketPath = join(socketRoot, "owner.sock")
   const server = createServer()
-  await unlink(socketPath).catch((error) => {
-    if (error?.code !== "ENOENT") throw error
-  })
   server.listen(socketPath)
   await once(server, "listening")
   try {
@@ -404,6 +403,7 @@ test("Linux /proc socket owner and executable digest match the fixture process (
     await unlink(socketPath).catch((error) => {
       if (error?.code !== "ENOENT") throw error
     })
+    await rm(socketRoot, { recursive: true, force: true })
   }
 })
 
