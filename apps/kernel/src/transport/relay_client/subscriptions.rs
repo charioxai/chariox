@@ -11,6 +11,13 @@ use chariox_relay::protocol::RelayCallerIdentity;
 
 pub(super) type RelaySubscriptionTasks = Arc<Mutex<BTreeMap<String, RelaySubscriptionTask>>>;
 
+/// Who a relay subscription serves: the caller's user and, for its passkey
+/// popups (protocol 394), its connection class.
+pub(super) struct RelaySubscriber {
+    pub(super) user_id: String,
+    pub(super) connection_class: crate::local::KernelConnectionClass,
+}
+
 pub(super) struct RelaySubscriptionTask {
     pub(super) relay_subscription_id: String,
     pub(super) client_public_key: String,
@@ -63,9 +70,10 @@ pub(super) async fn handle_relay_subscribe(
     subscription_scope: Option<String>,
     resume_from_event_id: Option<u64>,
 ) -> Result<(), DaemonError> {
-    let caller_user_id = relay_subscription_caller_user_id(caller_identity.as_ref());
-    let connection_class =
-        crate::runtime::command::relay_connection_class(caller_identity.as_ref());
+    let subscriber = RelaySubscriber {
+        user_id: relay_subscription_caller_user_id(caller_identity.as_ref()),
+        connection_class: crate::runtime::command::relay_connection_class(caller_identity.as_ref()),
+    };
     let is_inventory_subscription =
         subscription_scope.as_deref() == Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE);
     if resume_from_event_id.is_none() {
@@ -258,8 +266,7 @@ pub(super) async fn handle_relay_subscribe(
         subscription_scope.clone(),
         Arc::clone(event_runtime),
         resume_from_event_id.is_some(),
-        PasskeyPromptFeed::new(connection_class, &caller_user_id),
-        caller_user_id,
+        subscriber,
     ));
     subscription_tasks.lock().await.insert(
         task_key,
@@ -343,8 +350,7 @@ pub(super) async fn run_relay_subscription_loop(
     subscription_scope: Option<String>,
     event_runtime: Arc<RelayEventRuntime>,
     resumed: bool,
-    mut passkey_prompts: PasskeyPromptFeed,
-    caller_user_id: String,
+    subscriber: RelaySubscriber,
 ) {
     if subscription_scope.as_deref() == Some("waiting_room_inventory") {
         run_relay_waiting_room_inventory_subscription_loop(
@@ -354,12 +360,13 @@ pub(super) async fn run_relay_subscription_loop(
             client_public_key,
             event_runtime,
             resumed,
-            passkey_prompts,
-            caller_user_id,
+            subscriber,
         )
         .await;
         return;
     }
+    let mut passkey_prompts =
+        PasskeyPromptFeed::new(subscriber.connection_class, &subscriber.user_id);
     let mut previous_snapshot: Option<SessionSnapshotProjection> = None;
     let mut last_workflow_design_sequence = 0_u64;
     let mut last_snapshot_projection_sequence: Option<u64> = None;
@@ -791,9 +798,10 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
     client_public_key: String,
     event_runtime: Arc<RelayEventRuntime>,
     resumed: bool,
-    mut passkey_prompts: PasskeyPromptFeed,
-    caller_user_id: String,
+    subscriber: RelaySubscriber,
 ) {
+    let mut passkey_prompts =
+        PasskeyPromptFeed::new(subscriber.connection_class, &subscriber.user_id);
     let mut waiting_room_event_projection = WaitingRoomInventoryEventProjection::default();
     let mut previous_relay_status = if resumed {
         Some(router.transport_relay_status_snapshot().await)
@@ -830,7 +838,10 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
         if inventory_dirty
             || (!resumed && tick.is_multiple_of(RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS))
         {
-            match router.waiting_room_public_snapshot(&caller_user_id).await {
+            match router
+                .waiting_room_public_snapshot(&subscriber.user_id)
+                .await
+            {
                 Ok(snapshot) => {
                     inventory_dirty = false;
                     for event in waiting_room_event_projection.project(snapshot) {
