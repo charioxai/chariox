@@ -109,6 +109,7 @@ fn local_ipc_round_trip_exercises_session_and_terminal_flow() {
         "local-ipc-round-trip-exercises-session-and-terminal-flow",
         2,
         || async {
+            let worktree = crate::test_support::TestWorktree::new("workspace-ipc");
             let config = DaemonConfig::for_tests();
             let socket_path = config.local_socket_path.clone();
             let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -128,7 +129,7 @@ fn local_ipc_round_trip_exercises_session_and_terminal_flow() {
             let client = LocalIpcClient::new(socket_path.clone());
             let session = match client
                 .send(&LocalDaemonRequest::CreateSession(
-                    CreateSessionRequest::new("workspace-ipc", "."),
+                    worktree.session_request(),
                 ))
                 .expect("session create should succeed")
             {
@@ -260,6 +261,7 @@ fn local_ipc_uses_linked_cloud_user_for_session_creation() {
         "local-ipc-uses-linked-cloud-user-for-session-creation",
         2,
         || async {
+            let worktree = crate::test_support::TestWorktree::new("workspace-ipc-cloud");
             let mut config = DaemonConfig::for_tests();
             config.cloud_relay = Some(PersistedCloudRelayProfile {
                 api_url: "https://cloud.example.test".to_string(),
@@ -294,7 +296,7 @@ fn local_ipc_uses_linked_cloud_user_for_session_creation() {
             let client = LocalIpcClient::new(socket_path.clone());
             let response = client
                 .send(&LocalDaemonRequest::CreateSession(
-                    CreateSessionRequest::new("workspace-ipc-cloud", "."),
+                    worktree.session_request(),
                 ))
                 .expect("session create should succeed");
             let session = match response {
@@ -460,6 +462,7 @@ fn malformed_request_does_not_block_followup_request() {
         "malformed-request-does-not-block-followup-request",
         2,
         || async {
+            let worktree = crate::test_support::TestWorktree::new("workspace-ipc-followup");
             let config = DaemonConfig::for_tests();
             let socket_path = config.local_socket_path.clone();
             let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -494,7 +497,7 @@ fn malformed_request_does_not_block_followup_request() {
             let client = LocalIpcClient::new(socket_path.clone());
             let response = client
                 .send(&LocalDaemonRequest::CreateSession(
-                    CreateSessionRequest::new("workspace-ipc-followup", "."),
+                    worktree.session_request(),
                 ))
                 .expect("followup request should still succeed");
             match response {
@@ -517,6 +520,7 @@ fn local_ipc_round_trip_exercises_workflow_run_lifecycle() {
         "local-ipc-round-trip-exercises-workflow-run-lifecycle",
         2,
         || async {
+            let worktree = crate::test_support::TestWorktree::new("workspace-ipc-workflow");
             let config = DaemonConfig::for_tests();
             let socket_path = config.local_socket_path.clone();
             let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -536,7 +540,7 @@ fn local_ipc_round_trip_exercises_workflow_run_lifecycle() {
             let client = LocalIpcClient::new(socket_path.clone());
             let session = match client
                 .send(&LocalDaemonRequest::CreateSession(
-                    CreateSessionRequest::new("workspace-ipc-workflow", "."),
+                    worktree.session_request(),
                 ))
                 .expect("session create should succeed")
             {
@@ -751,6 +755,7 @@ fn local_ipc_round_trip_routes_downstream_workflow_nodes() {
         "local-ipc-round-trip-routes-downstream-workflow-nodes",
         2,
         || async {
+            let worktree = crate::test_support::TestWorktree::new("workspace-ipc-workflow-chain");
             let config = DaemonConfig::for_tests();
             let socket_path = config.local_socket_path.clone();
             let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -770,7 +775,7 @@ fn local_ipc_round_trip_routes_downstream_workflow_nodes() {
             let client = LocalIpcClient::new(socket_path.clone());
             let session = match client
                 .send(&LocalDaemonRequest::CreateSession(
-                    CreateSessionRequest::new("workspace-ipc-workflow-chain", "."),
+                    worktree.session_request(),
                 ))
                 .expect("session create should succeed")
             {
