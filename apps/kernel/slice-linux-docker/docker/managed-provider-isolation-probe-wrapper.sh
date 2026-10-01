@@ -150,7 +150,9 @@ allowed_empty_masked_directory=/home/slice/.chariox
 # A protected-layout slice mounts its private root at /var/lib/chariox/slice-private.
 # Managed isolation masks that root, and protected roots below it, with empty
 # tmpfs mounts, so the parent can only list mountpoint directories. Any file,
-# link or socket at any depth is payload; unreadable directories are masked.
+# link or socket at any depth is payload. A directory counts as masked only when
+# it can be neither listed nor searched; a searchable but unlistable directory
+# could still expose a file at a known name, so it fails closed.
 for denied in \
   /var/lib/chariox \
   /home/slice/.chariox \
@@ -178,7 +180,8 @@ do
     fi
     if [[ "$entry_count" != "0" ]] \
       && [[ "$denied" == /var/lib/chariox || "$denied" == /proc/1/root/var/lib/chariox ]]; then
-      if payload="$(find "$denied" -mindepth 1 \( -type d ! -readable -prune \) \
+      if payload="$(find "$denied" -mindepth 1 \( -type d ! -readable ! -executable -prune \) \
+          -o \( -type d ! -readable -print -quit \) \
           -o \( ! -type d -print -quit \) 2>/dev/null)" && [[ -z "$payload" ]]; then
         if [[ "$masked_private_root_parents" == "none" ]]; then
           masked_private_root_parents="$denied"
