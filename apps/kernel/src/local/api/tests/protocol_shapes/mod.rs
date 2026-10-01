@@ -16,6 +16,7 @@ mod core;
 mod credential_enrollment;
 mod event_publication;
 mod extension_apps;
+mod kernel_access;
 mod kernel_operation_interactions;
 mod managed_activity;
 mod managed_context;

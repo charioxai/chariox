@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use chariox_relay::auth::RelaySubjectKind;
 use chariox_relay::protocol::RelayCallerIdentity;
 
+use crate::local::KernelConnectionClass;
 use crate::session::DEFAULT_LOCAL_USER_ID;
 
 use super::KernelCommand;
@@ -43,6 +44,10 @@ pub struct KernelCaller {
     pub public_key_thumbprint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metaagent_id: Option<String>,
+    /// Protocol 393: the class of the connection this caller was admitted on.
+    /// Absent for the kernel's own commands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_class: Option<KernelConnectionClass>,
 }
 
 impl Default for KernelCaller {
@@ -75,10 +80,36 @@ impl KernelCaller {
             realm_id: None,
             public_key_thumbprint: None,
             metaagent_id: None,
+            connection_class: None,
         }
     }
 
+    pub fn with_connection_class(mut self, connection_class: KernelConnectionClass) -> Self {
+        self.connection_class = Some(connection_class);
+        self
+    }
+
+    /// A relay request's caller: its authenticated relay identity, or an
+    /// unverified relay client when the relay supplied none.
+    pub fn for_relay_request(identity: Option<RelayCallerIdentity>) -> Self {
+        identity.map(Self::from_relay_identity).unwrap_or_else(|| {
+            Self::for_source(&KernelCommandSource::RelayClient)
+                .with_connection_class(KernelConnectionClass::Unauthenticated)
+        })
+    }
+
     pub fn from_relay_identity(identity: RelayCallerIdentity) -> Self {
+        // A client with a user id is a terminal (web, remote TUI); kernels,
+        // machines and hosted services are relay peers.
+        let connection_class = match identity.subject_kind {
+            RelaySubjectKind::Client if identity.user_id.is_some() => {
+                KernelConnectionClass::Terminal
+            }
+            RelaySubjectKind::Client => KernelConnectionClass::Unauthenticated,
+            RelaySubjectKind::Kernel | RelaySubjectKind::Machine | RelaySubjectKind::Service => {
+                KernelConnectionClass::RelayPeer
+            }
+        };
         let (caller_kind, client_id, machine_id) = match identity.subject_kind {
             RelaySubjectKind::Client => (
                 KernelCallerKind::RemoteClient,
@@ -101,6 +132,7 @@ impl KernelCaller {
             realm_id: Some(identity.realm_id),
             public_key_thumbprint: identity.public_key_thumbprint,
             metaagent_id: None,
+            connection_class: Some(connection_class),
         }
     }
 }

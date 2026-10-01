@@ -57,7 +57,10 @@ impl LocalDaemonClient {
         self.runtime.block_on(async {
             let caller = self
                 .router
-                .local_command_caller(KernelCommandSource::LocalIpc)
+                .local_command_caller(
+                    KernelCommandSource::LocalIpc,
+                    super::KernelConnectionClass::Unauthenticated,
+                )
                 .await;
             let command = crate::runtime::command::KernelCommand::from_local_request_with_caller(
                 command_id,

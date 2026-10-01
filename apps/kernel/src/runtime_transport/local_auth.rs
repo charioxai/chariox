@@ -20,6 +20,7 @@ use serde_json::Value;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 
 use crate::config::DaemonConfig;
+use crate::local::KernelConnectionClass;
 use crate::runtime::command::KernelCommandSource;
 
 /// Recognizable prefix, so log redaction and secret scanners can find a leak.
@@ -61,6 +62,16 @@ impl KernelLocalCredential {
             Self::Missing => "missing",
             Self::Wrong => "wrong",
             Self::Unchecked => "unchecked",
+        }
+    }
+
+    /// The connection class this credential admits: the host token is the
+    /// host controller, the laptop token a terminal, anything else neither.
+    pub(crate) fn connection_class(self) -> KernelConnectionClass {
+        match self {
+            Self::HostToken => KernelConnectionClass::Host,
+            Self::LocalToken => KernelConnectionClass::Terminal,
+            Self::Missing | Self::Wrong | Self::Unchecked => KernelConnectionClass::Unauthenticated,
         }
     }
 }

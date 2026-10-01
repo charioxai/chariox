@@ -71,6 +71,37 @@ fn host_token_stays_required_and_unconfigured_stays_unchecked() {
 }
 
 #[test]
+fn each_credential_admits_its_connection_class() {
+    let (laptop, auth) = local_token_auth();
+    let host = KernelLocalAuth::host_token_or_unconfigured(Some(Arc::from("host-sentinel")));
+    let unconfigured = KernelLocalAuth::host_token_or_unconfigured(None);
+    for (admitted, class) in [
+        (
+            laptop.admit(Some(&bearer(auth.token()))),
+            KernelConnectionClass::Terminal,
+        ),
+        (laptop.admit(None), KernelConnectionClass::Unauthenticated),
+        (
+            laptop.admit(Some(&bearer("chx_kat_wrong"))),
+            KernelConnectionClass::Unauthenticated,
+        ),
+        (
+            host.admit(Some(&bearer("host-sentinel"))),
+            KernelConnectionClass::Host,
+        ),
+        (
+            unconfigured.admit(None),
+            KernelConnectionClass::Unauthenticated,
+        ),
+    ] {
+        assert_eq!(
+            admitted.map(KernelLocalCredential::connection_class),
+            Some(class)
+        );
+    }
+}
+
+#[test]
 fn warnings_are_rate_limited_per_class_and_never_carry_a_token() {
     let (_, auth) = local_token_auth();
     let wrong_token = generate_kernel_local_auth_token();

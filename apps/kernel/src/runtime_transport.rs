@@ -23,6 +23,7 @@ use tokio_tungstenite::{
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
+use crate::local::KernelConnectionClass;
 use crate::runtime::command::{KernelCommand, KernelCommandPriority, KernelCommandSource};
 use crate::runtime::event_log::EventLog;
 use crate::runtime::projection::TransportHealthStore;
@@ -781,6 +782,10 @@ async fn handle_kernel_connection(
     if let Some(credential) = local_credential {
         local_auth.record(credential, peer_addr);
     }
+    let connection_class = local_credential.map_or(
+        KernelConnectionClass::Unauthenticated,
+        local_auth::KernelLocalCredential::connection_class,
+    );
     runtime.transport_health.record_connection_opened();
     let _connection_guard = TransportConnectionGuard {
         transport_health: runtime.transport_health.clone(),
@@ -912,6 +917,7 @@ async fn handle_kernel_connection(
                     &outgoing_tx,
                     &close_tx,
                     &close_requested,
+                    connection_class,
                     payload.as_bytes(),
                 )
                 .await;
@@ -926,6 +932,7 @@ async fn handle_kernel_connection(
                     &outgoing_tx,
                     &close_tx,
                     &close_requested,
+                    connection_class,
                     &payload,
                 )
                 .await;
@@ -1051,6 +1058,7 @@ async fn handle_incoming_payload(
     outgoing_tx: &KernelOutgoingSender,
     close_tx: &mpsc::UnboundedSender<ConnectionCloseCommand>,
     close_requested: &Arc<AtomicBool>,
+    connection_class: KernelConnectionClass,
     payload: &[u8],
 ) {
     let frame = match serde_json::from_slice::<KernelIncomingFrame>(payload) {
@@ -1087,7 +1095,7 @@ async fn handle_incoming_payload(
         } => {
             runtime.transport_health.record_incoming_request();
             let caller = router
-                .local_command_caller(KernelCommandSource::LocalCli)
+                .local_command_caller(KernelCommandSource::LocalCli, connection_class)
                 .await;
             let command = KernelCommand::from_local_request_with_caller(
                 command_id.unwrap_or_else(|| request_id.clone()),
@@ -1227,6 +1235,7 @@ async fn handle_incoming_payload(
                         "session_id": command.session_id,
                         "attachment_id": command.attachment_id,
                         "agent_id": command.agent_id,
+                        "connection_class": connection_class,
                     }),
                 );
             }
@@ -1288,6 +1297,7 @@ async fn handle_incoming_payload(
                     "attachment_id": attachment_id,
                     "subscription_scope": subscription_scope,
                     "resume_from_event_id": resume_from_event_id,
+                    "connection_class": connection_class,
                 }),
             );
             if scope != KernelSubscriptionScope::WaitingRoomInventory

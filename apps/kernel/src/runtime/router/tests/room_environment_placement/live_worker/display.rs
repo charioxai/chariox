@@ -83,6 +83,7 @@ async fn rejects_hosted_service() {
                 &viewer_public,
             )),
             metaagent_id: None,
+            connection_class: None,
         },
     )
     .await;
@@ -118,6 +119,7 @@ async fn rejects_remote_kernel() {
             realm_id: Some("default".to_string()),
             public_key_thumbprint: None,
             metaagent_id: None,
+            connection_class: None,
         },
     )
     .await;
@@ -159,6 +161,7 @@ async fn rejects_remote_client_key_mismatch() {
                 &other_public,
             )),
             metaagent_id: None,
+            connection_class: None,
         },
     )
     .await;
@@ -196,6 +199,7 @@ async fn admits_remote_client_with_matching_key() {
                 &viewer_public,
             )),
             metaagent_id: None,
+            connection_class: None,
         },
     )
     .await
@@ -232,6 +236,7 @@ async fn rejects_different_attachment_owner() {
             realm_id: None,
             public_key_thumbprint: None,
             metaagent_id: None,
+            connection_class: None,
         },
     )
     .await;
