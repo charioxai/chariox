@@ -133,11 +133,20 @@ pub fn initialize() {
         let inherited_fd = std::env::var(BROKER_FD_ENV)
             .ok()
             .and_then(|value| value.parse::<RawFd>().ok());
-        let local = if socket_path.is_none() && inherited_fd.is_none()
-            && std::env::var_os(BROKER_REQUIRED_ENV).is_none() { super::local_authority::start() } else { None };
+        let local = if socket_path.is_none()
+            && inherited_fd.is_none()
+            && std::env::var_os(BROKER_REQUIRED_ENV).is_none()
+        {
+            super::local_authority::start()
+        } else {
+            None
+        };
         let local_configured = local.is_some();
-        if let Some(Ok(path)) = local { socket_path = Some(path.into_os_string()); }
-        let configured = local_configured || socket_path.is_some()
+        if let Some(Ok(path)) = local {
+            socket_path = Some(path.into_os_string());
+        }
+        let configured = local_configured
+            || socket_path.is_some()
             || inherited_fd.is_some()
             || std::env::var_os(BROKER_REQUIRED_ENV).is_some();
         let _ = BROKER_CONFIGURED.set(configured);
@@ -286,12 +295,16 @@ pub(super) fn require_capture_preflight(container: &str) -> io::Result<()> {
 }
 
 pub(super) fn resolve_home_restore(container: &str, path: &str) -> io::Result<()> {
-    if !broker_is_configured() { return Ok(()); }
+    if !broker_is_configured() {
+        return Ok(());
+    }
     #[cfg(unix)]
     {
-        let output = execute(&BrokerRequest::HomeRestoreResolve {container, path})?;
+        let output = execute(&BrokerRequest::HomeRestoreResolve { container, path })?;
         if !output.status.success() {
-            return Err(io::Error::other("protected home restore resolution remains pending"));
+            return Err(io::Error::other(
+                "protected home restore resolution remains pending",
+            ));
         }
     }
     Ok(())
