@@ -2594,14 +2594,56 @@ Workflow trigger and deployment direction:
   leaves the set, a passkey sent for it is no longer checked, and the
   decision times out to whoever raised it. Clients no longer ask for the
   passkey inside their approval panels; it is typed only into the popup.
-- protocol 395: kernel user config responses include `kernel_access` lifetime
-  settings, with minute values `grant_default_minutes` (30),
-  `grant_max_minutes` (240), `grant_extend_notice_minutes` (5), and
-  `request_timeout_minutes` (10). The settings support config set/unset;
-  unset restores the default. These defaults await the owner's explicit
-  confirmation and each is a one-line config change. Grant transport and
-  enforcement are separate from this config addition, so config schema marks
-  these keys unwired until the grant lifecycle consumes them.
+- protocol 395: process-bound external agent access over the existing
+  `local_socket_path`. The kernel serves the same websocket envelopes on a
+  Unix socket with mode 0600 in an owned 0700 directory. It rejects other
+  UIDs, `Origin`, and bearer authorization headers. macOS identifies the
+  peer with `getpeereid` and `LOCAL_PEERTOKEN`, including the audit token's
+  process version. Linux uses `SO_PEERCRED` and the process start time.
+  Every use checks the process identity again to prevent PID reuse.
+
+  An unapproved Unix peer can only send `RequestKernelAccess` with
+  `session_id`, `holder_pid`, and optional `lifetime_minutes`. The holder
+  must be the peer or an OS-verified ancestor. The kernel raises an owner-only
+  passkey popup naming its verified executable, pid, session, and lifetime.
+  Grant and extension prompts have kind `access_grant` or `access_extension`,
+  `lifetime_minutes`, and `max_lifetime_minutes`. Approve needs a fresh
+  terminal passkey; the critical-approval remember window never applies.
+  The owner may choose a lifetime through the approve answer's numeric
+  `custom_reply`. Refuse needs no passkey.
+
+  `KernelAccessGranted` returns public `KernelAccessGrant` metadata, never
+  a credential. A grant authorizes the live holder and its OS descendants
+  for one session. Kernel-launched processes receive no external authority,
+  even if the holder is an ancestor of the kernel. Session IDs, references,
+  attachments, and every session in a batch are checked. `ListSessions`
+  returns only the granted session. Global requests fail closed. The scope
+  match covers every request variant without a fallback, so an undecided new
+  request fails compilation. A grant cannot answer kernel-owned decisions
+  or critical approvals, or submit a passkey.
+
+  `ListKernelAccessGrants` and `RevokeKernelAccessGrant { grant_id }` are
+  terminal-only and scoped to the caller's owned grants; a null grant id
+  revokes all of them. Expiry, explicit revoke, holder exit, session end,
+  passkey rotation, and kernel shutdown revoke authority. Idle subscriptions,
+  queued commands, cached replies, and event replay check live authority.
+  Grants stay in memory and do not survive a restart. Durable grant events
+  record metadata and outcomes; terminal-answer and passkey verification
+  events correlate by interaction id. They contain no passkey or bearer.
+
+  TCP and relay access requests return a pointer to the Unix socket; neither
+  transport can use a grant. Existing TCP token and tokenless log-mode
+  behavior remains until enforcement. `LocalIpcClient` supports
+  `ws+unix:///absolute/socket`. `chariox access request --session <id>
+  [--holder-pid <pid>] [--minutes <minutes>] [--socket <path>]` waits for
+  the popup and prints public grant metadata. The default holder is the
+  CLI launcher's grandparent. Terminal controls are `chariox access list`,
+  `chariox access revoke <id|--all>`, `/kernel access list`, and
+  `/kernel access revoke <id|all>`.
+
+  Kernel user config settings are live runtime policy. Set/unset is supported;
+  unset restores the default. An extension popup is raised at the notice
+  time and a verified answer starts a new term.
 
   ```toml
   [kernel_access]

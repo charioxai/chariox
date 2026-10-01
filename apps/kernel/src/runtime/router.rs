@@ -28,6 +28,7 @@ mod caller_identity_bridge;
 mod cloud_relay_bridge;
 mod composition;
 mod dispatch;
+mod kernel_access;
 pub(crate) mod event_connection_lifecycle;
 mod managed_context_bridge;
 pub(crate) use managed_context_bridge::{

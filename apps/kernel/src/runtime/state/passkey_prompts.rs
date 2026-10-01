@@ -90,7 +90,11 @@ pub(super) fn passkey_prompt(
     };
     let timeout_ms = interaction.timeout_sec().unwrap_or_default() * 1000;
     Ok(Some(Arc::new(PasskeyPrompt {
-        kind: PasskeyPromptKind::CriticalApproval,
+        kind: match interaction.kernel_operation_id().unwrap_or_default() {
+            id if id.starts_with("access-grant:") => PasskeyPromptKind::AccessGrant,
+            id if id.starts_with("access-extension:") => PasskeyPromptKind::AccessExtension,
+            _ => PasskeyPromptKind::CriticalApproval,
+        },
         session_id: session.id().to_owned(),
         session_alias: session.alias().map(str::to_owned),
         interaction_id: interaction.id().to_owned(),
@@ -103,6 +107,8 @@ pub(super) fn passkey_prompt(
         refuse_choice_id: refuse.id().to_owned(),
         requested_at_ms: interaction.requested_at_ms(),
         expires_at_ms: registered_at_ms.saturating_add(timeout_ms),
+        lifetime_minutes: None,
+        max_lifetime_minutes: None,
     })))
 }
 
@@ -122,6 +128,35 @@ impl KernelRuntimeOwnedState {
             })
             .filter_map(|pending| pending.passkey_prompt.as_deref().cloned())
             .collect::<Vec<_>>();
+        let access = self.kernel_access.lock().expect("access state poisoned");
+        for prompt in &mut prompts {
+            if matches!(
+                prompt.kind,
+                PasskeyPromptKind::AccessGrant | PasskeyPromptKind::AccessExtension
+            ) {
+                let id = prompt
+                    .interaction_id
+                    .strip_suffix("-grant")
+                    .or_else(|| prompt.interaction_id.strip_suffix("-extension"));
+                if let Some(grant) = id.and_then(|id| {
+                    access
+                        .pending
+                        .values()
+                        .find(|g| g.grant_id == id)
+                        .or_else(|| access.grants.get(id).map(|g| &g.summary))
+                }) {
+                    prompt.lifetime_minutes = Some(grant.lifetime_minutes);
+                    prompt.max_lifetime_minutes = Some(
+                        self.config_projection
+                            .snapshot()
+                            .user_config
+                            .kernel_access
+                            .grant_max_minutes,
+                    );
+                }
+            }
+        }
+        drop(access);
         prompts.sort_by(|a, b| {
             (a.requested_at_ms, &a.interaction_id).cmp(&(b.requested_at_ms, &b.interaction_id))
         });

@@ -1,7 +1,7 @@
 mod api;
 mod client;
 mod harness;
-mod ipc;
+pub(crate) mod ipc;
 pub(crate) mod provider_requests;
 #[cfg(test)]
 pub(crate) mod test_support;
@@ -268,4 +268,12 @@ pub use api::{
 pub use api::{KernelConnectionClass, PasskeyPrompt, PasskeyPromptKind};
 pub use client::LocalDaemonClient;
 pub use harness::{run_local_harness, LocalHarnessReport};
-pub use ipc::{run_local_ipc_server, send_local_ipc_request, LocalIpcClient};
+pub use api::{KernelAccessGrant, ListKernelAccessGrantsRequest, RequestKernelAccessRequest, RevokeKernelAccessGrantRequest};
+
+/// Grandparent of the CLI launcher, verified from the OS process tree.
+#[cfg(unix)]
+pub fn default_access_holder_pid() -> std::io::Result<u32> {
+    let (_, parent) = crate::runtime::kernel_access::process::inspect(std::process::id())?;
+    let (_, grandparent) = crate::runtime::kernel_access::process::inspect(parent)?;
+    Ok(grandparent)
+}

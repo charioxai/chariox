@@ -2033,6 +2033,8 @@ async fn dispatch_transport_test_request(
         &close_tx,
         &Arc::new(AtomicBool::new(false)),
         KernelConnectionClass::Unauthenticated,
+        None,
+        &Arc::default(),
         &payload,
     )
     .await;
@@ -2335,3 +2337,6 @@ async fn app_wake_deadline_interrupts_idle_transport_without_client_traffic() {
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 mod wake_pressure;
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod kernel_access_grants;

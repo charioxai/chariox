@@ -58,9 +58,13 @@ impl KernelRuntimeOwnedState {
                     || interaction.kind() != crate::session::RuntimeInteractionKind::Permission
                     || interaction.default_on_timeout().is_some()
                     || interaction.custom_choice().is_some()
-                    || !interaction
-                        .timeout_sec()
-                        .is_some_and(|seconds| (1..=3600).contains(&seconds))
+                    || !interaction.timeout_sec().is_some_and(|seconds| {
+                        seconds >= 1
+                            && (seconds <= 3600
+                                || interaction
+                                    .kernel_operation_id()
+                                    .is_some_and(|id| id.starts_with("access-")))
+                    })
                 {
                     return Err(interaction_error("Invalid kernel operation decision"));
                 }

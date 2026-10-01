@@ -78,6 +78,7 @@ mod app_view_runtime;
 mod computer_secret_input_runtime_state;
 mod config_runtime_state;
 mod critical_approval_passkey;
+mod kernel_access;
 #[cfg(test)]
 pub(crate) use critical_approval_passkey::critical_approval_audit_payload;
 mod passkey_prompts;
@@ -140,6 +141,7 @@ struct KernelRuntimeOwnedState {
     app_control: crate::runtime::app_control::AppControlService,
     critical_approval_passkeys: critical_approval_passkey::CriticalApprovalPasskeys,
     passkey_prompts: Arc<passkey_prompts::PasskeyPromptBoard>,
+    kernel_access: crate::runtime::kernel_access::AccessStore,
     config_projection: crate::runtime::projection::DaemonConfigProjectionStore,
     session_store: SessionStateStore,
     agent_store: AgentServiceStore,
@@ -706,6 +708,7 @@ impl KernelRuntimeState {
                         &config_projection.snapshot().user_config.credential_vault,
                     ),
                 passkey_prompts: Arc::default(),
+                kernel_access: Default::default(),
                 config_projection,
                 session_store,
                 agent_store,

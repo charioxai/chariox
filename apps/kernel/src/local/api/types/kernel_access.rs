@@ -10,7 +10,7 @@ pub enum KernelConnectionClass {
     /// The kernel's local token on TCP loopback, or a relay client with a
     /// user id (web, remote TUI).
     Terminal,
-    /// A Unix socket peer holding an access grant. Not assigned yet.
+    /// An OS-verified Unix socket peer holding a session access grant.
     ExternalAgent,
     /// An agent the kernel launched, by its per-run runtime MCP bearer.
     KernelAgent,
@@ -39,6 +39,8 @@ impl KernelConnectionClass {
 pub enum PasskeyPromptKind {
     /// A kernel decision whose approve choice is marked `requires_passkey`.
     CriticalApproval,
+    AccessGrant,
+    AccessExtension,
 }
 
 /// Protocol 394: a kernel-owned pending interaction that needs the Chariox
@@ -60,5 +62,43 @@ pub struct PasskeyPrompt {
     pub approve_choice_id: String,
     pub refuse_choice_id: String,
     pub requested_at_ms: u64,
+    pub expires_at_ms: u64,
+    /// Present only for access decisions. The terminal may choose a different term.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifetime_minutes: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_lifetime_minutes: Option<u32>,
+}
+
+/// Protocol 395: an OS-verified Unix peer asks for one session. No passkey or token.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestKernelAccessRequest {
+    pub session_id: String,
+    pub holder_pid: u32,
+    #[serde(default)]
+    pub lifetime_minutes: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListKernelAccessGrantsRequest {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RevokeKernelAccessGrantRequest {
+    /// None revokes all grants owned by the terminal's user.
+    pub grant_id: Option<String>,
+}
+
+/// Public metadata only. This id is a revoke handle, never an access credential.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KernelAccessGrant {
+    pub grant_id: String,
+    pub session_id: String,
+    pub owner_user_id: String,
+    pub holder_pid: u32,
+    pub holder_executable: String,
+    pub lifetime_minutes: u32,
     pub expires_at_ms: u64,
 }
