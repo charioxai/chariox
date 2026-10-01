@@ -145,4 +145,22 @@ async fn refused_physical_viewport_does_not_publish_a_new_canonical_revision() {
     ).await;
     assert!(unsupported.is_err(), "unverified physical sizes must be refused");
     assert_eq!(state.room_environment_snapshot(&session_id).unwrap().viewport, before.viewport);
+    state.update_room_environment_component_health(&session_id,
+        crate::session::EnvironmentComponent::Browser,
+        crate::session::EnvironmentComponentHealthState::Degraded,
+        Some("fixture_previous_failure")).unwrap();
+    let (accepted, _) = store.update_room_environment_viewport(
+        crate::local::UpdateRoomEnvironmentViewportRequest {
+            session_id: session_id.clone(), expected_revision: before.viewport.revision,
+            viewport: crate::local::RoomEnvironmentViewportRequest {
+                css_width: 1280, css_height: 800, device_scale_factor: 1,
+                desktop_pixel_width: 1280, desktop_pixel_height: 800,
+            },
+        }, crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
+    ).await;
+    accepted.expect("a verified resize should commit");
+    let committed = state.room_environment_snapshot(&session_id).unwrap();
+    assert_eq!(committed.viewport.revision, before.viewport.revision + 1);
+    assert!(committed.health.iter().any(|health| health.component == crate::session::EnvironmentComponent::Browser
+        && health.state == crate::session::EnvironmentComponentHealthState::Ready));
 }
