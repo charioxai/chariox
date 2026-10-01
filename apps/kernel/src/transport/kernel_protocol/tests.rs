@@ -664,6 +664,7 @@ fn waiting_room_snapshot(
         external_provider_sessions_has_more: false,
         external_provider_sessions_next_cursor: None,
         relay_status: RelayStatus {
+            runtime_process_identity: None,
             capabilities: Vec::new(),
             configured: false,
             connected: false,

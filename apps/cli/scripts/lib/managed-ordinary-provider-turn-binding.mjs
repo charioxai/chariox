@@ -1,3 +1,4 @@
+import { managedOrdinaryKernelConnection } from "./managed-ordinary-kernel-endpoint.mjs"
 import { createHash } from "node:crypto"
 import { readFile, readlink } from "node:fs/promises"
 import { basename, isAbsolute, join, resolve } from "node:path"
@@ -51,7 +52,7 @@ function parseCaptureLocator(environment) {
   }
 }
 
-export function resolveKernelSocketPath(environment = {}) {
+function legacyKernelSocketPath(environment = {}) {
   const configured = environment.CHARIOX_DAEMON_SOCKET
   if (typeof configured === "string" && configured.trim()) {
     if (!isAbsolute(configured)) {
@@ -76,6 +77,10 @@ export function resolveKernelSocketPath(environment = {}) {
     runtimeRoot = join(tmpdir(), "chariox")
   }
   return join(runtimeRoot, `${kernelId}.sock`)
+}
+
+export function resolveKernelSocketPath(environment = {}) {
+  return managedOrdinaryKernelConnection(environment, () => legacyKernelSocketPath(environment)).endpoint
 }
 
 function parseProcStat(pid, text) {
@@ -274,7 +279,7 @@ async function defaultDependencies() {
     throw bindingError("kernel_ipc_client_missing", "built local IPC client is unavailable")
   }
   return {
-    clientFactory: (socketPath) => new ipcModule.LocalIpcClient(socketPath),
+    clientFactory: (endpoint, options) => new ipcModule.LocalIpcClient(endpoint, options),
     requestBuilders: {
       relayStatusRequest: requestModule.relayStatusRequest,
       getProviderRunRequest: requestModule.getProviderRunRequest,
@@ -306,8 +311,8 @@ function validateDependencies({ clientFactory, requestBuilders }) {
   }
 }
 
-async function observeBinding({ filesystem, processApi, expectedProvider, clientFactory, requestBuilders, socketPath }) {
-  const client = clientFactory(socketPath)
+async function observeBinding({ filesystem, processApi, expectedProvider, clientFactory, requestBuilders, connection }) {
+  const client = clientFactory(connection.endpoint, connection.clientOptions)
   try {
     const relayStatus = responseVariant(
       await client.send(requestBuilders.relayStatusRequest()),
@@ -316,10 +321,13 @@ async function observeBinding({ filesystem, processApi, expectedProvider, client
     )
     const daemonId = requiredId(relayStatus.status?.daemon_id, "kernel ID")
     const machineId = requiredId(relayStatus.status?.machine_id, "machine ID")
+    if (connection.transport === "relay" && daemonId !== connection.clientOptions.targetDaemonId) {
+      throw bindingError("kernel_identity_invalid", "authenticated product route returned a foreign target kernel")
+    }
     const kernelIdentity = {
       kernel_id: daemonId,
       machine_id: machineId,
-      transport: "local-unix-ipc",
+      transport: connection.transport,
     }
 
     const [processEnvelope, ancestry] = await Promise.all([
@@ -426,7 +434,8 @@ export async function startManagedOrdinaryProviderTurnBinding({
   if (typeof expectedProvider !== "string" || !expectedProvider.trim()) {
     throw bindingError("provider_identity_missing", "expected provider name is required")
   }
-  const socketPath = resolveKernelSocketPath(processApi.env)
+  const connection = managedOrdinaryKernelConnection(processApi.env, () => legacyKernelSocketPath(processApi.env))
+  const socketPath = connection.endpoint
   const dependencies = await resolveDependencies({ clientFactory, requestBuilders })
   validateDependencies(dependencies)
 
@@ -437,7 +446,7 @@ export async function startManagedOrdinaryProviderTurnBinding({
       processApi,
       expectedProvider,
       ...dependencies,
-      socketPath,
+      connection,
     })
   } catch (error) {
     throw error instanceof ProviderTurnBindingError
@@ -449,6 +458,12 @@ export async function startManagedOrdinaryProviderTurnBinding({
   return {
     socketPath,
     kernelIdentity: initial.proof.kernel_identity,
+    async readKernelStatus() {
+      const client = dependencies.clientFactory(connection.endpoint, connection.clientOptions)
+      try {
+        return responseVariant(await client.send(dependencies.requestBuilders.relayStatusRequest()), "RelayStatus", "RelayStatus").status
+      } finally { await client.close?.() }
+    },
     initialProof: initial.proof,
     async finish() {
       if (finished) {
@@ -462,7 +477,7 @@ export async function startManagedOrdinaryProviderTurnBinding({
           processApi,
           expectedProvider,
           ...dependencies,
-          socketPath,
+          connection,
         })
       } catch (error) {
         throw error instanceof ProviderTurnBindingError

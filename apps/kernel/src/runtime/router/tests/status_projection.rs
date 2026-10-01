@@ -584,6 +584,28 @@ async fn relay_status_uses_config_projection_without_app_lock() {
             assert_eq!(status.relay_url.as_deref(), Some("ws://127.0.0.1:9"));
             assert!(status.relay_token_configured);
             assert_eq!(status.machine_id, "machine-projected");
+            #[cfg(target_os = "linux")]
+            {
+                let encoded = serde_json::to_value(&status).unwrap();
+                let identity = &encoded["runtime_process_identity"];
+                assert_eq!(
+                    identity["pid"],
+                    serde_json::json!(std::process::id()),
+                    "MP-10 must bind the authenticated product route to this Linux kernel process"
+                );
+                assert_eq!(
+                    identity["linux_boot_id"],
+                    serde_json::json!(std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+                        .unwrap()
+                        .trim())
+                );
+                assert!(identity["start_time_ticks"]
+                    .as_str()
+                    .unwrap()
+                    .chars()
+                    .all(|c| c.is_ascii_digit()));
+            }
+
             assert_eq!(
                 status.capabilities,
                 crate::local::RUNTIME_CONTROL_CAPABILITIES

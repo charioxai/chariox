@@ -117,4 +117,5 @@ pub use workspace::*;
 /// Version 368 adds Cloud-coordinated managed release update requests.
 /// Version 369 coordinates canonical signed relay daemon identity admission.
 /// Version 370 drains pending terminal output and projects managed runtime start observations.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 370;
+/// Version 371 adds native process identity to authenticated product status.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 371;

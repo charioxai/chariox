@@ -812,7 +812,9 @@ export function createParityCollector({
       ...processApi,
       env: {
         ...(processApi.env ?? {}),
-        CHARIOX_DAEMON_SOCKET: providerTurnBinding.socketPath,
+        ...(observedKernelIdentity.transport === "local-unix-ipc"
+          ? { CHARIOX_DAEMON_SOCKET: providerTurnBinding.socketPath }
+          : { CHARIOX_KERNEL_URL: providerTurnBinding.socketPath }),
         CHARIOX_PARITY_CAPTURE_EVIDENCE_JSON: JSON.stringify({
           observed: true,
           boundary: "official-provider-turn",
@@ -831,6 +833,7 @@ export function createParityCollector({
         selectedKernelPath: selectedKernelRealPath,
         expectedArtifactDigest: releaseIdentity.kernelDigest,
         expectedBoundary: "official-provider-turn",
+        readKernelStatus: providerTurnBinding.readKernelStatus,
       })
     } catch (error) {
       throw new CollectorError(

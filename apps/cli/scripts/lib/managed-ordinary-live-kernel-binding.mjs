@@ -1,3 +1,4 @@
+import { managedOrdinaryKernelConnection } from "./managed-ordinary-kernel-endpoint.mjs"
 import { createHash } from "node:crypto"
 import { readFile, readdir, readlink, realpath } from "node:fs/promises"
 import net from "node:net"
@@ -61,8 +62,8 @@ function parseCaptureIdentity(environment, expectedBoundary) {
   if (!identity || typeof identity !== "object" || Array.isArray(identity) || identity.observed !== true) {
     throw bindingError("kernel_capture_identity_unobserved", "capture evidence is missing observed kernel identity details")
   }
-  if (identity.transport !== "local-unix-ipc") {
-    throw bindingError("kernel_capture_transport_mismatch", "capture kernel identity was not observed over local Unix IPC")
+  if (!["local-unix-ipc", "kernel-public-api", "relay"].includes(identity.transport)) {
+    throw bindingError("kernel_capture_transport_mismatch", "capture kernel identity was not observed over a supported product transport")
   }
   return {
     boundary: capture.boundary,
@@ -176,6 +177,10 @@ export async function inspectLinuxKernelProcess({
 }) {
   const socketInode = await findUnixSocketInode(filesystem, socketPath)
   const pid = await findSocketOwnerPid(filesystem, socketInode)
+  return inspectKernelProcessIdentity(filesystem, pid, socketInode, expectedExecutablePath, expectedExecutableDigest)
+}
+
+async function inspectKernelProcessIdentity(filesystem, pid, socketInode, expectedExecutablePath, expectedExecutableDigest) {
   const procPath = join(PROC_ROOT, String(pid))
 
   let bootId
@@ -360,12 +365,70 @@ async function observeKernel(filesystem, options) {
   return { identity, process: after }
 }
 
+async function requireKernelAncestor(filesystem, collectorPid, kernelPid) {
+  if (!Number.isSafeInteger(collectorPid) || collectorPid < 1 || collectorPid === kernelPid) {
+    throw bindingError("kernel_process_ancestry_mismatch", "capture must run inside a provider child")
+  }
+  const seen = new Set()
+  let pid = collectorPid
+  for (let depth = 0; depth < 128; depth += 1) {
+    if (pid === kernelPid) return
+    if (pid <= 1 || seen.has(pid)) break
+    seen.add(pid)
+    const text = String(await filesystem.readFile(join(PROC_ROOT, String(pid), "stat"), "utf8"))
+    parseProcStat(text, pid)
+    const parent = Number(text.slice(text.lastIndexOf(")") + 2).trim().split(/\s+/)[1])
+    if (!Number.isSafeInteger(parent) || parent < 0) break
+    pid = parent
+  }
+  throw bindingError("kernel_process_ancestry_mismatch", "authenticated kernel is not a collector process ancestor")
+}
+
+async function loopbackListenerInode(filesystem, endpoint) {
+  const url = new URL(endpoint)
+  const port = Number(url.port || 80).toString(16).padStart(4, "0").toUpperCase()
+  const ipv6 = url.hostname === "[::1]"
+  const address = ipv6 ? "00000000000000000000000001000000" : "0100007F"
+  const table = String(await filesystem.readFile(join(PROC_ROOT, ipv6 ? "net/tcp6" : "net/tcp"), "utf8"))
+  const inodes = table.split("\n").map(line => line.trim().split(/\s+/))
+    .filter(fields => fields[1]?.toUpperCase() === `${address}:${port}` && fields[3] === "0A")
+    .map(fields => fields[9])
+  if (inodes.length !== 1 || !/^\d+$/.test(inodes[0])) {
+    throw bindingError("kernel_socket_identity_mismatch", "loopback kernel listener is not uniquely present in the Linux TCP table")
+  }
+  return inodes[0]
+}
+
+async function observeProductKernel(filesystem, processApi, options, readKernelStatus) {
+  const status = await readKernelStatus()
+  if (status?.daemon_id !== options.captureIdentity.kernel_id || status?.machine_id !== options.captureIdentity.machine_id) {
+    throw bindingError("kernel_capture_identity_mismatch", "product response belongs to a foreign capture kernel")
+  }
+  const native = status.runtime_process_identity
+  if (!native || !Number.isSafeInteger(native.pid) || native.pid < 1
+    || !BOOT_ID.test(native.linux_boot_id ?? "") || !/^\d+$/.test(native.start_time_ticks ?? "")) {
+    throw bindingError("kernel_native_process_identity_missing", "product kernel must report its native Linux process identity")
+  }
+  const inode = options.captureIdentity.transport === "kernel-public-api"
+    ? await loopbackListenerInode(filesystem, options.socketPath) : null
+  if (inode !== null && await findSocketOwnerPid(filesystem, inode) !== native.pid) {
+    throw bindingError("kernel_socket_owner_mismatch", "product endpoint listener is not owned by the responding kernel")
+  }
+  await requireKernelAncestor(filesystem, processApi.pid, native.pid)
+  const observed = await inspectKernelProcessIdentity(filesystem, native.pid, inode, options.expectedExecutablePath, options.expectedExecutableDigest)
+  if (observed.linux_boot_id !== native.linux_boot_id.toLowerCase() || observed.start_time_ticks !== native.start_time_ticks) {
+    throw bindingError("kernel_native_process_identity_mismatch", "authenticated product process identity does not match the independent Linux observation")
+  }
+  return { identity: { kernel_id: status.daemon_id, machine_id: status.machine_id }, process: observed }
+}
+
 export async function startManagedOrdinaryLiveKernelBinding({
   filesystem = NODE_FILESYSTEM,
   processApi = process,
   selectedKernelPath,
   expectedArtifactDigest,
   expectedBoundary,
+  readKernelStatus,
 }) {
   if (processApi.platform !== "linux") {
     throw bindingError("kernel_binding_unsupported_platform", "live kernel process binding requires Linux")
@@ -378,7 +441,12 @@ export async function startManagedOrdinaryLiveKernelBinding({
   }
 
   const captureIdentity = parseCaptureIdentity(processApi.env, expectedBoundary)
-  const socketPath = localSocketPath(processApi.env, captureIdentity.kernel_id)
+  const connection = managedOrdinaryKernelConnection(processApi.env, () => localSocketPath(processApi.env, captureIdentity.kernel_id))
+  if (connection.transport !== captureIdentity.transport) throw bindingError("kernel_capture_transport_mismatch", "capture and product endpoint transports differ")
+  const socketPath = connection.endpoint
+  if (connection.transport !== "local-unix-ipc" && typeof readKernelStatus !== "function") {
+    throw bindingError("kernel_product_client_missing", "live product binding requires the authenticated provider-turn client")
+  }
   let expectedKernelPath
   try {
     expectedKernelPath = await filesystem.realpath(selectedKernelPath)
@@ -392,7 +460,10 @@ export async function startManagedOrdinaryLiveKernelBinding({
     expectedExecutableDigest: expectedArtifactDigest.toLowerCase(),
     captureIdentity,
   }
-  const initial = await observeKernel(filesystem, options)
+  const observe = () => connection.transport === "local-unix-ipc"
+    ? observeKernel(filesystem, options)
+    : observeProductKernel(filesystem, processApi, options, readKernelStatus)
+  const initial = await observe()
 
   return {
     async finish() {
@@ -400,7 +471,7 @@ export async function startManagedOrdinaryLiveKernelBinding({
       if (JSON.stringify(finalCaptureIdentity) !== JSON.stringify(captureIdentity)) {
         throw bindingError("kernel_capture_identity_changed", "observed capture kernel identity changed during collection")
       }
-      const final = await observeKernel(filesystem, options)
+      const final = await observe()
       if (!sameProcess(initial.process, final.process)) {
         throw bindingError("kernel_process_changed", "running kernel process identity changed during collection")
       }
@@ -418,8 +489,10 @@ export async function startManagedOrdinaryLiveKernelBinding({
           machine_id: final.identity.machine_id,
         },
         transport: {
-          kind: "local-unix-ipc",
-          socket_path_sha256: sha256(Buffer.from(resolve(socketPath), "utf8")),
+          kind: connection.transport,
+          ...(connection.transport === "local-unix-ipc"
+            ? { socket_path_sha256: sha256(Buffer.from(resolve(socketPath), "utf8")) }
+            : { endpoint_sha256: sha256(Buffer.from(socketPath, "utf8")) }),
         },
         kernel_process: {
           pid: final.process.pid,

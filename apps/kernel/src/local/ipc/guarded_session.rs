@@ -24,8 +24,8 @@ struct Admission {
 mod tests {
     use super::*;
     #[test]
-    fn transport_snapshot_requires_protocol_370() {
-        assert_eq!(crate::local::api::LOCAL_DAEMON_PROTOCOL_VERSION, 370);
+    fn transport_snapshot_requires_protocol_371() {
+        assert_eq!(crate::local::api::LOCAL_DAEMON_PROTOCOL_VERSION, 371);
         assert_eq!(
             serde_json::to_value(Negotiation {
                 session: SessionVersion { version: 1 }

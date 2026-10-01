@@ -1258,6 +1258,7 @@ mod tests {
 
     fn disconnected_relay_status() -> RelayStatus {
         RelayStatus {
+            runtime_process_identity: None,
             capabilities: Vec::new(),
             configured: false,
             connected: false,
@@ -1981,6 +1982,7 @@ mod tests {
         let metaagent_events = MetaagentEventStore::default();
         let projection = WaitingRoomSessionSummaryProjectionStore::default();
         let relay_status = RelayStatus {
+            runtime_process_identity: None,
             capabilities: Vec::new(),
             configured: false,
             connected: false,
@@ -2108,6 +2110,7 @@ mod tests {
             false,
             None,
             RelayStatus {
+                runtime_process_identity: None,
                 capabilities: Vec::new(),
                 configured: false,
                 connected: false,

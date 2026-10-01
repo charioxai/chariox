@@ -86,6 +86,26 @@ Capture probes must be supplied by the provider/remote boundary through the
 `CHARIOX_PARITY_*` context fields. Missing context produces a missing result,
 not a pass.
 
+For MP-10 product-route capture, set `CHARIOX_KERNEL_URL` to the selected
+kernel's normal loopback WebSocket endpoint or its authenticated TLS relay
+endpoint. A relay capture uses the existing
+`CHARIOX_PARITY_PROJECT_SETUP_RELAY_TOKEN` context and an exact kernel locator in
+`CHARIOX_PARITY_CAPTURE_EVIDENCE_JSON`; credentials must stay in the approved
+provider context and must never appear in endpoint URLs, logs, or manifests.
+The locator does not establish capture authority. The collector obtains the
+provider run, session, prompt, attachments, and kernel identity from the normal
+product client, then independently checks the provider-child ancestry and the
+running signed kernel executable through Linux process metadata.
+
+Product-route process binding requires local protocol 371's
+`RelayStatus.runtime_process_identity`. Boot ID, PID, and process start ticks
+must agree with the independent Linux observation before and after collection.
+Loopback captures also verify TCP listener ownership. Legacy or non-Linux
+status without this optional field fails product-route capture rather than
+substituting caller-supplied process identity. The existing Unix IPC capture
+remains supported for kernels that actually expose that transport. Neither a
+source-test pass nor a transport-only probe supplies missing acceptance rows.
+
 Comparison is a separate fail-closed operation:
 
 ```bash

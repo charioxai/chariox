@@ -318,3 +318,49 @@ test("rejects kernel identity and provider-run status changes during capture", a
       && error.code === "provider_turn_identity_mismatch")
   })
 })
+
+
+test("MP-10 observes the provider turn through the configured production WebSocket client", async () => {
+  const h = harness()
+  delete h.processApi.env.CHARIOX_DAEMON_SOCKET
+  h.processApi.env.CHARIOX_KERNEL_URL = "ws://127.0.0.1:43118"
+  const endpoints = []
+  const binding = await h.start({ clientFactory: (endpoint, options) => {
+    endpoints.push(endpoint)
+    assert.equal(endpoint, "ws://127.0.0.1:43118/")
+    assert.deepEqual(options, {})
+    return h.clientFactory(SOCKET_PATH)
+  } })
+  const proof = await binding.finish()
+  assert.equal(proof.kernel_identity.transport, "kernel-public-api")
+  assert.equal(endpoints.length, 2)
+  assert.equal(JSON.stringify(proof).includes("fixture-secret"), false)
+})
+
+
+test("MP-10 authenticated TLS relay targets the exact product kernel", async () => {
+  const h = harness()
+  delete h.processApi.env.CHARIOX_DAEMON_SOCKET
+  h.processApi.env.CHARIOX_KERNEL_URL = "wss://relay.example.test/runtime"
+  h.processApi.env.CHARIOX_PARITY_PROJECT_SETUP_RELAY_TOKEN = "fixture-relay-secret"
+  const binding = await h.start({ clientFactory: (endpoint, options) => {
+    assert.equal(endpoint, "wss://relay.example.test/runtime")
+    assert.deepEqual(options, { relayAuthToken: "fixture-relay-secret", targetDaemonId: KERNEL_ID })
+    return h.clientFactory(SOCKET_PATH)
+  } })
+  const proof = await binding.finish()
+  assert.equal(proof.kernel_identity.transport, "relay")
+  assert.equal(JSON.stringify(proof).includes("fixture-relay-secret"), false)
+  h.state.kernelId = "kernel-foreign"
+  await assert.rejects(h.start({ clientFactory: () => h.clientFactory(SOCKET_PATH) }), error => error.code === "kernel_identity_invalid")
+})
+
+test("MP-10 rejects remote unauthenticated or credential-bearing endpoint locators", async () => {
+  for (const endpoint of ["ws://example.test:43118", "wss://example.test", "ws://secret@127.0.0.1:43118", "ws://127.0.0.1:43118?token=secret", "ws://127.0.0.1:43118/foreign"]) {
+    const h = harness()
+    delete h.processApi.env.CHARIOX_DAEMON_SOCKET
+    h.processApi.env.CHARIOX_KERNEL_URL = endpoint
+    await assert.rejects(h.start())
+    assert.equal(h.state.requests.length, 0)
+  }
+})

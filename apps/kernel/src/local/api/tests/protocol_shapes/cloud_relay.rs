@@ -6,7 +6,7 @@ use crate::local::{
 
 #[test]
 fn relay_status_control_capabilities_are_versioned_and_hashed() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 370);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 371);
     let legacy = serde_json::json!({
         "configured": false, "connected": false, "relay_url": null,
         "relay_token_configured": false, "daemon_id": "kernel-1",
@@ -40,7 +40,7 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
 
 #[test]
 fn key_bound_cli_relay_requests_and_join_response_have_exact_protocol_shapes() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 370);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 371);
 
     let token_request =
         LocalDaemonRequest::IssueCloudRelayClientToken(IssueCloudRelayClientTokenRequest {
@@ -158,4 +158,33 @@ fn legacy_terminal_join_requests_and_responses_remain_unbound() {
     assert!(serialized
         .pointer("/TerminalPairingLinkJoined/relay_token")
         .is_none());
+}
+
+#[test]
+fn relay_status_native_process_identity_is_versioned_and_hashed() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 371);
+    let legacy = serde_json::json!({
+        "configured": false, "connected": false, "relay_url": null,
+        "relay_token_configured": false, "daemon_id": "kernel-1",
+        "daemon_alias": null, "machine_id": "machine-1", "machine_alias": null
+    });
+    let mut status: crate::local::RelayStatus = serde_json::from_value(legacy).unwrap();
+    assert!(status.runtime_process_identity.is_none());
+    status.runtime_process_identity = Some(crate::local::KernelRuntimeProcessIdentity {
+        pid: 4321,
+        linux_boot_id: "b4a8b0e7-0f5b-4fd8-bcd9-ccc1e8b3c5ac".to_string(),
+        start_time_ticks: "7712345".to_string(),
+    });
+    let response = serde_json::to_value(LocalDaemonResponse::RelayStatus { status }).unwrap();
+    assert_eq!(
+        response["RelayStatus"]["status"]["runtime_process_identity"]["pid"],
+        4321
+    );
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_string(&response).unwrap().as_bytes())
+        ),
+        "c3dfd43214945bfdc036638d58c9724d9d572cb00267c90aef7bb975241e8cef"
+    );
 }

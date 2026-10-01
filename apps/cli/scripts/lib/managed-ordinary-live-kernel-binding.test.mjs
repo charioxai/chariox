@@ -406,3 +406,89 @@ test("Linux /proc socket owner and executable digest match the fixture process (
     })
   }
 })
+
+
+function productHarness() {
+  const filesystem = fakeFilesystem()
+  const originalReadFile = filesystem.readFile
+  filesystem.readFile = async (path, ...args) => {
+    if (path === "/proc/net/tcp") return `  0: 0100007F:${Number(43118).toString(16).toUpperCase()} 00000000:0000 0A 00000000:00000000 00:00000000 00000000 999 0 ${SOCKET_INODE}\n`
+    if (path === "/proc/450/stat") return "450 (collector) S 201 " + [...Array(17).fill("0"), "123"].join(" ")
+    if (path === "/proc/201/stat") return "201 (provider) S " + PROCESS_ID + " " + [...Array(17).fill("0"), "456"].join(" ")
+    return originalReadFile(path, ...args)
+  }
+  const environment = captureEnvironment()
+  delete environment.CHARIOX_DAEMON_SOCKET
+  environment.CHARIOX_KERNEL_URL = "ws://127.0.0.1:43118"
+  const capture = JSON.parse(environment.CHARIOX_PARITY_CAPTURE_EVIDENCE_JSON)
+  capture.kernel_identity.transport = "kernel-public-api"
+  environment.CHARIOX_PARITY_CAPTURE_EVIDENCE_JSON = JSON.stringify(capture)
+  const native = { pid: PROCESS_ID, linux_boot_id: "7a2b9ea4-cd3d-4bc2-9b36-46cba658217a", start_time_ticks: String(filesystem.state.startTime) }
+  const status = { daemon_id: KERNEL_ID, machine_id: MACHINE_ID, runtime_process_identity: native }
+  let observations = 0
+  const options = {
+    filesystem,
+    processApi: { platform: "linux", pid: 450, env: environment },
+    selectedKernelPath: KERNEL_PATH,
+    expectedArtifactDigest: KERNEL_DIGEST,
+    expectedBoundary: EXPECTED_BOUNDARY,
+    readKernelStatus: async () => { observations += 1; return status },
+  }
+  return { filesystem, environment, native, status, options, get observations() { return observations } }
+}
+
+test("MP-10 product identity binds the Linux boot, live PID and signed provider ancestor", async () => {
+  const h = productHarness()
+  const liveBinding = await startManagedOrdinaryLiveKernelBinding(h.options)
+  const evidence = await liveBinding.finish()
+  assert.equal(evidence.transport.kind, "kernel-public-api")
+  assert.equal(evidence.kernel_process.pid, PROCESS_ID)
+  assert.equal(evidence.kernel_process.executable_sha256, KERNEL_DIGEST)
+  assert.equal(evidence.stable_across_capture, true)
+  assert.equal(h.observations, 2)
+})
+
+test("MP-10 product route fails closed for legacy or foreign native identities", async t => {
+  for (const [name, change, code] of [
+    ["legacy status", h => { delete h.status.runtime_process_identity }, "kernel_native_process_identity_missing"],
+    ["foreign boot", h => { h.native.linux_boot_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" }, "kernel_native_process_identity_mismatch"],
+    ["PID reuse", h => { h.native.start_time_ticks = "8888888" }, "kernel_native_process_identity_mismatch"],
+    ["foreign kernel", h => { h.status.daemon_id = "kernel-foreign" }, "kernel_capture_identity_mismatch"],
+    ["outside provider chain", h => { h.options.processApi.pid = PROCESS_ID }, "kernel_process_ancestry_mismatch"],
+    ["old executable", h => { h.filesystem.state.executableBytes = OLD_KERNEL_BYTES }, "kernel_executable_digest_mismatch"],
+  ]) await t.test(name, async () => {
+    const h = productHarness(); change(h)
+    await assert.rejects(startManagedOrdinaryLiveKernelBinding(h.options), error => error.code === code)
+  })
+})
+
+test("MP-10 authenticated relay still requires independent local signed-process observation", async () => {
+  const h = productHarness()
+  h.environment.CHARIOX_KERNEL_URL = "wss://relay.example.test/runtime"
+  h.environment.CHARIOX_PARITY_PROJECT_SETUP_RELAY_TOKEN = "fixture-relay-secret"
+  const capture = JSON.parse(h.environment.CHARIOX_PARITY_CAPTURE_EVIDENCE_JSON)
+  capture.kernel_identity.transport = "relay"
+  h.environment.CHARIOX_PARITY_CAPTURE_EVIDENCE_JSON = JSON.stringify(capture)
+  const liveBinding = await startManagedOrdinaryLiveKernelBinding(h.options)
+  const proof = await liveBinding.finish()
+  assert.equal(proof.transport.kind, "relay")
+  assert.equal(JSON.stringify(proof).includes("fixture-relay-secret"), false)
+  h.native.linux_boot_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+  await assert.rejects(startManagedOrdinaryLiveKernelBinding(h.options), error => error.code === "kernel_native_process_identity_mismatch")
+})
+
+test("MP-10 rejects native PID changes after the initial product observation", async () => {
+  const h = productHarness()
+  const liveBinding = await startManagedOrdinaryLiveKernelBinding(h.options)
+  h.filesystem.state.startTime += 1
+  h.native.start_time_ticks = String(h.filesystem.state.startTime)
+  await assert.rejects(liveBinding.finish(), error => error.code === "kernel_process_changed")
+})
+
+
+test("MP-10 rejects a spoofed local product status from a different TCP listener owner", async () => {
+  const h = productHarness()
+  const readlink = h.filesystem.readlink
+  h.filesystem.readlink = async path => path.endsWith("/fd/7") ? "socket:[foreign-inode]" : readlink(path)
+  await assert.rejects(startManagedOrdinaryLiveKernelBinding(h.options), error => error.code === "kernel_socket_owner_mismatch")
+})

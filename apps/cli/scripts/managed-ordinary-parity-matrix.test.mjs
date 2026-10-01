@@ -842,3 +842,20 @@ test("serialized reports are deterministic and contain command/evidence referenc
   assert.match(first, /collector-ordinary MP-02 exact_path_entry/)
   assert.match(first, /evidence:\/\/path1\/MP-09\/shutdown_custom/)
 })
+
+
+test("MP-10 matrix accepts observed product API and relay provenance without relaxing capture identity", () => {
+  for (const transport of ["kernel-public-api", "relay"]) {
+    const manifest = cloneAndResign(makeManifest("path1"), copy => {
+      copy.collection.capture_provenance.kernel_identity.transport = transport
+      copy.rows["MP-10"].checks.capture_boundary.result.provenance_sha256 = provenanceFingerprint(copy.collection.capture_provenance)
+    })
+    const result = validateManifest(manifest, { expectedTopology: "path1", expectedReviewedCommit: REVIEWED_COMMIT, expectedBuildId: BUILD_ID, signingKey: SIGNING_KEY, allowFixture: true })
+    assert.equal(result.ok, true, JSON.stringify(result.failures))
+    const invalid = cloneAndResign(manifest, copy => {
+      copy.collection.capture_provenance.kernel_identity.transport = "caller-assertion"
+      copy.rows["MP-10"].checks.capture_boundary.result.provenance_sha256 = provenanceFingerprint(copy.collection.capture_provenance)
+    })
+    assert.equal(validateManifest(invalid, { signingKey: SIGNING_KEY, allowFixture: true }).ok, false)
+  }
+})

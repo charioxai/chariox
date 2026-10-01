@@ -188,7 +188,7 @@ export function validateProjectSetupProofCaptureBinding(value, captureProvenance
 
   const kernel = captureProvenance.kernel_identity
   if (!validIdentifier(kernel.kernel_id) || !validIdentifier(kernel.machine_id)
-    || kernel.transport !== "local-unix-ipc"
+    || !["local-unix-ipc", "kernel-public-api", "relay"].includes(kernel.transport)
     || !validIdentifier(captureProvenance.session_id)
     || !validIdentifier(captureProvenance.agent_id)) {
     return invalid("capture_identity_missing")

@@ -256,6 +256,10 @@ pub struct CloudCollaborator {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayStatus {
+    /// Native Linux process identity for independent signed-artifact observation.
+    /// Legacy and non-Linux kernels provide no implied process proof.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_process_identity: Option<KernelRuntimeProcessIdentity>,
     /// Implemented control contracts, independent of branch-local protocol numbers.
     #[serde(default)]
     pub capabilities: Vec<String>,
@@ -267,6 +271,13 @@ pub struct RelayStatus {
     pub daemon_alias: Option<String>,
     pub machine_id: String,
     pub machine_alias: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KernelRuntimeProcessIdentity {
+    pub pid: u32,
+    pub linux_boot_id: String,
+    pub start_time_ticks: String,
 }
 
 /// Shared by direct kernel status and relay discovery. These advertise support,

@@ -5,6 +5,7 @@ import type {
 } from "./kernel-types-session.js"
 
 export type RelayStatus = {
+  runtime_process_identity?: { pid: number; linux_boot_id: string; start_time_ticks: string } | null
   capabilities?: string[]
   configured: boolean
   connected: boolean

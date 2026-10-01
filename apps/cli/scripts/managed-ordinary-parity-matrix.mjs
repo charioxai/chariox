@@ -533,7 +533,7 @@ function validateCaptureProvenance(proof, failures, topology, providerName) {
         addFailure(failures, `capture_provenance_${key}_invalid`, topology)
       }
     }
-    if (kernel.transport !== "local-unix-ipc") addFailure(failures, "capture_provenance_transport_invalid", topology)
+    if (!["local-unix-ipc", "kernel-public-api", "relay"].includes(kernel.transport)) addFailure(failures, "capture_provenance_transport_invalid", topology)
   }
 
   const provider = proof.provider
