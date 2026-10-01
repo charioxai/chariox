@@ -67,12 +67,24 @@ fn protected_slice_accounts_and_github_remain_inside_selected_namespace() {
     let home = private.join("provider-home");
     let selected = private.join("provider-accounts/person-a/codex/profile");
     let sibling = private.join("provider-accounts/person-b/codex/profile");
+    // Default accounts live in the private root, outside the shared provider
+    // HOME that every managed run binds at /home/chariox.
+    let default_codex = private.join("provider-default/codex");
+    let default_claude = private.join("provider-default/claude");
     let kernel = private.join("kernel");
     let nss = private.join("nssdb");
     let workspace = runtime_home.join(".local");
     let nss_alias = runtime_home.join(".local/share/pki/nssdb");
     for directory in [
-        &home, &selected, &sibling, &kernel, &nss, &nss_alias, &workspace,
+        &home,
+        &selected,
+        &sibling,
+        &default_codex,
+        &default_claude,
+        &kernel,
+        &nss,
+        &nss_alias,
+        &workspace,
     ] {
         std::fs::create_dir_all(directory).expect("synthetic directories");
     }
@@ -80,6 +92,12 @@ fn protected_slice_accounts_and_github_remain_inside_selected_namespace() {
     std::fs::create_dir(home.join("bin")).expect("synthetic utility path");
     std::fs::write(selected.join("auth.json"), "selected-synthetic-account").unwrap();
     std::fs::write(sibling.join("auth.json"), "sibling-synthetic-account").unwrap();
+    std::fs::write(default_codex.join("auth.json"), "default-synthetic-account").unwrap();
+    std::fs::write(
+        default_claude.join(".credentials.json"),
+        "default-synthetic-claude-account",
+    )
+    .unwrap();
     std::fs::write(kernel.join("private-sentinel"), "synthetic-kernel-private").unwrap();
     std::fs::write(nss.join("private-sentinel"), "synthetic-nss-private").unwrap();
     std::fs::write(nss_alias.join("private-sentinel"), "synthetic-nss-private").unwrap();
@@ -141,6 +159,10 @@ set -eu
 test "$(cat "$CODEX_HOME/auth.json")" = selected-synthetic-account
 test ! -r "$1/provider-accounts/person-a/codex/profile/auth.json"
 test ! -r "$1/provider-accounts/person-b/codex/profile/auth.json"
+test ! -r "$1/provider-default/codex/auth.json"
+test ! -r "$1/provider-default/claude/.credentials.json"
+test ! -e /home/chariox/.codex
+test ! -e /home/chariox/.claude
 test ! -r "$1/kernel/private-sentinel"
 test ! -r "$1/nssdb/private-sentinel"
 test ! -r "$2/.local/share/pki/nssdb/private-sentinel"
@@ -271,6 +293,55 @@ printf 'PROTECTED_ACCOUNT_AND_GITHUB_BOUNDARY_PASS\n'
         .status()
         .unwrap()
         .success());
+    // The default account is selected like any other account: only a run that
+    // selects it receives it, through its own account binding.
+    let launch = managed_isolated_utility_launch(
+        "/bin/sh",
+        vec![
+            "-ec".into(),
+            r#"case "$CODEX_HOME" in /home/chariox/.provider-account/root-*) ;; *) exit 93 ;; esac
+test "$(cat "$CODEX_HOME/auth.json")" = default-synthetic-account
+test ! -r "$1/provider-accounts/person-a/codex/profile/auth.json"
+test ! -r "$1/provider-default/claude/.credentials.json""#
+                .into(),
+            "default-account-probe".into(),
+            private.display().to_string(),
+        ],
+        BTreeMap::from([("CODEX_HOME".into(), default_codex.display().to_string())]),
+        Some(workspace.clone()),
+        "default-account-boundary",
+    )
+    .unwrap();
+    assert!(command_from_provider_launch(launch)
+        .unwrap()
+        .status()
+        .unwrap()
+        .success());
+    // Negative control for default roots inside the shared provider HOME: the
+    // /home/chariox alias exposes them to a run that selected another account.
+    std::fs::create_dir(home.join(".codex")).unwrap();
+    std::fs::write(home.join(".codex/auth.json"), "default-synthetic-account").unwrap();
+    let launch = managed_isolated_utility_launch(
+        "/bin/sh",
+        vec![
+            "-ec".into(),
+            r#"test "$(cat /home/chariox/.codex/auth.json)" = default-synthetic-account"#.into(),
+        ],
+        BTreeMap::from([("CODEX_HOME".into(), selected.display().to_string())]),
+        Some(workspace.clone()),
+        "provider-home-default-alias-negative",
+    )
+    .unwrap();
+    assert!(
+        command_from_provider_launch(launch)
+            .unwrap()
+            .status()
+            .unwrap()
+            .success(),
+        "a default root inside the provider HOME must be visible through its alias"
+    );
+    // Remove only the synthetic negative fixture.
+    std::fs::remove_dir_all(home.join(".codex")).unwrap();
     // Before login, the inherited directory may be absent. Translating HOME's
     // config path must not require or manufacture credentials to launch.
     std::fs::rename(
@@ -305,6 +376,8 @@ printf 'PROTECTED_ACCOUNT_AND_GITHUB_BOUNDARY_PASS\n'
             "maskRemovalNegativeFailed": true, "ambientGitHubAndGitWorked": true,
             "explicitGitHubWorked": true, "preLoginDirectoryMayBeAbsent": true,
             "outsideHomeAmbientGitHubRefused": true,
+            "defaultAccountHiddenFromOtherSelection": true, "defaultAccountSelectedReadable": true,
+            "providerHomeDefaultAliasNegativeExposed": true,
         })
     );
 }

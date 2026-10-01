@@ -46,11 +46,15 @@ mkdir -p "$KERNEL_HOME" /tmp/chariox-slice-state
 mkdir -p "$KERNEL_HOME/daemon"
 install -d -m 0700 "$PROVIDER_HOME" "$PRIVATE_RUNTIME_ROOT"
 # A protected layout captures /home/slice, which must never hold provider state.
-# Keep the default provider accounts in the private provider home instead.
+# Every managed run also binds the shared provider HOME, so default accounts kept
+# there would be readable by runs that select another account. Keep them in the
+# private root, which managed runs mask; only a run that selects the default
+# account receives it, through its own account binding.
 default_provider_env=()
 if [[ -n "${CHARIOX_SLICE_PRIVATE_ROOT:-}" ]]; then
-  install -d -m 0700 "$PROVIDER_HOME/.codex" "$PROVIDER_HOME/.claude"
-  default_provider_env=(CODEX_HOME="$PROVIDER_HOME/.codex" CLAUDE_CONFIG_DIR="$PROVIDER_HOME/.claude")
+  DEFAULT_PROVIDER_ROOT="$CHARIOX_SLICE_PRIVATE_ROOT/provider-default"
+  install -d -m 0700 "$DEFAULT_PROVIDER_ROOT" "$DEFAULT_PROVIDER_ROOT/codex" "$DEFAULT_PROVIDER_ROOT/claude"
+  default_provider_env=(CODEX_HOME="$DEFAULT_PROVIDER_ROOT/codex" CLAUDE_CONFIG_DIR="$DEFAULT_PROVIDER_ROOT/claude")
 fi
 
 case "$PROVIDER_ISOLATION_PROBE" in

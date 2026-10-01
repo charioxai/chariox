@@ -117,3 +117,12 @@ test("nested provider namespaces can use a host-installed AppArmor profile", asy
   assert.match(profile, /profile chariox-slice-provider flags=\(unconfined\)/)
   assert.match(profile, /^\s*userns,\s*$/m)
 })
+
+test("protected default provider accounts stay in the private root, outside the shared provider HOME", async () => {
+  const runtimeSource = await readFile(runtime, "utf8")
+
+  assert.match(runtimeSource, /DEFAULT_PROVIDER_ROOT="\$CHARIOX_SLICE_PRIVATE_ROOT\/provider-default"/)
+  assert.match(runtimeSource, /CODEX_HOME="\$DEFAULT_PROVIDER_ROOT\/codex" CLAUDE_CONFIG_DIR="\$DEFAULT_PROVIDER_ROOT\/claude"/)
+  assert.doesNotMatch(runtimeSource, /(?:CODEX_HOME|CLAUDE_CONFIG_DIR)="\$PROVIDER_HOME/)
+  assert.match(runtimeSource, /screen -dmS chariox-slice-kernel env \\\n\s+"\$\{default_provider_env\[@\]\}"/)
+})
