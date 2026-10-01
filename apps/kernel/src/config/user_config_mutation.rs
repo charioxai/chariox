@@ -381,6 +381,18 @@ impl CharioxUserConfig {
                     }
                 }
             }
+            "kernel_access.grant_default_minutes" => {
+                self.kernel_access.grant_default_minutes = parse_config_u32("kernel_access.grant_default_minutes", &value, true)?;
+            }
+            "kernel_access.grant_max_minutes" => {
+                self.kernel_access.grant_max_minutes = parse_config_u32("kernel_access.grant_max_minutes", &value, true)?;
+            }
+            "kernel_access.grant_extend_notice_minutes" => {
+                self.kernel_access.grant_extend_notice_minutes = parse_config_u32("kernel_access.grant_extend_notice_minutes", &value, true)?;
+            }
+            "kernel_access.request_timeout_minutes" => {
+                self.kernel_access.request_timeout_minutes = parse_config_u32("kernel_access.request_timeout_minutes", &value, true)?;
+            }
             "credential_vault.service" => {
                 self.credential_vault.service =
                     non_empty_config_string("credential_vault.service", value)?
@@ -570,6 +582,18 @@ impl CharioxUserConfig {
                 {
                     self.workflow.code = None;
                 }
+            }
+            "kernel_access.grant_default_minutes" => {
+                self.kernel_access.grant_default_minutes = super::UserKernelAccessConfig::default().grant_default_minutes;
+            }
+            "kernel_access.grant_max_minutes" => {
+                self.kernel_access.grant_max_minutes = super::UserKernelAccessConfig::default().grant_max_minutes;
+            }
+            "kernel_access.grant_extend_notice_minutes" => {
+                self.kernel_access.grant_extend_notice_minutes = super::UserKernelAccessConfig::default().grant_extend_notice_minutes;
+            }
+            "kernel_access.request_timeout_minutes" => {
+                self.kernel_access.request_timeout_minutes = super::UserKernelAccessConfig::default().request_timeout_minutes;
             }
             "credential_vault.agent_management" => {
                 self.credential_vault.agent_management =
