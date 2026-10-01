@@ -13,14 +13,19 @@ import tempfile
 import time
 
 
+def prepare_runtime(source, root):
+    for name in ("slice-screen.sh", "slice-selkies.py", "selkies_viewers.py", "browser-cdp.mjs",
+                 "browser-lifecycle.py", "browser-upload-store.py", "tint2rc"):
+        shutil.copy2(source / name, root / name)
+
+
 def main():
     if sys.argv[1:] not in ([], ["--json"]):
         raise ValueError("usage: validate-slice-viewer.py [--json]")
     source = Path(__file__).parent / "docker"
     with tempfile.TemporaryDirectory(prefix="chariox-viewer-drill-") as scratch:
         root = Path(scratch)
-        for name in ("slice-screen.sh", "slice-selkies.py", "selkies_viewers.py", "browser-cdp.mjs", "tint2rc"):
-            shutil.copy2(source / name, root / name)
+        prepare_runtime(source, root)
         runtime = root / "runtime"
         profile = root / "browser-profile"
         runtime.mkdir(mode=0o700)
