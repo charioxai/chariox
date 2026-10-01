@@ -750,9 +750,12 @@ fn append_managed_runtime_user_openbox_boundary(
 
 #[cfg(target_os = "linux")]
 fn append_managed_runtime_nss_boundary(
-    args: &mut Vec<String>, home: &Path, created: &mut BTreeSet<PathBuf>,
+    args: &mut Vec<String>,
+    home: &Path,
+    created: &mut BTreeSet<PathBuf>,
 ) -> Result<(), DaemonError> {
-    let nss = validate_boundary_directory(&home.join(".local/share/pki/nssdb"), "runtime NSS alias")?;
+    let nss =
+        validate_boundary_directory(&home.join(".local/share/pki/nssdb"), "runtime NSS alias")?;
     append_directory(args, &nss, created);
     args.extend(["--tmpfs".to_string(), nss.display().to_string()]);
     Ok(())
@@ -1803,9 +1806,12 @@ fn managed_runtime_roots(launch: &ProviderLaunchResult) -> Result<Vec<PathBuf>, 
         };
         let root = canonical_directory(&candidate, "managed provider runtime files")?;
         if let Some(private) = std::env::var_os("CHARIOX_SLICE_PRIVATE_ROOT") {
-            let private = canonical_directory(&PathBuf::from(private), "protected slice private root")?;
+            let private =
+                canonical_directory(&PathBuf::from(private), "protected slice private root")?;
             if root.starts_with(&private) || private.starts_with(&root) {
-                return Err(isolation_error("managed runtime files intersect protected slice private storage"));
+                return Err(isolation_error(
+                    "managed runtime files intersect protected slice private storage",
+                ));
             }
         }
         if roots.iter().all(|existing| existing != &root) {
