@@ -833,3 +833,36 @@ These source corrections close no MP acceptance item.
   nanocpu bounds. Shared cases reproduced broker rejection of `0.5` and ordinary
   acceptance of `0` before the fix. The narrow Rust harness and full-kernel CPU
   regression pass; broker suite passes 29/29 with no skips.
+- Kernel control-memory diagnostics: every Linux kernel disables dumpability
+  during the existing early initialization before loading runtime credentials.
+  Failure closes any inherited broker descriptor and fails loudly. The RED
+  subprocess regression showed ordinary dumpability was 1; both ordinary and
+  broker placement now report 0. A separately executed ordinary child reports
+  dumpability 1, preserving the exec boundary for provider diagnostics.
+
+The final focused Rust slice run passed 100 parent tests. Its one ignored test
+is an isolated broker child fixture explicitly launched with `--ignored` by the
+passing managed-delegation test; it was executed, not waived. The full-kernel
+CPU regression passed separately. A broader optional provider-PATH test is RED
+at its stale worker-source section matcher on unchanged frozen code; this lane
+has not claimed that adjacent suite green. No signed release, provider run,
+fresh-machine comparison, or MP acceptance was performed.
+
+### MP-08/MP-11 builder/engine decision blocker
+
+The lane stopped on the builder/environment finding as requested. A retained
+policy regression executes the actual helper environment projection and is RED
+for caller `BUILDX_BUILDER`, `DOCKER_CONTEXT`, `DOCKER_HOST`, and `BASH_ENV`.
+The helper pins the protected rootless daemon socket and the broker consumes
+prepared images on that daemon. Merely preserving an arbitrary caller Docker
+endpoint builds on a different engine; making the broker follow that endpoint
+would change the trusted-daemon/mount boundary. No endpoint, startup, UID,
+capability, socket or broker admission boundary was weakened.
+
+An owner decision is needed on a common explicit slice-engine configuration
+versus a reviewed adapter for caller-selected engines and image handoff. This
+is not an exception request or a claim that parity is impossible. The remaining
+lifetime, preverification cancellation, broker output, inherited tuning and
+builder/environment findings remain unimplemented. Frozen independent
+removal dispositions are preserved; changed rules are provisional and pending
+independent exact-blob review, never approvals copied from the 686 source.

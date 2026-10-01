@@ -93,21 +93,21 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
   },
   {
     "id": "placement-selected-kernel-dumpability",
-    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "sourceCommit": "8cab790db16062cd7d7f0c6240f2989bdba00bd6",
     "path": "apps/kernel/src/slice/local_docker/broker.rs",
-    "blob": "125a471ee52b117481cf69fcf14a34859195bd59",
+    "blob": "d32ddedc3bf60fc3d1df03b438dae1e23732bdee",
     "ranges": [
       [
         126,
-        156
+        159
       ],
       [
-        212,
-        219
+        214,
+        223
       ]
     ],
-    "classification": "open_managed_runtime_difference",
-    "rationale": "MP-08/MP-11: only a broker-configured kernel calls PR_SET_DUMPABLE=0, changing core/ptrace diagnostics for the host kernel. This does not prove that executed providers inherit the setting.",
+    "classification": "shared_kernel_control_memory_policy",
+    "rationale": "MP-03/MP-08/MP-11: Every Linux kernel disables process dumpability during early initialization, before runtime credentials load. Failure closes the inherited broker descriptor and fails loudly. Both placements retain the broker capability boundary; separately executed ordinary children reset dumpability for provider diagnostics. Frozen removal dispositions remain historical.",
     "anchors": [
       [
         "kernel_slice_broker_control",
@@ -119,7 +119,7 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
       ]
     ],
     "openFindings": [
-      "MP-08/MP-11 removal required: Adopt one explicit common kernel control-memory/diagnostics policy; test kernel dumpability in both placements and separately test provider exec behavior."
+      "Independent changed-blob review, real provider diagnostics and MP-10 fresh-machine comparison pending."
     ]
   },
   {

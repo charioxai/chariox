@@ -147,13 +147,15 @@ pub fn initialize() {
                 None
             }
         });
-        if configured && !make_process_nondumpable() {
+        // Every kernel owns relay/provider control memory, including ordinary hosts.
+        // Exec resets dumpability for normal provider diagnostics on Linux.
+        if !make_process_nondumpable() {
             if let Some(raw_fd) = inherited_fd {
                 unsafe {
                     libc::close(raw_fd);
                 }
             }
-            return;
+            panic!("failed to protect kernel control memory from process dumps");
         }
         if let Some(raw_fd) = inherited_fd {
             let writer = unsafe { UnixStream::from_raw_fd(raw_fd) };
@@ -641,6 +643,50 @@ pub(super) fn mark_broker_stream_close_on_exec(stream: &UnixStream) -> io::Resul
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn mp08_mp11_kernel_control_memory_policy_is_common_and_exec_resets_it() {
+        const MODE: &str = "CHARIOX_TEST_DUMPABILITY_PLACEMENT";
+        if let Ok(mode) = std::env::var(MODE) {
+            unsafe {
+                assert_eq!(libc::prctl(libc::PR_SET_DUMPABLE, 1, 0, 0, 0), 0);
+            }
+            std::env::remove_var(BROKER_SOCKET_ENV);
+            std::env::remove_var(BROKER_FD_ENV);
+            std::env::remove_var(BROKER_REQUIRED_ENV);
+            if mode == "broker" {
+                std::env::set_var(BROKER_REQUIRED_ENV, "1");
+            }
+            initialize();
+            assert_eq!(unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) }, 0);
+            let provider = Command::new("/usr/bin/python3")
+                .args([
+                    "-I",
+                    "-S",
+                    "-c",
+                    "import ctypes; print(ctypes.CDLL(None).prctl(3,0,0,0,0))",
+                ])
+                .output()
+                .unwrap();
+            assert!(provider.status.success());
+            assert_eq!(
+                provider.stdout, b"1\n",
+                "ordinary exec must retain provider diagnostics"
+            );
+            return;
+        }
+        for mode in ["ordinary", "broker"] {
+            let result = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "slice::local_docker::broker::tests::mp08_mp11_kernel_control_memory_policy_is_common_and_exec_resets_it", "--test-threads=1"])
+                .env(MODE, mode).output().unwrap();
+            assert!(
+                result.status.success(),
+                "{mode}: {}",
+                String::from_utf8_lossy(&result.stdout)
+            );
+        }
+    }
 
     #[test]
     fn managed_provider_isolation_probe_survives_broker_filter() {
