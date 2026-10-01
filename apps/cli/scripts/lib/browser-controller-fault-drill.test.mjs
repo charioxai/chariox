@@ -39,6 +39,17 @@ test("controller fault drill requires every crash-recovery invariant", () => {
     runningMutationNotRepeated: true,
     queuedMutationSettled: true,
     freshMutationExactlyOnce: true,
+    runningActionId: "action-running",
+    queuedActionId: "action-queued",
+    freshActionId: "action-fresh",
+    runningError: "browser controller exited during browser.action",
+    queuedError: "browser controller restarted before the operation",
+    clickCountBeforeFault: 9,
+    clickCountAfterFault: 9,
+    clickCountAfterFreshClick: 10,
+    runningControllerRequest: { event: "controller_request_entered", method: "browser.action", request_ref: "before-1" },
+    freshControllerRequest: { event: "controller_request_entered", method: "browser.action", request_ref: "after-1" },
+    faultBoundaryControllerRequests: [{ event: "controller_request_entered", method: "browser.action", request_ref: "before-1" }],
   }
   assert.deepEqual(parseBrowserControllerFaultProbe(`noise\n${JSON.stringify(probe)}\n`), probe)
 
@@ -47,4 +58,9 @@ test("controller fault drill requires every crash-recovery invariant", () => {
     () => parseBrowserControllerFaultProbe(JSON.stringify(invalid)),
     /tabsPreserved must be true/,
   )
+  assert.throws(() => parseBrowserControllerFaultProbe(JSON.stringify({ ...probe, clickCountAfterFault: 10 })),
+    /click counts/)
+  assert.throws(() => parseBrowserControllerFaultProbe(JSON.stringify({ ...probe,
+    faultBoundaryControllerRequests: [...probe.faultBoundaryControllerRequests, probe.runningControllerRequest] })),
+  /running controller request/)
 })

@@ -46,7 +46,7 @@ function publicRequests() {
   }
 }
 
-function clientFixture({ rejectInventory = false } = {}) {
+function clientFixture({ rejectInventory = false, ownerKernelId = "kernel-local" } = {}) {
   const requests = []
   const clients = []
   class LocalIpcClient {
@@ -58,7 +58,7 @@ function clientFixture({ rejectInventory = false } = {}) {
       }
       if (request.GetSlice) return { Slice: { slice: {
         id: "slice-1", name: "drillh-runtime-test-123-one", status: "running", display_mode: "headed",
-        backend: "local_docker", owner_kernel_id: "kernel-local", owner_machine_id: "machine-local",
+        backend: "local_docker", owner_kernel_id: ownerKernelId, owner_machine_id: "machine-local",
         worker_kernel_id: "kernel-local", worker_machine_id: "machine-local", local_docker_ports: portMap,
       } } }
       if (request.GetRoomEnvironmentSlice) return { RoomEnvironmentSlice: { binding: {
@@ -83,8 +83,10 @@ async function inScratch(t) {
   const repoRoot = path.join(root, "repo")
   await mkdir(path.join(repoRoot, "apps/cli/dist"), { recursive: true })
   await writeFile(path.join(repoRoot, "apps/cli/dist/index.js"), "fixture cli")
+  const runtimeDirectory = path.join(root, "state")
+  await mkdir(runtimeDirectory, { mode: 0o700 })
   t.after(() => rm(root, { recursive: true, force: true }))
-  return { root, runDirectory, repoRoot }
+  return { root, runDirectory, runtimeDirectory, repoRoot }
 }
 
 function fakeExecFile(command, args) {
@@ -136,8 +138,10 @@ test("actual runtime attaches a viewer, starts Selkies, starts a normal TUI, the
     async receive() {
       received += 1
       return received === 1
+        ? { kind: "text", data: new TextEncoder().encode("PIPELINE_RESETTING primary") }
+        : received === 2
         ? { kind: "text", data: new TextEncoder().encode("VIDEO_STARTED") }
-        : { kind: "binary", data: new Uint8Array([1, 2, 3]) }
+        : { kind: "binary", data: new Uint8Array([4, ...Array(10).fill(1)]) }
     },
     async close() { controls.push("CLOSED") },
   }
@@ -172,7 +176,12 @@ test("actual runtime attaches a viewer, starts Selkies, starts a normal TUI, the
   assert.equal(viewer.streamId, "display-stream-1")
   const tui = await runtime.startTui(null, { id: "local-tui", route: "local" })
   assert.equal(spawnCalls.length, 1)
+  assert.equal(spawnCalls[0][2].env.HOME, path.join(scratch.runtimeDirectory, "local-tui-home"))
+  assert.ok(spawnCalls[0][1].join(" ").includes(path.join(scratch.runtimeDirectory, "local-tui.sock")))
   assert.equal(spawnCalls[0][0], "script")
+  const commandArgs = spawnCalls[0][1]
+  if (process.platform === "linux") assert.match(commandArgs[commandArgs.indexOf("--command") + 1], /^'bun' /)
+  else assert.equal(commandArgs[2], "bun")
   assert.ok(spawnCalls[0][1].join(" ").includes("--session"))
   assert.ok(spawnCalls[0][1].join(" ").includes("room-1"))
   assert.ok(spawnCalls[0][1].join(" ").includes("runtime-test-123-local-tui"))
@@ -199,4 +208,166 @@ test("actual runtime attaches a viewer, starts Selkies, starts a normal TUI, the
   await assert.rejects(failedRuntime.startTui(null, { id: "relay-tui", route: "relay" }), /fixture startup failure/)
   assert.deepEqual(failedTui.requests, [{ DetachFromSession: { attachment_id: "attachment-before-startup-failure" } }])
   assert.equal(failedTui.clients[0].closed, 1)
+})
+
+test("prepared identity validation rejects a foreign owner and a mismatched child worker", async (t) => {
+  const scratch = await inScratch(t)
+  for (const foreignOwner of [true, false]) {
+    const plan = approvedPlan()
+    const fixture = clientFixture({ ownerKernelId: foreignOwner ? "another-kernel" : "kernel-local" })
+    if (!foreignOwner) plan.headedSlices[0].workerKernelId = "different-worker"
+    const runtime = await createRoomCoordinatedLoadRuntime({ plan, ...scratch }, {
+      protocol: fixture.protocol, relayToken: "fixture-relay-token", localKernelAuthEnvironment: {},
+    })
+    await assert.rejects(runtime.verifyPrepared(), /identity|prepared slice/)
+    assert.equal(fixture.clients[0].closed, 1)
+  }
+})
+
+
+test("shared Selkies viewer requires a reset and a valid video frame without an individual VIDEO_STARTED", async (t) => {
+  const scratch = await inScratch(t)
+  for (const validFrame of [true, false]) {
+    const fixture = clientFixture()
+    const messages = [
+      { kind: "text", data: new TextEncoder().encode("PIPELINE_RESETTING primary") },
+      { kind: "binary", data: new Uint8Array(validFrame ? [4, ...Array(10).fill(1)] : [1, 2, 3]) },
+    ]
+    let closed = false
+    fixture.protocol.openSelkiesDisplayStream = async () => ({
+      endpoint: { stream_id: "shared-viewer" },
+      async sendControl() {},
+      async receive() { if (!messages.length) throw new Error("fixture receive deadline"); return messages.shift() },
+      async close() { closed = true },
+    })
+    const runtime = await createRoomCoordinatedLoadRuntime({ plan: approvedPlan(), ...scratch }, {
+      protocol: fixture.protocol, relayToken: "fixture-relay-token", localKernelAuthEnvironment: {},
+    })
+    if (validFrame) {
+      const viewer = await runtime.startViewer(null, { id: "web-local", route: "local" })
+      await runtime.stopOwnedTask(viewer)
+    } else {
+      await assert.rejects(runtime.startViewer(null, { id: "web-local", route: "local" }), /video frame/)
+    }
+    assert.equal(closed, true)
+    assert.ok(fixture.requests.some((request) => request.DetachFromSession))
+    assert.equal(fixture.clients[0].closed, 1)
+  }
+})
+
+
+test("live sample validates both Room routes, TUI attachments, frames and workflow", async (t) => {
+  const scratch = await inScratch(t)
+  const plan = approvedPlan()
+  const fixture = clientFixture()
+  const protocol = {
+    ...fixture.protocol,
+    requests: {
+      ...fixture.protocol.requests,
+      invokeWorkflowEndpointRequest: () => ({ InvokeWorkflowEndpoint: {} }),
+      getWorkflowRunRequest: () => ({ GetWorkflowRun: {} }),
+    },
+    openSelkiesDisplayStream: async () => {
+      let count = 0
+      return {
+        endpoint: { stream_id: "fixture-stream" },
+        async sendControl() {},
+        async receive() { return ++count === 1
+          ? { kind: "text", data: new TextEncoder().encode("VIDEO_STARTED") }
+          : { kind: "binary", data: new Uint8Array([4, ...Array(10).fill(1)]) } },
+        async close() {},
+      }
+    },
+  }
+  const originalSend = protocol.LocalIpcClient.prototype.send
+  let wrongEnvironment = false
+  protocol.LocalIpcClient.prototype.send = async function(request) {
+    if (request.InvokeWorkflowEndpoint) return { WorkflowRunInvoked: { workflow_run: { id: "run-1" } } }
+    if (request.GetWorkflowRun) return { WorkflowRun: { workflow_run: { id: "run-1", status: "Completed" } } }
+    const response = await originalSend.call(this, request)
+    if (wrongEnvironment && request.GetRoomEnvironmentState) response.RoomEnvironmentState.environment.environment_id = "foreign"
+    return response
+  }
+  const child = Object.assign(new EventEmitter(), { pid: 32125, exitCode: null, signalCode: null })
+  const runtime = await createRoomCoordinatedLoadRuntime({ plan, ...scratch }, {
+    protocol, relayToken: "fixture-relay-token", localKernelAuthEnvironment: {},
+    spawn: () => child,
+    execFileAsync: async (cmd, args) => args[0] === "stats"
+      ? { stdout: "chariox-slice-drillh-runtime-test-123-one|12.5%|200 MiB / 2 GiB\n" }
+      : fakeExecFile(cmd, args),
+    tuiProcess: {
+      waitForAutomationRoom: async (state) => { state.attachmentId = state.route + "-attachment" },
+      readAutomationSnapshot: async (socket) => ({ session: { id: "room-1" }, attachmentId: socket.includes("relay-tui") ? "relay-attachment" : "local-attachment" }),
+      readOwnedProcessMetrics: async () => ({ count: 2, rssBytes: 1000 }),
+      stopProcessGroup: async () => {}, removeAutomationSocket: async () => {},
+    },
+  })
+  const tasks = []
+  try {
+    for (const route of ["local", "relay"]) tasks.push(await runtime.startViewer(null, { id: "web-" + route, route }))
+    for (const route of ["local", "relay"]) tasks.push(await runtime.startTui(null, { id: route === "local" ? "local-tui" : "relay-tui", route }))
+    const workflowTask = await runtime.startWorkflow()
+    tasks.push(workflowTask)
+    const sample = await runtime.sample(null, { sampleIndex: 0, ownedTasks: tasks, workflowTask, elapsedMs: 100 })
+    assert.equal(sample.workflowStatus, "completed")
+    assert.equal(sample.viewerLocalFrameBytes, 11)
+    assert.equal(sample.viewerRelayFrameBytes, 11)
+    assert.equal(sample.aggregateContainerMemoryBytes, 200 * 1024 ** 2)
+    assert.equal(sample.aggregateContainerCpuPercent, 12.5)
+    assert.equal(sample.ownedProcessCount, 2)
+    assert.ok(sample.localKernelLatencyMs >= 0)
+    assert.ok(sample.relayKernelLatencyMs >= 0)
+    wrongEnvironment = true
+    await assert.rejects(runtime.sample(null, { sampleIndex: 1, ownedTasks: tasks, workflowTask, elapsedMs: 200 }), /different or unready Room/)
+  } finally {
+    wrongEnvironment = false
+    for (const task of tasks.reverse()) await runtime.stopOwnedTask(task)
+  }
+})
+
+
+test("stalled viewer reconnects after bounded-buffer failure while the other route stays live", async (t) => {
+  const scratch = await inScratch(t)
+  const fixture = clientFixture()
+  let overloaded = false
+  let remoteStreams = 0
+  let healthyReads = 0
+  const closed = []
+  fixture.protocol.openSelkiesDisplayStream = async ({ client }) => {
+    const remote = client.options?.targetDaemonId !== undefined
+    const generation = remote ? ++remoteStreams : 0
+    let received = 0
+    return {
+      endpoint: { stream_id: `${generation}` },
+      async sendControl() {},
+      async receive() {
+        if (remote && generation === 1 && overloaded) throw new Error("Selkies display stream receive buffer exceeded its bounded capacity")
+        if (!remote) healthyReads++
+        return ++received === 1
+          ? { kind: "text", data: new TextEncoder().encode("VIDEO_STARTED") }
+          : { kind: "binary", data: new Uint8Array([4, ...Array(10).fill(1)]) }
+      },
+      async close() { closed.push(generation) },
+    }
+  }
+  const runtime = await createRoomCoordinatedLoadRuntime({ plan: approvedPlan(), ...scratch }, {
+    protocol: fixture.protocol, relayToken: "fixture-relay-token", localKernelAuthEnvironment: {},
+    tuiProcess: { sleep: async (ms) => { assert.equal(ms, 100); overloaded = true; await new Promise(resolve => setTimeout(resolve, ms)) } },
+  })
+  const local = await runtime.startViewer(null, { id: "web-local", route: "local" })
+  const remote = await runtime.startViewer(null, { id: "web-relay", route: "relay" })
+  try {
+    const before = healthyReads
+    const observed = await runtime.injectSlowViewer(remote, 100)
+    assert.equal(observed.recovered, true)
+    assert.ok(observed.observedDelayMs >= 100)
+    assert.equal(remoteStreams, 2)
+    assert.ok(healthyReads > before)
+    assert.ok(fixture.requests.some(request => request.GetRoomEnvironmentState))
+    assert.deepEqual(closed, [1])
+  } finally {
+    await runtime.stopOwnedTask(remote)
+    await runtime.stopOwnedTask(local)
+  }
+  assert.deepEqual(closed, [1, 2, 0])
 })

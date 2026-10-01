@@ -373,11 +373,7 @@ case "$*" in
   *" find /home-src -printf . | wc -c") printf '1\n' ;;
   *" df -B1 --output=avail /tmp") printf '107374182400\n' ;;
   "inspect -f {{{{.State.Running}}}} chariox-slice-save-replay") printf 'false\n' ;;
-  cp\ *)
-    destination=
-    for argument in "$@"; do destination=$argument; done
-    printf 'saved-home-generation' > "$destination"
-    ;;
+  *"tar --zstd -C /home-src -cf - .") printf 'saved-home-generation' ;;
 esac
 exit 0
 "#,
@@ -608,11 +604,7 @@ case "$*" in
   "inspect -f {{.State.Running}} chariox-slice-restore-interruption") printf 'false\n' ;;
   "image inspect --format {{.Id}} chariox-slice-backup:restore-target") printf 'sha256:1111111111111111111111111111111111111111111111111111111111111111\n' ;;
   "image inspect --format {{.Id}} "*) printf 'sha256:2222222222222222222222222222222222222222222222222222222222222222\n' ;;
-  cp\ *)
-    destination=
-    for argument in "$@"; do destination=$argument; done
-    printf 'prior-home-generation' > "$destination"
-    ;;
+  *"tar --zstd -C /home-src -cf - .") printf 'prior-home-generation' ;;
 esac
 exit 0
 "#,

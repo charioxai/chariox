@@ -88,11 +88,12 @@ async function buildKernelClient() {
   }
 }
 
-function daemonEnv({ baseEnv, ports, rootDir, relayToken, daemonId, daemonAlias, machineId, machineAlias, acceptRemoteLeases, kernelPort, mcpPort, opencodePort, codexPort }) {
+export function daemonEnv({ baseEnv, ports, rootDir, relayToken, daemonId, daemonAlias, machineId, machineAlias, acceptRemoteLeases, kernelPort, mcpPort, opencodePort, codexPort }) {
   const daemonRoot = path.join(rootDir, daemonId)
   return {
     ...baseEnv,
     HOME: path.join(daemonRoot, 'home'),
+    CHARIOX_HOME: path.join(daemonRoot, 'chariox-home'),
     XDG_CONFIG_HOME: path.join(daemonRoot, 'config'),
     XDG_STATE_HOME: path.join(daemonRoot, 'state'),
     XDG_RUNTIME_DIR: path.join(daemonRoot, 'runtime'),
@@ -310,9 +311,13 @@ async function promptRemoteAgent({ client, requests, sessionId, attachmentId, ag
   throw new Error(`timed out waiting for remote prompt ${label}; promptId=${promptId}; lastCompleteError=${lastCompleteError?.message ?? lastCompleteError}`)
 }
 
+export function remoteRestartRuntimeRoot(homeDir = os.homedir(), runId = `${process.pid}-${Date.now()}`) {
+  return path.join(homeDir, '.chariox', 'dev', 'browser-computer-use', 'remote-restart', runId)
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
-  const rootDir = path.join(repoRoot, 'target', 'live-remote-restart-drill', `${process.pid}-${Date.now()}`)
+  const rootDir = remoteRestartRuntimeRoot()
   const workspace = path.join(rootDir, 'workspace')
   const ports = makePorts()
   const relayToken = `relay-token-${process.pid}-${Date.now()}`
@@ -545,7 +550,7 @@ async function main() {
   }
 }
 
-main().catch((error) => {
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main().catch((error) => {
   console.error(`[remote-restart-drill] failed: ${error.stack ?? error.message}`)
   process.exit(1)
 })

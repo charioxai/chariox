@@ -95,35 +95,50 @@ export async function readOwnedProcessMetrics(ownedTasks) {
   return { count: metrics.length, rssBytes: metrics.reduce((total, row) => total + row.rssBytes, 0), groupCount: groupIds.length }
 }
 
-export async function currentOwnedPids(tasks) {
+async function ownedProcessRows(tasks) {
   const groups = tasks.filter((task) => task.kind === "tui")
-    .map((task) => task.processGroupId)
-    .filter(Number.isSafeInteger)
+    .map((task) => task.processGroupId).filter(Number.isSafeInteger)
   if (!groups.length) return []
   const { stdout } = await execFileAsync("ps", ["-axo", "pid=,ppid=,pgid="], {
-    timeout: processCommandTimeoutMs,
-    maxBuffer: maximumCommandOutputBytes,
+    timeout: processCommandTimeoutMs, maxBuffer: maximumCommandOutputBytes,
   })
   const rows = stdout.split("\n").map((line) => line.trim().split(/\s+/).map(Number))
-  return [...new Set(rows.filter((row) => row.length === 3 && groups.includes(row[2])).map((row) => row[0]))]
-    .sort((left, right) => left - right)
+    .filter((row) => row.length === 3)
+  const owned = new Set(rows.filter((row) => groups.includes(row[2])).map((row) => row[0]))
+  // Linux script gives its shell/TUI children separate process groups.
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const [pid, parent] of rows) {
+      if (owned.has(parent) && !owned.has(pid)) { owned.add(pid); changed = true }
+    }
+  }
+  return rows.filter(([pid]) => owned.has(pid))
+}
+
+export async function currentOwnedPids(tasks) {
+  return (await ownedProcessRows(tasks)).map(([pid]) => pid).sort((a, b) => a - b)
 }
 
 export async function stopProcessGroup(groupId, child) {
   if (!Number.isSafeInteger(groupId) || groupId <= 0) throw new Error("owned TUI process-group identity is invalid")
-  try { process.kill(-groupId, "SIGTERM") } catch (error) { if (error.code !== "ESRCH") throw error }
-  await Promise.race([
-    new Promise((resolve) => child.once("exit", resolve)),
-    sleep(2_000),
-  ])
-  const remaining = await currentOwnedPids([{ kind: "tui", processGroupId: groupId }])
-  if (remaining.length) {
-    try { process.kill(-groupId, "SIGKILL") } catch (error) { if (error.code !== "ESRCH") throw error }
+  const owned = await ownedProcessRows([{ kind: "tui", processGroupId: groupId }])
+  const groups = [...new Set([groupId, ...owned.map(([, , group]) => group)])]
+  const tasks = groups.map((processGroupId) => ({ kind: "tui", processGroupId }))
+  const kill = (signal) => {
+    for (const group of groups) {
+      try { process.kill(-group, signal) } catch (error) { if (error.code !== "ESRCH") throw error }
+    }
+  }
+  kill("SIGTERM")
+  if (child.exitCode === null && child.signalCode === null) {
+    await Promise.race([new Promise((resolve) => child.once("exit", resolve)), sleep(2_000)])
+  }
+  if ((await currentOwnedPids(tasks)).length) {
+    kill("SIGKILL")
     await sleep(250)
   }
-  if ((await currentOwnedPids([{ kind: "tui", processGroupId: groupId }])).length) {
-    throw new Error("owned TUI process group remained after cleanup")
-  }
+  if ((await currentOwnedPids(tasks)).length) throw new Error("owned TUI process group remained after cleanup")
 }
 
 export async function removeAutomationSocket(socketPath) {

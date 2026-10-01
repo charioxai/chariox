@@ -232,6 +232,8 @@ function validateSlowViewerObservation(observation, expected) {
     requestedDelayMs: expected.delayMs,
     observedDelayMs: observation.observedDelayMs,
     injectedOnce: true,
+    recoveredAfterBoundedBufferFailure: observation.recovered === true,
+    recoveryMs: observation.recoveryMs ?? 0,
   }
 }
 

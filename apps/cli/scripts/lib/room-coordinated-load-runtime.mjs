@@ -6,6 +6,7 @@ import path from "node:path"
 import { performance } from "node:perf_hooks"
 import { pathToFileURL } from "node:url"
 
+import { startLoadViewerReader } from "./room-coordinated-load-viewer.mjs"
 import { roomTuiPtyInvocation } from "./room-tui-pty.mjs"
 import { assertPreparedIdentities, COORDINATED_LOAD_VIEWERS } from "./room-coordinated-load-runner.mjs"
 import { countListeners, readDockerInventory, readDockerStats, readListeners } from "./room-coordinated-load-resource-observer.mjs"
@@ -25,7 +26,7 @@ const statusVariants = new Set([
   "created", "running", "waiting", "completing", "paused", "completed", "failed", "stopped",
 ])
 
-export async function createRoomCoordinatedLoadRuntime({ plan, repoRoot, runDirectory, signal = null }, dependencies = {}) {
+export async function createRoomCoordinatedLoadRuntime({ plan, repoRoot, runDirectory, runtimeDirectory = runDirectory, signal = null }, dependencies = {}) {
   if (process.platform !== "linux" && process.platform !== "darwin") {
     throw new Error("the local coordinated load runner currently supports Linux and macOS")
   }
@@ -74,12 +75,6 @@ export async function createRoomCoordinatedLoadRuntime({ plan, repoRoot, runDire
         })
     clients.set(route, client)
     return client
-  }
-  const unwrap = (response, variant) => {
-    if (!response || typeof response !== "object" || !Object.hasOwn(response, variant)) {
-      throw new Error("public kernel response omitted its expected variant")
-    }
-    return response[variant]
   }
   const own = (kind, id, privateState, extras = {}) => {
     const stopToken = randomUUID()
@@ -189,13 +184,11 @@ export async function createRoomCoordinatedLoadRuntime({ plan, repoRoot, runDire
           signal,
         })
         await stream.sendControl("START_VIDEO", { signal })
-        const started = await receiveMessage(stream, 10_000, signal)
-        if (started.kind !== "text" || new TextDecoder().decode(started.data) !== "VIDEO_STARTED") {
-          throw new Error("Selkies viewer did not start its normal video stream")
-        }
+        await waitForVideoReady(stream, 10_000, signal)
         const firstFrame = await nextBinaryFrame(stream, 15_000, signal)
-        viewers.set(viewer.id, { client, stream, attachmentId: attachment.id, route: viewer.route, frameBytes: firstFrame.byteLength })
-        return own("viewer", viewer.id, { client, stream, attachmentId: attachment.id, route: viewer.route }, {
+        const reader = startLoadViewerReader(stream, (activeStream) => nextBinaryFrame(activeStream, 10_000, signal))
+        viewers.set(viewer.id, { client, stream, reader, attachmentId: attachment.id, route: viewer.route, frameBytes: firstFrame.byteLength })
+        return own("viewer", viewer.id, { client, stream, reader, attachmentId: attachment.id, route: viewer.route }, {
           streamId: stream.endpoint.stream_id,
         })
       } catch (error) {
@@ -207,10 +200,10 @@ export async function createRoomCoordinatedLoadRuntime({ plan, repoRoot, runDire
     },
 
     async startTui(_plan, tui) {
-      const automationSocket = path.join(runDirectory, `${tui.id}.sock`)
+      const automationSocket = path.join(runtimeDirectory, `${tui.id}.sock`)
       const cliPath = path.join(repoRoot, "apps/cli/dist/index.js")
       await access(cliPath)
-      const home = path.join(runDirectory, `${tui.id}-home`)
+      const home = path.join(runtimeDirectory, `${tui.id}-home`)
       await mkdir(home, { recursive: true, mode: 0o700 })
       const clientId = `${plan.runId}-${tui.id}`
       const connectionArgs = tui.route === "local"
@@ -218,6 +211,7 @@ export async function createRoomCoordinatedLoadRuntime({ plan, repoRoot, runDire
         : ["--relay-url", plan.relay.url, "--relay-token-env", plan.relay.tokenEnv,
             "--target-daemon-id", plan.relay.targetDaemonId]
       const args = [
+        "bun",
         cliPath,
         ...connectionArgs,
         "--automation-socket", automationSocket,
@@ -288,14 +282,39 @@ export async function createRoomCoordinatedLoadRuntime({ plan, repoRoot, runDire
 
     async injectSlowViewer(task, delayMs) {
       const state = privateTask(task, "viewer")
+      await state.reader.pause()
       const before = performance.now()
-      await processApi.sleep(delayMs, signal)
-      await nextBinaryFrame(state.stream, 10_000, signal)
-      return {
-        viewerId: task.id,
-        requestedDelayMs: delayMs,
-        observedDelayMs: Math.round(performance.now() - before),
+      try { await processApi.sleep(delayMs, signal) } finally { state.reader.resume() }
+      const observedDelayMs = Math.round(performance.now() - before)
+      let recovered = false
+      let recoveryMs = 0
+      try {
+        await state.reader.takeFrame({ fresh: true })
+      } catch (error) {
+        if (!error.message.includes("receive buffer exceeded its bounded capacity")) throw error
+        const recoveryStarted = performance.now()
+        const healthy = [...viewers.entries()].find(([id]) => id !== task.id)?.[1]
+        if (!healthy) throw new Error("slow viewer recovery requires an independent healthy viewer")
+        await Promise.all([
+          measureRoomLatency(healthy.client, requests, plan.headedSlices),
+          healthy.reader.takeFrame({ fresh: true }),
+        ])
+        await state.reader.stop()
+        const stream = await openSelkiesDisplayStream({
+          client: state.client, sliceId: targetRoom().sliceId,
+          sessionId: targetRoom().roomId, attachmentId: state.attachmentId,
+          connectTimeoutMs: 10_000, signal,
+        })
+        // Track the replacement before startup so every failure closes it.
+        const reader = startLoadViewerReader(stream, (activeStream) => nextBinaryFrame(activeStream, 10_000, signal))
+        Object.assign(state, { stream, reader })
+        Object.assign(viewers.get(task.id), { stream, reader })
+        await stream.sendControl("START_VIDEO", { signal })
+        await reader.takeFrame({ fresh: true })
+        recovered = true
+        recoveryMs = Math.round(performance.now() - recoveryStarted)
       }
+      return { viewerId: task.id, requestedDelayMs: delayMs, observedDelayMs, recovered, recoveryMs }
     },
 
     async sample(_plan, { sampleIndex, ownedTasks, workflowTask, elapsedMs }) {
@@ -307,8 +326,8 @@ export async function createRoomCoordinatedLoadRuntime({ plan, repoRoot, runDire
         workflowStatus, dockerStats, processes, openListenerCount] = await Promise.all([
         measureRoomLatency(local.client, requests, plan.headedSlices),
         measureRoomLatency(relay.client, requests, plan.headedSlices),
-        nextBinaryFrame(local.stream, 10_000, signal),
-        nextBinaryFrame(relay.stream, 10_000, signal),
+        local.reader.takeFrame(),
+        relay.reader.takeFrame(),
         processApi.readAutomationSnapshot(localTui.automationSocket, signal),
         processApi.readAutomationSnapshot(relayTui.automationSocket, signal),
         readWorkflowStatus(workflowTask),
@@ -348,7 +367,7 @@ export async function createRoomCoordinatedLoadRuntime({ plan, repoRoot, runDire
       } else if (task.kind === "viewer") {
         let cleanupFailed = false
         await state.stream.sendControl("STOP_VIDEO", { signal }).catch(() => undefined)
-        await state.stream.close().catch(() => { cleanupFailed = true })
+        await state.reader.stop().catch(() => { cleanupFailed = true })
         await state.client.send(requests.detachFromSessionRequest(state.attachmentId)).catch(() => { cleanupFailed = true })
         viewers.delete(task.id)
         await closeUnusedClient(state.route).catch(() => { cleanupFailed = true })
@@ -428,6 +447,13 @@ export async function createRoomCoordinatedLoadRuntime({ plan, repoRoot, runDire
   return runtime
 }
 
+function unwrap(response, variant) {
+  if (!response || typeof response !== "object" || !Object.hasOwn(response, variant)) {
+    throw new Error("public kernel response omitted its expected variant")
+  }
+  return response[variant]
+}
+
 async function measureRoomLatency(client, requests, slices) {
   const started = performance.now()
   for (const slice of slices) {
@@ -447,11 +473,30 @@ async function receiveMessage(stream, timeoutMs, signal) {
   return await stream.receive({ timeoutMs, signal })
 }
 
+async function waitForVideoReady(stream, timeoutMs, signal) {
+  const deadline = performance.now() + timeoutMs
+  while (performance.now() < deadline) {
+    const message = await receiveMessage(stream, Math.max(1, deadline - performance.now()), signal)
+    if (message.kind === "text") {
+      const text = new TextDecoder().decode(message.data)
+      // Pinned Selkies shared viewers receive a reset and IDR instead of the
+      // individual display's VIDEO_STARTED. Both still require a video frame.
+      if (text === "VIDEO_STARTED" || text === "PIPELINE_RESETTING primary") return
+    }
+  }
+  throw new Error("Selkies viewer did not start its normal video stream within the bound")
+}
+
 async function nextBinaryFrame(stream, timeoutMs, signal) {
   const deadline = performance.now() + timeoutMs
   while (performance.now() < deadline) {
     const message = await receiveMessage(stream, Math.max(1, deadline - performance.now()), signal)
-    if (message.kind === "binary" && message.data.byteLength > 0) return message.data
+    if (message.kind === "binary") {
+      if (message.data.byteLength > 10 && message.data.byteLength <= 4 * 1024 * 1024 && message.data[0] === 4) {
+        return message.data
+      }
+      throw new Error("display stream returned an invalid Selkies video frame")
+    }
     if (message.kind !== "text") throw new Error("display stream returned an unsupported message")
   }
   throw new Error("display stream did not deliver a binary frame within the bound")
