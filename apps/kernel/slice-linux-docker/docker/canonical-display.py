@@ -60,7 +60,14 @@ def resize(width, height):
     output = outputs[0]
     mode = f"chariox-{width}x{height}"
     query = run("xrandr", "--query")
-    if mode not in query:
+    selected = False
+    modes = set()
+    for line in query.splitlines():
+        if line and not line[0].isspace():
+            selected = line.split()[0] == output
+        elif selected and line.split():
+            modes.add(line.split()[0])
+    if mode not in modes:
         timing = run("cvt", "-r", str(width), str(height), "60")
         line = next((line for line in timing.splitlines() if line.startswith("Modeline")), None)
         if line is None:
