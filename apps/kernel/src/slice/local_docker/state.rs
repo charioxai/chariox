@@ -893,6 +893,7 @@ fn docker_commit_container(
     image_ref: &str,
     operation: &'static str,
 ) -> Result<(), DaemonError> {
+    super::capture_preflight::require_supported_layout(operation)?;
     let container = local_docker_container_name(record);
     let status = docker_command()
         .args(["commit", &container, image_ref])
@@ -921,6 +922,7 @@ fn archive_local_docker_home_volume(
     archive_id: &str,
     operation: &'static str,
 ) -> Result<(PathBuf, u64, String), DaemonError> {
+    super::capture_preflight::require_supported_layout(operation)?;
     let volume = format!("{}-home", local_docker_container_name(record));
     let helper = format!(
         "{}-home-archive-{}",

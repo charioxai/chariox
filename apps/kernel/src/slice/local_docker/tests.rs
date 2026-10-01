@@ -383,16 +383,36 @@ exit 0
 
     std::fs::write(&capacity, b"107374182400\n").expect("recovered capacity should write");
     let recovered = state::save_local_docker_slice_state_live(&record, &options)
-        .expect("the real save path should reopen after capacity recovers");
+        .expect_err("capacity recovery must not bypass unsupported credential capture");
+    assert!(recovered
+        .to_string()
+        .contains("unavailable for this capture layout"));
     let recovered_calls = std::fs::read_to_string(&log).expect("Docker log should read");
-    assert!(recovered_calls
+    assert!(!recovered_calls
         .lines()
-        .any(|call| call.starts_with("commit ")));
-    assert_ne!(
-        std::fs::read(&manifest).expect("replacement manifest should exist"),
-        prior_manifest
+        .any(|call| call.starts_with("commit ") || call.contains("tar --zstd")));
+    assert_eq!(std::fs::read(&manifest).unwrap(), prior_manifest);
+    assert!(recovered_calls.contains("unpause chariox-slice-dev"));
+    assert!(recovered_calls.contains("/opt/chariox-slice/slice-screen.sh start"));
+    assert!(state::create_local_docker_slice_backup_live(
+        &record,
+        &options,
+        Some("synthetic-refusal")
+    )
+    .unwrap_err()
+    .to_string()
+    .contains("unavailable for this capture layout"));
+    assert!(
+        state::save_local_docker_slice_state_retaining_replaced(&record, &options)
+            .unwrap_err()
+            .to_string()
+            .contains("unavailable for this capture layout")
     );
-    assert_eq!(recovered.id, "dev");
+    let final_calls = std::fs::read_to_string(&log).unwrap();
+    assert!(!final_calls
+        .lines()
+        .any(|call| call.starts_with("commit ") || call.contains("tar --zstd")));
+    assert_eq!(std::fs::read(&manifest).unwrap(), prior_manifest);
 
     match previous_path {
         Some(path) => std::env::set_var("PATH", path),
@@ -408,7 +428,7 @@ exit 0
             "admissionClosesBeforeEnospc": !pressured_calls.lines().any(|call| call.starts_with("commit ")),
             "activeStateRemainsConsistent": pause < measurement && measurement < unpause,
             "lastKnownGoodPreserved": true,
-            "resourceRecoveryRecorded": recovered_calls.lines().any(|call| call.starts_with("commit ")),
+            "resourceRecoveryRecorded": recovered.to_string().contains("unavailable for this capture layout"),
             "reserveBytes": 2_u64 * 1024 * 1024 * 1024,
         })
     );
@@ -530,39 +550,26 @@ exit 0
         .any(|call| call.starts_with("commit chariox-slice-dev ")));
 
     std::env::set_var("DOCKER_FAIL_SCREEN_STOP", "0");
-    let state = state::save_local_docker_slice_state(&record, &options)
-        .expect("public headless save should capture after graceful shutdown");
-    assert!(state.home_archive_path.contains("states/dev/home-"));
-    assert!(state.home_archive_path.ends_with(".tar.zst"));
-    assert!(
-        !running.exists(),
-        "successful state save must leave the source stopped"
-    );
-    let calls = std::fs::read_to_string(&log).expect("successful-call log should read");
+    let error = state::save_local_docker_slice_state(&record, &options)
+        .expect_err("legacy headless capture must refuse after graceful shutdown");
+    assert!(error
+        .to_string()
+        .contains("unavailable for this capture layout"));
+    assert!(!running.exists());
+    let calls = std::fs::read_to_string(&log).unwrap();
+    assert!(calls.contains("CHARIOX_SLICE_DISPLAY_MODE=headless"));
     let screen_stop = calls
         .rfind("/opt/chariox-slice/slice-screen.sh stop")
-        .expect("screen stop should be called for a headless browser slice");
-    assert!(calls.contains("CHARIOX_SLICE_DISPLAY_MODE=headless"));
+        .unwrap();
     let kernel_shutdown = calls
         .rfind("screen -S chariox-slice-kernel -X quit")
-        .expect("kernel shutdown should follow desktop quiescence");
-    let container_stop = calls
-        .rfind("stop chariox-slice-dev")
-        .expect("container should stop after graceful process cleanup");
-    let image_capture = calls
-        .rfind("commit chariox-slice-dev ")
-        .expect("image capture should occur after container stop");
-    let home_capture = calls
-        .rfind("tar --zstd -cf /tmp/home.tar.zst .")
-        .expect("home archive should be captured");
-    assert!(screen_stop < kernel_shutdown);
-    assert!(kernel_shutdown < container_stop);
-    assert!(container_stop < image_capture);
-    assert!(image_capture < home_capture);
-    assert!(calls.lines().any(|call| {
-        call.starts_with("create --name chariox-slice-dev-home-archive-")
-            && call.contains("chariox-slice-dev-home:/home-src:ro")
-    }));
+        .unwrap();
+    let container_stop = calls.rfind("stop chariox-slice-dev").unwrap();
+    assert!(screen_stop < kernel_shutdown && kernel_shutdown < container_stop);
+    assert!(!calls
+        .lines()
+        .any(|call| call.starts_with("commit ") || call.contains("tar --zstd")));
+    assert!(!calls.contains("-home-archive-"));
 
     let screen = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("slice-linux-docker/docker/slice-screen.sh"),
@@ -576,7 +583,7 @@ exit 0
     std::fs::write(&log, "").expect("stopped-slice log should reset");
     std::env::set_var("DOCKER_FAIL_SCREEN_STOP", "1");
     state::save_local_docker_slice_state(&record, &options)
-        .expect("already-stopped slices must remain saveable without screen startup");
+        .expect_err("already-stopped slices must also refuse unsupported capture");
     let stopped_calls = std::fs::read_to_string(&log).expect("stopped-slice log should read");
     assert!(!stopped_calls.contains("slice-screen.sh stop"));
     assert!(!stopped_calls
