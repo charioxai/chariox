@@ -149,7 +149,7 @@ Each row's status follows the audit in `CHARIOX_APPS_PHASE1_VERIFICATION.md` (ma
 | V-RUN-05 | Ignored cancellation or acknowledgement | Tool call, external event, local event and lifecycle callback. | Partial: live event path |
 | V-RUN-06 | Kernel restart and machine reboot | Local and managed machine drills. | Partial [user step: machine reboot] (see verification) |
 | V-RUN-07 | Sandbox escape attempts | One malicious package on macOS and Linux Phase 1 release builds. Windows reuses the corpus in Phase 2. | Partial (see verification) |
-| V-RUN-08 | Log flooding | CLI, TUI and web logs. | Partial: live, dropped count (#498) |
+| V-RUN-08 | Log flooding | CLI, TUI and web logs. | Implemented on Linux: dropped count (#498), redaction (#629); see verification |
 | V-RUN-09 | Sandbox active before App code | Every attempt observes the final default-deny OS policy. No unconfined startup window exists. | Partial (see verification) |
 | V-RUN-10 | Cross-installation isolation | Neither installation reads, writes, signals, impersonates, or exhausts the other's worker, supervisor, or HTTP budget. | Partial (see verification) |
 
