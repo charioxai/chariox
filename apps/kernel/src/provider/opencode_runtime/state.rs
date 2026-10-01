@@ -50,6 +50,7 @@ pub(crate) struct OpenCodeRuntimeState {
     pub(super) active_terminal_assistant_message_id: Option<String>,
     pub(super) active_user_message_id: Option<String>,
     active_prompt_submitted_at: Option<Instant>,
+    pub(super) session_errors_require_prompt_match: bool,
 }
 
 impl OpenCodeRuntimeState {
@@ -75,6 +76,7 @@ impl OpenCodeRuntimeState {
             active_terminal_assistant_message_id: None,
             active_user_message_id: None,
             active_prompt_submitted_at: None,
+            session_errors_require_prompt_match: false,
         }
     }
 
@@ -124,6 +126,7 @@ impl OpenCodeRuntimeState {
     }
 
     pub(in crate::provider) fn settle_aborted_turn(&mut self, messages: &[OpenCodeMessage]) {
+        self.session_errors_require_prompt_match = true;
         while self.event_subscription.receiver.try_recv().is_ok() {}
         self.emitted_text_by_part.clear();
         self.emitted_tool_summaries.clear();

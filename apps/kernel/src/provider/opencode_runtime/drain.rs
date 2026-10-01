@@ -163,6 +163,29 @@ pub(in crate::provider) fn drain_opencode_events(
                 message,
             }) => {
                 if session_id == state.session_id {
+                    // SSE session errors have no prompt id. After reuse, a delayed
+                    // error may belong to the cancelled turn. Only current-message
+                    // evidence may terminate the successor, even when HTTP is down.
+                    let message = if state.session_errors_require_prompt_match {
+                        let client = OpenCodeClient::new(provider_run_id, &state.base_url)?;
+                        let Some(current_error) =
+                            client
+                                .messages(&state.session_id)
+                                .ok()
+                                .and_then(|messages| {
+                                    opencode_messages_active_prompt_failure(
+                                        state,
+                                        &messages,
+                                        drain_active_user_message_id.as_deref(),
+                                    )
+                                })
+                        else {
+                            continue;
+                        };
+                        current_error
+                    } else {
+                        message
+                    };
                     record_terminal_failure(
                         state,
                         message,

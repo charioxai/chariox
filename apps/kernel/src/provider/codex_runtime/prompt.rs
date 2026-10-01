@@ -187,6 +187,21 @@ fn ensure_codex_thread_ready(
             }),
         );
     }
+    if state.thread_ready() {
+        let thread_id = state.thread_id().to_string();
+        client.prepare_thread_context_refresh(
+            &mut state.socket,
+            &mut state.next_request_id,
+            &thread_id,
+        )?;
+    }
+    // An explicit empty override clears prior managed-thread instructions;
+    // omission on an initial resume keeps provider-owned defaults.
+    let resume_context = if state.thread_ready() {
+        Some(developer_instructions.unwrap_or(""))
+    } else {
+        developer_instructions
+    };
     let deadline = Instant::now() + CODEX_MCP_THREAD_INIT_RETRY_TIMEOUT;
     loop {
         let result = if let Some(thread_id) = state.pending_thread_id().map(str::to_string) {
@@ -203,7 +218,7 @@ fn ensure_codex_thread_ready(
                 run.write_access_mode(),
                 run.execution_mode(),
                 run.permission_level(),
-                developer_instructions,
+                resume_context,
                 &mut Vec::new(),
             )
         } else {

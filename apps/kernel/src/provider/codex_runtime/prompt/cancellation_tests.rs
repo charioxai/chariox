@@ -8,15 +8,20 @@ use tokio_tungstenite::tungstenite::{accept, connect, Message};
 
 #[test]
 fn cancelled_codex_turn_preserves_thread_when_hidden_context_changes() {
-    cancelled_codex_turn_continuity(false);
+    cancelled_codex_turn_continuity(false, "context after cancellation");
 }
 
 #[test]
 fn kernel_cancel_active_prompt_preserves_codex_thread_for_follow_up() {
-    cancelled_codex_turn_continuity(true);
+    cancelled_codex_turn_continuity(true, "context after cancellation");
 }
 
-fn cancelled_codex_turn_continuity(through_kernel: bool) {
+#[test]
+fn cancelled_codex_turn_can_clear_hidden_context_without_losing_thread() {
+    cancelled_codex_turn_continuity(false, "");
+}
+
+fn cancelled_codex_turn_continuity(through_kernel: bool, next_context: &str) {
     use crate::local::*;
     let worktree = crate::test_support::TestWorktree::new("codex-cancel-continuity");
     let harness = crate::local::test_support::LocalRouterTestHarness::new();
@@ -63,7 +68,11 @@ fn cancelled_codex_turn_continuity(through_kernel: bool) {
             .unwrap();
         let mut socket = accept(stream).unwrap();
         let mut methods = Vec::new();
-        for _ in 0..5 {
+        let mut subscribed = false;
+        let mut applied_context = serde_json::Value::Null;
+        let mut turn_count = 0;
+        let mut idle_reads = 0;
+        loop {
             let message = socket.read().unwrap();
             let request: serde_json::Value =
                 serde_json::from_str(message.to_text().unwrap()).unwrap();
@@ -71,6 +80,8 @@ fn cancelled_codex_turn_continuity(through_kernel: bool) {
             methods.push(method.to_string());
             let result = match method {
                 "thread/start" => {
+                    subscribed = true;
+                    applied_context = request["params"]["developerInstructions"].clone();
                     json!({"thread": {"id": if methods.len() == 1 { "thread-original" } else { "thread-new" }}, "model": "gpt-test"})
                 }
                 "thread/resume" => {
@@ -79,9 +90,26 @@ fn cancelled_codex_turn_continuity(through_kernel: bool) {
                         request["params"]["developerInstructions"],
                         "context before cancellation"
                     );
+                    // A loaded subscribed thread ignores resume overrides.
+                    if !subscribed {
+                        assert!(idle_reads >= 2, "refresh must wait for authoritative idle");
+                        applied_context = request["params"]["developerInstructions"].clone();
+                        subscribed = true;
+                    }
                     json!({"thread": {"id": "thread-original"}, "model": "gpt-test"})
                 }
-                "turn/start" => json!({"turn": {"id": format!("turn-{}", methods.len())}}),
+                "thread/read" => {
+                    idle_reads += 1;
+                    json!({"thread": {"id": "thread-original", "status": {"type": if idle_reads == 1 { "active" } else { "idle" }}}})
+                }
+                "thread/unsubscribe" => {
+                    subscribed = false;
+                    json!({"status": "unsubscribed"})
+                }
+                "turn/start" => {
+                    turn_count += 1;
+                    json!({"turn": {"id": format!("turn-{}", methods.len())}})
+                }
                 "turn/interrupt" => json!({}),
                 other => panic!("unexpected RPC {other}"),
             };
@@ -92,8 +120,11 @@ fn cancelled_codex_turn_continuity(through_kernel: bool) {
                         .into(),
                 ))
                 .unwrap();
+            if turn_count == 2 {
+                break;
+            }
         }
-        methods
+        (methods, applied_context)
     });
     let (socket, _) = connect(&endpoint).unwrap();
     let mut run = RuntimeProviderRun::new(
@@ -228,7 +259,7 @@ fn cancelled_codex_turn_continuity(through_kernel: bool) {
             &mut state,
             &PromptEnvelope::new(
                 "continue",
-                "context after cancellation",
+                next_context,
                 Vec::new(),
                 PromptManifest::current(),
             ),
@@ -240,13 +271,23 @@ fn cancelled_codex_turn_continuity(through_kernel: bool) {
             "user cancellation must preserve the conversation"
         );
     }
-    let methods = server.join().unwrap();
+    let (methods, applied_context) = server.join().unwrap();
+    assert_ne!(
+        applied_context, "context before cancellation",
+        "the follow-up must actually use updated provider instructions"
+    );
+    if !through_kernel {
+        assert_eq!(applied_context, next_context);
+    }
     assert_eq!(
         methods,
         [
             "thread/start",
             "turn/start",
             "turn/interrupt",
+            "thread/read",
+            "thread/read",
+            "thread/unsubscribe",
             "thread/resume",
             "turn/start"
         ]
