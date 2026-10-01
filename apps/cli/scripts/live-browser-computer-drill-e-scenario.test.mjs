@@ -567,14 +567,14 @@ test("prompt acknowledgments alone remain incomplete and are cleaned up", async 
   assert.ok(Object.values(capture.report.checks).every((check) => check.status === "incomplete"))
   assert.equal(capture.report.historyActionCount, 0)
   assert.deepEqual(kernel.submitted.map((promptValue) => promptValue.target_agent_id), [
-    "agent-a", "agent-b", "agent-c", "agent-a", "agent-c",
+    "agent-a", "agent-b", "agent-c", "agent-a", "agent-c", "agent-b",
   ])
   assert.ok(kernel.submitted[0].prompt.includes("slice_browser_status"))
   assert.ok(kernel.submitted[0].prompt.includes("slice_browser_find"))
   assert.ok(kernel.submitted[2].prompt.includes("tab-other"))
   assert.ok(kernel.submitted[3].prompt.includes("tab-same"))
   assert.deepEqual(capture.cleanup.submittedPrompts.map((entry) => entry.promptId), [
-    "prompt-read-a", "prompt-read-b", "prompt-read-c", "prompt-mutation-a", "prompt-mutation-c",
+    "prompt-read-a", "prompt-read-b", "prompt-read-c", "prompt-mutation-a", "prompt-mutation-c", "prompt-mutation-b",
   ])
   assert.equal(capture.cleanup.status, "passed")
   assert.equal(capture.cleanup.detached, true)
@@ -599,6 +599,27 @@ test("cleanup accepts protocol 369's omitted empty per-agent prompt map", async 
   })
   assert.equal(capture.cleanup.status, "passed")
   assert.ok(capture.cleanup.submittedPrompts.every((entry) => entry.cleanupStatus === "settled"))
+})
+
+test("mutation prompts are admitted together before observing the first running action", async () => {
+  const kernel = fakeKernel({ sequence: fullSequence() })
+  let clock = 1_000
+  let observedBeforeSecondAdmission = false
+  const client = { async send(request) {
+    if (request.GetRoomEnvironmentState
+      && kernel.submitted.some((entry) => entry.prompt.includes("first same-tab mutation"))
+      && !kernel.submitted.some((entry) => entry.prompt.includes("second same-tab mutation"))) {
+      observedBeforeSecondAdmission = true
+    }
+    return kernel.client.send(request)
+  } }
+  const capture = await runDrillEScenario({
+    client, requests: requestBuilders(), options: options(),
+    now: () => clock, sleep: async (ms) => { clock += ms },
+  })
+  assert.equal(observedBeforeSecondAdmission, false,
+    "provider response latency must not delay B's admission until A's bounded action is running")
+  assert.equal(capture.report.status, "passed")
 })
 
 test("cleanup rejects a session that omits every prompt inventory field", async () => {
@@ -1094,7 +1115,7 @@ test("long Drill E observation preserves its exact attachment heartbeat", async 
   }
   const capture = await runDrillEScenario({ client: kernel.client, requests: requestBuilders(),
     options: options({ timeoutMs: 180_000 }), now: () => clock, sleep: async (ms) => { clock += ms } })
-  assert.equal(kernel.submitted.length, 5)
+  assert.equal(kernel.submitted.length, 6)
   assert.equal(capture.cleanup.status, "passed")
   assert.ok(kernel.sent.filter(request => request.PollRuntimeNotices).length > 3)
 })

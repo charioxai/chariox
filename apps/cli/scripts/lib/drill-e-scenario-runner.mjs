@@ -646,6 +646,7 @@ export async function runDrillEScenario({
       await submitTogether(bounded, requests, options.sessionId, attachmentId, [
         [options.agentA, historyPrompt(options.sameTabId, "first same-tab mutation"), "first mutation A"],
         [options.agentC, historyPrompt(options.otherTabId, "independent-tab concurrency"), "independent mutation C"],
+        [options.agentB, historyPrompt(options.sameTabId, "second same-tab mutation"), "second mutation B"],
       ], prompts)
       stage = "first_mutation_observation"
       firstMutation = await waitFor((environment) =>
@@ -654,9 +655,6 @@ export async function runDrillEScenario({
     }
 
     if (firstMutation && now() < deadline) {
-      stage = "second_mutation_prompt_submission"
-      await submitPrompt(bounded, requests, options.sessionId, attachmentId, options.agentB,
-        historyPrompt(options.sameTabId, "second same-tab mutation"), "second mutation B", prompts)
       stage = "same_tab_queue_observation"
       const pair = now() < deadline
         ? await waitFor((environment) => queuePair(environment, options),
