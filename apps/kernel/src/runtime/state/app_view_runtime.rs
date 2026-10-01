@@ -4,14 +4,15 @@
 //! owner through the same catalog, validation and durable path as agent calls.
 use super::KernelRuntimeState;
 use crate::{
+    error::DaemonError,
     local::{AppRequestErrorCode, LocalDaemonRequest, LocalDaemonResponse},
     runtime::{
         app_call_errors,
         app_operation_budget::AppOperationBudget,
         app_views::{AppViewBinding, ViewCall},
         browser_controller_app_view::{
-            BrowserAppViewAsset, BrowserAppViewCall, BrowserAppViewCalls, BrowserAppViewError,
-            AppViewPage, BrowserAppViewOpened, BrowserAppViewRequest,
+            AppViewPage, BrowserAppViewAsset, BrowserAppViewCall, BrowserAppViewCalls,
+            BrowserAppViewError, BrowserAppViewOpened, BrowserAppViewRequest,
         },
         command::KernelCommand,
     },
@@ -44,24 +45,25 @@ impl KernelRuntimeState {
         &self,
         command: &KernelCommand,
         request: &LocalDaemonRequest,
-    ) -> Option<LocalDaemonResponse> {
+    ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
         let owner = match request {
             LocalDaemonRequest::OpenAppView(_) | LocalDaemonRequest::SetAppViewPanel(_) => {
                 match crate::runtime::app_control::owner(command) {
                     Ok(owner) => owner,
-                    Err(code) => return Some(failed(code)),
+                    Err(code) => return Some(Ok(crate::runtime::app_control::failed(code))),
                 }
             }
             _ => return None,
         };
         Some(match request {
-            LocalDaemonRequest::OpenAppView(request) => self
-                .open_app_view(owner, &request.session_id, &request.installation_id)
-                .await
-                .unwrap_or_else(failed),
-            LocalDaemonRequest::SetAppViewPanel(request) => {
-                self.set_app_view_panel(request).await.unwrap_or_else(failed)
+            LocalDaemonRequest::OpenAppView(request) => {
+                self.open_app_view(owner, &request.session_id, &request.installation_id)
+                    .await
             }
+            LocalDaemonRequest::SetAppViewPanel(request) => Ok(self
+                .set_app_view_panel(request)
+                .await
+                .unwrap_or_else(crate::runtime::app_control::failed)),
             _ => return None,
         })
     }
@@ -94,21 +96,15 @@ impl KernelRuntimeState {
         owner: String,
         session_id: &str,
         installation: &str,
-    ) -> Result<LocalDaemonResponse, AppRequestErrorCode> {
+    ) -> Result<LocalDaemonResponse, DaemonError> {
         let store = self.owned.durable_state_store.clone();
         let (view_owner, view_installation) = (owner.clone(), installation.to_owned());
         let view = tokio::task::spawn_blocking(move || {
             store.app_view_assets(&view_owner, &view_installation)
         })
         .await
-        .map_err(|_| AppRequestErrorCode::StorageUnavailable)?
-        .map_err(|code| {
-            tracing::warn!(code, "App view assets unavailable");
-            match code {
-                "app_view_too_large" => AppRequestErrorCode::LimitExceeded,
-                _ => AppRequestErrorCode::NotFound,
-            }
-        })?;
+        .map_err(|_| open_error("App storage is unavailable. Try again shortly."))?
+        .map_err(|error| open_error(error.message()))?;
         let generation = view.generation;
         let panel = crate::runtime::app_views::PanelRequest::from_manifest(view.panel.as_ref());
         let views = self.app_control().views().clone();
@@ -128,10 +124,7 @@ impl KernelRuntimeState {
             assets,
             page: page.map(|(width, height)| AppViewPage { width, height }),
         };
-        let opened: BrowserAppViewOpened = self
-            .app_view_command(session_id, request)
-            .await
-            .ok_or(AppRequestErrorCode::Conflict)?;
+        let opened: BrowserAppViewOpened = self.app_view_command(session_id, request).await?;
         if let Some(page) = page {
             views.sent_page(session_id, &opened.target_id, page);
         }
@@ -162,7 +155,7 @@ impl KernelRuntimeState {
         .unwrap_or(false);
         if !active {
             views.forget_installation(&owner, installation);
-            return Err(AppRequestErrorCode::NotFound);
+            return Err(open_error("The App release became unavailable while opening its view. Use /app status <installation-id> to check it before retrying."));
         }
         // Project the new Tab into the Room so viewers and agents see it.
         let _ = self
@@ -186,7 +179,7 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         request: BrowserAppViewRequest,
-    ) -> Option<T> {
+    ) -> Result<T, DaemonError> {
         let open = waits_for_slot(&request);
         let respond = matches!(request, BrowserAppViewRequest::Respond { .. });
         let deadline = tokio::time::Instant::now() + OPEN_WAIT;
@@ -204,8 +197,9 @@ impl KernelRuntimeState {
             {
                 Ok(Response::AppView {
                     result: Some(value),
-                }) => return serde_json::from_value(value).ok(),
-                Ok(_) => return None,
+                }) => return serde_json::from_value(value)
+                    .map_err(|_| open_error("The Room browser returned an invalid App view response. Restart the Room Environment and try again.")),
+                Ok(_) => return Err(open_error("This Room has no browser controller available. Bind an Environment with /room bind <slice> and start it with /room start, then retry /app open.")),
                 Err(error)
                     if (open
                         && tokio::time::Instant::now() < deadline
@@ -216,7 +210,7 @@ impl KernelRuntimeState {
                 }
                 Err(error) => {
                     tracing::debug!(%error, "App view controller command failed");
-                    return None;
+                    return Err(open_error(&error.to_string()));
                 }
             }
         }
@@ -228,7 +222,7 @@ impl KernelRuntimeState {
         while views.keep_pumping(&session_id) {
             tokio::time::sleep(POLL_INTERVAL).await;
             let polled_up_to = views.registrations(&session_id);
-            let Some(batch) = self
+            let Ok(batch) = self
                 .app_view_command::<BrowserAppViewCalls>(&session_id, BrowserAppViewRequest::Calls)
                 .await
             else {
@@ -313,7 +307,11 @@ impl KernelRuntimeState {
     ///
     /// Each page gets its CSS size beside its panel when that changed: a
     /// placement request, the user's choice or a viewport change.
-    async fn publish_app_tabs(&self, session_id: &str, views: &crate::runtime::app_views::AppViews) {
+    async fn publish_app_tabs(
+        &self,
+        session_id: &str,
+        views: &crate::runtime::app_views::AppViews,
+    ) {
         let app_panels = views.app_panels(session_id);
         let Ok(pages) =
             self.set_room_environment_app_tabs(session_id, views.layouts(session_id), app_panels)
@@ -328,7 +326,11 @@ impl KernelRuntimeState {
                 target_id: target_id.clone(),
                 page: AppViewPage { width, height },
             };
-            if self.app_view_command::<Value>(session_id, request).await.is_none() {
+            if self
+                .app_view_command::<Value>(session_id, request)
+                .await
+                .is_err()
+            {
                 views.forget_page(session_id, &target_id);
             }
         }
@@ -368,7 +370,10 @@ impl KernelRuntimeState {
             };
             let request = crate::runtime::app_views::PanelRequest { placement, size };
             if !views.request_panel(session_id, target_id, request) {
-                return Err(view_error("APP_VIEW_UNBOUND", "This view is not bound to an App"));
+                return Err(view_error(
+                    "APP_VIEW_UNBOUND",
+                    "This view is not bound to an App",
+                ));
             }
             self.publish_app_tabs(session_id, &views).await;
         }
@@ -403,7 +408,9 @@ impl KernelRuntimeState {
             Some((binding, true)) if binding.installation == call.installation_id => {
                 Err(view_reloading())
             }
-            Some((binding, false)) if binding.installation == call.installation_id && call.method == PANEL_METHOD => {
+            Some((binding, false))
+                if binding.installation == call.installation_id && call.method == PANEL_METHOD =>
+            {
                 self.request_app_panel(&session_id, &call.target_id, call.params)
                     .await
             }
@@ -543,7 +550,7 @@ impl KernelRuntimeState {
             return Err(view_reloading());
         }
         let (entry, assets) = view_assets(view);
-        let reloaded: Option<Value> = self
+        let reloaded: Result<Value, DaemonError> = self
             .app_view_command(
                 session_id,
                 BrowserAppViewRequest::Reload {
@@ -553,7 +560,7 @@ impl KernelRuntimeState {
                 },
             )
             .await;
-        if reloaded.is_none() {
+        if reloaded.is_err() {
             // Unbound before the mark goes, so no call runs in between.
             views.unbind(session_id, target_id);
             views.finish_reconnect(session_id, target_id);
@@ -728,8 +735,10 @@ fn budget() -> AppOperationBudget {
     AppOperationBudget::from_supervisor(|| false)
 }
 
-fn failed(code: AppRequestErrorCode) -> LocalDaemonResponse {
-    crate::runtime::app_control::failed(code)
+fn open_error(message: &str) -> DaemonError {
+    DaemonError::AppViewUnavailable {
+        message: message.to_owned(),
+    }
 }
 
 fn view_reloading() -> BrowserAppViewError {
@@ -751,6 +760,20 @@ fn waits_for_slot(request: &BrowserAppViewRequest) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_open_errors_use_the_existing_nonretryable_request_error_envelope() {
+        let error = open_error("This Room has no browser controller available.");
+        let projected = crate::transport::kernel_protocol::map_kernel_error(&error);
+        assert_eq!(projected.code, "kernel_request_failed");
+        assert!(
+            !projected.retryable,
+            "rejected opens must not be replayed as transport failures"
+        );
+        assert!(projected
+            .message
+            .contains("no browser controller available"));
+    }
 
     #[test]
     fn view_calls_run_as_the_views_owner_in_its_room() {

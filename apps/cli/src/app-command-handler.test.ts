@@ -165,3 +165,28 @@ test("a copied next-page command pages from the decoded installation ID", async 
   }, parseSlashCommand('/app list --after "todo"') as Extract<ParsedSlashCommand, { kind: "app" }>)
   assert.deepEqual(requests, [{ ListAppInstallations: { after: "todo", limit: null } }])
 })
+
+
+test("/app open without an id shows only its own usage", async () => {
+  const flashes: unknown[] = []
+  await handleAppSlashCommand({
+    currentAppSessionId: () => "session-1",
+    sendAppRequest: async () => assert.fail("must not send an incomplete open"),
+    appendNotice: message => assert.fail(message),
+    flashFooter: (message, tone) => { flashes.push({ message, tone }) },
+  }, { kind: "app", raw: "/app open", args: ["open"] })
+  assert.deepEqual(flashes, [{ message: "usage: app open <installation-id> [--session <session-id>]", tone: "error" }])
+})
+
+test("/app open preserves the kernel's actionable transport error", async () => {
+  const message = "This browser Environment belongs to Room apps-drill. Attach to that Room and use /app open todo, then /room view."
+  await assert.rejects(handleAppSlashCommand({
+    currentAppSessionId: () => "session-1",
+    sendAppRequest: async request => {
+      assert.deepEqual(request, { OpenAppView: { session_id: "session-1", installation_id: "todo" } })
+      throw new Error(message)
+    },
+    appendNotice: notice => assert.fail(notice),
+    flashFooter: notice => assert.fail(notice),
+  }, { kind: "app", raw: "/app open todo", args: ["open", "todo"] }), { message })
+})

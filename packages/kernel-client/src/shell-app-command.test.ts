@@ -212,3 +212,12 @@ test("an inbox test payload is taken from the raw line in every shell", () => {
   ])
   assert.deepEqual(appCommandArgs("/app list", ["list"]), ["list"])
 })
+
+
+test("App open argument errors show only open usage without sending", async () => {
+  for (const args of [["open"], ["open", "todo", "--session"], ["open", "--session", "s"], ["open", "todo", "--session", "--bad"], ["open", "todo", "extra"]]) {
+    const result = await executeAppCommand(args, { send: async () => { throw new Error("unexpected request") } })
+    assert.equal(result.ok, false)
+    assert.equal(result.message, "usage: app open <installation-id> [--session <session-id>]")
+  }
+})

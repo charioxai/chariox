@@ -83,7 +83,7 @@ impl CommandRouter {
             .execute_app_view_request(command, request)
             .await
         {
-            return Ok(Some(response));
+            return response.map(Some);
         }
         if matches!(
             request,

@@ -200,6 +200,8 @@ mod tests {
     mod agent_prompt_schedules;
     mod app_bindings;
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    mod app_open;
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
     mod app_tools;
     mod browser_import;
     mod credential_enrollment;
