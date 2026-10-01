@@ -15,6 +15,30 @@ new boot/machine/enrollment/relay identities, reviewed release, absence of old
 runtime residue, and retirement of the prior identity before the parity matrix
 or remaining acceptance gates run.
 
+## Extension lease recovery correction (2026-10-01)
+
+The current pair is OSS `2f678b544eef6c3e461a37c88a94033bc0f5eed1`
+(tree `2b4a9383b9dbaa8f134fcfc8588f9e7e584ac3e4`) and Cloud
+`654f44d6078dfe17af367934b8ae38aa7b4c0555`
+(tree `4a050584c36eae9a1b0a0ce2515fddd61f72c1e0`), with both pins aligned.
+
+Exact review5373322153 found that 256 stale extension leases prevented recovery
+because the capacity check ran before reclamation. The correction reclaims dead
+owned empty leases first and tolerates another helper removing the same stale
+entry. Saturation and two actual concurrent helper processes both reproduced
+failures before the fix. Helper18, Node11 and archive1 checks now pass without
+skips; their counts overlap. Unknown, unowned, nonempty and 256-live-lease cases
+remain rejected. The helper rule is re-bound to its inspected524-line blob.
+
+All80 scanner tests pass. Exact pair scans retain6081+2859 candidates,73 rules
+and406 scoped observations, with no source drift or missing anchors. All8940
+remain independently unreviewed and both scans fail closed. Tool bundle SHA-256
+is `7282a9c7b71e523440d5b43aa7c44ebe115e85b0c4364f2741e11f282fe903b3`.
+Exact scanner review5373326099 accepted the preceding835 increment by source
+inspection; the new binding needs its own review. The6c defect remains recorded
+on that historical source and is not waived as parity acceptance. MP01–MP11
+remain open.
+
 ## Slice recovery and extension reinspection (2026-10-01)
 
 The current source pair is OSS `6c2630e550335d15e7993d948331afa75454674d`
