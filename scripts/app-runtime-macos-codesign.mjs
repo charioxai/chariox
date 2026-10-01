@@ -98,6 +98,19 @@ function checked(run, command, what) {
   return result;
 }
 
+// The entitlement dictionary exactly: the worker's is `allow-jit` set to boolean
+// true, and every other file has none. Key names alone would accept `<false/>`.
+function entitlements(xml, jit, name) {
+  const text = xml.replace(/>\s+</gu, '><').trim();
+  const plist = /^(?:<\?xml [^>]*\?>)?(?:<!DOCTYPE plist [^>]*>)?<plist version="1\.0">(?:<dict\/>|<dict>(.*)<\/dict>)<\/plist>$/u.exec(text);
+  if (text && !plist) throw new Error(`${name} has unreadable entitlements`);
+  const body = plist?.[1] ?? '';
+  if (body !== (jit ? `<key>${JIT_ENTITLEMENT}</key><true/>` : '')) {
+    const found = body.replace(/<key>([^<]*)<\/key>/gu, ' $1=').replace(/<(true|false)\/>/gu, '$1').trim();
+    throw new Error(`${name} has unexpected entitlements: ${found || 'none'}`);
+  }
+}
+
 // Apple's Developer ID Application requirement, pinned to one team.
 export const developerIdRequirement = team => '=anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists'
   + ` and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "${team}"`;
@@ -116,10 +129,7 @@ export function verifyCodeSignature(file, { jit, executable, identity, run = run
   const shown = checked(run, [CODESIGN, '--display', '--verbose=2', file], `signature display for ${name}`);
   const text = `${shown.stderr}\n${shown.stdout}`;
   if (!/flags=0x[0-9a-f]+\([^)]*\bruntime\b[^)]*\)/u.test(text)) throw new Error(`${name} lacks the hardened runtime`);
-  const granted = checked(run, [CODESIGN, '--display', '--entitlements', '-', '--xml', file], `entitlements display for ${name}`);
-  const keys = [...granted.stdout.matchAll(/<key>([^<]+)<\/key>/gu)].map(match => match[1]);
-  if (jit ? keys.length !== 1 || keys[0] !== JIT_ENTITLEMENT : keys.length)
-    throw new Error(`${name} has unexpected entitlements: ${keys.join(', ') || 'none'}`);
+  entitlements(checked(run, [CODESIGN, '--display', '--entitlements', '-', '--xml', file], `entitlements display for ${name}`).stdout, jit, name);
   if (identity === undefined) return;
   const team = teamOf(identity);
   const lines = new Set(text.split('\n').map(line => line.trim()));

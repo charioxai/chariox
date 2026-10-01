@@ -309,14 +309,20 @@ test('tampered or re-signed macOS code cannot be released', { skip: onMac }, asy
   signed[codeHashOffset(signed)] ^= 1;
   await writeFile(join(damaged, library), signed);
   await refuse(damaged, /signature check for libnode.137.dylib failed/);
-  // A worker with more or fewer entitlements than JIT (dylibs carry none).
-  const entitled = await adHoc(f, 'entitled');
-  const extra = join(f.root, 'extra.entitlements');
-  await writeFile(extra, (await readFile(new URL('./macos-app-worker.entitlements', import.meta.url), 'utf8'))
-    .replace('<key>com.apple.security.cs.allow-jit</key>', '$&\n\t<true/>\n\t<key>com.apple.security.cs.disable-library-validation</key>'));
-  assert.equal(real(['/usr/bin/codesign', '--force', '--sign', '-', '--options', 'runtime', '--entitlements', extra,
-    join(entitled, 'native/chariox-app-worker')]).status, 0);
-  await refuse(entitled, /unexpected entitlements: com.apple.security.cs.allow-jit, com.apple.security.cs.disable-library-validation/);
+  // A worker with other entitlements than JIT = true (dylibs carry none).
+  const jit = await readFile(new URL('./macos-app-worker.entitlements', import.meta.url), 'utf8');
+  for (const [name, value, pattern] of [
+    ['extra', '<true/>\n\t<key>com.apple.security.cs.disable-library-validation</key>\n\t<true/>',
+      /unexpected entitlements: com.apple.security.cs.allow-jit=true com.apple.security.cs.disable-library-validation=true/],
+    ['false', '<false/>', /unexpected entitlements: com.apple.security.cs.allow-jit=false/],
+    ['string', '<string>true</string>', /unexpected entitlements: com.apple.security.cs.allow-jit=<string>true<\/string>/]]) {
+    const entitled = await adHoc(f, `entitled-${name}`);
+    const plist = join(f.root, `${name}.entitlements`);
+    await writeFile(plist, jit.replace('<true/>', value));
+    assert.equal(real(['/usr/bin/codesign', '--force', '--sign', '-', '--options', 'runtime', '--entitlements', plist,
+      join(entitled, 'native/chariox-app-worker')]).status, 0);
+    await refuse(entitled, pattern);
+  }
   const bare = await adHoc(f, 'bare', codeFiles(f.bundle).map(file => ({ ...file, jit: false })));
   await refuse(bare, /chariox-app-worker has unexpected entitlements: none/);
   // A missing hardened runtime, and an unsigned copy.
