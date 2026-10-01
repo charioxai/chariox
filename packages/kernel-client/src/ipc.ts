@@ -33,6 +33,7 @@ import {
   kernelSubscriptionScopeValue,
   type KernelSubscriptionState,
 } from "./kernel-subscriptions.js"
+import { readLocalKernelAuthToken } from "./local-kernel-auth-token.js"
 import { LocalIpcError } from "./local-ipc-error.js"
 import { sendLocalSocketRequest } from "./local-socket-transport.js"
 import { createRelayKeypair, decryptRelayPayload } from "./relay-crypto.js"
@@ -633,6 +634,24 @@ export class LocalIpcClient {
     await pending.promise
   }
 
+  private openKernelWebSocket(): WebSocket {
+    if (this.isRelayMode()) {
+      return new WebSocket(this.socketPath)
+    }
+    if (this.localAuthToken && this.localAuthEndpoint) {
+      return new WebSocket(this.localAuthEndpoint, {
+        headers: { authorization: `Bearer ${this.localAuthToken}` },
+      })
+    }
+    // A laptop kernel writes a new token at each start, so read it for every
+    // connection: a reconnect after a kernel restart presents the new one.
+    // Without a readable token the kernel still accepts the connection (log mode).
+    const laptopKernelToken = readLocalKernelAuthToken(this.socketPath)
+    return laptopKernelToken
+      ? new WebSocket(this.socketPath, { headers: { authorization: `Bearer ${laptopKernelToken}` } })
+      : new WebSocket(this.socketPath)
+  }
+
   private async ensureWebSocket(lane: KernelSocketLane = "control"): Promise<WebSocket> {
     const existing = this.getWebSocket(lane)
     if (existing?.readyState === WebSocket.OPEN) {
@@ -644,11 +663,7 @@ export class LocalIpcClient {
     }
 
     const nextConnectPromise = new Promise<WebSocket>((resolve, reject) => {
-      const socket = this.localAuthToken && this.localAuthEndpoint && !this.isRelayMode()
-        ? new WebSocket(this.localAuthEndpoint, {
-            headers: { authorization: `Bearer ${this.localAuthToken}` },
-          })
-        : new WebSocket(this.socketPath)
+      const socket = this.openKernelWebSocket()
       let settled = false
       this.setConnectingWebSocket(lane, socket)
 
