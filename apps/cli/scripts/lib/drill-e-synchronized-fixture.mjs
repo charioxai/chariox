@@ -2,7 +2,7 @@ import http from "node:http"
 import { createDrillEBarrier } from "./drill-e-barrier.mjs"
 
 // MP-08/MP-10: fixture traffic only. Provider tools still use the normal kernel MCP path.
-export async function startDrillESynchronizedFixture({ actors, isolatedFrameHost = "127.0.0.1" }) {
+export async function startDrillESynchronizedFixture({ actors }) {
   const phases = new Map()
   let phase = null
   let armed = false
@@ -19,36 +19,16 @@ export async function startDrillESynchronizedFixture({ actors, isolatedFrameHost
         response.end("MP-08/MP-10 READY: call the requested Chariox Browser tool now")
         return
       }
-      if (parts[0] === "read-hold") {
-        if (armed && phase === "reads") await phases.get(phase).hold("read-evaluation")
-        response.end("released")
-        return
-      }
-      if (parts[0] === "frame") {
-        response.setHeader("Content-Type", "text/html")
-        response.end(`<h2>MP-08/MP-10 isolated snapshot barrier</h2><script>
-          addEventListener('message', event => {
-            if (event.data !== 'drill-e-read') return;
-            const request = new XMLHttpRequest();
-            request.open('GET', '/read-hold', false); request.send();
-          });
-          </script>`)
-        return
-      }
       if (parts[0] === "page" && ["same", "other"].includes(parts[1])) {
         if (armed) await phases.get(phase).hold(parts[1])
         response.setHeader("Content-Type", "text/html")
-        response.end(`<title>MP-08/MP-10 Drill E ${parts[1]}</title><h1>Drill E probe</h1>
-          ${parts[1] === "same" ? `<iframe id="snapshot-barrier" src="http://${isolatedFrameHost}:${server.address().port}/frame"></iframe>` : ""}
-          <script>
-          const nativeVisibility = Object.getOwnPropertyDescriptor(Document.prototype, 'visibilityState');
-          Object.defineProperty(document, 'visibilityState', {get() {
-            // Keep top-page reconciliation responsive. Only the isolated child
-            // renderer blocks, at the subsequent structured-snapshot seam.
-            document.getElementById('snapshot-barrier')?.contentWindow.postMessage('drill-e-read', '*');
-            return nativeVisibility.get.call(document);
-          }});
-          </script>`)
+        // The production CDP snapshot captures AX/DOM before compacting to its
+        // unchanged 5000-node result bound. A large fixture makes that read
+        // observable after admission, without blocking preflight reconciliation.
+        const probes = parts[1] === "same"
+          ? Array.from({ length: 30_000 }, (_, index) => `<button>Drill E probe ${index}</button>`).join("")
+          : "";
+        response.end(`<title>MP-08/MP-10 Drill E ${parts[1]}</title><h1>Drill E probe</h1>${probes}`)
         return
       }
       response.writeHead(404).end()
