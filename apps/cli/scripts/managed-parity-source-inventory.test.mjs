@@ -2128,3 +2128,10 @@ for (const id of ["impld-path1-role-service-policy", "impld-repository-component
     })
   })
 }
+
+test("MP-11 release D Cloud scopes are not missing OSS source declarations", () => {
+  withFixture({}, (fixture) => {
+    const report = collect(fixture)
+    assert.ok(!report.sourceAuditGaps.some((gap) => gap.ruleId.startsWith("impld-auto-stop-")))
+  })
+})

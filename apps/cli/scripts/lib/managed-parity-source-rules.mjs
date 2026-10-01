@@ -3215,7 +3215,7 @@ export function sourceAuditGaps(files, locatedAnchors) {
   const gaps = [];
   for (const rule of SOURCE_AUDIT_RULES) {
     const file = byPath.get(rule.path);
-    const applies = ([CLOUD, CLOUD_CURRENT, CLOUD_PARITY3].includes(rule.sourceCommit)) ? cloud : oss;
+    const applies = [CLOUD, CLOUD_CURRENT, CLOUD_PARITY3, CLOUD_IMPLD].includes(rule.sourceCommit) ? cloud : oss;
     if (!file) {
       if (applies) gaps.push({ kind: "expected_source_missing", ruleId: rule.id, path: rule.path,
         auditedBlob: rule.blob, auditSourceCommit: rule.sourceCommit, authoritative: false });
