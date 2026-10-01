@@ -7,6 +7,8 @@ DISPLAY_ID="${CHARIOX_SLICE_DISPLAY:-:99}"
 DISPLAY_MODE="${CHARIOX_SLICE_DISPLAY_MODE:-unknown}"
 SCREEN_GEOMETRY="${CHARIOX_SLICE_SCREEN_GEOMETRY:-1280x800x24}"
 SCREEN_SIZE="${SCREEN_GEOMETRY%x*}"
+DISPLAY_SERVER="${CHARIOX_SLICE_DISPLAY_SERVER:-Xvfb}"
+case "$DISPLAY_SERVER" in Xvfb|Xorg) ;; *) exit 2 ;; esac
 VNC_PORT="${CHARIOX_SLICE_VNC_PORT:-5900}"
 NOVNC_PORT="${CHARIOX_SLICE_NOVNC_PORT:-6080}"
 VIEWER_BACKEND="${CHARIOX_SLICE_VIEWER_BACKEND:-selkies}"
@@ -56,7 +58,7 @@ wait_for_display() {
     sleep 0.1
   done
   log "X display $DISPLAY_ID did not become ready"
-  tail -n 40 "$LOGS/xvfb.log" >&2 || true
+  tail -n 40 "$LOGS/display.log" >&2 || true
   return 1
 }
 
@@ -140,8 +142,8 @@ screen_missing_components() {
   if ! xdpyinfo -display "$DISPLAY_ID" >/dev/null 2>&1; then
     missing+=("display")
   fi
-  if ! process_running "Xvfb $DISPLAY_ID"; then
-    missing+=("xvfb")
+  if ! process_running "$DISPLAY_SERVER $DISPLAY_ID"; then
+    missing+=("display")
   fi
   if ! process_running '(^|/)tint2([[:space:]]|$)'; then
     missing+=("taskbar")
@@ -172,8 +174,8 @@ tool_blocking_missing_components() {
   if ! xdpyinfo -display "$DISPLAY_ID" >/dev/null 2>&1; then
     missing+=("display")
   fi
-  if ! process_running "Xvfb $DISPLAY_ID"; then
-    missing+=("xvfb")
+  if ! process_running "$DISPLAY_SERVER $DISPLAY_ID"; then
+    missing+=("display")
   fi
   if ! process_running "chromium.*$CHROME_PROFILE"; then
     missing+=("chromium")
@@ -227,7 +229,7 @@ launch_chromium() {
 }
 
 start_desktop() {
-  if process_running "chromium.*$CHROME_PROFILE" || process_running "Xvfb $DISPLAY_ID" || process_running "x11vnc.*$DISPLAY_ID" || novnc_running; then
+  if process_running "chromium.*$CHROME_PROFILE" || process_running "$DISPLAY_SERVER $DISPLAY_ID" || process_running "x11vnc.*$DISPLAY_ID" || novnc_running; then
     stop_desktop || true
   fi
   # Stop an owned previous Selkies process even when switching to noVNC.
@@ -242,11 +244,30 @@ start_desktop() {
   stop_process_pattern '(^|/)tint2([[:space:]]|$)'
   stop_process_pattern "chromium.*$CHROME_PROFILE"
   stop_process_pattern "/usr/lib/chromium/chromium"
-  stop_process_pattern "Xvfb $DISPLAY_ID"
+  stop_process_pattern "$DISPLAY_SERVER $DISPLAY_ID"
   rm -f "/tmp/.X${DISPLAY_ID#:}-lock" "/tmp/.X11-unix/X${DISPLAY_ID#:}"
 
-  nohup Xvfb "$DISPLAY_ID" -screen 0 "$SCREEN_GEOMETRY" -ac +extension RANDR +extension XTEST >"$LOGS/xvfb.log" 2>&1 &
+  if [[ "$DISPLAY_SERVER" == "Xorg" ]]; then
+    nohup Xorg "$DISPLAY_ID" -config "$ROOT/xorg-dummy.conf" -logfile "$LOGS/Xorg.log" -nolisten tcp -noreset -ac >"$LOGS/display.log" 2>&1 &
+  else
+    nohup Xvfb "$DISPLAY_ID" -screen 0 "$SCREEN_GEOMETRY" -ac +extension RANDR +extension XTEST >"$LOGS/display.log" 2>&1 &
+  fi
   wait_for_display
+  if [[ "$DISPLAY_SERVER" == "Xorg" ]]; then
+    # Apply the configured initial geometry before any browser/viewer starts.
+    # Subsequent geometry changes belong to the canonical controller path.
+    /opt/chariox-selkies/bin/python - "$ROOT" "$SCREEN_SIZE" <<'PYTHON'
+import importlib.util, pathlib, sys, time
+sys.path.insert(0, sys.argv[1])
+spec = importlib.util.spec_from_file_location("canonical_display", pathlib.Path(sys.argv[1]) / "canonical-display.py")
+display = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(display)
+width, height = map(int, sys.argv[2].split("x"))
+display.dimensions(width, height)
+display._deadline = time.monotonic() + 10
+display.resize(width, height)
+PYTHON
+  fi
 
   # Desktop-launched programs inherit one session bus. Without it, ordinary
   # GTK applications cannot persist dconf settings. The supervisor stops the
@@ -259,14 +280,14 @@ start_desktop() {
       return 1
     fi
   else
-    nohup x11vnc -display "$DISPLAY_ID" -localhost -nopw -forever -shared -rfbport "$VNC_PORT" >"$LOGS/x11vnc.log" 2>&1 &
+    nohup x11vnc -display "$DISPLAY_ID" -xrandr resize -nonap -wait 100 -noxdamage -localhost -nopw -forever -shared -rfbport "$VNC_PORT" >"$LOGS/x11vnc.log" 2>&1 &
     nohup websockify --web=/usr/share/novnc/ "0.0.0.0:$NOVNC_PORT" "127.0.0.1:$VNC_PORT" >"$LOGS/novnc.log" 2>&1 &
   fi
 
   launch_chromium
 
   sleep 2
-  require_process "Xvfb $DISPLAY_ID" "Xvfb" "$LOGS/xvfb.log"
+  require_process "$DISPLAY_SERVER $DISPLAY_ID" "$DISPLAY_SERVER" "$LOGS/display.log"
   require_process '(^|/)openbox([[:space:]]|$)' "Openbox" "$LOGS/openbox.log"
   require_process '(^|/)tint2([[:space:]]|$)' "Applications taskbar" "$LOGS/taskbar.log"
   if [[ "$VIEWER_BACKEND" == "selkies" ]]; then
@@ -298,7 +319,7 @@ status() {
       viewer_port="$discovered_port"
     fi
     printf 'viewer=http://127.0.0.1:%s/vnc.html?host=127.0.0.1&port=%s&autoconnect=true&resize=scale\n' "$viewer_port" "$viewer_port"
-    pgrep -af "Xvfb $DISPLAY_ID|openbox|x11vnc|websockify|chromium.*$CHROME_PROFILE" | grep -v defunct || true
+    pgrep -af "$DISPLAY_SERVER $DISPLAY_ID|openbox|x11vnc|websockify|chromium.*$CHROME_PROFILE" | grep -v defunct || true
     return 0
   fi
   local missing_csv
@@ -339,7 +360,7 @@ stop_desktop() {
   stop_process_pattern "x11vnc.*$VNC_PORT"
   stop_process_pattern '(^|/)openbox([[:space:]]|$)'
   stop_process_pattern '(^|/)tint2([[:space:]]|$)'
-  stop_process_pattern "Xvfb $DISPLAY_ID"
+  stop_process_pattern "$DISPLAY_SERVER $DISPLAY_ID"
   clear_chromium_profile_locks
   return "$streamer_exit"
 }
@@ -703,7 +724,7 @@ find_text() {
 open_url() {
   # Opening a URL may recover the browser, but must not restart or create the
   # shared desktop. Other input operations still require the full screen state.
-  if ! xdpyinfo -display "$DISPLAY_ID" >/dev/null 2>&1 || ! process_running "Xvfb $DISPLAY_ID"; then
+  if ! xdpyinfo -display "$DISPLAY_ID" >/dev/null 2>&1 || ! process_running "$DISPLAY_SERVER $DISPLAY_ID"; then
     status
     return 1
   fi

@@ -216,77 +216,59 @@ impl SessionRuntimeStore {
             request.viewport.desktop_pixel_height,
         )
         .map_err(|error| room_environment_control_error("environment.viewport.update", error));
-        let result = viewport.and_then(|viewport| {
-            let actor_id = crate::session::human_environment_actor_id(&caller_user_id);
-            let display_label = crate::session::human_environment_actor_label(&caller_user_id);
-            self.state
-                .update_room_environment_viewport_as_actor(
-                    &request.session_id,
-                    crate::session::EnvironmentActor::new(
-                        actor_id,
-                        crate::session::EnvironmentActorKind::Human,
-                        display_label,
-                    ),
-                    request.expected_revision,
-                    viewport,
-                )
-                .map_err(|error| {
-                    room_environment_control_error("environment.viewport.update", error)
-                })
-        });
-        let result = match result {
-            Ok(environment)
-                if self
-                    .state
-                    .browser_controller_enabled_for_room(&request.session_id) =>
-            {
-                match self
-                    .state
-                    .reconcile_browser_controller_environment(&request.session_id)
-                    .await
-                {
-                    Ok(_) => self
-                        .state
-                        .update_room_environment_component_health(
-                            &request.session_id,
-                            crate::session::EnvironmentComponent::Browser,
-                            crate::session::EnvironmentComponentHealthState::Ready,
-                            None,
-                        )
-                        .map_err(|error| {
-                            room_environment_control_error("environment.viewport.update", error)
-                        }),
-                    Err(_) => {
-                        let degraded = self
-                            .state
-                            .update_room_environment_component_health(
-                                &request.session_id,
-                                crate::session::EnvironmentComponent::Browser,
-                                crate::session::EnvironmentComponentHealthState::Degraded,
-                                Some("viewport_apply_failed"),
-                            )
-                            .unwrap_or(environment);
-                        if degraded.lifecycle == crate::session::EnvironmentLifecycle::Ready {
-                            self.state
-                                .transition_room_environment(
-                                    &request.session_id,
-                                    crate::session::EnvironmentLifecycle::Degraded,
-                                )
-                                .map_err(|error| {
-                                    room_environment_control_error(
-                                        "environment.viewport.update",
-                                        error,
-                                    )
-                                })
-                        } else {
-                            Ok(degraded)
-                        }
+        let result = async {
+            let viewport = viewport?;
+            let actor = crate::session::EnvironmentActor::new(
+                crate::session::human_environment_actor_id(&caller_user_id),
+                crate::session::EnvironmentActorKind::Human,
+                crate::session::human_environment_actor_label(&caller_user_id),
+            );
+            // Preview validates the owner and revision without publishing a
+            // new viewport or clearing pointers before physical application.
+            let preview = self.state.preview_update_room_environment_viewport_as_actor(
+                &request.session_id, actor.clone(), request.expected_revision, viewport.clone(),
+            ).map_err(|error| room_environment_control_error("environment.viewport.update", error))?;
+            let controlled = self.state.browser_controller_enabled_for_room(&request.session_id);
+            let reconciliation = if controlled {
+                match self.state.apply_browser_controller_viewport(&request.session_id, &preview).await {
+                    Ok(reconciliation) => Some(reconciliation),
+                    Err(error) => {
+                        // Physical failures roll back locally; this also restores
+                        // CDP metrics after a later browser-layout failure.
+                        let _ = self.state.restore_browser_controller_viewport(&request.session_id).await;
+                        return Err(error);
                     }
                 }
+            } else { None };
+            if let Some(reconciliation) = reconciliation {
+                if let Err(error) = self.state.observe_browser_controller_reconciliation(
+                    &request.session_id, reconciliation,
+                ) {
+                    let _ = self.state.restore_browser_controller_viewport(&request.session_id).await;
+                    return Err(error);
+                }
+                if let Err(error) = self.state.update_room_environment_component_health(
+                    &request.session_id, crate::session::EnvironmentComponent::Browser,
+                    crate::session::EnvironmentComponentHealthState::Ready, None,
+                ) {
+                    let _ = self.state.restore_browser_controller_viewport(&request.session_id).await;
+                    return Err(room_environment_control_error("environment.viewport.update", error));
+                }
             }
-            other => other,
-        }
-        .map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment });
+            let environment = match self.state.update_room_environment_viewport_as_actor(
+                &request.session_id, actor, request.expected_revision, viewport,
+            ) {
+                Ok(environment) => environment,
+                Err(error) => {
+                    if controlled {
+                        let _ = self.state.restore_browser_controller_viewport(&request.session_id).await;
+                    }
+                    return Err(room_environment_control_error("environment.viewport.update", error));
+                }
+            };
+            Ok(LocalDaemonResponse::RoomEnvironmentUpdated { environment })
+        }.await;
+
         (result, None)
     }
 

@@ -2,7 +2,7 @@ use crate::error::DaemonError;
 use crate::local::RoomEnvironmentResourceInventory;
 use crate::runtime::browser_controller_event::{RoomBrowserEvent, RoomBrowserEventBatch};
 use crate::runtime::browser_controller_process::{
-    BrowserControllerProcessSnapshot, BrowserControllerProcessState,
+    BrowserControllerProcessSnapshot, BrowserControllerProcessState, BrowserControllerReconciliation,
 };
 use crate::session::{
     EnvironmentComponent, EnvironmentComponentHealthState, EnvironmentError, EnvironmentLifecycle,
@@ -212,6 +212,44 @@ impl KernelRuntimeState {
             .map_err(|error| environment_runtime_error(operation, error))
     }
 
+    pub(crate) async fn restore_browser_controller_viewport(
+        &self,
+        session_id: &str,
+    ) -> Result<(), DaemonError> {
+        if let Err(error) = self.reconcile_browser_controller_environment(session_id).await {
+            let _ = self.update_room_environment_component_health(
+                session_id,
+                EnvironmentComponent::Browser,
+                EnvironmentComponentHealthState::Degraded,
+                Some("viewport_rollback_failed"),
+            );
+            if self.room_environment_snapshot(session_id).is_ok_and(|environment| {
+                environment.lifecycle == EnvironmentLifecycle::Ready
+            }) {
+                let _ = self.transition_room_environment(session_id, EnvironmentLifecycle::Degraded);
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn apply_browser_controller_viewport(
+        &self,
+        session_id: &str,
+        environment: &RoomEnvironmentSnapshot,
+    ) -> Result<BrowserControllerReconciliation, DaemonError> {
+        match self.room_browser_controller_command(
+            session_id,
+            RoomBrowserControllerCommand::Reconcile {
+                viewport: environment.viewport.clone(),
+                browser_bar_visible: environment.browser_bar_visible,
+            },
+        ).await? {
+            RoomBrowserControllerResult::Reconciled { reconciliation: Some(reconciliation) } => Ok(reconciliation),
+            _ => Err(controller_route_error("controller did not verify canonical viewport")),
+        }
+    }
+
     pub(crate) async fn reconcile_browser_controller_environment(
         &self,
         session_id: &str,
@@ -238,6 +276,14 @@ impl KernelRuntimeState {
                 .room_environment_snapshot(session_id)
                 .map_err(|error| environment_runtime_error("browser_controller.reconcile", error));
         };
+        self.observe_browser_controller_reconciliation(session_id, reconciliation)
+    }
+
+    pub(crate) fn observe_browser_controller_reconciliation(
+        &self,
+        session_id: &str,
+        reconciliation: BrowserControllerReconciliation,
+    ) -> Result<RoomEnvironmentSnapshot, DaemonError> {
         let controller_recovery_pending = self.observe_browser_controller_generation(
             session_id,
             reconciliation.process.runtime_generation,

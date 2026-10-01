@@ -360,6 +360,10 @@ impl BrowserControllerProcessStdioBackend {
                     .and_then(serde_json::Value::as_u64)
                     .unwrap_or(0),
             ))
+        } else if method == "browser.reconcile" {
+            // Physical display verification includes bounded streamer readback
+            // and rollback. Do not kill its controller during that cleanup.
+            self.timeout.max(Duration::from_secs(45))
         } else {
             self.timeout
         };
