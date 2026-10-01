@@ -117,6 +117,14 @@ const DOCKER_READY_ATTEMPTS: usize = 60;
 const DOCKER_READY_RETRY_DELAY_MS: u64 = 1_000;
 const MANAGED_SLICE_DOCKER_PROVISIONER: &str =
     "/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh";
+/// The provisioner inside a slice build context, a tree in the repository layout.
+const SLICE_DOCKER_PROVISIONER: &str =
+    "apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh";
+/// A release's own slice build context, relative to the prefix of its `bin/chariox-kernel`.
+const RELEASE_SLICE_BUILD_CONTEXT: &str = "share/chariox/slice-build-context";
+/// The system-wide slice build context, where the managed image and the Linux
+/// release's root install step put it.
+const SYSTEM_SLICE_BUILD_CONTEXT: &str = "/usr/lib/chariox/slice-build-context";
 const MAX_PROVIDER_CREDENTIAL_BYTES: usize = 2 * 1024 * 1024;
 const MAX_PROVIDER_CREDENTIAL_TOTAL_BYTES: usize = 8 * 1024 * 1024;
 const GITHUB_TOKEN_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
@@ -1570,6 +1578,13 @@ fn linux_docker_slice_script() -> Result<PathBuf, DaemonError> {
         let script = expand_user_path_for_slice(&script.to_string_lossy());
         return validate_linux_docker_slice_script(script);
     }
+    if !cfg!(debug_assertions) {
+        // A release kernel has no source tree; it uses its release's slice build context.
+        return installed_slice_script(
+            std::env::current_exe().ok().as_deref(),
+            Path::new(SYSTEM_SLICE_BUILD_CONTEXT),
+        );
+    }
 
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let repo_root = manifest_dir
@@ -1585,6 +1600,40 @@ fn linux_docker_slice_script() -> Result<PathBuf, DaemonError> {
         .join("slice-linux-docker")
         .join("provision-linux-docker-slice.sh");
     validate_linux_docker_slice_script(script)
+}
+
+/// Finds a release kernel's provisioner: first in the context beside its real
+/// executable (`<prefix>/bin/chariox-kernel` with
+/// `<prefix>/share/chariox/slice-build-context`, the release bundle's layout), then
+/// in the system-wide context.
+fn installed_slice_script(
+    executable: Option<&Path>,
+    system_context: &Path,
+) -> Result<PathBuf, DaemonError> {
+    let prefix = executable
+        .and_then(|executable| executable.canonicalize().ok())
+        .and_then(|executable| Some(executable.parent()?.parent()?.to_path_buf()));
+    let candidates = prefix
+        .map(|prefix| prefix.join(RELEASE_SLICE_BUILD_CONTEXT))
+        .into_iter()
+        .chain([system_context.to_path_buf()])
+        .map(|context| context.join(SLICE_DOCKER_PROVISIONER))
+        .collect::<Vec<_>>();
+    candidates
+        .iter()
+        .find(|script| script.is_file())
+        .cloned()
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "slice.local_docker",
+            message: format!(
+                "slice Docker provisioner not found at {}; install the release's slice build context or set CHARIOX_SLICE_DOCKER_PROVISIONER",
+                candidates
+                    .iter()
+                    .map(|script| script.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(" or ")
+            ),
+        })
 }
 
 fn validate_linux_docker_slice_script(script: PathBuf) -> Result<PathBuf, DaemonError> {
