@@ -1,6 +1,6 @@
 # Chariox Kernel Access Plan
 
-**Status:** Draft, 2026-09-30, revised 2026-10-01. Owner decisions of 2026-09-30 and 2026-10-01 recorded. The lead proposal P2 awaits owner confirmation. This is an independent milestone, not part of Chariox Apps Phase 2.
+**Status:** Draft, 2026-09-30, revised 2026-10-01. Owner decisions of 2026-09-30 and 2026-10-01 recorded; no lead proposals remain open. This is an independent milestone, not part of Chariox Apps Phase 2.
 
 ## Summary
 
@@ -32,10 +32,7 @@ Every grant, extension and `/sudo` needs the passkey, typed only into a kernel-o
 - **D13. A separate track.** The popup ships with this milestone, not in Apps Phase 1. This is a separate feature track with its own plan and milestones, and it must never delay Chariox Apps.
 - **D14. No sudo safety cap.** A sudo turn has the user's authority on its kernel: no limit on critical approvals or payment amounts, and no confinement to its own session. It still may not mint grants or sudo, read secret values, or change the passphrase.
 - **D15. Shared sessions** (former lead proposal P5). Only the session's owner (the host) can grant an external agent access to a shared session, with the host's own passkey, and the popup appears only on the host's terminals. Guests can never grant. This matches Phase 1, where only the host answers approvals. The exception is the future Chariox assistant (stratum 4): it collaborates for its user, so it acts with its user's guest rights in sessions where that user is a guest (section 5.1).
-
-Lead proposal, **Proposed, awaiting owner confirmation**:
-
-- **P2.** An external agent's grant never answers critical approvals; the agent requests a `/sudo` turn instead (D8). The receipt of a critical approval answered by a sudo turn names the turn and the human `/sudo` entry that authorized it (section 7.2).
+- **D16. Who answers critical approvals** (former lead proposal P2): "yes, external agents can't. sudo agents can". An external agent's grant never answers critical approvals; the agent can request a `/sudo` turn instead (D8). Sudo turns can. The receipt names the sudo turn and the human `/sudo` entry that authorized it (section 7.2).
 
 ## 1. Problem and current state
 
@@ -86,7 +83,7 @@ Phase 1 protects critical approvals. Everything else a same-user process can do 
 - This is a separate feature track with its own plan and milestones, and it must never delay Chariox Apps (D13).
 - Phase 1 ships first and does not depend on this milestone. Its contract holds until this milestone ships: agents cannot approve critical actions.
 - This milestone reuses the Phase 1 pieces: the pinned passkey verifier, the rate limiter, the redaction and zeroization of the `passkey` field, the hidden-input prompts in the TUI and web, and the durable audit stream. The prompts become the popups of section 5.2 when this milestone ships; Apps Phase 1 keeps its approval panel (D13).
-- An external agent's grant never satisfies a critical approval (P2). A sudo turn may answer one (D3), because the human entered the passkey for that turn.
+- An external agent's grant never satisfies a critical approval (D16). A sudo turn may answer one (D3), because the human entered the passkey for that turn.
 - The Phase 1 remember window stays a Phase 1 feature for approvals at a terminal. It never satisfies a `/sudo`, a grant or an extension.
 
 ## 3. Goals and non-goals
@@ -147,7 +144,7 @@ As part of a successful rotation, the kernel:
 
 ### 4.5 Non-encrypted vault backends
 
-If the vault backend is not the encrypted Chariox vault, there is nothing to verify the passkey against. Critical approvals already fail closed in Phase 1. This milestone does the same: no access grants and no `/sudo`. The user sees a clear message pointing to the encrypted vault setup. Whether to offer a standalone passkey for other backends is open question 5.
+If the vault backend is not the encrypted Chariox vault, there is nothing to verify the passkey against. Critical approvals already fail closed in Phase 1. This milestone does the same: no access grants and no `/sudo`. The user sees a clear message pointing to the encrypted vault setup. Whether to offer a standalone passkey for other backends is open question 4.
 
 ### 4.6 Remote and hosted kernels
 
@@ -168,7 +165,7 @@ Today strata 2 and 3 do not exist as such: any same-user process can act as stra
 
 **Room for stratum 4.** Every grant and sudo record carries its stratum and how the human authenticated it, and every audit event names both. Strata 1 to 3 are defined per kernel, and nothing in them assumes a user has only one kernel. Stratum 2's same-machine rule belongs to stratum 2, not to the kernel's authorization model. Cloud-based kernel discovery for terminals changes how a terminal finds a kernel, not how it authenticates to one. The design must also let the root agent operate sessions where its user is a guest, with that user's guest rights (D15); how it is authorized there belongs to the stratum 4 design.
 
-Under D10, anything system-wide, including all kernels, is managed by Cloud. The root agent's authority across kernels cannot rest on per-kernel vault passphrases, which differ per kernel (section 4.1); it builds on the account-level authenticator of Apps Phase 2 P2.13, a Chariox-wide passkey. Its design is future work. Whether these system-wide features are also available to users who run a self-hosted relay instead of Chariox Cloud is open question 7.
+Under D10, anything system-wide, including all kernels, is managed by Cloud. The root agent's authority across kernels cannot rest on per-kernel vault passphrases, which differ per kernel (section 4.1); it builds on the account-level authenticator of Apps Phase 2 P2.13, a Chariox-wide passkey. Its design is future work. Whether these system-wide features are also available to users who run a self-hosted relay instead of Chariox Cloud is open question 6.
 
 ### 5.2 Passkey popups (D1)
 
@@ -209,7 +206,7 @@ An external agent acts as the user within its session only. Requests that name a
 - read secret values or export the vault (both may use credential handles and create vault entries through kernel-owned flows, as agents do today);
 - change the passkey or the kernel access configuration.
 
-Only a sudo turn may answer critical approvals (D3, P2).
+Only a sudo turn may answer critical approvals (D3, D16).
 
 Agents that a sudo turn or an external agent spawns through the kernel are normal agents (D4). The spawn path never copies a holder's authority.
 
@@ -223,7 +220,7 @@ grant_extend_notice_minutes = 5
 request_timeout_minutes = 10
 ```
 
-The user picks a grant's lifetime in the popup, up to `grant_max_minutes`. Each extension starts a new term under the same limit. A grant also ends when its bound process exits. A sudo turn has no lifetime setting: it lasts exactly one turn (D2). The defaults are for the owner to confirm (open question 2).
+The user picks a grant's lifetime in the popup, up to `grant_max_minutes`. Each extension starts a new term under the same limit. A grant also ends when its bound process exits. A sudo turn has no lifetime setting: it lasts exactly one turn (D2). The defaults are for the owner to confirm (open question 1).
 
 ### 5.6 Revocation
 
@@ -250,7 +247,7 @@ Durable events, next to `critical_approval.passkey`, never containing the passke
 
 - `kernel_access.grant` with outcome `requested`, `granted`, `refused`, `extended`, `expired` or `revoked`, plus the grant id, session id, holder, authorizing terminal and revocation reason.
 - `kernel_access.sudo` with outcome `requested`, `entered`, `refused`, `ended` or `interrupted`, plus the agent, run and turn, and the requester for an external request.
-- Receipts of critical approvals answered by a sudo turn name the turn and the `/sudo` entry that authorized it (P2).
+- Receipts of critical approvals answered by a sudo turn name the turn and the `/sudo` entry that authorized it (D16).
 - `kernel_access.denied` for each request refused for scope. These are sampled and aggregated so a looping agent cannot flood the log.
 
 Chariox terminals list the live grants and running sudo turns, with a revoke control.
@@ -266,7 +263,7 @@ The kernel identifies the connecting process through the OS, which works only on
 - **External agents.** The grant binds to the requesting process: the external agent itself. When the request comes from a helper, such as a `chariox` CLI run by the agent's shell tool, the helper names the agent process among its OS ancestors; the kernel verifies the ancestry, and the popup shows the executable and pid it will authorize. A requester that names a broad ancestor, such as a terminal emulator or a login shell, shows it in the popup. Later connections are accepted from that process and its OS descendants, checked with the same PID-reuse protection, so CLI calls from the agent's own shell tools work. Chariox agents it spawns through the kernel do not inherit (D4).
 - **Kernel-launched agents.** For shell-level CLI access from a sudo turn, the kernel creates a dedicated OS session (`setsid`) at each provider launch and tracks the descendant identities it launched, with PID-reuse protection. Process-group or shared OS-session membership alone is not an identity: on Linux any process in the same session can `setpgid` into another group. A negative test has a sibling agent's process join the target's group and try to use its authority.
 
-**Limits.** PID ancestry is fragile: daemonized helpers reparent to `launchd` or `init` and lose the grant, and sandbox wrappers or containers change the picture. A same-user process can still inject into the holder on many systems. Windows needs a different mechanism (named pipes and `GetNamedPipeClientProcessId`, open question 6).
+**Limits.** PID ancestry is fragile: daemonized helpers reparent to `launchd` or `init` and lose the grant, and sandbox wrappers or containers change the picture. A same-user process can still inject into the holder on many systems. Windows needs a different mechanism (named pipes and `GetNamedPipeClientProcessId`, open question 5).
 
 ### 6.2 Session scoping
 
@@ -300,7 +297,7 @@ Today `/meta <task>` puts the focused agent into a temporary Meta mode that is d
 
 Shell-level `chariox` CLI calls from the turn carry sudo only once process identity for kernel-launched agents exists (section 6.1). Until then, kernel access goes through the run's MCP tools.
 
-**Critical approval receipts (P2). Proposed, awaiting owner confirmation.** The receipt of a critical approval answered by a sudo turn is attributed to the turn and to the human `/sudo` entry that authorized it. An external agent's grant (stratum 2) does not answer critical approvals; the agent can request a `/sudo` turn instead (D8). Until this milestone ships, Phase 1 is unchanged: agents cannot approve.
+**Critical approval receipts (D16).** The receipt of a critical approval answered by a sudo turn is attributed to the turn and to the human `/sudo` entry that authorized it. An external agent's grant (stratum 2) does not answer critical approvals; the agent can request a `/sudo` turn instead (D8). Until this milestone ships, Phase 1 is unchanged: agents cannot approve.
 
 ### 7.3 What it still cannot do
 
@@ -320,7 +317,7 @@ Shell-level `chariox` CLI calls from the turn carry sudo only once process ident
 
 - For one release, `/meta` keeps working and shows a notice that `/sudo` replaces it. `/meta` stays delegation-only and needs no passkey, because it grants nothing new.
 - Meta tasks already running (`apps/kernel/src/runtime/state/metaagent_task_runtime_state.rs`) finish in Meta mode. They are never upgraded to sudo automatically, since that would grant authority without a passkey.
-- In a later release `/meta` is removed from the command catalog and the CLI (`apps/cli/src/command-center.test.ts` covers it today). Whether a delegation-only mode survives under another name is open question 3.
+- In a later release `/meta` is removed from the command catalog and the CLI (`apps/cli/src/command-center.test.ts` covers it today). Whether a delegation-only mode survives under another name is open question 2.
 
 ## 8. Effect on each client
 
@@ -380,7 +377,7 @@ Each step ships on its own and leaves the system working. Steps 3 to 7 change se
 
 | Attack | Mitigation |
 |---|---|
-| A same-user agent answers a critical approval | Phase 1: the passkey is required at approval time; agents never see it. After this milestone, only a Chariox terminal with the passkey, or a sudo turn the human started with the passkey (D3), can answer. A grant never can (P2). |
+| A same-user agent answers a critical approval | Phase 1: the passkey is required at approval time; agents never see it. After this milestone, only a Chariox terminal with the passkey, or a sudo turn the human started with the passkey (D3), can answer. A grant never can (D16). |
 | A same-user agent acts as the owner in other ways | Steps 1 to 5 require credentials and send agents through grants, which are bound to a process and scoped to one session. A same-user agent that deliberately reads the terminal credential file can still pose as a terminal; that is accepted (D11), because every dangerous action needs the passkey. |
 | Another OS user connects to loopback | Step 1 token in a 0600 file; the 0600 Unix socket with a peer UID check. |
 | A browser page drives the kernel over loopback | #618 refuses any upgrade with an `Origin` header. |
@@ -399,7 +396,7 @@ Each step ships on its own and leaves the system working. Steps 3 to 7 change se
 ### 10.4 Residual risks
 
 - **Memory and input capture.** A same-user process that can read the kernel's memory, attach a debugger, or log keystrokes can capture the passkey. On macOS keystroke capture needs a TCC permission; under X11 on Linux any client can read keystrokes. This plan does not address it.
-- **No isolation (D11, D12).** Same-user agents can read local files. They can read the step 1 token file and pose as a terminal for everything except passkey prompts, and read the vault file to guess the passkey offline, slowed only by Argon2id; passphrase strength matters more now that it gates approvals and sudo (open question 4). They can also read per-run MCP bearers from providers' MCP configurations; during a sudo turn that bearer carries sudo authority until the turn yields. This is accepted: the passkey is the hard boundary for everything dangerous, namely critical approvals, grants, extensions and `/sudo`. Steps 1 and 5 still stop other OS users and keep well-behaved agents on the grant path.
+- **No isolation (D11, D12).** Same-user agents can read local files. They can read the step 1 token file and pose as a terminal for everything except passkey prompts, and read the vault file to guess the passkey offline, slowed only by Argon2id; passphrase strength matters more now that it gates approvals and sudo (open question 3). They can also read per-run MCP bearers from providers' MCP configurations; during a sudo turn that bearer carries sudo authority until the turn yields. This is accepted: the passkey is the hard boundary for everything dangerous, namely critical approvals, grants, extensions and `/sudo`. Steps 1 and 5 still stop other OS users and keep well-behaved agents on the grant path.
 - **Proxying.** An authorized agent can deliberately act as a proxy for another process: forward its requests over its own connections, or run it inside its own process tree. No mechanism can stop that, and the audit attributes everything to the authorized agent. The same holds for an external agent's own sub-agents and helpers, which the kernel cannot tell apart from it; D4 covers agents spawned through the kernel.
 - **Sudo turn breadth.** A sudo turn can approve critical actions, including payments, in any session on its kernel for as long as it runs, and a misbehaving or prompt-injected agent can misuse that within the turn. The owner accepted this with no cap (D14). The bounds are one turn, the user's ability to interrupt it, and receipts that name the turn and the `/sudo` entry.
 - **Phase 1 remember window.** Within it a human at a terminal approves without retyping the passkey, and so can a same-user agent posing as a terminal (D11); that is the accepted cost of opting in. It is off by default, lasts at most 15 minutes, and never applies to `/sudo`, grants or extensions.
@@ -407,13 +404,12 @@ Each step ships on its own and leaves the system working. Steps 3 to 7 change se
 
 ## 11. Open questions for the owner
 
-1. **P2.** Confirm that an external agent's grant never answers critical approvals, and that the receipt of a critical approval answered by a sudo turn names the turn and the `/sudo` entry (section 7.2).
-2. **Lifetimes.** Confirm the grant default of 30 minutes and maximum of 240, the 5-minute extension notice, and the 10-minute request timeout.
-3. How long should `/meta` stay as an alias, and should a no-passkey delegation-only mode survive under another name?
-4. Should the kernel enforce a minimum passphrase strength now that the passphrase is the passkey, and prompt existing users with weak passphrases to rotate?
-5. For non-encrypted vault backends: fail closed permanently, or offer a standalone passkey?
-6. Is Windows in scope for external agent grants, which need a different process identity mechanism, or are they macOS and Linux only?
-7. **Self-hosted relay** (to discuss later). Are the system-wide features managed by Cloud (D10), such as the root agent and Cloud-based kernel discovery, also available to users who run a self-hosted relay instead of Chariox Cloud?
+1. **Lifetimes.** Confirm the grant default of 30 minutes and maximum of 240, the 5-minute extension notice, and the 10-minute request timeout.
+2. How long should `/meta` stay as an alias, and should a no-passkey delegation-only mode survive under another name?
+3. Should the kernel enforce a minimum passphrase strength now that the passphrase is the passkey, and prompt existing users with weak passphrases to rotate?
+4. For non-encrypted vault backends: fail closed permanently, or offer a standalone passkey?
+5. Is Windows in scope for external agent grants, which need a different process identity mechanism, or are they macOS and Linux only?
+6. **Self-hosted relay** (to discuss later). Are the system-wide features managed by Cloud (D10), such as the root agent and Cloud-based kernel discovery, also available to users who run a self-hosted relay instead of Chariox Cloud?
 
 ## References
 
