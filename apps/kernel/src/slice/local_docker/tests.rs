@@ -344,10 +344,14 @@ exit 0
     options.root = root.clone();
     let mut record = test_record();
     record.display_mode = SliceDisplayMode::Headless;
+    snapshot_pause::begin(&record, &options, false)
+        .expect("measurement obligation should persist without source pause");
     let rejection = disk_admission::with_slice_snapshot_disk_admission(|guard| {
         disk_admission::validate_slice_snapshot_disk_admission(&record, &options, guard)
     })
     .expect_err("low Docker capacity must reject the admission seam");
+    snapshot_pause::recover(&record, &options)
+        .expect("failed measurement obligation should retire");
     let pressured_calls = std::fs::read_to_string(&log).expect("Docker log should read");
     assert!(rejection
         .to_string()
@@ -358,10 +362,23 @@ exit 0
         .any(|call| call.starts_with("commit ")));
     assert_eq!(std::fs::read(&manifest).unwrap(), prior_manifest);
     std::fs::write(&capacity, b"107374182400\n").unwrap();
+    snapshot_pause::begin(&record, &options, false)
+        .expect("recovered measurement obligation should persist");
     disk_admission::with_slice_snapshot_disk_admission(|guard| {
         disk_admission::validate_slice_snapshot_disk_admission(&record, &options, guard)
     })
     .expect("recovered capacity should pass the independent admission seam");
+    snapshot_pause::recover(&record, &options)
+        .expect("successful measurement obligation should retire");
+    assert!(!root
+        .join("runtime")
+        .join(&record.id)
+        .join("snapshot-resume.json")
+        .exists());
+    let measurements = std::fs::read_to_string(&log).unwrap();
+    assert!(!measurements.lines().any(|call| call.starts_with("pause ")
+        || call.starts_with("stop ")
+        || call.contains("slice-screen.sh")));
     std::fs::write(&log, "").unwrap();
     for result in [
         state::save_local_docker_slice_state_live(&record, &options).map(|_| ()),
