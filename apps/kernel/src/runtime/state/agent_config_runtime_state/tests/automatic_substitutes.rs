@@ -772,6 +772,70 @@ async fn a_substitute_on_another_account_never_resumes_the_primary_session() {
     );
 }
 
+impl FailingTurn {
+    /// Queues "implement that solution" behind the active turn.
+    async fn queue_follow_up(&self) {
+        self.runtime
+            .with_app_side_effect(|app| {
+                let attachment = crate::app::KernelSessionService::new(app).attach(
+                    crate::attachment::AttachRequest::new(
+                        &self.session_id,
+                        "follow-up-client",
+                        crate::attachment::ClientCapabilityLevel::FullTerminal,
+                    ),
+                )?;
+                app.prompt_owner_submit_prepared_prompt(
+                    &self.session_id,
+                    crate::session::PromptQueueItem::new(
+                        "follow-up",
+                        attachment.id(),
+                        &self.agent_id,
+                        "implement that solution",
+                        crate::session::PromptStatus::Queued,
+                    ),
+                    false,
+                )
+            })
+            .await
+            .unwrap();
+    }
+
+    /// The queued follow-up runs on a fresh run of the configured profile,
+    /// with the substitute's answer, and the substitute run is retired.
+    fn assert_follow_up_on_the_primary(&self, substitute: &str) {
+        let follow_up = self.active_prompt().expect("the follow-up starts");
+        assert_eq!(follow_up.prompt(), "implement that solution");
+        let primary_run = follow_up
+            .durable_delivery_provider_run_id()
+            .expect("the follow-up is dispatched")
+            .to_string();
+        assert_ne!(primary_run, substitute);
+        let primary_run = self
+            .runtime
+            .owned
+            .provider_store
+            .get_run(&primary_run)
+            .unwrap();
+        assert_eq!(primary_run.model(), PRIMARY_MODEL);
+        assert!(primary_run.turn_substitute().is_none());
+        let delivered = self.provider_inputs(primary_run.id());
+        assert!(
+            delivered.contains("implement that solution")
+                && delivered.contains("Proposed fix: rename parse_all to parse."),
+            "the follow-up reaches the primary with the substitute's answer: {delivered}"
+        );
+        assert_eq!(
+            self.runtime
+                .owned
+                .provider_store
+                .get_run(substitute)
+                .unwrap()
+                .state(),
+            ProviderRunState::Ended
+        );
+    }
+}
+
 #[tokio::test]
 async fn a_queued_follow_up_reaches_the_primary_with_the_substitute_answer() {
     let turn = failing_turn(&[("dev-stub", SUBSTITUTE_A, None)]).await;
@@ -782,45 +846,119 @@ async fn a_queued_follow_up_reaches_the_primary_with_the_substitute_answer() {
         Some(&substitute),
         "Proposed fix: rename parse_all to parse.",
     );
-    turn.runtime
-        .with_app_side_effect(|app| {
-            let attachment = crate::app::KernelSessionService::new(app).attach(
-                crate::attachment::AttachRequest::new(
-                    &turn.session_id,
-                    "follow-up-client",
-                    crate::attachment::ClientCapabilityLevel::FullTerminal,
-                ),
-            )?;
-            app.prompt_owner_submit_prepared_prompt(
-                &turn.session_id,
-                crate::session::PromptQueueItem::new(
-                    "follow-up",
-                    attachment.id(),
-                    &turn.agent_id,
-                    "implement that solution",
-                    crate::session::PromptStatus::Queued,
-                ),
-                false,
-            )
-        })
-        .await
-        .unwrap();
+    turn.queue_follow_up().await;
 
     turn.runtime
         .settle_owned_provider_prompt(&turn.session_id, &substitute, true, false, true)
         .await
         .expect("the substitute completes the turn");
 
-    let follow_up = turn.active_prompt().expect("the follow-up starts");
-    let primary_run = follow_up
-        .durable_delivery_provider_run_id()
-        .expect("the follow-up is dispatched")
-        .to_string();
-    assert_ne!(primary_run, substitute);
-    let delivered = turn.provider_inputs(&primary_run);
-    assert!(
-        delivered.contains("implement that solution")
-            && delivered.contains("Proposed fix: rename parse_all to parse."),
-        "the follow-up reaches the primary with the substitute's answer: {delivered}"
+    turn.assert_follow_up_on_the_primary(&substitute);
+}
+
+/// The active turn running on a structured-I/O substitute, as a Codex or
+/// OpenCode substitute submits through its runtime rather than a terminal.
+/// A substitute profile cannot launch `slow-structured`, so its run is built
+/// by hand like the failed attempt.
+async fn structured_substitute_turn() -> (FailingTurn, String) {
+    let turn = failing_turn(&[]).await;
+    turn.runtime
+        .retire_owned_provider_run_after_terminal_failure(&turn.session_id, &turn.failed_run_id)
+        .await;
+    let request = crate::provider::LaunchProviderRequest::new(
+        &turn.session_id,
+        "dev-stub",
+        "slow-structured",
+        "default",
+        SUBSTITUTE_A,
+    )
+    .with_agent_id(&turn.agent_id)
+    .with_turn_substitute(Some(TurnSubstitute {
+        prompt_id: turn.prompt_id.clone(),
+        substitute_index: 0,
+    }));
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "structured-substitute",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "test-substitute".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("test-substitute-runtime".to_string()),
+        },
     );
+    run.mark_running();
+    assert!(turn
+        .runtime
+        .owned
+        .provider_store
+        .run_uses_structured_prompt_io(&run));
+    let substitute = run.id().to_string();
+    turn.runtime
+        .with_app_side_effect(|app| {
+            app.providers_mut().insert_run_for_test(run.clone());
+            app.sessions_mut()
+                .set_active_provider_run(&turn.session_id, Some(substitute.clone()))
+        })
+        .await
+        .unwrap();
+    turn.runtime
+        .owned
+        .mark_active_prompt_delivery(
+            &turn.session_id,
+            &turn.agent_id,
+            &turn.prompt_id,
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            Some(substitute.clone()),
+            None,
+        )
+        .unwrap();
+    turn.record_history(None, "review this change");
+    turn.record_history(
+        Some(&substitute),
+        "Proposed fix: rename parse_all to parse.",
+    );
+    (turn, substitute)
+}
+
+#[tokio::test]
+async fn a_follow_up_queued_behind_a_structured_substitute_reaches_the_primary() {
+    let (turn, substitute) = structured_substitute_turn().await;
+    turn.queue_follow_up().await;
+
+    turn.runtime
+        .settle_owned_provider_prompt(&turn.session_id, &substitute, true, false, true)
+        .await
+        .expect("the substitute completes the turn");
+
+    turn.assert_follow_up_on_the_primary(&substitute);
+}
+
+#[tokio::test]
+async fn a_follow_up_queued_behind_a_cancelled_structured_substitute_reaches_the_primary() {
+    let (turn, substitute) = structured_substitute_turn().await;
+    turn.queue_follow_up().await;
+    let session = turn
+        .runtime
+        .owned
+        .session_store
+        .get_session(&turn.session_id)
+        .unwrap();
+    turn.runtime
+        .owned
+        .prompt_state_owner
+        .begin_cancelling_active_prompt(&session, &turn.agent_id)
+        .expect("the user cancels the substitute's turn");
+
+    turn.runtime
+        .settle_owned_provider_prompt(&turn.session_id, &substitute, true, false, true)
+        .await
+        .expect("the cancelled turn settles");
+
+    turn.assert_follow_up_on_the_primary(&substitute);
 }

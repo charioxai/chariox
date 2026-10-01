@@ -515,9 +515,12 @@ impl KernelRuntimeOwnedState {
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
         self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
+        // A substitute run serves only its own turn; the next one goes through
+        // the dispatcher, which moves it to the agent's configured profile.
         if self
             .provider_store
             .run_uses_structured_prompt_io(&provider_run)
+            && provider_run.turn_substitute().is_none()
         {
             let prompt_with_handoff = self.prompt_with_pending_context_handoff(
                 session_id,

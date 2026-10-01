@@ -70,6 +70,19 @@ impl KernelRuntimeOwnedState {
             &prompt,
             cancellation_provider_run_id.as_deref(),
         );
+        if let Some(substitute_run) = cancellation_provider_run_id
+            .as_deref()
+            .and_then(|provider_run_id| self.provider_store.get_run(provider_run_id).ok())
+            .filter(|run| {
+                prompt.workflow_run_id().is_none()
+                    && run
+                        .turn_substitute()
+                        .is_some_and(|turn| turn.prompt_id == prompt.id())
+            })
+        {
+            // The configured profile never saw this turn; its next turn gets it.
+            self.prepare_turn_substitute_return_handoff(&substitute_run);
+        }
         let released_workflow_claim =
             match (prompt.workflow_run_id(), prompt.workflow_node_run_id()) {
                 (Some(workflow_run_id), Some(workflow_node_run_id)) => self
@@ -216,9 +229,12 @@ impl KernelRuntimeOwnedState {
                 session_id,
                 started_next.source_attachment_id(),
             )?;
+            // A substitute run serves only its own turn; the next one goes
+            // through the dispatcher, which moves it to the configured profile.
             if self
                 .provider_store
                 .run_uses_structured_prompt_io(&provider_run)
+                && provider_run.turn_substitute().is_none()
             {
                 let prompt_with_handoff = self.prompt_with_pending_context_handoff(
                     session_id,
