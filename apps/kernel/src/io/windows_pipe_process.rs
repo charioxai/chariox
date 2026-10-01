@@ -1,4 +1,4 @@
-//! Windows probes start suspended so no descendant can escape job assignment.
+//! Windows pipe producers start suspended so no descendant can escape job assignment.
 use std::ffi::c_void;
 use std::io;
 use std::os::windows::io::AsRawHandle;
@@ -48,10 +48,15 @@ impl Drop for OwnedHandle {
     }
 }
 
-pub(super) trait Pipe: AsRawHandle {}
+pub(crate) trait Pipe: AsRawHandle {}
 impl<T: AsRawHandle> Pipe for T {}
 
-pub(super) fn available(pipe: &impl Pipe) -> io::Result<usize> {
+pub(crate) fn available(pipe: &impl Pipe) -> io::Result<usize> {
+    readiness(pipe).map(|ready| ready.unwrap_or(0))
+}
+
+// None is genuine EOF; Some(0) is an open pipe with no bytes yet.
+pub(crate) fn readiness(pipe: &impl Pipe) -> io::Result<Option<usize>> {
     let mut count = 0;
     let result = unsafe {
         PeekNamedPipe(
@@ -66,21 +71,21 @@ pub(super) fn available(pipe: &impl Pipe) -> io::Result<usize> {
     if result == 0 {
         let error = io::Error::last_os_error();
         if error.raw_os_error() == Some(109) {
-            return Ok(0);
+            return Ok(None);
         } // ERROR_BROKEN_PIPE
         return Err(error);
     }
-    Ok(count as usize)
+    Ok(Some(count as usize))
 }
 
-pub(super) struct Process {
-    pub(super) child: Child,
+pub(crate) struct Process {
+    pub(crate) child: Child,
     job: OwnedHandle,
     stopped: bool,
 }
 
 impl Process {
-    pub(super) fn spawn(command: &mut Command) -> io::Result<Self> {
+    pub(crate) fn spawn(command: &mut Command) -> io::Result<Self> {
         let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
         if job.is_null() {
             return Err(io::Error::last_os_error());
@@ -101,7 +106,7 @@ impl Process {
         Ok(process)
     }
 
-    pub(super) fn stop(&mut self) -> io::Result<()> {
+    pub(crate) fn stop(&mut self) -> io::Result<()> {
         if self.stopped {
             return Ok(());
         }
@@ -148,6 +153,6 @@ fn resume(pid: u32) -> io::Result<()> {
     }
     Err(io::Error::new(
         io::ErrorKind::NotFound,
-        "probe primary thread was not found",
+        "producer primary thread was not found",
     ))
 }

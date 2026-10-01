@@ -8,8 +8,7 @@ use std::time::{Duration, Instant};
 #[path = "probe_capture/unix.rs"]
 mod platform;
 #[cfg(windows)]
-#[path = "probe_capture/windows.rs"]
-mod platform;
+use crate::io::windows_pipe_process as platform;
 
 pub(super) const OUTPUT_LIMIT: usize = 1024 * 1024;
 const READ_BUDGET: usize = 64 * 1024;
