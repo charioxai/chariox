@@ -736,14 +736,6 @@ fn append_managed_runtime_user_openbox_boundary(
     append_managed_runtime_user_anchor(args, &config, "runtime user .config", created)?;
     let local = home.join(".local");
     append_managed_runtime_user_anchor(args, &local, "runtime user .local", created)?;
-    // The runtime .local bind recursively exposes the browser's private NSS
-    // submount. Hide that alias after the bind, preserving other user data.
-    if std::env::var_os("CHARIOX_SLICE_PRIVATE_ROOT").is_some() {
-        let nss = validate_boundary_directory(&local.join("share/pki/nssdb"), "runtime NSS alias")?;
-        append_directory(args, &nss, created);
-        args.extend(["--tmpfs".to_string(), nss.display().to_string()]);
-    }
-
     for relative in MANAGED_RUNTIME_USER_COMMAND_DIRECTORY_NAMES {
         let command_directory =
             validate_boundary_directory(&home.join(relative), "runtime user command directory")?;
@@ -753,6 +745,16 @@ fn append_managed_runtime_user_openbox_boundary(
             command_directory.display().to_string(),
         ]);
     }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn append_managed_runtime_nss_boundary(
+    args: &mut Vec<String>, home: &Path, created: &mut BTreeSet<PathBuf>,
+) -> Result<(), DaemonError> {
+    let nss = validate_boundary_directory(&home.join(".local/share/pki/nssdb"), "runtime NSS alias")?;
+    append_directory(args, &nss, created);
+    args.extend(["--tmpfs".to_string(), nss.display().to_string()]);
     Ok(())
 }
 
@@ -1115,6 +1117,14 @@ pub(crate) fn apply_managed_provider_isolation(
                     .any(|command| root.starts_with(command)))
             {
                 append_bind(&mut args, root, root, &mut created_directories);
+            }
+        }
+
+        // Runtime and late workspace binds must not re-expose the browser's
+        // private NSS alias. Keep this mask after every filesystem rebind.
+        if std::env::var_os("CHARIOX_SLICE_PRIVATE_ROOT").is_some() {
+            if let Some(home) = runtime_user_home.as_deref() {
+                append_managed_runtime_nss_boundary(&mut args, home, &mut created_directories)?;
             }
         }
 
@@ -1792,6 +1802,12 @@ fn managed_runtime_roots(launch: &ProviderLaunchResult) -> Result<Vec<PathBuf>, 
                 .ok_or_else(|| isolation_error("managed Claude runtime path has no parent"))?
         };
         let root = canonical_directory(&candidate, "managed provider runtime files")?;
+        if let Some(private) = std::env::var_os("CHARIOX_SLICE_PRIVATE_ROOT") {
+            let private = canonical_directory(&PathBuf::from(private), "protected slice private root")?;
+            if root.starts_with(&private) || private.starts_with(&root) {
+                return Err(isolation_error("managed runtime files intersect protected slice private storage"));
+            }
+        }
         if roots.iter().all(|existing| existing != &root) {
             roots.push(root);
         }
