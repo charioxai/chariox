@@ -559,7 +559,7 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
       "--window-size=800,600",
       fixture.url,
     ]
-    owned.set("chromium", await spawnLogged("chromium", "chromium", chromiumArgs, { env: environment, cwd: repoRoot, logsRoot }))
+    owned.set("chromium", await spawnLogged("chromium", "/usr/lib/chromium/chromium", chromiumArgs, { env: environment, cwd: repoRoot, logsRoot }))
     await waitForHttp(`http://127.0.0.1:${allocation.debugPort}/json/version`, 20_000)
 
     const selkies = await execJson("/opt/chariox-selkies/bin/python", [path.join(sourceRoot, "slice-selkies.py"), "start"], {
@@ -629,7 +629,7 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
         const inputProof = await verifyComputerInputEffect({ iteration: iterations, cwd: repoRoot, env: environment })
         computerInputs += 1
         const screenshotPath = path.join(paths.runDir, "latest-screen.png")
-        await execFileAsync("scrot", [screenshotPath], { cwd: repoRoot, env: environment, timeout: 10_000 })
+        await execFileAsync("scrot", ["--overwrite", screenshotPath], { cwd: repoRoot, env: environment, timeout: 10_000 })
         const screenshotDigest = createHash("sha256").update(await readFile(screenshotPath)).digest("hex")
         screenshotDigests.add(screenshotDigest)
         computerScreenshots += 1
