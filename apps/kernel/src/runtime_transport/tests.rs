@@ -422,7 +422,7 @@ async fn kernel_websocket_auth_rejects_missing_or_wrong_tokens_before_accepting_
 
 #[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
-async fn slice_state_save_acknowledgement_replays_without_a_second_dispatch() {
+async fn unsupported_slice_save_refusal_replays_without_backend_side_effects() {
     use std::os::unix::fs::PermissionsExt;
 
     let _environment = crate::env_lock::lock();
@@ -523,14 +523,14 @@ exit 0
     timeout(Duration::from_secs(5), async {
         loop {
             let cache = std::fs::read_to_string(&command_cache_path).unwrap_or_default();
-            if cache.contains(command_id) && docker_commit_count(&docker_log) == 1 {
+            if cache.contains(command_id) {
                 break;
             }
             sleep(Duration::from_millis(10)).await;
         }
     })
     .await
-    .expect("first save should complete after its response is lost");
+    .expect("first refusal should persist after its response is lost");
 
     let same_process = dispatch_transport_test_request(
         Arc::clone(&runtime),
@@ -542,8 +542,10 @@ exit 0
     )
     .await
     .expect("same-process retry should reply");
-    let same_process_generation = slice_saved_generation(&same_process);
-    assert_eq!(docker_commit_count(&docker_log), 1);
+    let same_process_refusal = slice_capture_refusal(&same_process);
+    assert_eq!(docker_commit_count(&docker_log), 0);
+    assert!(std::fs::read_to_string(&docker_log).unwrap_or_default().is_empty(),
+        "unsupported capture must not invoke Docker before or after replay");
 
     drop(runtime);
     let restarted_runtime = Arc::new(
@@ -563,9 +565,11 @@ exit 0
     )
     .await
     .expect("restart retry should reply");
-    let restart_generation = slice_saved_generation(&after_restart);
-    assert_eq!(restart_generation, same_process_generation);
-    assert_eq!(docker_commit_count(&docker_log), 1);
+    let restart_refusal = slice_capture_refusal(&after_restart);
+    assert_eq!(restart_refusal, same_process_refusal);
+    assert_eq!(docker_commit_count(&docker_log), 0);
+    assert!(std::fs::read_to_string(&docker_log).unwrap_or_default().is_empty(),
+        "unsupported capture must not invoke Docker before or after replay");
 
     let conflicting = dispatch_transport_test_request(
         Arc::clone(&restarted_runtime),
@@ -588,7 +592,9 @@ exit 0
         error.expect("conflicting retry should fail").code,
         "duplicate_command_conflict"
     );
-    assert_eq!(docker_commit_count(&docker_log), 1);
+    assert_eq!(docker_commit_count(&docker_log), 0);
+    assert!(std::fs::read_to_string(&docker_log).unwrap_or_default().is_empty(),
+        "unsupported capture must not invoke Docker before or after replay");
 
     drop(restarted_runtime);
     drop(router);
@@ -601,11 +607,10 @@ exit 0
             "schema": "chariox.slice_save_ack_loss_probe.v1",
             "sameProcessReplay": true,
             "restartReplay": true,
-            "savedStateRefPreserved": true,
+            "unsupportedCaptureRefusalPreserved": true,
             "conflictingReuseRejected": true,
-            "backendSaveCount": 1,
-            "savedStateRef": same_process_generation.0,
-            "homeArchiveGeneration": same_process_generation.1,
+            "backendSaveCount": 0,
+            "successfulSaveReplayStillRequiresProtectedLiveFixture": true,
             "cleanupComplete": true
         })
     );
@@ -613,35 +618,18 @@ exit 0
 
 #[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
-async fn slice_backup_restore_interruption_after_container_creation_rolls_back_on_restart() {
+async fn slice_pending_backup_restore_interruption_rolls_back_on_restart() {
     use sha2::{Digest as _, Sha256};
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::process::ExitStatusExt;
 
-    const TEST_NAME: &str = "runtime_transport::tests::slice_backup_restore_interruption_after_container_creation_rolls_back_on_restart";
+    const TEST_NAME: &str = "runtime_transport::tests::slice_pending_backup_restore_interruption_rolls_back_on_restart";
     const CHILD_ROOT_ENV: &str = "CHARIOX_RESTORE_INTERRUPTION_CHILD_ROOT";
     if let Some(root) = std::env::var_os(CHILD_ROOT_ENV) {
         let root = PathBuf::from(root);
         let config = restore_interruption_config(&root);
-        let app = Arc::new(Mutex::new(
-            DaemonApp::bootstrap(config).expect("child kernel should restore its seeded state"),
-        ));
-        let router = CommandRouter::with_interactive_capacity(
-            app,
-            crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
-        );
-        let request = LocalDaemonRequest::RestoreSliceBackup(RestoreSliceBackupRequest {
-            slice_ref: "restore-interruption".to_string(),
-            backup_ref: "restore-target".to_string(),
-        });
-        let command = KernelCommand::from_local_request(
-            "restore-interruption-command",
-            None,
-            Some("restore-interruption-drill".to_string()),
-            &request,
-        );
-        let result = router.dispatch(command, request).await;
-        panic!("restore-interruption child survived its injected SIGKILL: {result:?}");
+        let result = DaemonApp::bootstrap(config);
+        panic!("pending-restore child survived its injected recovery SIGKILL: {}", result.is_ok());
     }
 
     let _environment = crate::env_lock::lock();
@@ -766,8 +754,35 @@ exit 0
     )
     .expect("target manifest should write");
     runtime
-        .save_slice_backup_record(target_backup)
+        .save_slice_backup_record(target_backup.clone())
         .expect("target backup should persist");
+    // This fixture exercises recovery of a legitimate preexisting durable
+    // transaction, not acceptance of a new capture on an unsupported layout.
+    // Successful protected capture and post-target-creation interruption remain
+    // separate live validation obligations.
+    let rollback_dir = root.path().join("rollback-backup");
+    std::fs::create_dir_all(&rollback_dir).expect("rollback directory should create");
+    let rollback_archive = rollback_dir.join("home.tar.zst");
+    let rollback_manifest = rollback_dir.join("manifest.json");
+    let rollback_home = b"prior-home-generation";
+    std::fs::write(&rollback_archive, rollback_home).expect("rollback archive should write");
+    let rollback_backup = crate::slice::SliceBackupRecord {
+        id: "restore-rollback-fixture".to_string(),
+        name: "restore-rollback-fixture".to_string(),
+        image_ref: "chariox-slice-backup:restore-rollback-fixture".to_string(),
+        home_archive_path: rollback_archive.display().to_string(),
+        manifest_path: rollback_manifest.display().to_string(),
+        size_bytes: Some(rollback_home.len() as u64),
+        home_archive_sha256: Some(format!("{:x}", Sha256::digest(rollback_home))),
+        image_id: Some(format!("sha256:{}", "2".repeat(64))),
+        ..target_backup.clone()
+    };
+    std::fs::write(&rollback_manifest, serde_json::to_vec_pretty(&rollback_backup)
+        .expect("rollback manifest should encode")).expect("rollback manifest should write");
+    runtime.begin_slice_backup_restore(crate::slice::SliceBackupRestoreTransactionRecord {
+        id: "restore-interruption-fixture".to_string(), source_slice_id: slice.id.clone(),
+        target_backup, rollback_backup, previous_saved_state: None, started_at_ms: 3,
+    }).expect("preexisting restore intent should persist");
     drop(runtime);
     drop(router);
     drop(app);
@@ -792,14 +807,14 @@ exit 0
     assert_eq!(
         child.status.signal(),
         Some(libc::SIGKILL),
-        "child must die at the injected post-create boundary: stdout={} stderr={}",
+        "child must die at the injected startup recovery boundary: stdout={} stderr={}",
         String::from_utf8_lossy(&child.stdout),
         String::from_utf8_lossy(&child.stderr),
     );
     assert!(interruption_marker.exists(), "fault boundary must trigger");
     assert!(
         partial_runtime.exists(),
-        "target replacement must exist at interruption"
+        "partial recovery runtime must exist at interruption"
     );
 
     let interrupted_store =
@@ -954,8 +969,8 @@ exit 0
         transaction.rollback_backup.image_ref
     );
     assert!(
-        !Path::new(&transaction.rollback_backup.manifest_path).exists(),
-        "resolved rollback manifest must be reclaimed",
+        Path::new(&transaction.rollback_backup.manifest_path).exists(),
+        "published rollback state must retain its referenced manifest",
     );
     let provisioner_calls =
         std::fs::read_to_string(&provisioner_log).expect("provisioner calls should read");
@@ -965,12 +980,13 @@ exit 0
             .filter(|line| line.starts_with("restore-state "))
             .count(),
         2,
-        "only the interrupted target and startup rollback should restore: {provisioner_calls}",
+        "only interrupted recovery and resumed recovery should restore: {provisioner_calls}",
     );
     let docker_calls = std::fs::read_to_string(&docker_log).expect("Docker calls should read");
-    assert!(docker_calls
+    assert!(!docker_calls
         .lines()
-        .any(|line| { line == format!("image rm -f {}", transaction.rollback_backup.image_ref) }));
+        .any(|line| { line == format!("image rm -f {}", transaction.rollback_backup.image_ref) }),
+        "published rollback image must not be garbage collected");
 
     let recovered_state_ref = recovered_state.id.clone();
     drop(durable);
@@ -984,7 +1000,8 @@ exit 0
         "CHARIOX_SLICE_RESTORE_INTERRUPTION_PROBE:{}",
         serde_json::json!({
             "schema": "chariox.slice_restore_interruption_probe.v1",
-            "childInterruptedAfterReplacement": true,
+            "childInterruptedDuringStartupRecovery": true,
+            "postTargetCreationInterruptionStillRequiresProtectedLiveFixture": true,
             "durableIntentSurvived": true,
             "rollbackRestoredOnRestart": true,
             "partialRuntimeRemoved": true,
@@ -1312,32 +1329,15 @@ async fn dispatch_transport_test_request(
 }
 
 #[cfg(unix)]
-fn slice_saved_generation(frame: &KernelOutgoingFrame) -> (String, String) {
-    let KernelOutgoingFrame::Response {
-        response, error, ..
-    } = frame
-    else {
-        panic!("slice save should return a response")
+fn slice_capture_refusal(frame: &KernelOutgoingFrame) -> serde_json::Value {
+    let KernelOutgoingFrame::Response { response, error, .. } = frame else {
+        panic!("slice refusal should return a response")
     };
-    assert!(error.is_none(), "slice save should succeed: {error:?}");
-    let payload = response
-        .as_ref()
-        .as_ref()
-        .and_then(|value| value.get("SliceStateSaved"))
-        .expect("slice save payload should be present");
-    let state = payload
-        .get("state")
-        .expect("slice save state should be present");
-    (
-        state["id"]
-            .as_str()
-            .expect("saved-state ref should be present")
-            .to_string(),
-        state["home_archive_path"]
-            .as_str()
-            .expect("saved-state archive generation should be present")
-            .to_string(),
-    )
+    assert!(response.is_none(), "unsupported capture must not publish saved state");
+    let error = error.as_ref().expect("unsupported capture must refuse");
+    let value = serde_json::to_value(error).expect("refusal should encode");
+    assert!(value.to_string().contains("storage layout"));
+    value
 }
 
 #[cfg(unix)]

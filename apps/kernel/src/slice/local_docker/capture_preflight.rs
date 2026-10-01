@@ -1,10 +1,10 @@
-//! Containment until every capture boundary has a verified credential-separated layout.
+//! Capture admission requires an actual credential-separated managed layout.
 //! Home-volume filtering cannot attest environment secrets or committed image layers.
 use crate::error::DaemonError;
 use crate::slice::SliceRecord;
 
-// Prepared completing seam. Existing call sites remain on the containment
-// refusal until the protected layout and restore path pass source approval.
+// The broker verifies retained host ownership, identities, mounts, environment,
+// runtime/image lineage and the actual home. Unsupported topologies refuse.
 pub(crate) fn require_verified_layout(
     record: &SliceRecord,
     operation: &'static str,
@@ -20,7 +20,8 @@ fn refusal(operation: &'static str) -> DaemonError {
     }
 }
 
-pub(crate) fn require_supported_layout(operation: &'static str) -> Result<(), DaemonError> {
+#[cfg(test)]
+fn require_supported_layout(operation: &'static str) -> Result<(), DaemonError> {
     // No current provisioner produces a verified protected capture layout. Do not
     // accept a label, environment flag, or synthetic mount list as that proof.
     // A completing change must verify actual private mounts, the immutable base,
