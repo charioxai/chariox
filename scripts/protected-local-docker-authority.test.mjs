@@ -52,8 +52,13 @@ test("helper topology refuses privileged, foreign image and extra/control mount 
       {Type: "bind", Source: "/tmp/chariox-local-broker-1000-aB12", Destination: "/tmp/chariox-local-broker-1000-aB12", RW: true},
     ]})
   assert.equal(verifyLocalHelperTopology(record, helper()), true)
+  // Current engines (Docker 29) report the canonical CAP_ form.
+  const canonical = helper()
+  canonical.HostConfig.CapAdd = ["CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FOWNER"]
+  assert.equal(verifyLocalHelperTopology(record, canonical), true)
   for (const mutate of [h => h.Image = `sha256:${"b".repeat(64)}`, h => h.HostConfig.Privileged = true,
-    h => h.HostConfig.CapAdd.push("SYS_ADMIN"), h => h.HostConfig.NetworkMode = "host", h => h.HostConfig.PidMode = "host",
+    h => h.HostConfig.CapAdd.push("SYS_ADMIN"), h => h.HostConfig.CapAdd.push("CAP_SYS_ADMIN"),
+    h => h.HostConfig.CapAdd = ["CAP_CHOWN", "CAP_DAC_OVERRIDE"], h => h.HostConfig.CapDrop = ["CAP_CHOWN"], h => h.HostConfig.NetworkMode = "host", h => h.HostConfig.PidMode = "host",
     h => h.HostConfig.ReadonlyRootfs = false, h => h.HostConfig.Tmpfs["/etc"] = "rw", h => delete h.HostConfig.Tmpfs["/tmp"], h => h.Mounts[1].RW = true, h => h.Mounts[3].Source = "/",
     h => h.Mounts.push({Type: "bind", Source: "/root", Destination: "/root", RW: true})]) {
     const actual = helper(); mutate(actual)

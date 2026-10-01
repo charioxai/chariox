@@ -98,13 +98,17 @@ export function verifyInstalledLocalSource(enrollment) {
   return manifest
 }
 
+// Docker 20.10+ reports requested capabilities in canonical CAP_ form
+// (CAP_CHOWN); older engines echo the requested name (CHOWN).
+const capabilityName = value => String(value).toUpperCase().replace(/^CAP_/, "")
+
 export function verifyLocalHelperTopology(enrollment, info) {
   if (!info || info.Image !== enrollment.helperImageId || info.Config?.User !== "0:0"
       || info.HostConfig?.Privileged !== false || info.HostConfig?.ReadonlyRootfs !== true
       || info.HostConfig?.NetworkMode !== "none" || info.HostConfig?.PidMode
       || info.HostConfig?.IpcMode === "host" || info.HostConfig?.UsernsMode
-      || JSON.stringify(info.HostConfig?.CapDrop?.map(value => value.toUpperCase()).sort()) !== '["ALL"]'
-      || JSON.stringify(info.HostConfig?.CapAdd?.map(value => value.toUpperCase()).sort()) !== '["CHOWN","DAC_OVERRIDE","FOWNER"]'
+      || JSON.stringify(info.HostConfig?.CapDrop?.map(capabilityName).sort()) !== '["ALL"]'
+      || JSON.stringify(info.HostConfig?.CapAdd?.map(capabilityName).sort()) !== '["CHOWN","DAC_OVERRIDE","FOWNER"]'
       || !info.HostConfig?.SecurityOpt?.includes("no-new-privileges")
       || JSON.stringify(Object.entries(info.HostConfig?.Tmpfs ?? {}).sort()) !== JSON.stringify([
         ["/run/chariox-slice-broker", "rw,nosuid,nodev,size=32m"], ["/tmp", "rw,nosuid,nodev,size=128m"],
