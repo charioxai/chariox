@@ -17,8 +17,8 @@ use crate::session::{
     DurablePromptPrivateState, RuntimeProject, RuntimeSession, SessionStateStore,
 };
 use crate::slice::{
-    SliceBackupRecord, SliceBackupRestoreTransactionRecord, SliceRecord, SliceSavedStateRecord,
-    SliceStore,
+    SliceBackupRecord, SliceBackupRestoreAcknowledgementRecord,
+    SliceBackupRestoreTransactionRecord, SliceRecord, SliceSavedStateRecord, SliceStore,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,6 +37,9 @@ pub(crate) struct DurableKernelSnapshotPayload {
     pub(crate) slice_backups: Vec<SliceBackupRecord>,
     #[serde(default)]
     pub(crate) pending_slice_backup_restores: Vec<SliceBackupRestoreTransactionRecord>,
+    #[serde(default)]
+    pub(crate) pending_slice_backup_restore_acknowledgements:
+        Vec<SliceBackupRestoreAcknowledgementRecord>,
     #[serde(default)]
     pub(crate) metaagent_event_records: Vec<MetaagentEventRecord>,
     #[serde(default)]
@@ -69,6 +72,8 @@ impl DurableKernelSnapshotPayload {
         let slice_saved_states = slices.list_saved_states();
         let slice_backups = slices.list_backups();
         let pending_slice_backup_restores = slices.list_pending_backup_restores();
+        let pending_slice_backup_restore_acknowledgements =
+            slices.list_pending_restore_acknowledgements();
         let metaagent_snapshot = metaagent_events.snapshot();
         Self {
             projects,
@@ -79,6 +84,7 @@ impl DurableKernelSnapshotPayload {
             slice_saved_states,
             slice_backups,
             pending_slice_backup_restores,
+            pending_slice_backup_restore_acknowledgements,
             metaagent_event_records: metaagent_snapshot.records,
             metaagent_event_subscriptions: metaagent_snapshot.subscriptions,
         }

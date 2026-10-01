@@ -2420,9 +2420,9 @@ fn pending_restore_reuses_rollback_and_clears_quarantine_only_after_durable_reso
             &record.id,
             generation.state.clone(),
             2,
-            SliceOperationStatus::Failed,
+            crate::slice::SliceBackupRestoreResolution::RolledBack,
             Some("rolled back".to_string()),
-            |_, _| {
+            |_, _, _| {
                 if fail {
                     Err(crate::error::DaemonError::LocalTransport {
                         operation: "synthetic.persist",
@@ -2448,4 +2448,177 @@ fn pending_restore_reuses_rollback_and_clears_quarantine_only_after_durable_reso
     assert_eq!(transaction.previous_saved_state, Some(prior));
     // Neither generation publication nor durable resolution invokes Docker.
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn restore_acknowledgement_retries_broker_failure_and_retains_rollback_until_acknowledged() {
+    use std::cell::{Cell, RefCell};
+
+    let record = test_record();
+    let backup = |id: &str| crate::slice::SliceBackupRecord {
+        id: id.to_string(),
+        image_ref: format!("chariox-slice-backup:{id}"),
+        home_archive_path: format!("/tmp/{id}-home.tar.zst"),
+        ..backup_record(format!("/tmp/{id}-manifest.json"))
+    };
+    let transaction = |id: &str| crate::slice::SliceBackupRestoreTransactionRecord {
+        id: id.to_string(),
+        source_slice_id: record.id.clone(),
+        target_backup: backup(&format!("{id}-target")),
+        rollback_backup: backup(&format!("{id}-rollback")),
+        previous_saved_state: None,
+        started_at_ms: 1,
+    };
+    let store = SliceStore::default();
+    store.restore_records(vec![record.clone()]);
+    let first = transaction("restore-first");
+    store
+        .begin_backup_restore_transactionally(first.clone(), |_| Ok(()))
+        .unwrap();
+    // A failed restore rolls back; its published home is the rollback archive.
+    store
+        .resolve_backup_restore_transactionally(
+            &first.id,
+            &record.id,
+            saved_state("/tmp/rolled-back-manifest.json".to_string()),
+            2,
+            crate::slice::SliceBackupRestoreResolution::RolledBack,
+            None,
+            |_, _, acknowledgement| {
+                assert_eq!(
+                    acknowledgement.home_archive_path,
+                    first.rollback_backup.home_archive_path
+                );
+                Ok(())
+            },
+        )
+        .unwrap();
+
+    let attempts = Cell::new(0);
+    let broker_available = Cell::new(false);
+    let released = RefCell::new(Vec::new());
+    let reconcile = || {
+        state::reconcile_local_docker_restore_acknowledgements(
+            &store,
+            Some(&record.id),
+            |slice, acknowledgement| {
+                attempts.set(attempts.get() + 1);
+                assert_eq!(slice.id, record.id);
+                assert_eq!(acknowledgement.transaction_id, first.id);
+                if broker_available.get() {
+                    Ok(())
+                } else {
+                    Err(crate::error::DaemonError::LocalTransport {
+                        operation: "slice.backup.restore",
+                        message: "managed slice Docker broker is unavailable".to_string(),
+                    })
+                }
+            },
+            |acknowledgement| {
+                store.acknowledge_backup_restore_transactionally(
+                    &acknowledgement.transaction_id,
+                    |_| Ok(()),
+                )
+            },
+            |rollback| released.borrow_mut().push(rollback.id.clone()),
+        )
+        .unwrap()
+    };
+
+    // Broker failure: the committed resolution stays, the acknowledgement and
+    // the rollback archive it names are retained, and no restore can start.
+    let pending = reconcile();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(store.list_pending_restore_acknowledgements(), pending);
+    assert!(released.borrow().is_empty());
+    assert_eq!(
+        store
+            .active_saved_state_for_slice(&record.id)
+            .unwrap()
+            .map(|state| state.id),
+        Some("gmail-ready".to_string())
+    );
+    let second = transaction("restore-second");
+    let error = store
+        .begin_backup_restore_transactionally(second.clone(), |_| {
+            panic!("an unacknowledged publication must refuse the next restore before journaling")
+        })
+        .expect_err("the broker would roll back the committed restore");
+    assert!(error.to_string().contains(&first.id));
+    assert!(store.try_begin_operation(&record.id, "slice.start").is_ok());
+
+    // A failed durable acknowledgement commit also keeps the record.
+    broker_available.set(true);
+    assert!(store
+        .acknowledge_backup_restore_transactionally(&first.id, |_| {
+            Err(crate::error::DaemonError::LocalTransport {
+                operation: "synthetic.persist",
+                message: "interrupted".to_string(),
+            })
+        })
+        .is_err());
+    assert_eq!(store.list_pending_restore_acknowledgements().len(), 1);
+
+    // Retry: acknowledged once, then the rollback is released exactly once.
+    assert!(reconcile().is_empty());
+    assert_eq!(attempts.get(), 2);
+    assert_eq!(*released.borrow(), vec![first.rollback_backup.id.clone()]);
+    assert!(reconcile().is_empty());
+    assert_eq!(attempts.get(), 2, "an acknowledged restore is not retried");
+    assert_eq!(released.borrow().len(), 1);
+    store
+        .begin_backup_restore_transactionally(second, |_| Ok(()))
+        .expect("the next restore starts once acknowledged");
+}
+
+#[test]
+fn restore_acknowledgement_keeps_rollback_published_as_active_saved_state() {
+    let record = test_record();
+    let rollback = crate::slice::SliceBackupRecord {
+        home_archive_path: "/tmp/recovered-rollback-home.tar.zst".to_string(),
+        ..backup_record("/tmp/recovered-rollback-manifest.json".to_string())
+    };
+    let transaction = crate::slice::SliceBackupRestoreTransactionRecord {
+        id: "restore-recovered".to_string(),
+        source_slice_id: record.id.clone(),
+        target_backup: backup_record("/tmp/recovered-target-manifest.json".to_string()),
+        rollback_backup: rollback.clone(),
+        previous_saved_state: None,
+        started_at_ms: 1,
+    };
+    let store = SliceStore::default();
+    store.restore_records(vec![record.clone()]);
+    store.restore_pending_backup_restore_records(vec![transaction.clone()]);
+    // Startup recovery publishes the rollback artifacts as the active state.
+    let recovered = SliceSavedStateRecord {
+        image_ref: rollback.image_ref.clone(),
+        home_archive_path: rollback.home_archive_path.clone(),
+        ..saved_state("/tmp/recovered-manifest.json".to_string())
+    };
+    store
+        .resolve_backup_restore_transactionally(
+            &transaction.id,
+            &record.id,
+            recovered,
+            2,
+            crate::slice::SliceBackupRestoreResolution::RolledBack,
+            None,
+            |_, _, _| Ok(()),
+        )
+        .unwrap();
+    let pending = state::reconcile_local_docker_restore_acknowledgements(
+        &store,
+        None,
+        |_, _| Ok(()),
+        |acknowledgement| {
+            store
+                .acknowledge_backup_restore_transactionally(&acknowledgement.transaction_id, |_| {
+                    Ok(())
+                })
+        },
+        |_| panic!("the active saved state still references the rollback"),
+    )
+    .unwrap();
+    assert!(pending.is_empty());
+    assert!(store.list_pending_restore_acknowledgements().is_empty());
 }

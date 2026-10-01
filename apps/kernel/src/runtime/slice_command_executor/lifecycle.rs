@@ -503,6 +503,17 @@ pub(super) async fn execute_restore_slice_backup_request(
     let task_backup = backup.clone();
     let task_runtime_state = runtime_state.clone();
     let restore_result = tokio::task::spawn_blocking(move || {
+        // An owed acknowledgement of an earlier committed restore must reach
+        // the broker first; otherwise the broker would roll that restore back.
+        if let Some(owed) = task_runtime_state
+            .reconcile_slice_backup_restore_acknowledgements(Some(&task_slice.id))?
+            .first()
+        {
+            return Err(crate::slice::unacknowledged_backup_restore_error(
+                &task_slice.name,
+                &owed.transaction_id,
+            ));
+        }
         crate::slice::restore_local_docker_slice_backup(
             &task_slice,
             &docker_options,
@@ -516,6 +527,15 @@ pub(super) async fn execute_restore_slice_backup_request(
                 task_runtime_state
                     .resolve_slice_backup_restore(transaction, state.clone(), resolution)
                     .map(|_| ())
+            },
+            |transaction| {
+                if let Err(error) = task_runtime_state
+                    .reconcile_slice_backup_restore_acknowledgements(Some(
+                        &transaction.source_slice_id,
+                    ))
+                {
+                    tracing::warn!(%error, "restore acknowledgement remains durably pending");
+                }
             },
         )
     })

@@ -83,7 +83,11 @@ export function createHomeGenerationStore(root) {
     resolve(container, activeHomeVolume) {
       const record = read(container)
       if (!record) return
-      if (record.phase !== "published" || record.newHomeVolume !== activeHomeVolume) refuse()
+      if (record.newHomeVolume !== activeHomeVolume) refuse()
+      // The kernel retries its durable acknowledgement after a crash or broker
+      // failure; repeating it for the same resolved publication is a no-op.
+      if (record.phase === "resolved") return
+      if (record.phase !== "published") refuse()
       // Preserve public ownership/history and all data references. Actual old
       // volume retirement is a separate operation after durable publication.
       writeProtectedLayoutReceipt(directory, container, {...record, phase: "resolved"})

@@ -1058,19 +1058,12 @@ impl KernelRuntimeState {
                         &transaction.source_slice_id,
                         state,
                         crate::session::unix_epoch_ms(),
-                        match resolution {
-                            crate::slice::SliceBackupRestoreResolution::Restored => {
-                                crate::slice::SliceOperationStatus::Completed
-                            }
-                            crate::slice::SliceBackupRestoreResolution::RolledBack => {
-                                crate::slice::SliceOperationStatus::Failed
-                            }
-                        },
+                        resolution,
                         (resolution == crate::slice::SliceBackupRestoreResolution::RolledBack)
                             .then(|| {
                                 "backup restore rolled back after a failed attempt".to_string()
                             }),
-                        |slice, state| {
+                        |slice, state, acknowledgement| {
                             self.owned
                                 .durable_state_store
                                 .append_event(
@@ -1080,6 +1073,7 @@ impl KernelRuntimeState {
                                         "transaction_id": &transaction.id,
                                         "slice": slice,
                                         "state": state,
+                                        "acknowledgement": acknowledgement,
                                     }),
                                 )
                                 .map(|_| ())
@@ -1088,6 +1082,46 @@ impl KernelRuntimeState {
             })?;
         self.owned.runtime_projection_changes.record_change();
         Ok(slice)
+    }
+
+    /// Retries owed managed broker acknowledgements for one slice or all.
+    /// Returns the acknowledgements that remain owed.
+    pub(crate) fn reconcile_slice_backup_restore_acknowledgements(
+        &self,
+        slice_id: Option<&str>,
+    ) -> Result<Vec<crate::slice::SliceBackupRestoreAcknowledgementRecord>, DaemonError> {
+        crate::slice::reconcile_local_docker_restore_acknowledgements(
+            &self.owned.slice_store,
+            slice_id,
+            crate::slice::acknowledge_protected_home_restore,
+            |acknowledgement| {
+                self.owned
+                    .durable_state_store
+                    .with_projection_transition_lock(|| {
+                        self.owned
+                            .slice_store
+                            .acknowledge_backup_restore_transactionally(
+                                &acknowledgement.transaction_id,
+                                |acknowledgement| {
+                                    self.owned
+                                        .durable_state_store
+                                        .append_event(
+                                            "slice.backup.restore.acknowledged",
+                                            Some(acknowledgement.transaction_id.clone()),
+                                            serde_json::json!({
+                                                "transaction_id": &acknowledgement.transaction_id,
+                                                "slice_id": &acknowledgement.source_slice_id,
+                                            }),
+                                        )
+                                        .map(|_| ())
+                                },
+                            )
+                    })?;
+                self.owned.runtime_projection_changes.record_change();
+                Ok(())
+            },
+            crate::slice::remove_local_docker_slice_backup_best_effort,
+        )
     }
 
     pub(super) fn append_slice_durable_event(

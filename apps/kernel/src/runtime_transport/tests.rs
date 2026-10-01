@@ -1015,6 +1015,212 @@ exit 0
 }
 
 #[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn slice_pending_backup_restore_acknowledgement_survives_crash_and_broker_outage() {
+    let _environment = crate::env_lock::lock();
+    let root = RuntimeTransportTempDir::new("slice-restore-acknowledgement");
+    let config = restore_interruption_config(root.path());
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(config.clone()).expect("seed kernel should boot"),
+    ));
+    let router = CommandRouter::with_interactive_capacity(
+        Arc::clone(&app),
+        crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+    );
+    let runtime = router.runtime_state();
+    let slice = runtime
+        .create_slice(CreateSliceRequest {
+            name: "restore-acknowledgement".to_string(),
+            backend: SliceBackendKind::LocalDocker,
+            os: "linux".to_string(),
+            display_mode: SliceDisplayMode::Headless,
+            display_backend: Default::default(),
+            workspace_id: None,
+            worktree_id: None,
+            workspace_mount: Some("/workspace".to_string()),
+            development: None,
+            worker_kernel_ref: None,
+            display_url: None,
+            provider_auth: Vec::new(),
+            from_saved_state: None,
+            base: Some(SliceCreateBase::Clean),
+        })
+        .await
+        .expect("slice seed should persist");
+    let backup = |id: &str| crate::slice::SliceBackupRecord {
+        id: id.to_string(),
+        name: id.to_string(),
+        source_slice_id: slice.id.clone(),
+        source_state_id: "restore-acknowledgement".to_string(),
+        image_ref: format!("chariox-slice-backup:{id}"),
+        home_archive_path: root
+            .path()
+            .join(id)
+            .join("home.tar.zst")
+            .display()
+            .to_string(),
+        manifest_path: root
+            .path()
+            .join(id)
+            .join("manifest.json")
+            .display()
+            .to_string(),
+        created_at_ms: 2,
+        size_bytes: Some(1),
+        home_archive_sha256: Some("a".repeat(64)),
+        image_id: Some(format!("sha256:{}", "b".repeat(64))),
+    };
+    let transaction = |id: &str| crate::slice::SliceBackupRestoreTransactionRecord {
+        id: id.to_string(),
+        source_slice_id: slice.id.clone(),
+        target_backup: backup(&format!("{id}-target")),
+        rollback_backup: backup(&format!("{id}-rollback")),
+        previous_saved_state: None,
+        started_at_ms: 3,
+    };
+    let state = |id: &str| crate::slice::SliceSavedStateRecord {
+        id: id.to_string(),
+        slice_name: slice.name.clone(),
+        source_slice_id: slice.id.clone(),
+        backend: SliceBackendKind::LocalDocker,
+        os: "linux".to_string(),
+        image_ref: format!("chariox-slice-state:{id}"),
+        home_archive_path: root
+            .path()
+            .join(format!("{id}.tar.zst"))
+            .display()
+            .to_string(),
+        manifest_path: root.path().join(format!("{id}.json")).display().to_string(),
+        created_at_ms: 4,
+        updated_at_ms: 4,
+        size_bytes: Some(1),
+        last_operation: Some("backup.restore".to_string()),
+        last_operation_status: Some(crate::slice::SliceOperationStatus::Completed),
+        last_error: None,
+    };
+    let first = transaction("restore-first");
+    let second = transaction("restore-second");
+    let owed = crate::slice::SliceBackupRestoreAcknowledgementRecord {
+        transaction_id: first.id.clone(),
+        source_slice_id: slice.id.clone(),
+        home_archive_path: first.target_backup.home_archive_path.clone(),
+        retained_rollback_backup: None,
+    };
+    runtime
+        .begin_slice_backup_restore(first.clone())
+        .expect("first restore intent should persist");
+    // Fault boundary: the kernel durably resolves the restore and dies before
+    // acknowledging publication to the broker.
+    runtime
+        .resolve_slice_backup_restore(
+            &first,
+            state("restored-first"),
+            crate::slice::SliceBackupRestoreResolution::Restored,
+        )
+        .expect("first restore should commit");
+    let error = runtime
+        .begin_slice_backup_restore(second.clone())
+        .expect_err("the next restore must wait for the owed acknowledgement");
+    assert!(error.to_string().contains(&first.id), "{error}");
+    drop(runtime);
+    drop(router);
+    drop(app);
+
+    let crashed = crate::durable_state::DurableKernelStateStore::open(config.durable_state_path())
+        .expect("crashed durable state should remain readable");
+    let committed = crashed
+        .load_events_by_kind("slice.backup.restore.committed")
+        .expect("commit events should read");
+    assert_eq!(committed.len(), 1);
+    assert_eq!(
+        committed[0].payload["acknowledgement"],
+        serde_json::to_value(&owed).expect("acknowledgement should encode"),
+        "the owed acknowledgement commits atomically with the resolution",
+    );
+    assert!(crashed
+        .load_events_by_kind("slice.backup.restore.acknowledged")
+        .expect("acknowledgement events should read")
+        .is_empty());
+    drop(crashed);
+
+    // Restart while the managed broker is unavailable: startup continues, the
+    // committed restore stays committed, and the acknowledgement stays owed.
+    let broker_outage = RuntimeTransportEnvGuard::set(
+        "CHARIOX_SLICE_DOCKER_BROKER_REQUIRED",
+        std::ffi::OsStr::new("1"),
+    );
+    let blocked = DaemonApp::bootstrap(config.clone())
+        .expect("a broker outage must not prevent kernel startup");
+    assert_eq!(
+        blocked.slices().list_pending_restore_acknowledgements(),
+        vec![owed.clone()]
+    );
+    assert_eq!(
+        blocked
+            .slices()
+            .resolve(&slice.id)
+            .expect("slice should remain visible")
+            .saved_state_ref
+            .as_deref(),
+        Some("restored-first"),
+        "a committed restore must never be rolled back",
+    );
+    assert!(blocked.slices().list_pending_backup_restores().is_empty());
+    let error = blocked
+        .slices()
+        .begin_backup_restore_transactionally(second.clone(), |_| Ok(()))
+        .expect_err("the next restore must wait for the owed acknowledgement");
+    assert!(error.to_string().contains(&first.id), "{error}");
+    drop(blocked);
+    drop(broker_outage);
+
+    // Restart with the broker repaired: reconciliation acknowledges, and the
+    // next restore starts and commits.
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(config.clone()).expect("kernel should restart"),
+    ));
+    let router = CommandRouter::with_interactive_capacity(
+        Arc::clone(&app),
+        crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+    );
+    let runtime = router.runtime_state();
+    assert!(runtime
+        .reconcile_slice_backup_restore_acknowledgements(None)
+        .expect("reconciliation should run")
+        .is_empty());
+    runtime
+        .begin_slice_backup_restore(second.clone())
+        .expect("the next restore should start after acknowledgement");
+    let restored = runtime
+        .resolve_slice_backup_restore(
+            &second,
+            state("restored-second"),
+            crate::slice::SliceBackupRestoreResolution::Restored,
+        )
+        .expect("the next restore should commit");
+    assert_eq!(restored.saved_state_ref.as_deref(), Some("restored-second"));
+    assert!(runtime
+        .reconcile_slice_backup_restore_acknowledgements(Some(&slice.id))
+        .expect("reconciliation should run")
+        .is_empty());
+    drop(runtime);
+    drop(router);
+    drop(app);
+    let durable = crate::durable_state::DurableKernelStateStore::open(config.durable_state_path())
+        .expect("durable state should remain readable");
+    let acknowledged = durable
+        .load_events_by_kind("slice.backup.restore.acknowledged")
+        .expect("acknowledgement events should read");
+    assert_eq!(
+        acknowledged
+            .iter()
+            .map(|event| event.payload["transaction_id"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>(),
+        vec![first.id.as_str(), second.id.as_str()],
+    );
+}
+
+#[cfg(unix)]
 #[test]
 fn room_takeover_response_loss_and_reconnect_retain_human_input_authority() {
     let test_thread = std::thread::Builder::new()
