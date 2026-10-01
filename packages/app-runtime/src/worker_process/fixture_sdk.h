@@ -234,5 +234,6 @@ static int fixture_sdk_run(const struct cx_launch_record* record, const char* mo
   }
   // Valid fixture stays alive until its one inherited channel closes. No
   // additional transport, subprocess or runtime loop is introduced.
-  return fixture_sdk_receive(response, cx_monotonic_ms() + 30000) == 0 ? 0 : 108;
+  // Span the kernel's 30-second authority-check budget in sustained-load tests.
+  return fixture_sdk_receive(response, cx_monotonic_ms() + 60000) == 0 ? 0 : 108;
 }

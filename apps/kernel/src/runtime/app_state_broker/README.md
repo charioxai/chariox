@@ -34,8 +34,16 @@ identity, attempts and backoff. It neither reopens terminal work nor claims a
 workflow was dispatched; the separate kernel pump handles durable queue handoff.
 
 Every operation captures the peer's monotonic deadline and cancellation, then
-obtains a shared permit without another waiting queue. The blocking closure owns
-the permit through writer completion even if its async caller is dropped. Budget
+awaits a FIFO shared permit within that budget. This prevents one worker's
+short eight-operation burst from returning a storage BUSY to a neighbour. Waiting
+uses the existing peer's at most sixteen broker handlers, bounded by the lifecycle's
+four live workers, rather than an additional task or mailbox. The global pool still
+admits at most eight blocking operations. Cancellation or expiry removes the waiter
+before blocking work starts. Full peer-handler capacity still returns BUSY.
+Storage takes shared admission before the snapshot read fence, matching snapshots'
+exclusive-fence order. Both waits observe cancellation and the original deadline.
+The blocking closure owns the permit and read fence through writer completion even
+if its async caller is dropped. Budget
 checks occur before enqueue, on dequeue and after SQLite writer-lock acquisition.
 Cancellation after transaction admission does not promise rollback.
 

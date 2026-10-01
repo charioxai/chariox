@@ -479,3 +479,8 @@ pub(crate) fn fixture_stage_approved_tool_update(
 ) {
     tests::stage_approved_update(store, "alice", installation, tests::tool_package())
 }
+
+#[cfg(test)]
+pub(crate) fn fixture_neighbour_catalog(store: &DurableKernelStateStore) -> Arc<EventCatalog> {
+    tests::install_package(store, "alice", "neighbour", tests::package())
+}

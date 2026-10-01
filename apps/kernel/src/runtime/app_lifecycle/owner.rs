@@ -276,12 +276,13 @@ fn serve(context: &Context, admission: &mut Admitted) -> Result<WorkerExit> {
             if Instant::now() >= authority_check {
                 // Contention cannot renew a check's deadline or immediately
                 // kill a healthy worker. Keep one budget until admission wins.
-                let budget = pending_check.get_or_insert_with(|| context.control.budget());
-                budget.check().map_err(|_| LifecycleError::Authority)?;
-                if let Ok(_permit) = context.admission.clone().try_acquire_owned() {
-                    context
-                        .store
-                        .verify_app_start(admission, budget.fork(|| false))?;
+                let check = pending_check.get_or_insert_with(|| {
+                    super::authority_check::AuthorityCheck::new(
+                        context.control.budget(),
+                        context.admission.clone(),
+                    )
+                });
+                if check.verify(&context.store, admission)? {
                     pending_check = None;
                     authority_check = Instant::now() + Duration::from_secs(2);
                 }

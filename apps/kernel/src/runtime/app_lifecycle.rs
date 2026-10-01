@@ -1,5 +1,6 @@
 //! Retained owners for approved first installs and active-generation restarts.
 //! Data migrations and terminal approval projection remain separate duties.
+mod authority_check;
 mod disk_space;
 mod first_install;
 mod manual_stop;
@@ -92,10 +93,15 @@ impl From<InstallOperationError> for LifecycleError {
 }
 #[derive(Clone)]
 enum StartKind {
-    Active { recovery: bool },
+    Active {
+        recovery: bool,
+    },
     /// A supervised install operation. `replace` is a local update: the
     /// installation's current worker is drained (not user-stopped) first.
-    First { request_id: String, replace: bool },
+    First {
+        request_id: String,
+        replace: bool,
+    },
 }
 type Result<T> = std::result::Result<T, LifecycleError>;
 #[derive(Debug, Clone, PartialEq, Eq)]

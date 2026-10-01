@@ -31,7 +31,11 @@ The same SQLite writer persists one health/restart-intent row per installation.
 Generation and attempt fences prevent old cleanup from overwriting a replacement.
 Current installation and publisher admission are rechecked before preparation,
 activation, Running publication, and periodically while the owner lives. The
-periodic check retains one monotonic budget through shared-admission contention.
+periodic check retains one monotonic budget and one FIFO admission future through
+shared-admission contention. The native owner polls that same future in its
+100 ms loop, so a replenished SDK queue cannot steal every released permit.
+Stop, revocation and the original deadline still fence the check; admission remains
+in the shared eight-operation pool.
 Each ordinary SDK call continues to use its own current catalog/permission fence.
 
 A stop request withdraws tool/pump handles immediately, including when App

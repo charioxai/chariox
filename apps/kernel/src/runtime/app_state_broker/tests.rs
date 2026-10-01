@@ -1,6 +1,7 @@
 use super::*;
 use chariox_app_runtime::managed_state::{MAX_CHANGES, MAX_CHECKS, MAX_VALUE_BYTES};
 
+mod admission;
 mod events;
 mod integration;
 

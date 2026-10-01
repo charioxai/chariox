@@ -72,6 +72,7 @@ fn build(
             owner.clone(),
             catalog.clone(),
             admission.clone(),
+            fence.clone(),
         ),
         http: AppHttpBroker::new(
             store.clone(),
@@ -156,7 +157,6 @@ impl Broker for BackendBroker {
                     || name.starts_with("schedule.")
                     || name == "migration.step" =>
                 {
-                    let _write = delegate.fence.read().await;
                     delegate.state.dispatch(request).await
                 }
                 name if name.starts_with("http.") => delegate.http.dispatch(request).await,

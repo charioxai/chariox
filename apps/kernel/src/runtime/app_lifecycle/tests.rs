@@ -1000,3 +1000,4 @@ fn callable_readiness_refuses_terminal_start_failure() {
     assert!(lease.is_none());
     control.lifecycle().shutdown_blocking().unwrap();
 }
+mod admission;
