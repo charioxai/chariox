@@ -1857,6 +1857,7 @@ fn backup_restore_replaces_the_slice_in_order_and_leaves_it_stopped() {
     let running = root.join("running");
     let volume = root.join("volume");
     let archive = root.join("backup-home.tar.zst");
+    let restored_stdin = root.join("restore-stdin");
     std::fs::create_dir_all(&bin).expect("fake Docker directory should create");
     std::fs::write(&container, b"").expect("container state should write");
     std::fs::write(&running, b"").expect("running state should write");
@@ -1867,6 +1868,9 @@ fn backup_restore_replaces_the_slice_in_order_and_leaves_it_stopped() {
         r#"#!/bin/sh
 printf '%s\n' "$*" >> "$DOCKER_LOG"
 if "$BROWSER_FIXTURE" "$@"; then exit 0; fi
+case "$*" in
+  *"chariox-home-restore -") cat > "$DOCKER_RESTORE_STDIN"; exit 0 ;;
+esac
 if [ "$1" = "info" ]; then
   exit 0
 fi
@@ -2002,6 +2006,7 @@ exit 0
             .env("DOCKER_CONTAINER", &container)
             .env("DOCKER_RUNNING", &running)
             .env("DOCKER_VOLUME", &volume)
+            .env("DOCKER_RESTORE_STDIN", &restored_stdin)
             .env(
                 "EXPECTED_PROTOCOL",
                 crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION.to_string(),
@@ -2078,13 +2083,20 @@ exit 0
             && start_container < stop_container,
         "restore lifecycle must be ordered: {calls:?}"
     );
+    assert_eq!(
+        std::fs::read(&restored_stdin).expect("restore should consume file stdin"),
+        std::fs::read(&archive).expect("selected archive should remain readable"),
+        "restore must stream the exact selected archive into the replacement volume"
+    );
+    assert!(calls.iter().any(|call| {
+        call.starts_with("exec -i -u root saved-slice-home-restore-")
+            && call.ends_with("chariox-home-restore -")
+    }));
     assert!(
-        calls.iter().any(|call| {
-            call.starts_with("cp -L ")
-                && call.contains(archive.to_string_lossy().as_ref())
-                && call.contains("saved-slice-home-restore-")
+        !calls.iter().any(|call| {
+            call.starts_with("cp -L ") && call.contains(archive.to_string_lossy().as_ref())
         }),
-        "restore must copy the selected archive into the replacement volume: {calls:?}"
+        "private restore must not stage the selected archive in a helper layer"
     );
     assert!(
         !calls
