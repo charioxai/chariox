@@ -18,7 +18,7 @@ const args = process.argv.slice(2);
 if (args[0] === "info") process.exit(0);
 if (args[0] === "container" && args[1] === "inspect") process.exit(1);
 if (args[0] === "volume" && args[1] === "inspect") {
-  console.error("Error: no such volume: fixture-home");
+  console.error("Error: no such volume: " + args.at(-1));
   process.exit(1);
 }
 if (args[0] === "volume" && args[1] === "create") process.exit(0);
@@ -44,7 +44,7 @@ throw new Error("unexpected Docker operation: " + JSON.stringify(args));
           allowProviderSandboxCompatibility ? "1" : "0",
       },
     })
-    assert.notEqual(result.status, 0, "the stubbed Docker create should stop the provisioner")
+    assert.equal(result.status, 42, "the stubbed Docker create should stop the provisioner")
     return JSON.parse((await readFile(dockerLog, "utf8")).trim())
   } finally {
     await rm(root, { recursive: true, force: true })
