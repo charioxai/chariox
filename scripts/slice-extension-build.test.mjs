@@ -235,3 +235,9 @@ test("MP-08 MP-11 builds use the configured slice engine despite caller builder 
  assert.match(result.stderr,/slice engine.*BUILDKIT_HOST/)
  await assert.rejects(readFile(marker),{code:"ENOENT"})
 })
+
+test("MP-08 MP-11 raw Docker controls share explicit engine selection with builds", async () => {
+ const source=await readFile(new URL("../apps/kernel/src/slice/local_docker/broker.rs",import.meta.url),"utf8")
+ const command=source.slice(source.indexOf("fn local_command(&self)"),source.indexOf("#[cfg(all(test, unix))]",source.indexOf("fn local_command(&self)")))
+ assert.match(command,/env_remove\("DOCKER_CONTEXT"\)/)
+})

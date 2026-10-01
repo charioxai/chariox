@@ -599,6 +599,10 @@ impl DockerCommand {
     fn local_command(&self) -> Command {
         let mut command = Command::new("docker");
         command.args(&self.args);
+        // MP-08/MP-11: use the same explicit engine as image production.
+        if std::env::var_os("DOCKER_HOST").is_some_and(|host| !host.is_empty()) {
+            command.env_remove("DOCKER_CONTEXT");
+        }
         if self.quiet_stdout {
             command.stdout(Stdio::null());
         }
@@ -668,6 +672,26 @@ mod tests {
                 String::from_utf8_lossy(&result.stdout)
             );
         }
+    }
+
+    #[test]
+    fn mp08_mp11_raw_controls_use_the_same_explicit_engine_as_builds() {
+        let _lock = crate::env_lock::lock();
+        let previous = ["DOCKER_HOST", "DOCKER_CONTEXT"].map(|name| (name, std::env::var_os(name)));
+        std::env::set_var("DOCKER_HOST", "unix:///synthetic-slice.sock");
+        std::env::set_var("DOCKER_CONTEXT", "foreign-builder");
+        let command = DockerCommand::default().local_command();
+        for (name, value) in previous {
+            if let Some(value) = value {
+                std::env::set_var(name, value);
+            } else {
+                std::env::remove_var(name);
+            }
+        }
+        assert_eq!(
+            command.get_envs().collect::<Vec<_>>(),
+            vec![(OsStr::new("DOCKER_CONTEXT"), None)]
+        );
     }
 
     #[test]
