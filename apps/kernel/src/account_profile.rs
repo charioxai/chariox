@@ -746,6 +746,24 @@ impl ProviderAccountLocator {
         }
     }
 
+    fn same_credential_scope(&self, other: &Self) -> bool {
+        // Claude's ambient scope differs from an explicit directory, and its
+        // Keychain service hashes the literal config path. Keep those scopes.
+        if matches!(self, Self::Claude { .. })
+            || std::mem::discriminant(self) != std::mem::discriminant(other)
+        {
+            return self == other;
+        }
+        self.roots()
+            .into_iter()
+            .zip(other.roots())
+            .all(|(left, right)| {
+                left == right
+                    || matches!((left.canonicalize(), right.canonicalize()),
+                (Ok(left), Ok(right)) if left == right)
+            })
+    }
+
     fn roots(&self) -> Vec<&Path> {
         match self {
             Self::Codex { codex_home } => vec![codex_home],
@@ -1595,7 +1613,7 @@ impl ProviderAccountProfileRegistry {
         if let Some(existing) = document.profiles.iter().find(|stored| {
             stored.public.owner_user_id == owner_user_id
                 && stored.public.provider == provider
-                && stored.locator == locator
+                && stored.locator.same_credential_scope(&locator)
         }) {
             return Err(registry_error(
                 "link account profile",
@@ -6682,6 +6700,70 @@ mod tests {
         assert!(error.to_string().contains(&first.profile_id), "{error}");
         assert_eq!(registry.list("owner-a", Some("codex")).unwrap().len(), 1);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linking_native_codex_symlink_reports_existing_profile() {
+        let _lock = crate::env_lock::lock();
+        let previous = std::env::var_os("CODEX_HOME");
+        let (root, registry) = fixture();
+        let real = root.join("codex-real");
+        let alias = root.join("codex-alias");
+        fs::create_dir_all(&real).unwrap();
+        set_private_dir_permissions(&real).unwrap();
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        std::env::set_var("CODEX_HOME", &alias);
+        let imported =
+            registry.import_native_default("imported-owner", "codex", &root.join("home"));
+        let migrated = registry.migrate_effective_defaults("migrated-owner", &root.join("home"));
+        match previous {
+            Some(value) => std::env::set_var("CODEX_HOME", value),
+            None => std::env::remove_var("CODEX_HOME"),
+        }
+        let imported = imported.unwrap();
+        let migrated = migrated
+            .unwrap()
+            .into_iter()
+            .find(|profile| profile.provider == "codex")
+            .unwrap();
+        for profile in [imported, migrated] {
+            for path in [&real, &alias] {
+                let error = registry
+                    .link_existing(&profile.owner_user_id, "codex", "second", path)
+                    .expect_err(
+                        "both spellings of a native root must report the existing registration",
+                    );
+                assert!(error.to_string().contains(&profile.profile_id), "{error}");
+            }
+            assert_eq!(
+                registry
+                    .list(&profile.owner_user_id, Some("codex"))
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn directory_matching_preserves_claude_credential_scopes() {
+        let explicit = ProviderAccountLocator::Claude {
+            claude_config_dir: PathBuf::from("/fixture/claude"),
+            ambient_default: Some(false),
+        };
+        let ambient = ProviderAccountLocator::Claude {
+            claude_config_dir: PathBuf::from("/fixture/claude"),
+            ambient_default: Some(true),
+        };
+        let alias = ProviderAccountLocator::Claude {
+            claude_config_dir: PathBuf::from("/fixture/claude/../claude"),
+            ambient_default: Some(false),
+        };
+        assert!(explicit.same_credential_scope(&explicit));
+        assert!(!explicit.same_credential_scope(&ambient));
+        assert!(!explicit.same_credential_scope(&alias));
     }
 
     #[test]
