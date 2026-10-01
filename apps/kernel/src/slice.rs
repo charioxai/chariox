@@ -883,14 +883,11 @@ mod tests {
         assert!(error.to_string().contains("slice.start"));
     }
 
-    // Tests that hold a listener on a slice candidate port take this lock, so
-    // one cannot occupy a port another expects to be free.
-    static SLICE_PORT_LISTENERS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn hold_slice_port_listeners() -> std::sync::MutexGuard<'static, ()> {
-        SLICE_PORT_LISTENERS
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    // The port checks ask `docker ps` first. The environment lock keeps another
+    // test's fake `docker` off PATH meanwhile, and serializes the tests that
+    // hold listeners on slice candidate ports.
+    fn hold_slice_port_listeners() -> crate::env_lock::EnvGuard {
+        crate::env_lock::lock()
     }
 
     // Other tests' allocations probe ports with brief binds; retry past them.
@@ -912,7 +909,8 @@ mod tests {
             .create("kernel-1", "machine-1", create_input("dev"))
             .expect("slice should create");
         let ports = LocalDockerSlicePorts::for_record(&slice);
-        let _listener = TcpListener::bind(("127.0.0.1", ports.relay)).ok();
+        let _listener = past_port_probes(|| TcpListener::bind(("127.0.0.1", ports.relay)))
+            .expect("the slice's relay port should be bindable");
 
         let error = ensure_local_docker_slice_ports_available(&slice)
             .expect_err("busy port should be reported before provisioning");
