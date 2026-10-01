@@ -440,7 +440,7 @@ exit 2
             home_agent_id: "home-agent".to_string(),
             execution_lease_id: lease.id,
         };
-        let materialization = |contents_base64: &str| ProviderAccountMaterialization {
+        let materialization = |synthetic_key: &str| ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
                 owner_user_id: "owner-a".to_string(),
                 provider: "opencode".to_string(),
@@ -451,16 +451,19 @@ exit 2
             },
             files: vec![crate::account_profile::ProviderAccountMaterializationFile {
                 relative_path: "data/opencode/auth.json".to_string(),
-                contents_base64: contents_base64.to_string(),
+                contents_base64: base64::Engine::encode(
+                    &base64::engine::general_purpose::STANDARD,
+                    serde_json::to_vec(&serde_json::json!({
+                        "opencode": {"type": "api", "key": synthetic_key}
+                    }))
+                    .unwrap(),
+                ),
             }],
             generated_at_ms: 1,
         };
 
         RemoteLeaseRuntime::new(&mut app)
-            .ensure_remote_provider_account(
-                context.clone(),
-                materialization("eyJzb3VyY2UiOiJpbml0aWFsIn0="),
-            )
+            .ensure_remote_provider_account(context.clone(), materialization("synthetic-initial"))
             .unwrap();
         let environment = app
             .provider_account_profile_registry()
@@ -475,16 +478,17 @@ exit 2
         std::fs::write(&provider_state_path, b"worker-state").unwrap();
         let auth_path =
             std::path::Path::new(&environment["XDG_DATA_HOME"]).join("opencode/auth.json");
-        std::fs::write(&auth_path, br#"{"token":"worker"}"#).unwrap();
+        let worker_auth = serde_json::to_vec(&serde_json::json!({
+            "opencode": {"type": "api", "key": "synthetic-worker"}
+        }))
+        .unwrap();
+        std::fs::write(&auth_path, &worker_auth).unwrap();
 
         RemoteLeaseRuntime::new(&mut app)
-            .ensure_remote_provider_account(
-                context,
-                materialization("eyJzb3VyY2UiOiJyZWZyZXNoIn0="),
-            )
+            .ensure_remote_provider_account(context, materialization("synthetic-refresh"))
             .unwrap();
 
-        assert_eq!(std::fs::read(&auth_path).unwrap(), br#"{"token":"worker"}"#);
+        assert_eq!(std::fs::read(&auth_path).unwrap(), worker_auth);
         assert_eq!(
             std::fs::read(&settings_path).unwrap(),
             br#"{"model":"worker-model"}"#
