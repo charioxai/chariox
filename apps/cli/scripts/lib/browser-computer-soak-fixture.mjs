@@ -43,11 +43,16 @@ export async function waitForFixtureMarker(url, marker, { timeoutMs = 2_000 } = 
   // Poll only the acknowledgement. Never repeat a completed browser mutation.
   while (performance.now() < deadline) {
     attempts += 1
-    const response = await fetch(`${url}health`, {
-      signal: AbortSignal.timeout(Math.max(1, Math.ceil(deadline - performance.now()))),
-    })
-    if (!response.ok) throw new Error(`Active fixture health read failed: HTTP ${response.status}`)
-    observedMarker = await response.text()
+    try {
+      const response = await fetch(`${url}health`, {
+        signal: AbortSignal.timeout(Math.max(1, Math.ceil(deadline - performance.now()))),
+      })
+      if (!response.ok) throw new Error(`Active fixture health read failed: HTTP ${response.status}`)
+      observedMarker = await response.text()
+    } catch (error) {
+      if (error.name === "TimeoutError") break
+      throw error
+    }
     if (observedMarker === marker && performance.now() <= deadline) {
       return { attempts, elapsedMs: performance.now() - startedAt }
     }

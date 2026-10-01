@@ -83,7 +83,7 @@ test("soak bounds an unresponsive health request by the acknowledgement deadline
   try {
     await assert.rejects(
       waitForFixtureMarker(`http://127.0.0.1:${server.address().port}/`, "SOAK-00000536", { timeoutMs: 100 }),
-      { name: "TimeoutError" },
+      /Chromium mutation did not reach the active fixture within 100ms.*observed \[unobserved\]/,
     )
   } finally {
     server.closeAllConnections()
