@@ -682,15 +682,8 @@ docker_target_arch() {
 }
 
 run_build_command() {
-  # Only the broker injects this trusted child marker. Extension and ordinary
-  # builds keep their existing wait; log silence is not evidence of a stall.
-  if [[ -n "${CHARIOX_SLICE_BROKER_BUILD_TIMEOUT_SECONDS:-}" ]]; then
-    [[ "$CHARIOX_SLICE_BROKER_BUILD_TIMEOUT_SECONDS" == 1200 ]] \
-      || fail "invalid broker build deadline"
-    run_with_timeout 1200 "$@"
-  else
-    run_guarded_command unbounded -- "$@"
-  fi
+  # MP-08/MP-10/MP-11: common owned wait; silence is not a build failure.
+  run_guarded_command unbounded -- "$@"
 }
 
 docker_build() {

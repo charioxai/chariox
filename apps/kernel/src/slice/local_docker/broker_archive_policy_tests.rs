@@ -72,8 +72,8 @@ fn archive_policy_response_deadlines_preserve_healthy_archive_progress() {
     }
     let (success, read, write) = exchange(&BrokerRequest::Docker { args: &[] }, true);
     assert!(
-        !success,
-        "unrelated commands retain their original deadline"
+        success,
+        "MP-08/MP-11 ordinary controls also use owned lifetime"
     );
     assert_eq!(read, Some(Duration::from_millis(50)));
     assert_eq!(write, Some(Duration::from_millis(75)));
@@ -121,8 +121,8 @@ fn archive_policy_restore_response_deadlines_are_request_specific() {
         };
         let (success, read, write) = exchange(&request, true);
         assert!(
-            !success,
-            "{action} without archive restore keeps the prior deadline"
+            success,
+            "{action} uses owned lifetime without a placement-selected deadline"
         );
         assert_eq!(read, Some(Duration::from_millis(50)));
         assert_eq!(write, Some(Duration::from_millis(75)));

@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 
+import { runBrokerCommand } from "./managed-broker-command.mjs"
+
 import { spawnSync } from "node:child_process"
 import { isPositiveDockerCpuLimit } from "./docker-cpu-policy.mjs"
 import { isDockerImageReference } from "./docker-image-reference.mjs"
-import { HOME_ARCHIVE_PROGRESS_TIMEOUT_MS, capturePrivateHomeArchive, homeArchiveMetadataMatches, isHomeArchiveRestoreRequest } from "./managed-home-archive-stream.mjs"
+import { HOME_ARCHIVE_PROGRESS_TIMEOUT_MS, capturePrivateHomeArchive, homeArchiveMetadataMatches } from "./managed-home-archive-stream.mjs"
 import { createHash } from "node:crypto"
 import { digestPinnedHomeArchive } from "./managed-home-archive-digest.mjs"
 import {
@@ -1547,18 +1549,13 @@ function cleanupPrepared(prepared) {
   if (prepared.output?.stagingDirectory) rmSync(prepared.output.stagingDirectory, { recursive: true, force: true })
 }
 
-function spawnBounded(command, args, options, archiveRestore = false) {
-  // Ordinary saved-home provisioning waits for verification and restore to
-  // finish. Keep shared per-step deadlines, without a managed-only outer cap.
-  if (archiveRestore) return spawnSync(command, args, { ...options, killSignal: "SIGKILL" })
-  if (process.platform === "linux") {
-    return spawnSync(
-      "/usr/bin/timeout",
-      ["--signal=TERM", "--kill-after=10s", "20m", command, ...args],
-      { ...options, timeout: 21 * 60_000, killSignal: "SIGKILL" },
-    )
-  }
-  return spawnSync(command, args, { ...options, timeout: 20 * 60_000, killSignal: "SIGKILL" })
+const brokerLifetime = new AbortController()
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(signal, () => { brokerLifetime.abort() })
+}
+
+function spawnBounded(command, args, options) {
+  return runBrokerCommand(command, args, { ...options, signal: brokerLifetime.signal })
 }
 
 function provisionerQuotaRequest(environment) {
@@ -1670,13 +1667,11 @@ async function execute(request) {
           PATH: "/usr/local/bin:/usr/bin:/bin",
           DOCKER_HOST,
           ...prepared.environment,
-          // Broker requests retain a build deadline while archive streaming uses progress.
-          CHARIOX_SLICE_BROKER_BUILD_TIMEOUT_SECONDS: "1200",
           ...(SIGNED_BUILD_CONTEXT_DIGEST
             ? { CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: SIGNED_BUILD_CONTEXT_DIGEST }
             : {}),
         }
-      return spawnBounded(command, args, { env, maxBuffer: MAX_OUTPUT_BYTES }, isHomeArchiveRestoreRequest(request))
+      return spawnBounded(command, args, { env, maxBuffer: MAX_OUTPUT_BYTES })
     }
     const containerName = request.kind === "docker" ? request.args[1] : undefined
     const isDockerStartOrUnpause = request.kind === "docker" && ["start", "unpause"].includes(request.args[0])
@@ -1881,6 +1876,8 @@ if (process.argv[2] === "--validate-request") {
     accepted = true
     server.close()
     rmSync(SOCKET_PATH, { force: true })
+    socket.on("close", () => brokerLifetime.abort())
+    socket.on("error", () => brokerLifetime.abort())
     let buffered = Buffer.alloc(0)
     let processing = Promise.resolve()
     socket.on("data", (chunk) => {
@@ -1908,6 +1905,7 @@ if (process.argv[2] === "--validate-request") {
         processing = processing.then(async () => {
           let response
           try {
+            if (brokerLifetime.signal.aborted) throw new Error("slice broker lease closed")
             response = await execute(parsed)
           } catch (error) {
             response = errorResponse(error)

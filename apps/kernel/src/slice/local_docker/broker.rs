@@ -33,7 +33,7 @@ const MAX_BROKER_RESPONSE_BYTES: usize = 12 * 1024 * 1024;
 #[cfg(unix)]
 const MAX_BROKER_REQUEST_BYTES: usize = 12 * 1024 * 1024;
 #[cfg(unix)]
-const BROKER_IO_TIMEOUT: Duration = Duration::from_secs(21 * 60);
+const BROKER_IO_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[cfg(unix)]
 struct BrokerConnection {
@@ -207,7 +207,7 @@ pub fn initialize() {
 
 #[cfg(unix)]
 fn configure_stream_deadlines(stream: &UnixStream) -> io::Result<()> {
-    stream.set_read_timeout(Some(BROKER_IO_TIMEOUT))?;
+    stream.set_read_timeout(None)?;
     stream.set_write_timeout(Some(BROKER_IO_TIMEOUT))
 }
 
@@ -250,20 +250,6 @@ fn broker_is_configured() -> bool {
 
 #[cfg(unix)]
 fn execute_with_disk_evidence(request: &BrokerRequest<'_>) -> io::Result<BrokerExecution> {
-    let archive_response = match request {
-        BrokerRequest::HomeArchiveCapture { .. } | BrokerRequest::HomeArchiveVerify { .. } => true,
-        BrokerRequest::Provisioner {
-            action,
-            environment,
-            ..
-        } => {
-            matches!(*action, "provision" | "restore-state")
-                && environment
-                    .get("CHARIOX_SLICE_SAVED_HOME_ARCHIVE")
-                    .is_some_and(|path| !path.is_empty())
-        }
-        _ => false,
-    };
     let request = Zeroizing::new(
         serde_json::to_vec(request)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?,
@@ -286,9 +272,7 @@ fn execute_with_disk_evidence(request: &BrokerRequest<'_>) -> io::Result<BrokerE
             )
         })?;
         let previous_read_timeout = connection.writer.read_timeout()?;
-        if archive_response {
-            connection.writer.set_read_timeout(None)?;
-        }
+        connection.writer.set_read_timeout(None)?;
         let result = (|| {
             connection
                 .writer
@@ -321,11 +305,9 @@ fn execute_with_disk_evidence(request: &BrokerRequest<'_>) -> io::Result<BrokerE
                 disk_quota_evidence: response.disk_quota_evidence,
             })
         })();
-        // Restore the exact prior read timeout on success and every IO/decode
-        // failure. Archive requests never change the write timeout.
-        if archive_response {
-            connection.writer.set_read_timeout(previous_read_timeout)?;
-        }
+        // MP-08/MP-10/MP-11: all operations wait under broker lease ownership.
+        // Preserve the caller write deadline and restore read state on every result.
+        connection.writer.set_read_timeout(previous_read_timeout)?;
         result
     })();
     if result.is_err() {

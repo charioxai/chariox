@@ -838,7 +838,7 @@ async function processesInMountNamespace(namespace) {
 }
 
 for (const abortBeforeRelease of [false, true]) test(abortBeforeRelease
-  ? "managed slice broker fixture settles timeout descendants after abort before release"
+  ? "managed slice broker fixture settles owned descendants after abort before release"
   : "managed slice broker pins a provisioner path inode across caller replacement", async (context) => {
   if (process.platform !== "linux" || process.env.CHARIOX_RUN_PRIVILEGED_MOUNT_TESTS !== "1") {
     context.skip("requires an explicitly enabled Linux mount namespace")
@@ -953,7 +953,7 @@ cat "$CHARIOX_SLICE_WORKSPACE_SOURCE/value"
   assert.notEqual(namespace, await readlink("/proc/self/ns/mnt"))
   const owned = await processesInMountNamespace(namespace)
   const commands = await Promise.all(owned.map((pid) => readFile(`/proc/${pid}/cmdline`, "utf8").catch(() => "")))
-  assert.ok(commands.some((command) => command.includes("/usr/bin/timeout")), "fixture reached the real timeout child")
+  assert.ok(commands.some((command) => command.includes("slice-command-guard.py")), "fixture reached the common process-group owner")
   if (abortBeforeRelease) return // Exercise teardown while the provisioner waits in its separate process group.
   await rename(workspace, moved)
   await symlink(outside, workspace)
@@ -1042,7 +1042,7 @@ test("managed slice broker removes its endpoint after the supervisor claims it",
 })
 
 
-test("archive-bearing provision and restore preserve healthy progress without widening other deadlines", async () => {
+test("MP-08 MP-10 MP-11 all provisioner requests use common owned lifetime", async () => {
   const source = await readFile(broker, "utf8")
   const spawnSource = source.slice(source.indexOf("function spawnBounded("), source.indexOf("\nfunction provisionerQuotaRequest("))
   const executeSource = source.slice(source.indexOf("async function execute(request)"), source.indexOf("\nfunction errorResponse("))
@@ -1063,15 +1063,10 @@ test("archive-bearing provision and restore preserve healthy progress without wi
     },
     prepareProvisioner: async request => { await new Promise(resolve => setImmediate(resolve)); prepared++; return { environment: request.environment, handles: new Set(), newHandles: new Set() } },
     cleanupPrepared: () => { cleaned++ }, removePersistentHandles: () => {},
-    spawnSync: (command, args, options) => {
+    brokerLifetime: new AbortController(),
+    runBrokerCommand: async (command, args, options) => {
       calls.push({ command, args, timeout: options.timeout, env: options.env })
-      // Scale only the existing outer operation deadlines. The actual tiny
-      // child, timeout executable, exit status, and cleanup are exercised.
-      const child = ["-e", "setTimeout(() => process.stdout.write('restored'), 120)"]
-      if (command === "/usr/bin/timeout") {
-        return spawnSync(command, ["--signal=TERM", "--kill-after=0.01s", "0.05s", process.execPath, ...child], { ...options, timeout: 80 })
-      }
-      return spawnSync(command, child, { ...options, ...(options.timeout ? { timeout: 80 } : {}) })
+      return spawnSync(command, ["-e", "setTimeout(() => process.stdout.write('restored'), 120)"], options)
     },
   })
   for (const action of ["provision", "restore-state"]) {
@@ -1082,18 +1077,18 @@ test("archive-bearing provision and restore preserve healthy progress without wi
     assert.equal(Buffer.from(response.stdoutBase64, "base64").toString(), "restored")
     assert.equal(calls.at(-1).command, process.execPath)
     assert.equal(calls.at(-1).timeout, undefined)
-    assert.equal(calls.at(-1).env.CHARIOX_SLICE_BROKER_BUILD_TIMEOUT_SECONDS, "1200")
+    assert.equal(calls.at(-1).env.CHARIOX_SLICE_BROKER_BUILD_TIMEOUT_SECONDS, undefined)
   }
   for (const [action, archive] of [["provision", undefined], ["restore-state", ""], ["recover", "/private/home"], ["status", "/private/home"], ["import-provider-auth", "/private/home"]]) {
     const response = await execute({ kind: "provisioner", action, files: [], environment: {
       CHARIOX_SLICE_NAME: "synthetic-owned", ...(archive !== undefined ? { CHARIOX_SLICE_SAVED_HOME_ARCHIVE: archive } : {}),
     } })
-    assert.notEqual(response.status, 0, `${action}/${archive} keeps its outer deadline`)
-    assert.equal(calls.at(-1).command, "/usr/bin/timeout")
-    assert.equal(calls.at(-1).timeout, 21 * 60_000)
+    assert.equal(response.status, 0, `${action}/${archive} uses common owned lifetime`)
+    assert.equal(calls.at(-1).command, process.execPath)
+    assert.equal(calls.at(-1).timeout, undefined)
   }
   assert.equal(prepared, 7)
-  assert.equal(cleaned, prepared, "prepared filesystem handles settle on success and timeout")
+  assert.equal(cleaned, prepared, "prepared filesystem handles settle on each completed request")
 })
 
 
@@ -1197,4 +1192,11 @@ test("MP-08/MP-11 broker CPU admission follows the shared positive Docker CPU ca
     }, files: [] }, root)
     assert.equal(result.status === 0, accepted, `${JSON.stringify(cpus)}: ${result.stderr}`)
   }
+})
+
+test("MP-08 MP-10 MP-11 broker lifetime has no placement-selected total deadline", async () => {
+ const source=await readFile(broker,"utf8")
+ assert.doesNotMatch(source,/CHARIOX_SLICE_BROKER_BUILD_TIMEOUT_SECONDS|21 \* 60_000|20 \* 60_000|"20m"/)
+ const provisioner=await readFile(join(repositoryRoot,"apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh"),"utf8")
+ assert.doesNotMatch(provisioner,/CHARIOX_SLICE_BROKER_BUILD_TIMEOUT_SECONDS/)
 })
