@@ -214,45 +214,56 @@ test("this terminal's remember window skips the prompt until the kernel refuses"
   assert.equal(h.requests.length, 2)
 })
 
-test("passkey text chunks preserve Unicode and spaces, reject controls and obey the existing bound", async () => {
-  const criticalFixture = critical("burst-critical")
-  const h = harness(session("session-1", [criticalFixture]))
-  h.controller.show(); await h.controller.choose(criticalFixture.id, "approve")
-  h.controller.handleKey(key("s", { sequence: "synthetic-input-check" }))
-  assert.equal(h.controller.view().passkey?.length, 21)
-  h.controller.handleKey(key("escape"))
-  await h.controller.choose(criticalFixture.id, "approve")
-  const pasted = "  café 🔑 密碼  "
-  h.controller.handlePaste({ text: pasted, preventDefault() {}, stopPropagation() {} })
-  assert.equal(h.controller.view().passkey?.length, pasted.length)
-  h.controller.handlePaste({ text: "\r\n", preventDefault() {}, stopPropagation() {} })
-  assert.equal(h.requests.length, 0)
-  assert.equal(h.controller.view().passkey?.length, pasted.length)
-  const submission = h.controller.submitPasskey()
-  assert.deepEqual(h.requests, [["session-1", criticalFixture.id, "approve", { passkey: pasted, rememberMinutes: null }]])
-  h.resolve(session("session-1", [])); await submission
-})
+const paste = (text: string, rawText: string | null = null) => {
+  const events: string[] = []
+  return { events, event: { text, rawText,
+    preventDefault: () => { events.push("prevent") }, stopPropagation: () => { events.push("stop") } } }
+}
 
-test("pasted passkeys stop at 512 units without splitting Unicode characters", async () => {
-  const h = harness(session("session-1", [critical("limit")]))
-  h.controller.show(); await h.controller.choose("limit", "approve")
-  const paste = (text: string) => h.controller.handlePaste({ text, preventDefault() {}, stopPropagation() {} })
-  paste("x".repeat(501) + "🔑".repeat(10))
-  assert.equal(h.controller.view().passkey?.length, 511)
-  paste("zmore")
-  assert.equal(h.controller.view().passkey?.length, 512)
-  const submission = h.controller.submitPasskey()
-  assert.deepEqual(h.requests, [["session-1", "limit", "approve", { passkey: "x".repeat(501) + "🔑".repeat(5) + "z", rememberMinutes: null }]])
-  h.resolve(session("session-1", [])); await submission
-})
+test("a pasted passkey is kept exactly, and a paste with control characters is refused", () => {
+  const h = harness(session("session-1", [critical("c1")]))
+  assert.equal(h.controller.handlePaste(paste("prompt text").event), false, "a closed panel leaves pastes to the prompt")
+  h.controller.handleKey(key("f8"))
+  const early = paste("not yet")
+  assert.equal(h.controller.handlePaste(early.event), true, "an open panel takes every paste")
+  assert.deepEqual(early.events, ["prevent", "stop"])
+  selectApprove(h)
+  assert.deepEqual(h.controller.view().passkey, { length: 0, rememberMinutes: 0 })
 
-test("Backspace removes a complete pasted Unicode code point before typing and submission", async () => {
-  const h = harness(session("session-1", [critical("unicode-delete")]))
-  h.controller.show(); await h.controller.choose("unicode-delete", "approve")
-  h.controller.handlePaste({ text: "a🔑", preventDefault() {}, stopPropagation() {} })
+  h.controller.handleKey(key("x", { shift: true, sequence: "X" }))
+  h.controller.handleKey(key("\u{1D11E}", { sequence: "\u{1D11E}" }))
+  h.controller.handleKey(key("1", { shift: true, sequence: "!" }))
   h.controller.handleKey(key("backspace"))
-  h.controller.handleKey(key("x", { sequence: "x" }))
-  const submission = h.controller.submitPasskey()
-  assert.deepEqual(h.requests, [["session-1", "unicode-delete", "approve", { passkey: "ax", rememberMinutes: null }]])
-  h.resolve(session("session-1", [])); await submission
+  h.controller.handleKey(key("backspace"))
+  h.controller.handleKey(key("\u{1D11E}", { sequence: "\u{1D11E}" }))
+  assert.equal(h.controller.handlePaste(paste("Pa$te Ünï\u{1F511} \n").event), true)
+  // OpenTUI strips the escape sequence from `text`; the raw paste keeps it.
+  h.controller.handlePaste(paste("AbCd", "Ab\u001b[31mCd").event)
+  assert.match(h.controller.view().error ?? "", /^Paste not added/)
+  h.controller.handlePaste(paste("first\nsecond").event)
+  h.controller.handlePaste(paste("tab\there").event)
+  h.controller.handlePaste(paste("y".repeat(512)).event)
+  assert.deepEqual(h.controller.view().passkey, { length: 13, rememberMinutes: 0 })
+  assert.equal(JSON.stringify(h.controller.view()).includes("Pa$te"), false)
+
+  h.controller.handleKey(key("return"))
+  assert.deepEqual(h.requests, [["session-1", "c1", "approve", { passkey: "X\u{1D11E}Pa$te Ünï\u{1F511} ", rememberMinutes: null }]])
+})
+
+test("a terminal control sequence typed into the passkey clears it and the rest of that input", async () => {
+  const h = harness(session("session-1", [critical("c1")]))
+  h.controller.handleKey(key("f8"))
+  selectApprove(h)
+  // An unbracketed paste of styled text, as OpenTUI parses it into keys.
+  h.controller.handleKey(key("a", { sequence: "a" }))
+  h.controller.handleKey(key("", { sequence: "\u001b[31m", ctrl: true, meta: true, alt: true }))
+  h.controller.handleKey(key("b", { sequence: "b" }))
+  h.controller.handleKey(key("return", { sequence: "\r" }))
+  assert.equal(h.requests.length, 0)
+  assert.deepEqual(h.controller.view().passkey, { length: 0, rememberMinutes: 0 })
+  assert.match(h.controller.view().error ?? "", /control sequence/)
+  await settle()
+  h.controller.handleKey(key("o", { sequence: "o" }))
+  h.controller.handleKey(key("return"))
+  assert.deepEqual(h.requests, [["session-1", "c1", "approve", { passkey: "o", rememberMinutes: null }]])
 })

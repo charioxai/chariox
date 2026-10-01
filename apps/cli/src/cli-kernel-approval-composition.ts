@@ -6,6 +6,7 @@ import { createKernelApprovalController } from "./kernel-approval-controller.js"
 import { createKernelApprovalRenderer } from "./kernel-approval-renderer.js"
 import type { LocalIpcClient } from "./ipc.js"
 import { respondToInteraction } from "./prompt-runtime-api.js"
+import { routeRawPastes } from "./raw-paste-routing.js"
 
 export function createCliKernelApprovalComposition(deps: {
   client: LocalIpcClient
@@ -41,8 +42,9 @@ export function createCliKernelApprovalComposition(deps: {
     applySession: deps.applySession,
   })
   createEffect(() => { deps.themeRevision(); deps.dimensions(); controller.sync() })
-  deps.renderer.keyInput.on("paste", controller.handlePaste)
-  onCleanup(() => { deps.renderer.keyInput.off("paste", controller.handlePaste); controller.dispose() })
+  // A paste while the panel is open belongs to the passkey, never the prompt.
+  onCleanup(routeRawPastes(deps.renderer.keyInput, controller.handlePaste))
+  onCleanup(() => controller.dispose())
   return {
     ...controller,
     assignBox(value: BoxRenderable) { surface.assign(value); controller.sync() },

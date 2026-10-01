@@ -4,7 +4,8 @@ import { BoxRenderable, TextRenderable, TextareaRenderable } from "@opentui/core
 import { createTestRenderer } from "@opentui/core/testing"
 import { createKernelApprovalRenderer } from "./kernel-approval-renderer.js"
 import { createKernelApprovalController, type KernelApprovalView } from "./kernel-approval-controller.js"
-import type { RuntimeSession } from "./cli-types.js"
+import type { RuntimeInteraction, RuntimeSession } from "./cli-types.js"
+import { routeRawPastes } from "./raw-paste-routing.js"
 
 const view: KernelApprovalView = {
   open: false, count: 1, index: 0, selected: null, pending: false, connected: true, error: null, passkey: null,
@@ -136,43 +137,83 @@ test("actual mouse clicks require the primary button and a connected, nonpending
   } finally { harness.renderer.destroy() }
 })
 
-for (const input of ["burst", "paste", "unicode-paste"] as const) {
-  test(`actual OpenTUI ${input} delivers the complete hidden passkey without changing the prompt`, async () => {
-    const harness = await createTestRenderer({ width: 80, height: 24, useThread: false })
-    const prompt = new TextareaRenderable(harness.renderer, { initialValue: "draft kept" })
-    const box = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0 })
-    harness.renderer.root.add(prompt); harness.renderer.root.add(box)
-    const requests: unknown[] = []
-    const critical = { ...view.interaction!, choices: [{ id: "approve", label: "Approve", reply: "allow", requires_passkey: true }] }
-    const surface = createKernelApprovalRenderer(harness.renderer, { show() {}, choose() {}, cycleRemember() {}, submitPasskey() {} })
-    surface.assign(box)
-    const controller = createKernelApprovalController({
-      getSession: () => ({ id: "session-1", agents: [], active_interactions: [critical] }) as unknown as RuntimeSession,
-      connected: () => true, onView: next => surface.render(next, { width: 80, height: 24 }),
-      onOpen: () => prompt.blur(), onClose: () => prompt.focus(), scroll() {},
-      respond: async (_session, _interaction, _choice, proof) => { requests.push(proof); return new Promise(() => {}) }, applySession() {},
-    })
-    harness.renderer.keyInput.on("keypress", controller.handleKey)
-    const paste = controller.handlePaste
-    harness.renderer.keyInput.on("paste", paste)
+// The passkey panel as cli-kernel-approval-composition.ts wires it: keys from
+// OpenTUI's keyboard, pastes through routeRawPastes, the prompt blurred while
+// the panel is open. These run OpenTUI's own parser over a terminal's bytes.
+const critical: RuntimeInteraction = {
+  id: "c1", kernel_operation_id: "validation:c1", kind: "permission", level: "warning",
+  title: "Approve App action", message: "An App asks to perform a protected action.",
+  choices: [{ id: "deny", label: "Deny", reply: "deny" },
+    { id: "approve", label: "Approve", reply: "allow", requires_passkey: true }],
+  requested_at_ms: 1,
+}
+async function passkeyHarness(kittyKeyboard: boolean) {
+  const harness = await createTestRenderer({ width: 80, height: 24, useThread: false, kittyKeyboard })
+  const prompt = new TextareaRenderable(harness.renderer, { initialValue: "draft kept" })
+  harness.renderer.root.add(prompt)
+  const proofs: unknown[] = []
+  const controller = createKernelApprovalController({
+    getSession: () => ({ id: "session-1", agents: [], active_interactions: [critical] }) as unknown as RuntimeSession,
+    connected: () => true, onView() {}, scroll() {},
+    onOpen: () => prompt.blur(), onClose: () => prompt.focus(),
+    respond: async (_session, _interaction, choice, proof) => { proofs.push([choice, proof?.passkey]); return new Promise(() => {}) },
+    applySession() {},
+  })
+  harness.renderer.keyInput.on("keypress", controller.handleKey)
+  const stopPastes = routeRawPastes(harness.renderer.keyInput, controller.handlePaste)
+  controller.sync()
+  prompt.focus()
+  await harness.mockInput.pressKeys(["F8", "ARROW_DOWN", "ARROW_DOWN", "RETURN"])
+  assert.deepEqual(controller.view().passkey, { length: 0, rememberMinutes: 0 })
+  return {
+    harness, prompt, proofs, controller,
+    send: (bytes: string) => { harness.renderer.stdin.emit("data", Buffer.from(bytes)) },
+    dispose() {
+      stopPastes()
+      harness.renderer.keyInput.off("keypress", controller.handleKey)
+      controller.dispose()
+      harness.renderer.destroy()
+    },
+  }
+}
+
+for (const kittyKeyboard of [false, true]) {
+  test(`a typed and pasted passkey reaches the kernel exactly (kitty keyboard ${kittyKeyboard})`, async () => {
+    const h = await passkeyHarness(kittyKeyboard)
     try {
-      controller.sync(); prompt.focus(); controller.show(); await controller.choose(critical.id, "approve")
-      const synthetic = input === "unicode-paste" ? "  café 🔑 密碼  " : "synthetic-Passkey-123"
-      if (input === "burst") await harness.mockInput.pressKeys([synthetic])
-      else await harness.mockInput.pasteBracketedText(synthetic)
-      assert.equal(controller.view().passkey?.length, synthetic.length)
-      await harness.renderOnce()
-      const frame = harness.captureCharFrame()
-      assert.ok(frame.includes("•".repeat(synthetic.length)))
-      assert.ok(!frame.includes(synthetic))
-      assert.equal(prompt.plainText, "draft kept")
-      assert.equal(requests.length, 0)
-      await harness.mockInput.pressKeys(["RETURN"])
-      assert.deepEqual(requests, [{ passkey: synthetic, rememberMinutes: null }])
-      assert.equal(controller.view().passkey, null)
-    } finally {
-      harness.renderer.keyInput.off("keypress", controller.handleKey); harness.renderer.keyInput.off("paste", paste)
-      controller.dispose(); harness.renderer.destroy()
-    }
+      if (kittyKeyboard) {
+        // Shift+c without associated text, o, Shift+1 reporting its shifted key.
+        h.send("\u001b[99;2u")
+        h.send("\u001b[111u")
+        h.send("\u001b[49:33;2u")
+      } else {
+        await h.harness.mockInput.typeText("Co!")
+      }
+      h.send("\u{1D11E}")
+      await h.harness.mockInput.pasteBracketedText("Pa$te Ünï\u{1F511} \n")
+      // OpenTUI strips ANSI codes from a paste; the raw paste is refused.
+      await h.harness.mockInput.pasteBracketedText("Ab\u001b[31mCd")
+      assert.match(h.controller.view().error ?? "", /^Paste not added/)
+      assert.equal(h.prompt.plainText, "draft kept", "no passkey text reaches the prompt")
+
+      h.send("\r")
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      assert.deepEqual(h.proofs, [["approve", "Co!\u{1D11E}Pa$te Ünï\u{1F511} "]])
+    } finally { h.dispose() }
   })
 }
+
+test("styled text pasted without bracketed paste clears the passkey instead of losing its codes", async () => {
+  const h = await passkeyHarness(false)
+  try {
+    h.send("Ab\u001b[31mCd\r")
+    assert.equal(h.proofs.length, 0)
+    assert.deepEqual(h.controller.view().passkey, { length: 0, rememberMinutes: 0 })
+    assert.match(h.controller.view().error ?? "", /control sequence/)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await h.harness.mockInput.typeText("Ok")
+    h.send("\r")
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    assert.deepEqual(h.proofs, [["approve", "Ok"]])
+  } finally { h.dispose() }
+})
