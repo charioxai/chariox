@@ -517,6 +517,7 @@ fn create_room_slice(runtime: &KernelRuntimeState, name: &str) -> crate::slice::
             "home-kernel",
             "home-machine",
             crate::slice::CreateSliceInput {
+                source_slice_ref: None,
                 name: name.to_string(),
                 backend: crate::slice::SliceBackendKind::LocalDocker,
                 os: "linux".to_string(),

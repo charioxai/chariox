@@ -373,7 +373,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         await deps.sendRoomEnvironmentRequest(adjustProjectEnvironmentRequest(session.id, agentId))
         deps.flashFooter("Environment review opened", "info")
       } else {
-        const response = await deps.sendRoomEnvironmentRequest(getProjectEnvironmentManifestRequest(session.project_id)) as { ProjectEnvironmentManifest?: {manifest?: ProjectEnvironmentManifest | null} }
+        const response = await deps.sendRoomEnvironmentRequest(getProjectEnvironmentManifestRequest(session.project_id, deps.focusedAgentId())) as { ProjectEnvironmentManifest?: {manifest?: ProjectEnvironmentManifest | null} }
         const manifest = response.ProjectEnvironmentManifest?.manifest
         deps.appendNotice(manifest ? `Environment\n${projectEnvironmentPanelLines(manifest).join("\n")}\n/env project adjust — Change something...` : "No saved Project environment yet")
       }

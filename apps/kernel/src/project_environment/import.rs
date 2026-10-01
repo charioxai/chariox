@@ -150,6 +150,7 @@ impl PreparedProjectEnvironmentImport {
         }
         manifest.evidence_digest = evidence.digest();
         let state = StoredProjectEnvironment {
+            source: None,
             reviewed_manifest: Some(manifest.clone()),
             manifest,
             evidence,

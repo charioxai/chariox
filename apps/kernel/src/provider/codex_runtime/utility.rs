@@ -83,6 +83,7 @@ pub fn run_codex_utility_prompt(
     if policy.is_read_only_discovery() {
         state.set_read_only_discovery_permissions(true);
     }
+    state.ephemeral = policy.is_metadata_only();
     let input = codex_input(prompt, &[]);
     let thread_id = state.thread_id().to_string();
     let response = client.turn_start(
@@ -137,7 +138,11 @@ pub fn run_codex_utility_prompt(
             ),
         });
     }
-    let output = clean_codex_utility_output(&output);
+    let output = if policy.is_metadata_only() {
+        output.trim().to_string()
+    } else {
+        clean_codex_utility_output(&output)
+    };
     if output.is_empty() {
         return Err(DaemonError::ProviderProtocol {
             provider_run_id: run.id().to_string(),

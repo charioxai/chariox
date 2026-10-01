@@ -45,6 +45,7 @@ export async function createSlice(
     displayBackend?: SliceDisplayBackend
     workspaceId?: string | null
     worktreeId?: string | null
+    sourceSliceRef?: string | null
     workspaceMount?: string | null
     developmentSetup?: ManagedEnvironmentDevelopmentSetup | null
     workerKernelRef?: string | null

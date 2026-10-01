@@ -1,7 +1,7 @@
 // MP-08 / MP-10 / MP-11: Display only kernel-selected metadata, never values.
 import type { ProjectEnvironmentManifest } from "./kernel-types-project-environment.js"
 
-export const projectEnvironmentAdjustmentMinimumProtocolVersion = 372
+export const projectEnvironmentAdjustmentMinimumProtocolVersion = 373
 
 export function adjustProjectEnvironmentRequest(sessionId: string, agentId: string) {
   return { AdjustProjectEnvironment: { sessionId, agentId } } as const

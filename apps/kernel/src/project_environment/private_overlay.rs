@@ -102,3 +102,35 @@ pub(crate) fn validate_project_private_files_present(
     }
     Ok(())
 }
+
+// MP-08 / MP-10 / MP-11: New brought files roll back if review/save fails.
+#[derive(Default)]
+pub(crate) struct ProjectPrivateFileAdditions {
+    files: Vec<super::materialization_transaction::MaterializedFile>,
+}
+impl ProjectPrivateFileAdditions {
+    pub(crate) fn add(
+        &mut self,
+        root: &Path,
+        path: &str,
+        bytes: &[u8],
+    ) -> Result<(), crate::error::DaemonError> {
+        if secret_looking_project_path(path)
+            || crate::workspace_live_sync_ignore::workspace_live_sync_force_excluded_path(path)
+        {
+            return Err(super::resolver::environment_error(
+                "private file cannot bypass sealed configuration",
+            ));
+        }
+        self.files
+            .push(super::materialize::write_private_workspace_file_owned(
+                root, path, bytes, true,
+            )?);
+        Ok(())
+    }
+    pub(crate) fn commit(self) {
+        for file in self.files {
+            file.commit();
+        }
+    }
+}

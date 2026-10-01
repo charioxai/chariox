@@ -587,10 +587,10 @@ async fn execute_start_slice_request_with_relaunch_manifests(
             },
         ) = &initial_record.development
         {
-            let selections = repositories
-                .iter()
-                .map(crate::managed_context::outbound_service::resolve_repository_selection)
-                .collect::<Result<Vec<_>, _>>()?;
+            if initial_record.source_slice_ref.is_some() {
+                runtime_state.refresh_slice_source_environment(&initial_record, request.interactive).await?;
+            } else {
+            let selections = repositories.iter().map(crate::managed_context::outbound_service::resolve_repository_selection).collect::<Result<Vec<_>, _>>()?;
             // MP-08: Discovery/review happens before the shared M28 private overlay is copied.
             let _prepared = runtime_state
                 .refresh_project_environment_state(
@@ -600,6 +600,7 @@ async fn execute_start_slice_request_with_relaunch_manifests(
                     &initial_record.name,
                 )
                 .await?;
+            }
         }
     }
     let materialization_state = runtime_state.clone();
@@ -1487,6 +1488,7 @@ mod tests {
 
     fn slice(agent_ids: Vec<String>) -> crate::slice::SliceRecord {
         crate::slice::SliceRecord {
+            source_slice_ref: None,
             id: "slice-1".to_string(),
             name: "dev".to_string(),
             owner_kernel_id: "kernel-1".to_string(),

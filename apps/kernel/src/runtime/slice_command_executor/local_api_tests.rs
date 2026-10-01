@@ -184,6 +184,7 @@ async fn busy_slice_runtime() -> (
             "owner-kernel-1",
             "owner-machine-1",
             crate::slice::CreateSliceInput {
+                source_slice_ref: None,
                 name: "slice-1".to_string(),
                 backend: crate::slice::SliceBackendKind::LocalDocker,
                 os: "linux".to_string(),

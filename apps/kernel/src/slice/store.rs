@@ -143,6 +143,7 @@ impl SliceStore {
         );
         let from_saved_state = input.from_saved_state.clone();
         let record = SliceRecord {
+            source_slice_ref: input.source_slice_ref,
             id: id.clone(),
             name: input.name,
             owner_kernel_id: owner_kernel_id.to_string(),

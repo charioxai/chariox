@@ -2,6 +2,60 @@
 use super::*;
 
 impl KernelRuntimeState {
+    // MP-08 / MP-10 / MP-11: Idle prompt admission refreshes through normal activation.
+    pub(super) async fn refresh_project_prompt_provider(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        let session = self.owned.session_store.get_session(session_id)?;
+        let agent = self.owned.agent_store.get_agent(agent_id)?;
+        if agent.remote_execution().is_some()
+            || self
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, agent_id)
+                .is_some()
+        {
+            return Ok(());
+        }
+        let Some(run) = self
+            .owned
+            .provider_store
+            .get_run_for_agent(session_id, agent_id)
+        else {
+            return Ok(());
+        };
+        let config = self.owned.config_projection.snapshot();
+        let has_environment = crate::project_environment::ProjectEnvironmentStore::new(
+            &config.private_runtime_state_root(),
+        )
+        .load(session.project_id())?
+        .is_some();
+        if !has_environment && run.project_environment_revision().is_none() {
+            return Ok(());
+        }
+        let _vault = if has_environment {
+            Some(
+                self.ensure_vault_unlocked_for_agent(
+                    session_id,
+                    agent_id,
+                    "prepare Project environment",
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        let session_id = session_id.to_string();
+        let agent_id = agent_id.to_string();
+        self.with_app_side_effect(move |app| {
+            app.ensure_prompt_provider_run_for_agent(&session_id, &agent_id)
+        })
+        .await?;
+        Ok(())
+    }
+
     pub(crate) fn project_environment_for_shell(
         &self,
         session_id: &str,
@@ -16,7 +70,7 @@ impl KernelRuntimeState {
         )
     }
 
-    pub(crate) fn get_project_environment_manifest(
+    pub(crate) async fn get_project_environment_manifest(
         &self,
         request: crate::local::GetProjectEnvironmentManifestRequest,
         caller_user_id: &str,
@@ -27,6 +81,22 @@ impl KernelRuntimeState {
                 operation: "get Project environment manifest",
                 message: "caller does not own the selected Project".into(),
             });
+        }
+        if let Some(agent_id) = &request.agent_id {
+            let agent = self.owned.ensure_agent_owner(
+                agent_id,
+                caller_user_id,
+                "read Project environment",
+            )?;
+            let session = self.owned.session_store.get_session(agent.session_id())?;
+            if session.project_id() != project.id() {
+                return Err(super::project_environment_export::environment_failure(
+                    "agent does not belong to selected Project",
+                ));
+            }
+            if agent.remote_execution().is_some() {
+                return self.remote_project_environment(&agent, false).await;
+            }
         }
         let config = self.owned.config_projection.snapshot();
         let store = crate::project_environment::ProjectEnvironmentStore::new(
@@ -63,13 +133,8 @@ impl KernelRuntimeState {
                 "caller does not own this Project environment",
             ));
         }
-        // MP-08 / MP-10 / MP-11: A home session is not the worker Project's
-        // environment authority. Fail before touching its manifest until the
-        // existing leased-agent protocol supports worker-owned adjustment.
         if agent.remote_execution().is_some() {
-            return Err(environment_failure(
-                "adjust this environment on its execution kernel; remote adjustment is unavailable",
-            ));
+            return self.remote_project_environment(&agent, true).await;
         }
         if self
             .owned
@@ -119,7 +184,8 @@ impl KernelRuntimeState {
                 )
             })
             .collect();
-        let index = index_project_environment(&roots, &names)?;
+        let mut index = index_project_environment(&roots, &names)?;
+        retain_imported_private_candidates(&mut index, Some(&state));
         let mut input = ProjectEnvironmentDiscoveryInput {
             project_id: project.id().into(),
             evidence_digest: state.manifest.evidence_digest.clone(),
@@ -165,7 +231,7 @@ impl KernelRuntimeState {
                         "adjust Project environment",
                     )
                     .await?;
-                runtime
+                let additions = runtime
                     .review_project_environment(
                         &session_id,
                         &agent_id,
@@ -188,7 +254,9 @@ impl KernelRuntimeState {
                             "Project is no longer available for adjustment",
                         ));
                     }
-                    store.save(&state)
+                    store.save(&state)?;
+                    additions.commit();
+                    Ok(())
                 }
             }
             .await;
@@ -265,6 +333,7 @@ mod tests {
             .unwrap();
         let evidence = ProjectEnvironmentEvidence::default();
         let state = StoredProjectEnvironment {
+            source: None,
             manifest: ProjectEnvironmentManifest {
                 schema_version: 1,
                 project_id: session.project_id().into(),
@@ -302,10 +371,12 @@ mod tests {
             session_id: session.id().into(),
             agent_id: agent.id().into(),
         };
-        assert!(runtime
-            .start_project_environment_adjustment(request.clone(), "another-user")
-            .await
-            .is_err());
+        assert!(
+            runtime
+                .start_project_environment_adjustment(request.clone(), "another-user")
+                .await
+                .is_err()
+        );
         runtime
             .owned
             .agent_store
@@ -325,17 +396,120 @@ mod tests {
                 },
             )
             .unwrap();
-        assert!(runtime
-            .start_project_environment_adjustment(request.clone(), "user-1")
+        assert!(
+            runtime
+                .start_project_environment_adjustment(request.clone(), "user-1")
+                .await
+                .is_err()
+        );
+
+        let context = crate::transport::relay_peer::RemoteNativeInteractionContext {
+            home_session_id: session.id().into(),
+            home_agent_id: agent.id().into(),
+            leased_agent_id: "synthetic-leased-agent".into(),
+            worker_provider_run_id: "environment-adjustment".into(),
+        };
+        let mut selected = state.clone();
+        std::fs::write(
+            workspace.join("notes.md"),
+            "MP-08 / MP-10 / MP-11 private notes",
+        )
+        .unwrap();
+        selected
+            .manifest
+            .private_files
+            .push(ProjectPrivateFileDecision {
+                workspace_id: session.workspace_id().into(),
+                path: "notes.md".into(),
+                bring: false,
+                reason: "Personal notes".into(),
+                secret_looking: false,
+            });
+        store.save(&selected).unwrap();
+        assert!(
+            runtime
+                .fetch_project_private_file(
+                    "other-worker",
+                    context.clone(),
+                    session.workspace_id().into(),
+                    "notes.md".into()
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            runtime
+                .fetch_project_private_file(
+                    "synthetic-worker",
+                    context.clone(),
+                    session.workspace_id().into(),
+                    "../notes.md".into()
+                )
+                .await
+                .is_err()
+        );
+        let bytes = runtime
+            .fetch_project_private_file(
+                "synthetic-worker",
+                context.clone(),
+                session.workspace_id().into(),
+                "notes.md".into(),
+            )
             .await
-            .is_err());
+            .unwrap();
+        assert!(!format!("{bytes:?}").contains("private notes"));
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(bytes.into_inner())
+                .unwrap(),
+            b"MP-08 / MP-10 / MP-11 private notes"
+        );
+        assert_eq!(
+            store.load(session.project_id()).unwrap().unwrap(),
+            selected,
+            "an explicit fetch never changes source decisions"
+        );
+        selected.manifest.private_files[0].secret_looking = true;
+        store.save(&selected).unwrap();
+        assert!(
+            runtime
+                .fetch_project_private_file(
+                    "synthetic-worker",
+                    context.clone(),
+                    session.workspace_id().into(),
+                    "notes.md".into()
+                )
+                .await
+                .is_err()
+        );
+        selected.manifest.private_files[0].secret_looking = false;
+        #[cfg(unix)]
+        {
+            std::fs::remove_file(workspace.join("notes.md")).unwrap();
+            std::os::unix::fs::symlink("/etc/passwd", workspace.join("notes.md")).unwrap();
+            store.save(&selected).unwrap();
+            assert!(
+                runtime
+                    .fetch_project_private_file(
+                        "synthetic-worker",
+                        context,
+                        session.workspace_id().into(),
+                        "notes.md".into()
+                    )
+                    .await
+                    .is_err()
+            );
+        }
+        store.save(&state).unwrap();
         assert_eq!(store.load(session.project_id()).unwrap().unwrap(), state);
-        assert!(runtime
-            .session_snapshot(session.id())
-            .await
-            .unwrap()
-            .active_interactions()
-            .is_empty());
+        assert!(
+            runtime
+                .session_snapshot(session.id())
+                .await
+                .unwrap()
+                .active_interactions()
+                .is_empty()
+        );
         runtime
             .owned
             .agent_store
@@ -375,10 +549,12 @@ mod tests {
             assert!(Instant::now() < deadline);
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
-        assert!(serde_json::to_value(&interaction)
-            .unwrap()
-            .get("project_environment_review")
-            .is_some());
+        assert!(
+            serde_json::to_value(&interaction)
+                .unwrap()
+                .get("project_environment_review")
+                .is_some()
+        );
         assert!(store.try_lock(session.project_id()).is_err());
         runtime
             .resolve_runtime_interaction(session.id(), interaction.id(), "skip", None)
@@ -398,12 +574,14 @@ mod tests {
             assert!(Instant::now() < deadline);
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        assert!(store
-            .load(session.project_id())
-            .unwrap()
-            .unwrap()
-            .reported_missing
-            .contains(&(session.workspace_id().into(), "OPTIONAL_INPUT".into())));
+        assert!(
+            store
+                .load(session.project_id())
+                .unwrap()
+                .unwrap()
+                .reported_missing
+                .contains(&(session.workspace_id().into(), "OPTIONAL_INPUT".into()))
+        );
         runtime
             .delete_session_ref(session.id(), None)
             .await

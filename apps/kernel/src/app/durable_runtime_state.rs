@@ -1905,6 +1905,7 @@ mod tests {
                 &app.config().daemon_id,
                 &app.config().host_machine_id,
                 crate::slice::CreateSliceInput {
+                    source_slice_ref: None,
                     name: "restored-slice".to_string(),
                     backend: crate::slice::SliceBackendKind::LocalDocker,
                     os: "linux".to_string(),
@@ -2024,6 +2025,7 @@ mod tests {
                     &config.daemon_id,
                     &config.host_machine_id,
                     crate::slice::CreateSliceInput {
+                        source_slice_ref: None,
                         name: "transactional-slice".to_string(),
                         backend: crate::slice::SliceBackendKind::LocalDocker,
                         os: "linux".to_string(),
@@ -2096,6 +2098,7 @@ mod tests {
                 &config.daemon_id,
                 &config.host_machine_id,
                 crate::slice::CreateSliceInput {
+                    source_slice_ref: None,
                     name: "pending-restore".to_string(),
                     backend: crate::slice::SliceBackendKind::LocalDocker,
                     os: "linux".to_string(),

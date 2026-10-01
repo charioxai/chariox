@@ -543,6 +543,7 @@ mod tests {
 
     fn create_request() -> crate::local::CreateSliceRequest {
         crate::local::CreateSliceRequest {
+            source_slice_ref: None,
             name: "browser-work".to_string(),
             backend: crate::slice::SliceBackendKind::LocalDocker,
             os: "linux".to_string(),

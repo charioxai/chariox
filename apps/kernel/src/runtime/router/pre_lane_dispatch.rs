@@ -250,7 +250,7 @@ impl CommandRouter {
                 return self
                     .runtime_state
                     .get_project_environment_manifest(request.clone(), caller_user_id)
-                    .map(Some);
+                    .await.map(Some);
             }
             request @ (LocalDaemonRequest::StartProjectEnvironmentSetup(_)
             | LocalDaemonRequest::GetProjectEnvironmentSetupStatus(_)

@@ -400,6 +400,7 @@ exit 0
             &config.daemon_id,
             &config.host_machine_id,
             CreateSliceInput {
+                source_slice_ref: None,
                 name: "save-replay".to_string(),
                 backend: SliceBackendKind::LocalDocker,
                 os: "linux".to_string(),
@@ -659,6 +660,7 @@ exit 0
     let runtime = router.runtime_state();
     let slice = runtime
         .create_slice(CreateSliceRequest {
+            source_slice_ref: None,
             name: "restore-interruption".to_string(),
             backend: SliceBackendKind::LocalDocker,
             os: "linux".to_string(),

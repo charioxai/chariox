@@ -50,7 +50,7 @@ impl WorkflowProgression {
                 {
                     continue;
                 }
-                app.end_provider_run_for_workflow_context_flush(session_id, node.agent_id())?;
+                app.end_agent_provider_run(session_id, node.agent_id())?;
             }
             return Ok(());
         }

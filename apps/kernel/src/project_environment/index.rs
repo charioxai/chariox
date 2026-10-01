@@ -182,7 +182,12 @@ pub fn index_project_environment(
             .private_inventory
             .entry(file.workspace_id.clone())
             .or_default()
-            .insert(file.path.clone(), file.bytes);
+            // MP-08 / MP-10 / MP-11: Value-only edits in sealed configuration
+            // refresh bindings, without reclassifying unchanged metadata.
+            .insert(
+                file.path.clone(),
+                if file.secret_looking { 0 } else { file.bytes },
+            );
     }
     Ok(ProjectEnvironmentIndex {
         evidence,
@@ -385,7 +390,7 @@ fn quoted_paths(line: &str) -> Vec<String> {
     }
     result
 }
-fn contains_secret_configuration(text: &str) -> bool {
+pub(crate) fn contains_secret_configuration(text: &str) -> bool {
     text.lines().any(|line| {
         let key = line
             .trim()
@@ -412,4 +417,41 @@ fn contains_secret_configuration(text: &str) -> bool {
                 .any(|name| key.contains(name))
         })
     })
+}
+
+// Imported left-behind files stay adjustable even though they are absent locally.
+// This is receipt metadata, never a source poll or an ongoing synchronization.
+pub(crate) fn retain_imported_private_candidates(
+    index: &mut ProjectEnvironmentIndex,
+    previous: Option<&StoredProjectEnvironment>,
+) {
+    let Some(previous) = previous.filter(|state| state.source.is_some()) else {
+        return;
+    };
+    for file in &previous.manifest.private_files {
+        if index.private_files.iter().any(|candidate| {
+            candidate.workspace_id == file.workspace_id && candidate.path == file.path
+        }) {
+            continue;
+        }
+        let bytes = previous
+            .evidence
+            .private_inventory
+            .get(&file.workspace_id)
+            .and_then(|paths| paths.get(&file.path))
+            .copied()
+            .unwrap_or(0);
+        index.private_files.push(ProjectPrivateFileCandidate {
+            workspace_id: file.workspace_id.clone(),
+            path: file.path.clone(),
+            bytes,
+            secret_looking: file.secret_looking,
+        });
+        index
+            .evidence
+            .private_inventory
+            .entry(file.workspace_id.clone())
+            .or_default()
+            .insert(file.path.clone(), bytes);
+    }
 }

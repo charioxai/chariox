@@ -887,7 +887,7 @@ pub fn abort_codex_turn(
                 return Ok(());
             }
             Err(error) if codex_turn_interrupt_is_waiting_for_task_start(&error) => {
-                if client
+                if !state.ephemeral && client
                     .thread_turns_list(
                         &mut state.socket,
                         &mut state.next_request_id,

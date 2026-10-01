@@ -9,9 +9,58 @@ use std::{
 };
 
 impl RemoteLeaseRuntime<'_> {
+    // MP-08 / MP-10 / MP-11: A new lease binds to the target's existing independent state.
+    pub(crate) fn use_project_environment(
+        &mut self,
+        context: RemoteSkillSyncContext,
+        project_id: String,
+    ) -> Result<bool, DaemonError> {
+        self.consume_leased_agent_authorization(&context.leased_agent_id)?;
+        let target = self.leased_project_target(
+            &context.leased_agent_id,
+            &context.home_session_id,
+            &context.home_agent_id,
+            None,
+        )?;
+        let lease = self
+            .app
+            .execution_leases
+            .get(&self.app.leased_agents[&context.leased_agent_id].lease_id)
+            .ok_or_else(|| failure("execution lease missing"))?;
+        if lease.home_kernel_id != context.home_kernel_id {
+            return Err(failure("Project reuse home mismatch"));
+        }
+        let store = ProjectEnvironmentStore::new(&self.app.config.private_runtime_state_root());
+        let Some(mut state) = store.load(&project_id)? else {
+            return Ok(false);
+        };
+        let project = self.app.sessions.get_project(&project_id)?;
+        let project = self.app.sessions.read().prepare_leased_project(
+            &target.backing_session_id,
+            &project_id,
+            project.workspace_ids().to_vec(),
+        )?;
+        if let Some(source) = &mut state.source {
+            if source.kernel_id != context.home_kernel_id {
+                return Err(failure("Project source home changed"));
+            }
+            source.context.home_session_id = context.home_session_id;
+            source.context.home_agent_id = context.home_agent_id;
+            source.context.leased_agent_id = context.leased_agent_id;
+            store.save(&state)?;
+        }
+        let bound = self
+            .app
+            .sessions
+            .write()
+            .bind_leased_project(&target.backing_session_id, project)?;
+        self.app.update_session_projection(bound);
+        Ok(true)
+    }
     pub(crate) fn install_project_environment(
         &mut self,
         context: RemoteSkillSyncContext,
+        source_kernel_id: Option<String>,
         layer: crate::managed_context::development::DevelopmentProjectEnvironment,
         directories: BTreeMap<String, String>,
     ) -> Result<String, DaemonError> {
@@ -101,7 +150,8 @@ impl RemoteLeaseRuntime<'_> {
             let authority = ProjectEnvironmentImportAuthority {
                 config: self.app.config.clone(),
                 context_id: lease.id.clone(),
-                source_kernel_id: context.home_kernel_id,
+                source_kernel_id: source_kernel_id
+                    .unwrap_or_else(|| context.home_kernel_id.clone()),
                 source_key_thumbprint: crate::runtime::terminal_pairings::public_key_thumbprint(
                     &layer.sealed.values.sender_public_key,
                 ),
@@ -115,6 +165,23 @@ impl RemoteLeaseRuntime<'_> {
                 &project_id,
             )?
             .commit()?;
+            let mut state = store
+                .load(&project_id)?
+                .ok_or_else(|| failure("imported Project environment missing"))?;
+            state.source = Some(ProjectEnvironmentSource {
+                kernel_id: context.home_kernel_id.clone(),
+                context: crate::transport::relay_peer::RemoteNativeInteractionContext {
+                    home_session_id: context.home_session_id,
+                    home_agent_id: context.home_agent_id,
+                    leased_agent_id: context.leased_agent_id,
+                    worker_provider_run_id: "environment-adjustment".into(),
+                },
+                workspaces: mapping
+                    .into_iter()
+                    .map(|(source, target)| (target, source))
+                    .collect(),
+            });
+            store.save(&state)?;
         }
         if !project_exists {
             self.app.durable_state.append_event(

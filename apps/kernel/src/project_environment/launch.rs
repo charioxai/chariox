@@ -154,3 +154,68 @@ mod revision_tests {
         assert!(!format!("{environment:?}").contains("synthetic-two"));
     }
 }
+
+// MP-08 / MP-10 / MP-11: One resolver for ordinary prompt activation and runtime launches.
+pub(crate) fn attach_project_provider_environment(
+    config: &DaemonConfig,
+    session: &crate::session::RuntimeSession,
+    agent: Option<&crate::agent::AgentInstance>,
+    mut request: crate::provider::LaunchProviderRequest,
+) -> Result<crate::provider::LaunchProviderRequest, DaemonError> {
+    if let Some(directory) = request.working_directory.as_deref() {
+        // A metadata utility executes in a neutral directory outside the Project.
+        let is_agent_worktree = agent
+            .and_then(|agent| agent.worktree_id().map(std::path::PathBuf::from))
+            .is_some_and(|worktree| worktree == directory);
+        if directory == std::path::Path::new(session.worktree_id()) || is_agent_worktree {
+            let project_environment_state =
+                crate::project_environment::ProjectEnvironmentStore::new(
+                    &config.private_runtime_state_root(),
+                )
+                .load(session.project_id())?;
+            let environment = crate::project_environment::project_launch_environment(
+                config,
+                session.project_id(),
+                session.workspace_id(),
+                directory,
+            )?;
+            let previously_bound = request.project_environment_revision.is_some();
+            request.project_environment_revision =
+                project_environment_state.as_ref().map(|state| {
+                    crate::project_environment::project_environment_launch_revision(
+                        &state.manifest,
+                        &environment,
+                    )
+                });
+            let missing = crate::project_environment::project_missing_inputs(
+                config,
+                session.project_id(),
+                session.workspace_id(),
+            )?;
+            if !missing.is_empty() {
+                request.provider_account_env.insert(
+                    "CHARIOX_PROJECT_MISSING_INPUTS".into(),
+                    serde_json::to_string(&missing).expect("missing names encode"),
+                );
+            }
+            for (name, value) in environment.iter() {
+                if crate::account_profile::provider_auth_env_vars(&request.provider).contains(&name)
+                    || (!previously_bound
+                        && request
+                            .provider_credential_env
+                            .iter()
+                            .any(|(existing, _)| existing == name))
+                {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "Project environment",
+                        message: "Project input conflicts with provider credential binding".into(),
+                    });
+                }
+                request
+                    .provider_credential_env
+                    .insert(name, zeroize::Zeroizing::new(value.to_string()));
+            }
+        }
+    }
+    Ok(request)
+}

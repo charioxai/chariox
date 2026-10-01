@@ -3,8 +3,8 @@ use crate::execution_lease::LeasedAgent;
 use crate::provider::LaunchProviderRequest;
 use crate::transport::relay_peer::RequiredRemoteMcp;
 
-use super::mcp_availability::provider_run_mcp_set_matches;
 use super::RemoteLeaseRuntime;
+use super::mcp_availability::provider_run_mcp_set_matches;
 
 pub(crate) enum LeasedProviderRunMatch {
     Ready(String),
@@ -141,6 +141,27 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 && run.variant() == leased_agent.effort.as_deref()
         });
         if let Some(run) = existing.as_ref() {
+            // MP-08 / MP-10 / MP-11: Worker reuse resolves its own current values.
+            let session = self
+                .app
+                .sessions
+                .get_session(&leased_agent.backing_session_id)?;
+            let agent = self.app.agents.get_agent(&leased_agent.backing_agent_id)?;
+            let selection = crate::project_environment::attach_project_provider_environment(
+                self.app.config(),
+                &session,
+                Some(&agent),
+                LaunchProviderRequest::new(
+                    session.id(),
+                    &leased_agent.provider,
+                    &leased_agent.provider,
+                    &leased_agent.account_profile,
+                    leased_agent.model.as_deref().unwrap_or("default"),
+                )
+                .with_working_directory(std::path::PathBuf::from(session.worktree_id())),
+            )?;
+            let environment_matches = run.project_environment_revision()
+                == selection.project_environment_revision.as_deref();
             let mcp_matches = provider_run_mcp_set_matches(run, required_mcps)?;
             let reply_capability_matches =
                 run.workflow_event_reply_enabled() == event_reply_enabled;
@@ -149,6 +170,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             let actions_capability_matches =
                 run.workflow_event_actions_enabled() == event_actions_enabled;
             if existing_profile_matches
+                && environment_matches
                 && mcp_matches
                 && reply_capability_matches
                 && context_capability_matches
@@ -197,6 +219,15 @@ impl<'a> RemoteLeaseRuntime<'a> {
             // change halfway through an active provider turn.
             if active {
                 return Ok(LeasedProviderRunMatch::Ready(run.id().to_string()));
+            }
+            if !environment_matches
+                && run.client_interface() == crate::provider::ProviderClientInterface::NativeTui
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "refresh native TUI Project environment",
+                    message: "restart the native provider TUI to load changed Project inputs"
+                        .into(),
+                });
             }
             let run_id = run.id().to_string();
             let _ = crate::app::provider_runtime::ProviderProcessTracker::new(self.app)

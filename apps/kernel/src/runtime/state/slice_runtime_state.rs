@@ -33,6 +33,9 @@ impl KernelRuntimeState {
             request.workspace_id.as_deref(),
             request.worktree_id.as_deref(),
         )?;
+        if let Some(source_ref) = request.source_slice_ref.as_deref() {
+            self.validate_source_slice_export(source_ref, request.development.as_ref())?;
+        }
         let config = self.owned.config_projection.snapshot();
         let development_storage_parent = (request.development.is_some()
             && request.backend == crate::slice::SliceBackendKind::LocalDocker)
@@ -51,6 +54,7 @@ impl KernelRuntimeState {
             &config.daemon_id,
             &config.host_machine_id,
             crate::slice::CreateSliceInput {
+                source_slice_ref: request.source_slice_ref,
                 name: request.name,
                 backend: request.backend,
                 os: request.os,
@@ -1798,6 +1802,7 @@ mod tests {
         let runtime = owned_runtime_state(&app).await;
         let created = runtime
             .create_slice(crate::local::CreateSliceRequest {
+                source_slice_ref: None,
                 name: "empty-regression".into(),
                 backend: crate::slice::SliceBackendKind::LocalDocker,
                 os: "linux".into(),
@@ -1903,6 +1908,7 @@ mod tests {
                 "owner-kernel-1",
                 "owner-machine-1",
                 crate::slice::CreateSliceInput {
+                    source_slice_ref: None,
                     name: "slice-1".to_string(),
                     backend: crate::slice::SliceBackendKind::LocalDocker,
                     os: "linux".to_string(),

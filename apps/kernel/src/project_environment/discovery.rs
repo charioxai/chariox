@@ -40,7 +40,9 @@ pub fn project_environment_discovery_prompt(
             "environment discovery input exceeds bounds",
         ));
     }
-    Ok(format!("MP-08 Project environment discovery. Use only the kernel-provided metadata below. Tools are disabled. Never read files, execute commands, retrieve credentials, or return values. Classify uncertain entries as secret. Return a JSON Project environment manifest with schema_version 1, the exact project_id and evidence_digest, entries with name/workspace_id/kind/classification/uses/locator/status, and toolchain_hints/package_hints/service_hints. Names, use sites and locators must come from references or unchanged previous entries. Cover only changed_paths when a previous manifest exists; preserve unchanged entries. Use found/missing/problem status; the kernel resolves actual values. Do not treat a missing Project configuration value as a failed setup recipe: the kernel projects all missing names once through a secret RuntimeInteraction. Decide every private_files candidate in private_files, with workspace_id/path/bring/reason (one line explaining project use or regeneration). Exclude caches, runtime files and secret-looking files from the plain overlay; referenced secrets use entries and Vault. Never claim readiness.\nMetadata:\n{encoded}"))
+    Ok(format!(
+        "MP-08 Project environment discovery. Use only the kernel-provided metadata below. Tools are disabled. Never read files, execute commands, retrieve credentials, or return values. Classify uncertain entries as secret. Return only a JSON object (no Markdown or commentary): a Project environment manifest with schema_version 1, the exact project_id and evidence_digest, entries with name/workspace_id/kind/classification/uses/locator/status, and toolchain_hints/package_hints/service_hints. Names, use sites and locators must come from references or unchanged previous entries. Cover only changed_paths when a previous manifest exists; preserve unchanged entries. Use found/missing/problem status; the kernel resolves actual values. Do not treat a missing Project configuration value as a failed setup recipe: the kernel projects all missing names once through a secret RuntimeInteraction. Decide every private_files candidate in private_files, with workspace_id/path/bring/reason (one line explaining project use or regeneration). Exclude caches, runtime files and secret-looking files from the plain overlay; referenced secrets use entries and Vault. Never claim readiness.\nMetadata:\n{encoded}"
+    ))
 }
 
 pub fn parse_project_environment_discovery_output(
@@ -103,6 +105,29 @@ pub fn parse_project_environment_discovery_output(
             ));
         }
     }
+    // MP-08 / MP-10 / MP-11: The kernel preserves unchanged decisions. An
+    // incremental utility classifies changed metadata, not saved selections or
+    // value availability (which the resolver determines after discovery).
+    if input.revision.is_none() {
+        for known in previous {
+            let changed = input.changed_paths.get(&known.workspace_id);
+            if known
+                .uses
+                .iter()
+                .all(|usage| changed.is_none_or(|paths| !paths.contains(&usage.path)))
+            {
+                if let Some(entry) = manifest.entries.iter_mut().find(|entry| {
+                    entry.workspace_id == known.workspace_id
+                        && entry.name == known.name
+                        && entry.kind == known.kind
+                }) {
+                    *entry = known.clone();
+                } else {
+                    manifest.entries.push(known.clone());
+                }
+            }
+        }
+    }
     for known in &input.references {
         if !manifest.entries.iter().any(|entry| {
             entry.workspace_id == known.workspace_id
@@ -111,21 +136,6 @@ pub fn parse_project_environment_discovery_output(
         }) {
             return Err(environment_error(
                 "discovery omitted a Project environment reference",
-            ));
-        }
-    }
-    // An incremental pass cannot silently remove or rewrite entries with unchanged use sites.
-    for known in previous {
-        let changed = input.changed_paths.get(&known.workspace_id);
-        if input.revision.is_none()
-            && known
-                .uses
-                .iter()
-                .all(|usage| changed.is_none_or(|paths| !paths.contains(&usage.path)))
-            && !manifest.entries.iter().any(|entry| entry == known)
-        {
-            return Err(environment_error(
-                "incremental discovery changed an unchanged entry",
             ));
         }
     }

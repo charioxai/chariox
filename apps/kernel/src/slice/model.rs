@@ -64,6 +64,8 @@ pub struct SliceProviderLoginStart {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SliceRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_slice_ref: Option<String>,
     pub id: String,
     pub name: String,
     pub owner_kernel_id: String,
@@ -295,6 +297,7 @@ pub struct SliceBackupRestoreTransactionRecord {
 
 #[derive(Debug, Clone)]
 pub struct CreateSliceInput {
+    pub source_slice_ref: Option<String>,
     pub name: String,
     pub backend: SliceBackendKind,
     pub os: String,

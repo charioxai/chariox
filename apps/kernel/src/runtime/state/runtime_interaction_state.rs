@@ -8,6 +8,35 @@ impl KernelRuntimeState {
         session_id: &str,
         interaction: crate::session::RuntimeInteraction,
     ) -> Result<oneshot::Receiver<PendingInteractionResolution>, DaemonError> {
+        // MP-08 / MP-10 / MP-11: Leased utility reviews and Vault input belong
+        // to the home session, using the same bridge as provider-native approval.
+        if let Some((config, home_kernel_id, context)) = self
+            .remote_native_interaction_context(session_id, interaction.agent_id())
+            .await?
+        {
+            let (tx, rx) = oneshot::channel();
+            let timeout =
+                Duration::from_secs(interaction.timeout_sec().unwrap_or(900).saturating_add(15));
+            tokio::spawn(async move {
+                let response = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+                    &config, ClientTarget {daemon_id: Some(home_kernel_id), daemon_alias: None},
+                    RelayPeerRequest::ForwardNativeInteraction {context, interaction}, timeout,
+                ).await;
+                if let Ok(RelayPeerResponse::NativeInteractionResolved { resolution }) = response {
+                    let status = if resolution.status == "answered" {
+                        "answered"
+                    } else {
+                        "timed_out"
+                    };
+                    let _ = tx.send(PendingInteractionResolution {
+                        status,
+                        choice_id: resolution.choice_id,
+                        reply: resolution.reply,
+                    });
+                }
+            });
+            return Ok(rx);
+        }
         let (tx, rx) = oneshot::channel();
         let event_interaction = interaction.clone();
         self.owned

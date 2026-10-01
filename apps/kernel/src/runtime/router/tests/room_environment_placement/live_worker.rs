@@ -541,6 +541,7 @@ fn managed_slice_fixture_record(config: &DaemonConfig) -> crate::slice::SliceRec
             "environment-home",
             &config.host_machine_id,
             crate::slice::CreateSliceInput {
+                source_slice_ref: None,
                 name: "desktop".into(),
                 backend: crate::slice::SliceBackendKind::LocalDocker,
                 os: "linux".into(),

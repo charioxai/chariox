@@ -16,6 +16,7 @@ export function createSliceRequest(options: {
   workspaceId?: string | null
   worktreeId?: string | null
   workspaceMount?: string | null
+  sourceSliceRef?: string | null
   developmentSetup?: ManagedEnvironmentDevelopmentSetup | null
   workerKernelRef?: string | null
   displayUrl?: string | null
@@ -37,6 +38,7 @@ export function createSliceRequest(options: {
       workspace_id: options.workspaceId ?? null,
       worktree_id: options.worktreeId ?? null,
       workspace_mount: options.workspaceMount ?? null,
+      ...(options.sourceSliceRef ? {source_slice_ref: options.sourceSliceRef} : {}),
       ...(options.developmentSetup
         ? { development: serializeSliceDevelopment(options.developmentSetup) }
         : {}),

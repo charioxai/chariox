@@ -343,5 +343,5 @@ test("MP-08 / MP-10 / MP-11 /env project shows saved decisions and Adjust opens 
   await handlers.handleEnvCommand({kind: "env", raw: "/env project", args: ["project"]})
   assert.match(notices[0]!, /Bring notes.md — Project notes/)
   await handlers.handleEnvCommand({kind: "env", raw: "/env project adjust", args: ["project", "adjust"]})
-  assert.deepEqual(requests, [{GetProjectEnvironmentManifest: {projectId: "project-1"}}, {AdjustProjectEnvironment: {sessionId: "session-1", agentId: "agent-1"}}])
+  assert.deepEqual(requests, [{GetProjectEnvironmentManifest: {projectId: "project-1", agentId: "agent-1"}}, {AdjustProjectEnvironment: {sessionId: "session-1", agentId: "agent-1"}}])
 })

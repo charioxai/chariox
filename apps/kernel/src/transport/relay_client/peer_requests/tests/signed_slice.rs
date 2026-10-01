@@ -193,6 +193,7 @@ async fn signed_slice_relay_preserves_kernel_authority_for_owner_confirmation_an
     let slice = router
         .runtime_state()
         .create_slice(crate::local::CreateSliceRequest {
+            source_slice_ref: None,
             name: "drill".to_owned(),
             backend: crate::slice::SliceBackendKind::LocalDocker,
             os: "linux".to_owned(),

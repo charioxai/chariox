@@ -5,6 +5,8 @@ use super::*;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GetProjectEnvironmentManifestRequest {
     pub project_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

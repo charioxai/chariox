@@ -9,7 +9,7 @@ use crate::managed_context::development::{
     export_development_context, import_development_context_with_publication,
     recover_pruned_development_context_publication_for_cleanup,
     recover_pruned_mutable_development_context_publication, DevelopmentContextExportRequest,
-    DevelopmentContextImportRequest, DevelopmentRepositoryRole, DevelopmentSourceRepositoryBinding,
+    DevelopmentContextImportRequest, DevelopmentRepositoryRole, DevelopmentRepositorySelection, DevelopmentSourceRepositoryBinding,
 };
 use crate::managed_context::package::ManagedContextDevelopmentSelection;
 
@@ -147,6 +147,7 @@ impl KernelRuntimeState {
             return Ok(slice.clone());
         }
         let publication_parent = slice_development_storage_root(slice)?;
+        let resolved = if slice.development_publication.is_some() {None} else {Some(self.slice_repository_selections(slice)?)};
         let publication = match slice.development.as_ref().expect("checked development") {
             ManagedContextDevelopmentSelection::Empty => empty_development::materialize(
                 &publication_parent,
@@ -155,11 +156,9 @@ impl KernelRuntimeState {
             ManagedContextDevelopmentSelection::SourceProject {
                 project_id,
                 repositories,
-            } => materialize_slice_development_publication(
-                &publication_parent,
-                project_id,
-                repositories,
-                slice.development_publication.as_ref(),
+            } => materialize_slice_development_publication_with_access(
+                &publication_parent, project_id, repositories, slice.development_publication.as_ref(),
+                update_managed_publication_access, resolved,
             )?,
         };
         if slice
@@ -218,6 +217,7 @@ fn materialize_slice_development_publication(
         repositories,
         expected_publication,
         update_managed_publication_access,
+        None,
     )
 }
 
@@ -231,6 +231,7 @@ fn materialize_slice_development_publication_with_access(
         &Path,
         &crate::slice::SliceDevelopmentPublication,
     ) -> Result<(), DaemonError>,
+    resolved_source: Option<Vec<DevelopmentRepositorySelection>>,
 ) -> Result<crate::slice::SliceDevelopmentPublication, DaemonError> {
     let access_action = if expected_publication.is_some() {
         "verify"
@@ -267,10 +268,10 @@ fn materialize_slice_development_publication_with_access(
             ensure_private_real_directory(&scratch_root)?;
             let scratch_cleanup = SliceDevelopmentScratchCleanup(scratch_root.clone());
             let archive_path = scratch_root.join("development.tar.gz");
-            let resolved = repositories
-                .iter()
-                .map(crate::managed_context::outbound_service::resolve_repository_selection)
-                .collect::<Result<Vec<_>, _>>()?;
+            let resolved = match resolved_source {
+                Some(resolved) => resolved,
+                None => repositories.iter().map(crate::managed_context::outbound_service::resolve_repository_selection).collect::<Result<Vec<_>, _>>()?,
+            };
             let exported = export_development_context(DevelopmentContextExportRequest {
                 project_id: project_id.to_string(),
                 repositories: resolved,
@@ -708,6 +709,7 @@ mod tests {
             &repositories,
             None,
             &update_access,
+            None,
         )
         .expect("materialize slice Project");
         assert!(!stale_scratch.exists());
@@ -760,6 +762,7 @@ mod tests {
             &repositories,
             Some(&publication),
             &update_access,
+            None,
         )
         .expect("recover slice Project after restart");
         assert_eq!(recovered, publication);
@@ -806,6 +809,7 @@ mod tests {
                 "kernel-1",
                 "machine-1",
                 crate::slice::CreateSliceInput {
+                    source_slice_ref: None,
                     name: "project-slice".to_string(),
                     backend: crate::slice::SliceBackendKind::SshDocker,
                     os: "linux".to_string(),

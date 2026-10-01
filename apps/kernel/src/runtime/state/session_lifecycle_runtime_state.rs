@@ -2025,6 +2025,7 @@ mod tests {
 
     fn slice(os: &str) -> crate::slice::SliceRecord {
         crate::slice::SliceRecord {
+            source_slice_ref: None,
             id: "slice-1".to_string(),
             name: "linux-slice".to_string(),
             owner_kernel_id: "kernel-home".to_string(),

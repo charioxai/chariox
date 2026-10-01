@@ -22,7 +22,7 @@ impl KernelRuntimeState {
         target: &str,
         code: String,
         vault: &dyn crate::secret::CredentialVaultStore,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<ProjectPrivateFileAdditions, DaemonError> {
         let id = format!("project-environment:{}", rand::random::<u64>());
         let mut expanded = false;
         let mut revise = false;
@@ -172,9 +172,10 @@ impl KernelRuntimeState {
             let action = resolution.choice_id.as_deref().unwrap_or("cancel");
             match action {
                 "continue" | "skip" => {
+                    let additions = self.retrieve_project_private_files(state, roots).await?;
                     validate_project_private_files_present(&state.manifest, roots)?;
                     accept_project_environment_review(state, review);
-                    return Ok(());
+                    return Ok(additions);
                 }
                 "details" => {
                     expanded = !expanded;

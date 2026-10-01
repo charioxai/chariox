@@ -128,6 +128,7 @@ export type RemoteMachineRecord = {
 }
 
 export type SliceRecord = {
+  source_slice_ref?: string | null
   id: string
   name: string
   owner_kernel_id: string

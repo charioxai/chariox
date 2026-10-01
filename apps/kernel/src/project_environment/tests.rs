@@ -279,6 +279,7 @@ fn mp08_evidence_refresh_is_incremental_and_kernel_copies_are_independent() {
     let mut manifest = fixture_manifest(vec![]);
     manifest.evidence_digest = original.digest();
     let state = StoredProjectEnvironment {
+        source: None,
         manifest,
         evidence: original.clone(),
         reported_missing: Default::default(),
@@ -541,6 +542,7 @@ fn mp08_export_reuses_discovery_but_resolves_current_values_and_new_target_entri
     .unwrap();
     target_store
         .save(&StoredProjectEnvironment {
+            source: None,
             manifest: target_manifest,
             evidence: evidence.clone(),
             reported_missing: Default::default(),
@@ -671,6 +673,7 @@ fn mp08_project_cleanup_removes_only_its_captured_values() {
         .unwrap();
     store
         .save(&StoredProjectEnvironment {
+            source: None,
             manifest,
             evidence,
             reported_missing: Default::default(),
@@ -904,6 +907,7 @@ fn review_state() -> StoredProjectEnvironment {
         reason: "Personal Project instructions".into(),
     });
     StoredProjectEnvironment {
+        source: None,
         manifest,
         evidence,
         reported_missing: Default::default(),
@@ -1230,4 +1234,66 @@ fn mp08_mp10_mp11_adjustment_excludes_concurrent_exports_and_adjustments() {
     drop(first);
     assert!(store.try_lock("project").is_ok());
     drop(other);
+}
+
+#[test]
+fn mp08_mp10_mp11_explicit_private_fetch_rolls_back_without_overwriting_user_files() {
+    let root = std::env::temp_dir().join(format!("chariox-envlayer5-fetch-{}", rand::random::<u64>()));
+    std::fs::create_dir_all(&root).unwrap();
+    {
+        let mut additions = ProjectPrivateFileAdditions::default();
+        additions.add(&root, "notes.md", b"MP-08 / MP-10 / MP-11 synthetic private notes").unwrap();
+        assert!(root.join("notes.md").is_file());
+        assert!(additions.add(&root, "notes.md", b"overwrite").is_err());
+        assert!(additions.add(&root, ".env", b"sealed").is_err());
+    }
+    assert!(!root.join("notes.md").exists());
+    {
+        let mut additions = ProjectPrivateFileAdditions::default();
+        additions.add(&root, "notes.md", b"synthetic private notes").unwrap();
+        std::fs::rename(root.join("notes.md"), root.join("old.md")).unwrap();
+        std::fs::write(root.join("notes.md"), "user replacement").unwrap();
+    }
+    assert_eq!(std::fs::read_to_string(root.join("notes.md")).unwrap(), "user replacement");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+
+#[test]
+fn mp08_mp10_mp11_sealed_value_edits_do_not_reclassify_metadata() {
+    let fixture = Fixture::new();
+    assert!(std::process::Command::new("git").args(["init", "-q"]).arg(&fixture.0).status().unwrap().success());
+    std::fs::write(fixture.0.join(".gitignore"), ".env.local\n").unwrap();
+    std::fs::write(fixture.0.join("app.ts"), "const label = process.env.APP_LABEL;\n").unwrap();
+    std::fs::write(fixture.0.join(".env.local"), "APP_LABEL=first\n").unwrap();
+    let before = index_project_environment(&fixture.workspaces(), &BTreeMap::new()).unwrap();
+    assert_eq!(before.evidence.private_inventory["web"][".env.local"], 0);
+    std::fs::write(fixture.0.join(".env.local"), "APP_LABEL=a-longer-second-value\n").unwrap();
+    let after = index_project_environment(&fixture.workspaces(), &BTreeMap::new()).unwrap();
+    assert_eq!(before.evidence, after.evidence);
+    assert_eq!(before.references, after.references);
+    assert!(after.evidence.changed_paths(&before.evidence).is_empty());
+}
+
+#[test]
+fn mp08_mp10_mp11_incremental_utility_cannot_reclassify_unchanged_selections() {
+    let mut manifest = fixture_manifest(vec![entry("APP_LABEL", ProjectEnvironmentLocator::Missing)]);
+    manifest.entries[0].classification = ProjectEnvironmentClassification::NonSecret;
+    manifest.entries[0].excluded = true;
+    manifest.entries[0].status = ProjectEnvironmentEntryStatus::Found;
+    let input = ProjectEnvironmentDiscoveryInput {
+        revision: None, project_id: manifest.project_id.clone(), evidence_digest: manifest.evidence_digest.clone(),
+        previous_manifest: Some(manifest.clone()), changed_paths: BTreeMap::from([("web".into(), vec!["package-lock.json".into()])]),
+        references: manifest.entries.clone(), private_files: vec![],
+    };
+    let mut output = manifest.clone();
+    output.entries[0].classification = ProjectEnvironmentClassification::Secret;
+    output.entries[0].excluded = false;
+    output.entries[0].status = ProjectEnvironmentEntryStatus::Missing;
+    assert_eq!(parse_project_environment_discovery_output(&serde_json::to_string(&output).unwrap(), &input).unwrap(), manifest);
+    output.entries.clear();
+    assert_eq!(parse_project_environment_discovery_output(&serde_json::to_string(&output).unwrap(), &input).unwrap(), manifest);
+    output.entries = manifest.entries.clone();
+    output.entries[0].locator = ProjectEnvironmentLocator::EnvFile {path: "foreign.env".into(), key: "APP_LABEL".into()};
+    assert!(parse_project_environment_discovery_output(&serde_json::to_string(&output).unwrap(), &input).is_err());
 }

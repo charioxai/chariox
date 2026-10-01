@@ -4,10 +4,11 @@ use super::*;
 #[test]
 fn mp08_project_environment_manifest_shape_requires_protocol_371() {
     use sha2::{Digest, Sha256};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 372);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 373);
     let request = LocalDaemonRequest::GetProjectEnvironmentManifest(
         crate::local::GetProjectEnvironmentManifestRequest {
             project_id: "project-1".into(),
+            agent_id: None,
         },
     );
     assert_eq!(
@@ -30,7 +31,7 @@ fn mp08_project_environment_manifest_shape_requires_protocol_371() {
 fn mp08_manifest_fields_are_bound_to_protocol_371_snapshot() {
     use crate::project_environment::*;
     use sha2::{Digest, Sha256};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 372);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 373);
     let manifest = ProjectEnvironmentManifest {
         schema_version: 1,
         project_id: "project-1".into(),
@@ -76,7 +77,7 @@ fn mp08_manifest_fields_are_bound_to_protocol_371_snapshot() {
 fn mp08_mp10_mp11_review_and_interactive_export_shapes_require_protocol_371() {
     use crate::project_environment::*;
     use sha2::{Digest, Sha256};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 372);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 373);
     let review = ProjectEnvironmentReview {
         schema_version: 1,
         project_name: "App".into(),
@@ -151,7 +152,7 @@ fn mp08_mp10_mp11_review_and_interactive_export_shapes_require_protocol_371() {
 #[test]
 fn mp08_mp10_mp11_adjustment_shape_requires_protocol_372() {
     use sha2::{Digest, Sha256};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 372);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 373);
     let request = LocalDaemonRequest::AdjustProjectEnvironment(crate::local::AdjustProjectEnvironmentRequest {
         session_id: "session-1".into(), agent_id: "agent-1".into(),
     });
@@ -159,4 +160,26 @@ fn mp08_mp10_mp11_adjustment_shape_requires_protocol_372() {
     let response = LocalDaemonResponse::ProjectEnvironmentAdjustmentStarted {session_id: "session-1".into(), agent_id: "agent-1".into()};
     let encoded = serde_json::to_string(&(request, response)).unwrap();
     assert_eq!(format!("{:x}", Sha256::digest(encoded)), "89c613b04824356e515d81d7d950bea3dca78015773983b7cc3e2ebd501653ee");
+}
+
+#[test]
+fn mp08_mp10_mp11_worker_environment_query_requires_protocol_373() {
+    use sha2::{Digest, Sha256};
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 373);
+    let request = LocalDaemonRequest::GetProjectEnvironmentManifest(crate::local::GetProjectEnvironmentManifestRequest {
+        project_id: "project-1".into(), agent_id: Some("agent-1".into()),
+    });
+    assert_eq!(serde_json::to_value(&request).unwrap(), serde_json::json!({"GetProjectEnvironmentManifest":{"projectId":"project-1","agentId":"agent-1"}}));
+    assert_eq!(format!("{:x}", Sha256::digest(serde_json::to_vec(&request).unwrap())), "55a9652be15eb4c549c0329268e7c48efec222efb00e5763722413268dd666fb");
+}
+
+#[test]
+fn mp08_mp10_mp11_slice_source_export_shape_requires_protocol_373() {
+    use sha2::{Digest, Sha256};
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 373);
+    let value: serde_json::Value = serde_json::from_str(r#"{"CreateSlice":{"source_slice_ref":"first","name":"second","backend":"local_docker","os":"linux","display_mode":"headless"}}"#).unwrap();
+    let request: LocalDaemonRequest = serde_json::from_value(value.clone()).unwrap();
+    let roundtrip = serde_json::to_value(request).unwrap();
+    assert_eq!(roundtrip, value);
+    assert_eq!(format!("{:x}", Sha256::digest(serde_json::to_vec(&roundtrip).unwrap())), "26d19c33a9ea613cfb2ecd39cdef89820fe0ed29e6cba7de72815a39e09351bd");
 }

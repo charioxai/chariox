@@ -61,6 +61,7 @@ mod tests {
 
     fn create_input(name: &str) -> CreateSliceInput {
         CreateSliceInput {
+            source_slice_ref: None,
             name: name.to_string(),
             backend: SliceBackendKind::LocalDocker,
             os: "linux".to_string(),

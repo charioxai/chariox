@@ -91,7 +91,7 @@ pub fn prepare_project_environment_export(
             });
     }
     let reported_missing = previous
-        .map(|state| state.reported_missing)
+        .as_ref().map(|state| state.reported_missing.clone())
         .unwrap_or_default();
     let newly_missing = resolved
         .unresolved
@@ -102,6 +102,7 @@ pub fn prepare_project_environment_export(
         .cloned()
         .collect();
     let state = StoredProjectEnvironment {
+        source: previous.as_ref().and_then(|state| state.source.clone()),
         manifest,
         evidence,
         reported_missing,

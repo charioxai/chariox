@@ -1525,7 +1525,7 @@ async fn pool_clone_binds_exact_stable_account_and_launch_ignores_later_default_
     // And a fresh relaunch of the existing clone still uses the original id.
     {
         let mut app = runtime.app.lock().await;
-        app.end_provider_run_for_workflow_context_flush(&session_id, clone_a.id())
+        app.end_agent_provider_run(&session_id, clone_a.id())
             .expect("previous run should retire");
     }
     let relaunched_run_id = {

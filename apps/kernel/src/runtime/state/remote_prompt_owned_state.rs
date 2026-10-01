@@ -906,6 +906,7 @@ mod tests {
                 "owner-kernel",
                 "owner-machine",
                 crate::slice::CreateSliceInput {
+                    source_slice_ref: None,
                     name: "stopped-slice".to_string(),
                     backend: crate::slice::SliceBackendKind::LocalDocker,
                     os: "linux".to_string(),

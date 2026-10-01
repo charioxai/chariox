@@ -122,7 +122,7 @@ pub(super) fn ensure_workflow_provider_run_for_agent(
     workflow_node_run_id: Option<&str>,
 ) -> Result<String, DaemonError> {
     if fresh_context {
-        app.end_provider_run_for_workflow_context_flush(session_id, agent_id)?;
+        app.end_agent_provider_run(session_id, agent_id)?;
     }
     if let Some(run) = app.providers().get_run_for_agent(session_id, agent_id) {
         if run.workflow_tools_enabled()

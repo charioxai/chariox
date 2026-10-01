@@ -1218,6 +1218,7 @@ mod tests {
         status: crate::slice::SliceStatus,
     ) -> crate::slice::SliceRecord {
         crate::slice::SliceRecord {
+            source_slice_ref: None,
             id: id.to_string(),
             name: id.to_string(),
             owner_kernel_id: "daemon".to_string(),

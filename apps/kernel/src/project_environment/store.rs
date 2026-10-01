@@ -127,9 +127,20 @@ impl ProjectEnvironmentEvidence {
     }
 }
 
+// MP-08 / MP-10 / MP-11: Receipt metadata for an explicit later fetch only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectEnvironmentSource {
+    pub kernel_id: String,
+    pub context: crate::transport::relay_peer::RemoteNativeInteractionContext,
+    pub workspaces: BTreeMap<String, String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StoredProjectEnvironment {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<ProjectEnvironmentSource>,
     pub manifest: ProjectEnvironmentManifest,
     pub evidence: ProjectEnvironmentEvidence,
     /// Names already projected as missing; used to avoid repeated questions on later exports.

@@ -610,6 +610,11 @@ impl KernelRuntimeState {
                     remote_dispatch: None,
                 });
             }
+            self.refresh_project_prompt_provider(
+                &prepared.session_id,
+                prepared.prompt.target_agent_id(),
+            )
+            .await?;
             if let Some(mut submission) =
                 owned.submit_local_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
             {

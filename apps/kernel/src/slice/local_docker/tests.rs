@@ -128,6 +128,7 @@ pub(super) fn test_record() -> SliceRecord {
             "kernel-1",
             "machine-1",
             CreateSliceInput {
+                source_slice_ref: None,
                 name: "dev".to_string(),
                 backend: SliceBackendKind::LocalDocker,
                 os: "linux".to_string(),
@@ -1513,6 +1514,7 @@ fn local_docker_slice_mounts_only_development_repositories() {
             "kernel-1",
             "machine-1",
             CreateSliceInput {
+                source_slice_ref: None,
                 name: "project-dev".to_string(),
                 backend: SliceBackendKind::SshDocker,
                 os: "linux".to_string(),
@@ -2159,6 +2161,7 @@ fn local_docker_slice_rejects_mounting_development_control_root() {
             "kernel-1",
             "machine-1",
             CreateSliceInput {
+                source_slice_ref: None,
                 name: "project-dev-invalid".to_string(),
                 backend: SliceBackendKind::SshDocker,
                 os: "linux".to_string(),
@@ -2392,6 +2395,7 @@ fn local_docker_slice_runtime_starts_desktop_for_headless_slices() {
             "kernel-1",
             "machine-1",
             CreateSliceInput {
+                source_slice_ref: None,
                 name: "dev".to_string(),
                 backend: SliceBackendKind::LocalDocker,
                 os: "linux".to_string(),

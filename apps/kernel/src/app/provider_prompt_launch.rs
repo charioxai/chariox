@@ -16,19 +16,6 @@ impl DaemonApp {
             &agent,
             "ensure prompt provider run for agent",
         )?;
-        if let Some(agent_run) = self.providers.get_run_for_agent(session_id, agent_id) {
-            match agent_run.state() {
-                ProviderRunState::Running | ProviderRunState::Starting => {
-                    return Ok(agent_run.id().to_string());
-                }
-                ProviderRunState::Parked => {
-                    let resumed = self.providers.resume_run_detached(agent_run.id())?;
-                    self.update_provider_run_projection(resumed.clone());
-                    return Ok(resumed.id().to_string());
-                }
-                ProviderRunState::Ended => {}
-            }
-        }
 
         if agent.remote_execution().is_some() {
             return Err(DaemonError::LocalTransport {
@@ -64,7 +51,58 @@ impl DaemonApp {
         if let Some(worktree_id) = agent.worktree_id() {
             request = request.with_working_directory(PathBuf::from(worktree_id));
         }
-        let provider_run = self.launch_provider_detached(request)?;
+        // MP-08 / MP-10 / MP-11: Re-resolve before reusing a process, including ordinary turns.
+        let directory = agent.worktree_id().unwrap_or_else(|| session.worktree_id());
+        request = request.with_working_directory(PathBuf::from(directory));
+        request = crate::project_environment::attach_project_provider_environment(
+            &self.config,
+            &session,
+            Some(&agent),
+            request,
+        )?;
+        let mut replace_environment = false;
+        if let Some(agent_run) = self.providers.get_run_for_agent(session_id, agent_id) {
+            if agent_run.project_environment_revision()
+                == request.project_environment_revision.as_deref()
+            {
+                match agent_run.state() {
+                    ProviderRunState::Running | ProviderRunState::Starting => {
+                        return Ok(agent_run.id().to_string());
+                    }
+                    ProviderRunState::Parked => {
+                        let resumed = self.providers.resume_run_detached(agent_run.id())?;
+                        self.update_provider_run_projection(resumed.clone());
+                        return Ok(resumed.id().to_string());
+                    }
+                    ProviderRunState::Ended => {}
+                }
+            }
+            if agent_run.client_interface() == crate::provider::ProviderClientInterface::NativeTui {
+                return Err(DaemonError::LocalTransport {
+                    operation: "refresh native TUI Project environment",
+                    message: "restart the native provider TUI to load changed Project inputs"
+                        .into(),
+                });
+            }
+            if self.provider_run_has_active_prompt(session_id, &agent_run)? {
+                return Err(DaemonError::InvalidProviderRunState {
+                    provider_run_id: agent_run.id().into(),
+                    state: agent_run.state(),
+                    operation: "refresh active Project provider environment",
+                });
+            }
+            // Codex holds a native thread writer for the life of its app-server.
+            // Settle the idle process before resuming that same native conversation.
+            self.end_agent_provider_run(session_id, agent_id)?;
+            replace_environment = true;
+        }
+
+        // Replacement uses normal activation after settling the previous process.
+        let provider_run = if replace_environment {
+            self.launch_provider(request)?
+        } else {
+            self.launch_provider_detached(request)?
+        };
         Ok(provider_run.id().to_string())
     }
 }
@@ -77,6 +115,81 @@ mod tests {
     use crate::config::{DaemonConfig, WorkspaceLiveSyncMode};
     use crate::provider::ProviderWriteAccessMode;
     use crate::session::CreateSessionRequest;
+
+    #[test]
+    fn mp08_mp10_mp11_ordinary_turn_reuses_unchanged_environment_and_relaunches_changed_values() {
+        use crate::project_environment::*;
+        let workspace = crate::test_support::TestWorktree::new("project-prompt-refresh");
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        let (session, _) = KernelSessionService::new(&mut app)
+            .create_session(workspace.session_request())
+            .unwrap();
+        let agent = KernelSessionService::new(&mut app)
+            .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub"))
+            .unwrap();
+        let manifest = ProjectEnvironmentManifest {
+            schema_version: 1,
+            project_id: session.project_id().into(),
+            evidence_digest: ProjectEnvironmentEvidence::default().digest(),
+            entries: vec![ProjectEnvironmentEntry {
+                name: "APP_LABEL".into(),
+                workspace_id: session.workspace_id().into(),
+                kind: ProjectEnvironmentEntryKind::Variable,
+                classification: ProjectEnvironmentClassification::NonSecret,
+                excluded: false,
+                uses: vec![ProjectEnvironmentUse {
+                    path: "app.ts".into(),
+                    line: 1,
+                }],
+                locator: ProjectEnvironmentLocator::EnvFile {
+                    path: ".env".into(),
+                    key: "APP_LABEL".into(),
+                },
+                status: ProjectEnvironmentEntryStatus::Found,
+            }],
+            private_files: vec![],
+            toolchain_hints: vec![],
+            package_hints: vec![],
+            service_hints: vec![],
+        };
+        ProjectEnvironmentStore::new(&app.config.private_runtime_state_root())
+            .save(&StoredProjectEnvironment {
+                source: None,
+                manifest,
+                evidence: ProjectEnvironmentEvidence::default(),
+                reported_missing: Default::default(),
+                reviewed_manifest: None,
+                last_review: None,
+            })
+            .unwrap();
+        std::fs::write(workspace.path().join(".env"), "APP_LABEL=first\n").unwrap();
+        let first = app
+            .ensure_prompt_provider_run_for_agent(session.id(), agent.id())
+            .unwrap();
+        let unchanged = app
+            .ensure_prompt_provider_run_for_agent(session.id(), agent.id())
+            .unwrap();
+        assert_eq!(first, unchanged);
+        std::fs::write(workspace.path().join(".env"), "APP_LABEL=second\n").unwrap();
+        let changed = app
+            .ensure_prompt_provider_run_for_agent(session.id(), agent.id())
+            .unwrap();
+        assert_ne!(first, changed);
+        assert_eq!(
+            app.providers.get_run(&first).unwrap().state(),
+            ProviderRunState::Ended
+        );
+        assert_ne!(
+            app.providers
+                .get_run(&first)
+                .unwrap()
+                .project_environment_revision(),
+            app.providers
+                .get_run(&changed)
+                .unwrap()
+                .project_environment_revision()
+        );
+    }
 
     #[test]
     fn prompt_launched_agents_inherit_session_workspace_live_sync_mode() {

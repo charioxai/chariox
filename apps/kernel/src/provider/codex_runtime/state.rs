@@ -42,6 +42,7 @@ pub struct CodexRuntimeState {
     /// Read-only discovery must keep its permission and MCP policy when the
     /// event drain reconstructs a client for server requests.
     read_only_discovery_permissions: bool,
+    pub(super) ephemeral: bool,
     pub(super) socket: CodexSocket,
     pub(super) next_request_id: u64,
     pub(super) buffered_notifications: Vec<CodexNotification>,
@@ -103,6 +104,7 @@ impl CodexRuntimeState {
             context_hot_reload_enabled: false,
             inject_hidden_context_on_submit: true,
             read_only_discovery_permissions: false,
+            ephemeral: false,
             socket,
             next_request_id,
             buffered_notifications: Vec::new(),
@@ -129,6 +131,7 @@ impl CodexRuntimeState {
             context_hot_reload_enabled: true,
             inject_hidden_context_on_submit,
             read_only_discovery_permissions: false,
+            ephemeral: false,
             socket,
             next_request_id,
             buffered_notifications: Vec::new(),

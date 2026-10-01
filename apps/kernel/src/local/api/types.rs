@@ -122,4 +122,5 @@ pub use workspace::*;
 /// Version 371 adds native process identity to authenticated product status and
 /// the value-free Project environment layer and inputs (MP-08).
 /// Version 372 adds session-bound post-launch Project Environment adjustment (MP-08).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 372;
+/// Version 373 adds worker Environment queries and waiting-room pending review visibility (MP-08).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 373;

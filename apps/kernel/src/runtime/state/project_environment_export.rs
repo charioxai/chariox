@@ -83,10 +83,11 @@ impl KernelRuntimeState {
             .keys()
             .map(|workspace| (workspace.clone(), names.clone()))
             .collect();
-        let index =
+        let mut index =
             tokio::task::spawn_blocking(move || index_project_environment(&index_roots, &names))
                 .await
                 .map_err(|_| environment_failure("environment reference index task failed"))??;
+        retain_imported_private_candidates(&mut index, previous.as_ref());
         let mut references = index.references;
         // Explicitly supplied values survive incremental discovery and are never asked again.
         if let Some(previous) = &previous {
@@ -207,6 +208,7 @@ impl KernelRuntimeState {
                 .map_or(ProjectEnvironmentEntryStatus::Found, |e| e.status);
         }
         let mut state = StoredProjectEnvironment {
+            source: previous.as_ref().and_then(|state| state.source.clone()),
             manifest,
             evidence: index.evidence,
             reported_missing: previous
@@ -217,6 +219,7 @@ impl KernelRuntimeState {
             last_review: previous.as_ref().and_then(|s| s.last_review.clone()),
         };
         let mut review_identity = None;
+        let mut additions = ProjectPrivateFileAdditions::default();
         if project_environment_needs_review(&state) {
             let code = project_environment_code_summary(repositories);
             if interactive {
@@ -228,7 +231,7 @@ impl KernelRuntimeState {
                     }
                 });
                 let (session, agent, _cleanup) = review_identity.as_ref().expect("review identity");
-                self.review_project_environment(
+                additions = self.review_project_environment(
                     &session,
                     &agent,
                     &mut state,
@@ -260,6 +263,7 @@ impl KernelRuntimeState {
             );
         }
         store.save(&state)?;
+        additions.commit();
         let resolved = resolve_project_environment(
             &state.manifest,
             &roots,
@@ -341,7 +345,7 @@ impl KernelRuntimeState {
                     &primary.workspace_id,
                     primary.worktree_path.to_string_lossy().to_string(),
                 )
-                .with_alias("project-environment")
+                .with_alias(format!("project-environment-{:x}", rand::random::<u64>()))
                 .with_owner_user_id(project.owner_user_id())
                 .with_project_selection(
                     crate::session::SessionProjectSelection::Existing {
@@ -396,8 +400,8 @@ impl Drop for EnvironmentDiscoveryScratch {
 }
 
 pub(crate) struct PreparedProjectEnvironmentExport {
-    state: StoredProjectEnvironment,
-    resolved: ResolvedProjectEnvironment,
+    pub(super) state: StoredProjectEnvironment,
+    pub(super) resolved: ResolvedProjectEnvironment,
     _lock: ProjectEnvironmentLock,
 }
 

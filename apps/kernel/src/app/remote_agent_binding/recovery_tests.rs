@@ -150,6 +150,7 @@ impl Fixture {
                     &config.daemon_id,
                     &config.host_machine_id,
                     crate::slice::CreateSliceInput {
+                        source_slice_ref: None,
                         name: format!("room-{index}"),
                         backend: crate::slice::SliceBackendKind::LocalDocker,
                         os: "linux".into(),

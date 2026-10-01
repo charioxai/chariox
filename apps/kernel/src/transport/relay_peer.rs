@@ -92,11 +92,20 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// acknowledgment before validating a utility-generated Project definition.
 /// Version 64 binds signed daemon admission to the canonical kernel subject.
 /// Version 65 installs an authenticated selected Project environment on a leased worker.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 65;
+/// Version 66 queries and adjusts the leased worker Project through its own authority.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 66;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
 pub const PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE: &str = "project_environment_setup_rejected";
+
+// MP-08 / MP-10 / MP-11 public transfer binding. Values are target-sealed at the source worker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectEnvironmentExportTarget {
+    pub context_id: String,
+    pub kernel_id: String,
+    pub public_key: String,
+}
 
 /// Home-selected execution identity for a leased prompt. Contains no credentials.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -883,8 +892,27 @@ pub enum RelayPeerRequest {
         context: RemoteNativeInteractionContext,
         interaction: crate::session::RuntimeInteraction,
     },
+    ExportLeasedProjectEnvironment {
+        context: RemoteSkillSyncContext,
+        interactive: bool,
+        target_name: String,
+        target: Option<ProjectEnvironmentExportTarget>,
+    },
+    FetchProjectPrivateFile {
+        context: RemoteNativeInteractionContext,
+        workspace_id: String,
+        path: String,
+    },
+    UseLeasedProjectEnvironment { context: RemoteSkillSyncContext, project_id: String },
+    ReadLeasedProjectPrivateFile { context: RemoteSkillSyncContext, workspace_id: String, path: String },
+    ReadLeasedProjectEnvironment {
+        context: RemoteSkillSyncContext,
+        adjust: bool,
+    },
     InstallLeasedProjectEnvironment {
         context: RemoteSkillSyncContext,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_kernel_id: Option<String>,
         layer: crate::managed_context::development::DevelopmentProjectEnvironment,
         /// Source workspace -> mounted repository basename; never arbitrary target paths.
         workspace_directories: std::collections::BTreeMap<String, String>,
@@ -1130,6 +1158,17 @@ pub enum RelayPeerResponse {
     NativeInteractionResolved {
         resolution: crate::provider::ProviderNativeInteractionResolution,
     },
+    LeasedProjectEnvironmentExport {
+        manifest: crate::project_environment::ProjectEnvironmentManifest,
+        evidence: crate::project_environment::ProjectEnvironmentEvidence,
+        layer: Option<crate::managed_context::development::DevelopmentProjectEnvironment>,
+    },
+    ProjectPrivateFile { bytes: RelayManagedContextChunk },
+    LeasedProjectEnvironment {
+        manifest: Option<crate::project_environment::ProjectEnvironmentManifest>,
+        adjustment_started: bool,
+    },
+    LeasedProjectEnvironmentUsed { exists: bool },
     LeasedProjectEnvironmentInstalled {
         project_id: String,
     },
@@ -1207,7 +1246,7 @@ mod tests {
 
     #[test]
     fn leased_prompt_cancellation_requires_exact_prompt_and_run_at_protocol_65() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 65);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 66);
         let request = RelayPeerRequest::CancelLeasedPrompt {
             leased_agent_id: "leased-agent-1".to_string(),
             home_prompt_id: "home-prompt-1".to_string(),
@@ -1244,7 +1283,7 @@ mod tests {
 
     #[test]
     fn remote_room_browser_capability_manifest_is_versioned_at_protocol_65() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 65);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 66);
         let request = RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
             leased_agent_id: "leased-agent-1".to_string(),
             remote_extension_manifest: crate::extension::RemoteExtensionManifest {
@@ -1266,7 +1305,7 @@ mod tests {
 
     #[test]
     fn leased_completion_provider_termination_shape_is_versioned() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 65);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 66);
         let completion = RelayProjectedCompletion {
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1_234,
@@ -1332,7 +1371,7 @@ mod tests {
 
     #[test]
     fn leased_project_setup_target_resolution_is_versioned_at_protocol_65() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 65);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 66);
         let request = RelayPeerRequest::ResolveLeasedProjectEnvironmentSetupTarget {
             leased_agent_id: "leased-agent-1".to_string(),
             home_session_id: "home-session-1".to_string(),
@@ -1376,7 +1415,7 @@ mod tests {
 
     #[test]
     fn project_environment_setup_relay_shapes_round_trip_at_protocol_65() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 65);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 66);
         let definition = crate::session::ProjectEnvironmentDefinition {
             schema_version: 1,
             origin: crate::session::ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
@@ -1551,7 +1590,7 @@ mod tests {
 
     #[test]
     fn leased_prompt_receipt_query_and_steer_reconciliation_are_versioned_at_protocol_65() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 65);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 66);
         let request = RelayPeerRequest::GetLeasedPromptReceipt {
             leased_agent_id: "leased-agent-1".to_string(),
             home_prompt_id: "home-prompt-1".to_string(),
@@ -1851,5 +1890,54 @@ mod tests {
                 .expect("response should deserialize"),
             response
         );
+    }
+}
+
+#[cfg(test)]
+mod project_environment_adjustment_shapes {
+    use super::*;
+    #[test]
+    fn mp08_mp10_mp11_worker_environment_shapes_are_protocol_66() {
+        use sha2::{Digest, Sha256};
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 66);
+        let request = RelayPeerRequest::ReadLeasedProjectEnvironment {context: RemoteSkillSyncContext {
+            home_kernel_id: "home".into(), home_session_id: "session".into(), home_agent_id: "agent".into(), leased_agent_id: "lease-agent".into(),
+        }, adjust: true};
+        assert_eq!(serde_json::to_value(&request).unwrap(), serde_json::json!({"kind":"read_leased_project_environment","context":{"home_kernel_id":"home","home_session_id":"session","home_agent_id":"agent","leased_agent_id":"lease-agent"},"adjust":true}));
+        assert_eq!(format!("{:x}", Sha256::digest(serde_json::to_vec(&request).unwrap())), "5363ab1fa44a01c413bb812af342afff37dcbadfc647e44ab3f3740cd8598254");
+        let response = RelayPeerResponse::LeasedProjectEnvironment {manifest: None, adjustment_started: true};
+        assert_eq!(serde_json::to_value(response).unwrap(), serde_json::json!({"kind":"leased_project_environment","manifest":null,"adjustment_started":true}));
+    }
+}
+
+#[cfg(test)]
+mod project_environment_export_shapes {
+    use super::*;
+    #[test]
+    fn mp08_mp10_mp11_source_export_and_target_reuse_shapes_require_peer_66() {
+        use sha2::{Digest, Sha256};
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 66);
+        let value: serde_json::Value = serde_json::from_str(r#"{"kind":"export_leased_project_environment","context":{"home_kernel_id":"home","home_session_id":"session","home_agent_id":"agent","leased_agent_id":"leased-agent"},"interactive":true,"target_name":"second","target":{"context_id":"lease2","kernel_id":"worker2","public_key":"public2"}}"#).unwrap();
+        let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
+        let roundtrip = serde_json::to_value(request).unwrap();
+        assert_eq!(roundtrip, value);
+        assert_eq!(format!("{:x}", Sha256::digest(serde_json::to_vec(&roundtrip).unwrap())), "bf8f113b4f7daf9a8d832eb1ffe5cd11f37e7037849b1bdfa032c8ce1599c99b");
+        let value: serde_json::Value = serde_json::from_str(r#"{"kind":"read_leased_project_private_file","context":{"home_kernel_id":"home","home_session_id":"session","home_agent_id":"agent","leased_agent_id":"leased-agent"},"workspace_id":"/workspace/app","path":"notes.md"}"#).unwrap();
+        let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
+        let roundtrip = serde_json::to_value(request).unwrap();
+        assert_eq!(roundtrip, value);
+        assert_eq!(format!("{:x}", Sha256::digest(serde_json::to_vec(&roundtrip).unwrap())), "48488ef87272c7cd031a3e2bb67fed41d4485c2f079ec451d93a4fb59ea9dfb1");
+        let value: serde_json::Value = serde_json::from_str(r#"{"kind":"use_leased_project_environment","context":{"home_kernel_id":"home","home_session_id":"session","home_agent_id":"agent","leased_agent_id":"leased-agent"},"project_id":"project"}"#).unwrap();
+        let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
+        let roundtrip = serde_json::to_value(request).unwrap();
+        assert_eq!(roundtrip, value);
+        assert_eq!(format!("{:x}", Sha256::digest(serde_json::to_vec(&roundtrip).unwrap())), "22f264441bb3be136c64a83c873a36f7e06cbe4c94e402e3d81116b9e57bb283");
+        let value: serde_json::Value = serde_json::from_str(r#"{"kind":"fetch_project_private_file","context":{"home_session_id":"session","home_agent_id":"agent","leased_agent_id":"leased-agent","worker_provider_run_id":"environment-adjustment"},"workspace_id":"/workspace/app","path":"notes.md"}"#).unwrap();
+        let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
+        let roundtrip = serde_json::to_value(request).unwrap();
+        assert_eq!(roundtrip, value);
+        assert_eq!(format!("{:x}", Sha256::digest(serde_json::to_vec(&roundtrip).unwrap())), "1188d57291152a1dbd2a207426157c32823590a1b8686e6164555dc0c00dae47");
+        let response = RelayPeerResponse::LeasedProjectEnvironmentUsed { exists: true };
+        assert_eq!(serde_json::to_value(response).unwrap(), serde_json::json!({"kind":"leased_project_environment_used","exists":true}));
     }
 }

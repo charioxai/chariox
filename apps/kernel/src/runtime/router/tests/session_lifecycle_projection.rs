@@ -253,6 +253,7 @@ async fn end_session_detaches_reusable_slice_agents() {
             app.config().daemon_id.as_str(),
             app.config().host_machine_id.as_str(),
             crate::slice::CreateSliceInput {
+                source_slice_ref: None,
                 name: "test-slice".to_string(),
                 backend: crate::slice::SliceBackendKind::LocalDocker,
                 os: "linux".to_string(),
@@ -315,6 +316,7 @@ async fn create_slice_ignores_client_supplied_provider_auth() {
     ));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
     let request = LocalDaemonRequest::CreateSlice(crate::local::CreateSliceRequest {
+        source_slice_ref: None,
         name: "forged-auth".to_string(),
         backend: crate::slice::SliceBackendKind::LocalDocker,
         os: "linux".to_string(),
@@ -447,6 +449,7 @@ async fn unsupported_slice_auth_mutations_fail_loudly_and_audit() {
     ));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
     let create_request = LocalDaemonRequest::CreateSlice(crate::local::CreateSliceRequest {
+        source_slice_ref: None,
         name: "ssh-slice".to_string(),
         backend: crate::slice::SliceBackendKind::SshDocker,
         os: "linux".to_string(),
@@ -1022,6 +1025,7 @@ fn create_router_test_slice(
             app.config().daemon_id.as_str(),
             app.config().host_machine_id.as_str(),
             crate::slice::CreateSliceInput {
+                source_slice_ref: None,
                 name: name.to_string(),
                 backend: crate::slice::SliceBackendKind::LocalDocker,
                 os: "linux".to_string(),

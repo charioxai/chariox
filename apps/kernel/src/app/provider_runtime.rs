@@ -13,7 +13,7 @@ pub(crate) use super::provider_liveness::ProviderRunLivenessRuntime;
 pub(crate) use super::provider_processes::ProviderProcessTracker;
 
 impl DaemonApp {
-    pub(crate) fn end_provider_run_for_workflow_context_flush(
+    pub(crate) fn end_agent_provider_run(
         &mut self,
         session_id: &str,
         agent_id: &str,

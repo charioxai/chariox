@@ -43,6 +43,6 @@ export function retryProjectEnvironmentSetupRequest(operationId: string, session
 }
 
 /** MP-08: values never cross this shared Web/TUI query seam. */
-export function getProjectEnvironmentManifestRequest(projectId: string) {
-  return { GetProjectEnvironmentManifest: { projectId } } as const
+export function getProjectEnvironmentManifestRequest(projectId: string, agentId?: string | null) {
+  return { GetProjectEnvironmentManifest: { projectId, ...(agentId ? {agentId} : {}) } } as const
 }
