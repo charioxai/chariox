@@ -4,7 +4,7 @@ import { join } from "node:path"
 import { spawn, spawnSync } from "node:child_process"
 import { readLocalDevEnrollment, verifyInstalledLocalSource } from "./protected-local-docker-authority.mjs"
 import { watchLocalBrokerLifetime } from "./local-docker-broker-lifetime.mjs"
-import { LocalBrokerRefusal, awaitLocalBrokerTransport } from "./local-docker-broker-transport.mjs"
+import { LocalBrokerRefusal, publishLocalBrokerTransport } from "./local-docker-broker-transport.mjs"
 
 // Only the ordinary home kernel starts this launcher. No private input is placed
 // in argv, environment, image or transport directory.
@@ -60,9 +60,7 @@ try {
     "-e", `CHARIOX_SLICE_DOCKER_HANDLE_STATE=${enrollment.controlRoot}/handles.json`,
     "--entrypoint", "/usr/local/bin/node", enrollment.helperImageId,
     `${enrollment.sourceRoot}/apps/kernel/slice-linux-docker/managed-docker-broker.mjs`], {env, stdio: "ignore"})
-  child.once("error", quit)
-  child.once("exit", quit)
-  await awaitLocalBrokerTransport(socket, {ownerUid: uid, helperExited: () => child.exitCode !== null})
+  await publishLocalBrokerTransport(child, socket, {ownerUid: uid, onHelperExit: quit})
   process.stdout.write(`${socket}\n`)
 } catch (error) {
   cleanup()
