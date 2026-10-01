@@ -764,6 +764,47 @@ impl PromptStateOwner {
         Self::activate_owned_queued_prompt(state, agent_id, expected_prompt_id, prompt_id)
     }
 
+    /// Opportunistic queue dispatch claims only the head it observed, while idle.
+    /// Preparation runs only for the eligible head, under this lock; it must
+    /// not reenter the prompt owner. This keeps workspace claims with the winner.
+    /// Another admission or completion may win between the caller's peek and
+    /// this lock; that is deferred work, not a provider initialization failure.
+    pub(crate) fn try_activate_next_queued_prompt_with_prompt_id(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        expected_prompt_id: &str,
+        prompt_id: String,
+        prepare: impl FnOnce(&PromptQueueItem) -> Result<(), DaemonError>,
+    ) -> Result<Option<PromptQueueItem>, DaemonError> {
+        let mut owner = self
+            .state
+            .lock()
+            .expect("prompt state owner lock should not be poisoned");
+        if owner
+            .profile_transitions
+            .contains_key(&PromptStateKey::new(session.id(), agent_id))
+        {
+            return Ok(None);
+        }
+        let state = owner.ensure_agent_state(session, agent_id);
+        if state.active_prompt.is_some()
+            || state
+                .queued_prompts
+                .front()
+                .is_none_or(|front| front.id() != expected_prompt_id)
+        {
+            return Ok(None);
+        }
+        let front = state
+            .queued_prompts
+            .front()
+            .expect("eligible head checked above");
+        validate_prompt_target_agent("activate queued prompt", agent_id, front)?;
+        prepare(front)?;
+        Self::activate_owned_queued_prompt(state, agent_id, Some(expected_prompt_id), prompt_id)
+    }
+
     fn activate_owned_queued_prompt(
         state: &mut OwnedAgentPromptState,
         agent_id: &str,
@@ -1420,6 +1461,92 @@ mod tests {
                 None,
             )
             .is_err());
+    }
+
+    #[test]
+    fn opportunistic_queue_claim_defers_busy_and_consumed_heads_without_losing_successors() {
+        let owner = PromptStateOwner::default();
+        let session = RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace-1",
+            "worktree-1",
+            "machine-1",
+            "daemon-1",
+        );
+        let mut queued_ids = Vec::new();
+        for (id, text) in [
+            ("active", "active"),
+            ("first", "first"),
+            ("second", "second"),
+        ] {
+            let outcome = owner
+                .submit_prepared_prompt(
+                    &session,
+                    PromptQueueItem::new(id, "attachment-1", "agent-1", text, PromptStatus::Queued),
+                    false,
+                )
+                .expect("normal prompt admission");
+            if let PromptSubmissionOutcome::Queued { prompt } = outcome {
+                queued_ids.push(prompt.id().to_string());
+            }
+        }
+        assert_eq!(queued_ids.len(), 2);
+        assert!(owner
+            .try_activate_next_queued_prompt_with_prompt_id(
+                &session,
+                "agent-1",
+                &queued_ids[0],
+                "busy-claim".to_string(),
+                |_| Ok(()),
+            )
+            .expect("busy is ordinary contention")
+            .is_none());
+        owner
+            .complete_active_prompt_only(&session, "agent-1")
+            .expect("complete active turn");
+        let first = owner
+            .activate_next_queued_prompt_with_prompt_id(
+                &session,
+                "agent-1",
+                Some(&queued_ids[0]),
+                "rival-first".to_string(),
+            )
+            .expect("another dispatcher claims the first head")
+            .expect("first queued turn");
+        assert_eq!(first.prompt(), "first");
+        owner
+            .complete_active_prompt_only(&session, "agent-1")
+            .expect("complete rival turn");
+        assert!(owner
+            .try_activate_next_queued_prompt_with_prompt_id(
+                &session,
+                "agent-1",
+                &queued_ids[0],
+                "stale-claim".to_string(),
+                |_| Ok(()),
+            )
+            .expect("consumed head is ordinary contention")
+            .is_none());
+        assert_eq!(
+            owner
+                .peek_next_queued_prompt(&session, "agent-1")
+                .unwrap()
+                .id(),
+            queued_ids[1]
+        );
+        let second = owner
+            .try_activate_next_queued_prompt_with_prompt_id(
+                &session,
+                "agent-1",
+                &queued_ids[1],
+                "second-dispatch".to_string(),
+                |_| Ok(()),
+            )
+            .expect("current idle head can progress")
+            .expect("second queued turn");
+        assert_eq!(second.prompt(), "second");
+        assert!(owner.peek_next_queued_prompt(&session, "agent-1").is_none());
     }
 
     #[test]

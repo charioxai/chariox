@@ -591,13 +591,6 @@ impl KernelRuntimeOwnedState {
         ) {
             return Ok(None);
         }
-        if self
-            .prompt_state_owner
-            .active_prompt_for_agent(&session, agent_id)
-            .is_some_and(|prompt| prompt.is_external())
-        {
-            return Ok(None);
-        }
         let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
         if provider_run.state() != crate::provider::ProviderRunState::Running {
             return Err(DaemonError::InvalidProviderRunState {
@@ -606,19 +599,19 @@ impl KernelRuntimeOwnedState {
                 operation: "advance queued prompt",
             });
         }
-        let acquired_workflow_claim =
-            match self.ensure_workflow_prompt_workspace_claim(session_id, &next_prompt) {
-                Ok(acquired) => acquired,
-                Err(DaemonError::WorkspaceClaimConflict { .. }) => return Ok(None),
-                Err(error) => return Err(error),
-            };
+        let mut acquired_workflow_claim = None;
         let started_next = self
             .prompt_state_owner
-            .activate_next_queued_prompt_with_prompt_id(
+            .try_activate_next_queued_prompt_with_prompt_id(
                 &session,
                 agent_id,
-                Some(next_prompt.id()),
+                next_prompt.id(),
                 self.session_store.reserve_prompt_id(),
+                |prompt| {
+                    acquired_workflow_claim =
+                        self.ensure_workflow_prompt_workspace_claim(session_id, prompt)?;
+                    Ok(())
+                },
             );
         let started_next = match started_next {
             Ok(Some(prompt)) => prompt,
@@ -630,14 +623,9 @@ impl KernelRuntimeOwnedState {
                         next_prompt.workflow_node_run_id().unwrap_or_default(),
                     );
                 }
-                return Err(DaemonError::LocalTransport {
-                    operation: "advance queued prompt",
-                    message: format!(
-                        "expected queued prompt `{}` but no queued prompt was available",
-                        next_prompt.id()
-                    ),
-                });
+                return Ok(None);
             }
+            Err(DaemonError::WorkspaceClaimConflict { .. }) => return Ok(None),
             Err(error) => {
                 if acquired_workflow_claim == Some(true) {
                     self.release_workflow_node_workspace_claim(
