@@ -4,6 +4,8 @@
 // and the runtime inventory with private local keys, and prints the one-time
 // root enrollment command. It never runs sudo or installs trust itself.
 // Production releases use the separate builder and Developer ID signing path.
+// With a codesign identity ("-" for ad hoc), the Mach-O files are codesigned
+// like a production release and the inventory is signed over the signed bytes.
 import { createPrivateKey, createPublicKey, generateKeyPairSync, sign } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
@@ -11,8 +13,9 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { sha256, stableJson } from './app-runtime-bundle-files.mjs';
+import { codesignCopy } from './app-runtime-macos-codesign.mjs';
 import { packageRuntime } from './package-app-runtime.mjs';
-import { executable, launcherInputs, nativeExecutables, platformFiles, releasePaths } from './app-runtime-release-contract.mjs';
+import { executable, launcherInputs, macosCodePaths, nativeExecutables, platformFiles, releasePaths } from './app-runtime-release-contract.mjs';
 import { signRuntimeRelease } from './sign-app-runtime-release.mjs';
 
 const REPOSITORY = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -38,7 +41,7 @@ function compileLauncher(output) {
   if (result.status !== 0) throw new Error(`launcher compile failed: ${result.stderr}`);
 }
 
-export async function localRelease({ nativeDirectory, output, target }) {
+export async function localRelease({ nativeDirectory, output, target, codesignIdentity }) {
   if (!target.startsWith('darwin-')) throw new Error('local releases are macOS developer runtimes');
   await mkdir(join(homedir(), '.chariox/dev'), { recursive: true, mode: 0o700 });
   const scratch = await mkdtemp(join(homedir(), '.chariox/dev/app-runtime-local-'));
@@ -64,9 +67,16 @@ export async function localRelease({ nativeDirectory, output, target }) {
     await writeFile(builderPublic, createPublicKey(builderKey).export({ type: 'spki', format: 'pem' }));
     await writeFile(join(scratch, 'builder.json'), proof);
     await writeFile(join(scratch, 'builder.sig'), sign(null, proof, builderKey).toString('hex'));
+    let codesigned;
+    if (codesignIdentity) {
+      codesigned = join(scratch, 'codesigned');
+      const sourcePath = path => join(bundlePaths.has(path) ? 'bundle' : 'native', path);
+      await codesignCopy({ input, output: codesigned, identity: codesignIdentity, code: macosCodePaths(bundle).map(path =>
+        ({ path: sourcePath(path), executable: executable(path), jit: path === 'chariox-app-worker' })) });
+    }
     const receipt = await signRuntimeRelease({ inputDirectory: input, builderAttestation: join(scratch, 'builder.json'),
       builderSignature: join(scratch, 'builder.sig'), trustedBuilderKey: builderPublic,
-      signingKey: await localKey('local-release'), output: resolve(output), developerRuntime: true });
+      signingKey: await localKey('local-release'), output: resolve(output), developerRuntime: true, codesigned });
     return { ...receipt, output: resolve(output),
       enroll: `sudo <chariox-app-runtime-install> install --source ${resolve(output)} --trusted-public-key-hex ${receipt.publicKeyHex} --inventory-sha256 ${receipt.inventorySha256}` };
   } finally {
@@ -75,10 +85,13 @@ export async function localRelease({ nativeDirectory, output, target }) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const [native, output, target = 'darwin-arm64'] = process.argv.slice(2);
-  if (!native || !output) {
-    process.stderr.write('usage: app-runtime-local-release.mjs NATIVE_DIR OUTPUT_DIR [darwin-arm64]\n');
+  const argv = process.argv.slice(2);
+  const flag = argv.indexOf('--codesign-identity');
+  const codesignIdentity = flag === -1 ? undefined : argv.splice(flag, 2)[1];
+  const [native, output, target = 'darwin-arm64'] = argv;
+  if (!native || !output || argv.length > 3 || flag !== -1 && !codesignIdentity) {
+    process.stderr.write('usage: app-runtime-local-release.mjs NATIVE_DIR OUTPUT_DIR [darwin-arm64] [--codesign-identity -|IDENTITY]\n');
     process.exit(2);
   }
-  process.stdout.write(`${stableJson(await localRelease({ nativeDirectory: native, output, target }))}\n`);
+  process.stdout.write(`${stableJson(await localRelease({ nativeDirectory: native, output, target, codesignIdentity }))}\n`);
 }

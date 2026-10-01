@@ -149,6 +149,65 @@ fn hosted_install_signed_graph_for_storage_views() {
     // The copied production graph and external enrollment remain for the next
     // nonroot storage drill. Only this private source fixture is removed here.
 }
+/// The installer half of the macOS release order: codesign, then sign the
+/// inventory over the codesigned bytes, then install. A Mac produces the input
+/// (`CHARIOX_CODESIGNED_RUNTIME_EVIDENCE=<dir> node --test
+/// scripts/sign-app-runtime-release.test.mjs`); any host can run this check.
+#[test]
+#[ignore = "needs a codesigned macOS runtime made on a Mac; installs into private test roots"]
+fn codesigned_macos_runtime_installs_and_tampered_signed_code_is_refused() {
+    let evidence = PathBuf::from(std::env::var_os("CHARIOX_CODESIGNED_RUNTIME_EVIDENCE").unwrap());
+    let receipt: serde_json::Value =
+        serde_json::from_slice(&fs::read(evidence.join("release-receipt.json")).unwrap()).unwrap();
+    let target = receipt["target"].as_str().unwrap();
+    let digest = receipt["inventorySha256"].as_str().unwrap();
+    let key = super::super::decode_hex::<32>(receipt["publicKeyHex"].as_str().unwrap()).unwrap();
+    assert!(target.starts_with("darwin-"));
+    let source = evidence.join("runtime");
+    let install = |source: &Path| {
+        let mut fixture = Fixture::new();
+        fixture.roots.target = target.into();
+        let result = fixture.roots.install(source, key, digest, &mut |_| Ok(()));
+        (fixture, result)
+    };
+    let (fixture, installed) = install(&source);
+    assert_eq!(installed.unwrap().inventory_sha256, digest);
+    let copied = fixture.roots.runtimes.join(digest);
+    for name in [
+        "chariox-app-worker",
+        "libnode.137.dylib",
+        "libchariox-app-runtime.dylib",
+    ] {
+        assert_eq!(
+            fs::read(copied.join(name)).unwrap(),
+            fs::read(source.join(name)).unwrap()
+        );
+    }
+    // One flipped bit in signed code, at its signed size, is refused.
+    fn copy(from: &Path, to: &Path) {
+        fs::create_dir(to).unwrap();
+        for entry in fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let (from, to) = (entry.path(), to.join(entry.file_name()));
+            if entry.file_type().unwrap().is_dir() {
+                copy(&from, &to);
+            } else {
+                let bytes = fs::read(&from).unwrap();
+                let mode = fs::metadata(&from).unwrap().mode() & 0o777;
+                write(&to, &bytes, mode);
+            }
+        }
+    }
+    let tampered = fixture.root.join("tampered");
+    copy(&source, &tampered);
+    let library = tampered.join("libnode.137.dylib");
+    let mut bytes = fs::read(&library).unwrap();
+    let middle = bytes.len() / 2;
+    bytes[middle] ^= 1;
+    write(&library, &bytes, 0o444);
+    let (_refused, result) = install(&tampered);
+    assert!(matches!(result, Err(EnrollmentError::Identity)));
+}
 fn write(path: &Path, bytes: &[u8], mode: u32) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     if path.exists() {
