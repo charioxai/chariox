@@ -311,11 +311,7 @@ case "$*" in
   *" du -sb /home-src") printf '1048576 /home-src\n' ;;
   *" find /home-src -printf . | wc -c") printf '1\n' ;;
   *" df -B1 --output=avail /tmp") cat "$DOCKER_CAPACITY" ;;
-  cp\ *)
-    destination=
-    for argument in "$@"; do destination=$argument; done
-    printf 'known-good-home' > "$destination"
-    ;;
+  *"tar --zstd -cf - .") printf 'known-good-home' ;;
 esac
 exit 0
 "#,

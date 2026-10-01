@@ -26,6 +26,7 @@ use super::ports::{busy_published_ports_for_slice, LocalDockerSlicePorts};
 mod broker;
 mod disk_admission;
 mod extension_build;
+mod home_archive_capture;
 mod image;
 mod memory_admission;
 mod provider_inputs;
