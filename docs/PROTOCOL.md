@@ -156,7 +156,8 @@ OpenCode-specific structured adapter contract:
 
 - prompt submit maps to the provider session prompt operation
 - `/<provider> ...` command invoke maps to the provider session command operation
-- turn abort maps to the provider session abort operation
+- turn abort maps to the provider session abort operation and retains the provider session
+- after abort, unscoped session errors settle a follow-up immediately only with matching current-prompt assistant evidence; if the accepted current user has no assistant and remains observably idle for five seconds, the kernel closes the stalled turn with an uncorrelated-error diagnostic
 - provider lifecycle and output state are consumed from the provider event stream rather than inferred from PTY EOF or PTY idleness
 - later providers such as Claude Code and Codex should fit behind the same daemon/client contract after the OpenCode-first cycle is closed
 
@@ -172,7 +173,7 @@ Provider hidden-context injection contract:
 
 Provider adapter hidden-context channels:
 
-- Codex adapters MUST send hidden context through `thread/start.developerInstructions` or `thread/resume.developerInstructions` when a Codex thread is created or resumed. Codex does not accept this context through `turn/start`; for kernel-managed Codex runs, the kernel MUST hot-reload the Codex thread before a turn when the assembled hidden context fingerprint changes.
+- Codex adapters MUST send hidden context through `thread/start.developerInstructions` or `thread/resume.developerInstructions` when a Codex thread is created or resumed. Codex does not accept this context through `turn/start`; for kernel-managed Codex runs, the kernel MUST wait for the managed thread to become idle, unsubscribe, and resume the same Codex thread before a turn when the assembled hidden context fingerprint changes, preserving its conversation.
 - OpenCode adapters MUST send turn-scoped hidden context through the provider session prompt request `system` field, currently `POST /session/{id}/prompt_async` body `system`.
 - Claude Code adapters MUST send turn-scoped hidden context through the `UserPromptSubmit` hook response `hookSpecificOutput.additionalContext`.
 - If a provider channel is unavailable, the adapter may run without hidden context for that turn or restart the provider process with an initialization-scoped system prompt only when the caller explicitly accepts that behavior; it must not silently fall back to visible prompt injection.
@@ -575,6 +576,7 @@ Local cancellation policy:
 
 - any currently attached client in a session may request cancellation of that session's active prompt
 - cancellation is session-scoped rather than attachment-owned because the active provider turn is shared session state
+- user cancellation settles the active turn while retaining the agent's provider conversation and resume identity for the next prompt
 
 This local API MUST remain daemon-owned, local-first, and compatible with later workflow-mode runtime surfaces.
 

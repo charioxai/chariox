@@ -150,10 +150,7 @@ impl CodexClient {
         if let Some(model) = model {
             params["model"] = json!(model);
         }
-        if let Some(developer_instructions) = developer_instructions
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
+        if let Some(developer_instructions) = developer_instructions.map(str::trim) {
             params["developerInstructions"] = json!(developer_instructions);
         }
         self.send_request_buffering_notifications(
@@ -163,6 +160,60 @@ impl CodexClient {
             params,
             buffered_notifications,
         )
+    }
+
+    /// Managed threads must be idle and unsubscribed before resume overrides
+    /// can rebuild the loaded provider thread from its existing rollout.
+    pub(in crate::provider) fn prepare_thread_context_refresh(
+        &self,
+        socket: &mut CodexSocket,
+        next_request_id: &mut u64,
+        thread_id: &str,
+    ) -> Result<(), DaemonError> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let response: Value = self.send_request_buffering_notifications(
+                socket,
+                next_request_id,
+                "thread/read",
+                json!({"threadId": thread_id, "includeTurns": false}),
+                &mut Vec::new(),
+            )?;
+            if matches!(
+                response
+                    .pointer("/thread/status/type")
+                    .and_then(Value::as_str),
+                Some("idle" | "notLoaded")
+            ) {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(DaemonError::ProviderProtocol {
+                    provider_run_id: self.provider_run_id.clone(),
+                    operation: "thread/context-refresh",
+                    message: "Codex thread did not become idle before context refresh".to_string(),
+                });
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let response: Value = self.send_request_buffering_notifications(
+            socket,
+            next_request_id,
+            "thread/unsubscribe",
+            json!({"threadId": thread_id}),
+            &mut Vec::new(),
+        )?;
+        if !matches!(
+            response.get("status").and_then(Value::as_str),
+            Some("unsubscribed" | "notSubscribed" | "notLoaded")
+        ) {
+            return Err(DaemonError::ProviderProtocol {
+                provider_run_id: self.provider_run_id.clone(),
+                operation: "thread/unsubscribe",
+                message: "Codex did not acknowledge thread unsubscription".to_string(),
+            });
+        }
+        Ok(())
     }
 
     pub fn turn_start(

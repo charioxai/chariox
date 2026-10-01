@@ -732,11 +732,11 @@ The registry layout is intentionally ordinary markdown so later Chariox Cloud ed
 
 Provider adapters inject `hidden_system_context` through provider-native hidden/system surfaces on every turn:
 
-- Codex: `thread/start.developerInstructions` or `thread/resume.developerInstructions` when the thread is created or resumed. Because Codex does not accept this context through `turn/start`, kernel-managed Codex runs hot-reload the Codex thread before a turn when the assembled hidden-context fingerprint changes.
+- Codex: `thread/start.developerInstructions` or `thread/resume.developerInstructions` when the thread is created or resumed. Because Codex does not accept this context through `turn/start`, kernel-managed Codex runs wait for the managed thread to become idle, unsubscribe, and resume the same thread before a turn when the assembled hidden-context fingerprint changes, preserving its conversation.
 - OpenCode: `POST /session/{id}/prompt_async` request body `system`
 - Claude Code: `UserPromptSubmit` hook response `hookSpecificOutput.additionalContext`
 
-Live drills against the installed provider harnesses confirmed OpenCode and Claude Code support turn-scoped hidden context. Current Codex app-server supports this context at thread creation/resume, so the kernel performs a managed thread hot reload before a Codex turn when mid-session hidden-context changes must be reflected.
+Live drills against the installed provider harnesses confirmed OpenCode and Claude Code support turn-scoped hidden context. Current Codex app-server supports this context at thread creation/resume, so the kernel resumes the existing thread before a Codex turn when mid-session hidden-context changes must be reflected.
 
 Visibility rules:
 

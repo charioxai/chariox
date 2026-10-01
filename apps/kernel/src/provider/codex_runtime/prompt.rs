@@ -183,24 +183,28 @@ fn ensure_codex_thread_ready(
             "hot reloading codex thread for changed hidden context",
             serde_json::json!({
                 "provider_run_id": run.id(),
-                "previous_thread_id": state.thread_id(),
+                "thread_id": state.thread_id(),
             }),
         );
     }
+    if state.thread_ready() {
+        let thread_id = state.thread_id().to_string();
+        client.prepare_thread_context_refresh(
+            &mut state.socket,
+            &mut state.next_request_id,
+            &thread_id,
+        )?;
+    }
+    // An explicit empty override clears prior managed-thread instructions;
+    // omission on an initial resume keeps provider-owned defaults.
+    let resume_context = if state.thread_ready() {
+        Some(developer_instructions.unwrap_or(""))
+    } else {
+        developer_instructions
+    };
     let deadline = Instant::now() + CODEX_MCP_THREAD_INIT_RETRY_TIMEOUT;
     loop {
-        let result = if state.thread_ready() {
-            client.thread_start(
-                &mut state.socket,
-                &mut state.next_request_id,
-                cwd,
-                model,
-                run.write_access_mode(),
-                run.execution_mode(),
-                run.permission_level(),
-                developer_instructions,
-            )
-        } else if let Some(thread_id) = state.pending_thread_id().map(str::to_string) {
+        let result = if let Some(thread_id) = state.pending_thread_id().map(str::to_string) {
             // No new turn has been submitted yet. Resume may replay old item
             // deltas and uncorrelated legacy abort/error events; they must not
             // enter the buffer later drained for the newly admitted prompt.
@@ -214,7 +218,7 @@ fn ensure_codex_thread_ready(
                 run.write_access_mode(),
                 run.execution_mode(),
                 run.permission_level(),
-                developer_instructions,
+                resume_context,
                 &mut Vec::new(),
             )
         } else {
@@ -232,7 +236,7 @@ fn ensure_codex_thread_ready(
         match result {
             Ok(thread) => {
                 if state.thread_ready() {
-                    state.replace_thread(thread.thread.id, Some(desired_fingerprint));
+                    state.refresh_thread(thread.thread.id, Some(desired_fingerprint));
                 } else {
                     state.mark_thread_ready(thread.thread.id, Some(desired_fingerprint));
                 }
@@ -261,6 +265,9 @@ fn codex_active_steering_preserves_thread(
 ) -> bool {
     thread_ready && active_turn && steering
 }
+
+#[cfg(test)]
+mod cancellation_tests;
 
 #[cfg(test)]
 mod prompt_tests {

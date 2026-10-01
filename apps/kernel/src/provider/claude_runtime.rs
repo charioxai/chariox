@@ -852,6 +852,70 @@ cat >/dev/null
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn cancelled_claude_turn_resumes_same_session_for_follow_up() {
+        let worktree = crate::test_support::TestWorktree::new("claude-cancel-continuity");
+        let trace = worktree.path().join("argv.log");
+        let run = RuntimeProviderRun::new(
+            "provider-run-cancel-continuity",
+            &LaunchProviderRequest::new("room", "claude", "claude", "default", "sonnet"),
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::External,
+                process_label: "claude-fixture".to_string(),
+                pty_target: None,
+                pty_program: Some("/bin/sh".to_string()),
+                pty_args: vec![
+                    "-c".to_string(),
+                    r#"
+printf 'argv' >> "$CLAUDE_TEST_TRACE"
+for arg in "$@"; do printf '\t%s' "$arg" >> "$CLAUDE_TEST_TRACE"; done
+printf '\n' >> "$CLAUDE_TEST_TRACE"
+while IFS= read -r line; do printf 'input:%s\n' "$line" >> "$CLAUDE_TEST_TRACE"; done
+"#
+                    .to_string(),
+                    "fixture".to_string(),
+                ],
+                pty_env: BTreeMap::from([(
+                    "CLAUDE_TEST_TRACE".to_string(),
+                    trace.display().to_string(),
+                )]),
+                pty_env_remove: Vec::new(),
+                working_directory: Some(worktree.path().to_path_buf()),
+                structured_endpoint: None,
+            },
+        );
+        let mut binding = initialize_claude_runtime(&run).unwrap();
+        let session_id = binding.state.session_id().unwrap().to_string();
+        let envelope = crate::prompt_assembly::PromptEnvelope::new(
+            "remember cancelled context",
+            "",
+            Vec::new(),
+            crate::prompt_assembly::PromptManifest::current(),
+        );
+        submit_claude_prompt(&run, &mut binding.state, &envelope).unwrap();
+        wait_for_trace_lines(&trace, 2);
+        super::abort_claude_turn(&run, &mut binding.state).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let contents = std::fs::read_to_string(&trace).unwrap_or_default();
+            if contents.lines().any(|line| {
+                line.starts_with("argv\t") && line.ends_with(&format!("\t--resume\t{session_id}"))
+            }) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "abort must resume the original Claude session"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        submit_claude_prompt(&run, &mut binding.state, &envelope).unwrap();
+        assert_eq!(binding.state.session_id(), Some(session_id.as_str()));
+        assert!(binding.state.active_turn_id.is_some());
+        drop(binding);
+    }
+
     #[test]
     fn runtime_mcp_config_uses_private_file_not_argv_and_cleans_up_after_restart() {
         let request =

@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod cancellation_tests;
 mod drain;
 mod parts;
 mod permission;
@@ -357,6 +359,8 @@ mod tests {
             crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(event_receiver),
         );
         state.note_prompt_submitted("msg_user_cancelled".to_string());
+        state.settle_aborted_turn(&[]);
+        state.note_prompt_submitted("msg_user_next".to_string());
         event_sender
             .send(OpenCodeEvent::SessionError {
                 session_id: "session-1".to_string(),
@@ -364,14 +368,17 @@ mod tests {
             })
             .expect("abort error should queue");
 
-        state.switch_session_after_abort("session-2".to_string());
-        state.note_prompt_submitted("msg_user_next".to_string());
+        assert_eq!(state.session_id(), "session-1");
         let drained = drain_opencode_events(&test_run(), &mut state, None)
             .expect("next prompt drain should succeed");
 
         assert!(drained.terminal_failure.is_none());
         assert!(drained.notices.is_empty());
         assert!(!drained.prompt_completed);
+        assert_eq!(
+            state.active_user_message_id.as_deref(),
+            Some("msg_user_next")
+        );
     }
 
     #[test]
