@@ -67,7 +67,11 @@ export function createManagedShutdownProduct({ deps, options, capture, getTarget
 
   const waitForExactOperation = (expected, statePredicate, deadline) => poll((current) => {
     const target = getTarget()
-    const operation = exactOperation(requireOperationHistory(current), expected, target.environmentId)
+    // Cloud FAILED/retryable attempts can be reclaimed by the manager. Keep
+    // the same exact operation/revision bound and require final success within
+    // this caller's existing deadline, including the cleanup reserve.
+    const operation = exactOperation(requireOperationHistory(current), expected, target.environmentId,
+      { waitThroughFailedAttempts: true })
     return operation.status === "succeeded" && typeof operation.completedAt === "string"
       && current.summary.desiredRevision === expected.desiredRevision
       && current.summary.observedRevision === expected.desiredRevision

@@ -157,7 +157,7 @@ export function recordSummary(capture, summary, capturedAt, force = false) {
   capture.observations.push({ capturedAt, environment: summary })
 }
 
-export function exactOperation(operations, expected, targetId) {
+export function exactOperation(operations, expected, targetId, { waitThroughFailedAttempts = false } = {}) {
   requireValue(Array.isArray(operations), "managed operation history is unavailable")
   const matches = operations.filter(({ operationId }) => operationId === expected.operationId)
   requireValue(matches.length === 1, "exact managed operation is unavailable or ambiguous")
@@ -165,7 +165,7 @@ export function exactOperation(operations, expected, targetId) {
   requireValue(operation.environmentId === targetId && operation.kind === expected.kind
     && operation.desiredRevision === expected.desiredRevision,
   "managed operation identity or revision changed")
-  if (operation.status === "failed") throw new Error("managed operation failed")
+  if (operation.status === "failed" && !waitThroughFailedAttempts) throw new Error("managed operation failed")
   if (operation.status === "succeeded") {
     requireValue(typeof operation.completedAt === "string", "managed operation completion receipt is missing")
     requireValue(Date.parse(operation.completedAt) >= Date.parse(operation.createdAt)

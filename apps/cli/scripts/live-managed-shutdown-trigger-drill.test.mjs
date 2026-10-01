@@ -700,3 +700,67 @@ test('MP-09 failure diagnostics discard external messages, stacks and token-like
   assert.equal(capture.failures[0].invariant, 'unclassified_failure')
   assert.equal(capture.failures[0].code, null)
 })
+
+
+test("MP-09 exact delete waits through Cloud failed attempt until same operation succeeds", async (t) => {
+  const root = await scratch(t)
+  const product = fakeProductPath()
+  let deleteStarted = false, observedFailed = false
+  const send = async request => {
+    const response = await product.send(request)
+    if (request.RequestManagedEnvironmentLifecycle?.action === "delete") deleteStarted = true
+    if (request.GetManagedEnvironment && deleteStarted) {
+      const details = structuredClone(response.ManagedEnvironment)
+      const deletion = details.operations.find(operation => operation.kind === "delete")
+      if (!observedFailed) {
+        observedFailed = true
+        deletion.status = "failed"
+        details.environment.observedState = "failed"
+        details.environment.observedRevision -= 1
+      } else deletion.attempt = 2
+      return { ManagedEnvironment: details }
+    }
+    return response
+  }
+  const result = await runManagedShutdownTrigger(parseArguments(argumentsFor(join(root, "retry.json"))), {
+    client: { send, close: async () => {} }, requests: product.requests, send,
+    pause: async () => {}, id: () => "run-retry-fixture",
+  })
+  assert.equal(observedFailed, true)
+  assert.equal(result.operations.find(operation => operation.kind === "delete").status, "succeeded")
+  assert.equal(result.operations.find(operation => operation.kind === "delete").attempt, 2)
+  assert.equal(result.observations.at(-1).environment.observedState, "deleted")
+  assert.equal(result.observations.some(row => row.environment.observedState === "failed"), true)
+})
+
+
+test("MP-09 permanently failed exact delete still expires without an acceptance verdict", async (t) => {
+  const root = await scratch(t)
+  const output = join(root, "permanent-delete-failure.json")
+  const product = fakeProductPath()
+  let elapsed = 0, deleteStarted = false, failedReads = 0
+  const send = async request => {
+    const response = await product.send(request)
+    if (request.RequestManagedEnvironmentLifecycle?.action === "delete") deleteStarted = true
+    if (request.GetManagedEnvironment && deleteStarted) {
+      failedReads += 1
+      const details = structuredClone(response.ManagedEnvironment)
+      details.operations.find(operation => operation.kind === "delete").status = "failed"
+      details.environment.observedState = "failed"
+      details.environment.observedRevision -= 1
+      return { ManagedEnvironment: details }
+    }
+    return response
+  }
+  await assert.rejects(runManagedShutdownTrigger(parseArguments(argumentsFor(output)), {
+    client: { send, close: async () => {} }, requests: product.requests, send,
+    pause: async milliseconds => { elapsed += milliseconds }, monotonic: () => elapsed,
+    now: () => new Date(Date.parse(baseTime) + elapsed), id: () => "permanent-retry-fixture",
+  }), /no acceptance verdict/)
+  const capture = JSON.parse(await readFile(output, "utf8"))
+  assert.ok(failedReads > 1 && failedReads <= 100)
+  assert.equal(elapsed, 600_000)
+  assert.equal(capture.operations.find(operation => operation.kind === "delete").status, "failed")
+  assert.equal(capture.failures.at(-1).stage, "cleanup")
+  assert.equal(capture.observations.some(row => row.environment.observedState === "deleted"), false)
+})
