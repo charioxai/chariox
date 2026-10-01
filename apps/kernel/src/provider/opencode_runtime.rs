@@ -364,7 +364,8 @@ mod tests {
             })
             .expect("abort error should queue");
 
-        state.switch_session_after_abort("session-2".to_string());
+        state.settle_aborted_turn(&[]);
+        assert_eq!(state.session_id(), "session-1");
         state.note_prompt_submitted("msg_user_next".to_string());
         let drained = drain_opencode_events(&test_run(), &mut state, None)
             .expect("next prompt drain should succeed");

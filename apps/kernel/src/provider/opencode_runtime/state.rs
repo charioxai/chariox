@@ -123,9 +123,8 @@ impl OpenCodeRuntimeState {
         }
     }
 
-    pub(in crate::provider) fn switch_session_after_abort(&mut self, session_id: String) {
+    pub(in crate::provider) fn settle_aborted_turn(&mut self, messages: &[OpenCodeMessage]) {
         while self.event_subscription.receiver.try_recv().is_ok() {}
-        self.session_id = session_id;
         self.emitted_text_by_part.clear();
         self.emitted_tool_summaries.clear();
         self.buffered_text_deltas.clear();
@@ -139,6 +138,7 @@ impl OpenCodeRuntimeState {
         self.active_terminal_assistant_message_id = None;
         self.active_prompt_submitted_at = None;
         self.last_status = Some("idle".into());
+        self.baseline_existing_messages(messages);
     }
 
     pub(super) fn message_belongs_to_active_prompt(&self, message_id: &str) -> bool {

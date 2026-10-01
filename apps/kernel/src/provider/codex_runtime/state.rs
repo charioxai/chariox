@@ -186,7 +186,7 @@ impl CodexRuntimeState {
         self.developer_instructions_fingerprint = developer_instructions_fingerprint;
     }
 
-    pub(super) fn replace_thread(
+    pub(super) fn refresh_thread(
         &mut self,
         thread_id: impl Into<String>,
         developer_instructions_fingerprint: Option<String>,
