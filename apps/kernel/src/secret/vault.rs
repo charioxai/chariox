@@ -333,11 +333,11 @@ impl VaultPasskeyVerifier {
 
     /// Whether the vault file at `path` was last re-keyed for this verifier:
     /// it carries the verifier's KDF parameters and salt, which only that
-    /// passphrase change wrote. Settles a change that stopped before its pin
-    /// was recorded; it never verifies a passkey.
-    pub fn matches_vault_file(&self, path: &Path) -> bool {
-        read_vault_file(&normalize_vault_path(path.to_path_buf()))
-            .is_ok_and(|file| file.kdf == self.kdf)
+    /// passphrase change wrote. An error means the file could not be
+    /// inspected, so the answer is unknown. Settles a change that stopped
+    /// before its pin was recorded; it never verifies a passkey.
+    pub fn matches_vault_file(&self, path: &Path) -> Result<bool, DaemonError> {
+        Ok(read_vault_file(&normalize_vault_path(path.to_path_buf()))?.kdf == self.kdf)
     }
 
     /// Whether `passphrase` derives the pinned key.
@@ -435,9 +435,17 @@ pub fn change_chariox_encrypted_vault_passphrase(
     ))?;
     let written = write_vault_file(&path, new_key.as_ref(), &plaintext, kdf.clone());
     // A write can fail after its rename, at the directory sync. The new file
-    // is in use all the same, so the unlocked key follows it.
-    if written.is_err() && !read_vault_file(&path).is_ok_and(|file| file.kdf == kdf) {
-        return written.map(|()| None);
+    // is in use all the same, so the unlocked key follows it. If the file
+    // cannot be read, the vault locks rather than keep a key that may not fit.
+    if written.is_err() {
+        match read_vault_file(&path) {
+            Ok(file) if file.kdf == kdf => {}
+            Ok(_) => return written.map(|()| None),
+            Err(_) => {
+                lock_chariox_encrypted_vault(&path)?;
+                return written.map(|()| None);
+            }
+        }
     }
     let mut unlocked = unlocked_vaults()
         .lock()
@@ -1934,7 +1942,7 @@ mod tests {
         assert!(next.verify(intended).expect("verify"));
         assert!(!next.verify(folded).expect("verify"));
         assert!(
-            next.matches_vault_file(&path),
+            next.matches_vault_file(&path).expect("vault should read"),
             "the file carries the new salt"
         );
         let kdf_after = read_vault_file(&path).expect("vault should read").kdf;
@@ -1962,7 +1970,7 @@ mod tests {
             .set_secret("chariox-test", "second", "after-change")
             .expect("a write after the change uses the new key");
         assert!(
-            next.matches_vault_file(&path),
+            next.matches_vault_file(&path).expect("vault should read"),
             "a secret write keeps the salt"
         );
 
@@ -1996,7 +2004,7 @@ mod tests {
                 .expect("a locked vault can change with its current passphrase");
         assert!(!locked.unlocked, "a locked vault stays locked");
         assert!(
-            !next.matches_vault_file(&path),
+            !next.matches_vault_file(&path).expect("vault should read"),
             "a later change writes another salt"
         );
         unlock_chariox_encrypted_vault(&path, "Another One", VaultUnlockLease::KernelShutdown)

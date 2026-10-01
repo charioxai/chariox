@@ -131,11 +131,17 @@ impl CriticalApprovalPasskeys {
         let moved: PinMove = serde_json::from_value(payload).map_err(|error| {
             passkey_error(PASSKEY_UNAVAILABLE, &format!("passkey pin move: {error}"))
         })?;
-        let Some(vault) = self
-            .boot_vault
-            .as_deref()
-            .filter(|vault| moved.next.matches_vault_file(vault))
-        else {
+        let landed = match self.boot_vault.as_deref() {
+            // Unreadable: the outcome is unknown, so the move stays unsettled.
+            Some(vault) => moved.next.matches_vault_file(vault).map_err(|error| {
+                passkey_error(
+                    PASSKEY_UNAVAILABLE,
+                    &format!("a passphrase change cannot be settled yet: {error}"),
+                )
+            })?,
+            None => false,
+        };
+        let Some(vault) = self.boot_vault.as_deref().filter(|_| landed) else {
             append_pin_event(durable, PIN_EVENT, &moved.previous)?;
             return Ok(moved.previous);
         };
@@ -241,7 +247,22 @@ impl CriticalApprovalPasskeys {
         // remember window, but it may not survive a crash, so its move stays
         // unrecorded and a restart settles it from the file that survived.
         let attempted = next.is_some();
-        let committed = next.filter(|next| next.matches_vault_file(vault));
+        let landed = match (&changed, &next) {
+            (Ok(Some(_)), _) => Ok(true),
+            (Err(_), Some(next)) => next.matches_vault_file(vault),
+            _ => Ok(false),
+        };
+        let Ok(landed) = landed else {
+            // The file cannot be read, so the outcome is unknown: the move
+            // stays unsettled for the next check, and remember windows end in
+            // case it landed.
+            if passkey {
+                self.end_remember_windows();
+                *self.pinned.lock().expect("passkey verifier poisoned") = None;
+            }
+            return changed;
+        };
+        let committed = next.filter(|_| landed);
         let undurable = committed.is_some() && !matches!(changed, Ok(Some(_)));
         let outcome = if !passkey {
             None
@@ -776,6 +797,27 @@ mod tests {
         assert!(f.vault_opens_with(NEW));
         crate::secret::create_chariox_encrypted_vault_for_test(&f.vault, "planted").unwrap();
         assert!(f.accepts(NEW), "the settled pin is recorded");
+    }
+
+    #[test]
+    fn a_restart_that_cannot_read_the_vault_leaves_the_rotation_unsettled() {
+        let f = Fixture::pinned();
+        let kernel = f.kernel();
+        let previous = kernel.pinned(&f.durable).unwrap().unwrap();
+        // Stopped after the re-key, before the new pin is recorded.
+        crate::secret::change_chariox_encrypted_vault_passphrase(&f.vault, OLD, NEW, |next| {
+            kernel.record_pin_move(&f.durable, &previous, next)
+        })
+        .unwrap()
+        .unwrap();
+        // While the vault cannot be read, nothing is settled or accepted...
+        let aside = f.vault.with_extension("aside");
+        std::fs::rename(&f.vault, &aside).unwrap();
+        let unavailable = f.kernel().pinned(&f.durable).err().unwrap().to_string();
+        assert!(unavailable.contains("PASSKEY_UNAVAILABLE"), "{unavailable}");
+        // ...and once it can, the move settles on the file that is there.
+        std::fs::rename(&aside, &f.vault).unwrap();
+        assert!(f.accepts(NEW) && !f.accepts(OLD));
     }
 
     #[test]
