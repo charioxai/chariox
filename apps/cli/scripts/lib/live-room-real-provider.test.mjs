@@ -757,6 +757,18 @@ test("MP-08/MP-10 diagnostics recognize doubly prefixed OpenCode tool names", as
   assert.equal(JSON.stringify(run.checkpoints).includes(secret), false)
 })
 
+test("MP-08/MP-10 diagnostics decode the chariox_chariox namespace used by live OpenCode", async () => {
+  const record = entry("provider_tool", JSON.stringify({
+    tool: "chariox_chariox_slice_browser_find", status: "completed", input: { query: "Browser sample" },
+    output: { browser: { matches: [{ label: secret }] } },
+  }))
+  const run = fixture({ turns: [{ lifecycle: "completed", blobs: [], entries: [record] }] })
+  await assert.rejects(runRoomRealProvider(run.input))
+  assert.deepEqual(run.checkpoints.at(-1).diagnostic.observedTools, ["slice_browser_find"])
+  assert.deepEqual(run.checkpoints.at(-1).diagnostic.browserFindResults, [{ query: "field", matches: 1 }])
+  assert.equal(JSON.stringify(run.checkpoints).includes(secret), false)
+})
+
 test("Browser discovery counts one entry represented by both preview and hydrated history", async () => {
   const record = entry("provider_tool", JSON.stringify({ tool: "slice_browser_find", status: "completed",
     input: { query: "Submit Browser form" }, output: { browser: { matches: [] } } }), 7)

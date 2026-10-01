@@ -1,7 +1,7 @@
 // MP-08/MP-10: normalize official provider transcript envelopes for evidence.
 export function roomProviderToolName(value) {
   if (typeof value !== "string") return ""
-  return value.replace(/^mcp__chariox__/, "").replace(/^(?:chariox\.|chariox_)/, "")
+  return value.replace(/^(?:mcp__chariox__|chariox_)/, "").replace(/^(?:chariox\.|chariox_)/, "")
 }
 
 export function roomProviderToolOutput(value) {
