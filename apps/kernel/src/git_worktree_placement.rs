@@ -156,6 +156,23 @@ pub(crate) fn preflight_working_directory(
     })
 }
 
+/// Validate caller-supplied local session/agent paths before any placement or state mutation.
+/// Relative Git creation targets are separate from these existing-directory identifiers.
+pub(crate) fn preflight_existing_absolute_directory(
+    directory: &str,
+    field: &str,
+    operation: &'static str,
+) -> Result<WorkingDirectoryPreflight, DaemonError> {
+    let path = Path::new(directory);
+    if !path.is_absolute() {
+        return Err(working_directory_error(
+            operation,
+            format!("{field} `{directory}` must be an absolute directory path"),
+        ));
+    }
+    preflight_working_directory(path, operation, false, &[])
+}
+
 fn working_directory_error(operation: &'static str, message: String) -> DaemonError {
     DaemonError::LocalTransport { operation, message }
 }
