@@ -23,6 +23,7 @@ Every grant, extension and `/sudo` needs the passkey, typed only into a kernel-o
 - **D4. No inheritance.** Agents spawned by a sudoagent or an external agent are normal agents.
 - **D5. Extension.** An external agent's access can be extended before it expires, so a legitimate agent is not cut short.
 - **D6. Access strata.** (1) Chariox terminals: the human. (2) External agents: only the local kernel on the same machine, with session-scoped access granted by the user. This is the Chariox server endpoint that external agents connect to today, where they can act as the user. (3) Sudoagents: one turn. (4) Future and out of scope: the Chariox assistant, or root agent, with access to the whole Chariox system and all of the user's kernels across machines, which it discovers through Chariox Cloud. Chariox terminals will later gain the same Cloud-based kernel discovery. The design must leave room for this stratum.
+- **D7. Retire the agent-terminal MCP.** External agents use only the access path of this plan: a grant through the popup. The external agent-terminal MCP of PR #15, which was never merged or tested, is superseded and is cleaned up (section 9, step 0).
 
 Lead proposals, each **Proposed, awaiting owner confirmation**:
 
@@ -103,6 +104,7 @@ Phase 1 protects critical approvals. Everything else a same-user process can do 
 - Multi-user kernels with distinct OS accounts per Chariox user.
 - A new secret. The passkey stays the vault passphrase.
 - Changing how the Cloud authenticates web users or how the relay encrypts traffic.
+- Tool discovery for external agents, which the operation registry of #15 offered. If it is needed later, it is designed fresh on top of the grant path; it is not part of this milestone unless the owner asks.
 
 ## 4. The Chariox passkey
 
@@ -361,6 +363,10 @@ The same local-token pattern is used for package actions in `docs/DEPLOYED_WORKF
 
 Each step ships on its own and leaves the system working. Steps 3 to 7 change serialized protocol shapes, so each needs a future protocol version under the Protocol Change Rule.
 
+0. **Retire #15 (D7).** PR #15 ("feat: external agent terminal MCP peer", branch `codex/agent-terminal-runtime`, one commit `95137ee73`) is open and was never merged. It adds the stdio MCP server `chariox-agent-terminal` and `chariox-shell agent-terminal`, whose `chariox_execute` tool reaches every registry kernel request over the unauthenticated loopback socket with no auth of its own. It also adds `GetTerminalOperationRegistry` and `TerminalOperationRegistry`, a `PromptSource` on `SubmitPrompt`, generated `contracts.json` and `parity_manifest.json`, and the docs `AGENT_TERMINAL.md` and `AGENT_TERMINAL_VALIDATION.md`. Main and `apps/p1-app-bound-copy` contain none of it, so nothing is removed from main.
+   - Close #15 with a pointer to this plan, archive the branch as a git bundle, then delete `codex/agent-terminal-runtime`.
+   - Closing and deleting need the owner's go-ahead. The same commit bundles unrelated changes (it removes `ListPromptSettings` and `GetPromptSetting`, rewrites `session/runtime_session/workflows.rs` and edits `ci.yml`), which must first be confirmed unwanted.
+   - These stay, because other features use them: the per-run runtime MCP listener (`transport/mcp_server.rs`, `generate_runtime_mcp_auth_token`), `GetTerminalCommandCatalog`, `chariox-shell` and the `LocalIpcClient` in `@chariox/kernel-client`, and `prompt_origin: "external"`, which observes provider sessions run outside Chariox.
 1. **Local-kernel auth token (option A), defense in depth.** On start, the laptop kernel writes a random token to a 0600 file in its state directory and accepts it on the handshake `Authorization` header, as managed workers already do. The TUI and CLI read the file. At first, connections without it are accepted but logged. This stops other OS users once enforced, and prepares every client.
 2. **Human-surface credentials.** The kernel records the stratum of each connection (host token, Chariox terminal, external agent, kernel-launched agent), counts passkey failures per class, and attributes audit events to it. `is_terminal_caller` becomes a statement about credential class rather than transport source.
 3. **Passkey popups.** The kernel-owned pending interaction of section 5.2, projected to every connected terminal and closed everywhere once resolved. Whether Phase 1's critical approvals move to it at this step or earlier is open question 3.
@@ -448,3 +454,4 @@ Each step ships on its own and leaves the system working. Steps 3 to 7 change se
 - TUI hot-keys popup: `apps/cli/src/hotkey-help.ts`
 - Step-up authentication (P2.13, V2-AUTH-01): `docs/CHARIOX_APPS_IMPLEMENTATION_PLAN.html`
 - Package action local token: `docs/DEPLOYED_WORKFLOWS_THREAT_MODEL.md`
+- Superseded agent-terminal MCP: PR #15, branch `codex/agent-terminal-runtime`
