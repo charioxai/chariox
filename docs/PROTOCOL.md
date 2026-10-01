@@ -450,6 +450,7 @@ Current implementation notes:
 
 - the TypeScript CLI now defaults to `ws://127.0.0.1:${CHARIOX_KERNEL_PORT:-43118}/kernel`
 - the Rust daemon process hosts that WebSocket listener directly
+- local credentials travel on the upgrade's `Authorization: Bearer <token>` header, not in any frame. A kernel started with `CHARIOX_KERNEL_LOCAL_AUTH_TOKEN(_FILE)` (managed and hosted workers) refuses upgrades without that token with HTTP 401. Any other kernel generates a fresh `chx_kat_`-prefixed token at each start and writes it to the owner-only file `<state dir>/kernel-local-auth/<port>.token`, where the state dir is `$CHARIOX_HOME/state`, `$XDG_STATE_HOME/chariox` or `$HOME/.local/state/chariox`. Local clients read that file on every connection to a loopback endpoint and present the token. For now this is log mode: upgrades without the token, or with a wrong one, are accepted and logged (rate-limited, never the token itself)
 - the older Unix-socket local IPC path still exists for daemon harnessing/tests and compatibility shims, but it is no longer the primary CLI transport
 - the current wire shape now supports request/response plus pushed kernel events over one long-lived connection
 - subscriptions carry optional `resume_from_event_id`

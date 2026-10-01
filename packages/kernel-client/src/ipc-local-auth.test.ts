@@ -1,14 +1,17 @@
 import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
-import { mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
 
 import { WebSocketServer } from "ws"
 
+import { localKernelAuthTokenPath } from "./local-kernel-auth-token.js"
+
 const ipcModuleUrl = new URL("./ipc.js", import.meta.url).href
 const localAuthEnvironmentNames = [
+  "CHARIOX_HOME",
   "CHARIOX_KERNEL_HOST",
   "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN",
   "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE",
@@ -19,6 +22,7 @@ const localAuthEnvironmentNames = [
   "CHARIOX_PUBLICATION_CLOUD_API_URL",
   "CHARIOX_PUBLICATION_CLOUD_DEPLOYMENT_ID",
   "CHARIOX_PUBLICATION_CLOUD_RUNNER_KEY",
+  "XDG_STATE_HOME",
 ] as const
 
 test("LocalIpcClient consumes a private auth file before authenticating local upgrades", async (t) => {
@@ -194,7 +198,125 @@ test("LocalIpcClient rejects oversized one-shot credentials without consuming th
   assert.equal((await stat(tokenFile)).isFile(), true)
 })
 
-async function startKernelServer() {
+test("the laptop kernel token path mirrors the kernel state directory and is loopback only", () => {
+  assert.equal(
+    localKernelAuthTokenPath("ws://127.0.0.1:44240/kernel", { CHARIOX_HOME: "/charioxhome", HOME: "/home/u" }),
+    "/charioxhome/state/kernel-local-auth/44240.token",
+  )
+  assert.equal(
+    localKernelAuthTokenPath("ws://[::1]:43118", { XDG_STATE_HOME: "/xdg-state", HOME: "/home/u" }),
+    "/xdg-state/chariox/kernel-local-auth/43118.token",
+  )
+  assert.equal(
+    localKernelAuthTokenPath("ws://localhost:43119/kernel", { HOME: "/home/u" }),
+    "/home/u/.local/state/chariox/kernel-local-auth/43119.token",
+  )
+  for (const endpoint of [
+    "wss://relay.example.com/client",
+    "ws://192.168.1.20:43118/kernel",
+    "ws://user:secret@127.0.0.1:43118",
+    "/tmp/kernel.sock",
+  ]) {
+    assert.equal(localKernelAuthTokenPath(endpoint, { HOME: "/home/u" }), null, endpoint)
+  }
+})
+
+test("LocalIpcClient presents the laptop kernel token for its port without consuming it", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-laptop-kernel-token-"))
+  const { server, endpoint, authorizations } = await startKernelServer()
+  const port = new URL(endpoint).port
+  const tokenFile = await writeLaptopKernelToken(root, port, "chx_kat_laptop-sentinel")
+  t.after(async () => {
+    await closeKernelServer(server)
+    await rm(root, { recursive: true, force: true })
+  })
+
+  const result = await runClientScript(`
+    const client = new LocalIpcClient(${JSON.stringify(`${endpoint}/kernel`)})
+    try {
+      await client.send({ ListSessions: null })
+    } finally {
+      client.destroy()
+    }
+  `, { CHARIOX_HOME: root })
+
+  assert.equal(result.code, 0, result.stderr)
+  assert.deepEqual(authorizations, ["Bearer chx_kat_laptop-sentinel"])
+  assert.equal((await stat(tokenFile)).isFile(), true)
+})
+
+test("LocalIpcClient rereads the laptop kernel token when it reconnects", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-laptop-kernel-token-restart-"))
+  const { server, endpoint, authorizations } = await startKernelServer({ closeAfterResponse: true })
+  const port = new URL(endpoint).port
+  const tokenFile = await writeLaptopKernelToken(root, port, "chx_kat_first-start")
+  t.after(async () => {
+    await closeKernelServer(server)
+    await rm(root, { recursive: true, force: true })
+  })
+
+  const result = await runClientScript(`
+    const { writeFileSync } = await import("node:fs")
+    const client = new LocalIpcClient(${JSON.stringify(endpoint)})
+    try {
+      await client.send({ ListSessions: null })
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      writeFileSync(${JSON.stringify(tokenFile)}, "chx_kat_second-start\\n", { mode: 0o600 })
+      await client.send({ ListSessions: null })
+    } finally {
+      client.destroy()
+    }
+  `, { CHARIOX_HOME: root })
+
+  assert.equal(result.code, 0, result.stderr)
+  assert.deepEqual(authorizations, ["Bearer chx_kat_first-start", "Bearer chx_kat_second-start"])
+})
+
+test("LocalIpcClient still connects without a header when the laptop token is missing or unsafe", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-laptop-kernel-token-unsafe-"))
+  const { server, endpoint, authorizations } = await startKernelServer()
+  const port = new URL(endpoint).port
+  const otherPortFile = await writeLaptopKernelToken(root, String(Number(port) + 1), "chx_kat_other-kernel")
+  t.after(async () => {
+    await closeKernelServer(server)
+    await rm(root, { recursive: true, force: true })
+  })
+  const send = () => runClientScript(`
+    const client = new LocalIpcClient(${JSON.stringify(endpoint)})
+    try {
+      const response = await client.send({ ListSessions: null })
+      process.stdout.write(JSON.stringify(response))
+    } finally {
+      client.destroy()
+    }
+  `, { CHARIOX_HOME: root })
+
+  const missing = await send()
+  assert.equal(missing.code, 0, missing.stderr)
+  assert.deepEqual(JSON.parse(missing.stdout), { authenticated: true })
+
+  const groupReadable = await writeLaptopKernelToken(root, port, "chx_kat_group-readable")
+  await chmod(groupReadable, 0o640)
+  const unsafe = await send()
+  assert.equal(unsafe.code, 0, unsafe.stderr)
+
+  await rm(groupReadable)
+  await symlink(otherPortFile, groupReadable)
+  const symlinked = await send()
+  assert.equal(symlinked.code, 0, symlinked.stderr)
+
+  assert.deepEqual(authorizations, [undefined, undefined, undefined])
+})
+
+async function writeLaptopKernelToken(charioxHome: string, port: string, token: string) {
+  const directory = join(charioxHome, "state", "kernel-local-auth")
+  await mkdir(directory, { recursive: true, mode: 0o700 })
+  const tokenFile = join(directory, `${port}.token`)
+  await writeFile(tokenFile, `${token}\n`, { mode: 0o600 })
+  return tokenFile
+}
+
+async function startKernelServer(options: { closeAfterResponse?: boolean } = {}) {
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })
   await new Promise<void>((resolve) => server.once("listening", resolve))
   const address = server.address()
@@ -210,6 +332,7 @@ async function startKernelServer() {
         response: { authenticated: true },
         error: null,
       }))
+      if (options.closeAfterResponse) socket.close()
     })
   })
   return {
