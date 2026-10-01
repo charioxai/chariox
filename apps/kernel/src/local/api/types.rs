@@ -22,6 +22,7 @@ mod daemon;
 mod event_publication;
 mod external_provider_session;
 mod history;
+mod kernel_access;
 mod managed_context;
 mod managed_environment;
 mod metaagent;
@@ -54,6 +55,7 @@ pub use daemon::*;
 pub use event_publication::*;
 pub use external_provider_session::*;
 pub use history::*;
+pub use kernel_access::*;
 pub use managed_context::*;
 pub use managed_environment::*;
 pub use metaagent::*;
@@ -175,4 +177,4 @@ pub use workspace::*;
 /// before, is approved by the `kernel_deployment_consent:<interaction>`
 /// policy. Copy installations are tagged with their deployment: absent from
 /// `ListAppInstallations`, marked by `AppSetInstallation.deployment_id`.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 383;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 393;

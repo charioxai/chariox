@@ -1,5 +1,5 @@
 use crate::error::DaemonError;
-use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
+use crate::local::{KernelConnectionClass, LocalDaemonRequest, LocalDaemonResponse};
 use crate::runtime::projection::{
     publish_session_runtime_projection, AgentRuntimeProjectionStore, SessionStateProjectionStore,
 };
@@ -49,6 +49,7 @@ impl SessionRuntimeCommandExecutor {
         caller_user_id: String,
         caller_metaagent_id: Option<String>,
         terminal_caller: bool,
+        connection_class: Option<KernelConnectionClass>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let (result, projection_action) = if let Some(result) = projected_runtime_notices_response(
             &self.session_projection,
@@ -107,6 +108,7 @@ impl SessionRuntimeCommandExecutor {
                 caller_user_id,
                 caller_metaagent_id,
                 terminal_caller,
+                connection_class,
             )
             .await
         };
@@ -151,6 +153,7 @@ impl SessionRuntimeCommandExecutor {
         caller_user_id: String,
         caller_metaagent_id: Option<String>,
         terminal_caller: bool,
+        connection_class: Option<KernelConnectionClass>,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
@@ -288,7 +291,11 @@ impl SessionRuntimeCommandExecutor {
             }
             LocalDaemonRequest::RespondToInteraction(request) => {
                 self.store
-                    .respond_to_interaction(request, terminal_caller.then_some(caller_user_id))
+                    .respond_to_interaction(
+                        request,
+                        terminal_caller.then_some(caller_user_id),
+                        connection_class,
+                    )
                     .await
             }
             LocalDaemonRequest::AliasSession(request) => self.store.alias_session(request).await,

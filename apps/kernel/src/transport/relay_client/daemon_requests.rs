@@ -367,9 +367,7 @@ async fn dispatch_relay_client_request(
     let command = KernelCommand::from_local_request_with_caller(
         command_id.clone(),
         KernelCommandSource::RelayClient,
-        caller_identity
-            .map(KernelCaller::from_relay_identity)
-            .unwrap_or_else(|| KernelCaller::for_source(&KernelCommandSource::RelayClient)),
+        KernelCaller::for_relay_request(caller_identity),
         None,
         None,
         &request,

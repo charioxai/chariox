@@ -101,12 +101,14 @@ impl KernelRuntimeState {
             caller_user_id,
             None,
             None,
+            None,
         )
         .await
     }
 
     /// A human terminal's answer; a critical approval also carries the
     /// passkey, or falls within the owner's remember window.
+    /// `connection_class` is the answering connection's (protocol 393).
     #[allow(clippy::too_many_arguments)]
     pub(in crate::runtime) async fn answer_terminal_runtime_interaction(
         &self,
@@ -117,6 +119,7 @@ impl KernelRuntimeState {
         caller_user_id: Option<&str>,
         passkey: Option<&crate::local::ApprovalPasskey>,
         passkey_remember_minutes: Option<u32>,
+        connection_class: Option<crate::local::KernelConnectionClass>,
     ) -> Result<(), DaemonError> {
         let passkey_verified = self
             .authorize_critical_approval(
@@ -126,6 +129,7 @@ impl KernelRuntimeState {
                 caller_user_id,
                 passkey,
                 passkey_remember_minutes,
+                connection_class,
             )
             .await?;
         self.owned.resolve_runtime_interaction(

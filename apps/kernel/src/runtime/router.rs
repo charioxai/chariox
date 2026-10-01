@@ -183,6 +183,7 @@ mod tests {
                 realm_id: Some("realm-1".to_string()),
                 public_key_thumbprint: Some("thumbprint-remote".to_string()),
                 metaagent_id: None,
+                connection_class: None,
             },
             None,
             None,

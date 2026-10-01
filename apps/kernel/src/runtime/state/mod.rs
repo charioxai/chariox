@@ -73,6 +73,8 @@ mod app_file_pick_runtime;
 mod computer_secret_input_runtime_state;
 mod config_runtime_state;
 mod critical_approval_passkey;
+#[cfg(test)]
+pub(crate) use critical_approval_passkey::critical_approval_audit_payload;
 mod native_catalog_refresh;
 mod provider_output_deadline_store;
 mod provider_reload;

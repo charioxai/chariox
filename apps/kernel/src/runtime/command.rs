@@ -619,4 +619,84 @@ mod tests {
         assert!(command.caller.client_id.is_none());
         assert!(command.caller.machine_id.is_none());
     }
+
+    #[test]
+    fn relay_callers_get_their_connection_class_and_keep_terminal_status() {
+        use crate::local::KernelConnectionClass;
+        let identity = |subject_kind, user_id: Option<&str>| RelayCallerIdentity {
+            realm_id: "realm-1".to_string(),
+            subject: "subject-1".to_string(),
+            subject_kind,
+            expires_at_ms: 20,
+            token_id: None,
+            user_id: user_id.map(str::to_string),
+            public_key_thumbprint: None,
+        };
+        let request = LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest);
+        for (identity, class, terminal) in [
+            (
+                Some(identity(RelaySubjectKind::Client, Some("user-1"))),
+                KernelConnectionClass::Terminal,
+                true,
+            ),
+            (
+                Some(identity(RelaySubjectKind::Client, None)),
+                KernelConnectionClass::Unauthenticated,
+                false,
+            ),
+            (
+                Some(identity(RelaySubjectKind::Kernel, Some("user-1"))),
+                KernelConnectionClass::RelayPeer,
+                false,
+            ),
+            (
+                Some(identity(RelaySubjectKind::Machine, None)),
+                KernelConnectionClass::RelayPeer,
+                false,
+            ),
+            (
+                Some(identity(RelaySubjectKind::Service, Some("user-1"))),
+                KernelConnectionClass::RelayPeer,
+                false,
+            ),
+            (None, KernelConnectionClass::Unauthenticated, false),
+        ] {
+            let command = KernelCommand::from_local_request_with_caller(
+                "relay-class",
+                KernelCommandSource::RelayClient,
+                KernelCaller::for_relay_request(identity),
+                None,
+                None,
+                &request,
+            );
+            assert_eq!(command.caller.connection_class, Some(class));
+            // The class does not decide terminal status yet.
+            assert_eq!(command.is_terminal_caller(), terminal);
+        }
+    }
+
+    #[test]
+    fn local_and_kernel_callers_without_admission_have_no_connection_class() {
+        let request = LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest);
+        for source in [
+            KernelCommandSource::LocalCli,
+            KernelCommandSource::LocalIpc,
+            KernelCommandSource::DaemonBackground,
+        ] {
+            let command =
+                KernelCommand::from_local_request_with_source("own", source, None, None, &request);
+            assert_eq!(command.caller.connection_class, None);
+        }
+        // An absent class reads back as absent from older serialized callers.
+        let caller: KernelCaller = serde_json::from_value(serde_json::json!({
+            "caller_id": "local-cli",
+            "caller_kind": "local_client",
+        }))
+        .unwrap();
+        assert_eq!(caller.connection_class, None);
+        assert!(serde_json::to_value(&caller)
+            .unwrap()
+            .get("connection_class")
+            .is_none());
+    }
 }
