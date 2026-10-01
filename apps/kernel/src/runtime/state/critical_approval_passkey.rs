@@ -173,11 +173,12 @@ impl CriticalApprovalPasskeys {
     /// The blocking part of `change_vault_passphrase`. For the boot vault
     /// (`passkey`) with a pin, the current passphrase must verify against the
     /// pin (`Ok(None)` otherwise), and the pin move is recorded before the
-    /// vault file is re-keyed and its outcome after. If recording the outcome
-    /// fails, the pin is dropped from memory, so the next check settles the
-    /// recorded move from the vault file. Without a pin yet, the new key is
-    /// pinned once the file is re-keyed, as an unlock would pin it. Once the
-    /// boot vault is re-keyed, every remember window ends.
+    /// vault file is re-keyed and its outcome after, once the new file is
+    /// durable. If recording the outcome fails, the pin is dropped from
+    /// memory, so the next check settles the recorded move from the vault
+    /// file. Without a pin yet, the new key is pinned once the file is
+    /// re-keyed, as an unlock would pin it. Once the boot vault is re-keyed,
+    /// every remember window ends.
     fn change_passphrase(
         &self,
         durable: &DurableKernelStateStore,
@@ -206,10 +207,13 @@ impl CriticalApprovalPasskeys {
             },
         );
         // The vault file decides the outcome, as `settle` does after a crash:
-        // a write can fail after the new file is in place. A committed change
-        // ends every remember window, even if it then reports an error.
+        // a write can fail after the new file is in place (at the directory
+        // sync). Such a change is used in this process and ends every
+        // remember window, but it may not survive a crash, so its move stays
+        // unrecorded and a restart settles it from the file that survived.
         let attempted = next.is_some();
         let committed = next.filter(|next| next.matches_vault_file(vault));
+        let undurable = committed.is_some() && !matches!(changed, Ok(Some(_)));
         let outcome = if !passkey {
             None
         } else if committed.is_some() {
@@ -219,8 +223,8 @@ impl CriticalApprovalPasskeys {
             previous.clone().filter(|_| attempted)
         };
         if let Some(verifier) = outcome {
-            let recorded = append_pin_event(durable, PIN_EVENT, &verifier).is_ok();
-            *self.pinned.lock().expect("passkey verifier poisoned") = recorded.then_some(verifier);
+            let in_use = undurable || append_pin_event(durable, PIN_EVENT, &verifier).is_ok();
+            *self.pinned.lock().expect("passkey verifier poisoned") = in_use.then_some(verifier);
         }
         match changed {
             Ok(None) if previous.is_some() => Err(DaemonError::LocalTransport {
@@ -627,25 +631,41 @@ mod tests {
     }
 
     #[test]
-    fn a_rotation_whose_write_fails_after_the_rename_still_moves_the_pin() {
+    fn a_rotation_whose_write_fails_after_the_rename_moves_the_pin_in_process_only() {
         let f = Fixture::pinned();
         let kernel = f.kernel();
+        let before = std::fs::read(&f.vault).unwrap();
         kernel.record_success("owner", Instant::now(), Some(5));
         crate::secret::fail_next_vault_write_after_rename_for_test();
         let error = kernel
             .change_passphrase(&f.durable, &f.vault, true, OLD, NEW)
             .expect_err("the failed directory sync is reported");
         assert!(error.to_string().contains("was changed"), "{error}");
-        // The new file is in use, so the pin follows it and windows end.
+        // The new file is in use, so this kernel's pin follows it and the
+        // remember windows end.
         assert!(kernel
             .pinned(&f.durable)
             .unwrap()
             .unwrap()
             .verify(NEW)
             .unwrap());
-        assert!(f.accepts(NEW) && !f.accepts(OLD));
         assert!(f.vault_opens_with(NEW));
         assert!(!kernel.remembered("owner", Instant::now()));
+        // The rename was not synced, so a crash may bring the old file back:
+        // the move stays pending and a restart settles on the surviving file.
+        std::fs::write(&f.vault, before).unwrap();
+        assert!(f.accepts(OLD) && !f.accepts(NEW));
+    }
+
+    #[test]
+    fn a_rotation_whose_unsynced_rename_survives_settles_on_the_new_passphrase() {
+        let f = Fixture::pinned();
+        crate::secret::fail_next_vault_write_after_rename_for_test();
+        assert!(f
+            .kernel()
+            .change_passphrase(&f.durable, &f.vault, true, OLD, NEW)
+            .is_err());
+        assert!(f.accepts(NEW) && !f.accepts(OLD));
     }
 
     #[test]
