@@ -78,6 +78,9 @@ enum BrokerRequest<'a> {
         container: &'a str,
         path: &'a str,
     },
+    CapturePreflight {
+        container: &'a str,
+    },
 }
 
 #[cfg(unix)]
@@ -236,6 +239,20 @@ fn broker_is_configured() -> bool {
 
 pub(super) fn configured() -> bool {
     broker_is_configured()
+}
+
+pub(super) fn require_capture_preflight(container: &str) -> io::Result<()> {
+    if !broker_is_configured() {
+        return Err(io::Error::other("protected capture broker is unavailable"));
+    }
+    #[cfg(unix)]
+    {
+        let output = execute(&BrokerRequest::CapturePreflight { container })?;
+        if output.status.success() {
+            return Ok(());
+        }
+    }
+    Err(io::Error::other("protected capture preflight refused"))
 }
 
 pub(super) fn resolve_home_restore(container: &str, path: &str) -> io::Result<()> {

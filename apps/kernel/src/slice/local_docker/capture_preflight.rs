@@ -1,16 +1,31 @@
 //! Containment until every capture boundary has a verified credential-separated layout.
 //! Home-volume filtering cannot attest environment secrets or committed image layers.
 use crate::error::DaemonError;
+use crate::slice::SliceRecord;
+
+// Prepared completing seam. Existing call sites remain on the containment
+// refusal until the protected layout and restore path pass source approval.
+pub(crate) fn require_verified_layout(
+    record: &SliceRecord,
+    operation: &'static str,
+) -> Result<(), DaemonError> {
+    super::broker::require_capture_preflight(&super::local_docker_container_name(record))
+        .map_err(|_| refusal(operation))
+}
+
+fn refusal(operation: &'static str) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation,
+        message: "Slice save/backup is unavailable because this storage layout may include credentials. Existing saved state is preserved.".to_string(),
+    }
+}
 
 pub(crate) fn require_supported_layout(operation: &'static str) -> Result<(), DaemonError> {
     // No current provisioner produces a verified protected capture layout. Do not
     // accept a label, environment flag, or synthetic mount list as that proof.
     // A completing change must verify actual private mounts, the immutable base,
     // container configuration and the archive sink before introducing acceptance.
-    Err(DaemonError::LocalTransport {
-        operation,
-        message: "Slice save/backup is unavailable because this storage layout may include credentials. Existing saved state is preserved.".to_string(),
-    })
+    Err(refusal(operation))
 }
 
 #[cfg(test)]
