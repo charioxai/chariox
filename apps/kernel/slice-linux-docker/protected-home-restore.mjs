@@ -1,8 +1,9 @@
 import { spawn, spawnSync } from "node:child_process"
-import { openSync, closeSync, fstatSync, constants, createReadStream, statfsSync } from "node:fs"
+import { openSync, closeSync, fstatSync, constants, createReadStream } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { pipeline } from "node:stream/promises"
+import { DURABLE_LAYOUT_ROOT, verifiedProtectedAuthority } from "./protected-authority.mjs"
 import { createHomeGenerationStore } from "./protected-home-generation.mjs"
 
 function refuse() { throw new Error("Saved slice home cannot be restored safely; existing identity and saved state are preserved") }
@@ -36,6 +37,13 @@ export async function validateCompressedArchive(fd, helper, environment, abort =
     await Promise.allSettled(completion)
   }
 }
+export function requireRestoreVolumeReserve(docker, helper, reserveBytes = 10n * 1024n ** 3n) {
+  const result = docker(["exec", "-u", "root", helper, "/usr/bin/stat", "-f", "-c", "%a %S", "/home-dst"])
+  const text = Buffer.from(result.stdout ?? "").toString("utf8").trim()
+  if (result.status !== 0 || !/^[0-9]+ [0-9]+$/.test(text)) refuse()
+  const [available, blockSize] = text.split(" ").map(BigInt)
+  if (blockSize <= 0n || available * blockSize < reserveBytes) refuse()
+}
 async function extractCompressedArchive(fd, helper, environment, abort) {
   const child = spawn("/usr/bin/docker", ["exec", "-i", "-u", "root", helper,
     "tar", "--zstd", "--no-same-owner", "--no-same-permissions", "-xf", "-", "-C", "/home-dst"],
@@ -45,8 +53,7 @@ async function extractCompressedArchive(fd, helper, environment, abort) {
   const timer = setTimeout(stop, 10 * 60_000)
   const reserve = setInterval(() => {
     try {
-      const disk = statfsSync("/var/lib/chariox-docker", {bigint: true})
-      if (disk.bavail * disk.bsize < 10n * 1024n ** 3n) stop()
+      requireRestoreVolumeReserve(args => spawnSync("/usr/bin/docker", args, {env: environment, timeout: 5_000, maxBuffer: 1024}), helper)
     } catch { stop() }
   }, 200)
   try { await Promise.all([pipeline(createReadStream("unused", {fd, autoClose: false, start: 0}), child.stdin), completion]) }
@@ -87,13 +94,13 @@ if (process.argv[1]?.endsWith("/protected-home-restore.mjs")) {
     }
     process.once("SIGTERM", onSignal)
     process.once("SIGINT", onSignal)
-    const disk = statfsSync("/var/lib/chariox-docker", {bigint: true})
-    if (disk.bavail * disk.bsize < 10n * 1024n ** 3n) refuse()
+    const authority = verifiedProtectedAuthority()
+    requireRestoreVolumeReserve(docker, helper)
     await validateCompressedArchive(fd, helper, environment, abort)
     await extractCompressedArchive(fd, helper, environment, abort)
-    if (docker(["exec", "-u", "root", helper, "chown", "-R", "1001:1001", "/home-dst"]).status !== 0) refuse()
+    if (docker(["exec", "-u", "root", helper, "chown", "-R", `${authority.dataUid}:${authority.dataGid}`, "/home-dst"]).status !== 0) refuse()
     if (docker(["exec", "-u", "root", helper, "/usr/bin/sync", "-f", "/home-dst"]).status !== 0) refuse()
-    createHomeGenerationStore("/var/lib/chariox-docker/private-layout").complete({
+    createHomeGenerationStore(DURABLE_LAYOUT_ROOT).complete({
       container, token: generation, volume, digest: process.env.CHARIOX_SLICE_RESTORE_DIGEST,
     })
     succeeded = true

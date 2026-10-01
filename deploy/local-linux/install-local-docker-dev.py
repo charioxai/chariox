@@ -32,6 +32,7 @@ p.add_argument('--source', required=True, type=pathlib.Path)
 p.add_argument('--user', required=True)
 p.add_argument('--worker-image', required=True)
 p.add_argument('--worker-kernel-sha256', required=True)
+p.add_argument('--docker-cli-sha256', required=True, help='Reviewed SHA-256 of the public host Docker CLI copied into the helper')
 a = p.parse_args()
 if os.geteuid() != 0: refuse('root installation required')
 user = pwd.getpwnam(a.user)
@@ -47,12 +48,22 @@ if worker['Id'] != a.worker_image or worker['Config']['User'] != 'slice': refuse
 proof = command(['run', '--rm', '--read-only', '--network', 'none', '--cap-drop', 'ALL', '--memory', '64m', '--pids-limit', '16', '--user', '0:0', '--entrypoint', '/usr/bin/sha256sum', a.worker_image, '/opt/chariox-slice/bin/chariox-kernel']).split()[0]
 if proof != a.worker_kernel_sha256: refuse('actual worker runtime hash mismatch')
 source = a.source.resolve()
-files = []
+# Public CLI bytes only. The exact pin enters the immutable source manifest;
+# no Docker configuration or credential directory is copied.
+cli = pathlib.Path('/usr/bin/docker')
+metadata = cli.lstat()
+if not re.fullmatch('[a-f0-9]{64}', a.docker_cli_sha256): refuse('public Docker CLI pin required')
+if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_nlink != 1 or metadata.st_mode & 0o022 or cli.resolve() != cli:
+    refuse('public Docker CLI must be a root-controlled regular file')
+cli_bytes = cli.read_bytes()
+if len(cli_bytes) > 64 * 1024 * 1024 or hashlib.sha256(cli_bytes).hexdigest() != a.docker_cli_sha256:
+    refuse('public Docker CLI pin mismatch or oversized binary')
+files = [('.local-public-tools/docker', cli_bytes)]
 for name in subprocess.check_output(['git', '-C', str(source), 'ls-files', 'apps/kernel/slice-linux-docker', 'apps/kernel/src/transport/relay_peer.rs', 'apps/browser-session-import'], text=True).splitlines():
     relative = pathlib.PurePosixPath(name)
     if 'prebuilt' in relative.parts: continue
     original = source / name
-    if original.is_symlink() or not original.is_file(): refuse('non-regular source input')
+    if original.is_symlink() or not original.is_file() or original.resolve() != original or source not in original.parents: refuse('non-regular or redirected source input')
     if original.stat().st_size > 16 * 1024 * 1024: refuse('oversized source input')
     files.append((str(relative), original.read_bytes()))
 # Include staged owned source changes only after their normal tracked publication.
@@ -75,9 +86,14 @@ publish(root / 'source-manifest.json', manifest, 0o444)
 # Unique tag and iid receipt. No profile, credential or private state enters context.
 with tempfile.TemporaryDirectory(prefix='chariox-local-broker-build-', dir='/run') as scratch:
     iid = pathlib.Path(scratch) / 'image.id'
-    command(['build', '--network', 'default', '--iidfile', str(iid), '--build-arg', f'CHARIOX_LOCAL_SOURCE_DIGEST=sha256:{digest}', '-f', str(root / 'apps/kernel/slice-linux-docker/docker/LocalBroker.Dockerfile'), '-t', f'chariox-local-broker-dev:{digest}', str(root)])
+    command(['build', '--network', 'default', '--iidfile', str(iid), '--build-arg', f'CHARIOX_LOCAL_SOURCE_DIGEST=sha256:{digest}', '--build-arg', f'CHARIOX_LOCAL_DOCKER_SHA256={a.docker_cli_sha256}', '-f', str(root / 'apps/kernel/slice-linux-docker/docker/LocalBroker.Dockerfile'), '-t', f'chariox-local-broker-dev:{digest}', str(root)])
     helper = iid.read_text().strip()
 if not re.fullmatch('sha256:[a-f0-9]{64}', helper): refuse('helper build identity unavailable')
+# Test loader/dependencies in the actual pinned helper, then negotiate with the
+# exact enrolled engine. These probes have no private mounts or profiles.
+command(['run', '--rm', '--read-only', '--network', 'none', '--cap-drop', 'ALL', '--memory', '64m', '--pids-limit', '16', '--entrypoint', '/bin/sh', helper, '-ec', '/usr/bin/docker --version; /usr/bin/python3 --version; /usr/bin/zstd --version; /usr/bin/tar --version'])
+helper_engine = command(['run', '--rm', '--read-only', '--network', 'none', '--cap-drop', 'ALL', '--memory', '64m', '--pids-limit', '16', '--mount', 'type=bind,src=/run/docker.sock,dst=/run/docker.sock', '--env', 'DOCKER_HOST=unix:///run/docker.sock', '--env', 'DOCKER_CONFIG=/nonexistent', '--entrypoint', '/usr/bin/docker', helper, 'info', '--format', '{{.ID}}']).strip()
+if helper_engine != engine['ID']: refuse('helper CLI does not reach the enrolled engine')
 owner_root = pathlib.Path(f'/var/lib/chariox/slice-local-dev/u-{user.pw_uid}')
 directory(owner_root, 0o755)
 directory(owner_root / 'private', 0o700)

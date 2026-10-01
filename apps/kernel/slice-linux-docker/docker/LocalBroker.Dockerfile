@@ -8,8 +8,16 @@ COPY --from=ca-bundle /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certi
 RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20260701T000000Z bookworm main' > /etc/apt/sources.list \
     && rm -f /etc/apt/sources.list.d/debian.sources \
     && apt-get -o Acquire::Check-Valid-Until=false update \
-    && apt-get install -y --no-install-recommends docker.io bash ca-certificates coreutils util-linux tar zstd \
+    && apt-get install -y --no-install-recommends bash ca-certificates coreutils util-linux tar zstd python3 \
     && rm -rf /var/lib/apt/lists/*
+COPY .local-public-tools/docker /usr/bin/docker
+ARG CHARIOX_LOCAL_DOCKER_SHA256
+RUN echo "$CHARIOX_LOCAL_DOCKER_SHA256  /usr/bin/docker" | sha256sum --check --strict \
+    && chmod 0555 /usr/bin/docker \
+    && /usr/bin/docker --version \
+    && /usr/bin/python3 --version \
+    && /usr/bin/zstd --version \
+    && /usr/bin/tar --version
 ARG CHARIOX_LOCAL_SOURCE_DIGEST
 LABEL org.chariox.local-broker.schema="1" org.chariox.local-broker.source="$CHARIOX_LOCAL_SOURCE_DIGEST"
 USER 0:0

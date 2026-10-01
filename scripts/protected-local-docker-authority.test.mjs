@@ -42,6 +42,7 @@ test("helper topology refuses privileged, foreign image and extra/control mount 
   const record = fresh()
   const helper = () => ({Image: record.helperImageId, Config: {User: "0:0"},
     HostConfig: {Privileged: false, ReadonlyRootfs: true, NetworkMode: "none", PidMode: "", UsernsMode: "", IpcMode: "private",
+      Tmpfs: {"/tmp":"rw,nosuid,nodev,size=128m", "/run/chariox-slice-broker":"rw,nosuid,nodev,size=32m"},
       CapDrop: ["ALL"], CapAdd: ["CHOWN", "DAC_OVERRIDE", "FOWNER"], SecurityOpt: ["no-new-privileges"]},
     Mounts: [
       {Type: "bind", Source: "/run/docker.sock", Destination: "/run/docker.sock", RW: true},
@@ -53,7 +54,7 @@ test("helper topology refuses privileged, foreign image and extra/control mount 
   assert.equal(verifyLocalHelperTopology(record, helper()), true)
   for (const mutate of [h => h.Image = `sha256:${"b".repeat(64)}`, h => h.HostConfig.Privileged = true,
     h => h.HostConfig.CapAdd.push("SYS_ADMIN"), h => h.HostConfig.NetworkMode = "host", h => h.HostConfig.PidMode = "host",
-    h => h.HostConfig.ReadonlyRootfs = false, h => h.Mounts[1].RW = true, h => h.Mounts[3].Source = "/",
+    h => h.HostConfig.ReadonlyRootfs = false, h => h.HostConfig.Tmpfs["/etc"] = "rw", h => delete h.HostConfig.Tmpfs["/tmp"], h => h.Mounts[1].RW = true, h => h.Mounts[3].Source = "/",
     h => h.Mounts.push({Type: "bind", Source: "/root", Destination: "/root", RW: true})]) {
     const actual = helper(); mutate(actual)
     assert.throws(() => verifyLocalHelperTopology(record, actual), /authority is unavailable/)

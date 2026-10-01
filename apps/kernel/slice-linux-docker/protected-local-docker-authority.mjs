@@ -91,7 +91,7 @@ export function verifyInstalledLocalSource(enrollment) {
     seen.add(entry.path)
     const file = join(enrollment.sourceRoot, entry.path)
     const current = requireRootControlledPath(file)
-    if ((current.mode & 0o222) !== 0 || current.size > 16 * 1024 * 1024
+    if ((current.mode & 0o222) !== 0 || current.size > (entry.path === ".local-public-tools/docker" ? 64 : 16) * 1024 * 1024
         || createHash("sha256").update(readFileSync(file)).digest("hex") !== entry.sha256) refuse()
   }
   return manifest
@@ -105,6 +105,9 @@ export function verifyLocalHelperTopology(enrollment, info) {
       || JSON.stringify(info.HostConfig?.CapDrop?.map(value => value.toUpperCase()).sort()) !== '["ALL"]'
       || JSON.stringify(info.HostConfig?.CapAdd?.map(value => value.toUpperCase()).sort()) !== '["CHOWN","DAC_OVERRIDE","FOWNER"]'
       || !info.HostConfig?.SecurityOpt?.includes("no-new-privileges")
+      || JSON.stringify(Object.entries(info.HostConfig?.Tmpfs ?? {}).sort()) !== JSON.stringify([
+        ["/run/chariox-slice-broker", "rw,nosuid,nodev,size=32m"], ["/tmp", "rw,nosuid,nodev,size=128m"],
+      ])
       || !Array.isArray(info.Mounts) || info.Mounts.length !== 5) refuse()
   const required = new Map([
     ["/run/docker.sock", {source: "/run/docker.sock", rw: true}],
