@@ -1117,14 +1117,27 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("test root should exist");
         let previous_home = std::env::var_os("CHARIOX_HOME");
-        struct RestoreEnvironment(Option<std::ffi::OsString>);
+        let previous_claude_bin = std::env::var_os("CHARIOX_CLAUDE_BIN");
+        struct RestoreEnvironment(Option<std::ffi::OsString>, Option<std::ffi::OsString>);
         impl Drop for RestoreEnvironment {
             fn drop(&mut self) {
                 restore_env("CHARIOX_HOME", self.0.take());
+                restore_env("CHARIOX_CLAUDE_BIN", self.1.take());
             }
         }
-        let _restore = RestoreEnvironment(previous_home);
+        let _restore = RestoreEnvironment(previous_home, previous_claude_bin);
         std::env::set_var("CHARIOX_HOME", &root);
+        // MP-08/MP-10: forced catalog reload needs a live local CLI fixture.
+        // Consume stdin without printing the synthetic credential environment.
+        let claude_fixture = root.join("claude-fixture");
+        std::fs::write(&claude_fixture, "#!/bin/sh\nexec cat >/dev/null\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&claude_fixture, std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        std::env::set_var("CHARIOX_CLAUDE_BIN", &claude_fixture);
 
         let vault_path = root.join("credentials.vault");
         let mut config = crate::config::DaemonConfig::for_tests()
@@ -1198,12 +1211,10 @@ mod tests {
         let runtime = owned_runtime_state(&app).await;
         let request = crate::provider::LaunchProviderRequest::new(
             session.id(),
-            // MP-08/MP-10: forced catalog relaunch exercises the Vault policy
-            // with an inert adapter, rather than executing a test binary as Claude.
-            "dev-stub",
+            "claude",
             "claude",
             &profile.profile_id,
-            "runtime-mcp-idle",
+            "claude-sonnet",
         )
         .with_agent_id(agent.id());
         let mut preparation = Box::pin(
@@ -1366,20 +1377,32 @@ mod tests {
                 .owned
                 .provider_store
                 .get_run_for_agent(session.id(), agent.id());
+            let pending = runtime
+                .owned
+                .pending_mcp_continuations
+                .write()
+                .contains_key(agent.id());
             panic!(
                 "MCP continuation should resume; run={:?}, interaction={:?}, pending={}",
                 run.map(|r| r.state()),
                 session
                     .active_interaction_for_agent(agent.id())
                     .map(|i| i.title()),
-                runtime
-                    .owned
-                    .pending_mcp_continuations
-                    .write()
-                    .contains_key(agent.id())
+                pending
             );
         });
 
+        if let Some(run) = runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(session.id(), agent.id())
+        {
+            runtime
+                .owned
+                .provider_store
+                .terminate_run_provider_only(session.id(), run.id())
+                .expect("stop fixture-owned Claude process");
+        }
         let _ = crate::secret::lock_chariox_encrypted_vault(&vault_path);
         let _ = crate::secret::clear_vault_secret_process_cache();
         let _ = std::fs::remove_dir_all(root);
