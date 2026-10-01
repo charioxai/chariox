@@ -66,12 +66,20 @@ chariox-<version>-<platform>/
 - on macOS, the codesigning identity, team and notarization submission;
 - every file's path, size, mode and SHA-256.
 
-`release-bundle.mjs verify` and `install.sh --check` accept a bundle only if all of
-these hold:
-- the signature verifies against the published release key;
-- every file matches the manifest;
+Two checks accept a bundle:
+- `release-bundle.mjs verify` (Node; CI and contributors);
+- `install.sh --check` (python3 and OpenSSL 3; users, before and during the root
+  step).
+
+Each check accepts a bundle only if all of these hold:
+- `manifest.sig` verifies against the published release key;
+- every file matches the manifest's size and SHA-256;
 - no file was added;
-- the runtime's own inventory signature verifies.
+- `runtime/runtime-inventory.json` is the inventory the manifest names, and its
+  `runtime-inventory.sig` verifies with the runtime key the manifest names.
+
+During root enrollment, `chariox-app-runtime-install` verifies the runtime again
+against that key and digest.
 
 ## Channels
 
