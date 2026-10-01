@@ -70,5 +70,72 @@ directories, then atomically publish the separate fixed enrollment. The worker
 retains the enrolled generation's shared lease through process and broker drain;
 cleanup requires the exclusive lease. The assembler does not run the artifacts,
 install authority or claim sandbox/embedded execution validation. Production
-builder attestation generation, the root enrollment installer and the macOS
-Developer ID/notarization release path remain integration work.
+builder attestation generation and the root enrollment installer remain
+integration work.
+
+## macOS Developer ID signing
+
+`sign-macos-release.mjs` Developer ID-signs and notarizes macOS release code:
+the kernel, its helpers, and the App runtime's worker and libraries. It runs
+on the owner's Mac. The owner names the identity and the notarytool keychain
+profile at run time. The tool never creates, stores or reads a credential,
+certificate or profile.
+
+It copies `--input` to a new `--output` directory and leaves the input
+unchanged. Each Mach-O file is classified by its header: `*.dylib` files are
+libraries, everything else is an executable, and other files are copied
+unchanged. Libraries are signed before executables. Every Mach-O file gets a
+Developer ID signature with `--options runtime` and `--timestamp`.
+Only `chariox-app-worker`, the process that runs V8, also gets
+`macos-app-worker.entitlements`, which grants `com.apple.security.cs.allow-jit`
+and nothing else, so library validation stays on.
+
+The tool then checks each signature with `codesign --verify --strict`, and
+checks that each file names the identity and team, has a secure timestamp and
+the hardened runtime, and has exactly the expected entitlements. It zips the
+output, submits it with `notarytool submit --wait`, and keeps the notary log.
+Finally, it asks Gatekeeper (`spctl --assess --type install`) to accept every
+executable as notarized Developer ID code.
+
+Bare Mach-O files and zip archives can't hold a stapled ticket; `stapler` only
+accepts app bundles, disk images and flat packages. So the tool records
+stapling as not applicable, and Gatekeeper checks the ticket online.
+
+If any step fails, the tool removes the output directory and the archive. On
+success, it prints a JSON receipt with the unsigned and signed digests of
+every file, the notarization submission ID, and the Gatekeeper results. It
+refuses an input that contains `runtime-inventory.json`,
+`runtime-inventory.sig` or `.runtime-lease`, because a Chariox runtime
+inventory must be signed over the platform-signed bytes, after this step.
+
+Owner prerequisites, once:
+
+1. Join the Apple Developer Program. Create a **Developer ID Application**
+   certificate, either in Xcode (Settings › Accounts › Manage Certificates)
+   or at developer.apple.com › Certificates. Back up the certificate and its
+   private key as a password-protected `.p12`, and keep the backup off-device.
+2. Confirm the identity: `security find-identity -v -p codesigning` lists
+   `Developer ID Application: <Name> (<TEAMID>)`.
+3. Store the notary credentials in your keychain. The command prompts for an
+   app-specific password from appleid.apple.com:
+   `xcrun notarytool store-credentials chariox-notary --apple-id <Apple ID> --team-id <TEAMID>`.
+   An App Store Connect API key also works:
+   `--key <AuthKey.p8> --key-id <id> --issuer <uuid>`.
+
+Each release:
+
+```sh
+export CHARIOX_CODESIGN_IDENTITY='Developer ID Application: <Name> (<TEAMID>)'
+export CHARIOX_NOTARY_PROFILE=chariox-notary
+node scripts/sign-macos-release.mjs --dry-run \
+  --input /absolute/unsigned --output /absolute/signed
+node scripts/sign-macos-release.mjs \
+  --input /absolute/unsigned --output /absolute/signed > signing-receipt.json
+```
+
+The dry run lists every file with its role and digest, and prints every
+command without running any of them. Its output is the review step.
+`--identity` and `--keychain-profile` override the environment variables.
+macOS asks before `codesign` uses the private key; answer **Allow**, not
+**Always Allow**. If notarization is rejected, the error prints the
+`xcrun notarytool log <id> --keychain-profile <profile>` command to run.
