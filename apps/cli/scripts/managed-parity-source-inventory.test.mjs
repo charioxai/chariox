@@ -1220,11 +1220,11 @@ const CURRENT_DECLARATION_EXCERPTS = {
   ],
   "guarded-friendly-slice-reference-resolution": [[6, "pub(crate) fn resolve_execution_worker_kernel_ref("]],
   "inner-slice-kernel-bootstrap-identity": [[132, "start_slice_kernel() {"]],
-  "slice-provisioner-container-identity-forwarding": [[1120, "exec_slice_with_timeout() {"]],
+  "slice-provisioner-container-identity-forwarding": [[1131, "exec_slice_with_timeout() {"]],
   "path1-broker-prepared-image-admission": [
-    [115, "const ALLOWED_ENVIRONMENT = new Set(["],
-    [335, "function validateDocker(args) {"],
-    [438, "function validateProvisioner(action, environment, files) {"],
+    [118, "const ALLOWED_ENVIRONMENT = new Set(["],
+    [336, "function validateDocker(args) {"],
+    [439, "function validateProvisioner(action, environment, files) {"],
   ],
   "per-creation-machine-scoped-slice-ref": [
     [6, "pub(super) fn new_local_docker_worker_ref("],
@@ -1567,7 +1567,7 @@ test("JSON policy declaration anchors bind exact data without granting approval"
 for (const [id, declarations] of [
   ["shared-private-home-archive-dispatch", [[916, "fn archive_local_docker_home_volume() {}"], [958, "fn archive_local_docker_home_volume_with_helper() {}"]]],
   ["ordinary-private-home-archive-stream", [[47, "pub(super) fn capture() {}"], [272, "fn remove_created_archive() {}"]]],
-  ["managed-private-home-archive-publication", [[681, "function validateArtifactIdentity() {}"], [705, "async function captureHomeArchive() {}"], [774, "async function inspectManagedHomeArchive() {}"], [813, "async function verifyHomeArchive() {}"], [824, "function removeHomeArchive() {}"]]],
+  ["managed-private-home-archive-publication", [[695, "function validateArtifactIdentity() {}"], [719, "async function captureHomeArchive() {}"], [788, "async function inspectManagedHomeArchive() {}"], [827, "async function verifyHomeArchive() {}"], [838, "function removeHomeArchive() {}"]]],
   ["managed-home-archive-stream-policy", [[16, "export function isHomeArchiveRestoreRequest() {}"], [22, "export function homeArchiveMetadataMatches() {}"], [30, "export async function capturePrivateHomeArchive() {}"]]],
 ]) {
   test("scoped home archive declarations stay unreviewed: " + id, () => {
@@ -1607,22 +1607,19 @@ const FINAL_ARCHIVE_DECLARATIONS = [
   {
     "id": "managed-home-archive-digest-policy",
     "path": "apps/kernel/slice-linux-docker/managed-home-archive-digest.mjs",
-    "blob": "9d4e017f5f03fb2a4bd57994d7c203d003913239",
+    "blob": "8ac3933cf9b9d4ade377fb9b8e7857c40ce8488d",
     "declarations": [
       [
         6,
         "export async function digestPinnedHomeArchive() {}"
       ],
       [
-        13,
-        "export async function digestHomeArchiveStream() {}"
-      ],
-      [
-        35,
+        34,
         "function validateProgressTimeout() {}"
       ]
     ],
-    "anchorCount": 3
+    "anchorCount": 2,
+    "sourceCommit": "3679fbb8bee37152fa694436297f558af2197d2c"
   },
   {
     "id": "shared-home-archive-policy-data",
@@ -1639,18 +1636,19 @@ const FINAL_ARCHIVE_DECLARATIONS = [
   {
     "id": "home-archive-broker-response-lifetime",
     "path": "apps/kernel/src/slice/local_docker/broker.rs",
-    "blob": "125a471ee52b117481cf69fcf14a34859195bd59",
+    "blob": "2a5ec0a4e08235e74bd5ac1f0ce36b1f73772772",
     "declarations": [
       [
-        207,
+        209,
         "fn configure_stream_deadlines() {}"
       ],
       [
-        250,
+        252,
         "fn execute_with_disk_evidence() {}"
       ]
     ],
-    "anchorCount": 2
+    "anchorCount": 2,
+    "sourceCommit": "3679fbb8bee37152fa694436297f558af2197d2c"
   },
   {
     "id": "shared-home-archive-disk-reserve-admission",
@@ -1703,127 +1701,128 @@ const FINAL_ARCHIVE_DECLARATIONS = [
   {
     "id": "ordinary-backup-verification-cancellation-scope",
     "path": "apps/kernel/src/slice/local_docker/state.rs",
-    "blob": "cb8d5f2d1439b00e0e9645f0ac1baabfe3e9bdd7",
+    "blob": "ebd3aebffc2efd0ecc8ed26d217bd51fee07d56d",
     "declarations": [
       [
         178,
         "pub fn validate_local_docker_slice_backup() {}"
       ],
       [
-        990,
+        975,
         "fn file_sha256() {}"
       ]
     ],
-    "anchorCount": 2
+    "anchorCount": 2,
+    "sourceCommit": "3679fbb8bee37152fa694436297f558af2197d2c"
   },
   {
     "id": "shared-provisioner-command-ownership",
     "path": "apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh",
-    "blob": "de2d0c0cee1fc054d719e4c06a3bd80e452943f6",
+    "blob": "8b08b094f119638442dff57f0cce1235393c1358",
     "declarations": [
       [
-        9,
+        29,
         "docker() {}"
       ],
       [
-        182,
+        202,
         "run_guarded_command() {}"
       ],
       [
-        209,
+        229,
         "run_with_timeout() {}"
       ],
       [
-        215,
+        235,
         "run_with_file_stdin_timeout() {}"
       ],
       [
-        256,
+        276,
         "volume_inspect_reports_not_found() {}"
       ],
       [
-        1585,
+        1596,
         "stop_container() {}"
       ],
       [
-        1608,
+        1619,
         "destroy_container() {}"
       ]
     ],
-    "anchorCount": 7
+    "anchorCount": 7,
+    "sourceCommit": "7f882d06a9e10950708d9e7c6a8b20ec57356304"
   },
   {
     "id": "shared-saved-home-restore-stream-and-identity",
     "path": "apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh",
-    "blob": "de2d0c0cee1fc054d719e4c06a3bd80e452943f6",
+    "blob": "8b08b094f119638442dff57f0cce1235393c1358",
     "declarations": [
       [
-        274,
+        294,
         "saved_home_archive_identity() {}"
       ],
       [
-        291,
+        311,
         "restore_saved_home_volume() {}"
       ],
       [
-        331,
+        351,
         "prepare_home_volume() {}"
       ]
     ],
-    "anchorCount": 3
+    "anchorCount": 3,
+    "sourceCommit": "7f882d06a9e10950708d9e7c6a8b20ec57356304"
   },
   {
     "id": "broker-control-settlement",
     "path": "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
-    "blob": "d606e2c5ca6caa824d883c3a385f375101461160",
+    "blob": "ed76a2e5e296385a8917e26e0d266dd4863fe031",
     "declarations": [
       [
-        897,
+        911,
         "function spawnControl() {}"
       ],
       [
-        907,
+        921,
         "function handleIsMountpoint() {}"
       ],
       [
-        915,
+        929,
         "function unmountHandle() {}"
       ],
       [
-        932,
+        946,
         "function publishHandle() {}"
       ],
       [
-        1234,
+        1248,
         "function inspectContainerMounts() {}"
       ],
       [
-        1377,
+        1391,
         "function requireExactContainerMounts() {}"
       ]
     ],
-    "anchorCount": 6
+    "anchorCount": 6,
+    "sourceCommit": "7f882d06a9e10950708d9e7c6a8b20ec57356304"
   },
   {
     "id": "broker-build-duration-limit",
     "path": "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
-    "blob": "d606e2c5ca6caa824d883c3a385f375101461160",
+    "blob": "ed76a2e5e296385a8917e26e0d266dd4863fe031",
     "declarations": [
       [
-        1549,
+        1568,
         "function spawnBounded() {}"
-      ],
-      [
-        1673,
-        "const selector = \"CHARIOX_SLICE_BROKER_BUILD_TIMEOUT_SECONDS\";"
       ]
     ],
-    "anchorCount": 1
+    "anchorCount": 1,
+    "sourceCommit": "3679fbb8bee37152fa694436297f558af2197d2c"
   },
   {
     "id": "shared-provisioner-command-guard",
     "path": "apps/kernel/slice-linux-docker/slice-command-guard.py",
-    "blob": "4df7d2d754c2b09183e1450118af086466038c11",
+    "blob": "a164518800a9a037d556975ea28a58636209d78e",
     "declarations": [
       [
         15,
@@ -1846,19 +1845,20 @@ const FINAL_ARCHIVE_DECLARATIONS = [
         "def digest_worker(): pass"
       ],
       [
-        114,
+        115,
         "def source_digest_worker(): pass"
       ],
       [
-        141,
+        142,
         "def run_owned(): pass"
       ],
       [
-        227,
+        228,
         "def main(): pass"
       ]
     ],
-    "anchorCount": 8
+    "anchorCount": 8,
+    "sourceCommit": "7f882d06a9e10950708d9e7c6a8b20ec57356304"
   },
   {
     "id": "m20-owned-fallback-image-cleanup",
@@ -1889,11 +1889,12 @@ const FINAL_ARCHIVE_DECLARATIONS = [
     "anchorCount": 1
   }
 ];
+
 for (const pinned of FINAL_ARCHIVE_DECLARATIONS) {
   test("final archive policy declaration retains review gap: " + pinned.id, () => {
     const rule = SOURCE_AUDIT_RULES.find(rule => rule.id === pinned.id);
     assert.ok(rule, "the inspected policy must be represented even without a lexical selector");
-    assert.equal(rule.sourceCommit, FINAL_ARCHIVE_SOURCE);
+    assert.equal(rule.sourceCommit, pinned.sourceCommit ?? FINAL_ARCHIVE_SOURCE);
     assert.equal(rule.path, pinned.path);
     assert.equal(rule.blob, pinned.blob);
     const lines = Array.from({ length: Math.max(...pinned.declarations.map(([line]) => line)) }, () => "");
@@ -1908,8 +1909,8 @@ for (const pinned of FINAL_ARCHIVE_DECLARATIONS) {
       assert.ok(manual.every(entry => entry.sourceClassification.independentDisposition === "pending"));
       assert.ok(!report.sourceAuditGaps.some(gap => gap.ruleId === pinned.id));
       if (pinned.id === "broker-build-duration-limit") {
-        assert.ok(manual.every(entry => entry.sourceClassification.classification.startsWith("unresolved_")));
-        assert.ok(manual.every(entry => entry.sourceClassification.openFindings.some(finding => finding.includes("1200"))));
+        assert.ok(manual.every(entry => entry.sourceClassification.classification === "shared_owned_operation_lifetime"));
+        assert.ok(manual.every(entry => entry.sourceClassification.openFindings.some(finding => finding.includes("independent changed-blob review"))));
       }
       assert.equal(report.status, "fail");
     });
@@ -1926,7 +1927,9 @@ for (const pinned of FINAL_ARCHIVE_DECLARATIONS) {
 
 // MP-11: frozen independent conclusions may bind only the reviewed source.
 test("MP-11 independent ledger covers each inspected scope without authorizing scope expansion", () => {
-  assert.equal(new Set(INDEPENDENT_REVIEW_GROUPS.map(group => group.ruleId)).size, SOURCE_AUDIT_RULES.length);
+  assert.equal(new Set(INDEPENDENT_REVIEW_GROUPS.map(group => group.ruleId)).size, 95);
+  assert.ok(INDEPENDENT_REVIEW_GROUPS.every(group => SOURCE_AUDIT_RULES.some(rule => rule.id === group.ruleId)));
+  assert.equal(SOURCE_AUDIT_RULES.length, 98);
   assert.equal(new Set(DEFAULT_SEMANTIC_DISPOSITIONS.map(review => review.id)).size, DEFAULT_SEMANTIC_DISPOSITIONS.length);
   const first = DEFAULT_SEMANTIC_DISPOSITIONS[0];
   assert.equal(evaluateSemanticDisposition(first.anchor, { commit: first.sourceCommit, tree: first.sourceTree }, DEFAULT_SEMANTIC_DISPOSITIONS).status, "reviewed");
@@ -1961,11 +1964,11 @@ test("MP-11 independent ledger covers each inspected scope without authorizing s
 });
 
 const MP11_NEW_RULE_EXCERPTS = {
-  "broker-runtime-output-budget": [[43, "const MAX_OUTPUT_BYTES = 4 * 1024 * 1024"], [1582, "async function execute(request) {"], [1679, "return spawnBounded(command, args, { env, maxBuffer: MAX_OUTPUT_BYTES }, false)"]],
-  "placement-selected-slice-sandbox-policy": [[125, "pub fn from_config(config: &DaemonConfig) -> Self {"], [140, "allow_provider_sandbox_compatibility: managed_docker_broker_configured()"]],
-  "broker-slice-resource-admission": [[434, "function validateProvisioner(action, environment, files) {"], [560, 'if (environment.CHARIOX_SLICE_DOCKER_CPUS) fail("CHARIOX_SLICE_DOCKER_CPUS is invalid")']],
+  "broker-runtime-output-budget": [[45, "const MAX_OUTPUT_BYTES = 64 * 1024"], [1590, "async function execute(request) {"], [1685, "return spawnBounded(command, args, { env, maxBuffer: MAX_OUTPUT_BYTES }, false)"]],
+  "placement-selected-slice-sandbox-policy": [[126, "pub fn from_config(config: &DaemonConfig) -> Self {"], [140, "allow_provider_sandbox_compatibility: managed_docker_broker_configured()"]],
+  "broker-slice-resource-admission": [[439, "function validateProvisioner(action, environment, files) {"], [565, 'if (environment.CHARIOX_SLICE_DOCKER_CPUS) fail("CHARIOX_SLICE_DOCKER_CPUS is invalid")']],
   "placement-selected-kernel-dumpability": [[126, "pub fn initialize() {"], [150, "if configured && !make_process_nondumpable() {"], [215, "fn make_process_nondumpable() -> bool {"], [216, "libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0)"]],
-  "broker-provisioner-environment-projection": [[341, "fn provisioner_environment(command: &Command) -> BTreeMap<String, String> {"], [346, 'if !name.starts_with("CHARIOX_SLICE_") {']],
+  "broker-provisioner-environment-projection": [[325, "pub(super) fn provisioner_environment(command: &Command) -> BTreeMap<String, String> {"], [330, 'if !name.starts_with("CHARIOX_SLICE_") {'], [599, 'fn local_command(&self) -> Command {']],
 };
 
 for (const [ruleId, excerpt] of Object.entries(MP11_NEW_RULE_EXCERPTS)) {
@@ -1989,3 +1992,22 @@ for (const [ruleId, excerpt] of Object.entries(MP11_NEW_RULE_EXCERPTS)) {
     }
   });
 }
+
+for (const [id, declaration] of [
+ ["shared-owned-broker-command", "export async function runBrokerCommand() {}"],
+ ["ordinary-pinned-archive-verify", "pub(super) fn digest() {}"],
+ ["common-slice-tuning-options", "pub(super) fn project() {}"],
+]) test(`MP-08 MP-11 new common responsibility scope ${id} stays independently unreviewed`, () => {
+ const rule=SOURCE_AUDIT_RULES.find(rule=>rule.id===id)
+ assert.ok(rule,"new runtime responsibility modules must retain an audit scope")
+ const source=declaration+"\n"
+ for(const blob of [rule.blob,"e".repeat(40)]) withFixture({}, fixture=>{
+  fixture.addFile(rule.path,source,"100644",blob)
+  const report=collect(fixture)
+  const candidates=report.entries.filter(entry=>entry.sourceClassification?.ruleId===id)
+  assert(candidates.length>0)
+  assert(candidates.every(entry=>entry.semanticDisposition.status==="unreviewed"))
+  assert(candidates.every(entry=>entry.sourceClassification.status===(blob===rule.blob?"source_inspected":"source_drift")))
+  assert.equal(report.status,"fail")
+ })
+})

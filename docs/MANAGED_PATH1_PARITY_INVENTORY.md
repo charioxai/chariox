@@ -53,10 +53,10 @@ Reviews for the other repository remain `pending_source_review` in each
 individual report; the three historical predicates still lack independent
 metadata. Both reports fail closed.
 
-### Open MP-08/MP-11 removal findings
+### MP-08/MP-11 frozen 686 removal findings
 
 Paths below are relative to `apps/kernel/` unless a full path is shown. These
-are reachable source differences; no ordinary-success/managed-failure live
+are reachable source differences on the frozen 686 source; no ordinary-success/managed-failure live
 regression is claimed. Signed deployment does not cover user slice builds,
 mutable archive verification, post-enrollment kernel discovery or diagnostics.
 
@@ -848,7 +848,7 @@ at its stale worker-source section matcher on unchanged frozen code; this lane
 has not claimed that adjacent suite green. No signed release, provider run,
 fresh-machine comparison, or MP acceptance was performed.
 
-### MP-08/MP-11 builder/engine decision blocker
+### MP-08/MP-11 historical builder/engine decision blocker
 
 The lane stopped on the builder/environment finding as requested. A retained
 policy regression executes the actual helper environment projection and is RED
@@ -873,3 +873,56 @@ scanner still retains all 95 scopes and passes 103/103 tests without skips.
 Client placement tests pass 7/7 and focused TypeScript type checking passes.
 The retained evidence distinguishes RED reproductions, corrected fixture/tool
 failures and GREEN results; none is relabeled as a signed 686 artifact run.
+
+
+## MP-08/MP-10/MP-11 parity2 source checkpoint (2026-10-01)
+
+Runtime checkpoint `3679fbb8bee37152fa694436297f558af2197d2c` on local
+`parity-mp08-mp11` implements the five remaining findings. Together with the
+preceding parity lane, all ten frozen source findings have source corrections.
+The preceding decision blocker is resolved by the owner's common slice-engine
+contract. Frozen independent reviews remain unchanged; no MP acceptance closes.
+
+| MP-08/MP-10/MP-11 correction | Local commit and retained verification |
+| --- | --- |
+| Common configured slice engine | `863d0cf7b46869754250ca752897894d640e86c3`, with raw-control follow-up `452ce8bb93d6071dac117d6d1d596699eda59184`. Both placements build with the default Buildx builder on the engine that will run the slice. Explicit ordinary `DOCKER_HOST` overrides caller context selection; managed placement pins the protected rootless socket. Caller builder/startup overrides are ignored with names-only diagnostics. Credential-helper environment survives user privilege drop. Engine and raw-control regressions failed first. |
+| Owned runtime/build lifetime | `bc84df292076c4e7888ac49c2108fbd3f7fd5655`. Shared process-group supervision replaces placement-selected 20/21-minute total deadlines and the 1,200-second build injection. All broker replies wait under operation ownership; request-write and shared per-step control bounds remain. Healthy and silent producers, cancellation and signal-resistant descendants are covered. |
+| Complete broker output | `5af72e584b59f5f3c182ad2eca7af90175f6e197`. Complete stdout/stderr stream to broker-private 0600 files in 0700 directories; only bounded 64 KiB tails cross each response stream. A real admitted synthetic broker command emits over 5 MiB successfully and its next request succeeds. No response shape changed. |
+| Pinned preverification cancellation | `15de142ffc20d0c0457d461f7fbaa4777b746848`, with obsolete stream-hasher removal `3679fbb8bee37152fa694436297f558af2197d2c`. Ordinary and managed hashing pass retained file descriptors into the same progress supervisor. Tests cover pinned-inode replacement, regular-file admission, actual syscall stalls before/after progress and healthy progress beyond the inactivity interval. User-space supervision cannot interrupt uninterruptible kernel I/O. |
+| Common inherited tuning | `b199e247afbf068fd0cb8f75a12211ac37b6fa18`. Typed capture projects documented pids, nofile and free-space reserve values explicitly into both adapters; matching broker admission validates numeric bounds. Defaults and nondefaults remain common. Other ambient variables and protected socket controls remain excluded. |
+
+MP-08/MP-10/MP-11 local verification: final Node affected suites pass 79/79,
+including the 19-test privileged extension-helper fixture, with no skips.
+The verified Rust artifact passes 181 slice-filtered parent tests; its ignored
+isolated broker child is explicitly executed by its passing parent. An earlier
+concurrent Rust run failed two existing timing assertions; its RED is retained.
+A retry reused another lane's shared Cargo artifact and is excluded from proof.
+The final run compiled this checkout with a distinct package debug profile,
+verified new test symbols, pinned its executable and recorded its SHA-256.
+
+MP-11 source rules retain all 95 historical scopes and add three responsibility
+modules, for 98 provisional scopes. Static declaration/drift tests pass 106/106.
+The actual runtime-source inventory has zero missing declaration/source gaps
+and remains RED: all 6,197 candidates lack independent disposition for this
+source identity. Frozen 686 semantic reviews cannot approve changed code.
+
+MP-08/MP-10/MP-11 runtime files changed since this lane's starting checkpoint:
+
+- `apps/kernel/src/slice/local_docker.rs`
+- `apps/kernel/src/slice/local_docker/broker.rs`
+- `apps/kernel/src/slice/local_docker/state.rs`
+- `apps/kernel/src/slice/local_docker/home_archive_verify.rs`
+- `apps/kernel/src/slice/local_docker/tuning.rs`
+- `apps/kernel/slice-linux-docker/managed-broker-command.mjs`
+- `apps/kernel/slice-linux-docker/managed-docker-broker.mjs`
+- `apps/kernel/slice-linux-docker/managed-extension-build.py`
+- `apps/kernel/slice-linux-docker/managed-home-archive-digest.mjs`
+- `apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh`
+- `apps/kernel/slice-linux-docker/slice-command-guard.py`
+
+MP-08/MP-10/MP-11 evidence is external under
+`/root/.codex/evidence/browser-resume-20260930/parity2/`, with commands,
+source/diff hashes, exit codes, resource samples and scoped cleanup receipts.
+No live slice, provider, signed release, Cloud staging change, deployment or
+GitHub action was performed. Independent review, a new signed aggregate
+artifact and ordinary-versus-Path-1 fresh-machine comparison remain pending.

@@ -8,25 +8,25 @@ const CLOUD_CURRENT = "06cd95fda1fc07f9dd37a12727f6ed4e5a4adeb2";
 export const SOURCE_AUDIT_RULES = Object.freeze([
   {
     "id": "broker-runtime-output-budget",
-    "sourceCommit": "7ada4504adaffe7a352ea0130c681dbf9230dde4",
+    "sourceCommit": "3679fbb8bee37152fa694436297f558af2197d2c",
     "path": "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
-    "blob": "519ac05c7ac7d92e308d441bf95fab26a2ea2467",
+    "blob": "ed76a2e5e296385a8917e26e0d266dd4863fe031",
     "ranges": [
       [
-        43,
-        43
+        45,
+        45
       ],
       [
-        1582,
-        1664
+        1590,
+        1672
       ],
       [
-        1679,
-        1679
+        1685,
+        1685
       ]
     ],
-    "classification": "open_managed_runtime_difference",
-    "rationale": "MP-08/MP-11: broker runtime commands buffer at most4MiB through spawnSync; ordinary provisioner output streams to kernel logs. Output volume can fail managed builds even when the ordinary command completes.",
+    "classification": "shared_streaming_output_with_private_broker_logs",
+    "rationale": "MP-08/MP-11: runtime commands use the common process-group owner, stream complete diagnostics to private logs and retain bounded response tails. Actual broker output above4MiB succeeds and a second request runs. Log files and directories are0600/0700; configured share roots own their log paths. No client protocol shape is changed.",
     "anchors": [
       [
         "kernel_slice_broker_control",
@@ -38,18 +38,18 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
       ]
     ],
     "openFindings": [
-      "MP-08/MP-11 removal required: Use shared streaming/log retention policy with bounded response summaries; exercise successful output above4MiB on both placements without buffering the full stream."
+      "MP-08/MP-10/MP-11 independent changed-blob review, signed aggregate artifacts, ordinary-versus-Path-1 fresh-machine comparison and cleanup remain pending."
     ]
   },
   {
     "id": "placement-selected-slice-sandbox-policy",
-    "sourceCommit": "7ada4504adaffe7a352ea0130c681dbf9230dde4",
+    "sourceCommit": "7f882d06a9e10950708d9e7c6a8b20ec57356304",
     "path": "apps/kernel/src/slice/local_docker.rs",
-    "blob": "7ae6cc5b83e1b6da6d4975d6ad2134b3c3ac4ea3",
+    "blob": "49ddff903e9c0682599bd5d8015ea6cba4142ebe",
     "ranges": [
       [
-        124,
-        154
+        126,
+        156
       ]
     ],
     "classification": "shared_explicit_slice_sandbox_policy",
@@ -66,17 +66,17 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
   },
   {
     "id": "broker-slice-resource-admission",
-    "sourceCommit": "7ada4504adaffe7a352ea0130c681dbf9230dde4",
+    "sourceCommit": "7f882d06a9e10950708d9e7c6a8b20ec57356304",
     "path": "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
-    "blob": "519ac05c7ac7d92e308d441bf95fab26a2ea2467",
+    "blob": "ed76a2e5e296385a8917e26e0d266dd4863fe031",
     "ranges": [
       [
-        434,
-        434
+        439,
+        439
       ],
       [
-        560,
-        562
+        565,
+        567
       ]
     ],
     "classification": "shared_docker_cpu_admission_policy",
@@ -93,9 +93,9 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
   },
   {
     "id": "placement-selected-kernel-dumpability",
-    "sourceCommit": "7ada4504adaffe7a352ea0130c681dbf9230dde4",
+    "sourceCommit": "7f882d06a9e10950708d9e7c6a8b20ec57356304",
     "path": "apps/kernel/src/slice/local_docker/broker.rs",
-    "blob": "d32ddedc3bf60fc3d1df03b438dae1e23732bdee",
+    "blob": "2a5ec0a4e08235e74bd5ac1f0ce36b1f73772772",
     "ranges": [
       [
         126,
@@ -124,36 +124,44 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
   },
   {
     "id": "broker-provisioner-environment-projection",
-    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "sourceCommit": "3679fbb8bee37152fa694436297f558af2197d2c",
     "path": "apps/kernel/src/slice/local_docker/broker.rs",
-    "blob": "125a471ee52b117481cf69fcf14a34859195bd59",
+    "blob": "2a5ec0a4e08235e74bd5ac1f0ce36b1f73772772",
     "ranges": [
       [
-        341,
-        362
+        325,
+        346
+      ],
+      [
+        599,
+        614
       ]
     ],
-    "classification": "open_managed_runtime_difference",
-    "rationale": "MP-08/MP-11: broker serializes only explicit Command environment overrides; ordinary commands also inherit environment. Documented pids/nofile/free-space tuning is neither explicitly projected by the kernel nor admitted by the broker.",
+    "classification": "shared_explicit_typed_slice_tuning",
+    "rationale": "MP-08/MP-11: common command construction snapshots documented inherited pids/nofile/free-space settings into typed numeric options and explicitly projects them to both ordinary execution and broker serialization. The broker admits these names with independent matching numeric bounds. Other ambient variables and protected engine controls remain excluded. MP-08/MP-11 raw ordinary controls clear DOCKER_CONTEXT when explicit DOCKER_HOST selects the same engine as builds.",
     "anchors": [
       [
         "kernel_slice_broker_control",
         "provisioner_environment"
+      ],
+      [
+        "kernel_slice_broker_control",
+        "local_command"
       ]
     ],
     "openFindings": [
-      "MP-08/MP-11 removal required: Move documented tuning into common typed options and project/admit the same values in both adapters; compare pids/nofile/free-space admission with nondefault settings."
+      "MP-08/MP-10/MP-11 independent changed-blob review, signed aggregate artifacts, ordinary-versus-Path-1 fresh-machine comparison and cleanup remain pending."
     ]
   },
   {
     "id": "shared-private-home-archive-dispatch",
-    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "sourceCommit": "7f882d06a9e10950708d9e7c6a8b20ec57356304",
     "path": "apps/kernel/src/slice/local_docker/state.rs",
-    "blob": "cb8d5f2d1439b00e0e9645f0ac1baabfe3e9bdd7",
+    "blob": "ebd3aebffc2efd0ecc8ed26d217bd51fee07d56d",
     "ranges": [
       [
-        916,
-        988
+        901,
+        973
       ]
     ],
     "classification": "shared_slice_private_archive_dispatch",
@@ -169,7 +177,7 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
       ]
     ],
     "openFindings": [
-      "Independent semantic disposition, credential-preserving live comparison and full MP01\u2013MP11 acceptance remain pending."
+      "Independent semantic disposition, credential-preserving live comparison and full MP01–MP11 acceptance remain pending."
     ]
   },
   {
@@ -202,13 +210,13 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
   },
   {
     "id": "managed-private-home-archive-publication",
-    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "sourceCommit": "7f882d06a9e10950708d9e7c6a8b20ec57356304",
     "path": "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
-    "blob": "d606e2c5ca6caa824d883c3a385f375101461160",
+    "blob": "ed76a2e5e296385a8917e26e0d266dd4863fe031",
     "ranges": [
       [
-        681,
-        849
+        695,
+        863
       ]
     ],
     "classification": "shared_slice_private_archive_publication",
@@ -236,8 +244,8 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
       ]
     ],
     "openFindings": [
-      "Verification cancellation differs: ordinary backup validation uses blocking filesystem hashing, while managed preverification uses asynchronous progress cancellation. OS-uninterruptible filesystem I/O cannot be settled by these user-space guards. This is unresolved source scope, not a reproduced ordinary-success/managed-failure regression or live-equivalence claim.",
-      "Independent semantic disposition, credential-preserving live comparison and full MP01\u2013MP11 acceptance remain pending."
+      "MP-08/MP-10/MP-11 independent changed-blob review, signed aggregate artifacts, ordinary-versus-Path-1 fresh-machine comparison and cleanup remain pending.",
+      "Independent semantic disposition, credential-preserving live comparison and full MP01–MP11 acceptance remain pending."
     ]
   },
   {
@@ -539,7 +547,8 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
     "openFindings": [
       "Independent exact-blob disposition and MP-10 fresh-machine comparison pending."
     ]
-  }, {
+  },
+  {
     "id": "shared-provider-utility-capture-budget",
     "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
     "path": "apps/kernel/src/local/provider_requests/catalog/probe_capture.rs",
@@ -911,18 +920,21 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
   },
   {
     "id": "slice-provisioned-canonical-and-display-identity",
-    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "sourceCommit": "7f882d06a9e10950708d9e7c6a8b20ec57356304",
     "path": "apps/kernel/src/slice/local_docker.rs",
-    "blob": "7a9b862181d42ac5a987903700818c31a45b55e1",
+    "blob": "49ddff903e9c0682599bd5d8015ea6cba4142ebe",
     "ranges": [
-      [365, 368],
       [
-        1067,
-        1147
+        368,
+        378
       ],
       [
-        1194,
-        1196
+        1077,
+        1161
+      ],
+      [
+        1208,
+        1210
       ]
     ],
     "classification": "shared_slice_identity_projection",
@@ -963,17 +975,17 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
   },
   {
     "id": "slice-provisioner-container-identity-forwarding",
-    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "sourceCommit": "7f882d06a9e10950708d9e7c6a8b20ec57356304",
     "path": "apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh",
-    "blob": "de2d0c0cee1fc054d719e4c06a3bd80e452943f6",
+    "blob": "8b08b094f119638442dff57f0cce1235393c1358",
     "ranges": [
       [
-        113,
-        116
+        133,
+        136
       ],
       [
-        1120,
-        1203
+        1131,
+        1214
       ]
     ],
     "classification": "shared_inner_slice_bootstrap_projection",
@@ -990,21 +1002,21 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
   },
   {
     "id": "path1-broker-prepared-image-admission",
-    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "sourceCommit": "7f882d06a9e10950708d9e7c6a8b20ec57356304",
     "path": "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
-    "blob": "d606e2c5ca6caa824d883c3a385f375101461160",
+    "blob": "ed76a2e5e296385a8917e26e0d266dd4863fe031",
     "ranges": [
       [
-        115,
-        164
+        118,
+        170
       ],
       [
-        330,
-        431
+        336,
+        437
       ],
       [
-        433,
-        546
+        439,
+        552
       ]
     ],
     "classification": "shared_slice_image_operand_admission",
@@ -1252,17 +1264,17 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
   },
   {
     "id": "path1-pinned-user-extension-helper",
-    "sourceCommit": "7ada4504adaffe7a352ea0130c681dbf9230dde4",
+    "sourceCommit": "7f882d06a9e10950708d9e7c6a8b20ec57356304",
     "path": "apps/kernel/slice-linux-docker/managed-extension-build.py",
-    "blob": "22d027168dc10dcce770eae3e9ccdef352401097",
+    "blob": "0d1835584a363cd618a3b79db0b049e54dfa4e05",
     "ranges": [
       [
         1,
-        520
+        523
       ]
     ],
     "classification": "path1_extension_build_adapter",
-    "rationale": "MP-03/MP-08/MP-11: Caller/source/cwd/socket pins, UID and capability drop, and caller-bound PID namespaces remain. Build stdout/stderr now stream completely in fixed-memory chunks to private kernel logs; no output-volume failure or discard budget remains. Builder/endpoint/startup environment selection remains an open independent removal finding. Frozen semantic conclusions do not approve this changed blob.",
+    "rationale": "MP-03/MP-08/MP-11: Caller/source/cwd/socket pins, UID and capability drop, and caller-bound PID namespaces remain. Build stdout/stderr now stream completely in fixed-memory chunks to private kernel logs; no output-volume failure or discard budget remains. Frozen semantic conclusions do not approve this changed blob. MP-08/MP-11 coordinator engine contract: caller endpoint/builder/startup overrides are ignored with names-only diagnostics; protected rootless socket remains pinned and arbitrary credential-helper settings survive UID drop.",
     "anchors": [
       [
         "managed_only_branch",
@@ -1330,25 +1342,26 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
       ]
     ],
     "openFindings": [
-      "MP-08/MP-11 builder/environment selection remains removal-required; independent changed-blob review and MP-10 live comparison pending."
+      "MP-08/MP-10/MP-11 independent changed-blob review, signed aggregate artifacts, ordinary-versus-Path-1 fresh-machine comparison and cleanup remain pending."
     ]
-  }, {
+  },
+  {
     "id": "shared-provisioner-extension-cache-and-build",
-    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "sourceCommit": "7f882d06a9e10950708d9e7c6a8b20ec57356304",
     "path": "apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh",
-    "blob": "de2d0c0cee1fc054d719e4c06a3bd80e452943f6",
+    "blob": "8b08b094f119638442dff57f0cce1235393c1358",
     "ranges": [
       [
-        654,
-        811
+        676,
+        822
       ],
       [
-        1627,
-        1654
+        1638,
+        1665
       ]
     ],
     "classification": "shared_slice_image_build_policy",
-    "rationale": "The common build_image path preserves cache/saved-image decisions before check-only exit42 and before opening user extension context. The pinned helper socket selects the local default builder; ordinary Docker selection remains. Actual builds use the shared owned command guard with no total deadline unless the broker alone injects its trusted1200-second child marker. The internal build-image action invokes existing admission/build without container provisioning; recover does not build.",
+    "rationale": "The common build_image path preserves cache/saved-image decisions before check-only exit42 and before opening user extension context. The pinned helper socket selects the local default builder; ordinary Docker selection remains. Actual builds use the shared owned command guard with no total deadline unless the broker alone injects its trusted1200-second child marker. The internal build-image action invokes existing admission/build without container provisioning; recover does not build. MP-08/MP-11: ordinary and managed Buildx use the default builder on the configured slice engine; caller builder/host/startup overrides cannot redirect image production.",
     "anchors": [
       [
         "client_projection",
@@ -1380,8 +1393,8 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
       ]
     ],
     "openFindings": [
-      "Broker child builds retain an internal1200-second deadline, and nonarchive broker execution retains its20-minute outer command deadline. Ordinary and signed-helper extension builds use an owned unbounded wait. This is an outstanding MP08/MP10/MP11 runtime parity limit, not the signed host-release deployment exception; no long-build live comparison is claimed.",
-      "Independent semantic disposition, credential-preserving live comparison and full MP01\u2013MP11 acceptance remain pending."
+      "MP-08/MP-10/MP-11 independent changed-blob review, signed aggregate artifacts, ordinary-versus-Path-1 fresh-machine comparison and cleanup remain pending.",
+      "Independent semantic disposition, credential-preserving live comparison and full MP01–MP11 acceptance remain pending."
     ]
   },
   {
@@ -1409,17 +1422,17 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
   },
   {
     "id": "managed-home-archive-digest-policy",
-    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "sourceCommit": "3679fbb8bee37152fa694436297f558af2197d2c",
     "path": "apps/kernel/slice-linux-docker/managed-home-archive-digest.mjs",
-    "blob": "9d4e017f5f03fb2a4bd57994d7c203d003913239",
+    "blob": "8ac3933cf9b9d4ade377fb9b8e7857c40ce8488d",
     "ranges": [
       [
         1,
-        39
+        38
       ]
     ],
-    "classification": "managed_archive_verification_progress",
-    "rationale": "Pinned Linux archive verification reopens the retained inode into a separately owned64 KiB read stream, hashes incrementally and resets the shared inactivity timer on nonempty chunks. Failure destroys its stream while the caller retains archive/generation pins. It adds no total size/duration cap; cancellation and OS I/O limitations remain explicit.",
+    "classification": "shared_pinned_preverification_supervisor",
+    "rationale": "MP-08/MP-10/MP-11: broker preverification passes the retained archive descriptor as stdin to the same process supervisor as ordinary hashing. It preserves the caller descriptor, validates a bounded digest reply, uses the shared inactivity policy and settles before failure. Actual syscall-stall and pinned-inode replacement fixtures pass; kernel lease cancellation uses the same supervisor.",
     "anchors": [
       [
         "cleanup_selector",
@@ -1427,16 +1440,11 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
       ],
       [
         "cleanup_selector",
-        "digestHomeArchiveStream"
-      ],
-      [
-        "cleanup_selector",
         "validateProgressTimeout"
       ]
     ],
     "openFindings": [
-      "Verification cancellation differs: ordinary backup validation uses blocking filesystem hashing, while managed preverification uses asynchronous progress cancellation. OS-uninterruptible filesystem I/O cannot be settled by these user-space guards. This is unresolved source scope, not a reproduced ordinary-success/managed-failure regression or live-equivalence claim.",
-      "Independent semantic disposition, credential-preserving live comparison and full MP01\u2013MP11 acceptance remain pending."
+      "MP-08/MP-10/MP-11 independent changed-blob review, signed aggregate artifacts, ordinary-versus-Path-1 fresh-machine comparison and cleanup remain pending."
     ]
   },
   {
@@ -1472,21 +1480,21 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
   },
   {
     "id": "home-archive-broker-response-lifetime",
-    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "sourceCommit": "3679fbb8bee37152fa694436297f558af2197d2c",
     "path": "apps/kernel/src/slice/local_docker/broker.rs",
-    "blob": "125a471ee52b117481cf69fcf14a34859195bd59",
+    "blob": "2a5ec0a4e08235e74bd5ac1f0ce36b1f73772772",
     "ranges": [
       [
-        206,
-        210
+        208,
+        212
       ],
       [
-        249,
-        333
+        251,
+        317
       ]
     ],
-    "classification": "managed_archive_response_lifetime_adapter",
-    "rationale": "While retaining the shared broker mutex and finite frame/write bounds, only archive capture/verify or provision/restore-state carrying a nonempty saved archive disable the response read timeout. The exact previous read timeout is restored on success and errors; other requests retain21 minutes. Producer/hash progress guards must settle their work so the global broker connection remains usable; this transport exemption alone is not recovery proof.",
+    "classification": "shared_owned_operation_response_lifetime",
+    "rationale": "MP-08/MP-10/MP-11: all broker response waits have no placement-selected total deadline. Request writes retain a30-second transport bound. The caller read state is restored on success and decode failures; ownership/cancellation is enforced at the broker producer. Archive and nonarchive delayed responses are tested.",
     "anchors": [
       [
         "kernel_slice_broker_control",
@@ -1498,8 +1506,7 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
       ]
     ],
     "openFindings": [
-      "Verification cancellation differs: ordinary backup validation uses blocking filesystem hashing, while managed preverification uses asynchronous progress cancellation. OS-uninterruptible filesystem I/O cannot be settled by these user-space guards. This is unresolved source scope, not a reproduced ordinary-success/managed-failure regression or live-equivalence claim.",
-      "Independent semantic disposition, credential-preserving live comparison and full MP01\u2013MP11 acceptance remain pending."
+      "MP-08/MP-10/MP-11 independent changed-blob review, signed aggregate artifacts, ordinary-versus-Path-1 fresh-machine comparison and cleanup remain pending."
     ]
   },
   {
@@ -1578,21 +1585,21 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
   },
   {
     "id": "ordinary-backup-verification-cancellation-scope",
-    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "sourceCommit": "3679fbb8bee37152fa694436297f558af2197d2c",
     "path": "apps/kernel/src/slice/local_docker/state.rs",
-    "blob": "cb8d5f2d1439b00e0e9645f0ac1baabfe3e9bdd7",
+    "blob": "ebd3aebffc2efd0ecc8ed26d217bd51fee07d56d",
     "ranges": [
       [
         178,
-        279
+        264
       ],
       [
-        990,
-        1003
+        975,
+        977
       ]
     ],
-    "classification": "unresolved_archive_verification_cancellation_scope",
-    "rationale": "Backup integrity validates durable record/manifest, then chooses broker verification or ordinary regular-file metadata plus blocking File open/io::copy hashing before image identity admission. The ordinary hash has no progress-cancellation supervisor. This scoped rule exposes the reachable source asymmetry without calling it an observed runtime regression.",
+    "classification": "shared_pinned_preverification_supervisor",
+    "rationale": "MP-08/MP-10/MP-11: ordinary preverification delegates a retained regular-file descriptor to the same Python progress/cancellation supervisor as the broker. Size/digest derive from the opened inode and metadata is checked after hashing. Both placements use the packaged inactivity policy,64KiB reads, parent-death supervision and owned process settlement. Stalled reads before/after progress are tested; uninterruptible OS I/O cannot be made cancellable in user space.",
     "anchors": [
       [
         "cleanup_selector",
@@ -1604,35 +1611,34 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
       ]
     ],
     "openFindings": [
-      "Verification cancellation differs: ordinary backup validation uses blocking filesystem hashing, while managed preverification uses asynchronous progress cancellation. OS-uninterruptible filesystem I/O cannot be settled by these user-space guards. This is unresolved source scope, not a reproduced ordinary-success/managed-failure regression or live-equivalence claim.",
-      "Independent semantic disposition, credential-preserving live comparison and full MP01\u2013MP11 acceptance remain pending."
+      "MP-08/MP-10/MP-11 independent changed-blob review, signed aggregate artifacts, ordinary-versus-Path-1 fresh-machine comparison and cleanup remain pending."
     ]
   },
   {
     "id": "shared-provisioner-command-ownership",
-    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "sourceCommit": "7f882d06a9e10950708d9e7c6a8b20ec57356304",
     "path": "apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh",
-    "blob": "de2d0c0cee1fc054d719e4c06a3bd80e452943f6",
+    "blob": "8b08b094f119638442dff57f0cce1235393c1358",
     "ranges": [
       [
-        9,
-        21
+        1,
+        41
       ],
       [
-        182,
-        219
+        202,
+        239
       ],
       [
-        256,
-        273
+        276,
+        293
       ],
       [
-        1585,
-        1625
+        1596,
+        1636
       ]
     ],
     "classification": "shared_slice_control_process_policy",
-    "rationale": "Ordinary and broker-backed noninteractive Docker controls use the same Python-owned command wrapper; interactive login retains its TTY. Named explicit commands select the executable/optional helper socket without a login-shell fallback. Stop/destroy require successful inventories before absence classification, and volume absence is accepted only for exact requested single diagnostics. Shared control deadlines do not establish complete cross-placement parity.",
+    "rationale": "Ordinary and broker-backed noninteractive Docker controls use the same Python-owned command wrapper; interactive login retains its TTY. Named explicit commands select the executable/optional helper socket without a login-shell fallback. Stop/destroy require successful inventories before absence classification, and volume absence is accepted only for exact requested single diagnostics. Shared control deadlines do not establish complete cross-placement parity. MP-08/MP-11: privileged Bash startup ignores ambient hooks; image builds use the configured slice engine, default builder and explicit endpoint selection with names-only override diagnostics.",
     "anchors": [
       [
         "cleanup_selector",
@@ -1664,19 +1670,19 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
       ]
     ],
     "openFindings": [
-      "Broker child builds retain an internal1200-second deadline, and nonarchive broker execution retains its20-minute outer command deadline. Ordinary and signed-helper extension builds use an owned unbounded wait. This is an outstanding MP08/MP10/MP11 runtime parity limit, not the signed host-release deployment exception; no long-build live comparison is claimed.",
-      "Independent semantic disposition, credential-preserving live comparison and full MP01\u2013MP11 acceptance remain pending."
+      "MP-08/MP-10/MP-11 independent changed-blob review, signed aggregate artifacts, ordinary-versus-Path-1 fresh-machine comparison and cleanup remain pending.",
+      "Independent semantic disposition, credential-preserving live comparison and full MP01–MP11 acceptance remain pending."
     ]
   },
   {
     "id": "shared-saved-home-restore-stream-and-identity",
-    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "sourceCommit": "7f882d06a9e10950708d9e7c6a8b20ec57356304",
     "path": "apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh",
-    "blob": "de2d0c0cee1fc054d719e4c06a3bd80e452943f6",
+    "blob": "8b08b094f119638442dff57f0cce1235393c1358",
     "ranges": [
       [
-        274,
-        383
+        294,
+        403
       ]
     ],
     "classification": "shared_slice_private_archive_restore",
@@ -1696,27 +1702,27 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
       ]
     ],
     "openFindings": [
-      "Verification cancellation differs: ordinary backup validation uses blocking filesystem hashing, while managed preverification uses asynchronous progress cancellation. OS-uninterruptible filesystem I/O cannot be settled by these user-space guards. This is unresolved source scope, not a reproduced ordinary-success/managed-failure regression or live-equivalence claim.",
-      "Independent semantic disposition, credential-preserving live comparison and full MP01\u2013MP11 acceptance remain pending."
+      "MP-08/MP-10/MP-11 independent changed-blob review, signed aggregate artifacts, ordinary-versus-Path-1 fresh-machine comparison and cleanup remain pending.",
+      "Independent semantic disposition, credential-preserving live comparison and full MP01–MP11 acceptance remain pending."
     ]
   },
   {
     "id": "broker-control-settlement",
-    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "sourceCommit": "7f882d06a9e10950708d9e7c6a8b20ec57356304",
     "path": "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
-    "blob": "d606e2c5ca6caa824d883c3a385f375101461160",
+    "blob": "ed76a2e5e296385a8917e26e0d266dd4863fe031",
     "ranges": [
       [
-        897,
-        966
+        911,
+        980
       ],
       [
-        1234,
-        1250
+        1248,
+        1264
       ],
       [
-        1377,
-        1392
+        1391,
+        1406
       ]
     ],
     "classification": "managed_slice_control_process_adapter",
@@ -1748,26 +1754,26 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
       ]
     ],
     "openFindings": [
-      "Independent semantic disposition, credential-preserving live comparison and full MP01\u2013MP11 acceptance remain pending."
+      "Independent semantic disposition, credential-preserving live comparison and full MP01–MP11 acceptance remain pending."
     ]
   },
   {
     "id": "broker-build-duration-limit",
-    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "sourceCommit": "3679fbb8bee37152fa694436297f558af2197d2c",
     "path": "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
-    "blob": "d606e2c5ca6caa824d883c3a385f375101461160",
+    "blob": "ed76a2e5e296385a8917e26e0d266dd4863fe031",
     "ranges": [
       [
-        1549,
-        1561
+        1563,
+        1570
       ],
       [
-        1664,
-        1678
+        1673,
+        1685
       ]
     ],
-    "classification": "unresolved_managed_slice_build_duration_policy",
-    "rationale": "Saved-home restore bypasses the broker outer total deadline while shared per-step guards remain. Other requests retain a20-minute wrapper, and broker-created provisioner environment injects internal1200-second actual-build timeout after request environment. That selector is not admitted from caller fields. Healthy ordinary/signed-helper extension builds retain an owned unbounded wait.",
+    "classification": "shared_owned_operation_lifetime",
+    "rationale": "MP-08/MP-10/MP-11: no placement-selected20/21-minute total command cap or1200-second build injection remains. Broker commands use the same Python process-group owner as ordinary provisioning; lease close cancels producers before prepared handles are released. Healthy and silent producers and signal-resistant descendants are covered locally; per-step control deadlines remain shared.",
     "anchors": [
       [
         "kernel_slice_broker_control",
@@ -1775,19 +1781,18 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
       ]
     ],
     "openFindings": [
-      "Broker child builds retain an internal1200-second deadline, and nonarchive broker execution retains its20-minute outer command deadline. Ordinary and signed-helper extension builds use an owned unbounded wait. This is an outstanding MP08/MP10/MP11 runtime parity limit, not the signed host-release deployment exception; no long-build live comparison is claimed.",
-      "Independent semantic disposition, credential-preserving live comparison and full MP01\u2013MP11 acceptance remain pending."
+      "MP-08/MP-10/MP-11 independent changed-blob review, signed aggregate artifacts, ordinary-versus-Path-1 fresh-machine comparison and cleanup remain pending."
     ]
   },
   {
     "id": "shared-provisioner-command-guard",
-    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "sourceCommit": "7f882d06a9e10950708d9e7c6a8b20ec57356304",
     "path": "apps/kernel/slice-linux-docker/slice-command-guard.py",
-    "blob": "4df7d2d754c2b09183e1450118af086466038c11",
+    "blob": "a164518800a9a037d556975ea28a58636209d78e",
     "ranges": [
       [
         1,
-        256
+        262
       ]
     ],
     "classification": "shared_slice_control_and_digest_progress_policy",
@@ -1827,8 +1832,8 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
       ]
     ],
     "openFindings": [
-      "Verification cancellation differs: ordinary backup validation uses blocking filesystem hashing, while managed preverification uses asynchronous progress cancellation. OS-uninterruptible filesystem I/O cannot be settled by these user-space guards. This is unresolved source scope, not a reproduced ordinary-success/managed-failure regression or live-equivalence claim.",
-      "Independent semantic disposition, credential-preserving live comparison and full MP01\u2013MP11 acceptance remain pending."
+      "MP-08/MP-10/MP-11 independent changed-blob review, signed aggregate artifacts, ordinary-versus-Path-1 fresh-machine comparison and cleanup remain pending.",
+      "Independent semantic disposition, credential-preserving live comparison and full MP01–MP11 acceptance remain pending."
     ]
   },
   {
@@ -1879,6 +1884,75 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
     ],
     "openFindings": [
       "Independent semantic disposition, credential-preserving live comparison and full MP01\u2013MP11 acceptance remain pending."
+    ]
+  },
+  {
+    "id": "shared-owned-broker-command",
+    "sourceCommit": "3679fbb8bee37152fa694436297f558af2197d2c",
+    "path": "apps/kernel/slice-linux-docker/managed-broker-command.mjs",
+    "blob": "00e377629d5343a013bee83044192dffbaff27ac",
+    "ranges": [
+      [
+        1,
+        55
+      ]
+    ],
+    "classification": "shared_owned_streaming_command",
+    "rationale": "MP-08/MP-10/MP-11: common Python owner supervises broker runtime/build producers without a total deadline, settles cancellation, writes complete private logs and bounds only the response tail. Real output and cancellation regressions pass; this observation is not acceptance.",
+    "anchors": [
+      [
+        "kernel_slice_broker_control",
+        "runBrokerCommand"
+      ]
+    ],
+    "openFindings": [
+      "MP-08/MP-10/MP-11 independent changed-blob review, signed aggregate artifacts and fresh-machine comparison remain pending."
+    ]
+  },
+  {
+    "id": "ordinary-pinned-archive-verify",
+    "sourceCommit": "3679fbb8bee37152fa694436297f558af2197d2c",
+    "path": "apps/kernel/src/slice/local_docker/home_archive_verify.rs",
+    "blob": "383df4fa45fd7a67fdd571650cde463f29ac8440",
+    "ranges": [
+      [
+        1,
+        101
+      ]
+    ],
+    "classification": "shared_pinned_preverification_supervisor",
+    "rationale": "MP-08/MP-10/MP-11: ordinary archive hashing pins a regular file and delegates its retained descriptor to the shared progress supervisor, with before/after metadata checks. This scope retains cancellation and inode identity review obligations.",
+    "anchors": [
+      [
+        "cleanup_selector",
+        "digest"
+      ]
+    ],
+    "openFindings": [
+      "MP-08/MP-10/MP-11 independent changed-blob review, signed aggregate artifacts and fresh-machine comparison remain pending."
+    ]
+  },
+  {
+    "id": "common-slice-tuning-options",
+    "sourceCommit": "3679fbb8bee37152fa694436297f558af2197d2c",
+    "path": "apps/kernel/src/slice/local_docker/tuning.rs",
+    "blob": "15db8bf32b354e16834c6075556f1049a1a44714",
+    "ranges": [
+      [
+        1,
+        69
+      ]
+    ],
+    "classification": "shared_explicit_typed_slice_tuning",
+    "rationale": "MP-08/MP-11: common typed option capture validates inherited pids/nofile/free-space settings and explicitly projects them for ordinary commands and broker request serialization. Protected engine and broker controls are never admitted as inherited tuning.",
+    "anchors": [
+      [
+        "kernel_slice_broker_control",
+        "project"
+      ]
+    ],
+    "openFindings": [
+      "MP-08/MP-10/MP-11 independent changed-blob review, signed aggregate artifacts and fresh-machine comparison remain pending."
     ]
   },
 ]);
