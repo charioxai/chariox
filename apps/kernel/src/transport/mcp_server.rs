@@ -2,7 +2,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
+use http_body_util::{combinators::UnsyncBoxBody, BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::header::{AUTHORIZATION, CONTENT_TYPE, ORIGIN};
 use hyper::server::conn::http1;
@@ -18,7 +18,13 @@ use crate::runtime::router::CommandRouter;
 const DEFAULT_PROTOCOL_VERSION: &str = "2025-03-26";
 const JSON_RPC_VERSION: &str = "2.0";
 
-type HttpBody = Full<Bytes>;
+type HttpBody = UnsyncBoxBody<Bytes, Infallible>;
+
+mod catalog;
+
+pub(crate) fn catalog_changed() {
+    catalog::changed();
+}
 
 pub(crate) async fn bind_mcp_http_server(
     router: &CommandRouter,
@@ -103,7 +109,7 @@ async fn handle_http_request_inner(
     }
 
     match *request.method() {
-        Method::GET => Ok(empty_response(StatusCode::METHOD_NOT_ALLOWED)),
+        Method::GET => Ok(catalog::stream_response(router, request.headers())),
         Method::POST => handle_json_rpc_request(router, request).await,
         Method::DELETE => Ok(empty_response(StatusCode::METHOD_NOT_ALLOWED)),
         _ => Ok(empty_response(StatusCode::METHOD_NOT_ALLOWED)),
@@ -222,6 +228,7 @@ async fn handle_json_rpc_value(
                 .get("params")
                 .and_then(|params| params.get("protocolVersion"))
                 .and_then(Value::as_str)
+                .filter(|version| matches!(*version, "2025-03-26" | "2025-06-18" | "2025-11-25"))
                 .unwrap_or(DEFAULT_PROTOCOL_VERSION);
             Ok(json_response(
                 StatusCode::OK,
@@ -232,7 +239,7 @@ async fn handle_json_rpc_value(
                         "protocolVersion": protocol_version,
                         "capabilities": {
                             "tools": {
-                                "listChanged": false
+                                "listChanged": true
                             },
                             "resources": {
                                 "subscribe": false,
@@ -307,14 +314,15 @@ async fn handle_json_rpc_value(
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| serde_json::json!({}));
+            let previous_catalog = catalog::snapshot(&router, auth_token);
             let result = router
                 .dispatch_authenticated_runtime_tool_call(auth_token, tool_name, arguments)
                 .await;
             match result {
                 Ok(result) => {
                     let (content, structured_content) = runtime_tool_content(result.payload);
-                    Ok(json_response(
-                        StatusCode::OK,
+                    Ok(catalog::tool_response(
+                        previous_catalog != catalog::snapshot(&router, auth_token),
                         serde_json::json!({
                             "jsonrpc": JSON_RPC_VERSION,
                             "id": id,
@@ -375,16 +383,16 @@ fn parse_bearer_token(headers: &hyper::HeaderMap) -> Option<String> {
 fn empty_response(status: StatusCode) -> Response<HttpBody> {
     Response::builder()
         .status(status)
-        .body(Full::new(Bytes::new()))
-        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new())))
+        .body(Full::new(Bytes::new()).boxed_unsync())
+        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new()).boxed_unsync()))
 }
 
 fn text_response(status: StatusCode, body: String) -> Response<HttpBody> {
     Response::builder()
         .status(status)
         .header(CONTENT_TYPE, "text/plain; charset=utf-8")
-        .body(Full::new(Bytes::from(body)))
-        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new())))
+        .body(Full::new(Bytes::from(body)).boxed_unsync())
+        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new()).boxed_unsync()))
 }
 
 fn json_response(status: StatusCode, value: Value) -> Response<HttpBody> {
@@ -392,8 +400,8 @@ fn json_response(status: StatusCode, value: Value) -> Response<HttpBody> {
     Response::builder()
         .status(status)
         .header(CONTENT_TYPE, "application/json")
-        .body(Full::new(Bytes::from(body)))
-        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new())))
+        .body(Full::new(Bytes::from(body)).boxed_unsync())
+        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new()).boxed_unsync()))
 }
 
 fn json_rpc_error_response(id: Option<Value>, code: i64, message: &str) -> Response<HttpBody> {

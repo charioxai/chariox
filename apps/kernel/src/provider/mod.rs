@@ -209,6 +209,12 @@ pub(crate) fn provider_run_waits_for_workflow_publication_completion(
     matches!(run.adapter_key(), "codex" | "claude")
 }
 
+// OpenCode's official MCP handler refreshes definitions on list_changed.
+// Codex currently only logs it; unverified providers use the resume fallback.
+pub(crate) fn provider_runtime_catalog_requires_reload(provider: &str) -> bool {
+    !matches!(canonical_provider_family(provider), Some("opencode")) && provider != "dev-stub"
+}
+
 pub(crate) fn provider_run_reuses_run_for_mcp_continuation_reload(
     run: &RuntimeProviderRun,
 ) -> bool {
@@ -413,6 +419,18 @@ mod tests {
         assert!(!provider_run_waits_for_workflow_publication_completion(
             &opencode
         ));
+    }
+
+    #[test]
+    fn runtime_catalog_refresh_uses_official_provider_policy() {
+        assert!(!super::provider_runtime_catalog_requires_reload("opencode"));
+        assert!(!super::provider_runtime_catalog_requires_reload("dev-stub"));
+        for provider in ["codex", "claude", "claude-headless", "unknown"] {
+            assert!(
+                super::provider_runtime_catalog_requires_reload(provider),
+                "MP-08/MP-10 {provider} must use the documented resume fallback"
+            );
+        }
     }
 
     #[test]

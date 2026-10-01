@@ -499,6 +499,7 @@ impl ProviderProcessService {
     ) -> Result<RuntimeProviderRun, DaemonError> {
         let run = self.get_run_mut(run_id)?;
         run.set_remote_extension_manifest(manifest);
+        crate::transport::mcp_server::catalog_changed();
         Ok(run.clone())
     }
 
@@ -513,6 +514,7 @@ impl ProviderProcessService {
             return Ok(None);
         }
         run.set_remote_extension_manifest(manifest);
+        crate::transport::mcp_server::catalog_changed();
         Ok(Some(run.clone()))
     }
 

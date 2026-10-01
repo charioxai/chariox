@@ -37,6 +37,7 @@ pub(super) struct PendingProviderReload {
     pub(super) session_id: String,
     pub(super) agent_id: String,
     pub(super) reason: String,
+    pub(super) force_catalog_reload: bool,
 }
 
 #[derive(Debug, Clone, Default)]

@@ -112,7 +112,7 @@ impl KernelRuntimeState {
                         "authority": if remote_home_proxy { "home" } else { "worker" },
                         "definition_origin": active_definition_origin,
                         "execution_location": active_execution_location,
-                        "effective_when_requested": "now",
+                        "effective_when_requested": self.runtime_catalog_grant_effect(agent, granted).0,
                         "ready_state": if granted { "ready" } else { "available" }
                     })
                 })
@@ -162,7 +162,7 @@ impl KernelRuntimeState {
                         "execution_location": active_execution_location,
                         "max_safety": grant.as_ref().and_then(|grant| grant.max_safety.clone()).unwrap_or_else(|| "read".to_string()),
                         "operations": operations,
-                        "effective_when_requested": "now",
+                        "effective_when_requested": self.runtime_catalog_grant_effect(agent, granted).0,
                         "ready_state": if grant.is_some() { "ready" } else { "available" }
                     })
                 })

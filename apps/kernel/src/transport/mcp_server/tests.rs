@@ -34,15 +34,23 @@ where
         .expect("mcp server test thread should not panic");
 }
 
+mod catalog_changes;
 mod slice_tools;
 
 #[tokio::test]
 async fn mcp_initialize_and_tools_list_return_runtime_tools() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let workspace = std::env::temp_dir().join(format!(
+        "chariox-mcp-tools-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&workspace).unwrap();
+    let _cleanup = catalog_changes::Scratch(workspace.clone());
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new(
-            "mcp-workflow-tools-workspace",
-            "mcp-workflow-tools-worktree",
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
         ))
         .expect("session should be created");
     let run = app
@@ -93,6 +101,11 @@ async fn mcp_initialize_and_tools_list_return_runtime_tools() {
     assert_eq!(
         initialize_value["result"]["serverInfo"]["name"],
         "chariox-runtime"
+    );
+
+    assert_eq!(
+        initialize_value["result"]["capabilities"]["tools"]["listChanged"], true,
+        "MP-08/MP-10 providers must be told the tool catalog can change"
     );
 
     let tools_list = handle_json_rpc_value(
@@ -950,4 +963,25 @@ async fn mcp_tools_call_rejects_invalid_auth_token() {
         .to_bytes();
     let value: Value = serde_json::from_slice(&body).expect("body should be json");
     assert_eq!(value["error"]["code"], -32000);
+}
+
+#[tokio::test]
+async fn mcp_get_catalog_stream_requires_running_agent_auth() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap(),
+    ));
+    let router = Arc::new(CommandRouter::with_interactive_capacity(app, 8));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(super::run_mcp_http_server_on_listener(router, listener));
+    let mut socket = tokio::net::TcpStream::connect(address).await.unwrap();
+    socket.write_all(b"GET /mcp HTTP/1.1\r\nHost: localhost\r\nAccept: text/event-stream\r\nAuthorization: Bearer invalid\r\nConnection: close\r\n\r\n").await.unwrap();
+    let mut response = String::new();
+    socket.read_to_string(&mut response).await.unwrap();
+    server.abort();
+    assert!(
+        response.starts_with("HTTP/1.1 401"),
+        "MP-08/MP-10 catalog stream must authenticate: {response}"
+    );
 }

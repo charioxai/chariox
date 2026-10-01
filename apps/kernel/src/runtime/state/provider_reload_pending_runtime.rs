@@ -9,14 +9,44 @@ impl KernelRuntimeState {
         agent_id: &str,
         reason: &str,
     ) {
-        self.owned.pending_provider_reloads.write().insert(
+        self.remember_pending_provider_reload_inner(session_id, agent_id, reason, false);
+    }
+
+    pub(super) fn remember_pending_provider_catalog_reload(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) {
+        self.remember_pending_provider_reload_inner(
+            session_id,
+            agent_id,
+            "runtime tool catalog",
+            true,
+        );
+    }
+
+    fn remember_pending_provider_reload_inner(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        reason: &str,
+        force_catalog_reload: bool,
+    ) {
+        let mut pending = self.owned.pending_provider_reloads.write();
+        if let Some(existing) = pending.get_mut(agent_id) {
+            existing.force_catalog_reload |= force_catalog_reload;
+            return;
+        }
+        pending.insert(
             agent_id.to_string(),
             PendingProviderReload {
                 session_id: session_id.to_string(),
                 agent_id: agent_id.to_string(),
                 reason: reason.to_string(),
+                force_catalog_reload,
             },
         );
+        drop(pending);
         let state = self.clone();
         let session_id = session_id.to_string();
         let agent_id = agent_id.to_string();
@@ -41,18 +71,20 @@ impl KernelRuntimeState {
                     };
                     if let Some(pending) = pending {
                         match state
-                            .reload_agent_provider_if_idle(
+                            .reload_agent_provider_if_idle_inner(
                                 &pending.session_id,
                                 &pending.agent_id,
                                 &pending.reason,
+                                pending.force_catalog_reload,
                             )
                             .await
                         {
                             Ok(ProviderReloadOutcome::Deferred) => {
-                                state.remember_pending_provider_reload(
+                                state.remember_pending_provider_reload_inner(
                                     &pending.session_id,
                                     &pending.agent_id,
                                     &pending.reason,
+                                    pending.force_catalog_reload,
                                 );
                             }
                             Ok(_) => {}

@@ -157,6 +157,27 @@ impl KernelRuntimeState {
         agent_id: &str,
         reason: &str,
     ) -> Result<ProviderReloadOutcome, DaemonError> {
+        self.reload_agent_provider_if_idle_inner(session_id, agent_id, reason, false)
+            .await
+    }
+
+    pub(super) async fn reload_agent_provider_catalog_if_idle(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        reason: &str,
+    ) -> Result<ProviderReloadOutcome, DaemonError> {
+        self.reload_agent_provider_if_idle_inner(session_id, agent_id, reason, true)
+            .await
+    }
+
+    pub(super) async fn reload_agent_provider_if_idle_inner(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        reason: &str,
+        force_catalog_reload: bool,
+    ) -> Result<ProviderReloadOutcome, DaemonError> {
         let (launch_request, runtime_init_delay_ms, terminated_run_id) = {
             let owned = &self.owned;
             if owned
@@ -229,8 +250,9 @@ impl KernelRuntimeState {
                 return Ok(ProviderReloadOutcome::Deferred);
             }
             let run = current_run.expect("current provider run was checked above");
-            if ProviderLaunchFingerprint::from_run(&run)
-                == ProviderLaunchFingerprint::from_request(&launch_request)
+            if !force_catalog_reload
+                && ProviderLaunchFingerprint::from_run(&run)
+                    == ProviderLaunchFingerprint::from_request(&launch_request)
             {
                 return Ok(ProviderReloadOutcome::Unaffected);
             }

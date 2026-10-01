@@ -7,6 +7,12 @@ impl KernelRuntimeState {
         grant: crate::extension::ExtensionGrant,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let previous_grants = self
+            .owned
+            .agent_store
+            .get_agent(agent_ref)
+            .or_else(|_| self.owned.agent_store.get_agent_by_ref(agent_ref))?
+            .extension_grants();
         match grant.kind {
             crate::extension::ExtensionKind::Mcp => {
                 self.grant_agent_mcp(agent_ref, grant.name, caller_user_id)
@@ -47,6 +53,9 @@ impl KernelRuntimeState {
                     agent.session_id(),
                     agent.id(),
                 )?;
+                if previous_grants != agent.extension_grants() {
+                    self.remember_runtime_catalog_continuation(&agent, "runtime tool catalog");
+                }
                 Ok(agent)
             }
             crate::extension::ExtensionKind::Connector => {
@@ -80,6 +89,9 @@ impl KernelRuntimeState {
                     agent.session_id(),
                     agent.id(),
                 )?;
+                if previous_grants != agent.extension_grants() {
+                    self.remember_runtime_catalog_continuation(&agent, "runtime tool catalog");
+                }
                 Ok(agent)
             }
         }
@@ -165,6 +177,12 @@ impl KernelRuntimeState {
         name: &str,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let previous_grants = self
+            .owned
+            .agent_store
+            .get_agent(agent_ref)
+            .or_else(|_| self.owned.agent_store.get_agent_by_ref(agent_ref))?
+            .extension_grants();
         match kind {
             crate::extension::ExtensionKind::Mcp => {
                 self.revoke_agent_mcp(agent_ref, name, caller_user_id).await
@@ -203,6 +221,9 @@ impl KernelRuntimeState {
                     agent.session_id(),
                     agent.id(),
                 )?;
+                if previous_grants != agent.extension_grants() {
+                    self.remember_runtime_catalog_continuation(&agent, "runtime tool catalog");
+                }
                 Ok(agent)
             }
             crate::extension::ExtensionKind::Connector => {
@@ -235,6 +256,9 @@ impl KernelRuntimeState {
                     agent.session_id(),
                     agent.id(),
                 )?;
+                if previous_grants != agent.extension_grants() {
+                    self.remember_runtime_catalog_continuation(&agent, "runtime tool catalog");
+                }
                 Ok(agent)
             }
         }

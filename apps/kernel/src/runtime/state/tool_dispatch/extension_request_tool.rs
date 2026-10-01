@@ -175,7 +175,16 @@ impl KernelRuntimeState {
                         agent.owner_user_id(),
                     )
                     .await?;
-                (granted_agent, "now", false)
+                {
+                    let (effective, restart) = self.runtime_catalog_grant_effect(
+                        &granted_agent,
+                        agent.has_extension_grant(
+                            crate::extension::ExtensionKind::Script,
+                            &args.name,
+                        ),
+                    );
+                    (granted_agent, effective, restart)
+                }
             }
             "connector" => {
                 let connector_registry = connector_registry()?;
@@ -207,7 +216,16 @@ impl KernelRuntimeState {
                         agent.owner_user_id(),
                     )
                     .await?;
-                (granted_agent, "now", false)
+                {
+                    let (effective, restart) = self.runtime_catalog_grant_effect(
+                        &granted_agent,
+                        agent.has_extension_grant(
+                            crate::extension::ExtensionKind::Connector,
+                            &args.name,
+                        ),
+                    );
+                    (granted_agent, effective, restart)
+                }
             }
             _ => {
                 return Ok((
