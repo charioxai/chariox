@@ -62,3 +62,51 @@ test("managed digest retains the pinned inode and leaves its caller descriptor o
   assert.equal(after.size, contents.length)
   assert.equal(after.mode & 0o777, 0o600)
 })
+
+test("MP-08 MP-11 ordinary preverification uses the descriptor-owned progress supervisor", async () => {
+ const {readFile}=await import("node:fs/promises")
+ const source=await readFile(new URL("../apps/kernel/src/slice/local_docker/state.rs",import.meta.url),"utf8")
+ const hash=source.slice(source.indexOf("fn file_sha256("),source.indexOf("fn valid_sha256_digest("))
+ assert.doesNotMatch(hash,/std::io::copy/)
+ assert.match(hash,/home_archive_verify::digest/)
+})
+
+for (const fault of ["before", "after"]) test(`MP-08 MP-10 MP-11 pinned supervisor settles a stalled syscall ${fault} progress`, {
+ skip: process.platform !== "linux" && "requires Linux syscall injection", timeout: 6000,
+}, async context => {
+ const {spawnSync}=await import("node:child_process")
+ const {readFile}=await import("node:fs/promises")
+ const root=await mkdtemp(join(tmpdir(),"chariox-verify-syscall-"))
+ context.after(()=>rm(root,{recursive:true,force:true}))
+ const archive=join(root,"archive"),marker=join(root,"started"),source=join(root,"stall.c"),library=join(root,"stall.so")
+ await writeFile(archive,Buffer.alloc(256*1024,111),{mode:0o600})
+ const fd=openSync(archive,"r"), identity=fstatSync(fd,{bigint:true});closeSync(fd)
+ await writeFile(source,`
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+ssize_t read(int fd, void *buf, size_t count) {
+ static ssize_t (*actual)(int,void*,size_t); static int reads;
+ if(!actual) actual=dlsym(RTLD_NEXT,"read");
+ struct stat s;
+ if(fstat(fd,&s)==0 && s.st_dev==${identity.dev}ULL && s.st_ino==${identity.ino}ULL && ++reads>${fault==="after" ? 1 : 0}) {
+  FILE *m=fopen(${JSON.stringify(marker)},"w"); if(m){fprintf(m,"%d",getpid());fclose(m);}
+  for(;;) sleep(1);
+ }
+ return actual(fd,buf,count);
+}
+`)
+ const compiled=spawnSync("cc",["-shared","-fPIC","-o",library,source,"-ldl"],{encoding:"utf8",timeout:10000})
+ assert.equal(compiled.status,0,compiled.stderr)
+ const moduleUrl=new URL("../apps/kernel/slice-linux-docker/managed-home-archive-digest.mjs",import.meta.url).href
+ const script=`import {openSync,closeSync} from 'node:fs';import {digestPinnedHomeArchive} from ${JSON.stringify(moduleUrl)};const fd=openSync(${JSON.stringify(archive)},'r');try{await digestPinnedHomeArchive(fd,50);process.exitCode=99}catch(e){if(!/made no progress/.test(e.message))throw e}finally{closeSync(fd)}`
+ const result=spawnSync(process.execPath,["--input-type=module","-e",script],{env:{...process.env,LD_PRELOAD:library},encoding:"utf8",timeout:4000})
+ assert.equal(result.status,0,result.stderr)
+ const pid=(await readFile(marker,"utf8")).trim()
+ const state=await readFile(`/proc/${pid}/stat`,"utf8").catch(()=>undefined)
+ assert(!state || state.split(") ")[1].startsWith("Z "),"stalled hash worker survived settlement")
+})

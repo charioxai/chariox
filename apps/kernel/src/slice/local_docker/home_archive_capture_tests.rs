@@ -112,7 +112,7 @@ fn home_archive_stream_is_private_direct_output_and_digest_bound() {
     );
     assert_eq!(size, 14);
     assert_eq!(std::fs::read(&path).unwrap(), b"synthetic home");
-    assert_eq!(hash, file_sha256(&path, "test").unwrap());
+    assert_eq!((size, hash), file_sha256(&path, "test").unwrap());
     f.no_layer_archive();
     let calls = f.calls();
     assert!(calls.lines().next().unwrap().starts_with("start "));
@@ -174,7 +174,7 @@ fn home_archive_stream_large_output_is_file_backed() {
     let f = Fixture::new("large");
     let (path, size, hash) = f.capture().unwrap();
     assert_eq!(size, 2 * 1024 * 1024);
-    assert_eq!(hash, file_sha256(&path, "test").unwrap());
+    assert_eq!((size, hash), file_sha256(&path, "test").unwrap());
     f.no_layer_archive();
 }
 #[test]

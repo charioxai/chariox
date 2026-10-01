@@ -92,7 +92,8 @@ def digest_worker(path, progress_fd, parent_pid):
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     digest = hashlib.sha256()
     stop_orphaned_anchor(parent_pid)
-    with open(path, "rb", buffering=0) as source:
+    with (os.fdopen(os.dup(0), "rb", buffering=0) if path == "-" else open(path, "rb", buffering=0)) as source:
+        source.seek(0)
         before = os.fstat(source.fileno())
         if not stat.S_ISREG(before.st_mode):
             raise ValueError("archive is not a regular file")
@@ -235,6 +236,11 @@ def main(args):
         return source_digest_worker(args[1], int(args[-2]), int(args[-1]))
     if args[0] == "digest-paths" and len(args) == 2:
         return run_owned(["_source", args[1]], progress_timeout_seconds(), progress=True)
+    if args[0] == "digest-stdin" and len(args) in (1, 2):
+        seconds = progress_timeout_seconds() if len(args) == 1 else int(args[1]) / 1000
+        if not 0 < seconds <= 2147483.647:
+            raise ValueError("invalid archive progress timeout")
+        return run_owned(["_digest", "-"], seconds, progress=True)
     if args[0] == "digest" and len(args) == 2:
         return run_owned(["_digest", args[1]], progress_timeout_seconds(), progress=True)
     if args[0] == "run" and len(args) >= 4 and args[2] == "--":

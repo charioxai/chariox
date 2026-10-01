@@ -27,6 +27,7 @@ mod broker;
 mod disk_admission;
 mod extension_build;
 mod home_archive_capture;
+mod home_archive_verify;
 mod image;
 mod memory_admission;
 mod provider_inputs;

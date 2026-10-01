@@ -794,7 +794,7 @@ async function inspectManagedHomeArchive(path) {
       if (!homeArchiveMetadataMatches(metadata, expectedScope, relative[1], archiveMetadata.size)) {
         fail("managed saved home archive metadata is invalid")
       }
-      const digest = await digestPinnedHomeArchive(archive.fd, HOME_ARCHIVE_PROGRESS_TIMEOUT_MS)
+      const digest = await digestPinnedHomeArchive(archive.fd, HOME_ARCHIVE_PROGRESS_TIMEOUT_MS, brokerLifetime.signal)
       if (digest !== metadata.sha256) {
         fail("managed saved home archive digest does not match")
       }

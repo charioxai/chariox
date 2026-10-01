@@ -240,24 +240,10 @@ pub fn validate_local_docker_slice_backup(
         })? {
             Some((size, digest)) => (size, digest, true),
             None => {
-                let metadata = std::fs::symlink_metadata(archive_path).map_err(|error| {
-                    DaemonError::LocalTransport {
-                        operation: OPERATION,
-                        message: format!(
-                            "backup `{}` archive is unavailable at {}: {error}",
-                            backup.id,
-                            archive_path.display()
-                        ),
-                    }
-                })?;
-                if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
-                    return Err(DaemonError::LocalTransport {
-                        operation: OPERATION,
-                        message: format!("backup `{}` archive is not a regular file", backup.id),
-                    });
-                }
-                (metadata.len(), file_sha256(archive_path, OPERATION)?, false)
+                let (size, digest) = file_sha256(archive_path, OPERATION)?;
+                (size, digest, false)
             }
+
         };
     if actual_size != expected_size || actual_digest != expected_digest {
         return reject_corrupt_home_archive(
@@ -987,22 +973,11 @@ fn archive_local_docker_home_volume_with_helper(
     super::home_archive_capture::capture(helper, archive_path, operation)
 }
 
-fn file_sha256(path: &Path, operation: &'static str) -> Result<String, DaemonError> {
-    use sha2::{Digest, Sha256};
-
-    let mut file = std::fs::File::open(path).map_err(|error| DaemonError::LocalTransport {
-        operation,
-        message: format!("failed to open slice archive {}: {error}", path.display()),
-    })?;
-    let mut hasher = Sha256::new();
-    std::io::copy(&mut file, &mut hasher).map_err(|error| DaemonError::LocalTransport {
-        operation,
-        message: format!("failed to digest slice archive {}: {error}", path.display()),
-    })?;
-    Ok(format!("{:x}", hasher.finalize()))
+fn file_sha256(path: &Path, operation: &'static str) -> Result<(u64, String), DaemonError> {
+    super::home_archive_verify::digest(path, operation)
 }
 
-fn valid_sha256_digest(value: &str) -> bool {
+pub(super) fn valid_sha256_digest(value: &str) -> bool {
     value.len() == 64
         && value
             .bytes()
