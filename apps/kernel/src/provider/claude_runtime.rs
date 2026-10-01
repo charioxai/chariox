@@ -292,6 +292,12 @@ fn apply_claude_turn_stall_policy(
     state: &mut ClaudeRuntimeState,
     batch: &mut ProviderPromptSignalBatch,
 ) -> Result<(), DaemonError> {
+    // A reported native tool still owns work while it runs without output.
+    // Its result, explicit cancellation, or child exit settles that ownership;
+    // elapsed quiet time alone cannot establish a stalled provider turn.
+    if state.tool_transcript.has_pending_tools() {
+        return Ok(());
+    }
     match state
         .turn_watchdog
         .action(Instant::now(), claude_turn_stall_timeout())
