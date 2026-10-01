@@ -7,7 +7,7 @@ import net from "node:net"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { browserStateCleanupFailure } from "./lib/browser-state-drill-cleanup.mjs"
+import { browserStateCleanupFailure, cleanupBrowserStateImages } from "./lib/browser-state-drill-cleanup.mjs"
 import { browserStateDrillImageConfig } from "./lib/browser-state-drill-image.mjs"
 import { resolveBrowserStateDrillPaths } from "./lib/browser-state-drill-paths.mjs"
 import { startBrowserComputerFixture } from "./lib/browser-computer-fixture.mjs"
@@ -751,6 +751,17 @@ async function inspectContainerId() {
   return inspected[0].Id
 }
 
+async function inspectDockerImage(imageRef) {
+  const result = await runCommand("docker", ["image", "inspect", imageRef], { timeoutMs: 20_000 })
+  if (result.code === 0) {
+    const images = JSON.parse(result.stdout)
+    assert.ok(Array.isArray(images) && images.length === 1, "fallback image inspection must resolve exactly one image")
+    return images[0]
+  }
+  if (result.code === 1 && /(?:No such image|No such object):/i.test(result.stderr)) return null
+  throw new Error(`fallback image inspection failed for ${imageRef}`)
+}
+
 async function listDockerImageRefs(reference) {
   const result = await docker([
     "image",
@@ -1026,13 +1037,31 @@ async function cleanup() {
   for (const backup of [namedBackup, corruptBackup].filter(Boolean)) {
     await docker(["image", "rm", "-f", backup.image_ref]).catch(() => undefined)
   }
-  const stateImageLeaks = (await listDockerImageRefs(`chariox-slice-state:${sliceName}-*`).catch(() => []))
-    .filter((imageRef) => !stateImagesBefore.has(imageRef))
-  const rollbackImageLeaks = (await listDockerImageRefs("chariox-slice-backup:restore-rollback-*").catch(() => []))
-    .filter((imageRef) => !rollbackImagesBefore.has(imageRef))
-  for (const imageRef of [...stateImageLeaks, ...rollbackImageLeaks]) {
-    await docker(["image", "rm", "-f", imageRef]).catch(() => undefined)
+  const imageCleanupOptions = {
+    slice,
+    inspectImage: inspectDockerImage,
+    removeImage: (imageId) => docker(["image", "rm", "-f", imageId]),
   }
+  let stateImageInventoryFailed = false
+  const stateImageCleanup = await cleanupBrowserStateImages({
+    ...imageCleanupOptions,
+    imageRefs: await listDockerImageRefs(`chariox-slice-state:${sliceName}-*`).catch(() => {
+      stateImageInventoryFailed = true
+      return []
+    }),
+    imagesBefore: stateImagesBefore,
+  })
+  const stateImageLeaks = stateImageCleanup.unresolvedImageRefs
+  let rollbackImageInventoryFailed = false
+  const rollbackImageCleanup = await cleanupBrowserStateImages({
+    ...imageCleanupOptions,
+    imageRefs: await listDockerImageRefs("chariox-slice-backup:restore-rollback-*").catch(() => {
+      rollbackImageInventoryFailed = true
+      return []
+    }),
+    imagesBefore: rollbackImagesBefore,
+  })
+  const rollbackImageLeaks = rollbackImageCleanup.unresolvedImageRefs
   client?.close?.()
   await closeFixtureServer()
   for (const child of children.toReversed()) {
@@ -1060,8 +1089,8 @@ async function cleanup() {
       (await runCommand("docker", ["image", "inspect", backup.image_ref], { timeoutMs: 20_000 })).code !== 0
     )),
   ).then((values) => values.every(Boolean))
-  const savedImageGone = knownSavedImageGone && stateImageLeaks.length === 0
-  const backupImagesGone = knownBackupImagesGone && rollbackImageLeaks.length === 0
+  const savedImageGone = knownSavedImageGone && stateImageLeaks.length === 0 && !stateImageInventoryFailed
+  const backupImagesGone = knownBackupImagesGone && rollbackImageLeaks.length === 0 && !rollbackImageInventoryFailed
   const occupiedPorts = []
   for (const port of [kernelPort, kernelPort + 1, kernelPort + 2, kernelPort + 3, fixturePort].filter(Number.isInteger)) {
     if (!(await portIsAvailable(port))) occupiedPorts.push(port)
@@ -1075,7 +1104,14 @@ async function cleanup() {
     savedImageGone,
     backupImagesGone,
     stateImageLeaks,
+    stateImagesRemoved: stateImageCleanup.removedImageRefs,
+    stateImagesPreserved: stateImageCleanup.preservedImageRefs,
+    stateImageInventoryFailed,
     rollbackImageLeaks,
+    rollbackImagesRemoved: rollbackImageCleanup.removedImageRefs,
+    rollbackImagesPreserved: rollbackImageCleanup.preservedImageRefs,
+    rollbackImagesUnresolved: rollbackImageCleanup.unresolvedImageRefs,
+    rollbackImageInventoryFailed,
     fixtureWorkspaceRemoved,
     tempRootRemoved: await access(tempRoot).then(() => false).catch(() => true),
     listenersReleased: occupiedPorts.length === 0,
