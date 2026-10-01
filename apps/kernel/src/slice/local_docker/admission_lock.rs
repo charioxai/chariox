@@ -97,9 +97,18 @@ extern "C" fn cleanup_test_locks() {
     }
 }
 
+fn provisioning_help(macos: bool) -> &'static str {
+    if macos {
+        "on macOS, install the Chariox pkg or run sudo /usr/bin/python3 deploy/local-macos/install-docker-admission-locks.py from a checkout to install the boot LaunchDaemon; for an installed pkg, run sudo /usr/bin/python3 /usr/local/libexec/chariox/provision-docker-admission-locks.py"
+    } else {
+        "provision the host-wide locks as root with deploy/local-linux/provision-docker-admission-locks.py"
+    }
+}
+
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, format!(
-        "{message}; provision the host-wide locks as root with deploy/local-linux/provision-docker-admission-locks.py (do not replace a lock while kernels run)"
+        "{message}; {}; if a legacy lock is unsafe, stop all kernels sharing Docker before administrator repair; never replace a live lock",
+        provisioning_help(cfg!(target_os = "macos"))
     ))
 }
 
@@ -109,11 +118,13 @@ fn open_for_owner(path: &Path, owner: u32) -> io::Result<File> {
     let parent = path
         .parent()
         .ok_or_else(|| invalid("admission lock has no parent"))?;
-    let parent = std::fs::canonicalize(parent)?;
+    let parent = std::fs::canonicalize(parent)
+        .map_err(|error| invalid(&format!("failed to resolve admission lock parent: {error}")))?;
     let directory = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(parent)?;
+        .open(parent)
+        .map_err(|error| invalid(&format!("failed to open admission lock parent: {error}")))?;
     let metadata = directory.metadata()?;
     let writable = metadata.mode() & 0o022 != 0;
     if metadata.uid() != owner || (writable && metadata.mode() & 0o1000 == 0) {
@@ -158,6 +169,18 @@ mod tests {
     use super::*;
     use fs2::FileExt;
     use std::os::unix::fs::{symlink, PermissionsExt};
+
+    #[test]
+    fn provisioning_help_names_macos_boot_setup_and_installed_repair() {
+        let help = provisioning_help(true);
+        assert!(help.contains("deploy/local-macos/install-docker-admission-locks.py"));
+        assert!(help.contains("/usr/local/libexec/chariox/provision-docker-admission-locks.py"));
+        assert!(help.contains("LaunchDaemon"));
+        assert!(provisioning_help(false).contains("deploy/local-linux/"));
+        assert!(invalid("unsafe lock")
+            .to_string()
+            .contains("stop all kernels"));
+    }
 
     struct Fixture(PathBuf);
     impl Fixture {
