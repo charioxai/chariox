@@ -26,7 +26,7 @@ export async function startDrillESynchronizedFixture({ actors }) {
         // unchanged 5000-node result bound. A large fixture makes that read
         // observable after admission, without blocking preflight reconciliation.
         const probes = parts[1] === "same"
-          ? Array.from({ length: 30_000 }, (_, index) => `<button>Drill E probe ${index}</button>`).join("")
+          ? Array.from({ length: 10_000 }, (_, index) => `<button>Drill E probe ${index}</button>`).join("")
           : "";
         response.end(`<title>MP-08/MP-10 Drill E ${parts[1]}</title><h1>Drill E probe</h1>${probes}`)
         return
