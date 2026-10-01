@@ -31,9 +31,11 @@ impl KernelRuntimeState {
         }
         let session_id = failed_run.session_id();
         let mut failed_label = provider_profile_label(failed_run.provider(), failed_run.model());
+        // The reason builder redacts credentials itself and keeps the text
+        // readable; `safe_message` is narrowed to the evidence character set.
         let mut reason = crate::provider::provider_turn_failure_reason(
             failed_run.adapter_key(),
-            attempt.safe_message,
+            attempt.message,
             attempt.termination,
         );
         let mut tried = failed_run

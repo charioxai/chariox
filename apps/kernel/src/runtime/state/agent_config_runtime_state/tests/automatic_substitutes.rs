@@ -1031,7 +1031,7 @@ async fn a_follow_up_promoted_by_a_structured_abort_acknowledgement_reaches_the_
 async fn substitute_notices_never_carry_provider_credentials() {
     const SECRET: &str = "sk-live-0123456789abcdef";
     let failure =
-        format!("Provider prompt dispatch failed: upstream failed Authorization: Bearer {SECRET}");
+        format!("Provider prompt dispatch failed: upstream failed · retry later Authorization: Bearer {SECRET}");
     let turn = failing_turn(&[("dev-stub", SUBSTITUTE_A, None)]).await;
 
     turn.fail_run(&turn.failed_run_id, &failure).await;
@@ -1048,6 +1048,14 @@ async fn substitute_notices_never_carry_provider_credentials() {
     assert!(
         notices.iter().all(|notice| !notice.contains(SECRET)),
         "{notices:?}"
+    );
+    assert!(
+        notices
+            .iter()
+            .filter(|notice| notice.starts_with("This turn runs on ")
+                || notice.starts_with("No substitute is left"))
+            .all(|notice| notice.contains("upstream failed · retry later")),
+        "the notices stay readable: {notices:?}"
     );
 }
 
