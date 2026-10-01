@@ -410,14 +410,17 @@ exit 2
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[cfg(unix)]
     #[test]
     fn repeated_ensure_preserves_the_worker_owned_provider_profile() {
+        let _env = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-remote-account-handoff-{}-{}",
             std::process::id(),
             rand::random::<u64>()
         ));
         std::fs::create_dir_all(&root).unwrap();
+        let _native_auth = install_opencode_auth_fixture(&root);
         let mut config = crate::config::DaemonConfig::for_tests();
         config.accept_remote_leases = true;
         config.user_config.state.path = Some(root.join("state.db").display().to_string());
@@ -440,7 +443,7 @@ exit 2
         let materialization = |contents_base64: &str| ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
                 owner_user_id: "owner-a".to_string(),
-                provider: "codex".to_string(),
+                provider: "opencode".to_string(),
                 profile_id: "work".to_string(),
                 label: "Work".to_string(),
                 origin: crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated,
@@ -461,14 +464,17 @@ exit 2
             .unwrap();
         let environment = app
             .provider_account_profile_registry()
-            .resolve_environment("owner-a", "codex", "work")
+            .resolve_environment("owner-a", "opencode", "work")
             .unwrap();
-        let provider_config_dir = std::path::Path::new(&environment["CODEX_HOME"]);
-        let settings_path = provider_config_dir.join("config.toml");
+        let provider_config_dir =
+            std::path::Path::new(&environment["XDG_CONFIG_HOME"]).join("opencode");
+        std::fs::create_dir_all(&provider_config_dir).unwrap();
+        let settings_path = provider_config_dir.join("opencode.json");
         let provider_state_path = provider_config_dir.join("provider-owned-state.json");
-        std::fs::write(&settings_path, b"model = \"worker-model\"\n").unwrap();
+        std::fs::write(&settings_path, br#"{"model":"worker-model"}"#).unwrap();
         std::fs::write(&provider_state_path, b"worker-state").unwrap();
-        let auth_path = provider_config_dir.join("auth.json");
+        let auth_path =
+            std::path::Path::new(&environment["XDG_DATA_HOME"]).join("opencode/auth.json");
         std::fs::write(&auth_path, br#"{"token":"worker"}"#).unwrap();
 
         RemoteLeaseRuntime::new(&mut app)
@@ -481,7 +487,7 @@ exit 2
         assert_eq!(std::fs::read(&auth_path).unwrap(), br#"{"token":"worker"}"#);
         assert_eq!(
             std::fs::read(&settings_path).unwrap(),
-            b"model = \"worker-model\"\n"
+            br#"{"model":"worker-model"}"#
         );
         assert_eq!(
             std::fs::read(&provider_state_path).unwrap(),
