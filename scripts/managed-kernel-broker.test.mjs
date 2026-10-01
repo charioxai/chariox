@@ -814,6 +814,40 @@ cat "$CHARIOX_SLICE_WORKSPACE_SOURCE/value"
   assert.equal(Buffer.from(response.stdoutBase64, "base64").toString(), "safe")
 })
 
+test("managed slice broker gives a slice without a workspace its own volume, not the build context", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-broker-owned-workspace-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const share = join(root, "share")
+  await mkdir(share)
+  const provisioner = join(root, "provisioner.sh")
+  await writeFile(provisioner, "#!/bin/sh\nprintf '%s' \"${CHARIOX_SLICE_OWNED_WORKSPACE:-unset}\"\n")
+  await chmod(provisioner, 0o755)
+  const result = spawnSync(process.execPath, [broker, "--stdio"], {
+    input: `${JSON.stringify({
+      kind: "provisioner",
+      action: "provision",
+      environment: {
+        CHARIOX_SLICE_NAME: "chariox-slice-dev",
+        CHARIOX_SLICE_ID: "slice-dev",
+        CHARIOX_SLICE_HOME_VOLUME: "chariox-slice-dev-home",
+      },
+      files: [],
+    })}\n`,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      CHARIOX_SLICE_DOCKER_SHARE_ROOT: share,
+      CHARIOX_SLICE_DOCKER_PROVISIONER: provisioner,
+      CHARIOX_SLICE_DOCKER_HANDLE_ROOT: join(root, "handles"),
+      CHARIOX_SLICE_DOCKER_HANDLE_STATE: join(root, "handles.json"),
+    },
+  })
+  assert.equal(result.status, 0, result.stderr)
+  const response = JSON.parse(result.stdout.trim())
+  assert.equal(response.status, 0, Buffer.from(response.stderrBase64, "base64").toString())
+  assert.equal(Buffer.from(response.stdoutBase64, "base64").toString(), "1")
+})
+
 test("managed slice broker recovers after an oversized command output", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-broker-output-"))
   context.after(() => rm(root, { recursive: true, force: true }))
