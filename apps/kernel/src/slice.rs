@@ -6,11 +6,11 @@ mod store;
 
 pub(crate) use local_docker::managed_docker_broker_configured;
 pub(crate) use local_docker::{
-    cleanup_replaced_saved_state_generation, recover_local_docker_snapshot_pause,
+    acknowledge_protected_home_restore, cleanup_replaced_saved_state_generation,
+    reconcile_local_docker_restore_acknowledgements, recover_local_docker_snapshot_pause,
     recover_pending_local_docker_slice_backup_restore,
     remove_local_docker_slice_backup_best_effort, require_supported_slice_capture_layout,
     restore_local_docker_slice_backup, SliceBackupRestoreResolution,
-    resolve_protected_home_restore_retention,
 };
 pub use local_docker::{
     collect_local_docker_slice_logs, create_local_docker_slice_backup,
@@ -31,13 +31,15 @@ use local_docker::{
 };
 pub use model::{
     CreateSliceInput, LocalDockerSliceAction, SliceBackendKind, SliceBackupRecord,
-    SliceBackupRestoreTransactionRecord, SliceDevelopmentPublication, SliceDisplayBackend,
-    SliceDisplayEndpoint, SliceDisplayEndpointAccess, SliceDisplayEndpointKind, SliceDisplayMode,
-    SliceLocalDockerPorts, SliceLogEntry, SliceOperationStatus, SliceProviderLoginStart,
-    SliceRecord, SliceRelayEndpoint, SliceSavedStateRecord, SliceSavedStateStatus, SliceStatus,
+    SliceBackupRestoreAcknowledgementRecord, SliceBackupRestoreTransactionRecord,
+    SliceDevelopmentPublication, SliceDisplayBackend, SliceDisplayEndpoint,
+    SliceDisplayEndpointAccess, SliceDisplayEndpointKind, SliceDisplayMode, SliceLocalDockerPorts,
+    SliceLogEntry, SliceOperationStatus, SliceProviderLoginStart, SliceRecord, SliceRelayEndpoint,
+    SliceSavedStateRecord, SliceSavedStateStatus, SliceStatus,
 };
 #[cfg(test)]
 use ports::LocalDockerSlicePorts;
+pub(crate) use store::unacknowledged_backup_restore_error;
 pub use store::{SliceAgentAttachment, SliceHostRuntimeState, SliceOperationGuard, SliceStore};
 
 #[cfg(test)]
@@ -197,9 +199,9 @@ mod tests {
                 &slice.id,
                 restored_state.clone(),
                 46,
-                SliceOperationStatus::Completed,
+                SliceBackupRestoreResolution::Restored,
                 None,
-                |_, _| {
+                |_, _, _| {
                     Err(crate::error::DaemonError::LocalTransport {
                         operation: "slice.backup.restore",
                         message: "injected resolution failure".to_string(),
@@ -226,9 +228,9 @@ mod tests {
                 &slice.id,
                 restored_state.clone(),
                 47,
-                SliceOperationStatus::Completed,
+                SliceBackupRestoreResolution::Restored,
                 None,
-                |record, state| {
+                |record, state, _| {
                     assert_eq!(record.saved_state_ref.as_deref(), Some(state.id.as_str()));
                     assert_eq!(
                         store.list_pending_backup_restores(),
@@ -266,9 +268,9 @@ mod tests {
                 &slice.id,
                 saved_state("failed-restore-state"),
                 46,
-                SliceOperationStatus::Failed,
+                SliceBackupRestoreResolution::RolledBack,
                 Some("automatic rollback failed".to_string()),
-                |_, _| {
+                |_, _, _| {
                     Err(crate::error::DaemonError::LocalTransport {
                         operation: "slice.backup.restore",
                         message: "injected rollback publication failure".to_string(),
@@ -304,9 +306,9 @@ mod tests {
                 &slice.id,
                 saved_state("rolled-back-state"),
                 47,
-                SliceOperationStatus::Failed,
+                SliceBackupRestoreResolution::RolledBack,
                 Some("backup restore failed; automatic rollback completed".to_string()),
-                |_, _| Ok(()),
+                |_, _, _| Ok(()),
             )
             .expect("durable rollback resolution should clear quarantine");
         store

@@ -10,8 +10,8 @@ use super::{
     LocalDockerSliceOptions,
 };
 use crate::slice::model::{
-    SliceBackendKind, SliceBackupRecord, SliceBackupRestoreTransactionRecord, SliceRecord,
-    SliceSavedStateRecord,
+    SliceBackendKind, SliceBackupRecord, SliceBackupRestoreAcknowledgementRecord,
+    SliceBackupRestoreTransactionRecord, SliceRecord, SliceSavedStateRecord,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -372,6 +372,7 @@ pub(crate) fn restore_local_docker_slice_backup(
         &SliceSavedStateRecord,
         SliceBackupRestoreResolution,
     ) -> Result<(), DaemonError>,
+    mut reconcile_acknowledgement: impl FnMut(&SliceBackupRestoreTransactionRecord),
 ) -> Result<SliceSavedStateRecord, DaemonError> {
     validate_local_docker_slice_backup(record, backup)?;
 
@@ -398,6 +399,7 @@ pub(crate) fn restore_local_docker_slice_backup(
     }
     let restore_options = options.clone().with_backup(backup);
     let rollback_options = options.clone().with_backup(&rollback);
+    let rolled_back = std::cell::Cell::new(false);
     let generation = restore_local_docker_slice_backup_with_rollback(
         &rollback,
         || {
@@ -413,11 +415,10 @@ pub(crate) fn restore_local_docker_slice_backup(
         || save_local_docker_slice_state_retaining_replaced(record, options),
         |generation, resolution| {
             persist_restore_resolution(&transaction, &generation.state, resolution)?;
-            let artifact = match resolution {
-                SliceBackupRestoreResolution::Restored => &transaction.target_backup,
-                SliceBackupRestoreResolution::RolledBack => &transaction.rollback_backup,
-            };
-            resolve_protected_home_restore_retention(record, &artifact.home_archive_path);
+            // Publication is committed. The broker acknowledgement is durable
+            // and retried; its failure never rolls this resolution back.
+            rolled_back.set(resolution == SliceBackupRestoreResolution::RolledBack);
+            reconcile_acknowledgement(&transaction);
             Ok(())
         },
         || {
@@ -432,23 +433,83 @@ pub(crate) fn restore_local_docker_slice_backup(
             save_local_docker_slice_state_retaining_replaced(record, options)
         },
         |generation| cleanup_replaced_saved_state_generation(&transaction, generation),
-        || remove_local_docker_slice_backup_best_effort(&rollback),
+        || {
+            // A rolled-back acknowledgement names the rollback archive, so its
+            // reconciliation releases the rollback only once acknowledged.
+            if !rolled_back.get() {
+                remove_local_docker_slice_backup_best_effort(&rollback);
+            }
+        },
     )?;
     Ok(generation.state)
 }
 
-pub(crate) fn resolve_protected_home_restore_retention(
-    record: &SliceRecord,
-    archive_path: &str,
-) {
-    // Invoke only after durable transaction resolution, for either restored or
-    // rolled-back state. Failure retains references and never triggers another
-    // rollback after publication.
-    if broker::resolve_home_restore(&local_docker_container_name(record), archive_path)
-        .is_err()
-    {
-        tracing::warn!("protected home restore retention resolution remains pending");
+/// Retries owed broker acknowledgements of durably resolved restores, for one
+/// slice or all. Failure keeps the record and the archives it references; it
+/// never rolls a committed resolution back. Returns the records still owed.
+pub(crate) fn reconcile_local_docker_restore_acknowledgements(
+    slices: &crate::slice::SliceStore,
+    slice_id: Option<&str>,
+    mut acknowledge: impl FnMut(
+        &SliceRecord,
+        &SliceBackupRestoreAcknowledgementRecord,
+    ) -> Result<(), DaemonError>,
+    mut commit: impl FnMut(&SliceBackupRestoreAcknowledgementRecord) -> Result<(), DaemonError>,
+    mut release_rollback: impl FnMut(&SliceBackupRecord),
+) -> Result<Vec<SliceBackupRestoreAcknowledgementRecord>, DaemonError> {
+    let mut pending = Vec::new();
+    for acknowledgement in slices.list_pending_restore_acknowledgements() {
+        if slice_id.is_some_and(|slice_id| slice_id != acknowledgement.source_slice_id) {
+            continue;
+        }
+        // A removed slice has no publication left to acknowledge.
+        if let Ok(slice) = slices.resolve(&acknowledgement.source_slice_id) {
+            if let Err(error) = acknowledge(&slice, &acknowledgement) {
+                crate::logging::warn_with_fields(
+                    "slice.backup.restore",
+                    "managed broker restore acknowledgement remains pending",
+                    serde_json::json!({
+                        "transaction_id": &acknowledgement.transaction_id,
+                        "slice_id": &acknowledgement.source_slice_id,
+                        "error": error.to_string(),
+                    }),
+                );
+                pending.push(acknowledgement);
+                continue;
+            }
+        }
+        commit(&acknowledgement)?;
+        let Some(rollback) = acknowledgement.retained_rollback_backup.as_ref() else {
+            continue;
+        };
+        // Startup recovery publishes the rollback artifacts as the active
+        // saved state; release them only when nothing active references them.
+        let active = slices
+            .active_saved_state_for_slice(&acknowledgement.source_slice_id)
+            .ok()
+            .flatten();
+        if !active.is_some_and(|active| {
+            active.image_ref == rollback.image_ref
+                || active.home_archive_path == rollback.home_archive_path
+        }) {
+            release_rollback(rollback);
+        }
     }
+    Ok(pending)
+}
+
+pub(crate) fn acknowledge_protected_home_restore(
+    record: &SliceRecord,
+    acknowledgement: &SliceBackupRestoreAcknowledgementRecord,
+) -> Result<(), DaemonError> {
+    broker::resolve_home_restore(
+        &local_docker_container_name(record),
+        &acknowledgement.home_archive_path,
+    )
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "slice.backup.restore",
+        message: format!("managed broker restore acknowledgement failed: {error}"),
+    })
 }
 
 pub(super) fn restore_local_docker_slice_backup_with_rollback<T>(
