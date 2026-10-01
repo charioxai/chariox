@@ -1452,8 +1452,6 @@ fn import_rejects_unsafe_manifest_paths_and_archive_symlinks() {
     write_archive(&unsafe_archive, unsafe_file, &unpacked, &unsafe_manifest)
         .expect("package unsafe manifest fixture");
     let unsafe_destination = root.join("managed/unsafe-manifest");
-    fs::create_dir_all(unsafe_destination.parent().expect("destination parent"))
-        .expect("create ordinary import destination parent");
     let unsafe_error = import_development_context(DevelopmentContextImportRequest {
         archive_path: unsafe_archive.clone(),
         expected_archive_sha256: sha256_file(&unsafe_archive).expect("hash unsafe archive"),
@@ -1464,7 +1462,7 @@ fn import_rejects_unsafe_manifest_paths_and_archive_symlinks() {
     .expect_err("unsafe target directory should fail before extraction");
     assert!(unsafe_error
         .to_string()
-        .contains("target directory is invalid"));
+        .contains("target directory is unsafe or invalid"));
     assert!(!unsafe_destination.exists());
 
     let managed_unsafe_destination = control_parent.join("unsafe-manifest");
@@ -1481,7 +1479,7 @@ fn import_rejects_unsafe_manifest_paths_and_archive_symlinks() {
     .expect_err("managed import must reject a parent-directory target");
     assert!(managed_unsafe_error
         .to_string()
-        .contains("target directory is invalid"));
+        .contains("target directory is unsafe or invalid"));
     assert!(!managed_unsafe_destination.exists());
     assert!(!root.join("escape").exists());
     assert_no_import_temporaries(&control_parent);
