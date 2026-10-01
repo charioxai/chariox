@@ -106,7 +106,10 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
     // deduplication; disk exclusions are separate.
     !matches!(
         request,
-        LocalDaemonRequest::ListAppInstallations(_)
+        LocalDaemonRequest::RequestKernelAccess(_)
+            | LocalDaemonRequest::ListKernelAccessGrants(_)
+            | LocalDaemonRequest::RevokeKernelAccessGrant(_)
+            | LocalDaemonRequest::ListAppInstallations(_)
             | LocalDaemonRequest::BeginAppPublisherEnrollment(_)
             | LocalDaemonRequest::GetAppPublisherEnrollment(_)
             | LocalDaemonRequest::CancelAppPublisherEnrollment(_)

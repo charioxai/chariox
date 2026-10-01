@@ -18,6 +18,16 @@ impl CommandRouter {
         command: KernelCommand,
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        if command.caller.connection_class
+            == Some(crate::local::KernelConnectionClass::ExternalAgent)
+        {
+            self.runtime_state
+                .authorize_external_request(&command.caller.caller_id, &request)?;
+        }
+        if let Some(response) = self.dispatch_kernel_access(&command, &request)? {
+            return Ok(response);
+        }
+        self.audit_access_terminal_attempt(&command, &request)?;
         let command_trace = CommandTrace::from_command(&command);
         log_command_received(&command_trace);
         if let Err(error) =
@@ -67,7 +77,7 @@ impl CommandRouter {
                         return result;
                     }
                 }
-                let result = Ok(response);
+                let result = self.filter_external_response(&command, Ok(response));
                 log_command_completed(&command_trace, &result);
                 return result;
             }
@@ -79,6 +89,7 @@ impl CommandRouter {
             }
         }
 
+        let response_caller = command.clone();
         let session_refresh = session_projection_refresh(&request);
         let result = self.dispatch_refresh_tracked(command, request).await;
         refresh_command_response_state(
@@ -99,6 +110,7 @@ impl CommandRouter {
         )
         .await;
         let result = self.redact_result_for_user(result, &caller_user_id);
+        let result = self.filter_external_response(&response_caller, result);
         log_command_completed(&command_trace, &result);
         result
     }

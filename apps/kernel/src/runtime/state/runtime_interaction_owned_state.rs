@@ -144,17 +144,41 @@ impl KernelRuntimeOwnedState {
         }
         let resolved_reply = if let Some(choice) = interaction.choice(choice_id) {
             if let Some(reply) = custom_reply {
-                let custom_choice =
-                    interaction
-                        .custom_choice()
-                        .ok_or_else(|| DaemonError::LocalTransport {
+                if interaction
+                    .kernel_operation_id()
+                    .is_some_and(|id| id.starts_with("access-"))
+                    && choice.requires_passkey()
+                {
+                    let minutes = reply
+                        .parse::<u32>()
+                        .map_err(|_| interaction_error("Access lifetime must be whole minutes"))?;
+                    if minutes == 0
+                        || minutes
+                            > self
+                                .config_projection
+                                .snapshot()
+                                .user_config
+                                .kernel_access
+                                .grant_max_minutes
+                    {
+                        return Err(interaction_error("Access lifetime exceeds kernel policy"));
+                    }
+                    reply.to_owned()
+                } else {
+                    let custom_choice =
+                        interaction
+                            .custom_choice()
+                            .ok_or_else(|| {
+                                DaemonError::LocalTransport {
                             operation: "resolve runtime interaction",
                             message:
                                 "custom_reply is only valid for interactions with a custom choice"
                                     .to_string(),
-                        })?;
-                validate_runtime_interaction_custom_reply(custom_choice, reply)?;
-                reply.to_string()
+                        }
+                            })?;
+                    validate_runtime_interaction_custom_reply(custom_choice, reply)?;
+                    reply.to_string()
+                }
             } else {
                 choice.reply().to_string()
             }

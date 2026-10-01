@@ -25,6 +25,8 @@ export type KernelCommandHandlerDeps = {
   flashFooter: (message: string, tone: FooterTone) => void
   deleteKernel?: () => Promise<{ kernelId: string; deletedSessions: RuntimeSession[] }>
   getDaemonHealth?: () => Promise<DaemonHealthProjection>
+  listKernelAccessGrants?: () => Promise<import("@chariox/kernel-client/kernel-types").KernelAccessGrant[]>
+  revokeKernelAccessGrant?: (grantId: string | null) => Promise<number>
   exportDebugBundle?: (sessionId: string, label: string | null) => Promise<{
     bundleDir: string
     recordCount: number
@@ -39,6 +41,19 @@ export async function handleKernelSlashCommand(
   command: Extract<ParsedSlashCommand, { kind: "kernel" }>,
 ): Promise<void> {
   const [subcommand, ...args] = command.args
+  if (subcommand === "access") {
+    if (args[0] === "list" && args.length === 1 && deps.listKernelAccessGrants) {
+      const grants = await deps.listKernelAccessGrants()
+      deps.appendNotice(grants.length ? grants.map((g) => `${g.grant_id}: ${JSON.stringify(g.holder_executable)} (pid ${g.holder_pid}), session ${g.session_id}, expires ${new Date(g.expires_at_ms).toISOString()}`).join("\n") : "No external agent access grants.")
+      deps.flashFooter(`${grants.length} external agent access grants`, "info")
+    } else if (args[0] === "revoke" && args.length === 2 && deps.revokeKernelAccessGrant) {
+      const count = await deps.revokeKernelAccessGrant(args[1] === "all" ? null : args[1]!)
+      deps.flashFooter(`Revoked ${count} external agent access grants`, "info")
+    } else {
+      deps.flashFooter("usage: /kernel access list | /kernel access revoke <id|all>", "error")
+    }
+    return
+  }
   if (subcommand === "health" || subcommand === "status" || subcommand === "remote-runtime" || subcommand === "runtime") {
     if (!deps.getDaemonHealth) {
       deps.flashFooter("kernel health is unavailable in this build", "error")
@@ -111,5 +126,5 @@ export async function handleKernelSlashCommand(
     deps.flashFooter(`deleted kernel ${deleted.kernelId} (${deleted.deletedSessions.length} session${deleted.deletedSessions.length === 1 ? "" : "s"})`, "info")
     return
   }
-  deps.flashFooter("usage: /kernel health | /kernel remote-runtime | /kernel debug-bundle [label] | /kernel delete", "error")
+  deps.flashFooter("usage: /kernel access list | /kernel access revoke <id|all> | /kernel health | /kernel remote-runtime | /kernel debug-bundle [label] | /kernel delete", "error")
 }

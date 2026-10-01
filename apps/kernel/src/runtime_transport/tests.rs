@@ -1544,6 +1544,8 @@ async fn dispatch_transport_test_request(
         &close_tx,
         &Arc::new(AtomicBool::new(false)),
         KernelConnectionClass::Unauthenticated,
+        None,
+        &Arc::default(),
         &payload,
     )
     .await;
@@ -1711,3 +1713,6 @@ fn write_private_test_file(path: &Path, value: &str) {
     file.write_all(value.as_bytes())
         .expect("private test file should be written");
 }
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod kernel_access_grants;

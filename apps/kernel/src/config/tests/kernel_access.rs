@@ -99,8 +99,8 @@ fn kernel_access_settings_persist_and_are_discoverable() {
         let key_path = format!("kernel_access.{key}");
         let entry = schema.iter().find(|entry| entry.path == key_path).unwrap();
         assert!(entry.settable && entry.unsettable);
-        assert_eq!(entry.effect, "no_runtime_effect");
-        assert_eq!(entry.status, "unwired");
+        assert_eq!(entry.effect, "runtime_policy");
+        assert_eq!(entry.status, "live");
         config
             .set_user_config_value(&key_path, value.to_string())
             .unwrap();

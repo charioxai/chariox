@@ -29,7 +29,7 @@ use super::KernelRuntimeState;
 use crate::durable_state::DurableKernelStateStore;
 use crate::error::DaemonError;
 use crate::local::{ApprovalPasskey, KernelConnectionClass, PASSKEY_REMEMBER_MAX_MINUTES};
-use crate::secret::VaultPasskeyVerifier;
+use crate::secret::{CharioxVaultUnlockStatus, VaultPasskeyVerifier};
 
 pub(crate) const PASSKEY_REQUIRED: &str = "PASSKEY_REQUIRED";
 pub(crate) const PASSKEY_REJECTED: &str = "PASSKEY_REJECTED";
@@ -69,6 +69,13 @@ impl CriticalApprovalAuthorization {
             _turn: None,
         }
     }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PinMove {
+    previous: VaultPasskeyVerifier,
+    next: VaultPasskeyVerifier,
 }
 
 #[derive(Debug, Default)]
@@ -431,6 +438,7 @@ impl KernelRuntimeState {
             Ok(Some(status)) => {
                 if passkey {
                     presence.record_success(owner, Instant::now(), None);
+                    self.revoke_kernel_access(None, None, "passkey_rotation")?;
                 }
                 audit("changed")?;
                 Ok(status)
@@ -446,6 +454,9 @@ impl KernelRuntimeState {
                 })
             }
             Err(error) => {
+                if passkey {
+                    self.revoke_kernel_access(None, None, "passkey_rotation_failed")?;
+                }
                 audit("failed")?;
                 Err(error)
             }
@@ -501,8 +512,19 @@ impl KernelRuntimeState {
                 connection_class,
             )
         };
+        let fresh = operation_id.starts_with("access-grant:")
+            || operation_id.starts_with("access-extension:");
+        if fresh
+            && (connection_class != Some(KernelConnectionClass::Terminal)
+                || remember_minutes.is_some())
+        {
+            return Err(passkey_error(
+                PASSKEY_NOT_ACCEPTED,
+                "access decisions require a fresh terminal passkey",
+            ));
+        }
         let Some(passkey) = passkey else {
-            if presence.remembered(&owner, Instant::now()) {
+            if !fresh && presence.remembered(&owner, Instant::now()) {
                 audit("remembered")?;
                 return Ok(CriticalApprovalAuthorization::without_passkey(true));
             }

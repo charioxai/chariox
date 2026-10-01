@@ -8,7 +8,7 @@ use crate::runtime::projection::SessionStateProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
 use crate::session::DEFAULT_LOCAL_USER_ID;
 
-mod scope;
+pub(crate) mod scope;
 use scope::{request_session_scope, SessionMembershipScope};
 
 pub(crate) fn command_session_user_id(command: &KernelCommand) -> Option<String> {
