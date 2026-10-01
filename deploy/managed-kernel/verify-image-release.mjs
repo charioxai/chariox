@@ -381,6 +381,16 @@ async function verifyImageRelease(
     const servicePath = artifactPath(rootfs, EXPECTED_ARTIFACTS.get(selectedService).path)
     const service = (await readRegularFile(servicePath, `${selectedTopology} managed bootstrap service`, 64 * 1024))
       .toString("utf8")
+    if (service.includes("chariox-docker-admission-locks.service")) {
+      // New files live inside the already hash-verified signed context tree.
+      // Legacy releases without this dependency remain verifiable for rollback.
+      for (const path of [
+        "/usr/lib/chariox/slice-build-context/deploy/local-linux/provision-docker-admission-locks.py",
+        "/usr/lib/chariox/slice-build-context/deploy/managed-kernel/chariox-docker-admission-locks.service",
+      ]) {
+        await readRegularFile(artifactPath(rootfs, path), "Docker admission provisioning artifact", 64 * 1024)
+      }
+    }
     const lines = service.split(/\r?\n/)
     const execStarts = lines.filter((line) => line.startsWith("ExecStart="))
     if (execStarts.length !== 1 || execStarts[0] !== "ExecStart=/usr/local/bin/chariox-managed-bootstrap") {

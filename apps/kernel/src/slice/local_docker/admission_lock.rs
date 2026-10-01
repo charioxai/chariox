@@ -6,12 +6,95 @@ use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
-pub(super) fn path(resource: &str) -> PathBuf {
+pub(super) fn host_path(resource: &str) -> PathBuf {
     PathBuf::from(format!("/tmp/chariox-docker-{resource}-admission.lock"))
 }
 
+pub(super) fn path(resource: &str) -> PathBuf {
+    #[cfg(not(test))]
+    {
+        host_path(resource)
+    }
+    #[cfg(test)]
+    {
+        test_directory().join(format!("{resource}.lock"))
+    }
+}
+
 pub(super) fn open(path: &Path) -> io::Result<File> {
-    open_for_owner(path, 0)
+    #[cfg(not(test))]
+    let owner = 0;
+    #[cfg(test)]
+    let owner = if path.parent() == Some(test_directory().as_path()) {
+        unsafe { libc::geteuid() }
+    } else {
+        0
+    };
+    open_for_owner(path, owner)
+}
+
+#[cfg(test)]
+struct TestLocks {
+    directory: PathBuf,
+    owned: bool,
+}
+#[cfg(test)]
+static TEST_LOCKS: std::sync::OnceLock<TestLocks> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+pub(super) fn test_directory() -> &'static PathBuf {
+    &TEST_LOCKS
+        .get_or_init(|| {
+            use std::os::unix::fs::PermissionsExt;
+            let inherited = std::env::var_os("CHARIOX_TEST_DOCKER_ADMISSION_LOCK_DIR");
+            let owned = inherited.is_none();
+            let directory = inherited.map(PathBuf::from).unwrap_or_else(|| {
+                std::env::temp_dir().join(format!(
+                    "chariox-admission-tests-{}-{:032x}",
+                    std::process::id(),
+                    rand::random::<u128>()
+                ))
+            });
+            if owned {
+                std::fs::create_dir(&directory).expect("owned admission fixture directory");
+                std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755))
+                    .unwrap();
+                for resource in ["memory", "disk"] {
+                    let file = OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .mode(0o444)
+                        .open(directory.join(format!("{resource}.lock")))
+                        .unwrap();
+                    drop(file);
+                }
+            }
+            for resource in ["memory", "disk"] {
+                open_for_owner(&directory.join(format!("{resource}.lock")), unsafe {
+                    libc::geteuid()
+                })
+                .expect("fixture lock owner and inode must be valid");
+            }
+            if owned {
+                unsafe {
+                    libc::atexit(cleanup_test_locks);
+                }
+            }
+            TestLocks { directory, owned }
+        })
+        .directory
+}
+
+#[cfg(test)]
+extern "C" fn cleanup_test_locks() {
+    if let Some(locks) = TEST_LOCKS.get() {
+        if locks.owned {
+            for resource in ["memory", "disk"] {
+                let _ = std::fs::remove_file(locks.directory.join(format!("{resource}.lock")));
+            }
+            let _ = std::fs::remove_dir(&locks.directory);
+        }
+    }
 }
 
 fn invalid(message: &str) -> io::Error {
@@ -98,6 +181,17 @@ mod tests {
     impl Drop for Fixture {
         fn drop(&mut self) {
             std::fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_resource_locks_are_owned_disposable_and_not_host_paths() {
+        for resource in ["memory", "disk"] {
+            let fixture = path(resource);
+            assert_ne!(fixture, host_path(resource));
+            let file = open(&fixture).unwrap();
+            assert_eq!(file.metadata().unwrap().uid(), unsafe { libc::geteuid() });
+            assert_eq!(file.metadata().unwrap().nlink(), 1);
         }
     }
 

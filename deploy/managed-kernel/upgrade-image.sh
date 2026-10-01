@@ -726,6 +726,13 @@ else
   pending_release=
 fi
 
+# Provision before supervisor namespace setup, including upgrades from PrivateTmp hosts.
+. "$script_root/docker-admission-install.sh"
+install_docker_admission_artifacts "$published_release" "$install_root" || {
+  echo "failed to provision host-wide Docker admission locks" >&2
+  exit 1
+}
+
 pending_transaction=$chariox_root/.managed-kernel-upgrade.pending
 if [ -e "$pending_transaction" ] || [ -L "$pending_transaction" ]; then
   if [ -L "$pending_transaction" ] || [ ! -d "$pending_transaction" ]; then

@@ -1,6 +1,7 @@
 [Unit]
 Description=Chariox managed independent kernel supervisor
-After=network-online.target
+After=network-online.target chariox-docker-admission-locks.service
+Requires=chariox-docker-admission-locks.service
 Wants=network-online.target chariox-rootless-docker.service chariox-app-storage.service
 After=chariox-rootless-docker.service chariox-app-storage.service
 ConditionPathExists=/usr/local/bin/chariox-managed-bootstrap

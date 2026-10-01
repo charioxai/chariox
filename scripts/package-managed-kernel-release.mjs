@@ -26,6 +26,8 @@ const SLICE_BUILD_CONTEXT_PATH = "/usr/lib/chariox/slice-build-context"
 const SLICE_BUILD_CONTEXT_SOURCES = [
   "Cargo.toml",
   "Cargo.lock",
+  "deploy/local-linux/provision-docker-admission-locks.py",
+  "deploy/managed-kernel/chariox-docker-admission-locks.service",
   "adapters/rust",
   "apps/aegs-dummy",
   "apps/browser-session-import",

@@ -53,6 +53,8 @@ printf '%s\\n' ${passwd.map((line) => `'${line}'`).join(" ")} | awk -F: -v key="
 echo "$*" >> "$HARNESS_STATE/systemctl"
 case "$*" in
   "show user@"*) echo "\${HARNESS_DELEGATE:-cpu memory pids}" ;;
+  "is-enabled --quiet chariox-docker-admission-locks.service") test -e "$HARNESS_STATE/enabled-admission" ;;
+  "enable --quiet chariox-docker-admission-locks.service") touch "$HARNESS_STATE/enabled-admission" ;;
   "is-enabled --quiet chariox-app-storage.service") test -e "$HARNESS_STATE/enabled" ;;
   "is-active --quiet chariox-app-storage.service") test -e "$HARNESS_STATE/active" ;;
   "enable --quiet chariox-app-storage.service") touch "$HARNESS_STATE/enabled" ;;

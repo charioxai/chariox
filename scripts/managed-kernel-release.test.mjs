@@ -278,6 +278,8 @@ async function makeFixture(root, variant = "") {
     ["apps/kernel/src/transport/relay_peer.rs", "pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 1;\n"],
     ["apps/relay/Cargo.toml", "[package]\nname = \"relay-fixture\"\n"],
     ["deploy/managed-kernel/chariox-managed-bootstrap.service", await readFile(service)],
+    ["deploy/local-linux/provision-docker-admission-locks.py", await readFile(join(repositoryRoot, "deploy/local-linux/provision-docker-admission-locks.py"))],
+    ["deploy/managed-kernel/chariox-docker-admission-locks.service", await readFile(join(repositoryRoot, "deploy/managed-kernel/chariox-docker-admission-locks.service"))],
     ["deploy/managed-kernel/chariox-app-storage.service", await readFile(join(repositoryRoot, "deploy/managed-kernel/chariox-app-storage.service"))],
     ["deploy/managed-kernel/chariox-path1-managed-bootstrap.service", await readFile(path1Service)],
     ["deploy/managed-kernel/chariox-disposable-worker-bootstrap.service", await readFile(workerService)],
@@ -1322,6 +1324,19 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
     env: { ...env, HARNESS_MUTATE_SOURCE: sourceKernel },
   })
   assert.equal(first.status, 0, first.stderr)
+  const admissionPaths = ["memory", "disk"].map((resource) => join(harness.installRoot, `tmp/chariox-docker-${resource}-admission.lock`))
+  const admissionInodes = []
+  for (const path of admissionPaths) {
+    const metadata = await stat(path)
+    assert.equal(metadata.size, 0)
+    assert.equal(metadata.mode & 0o777, 0o444)
+    admissionInodes.push(metadata.ino)
+  }
+  assert.deepEqual(
+    await readFile(join(harness.installRoot, "usr/libexec/chariox-docker-admission-locks")),
+    await readFile(join(repositoryRoot, "deploy/local-linux/provision-docker-admission-locks.py")),
+  )
+  assert.match(await readFile(join(harness.installRoot, "etc/systemd/system/chariox-docker-admission-locks.service"), "utf8"), /Before=basic.target chariox-managed-bootstrap.service/)
   const contextPath = "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker"
   for (const [link, source] of [
     ["etc/systemd/user/chariox-rootless-engine.service", "chariox-rootless-engine.service"],
@@ -1358,6 +1373,7 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
   await writeFile(sourceKernel, "kernel fixture\n", { mode: 0o755 })
   const second = spawnSync(installer, args, { encoding: "utf8", env })
   assert.equal(second.status, 0, second.stderr)
+  assert.deepEqual(await Promise.all(admissionPaths.map(async (path) => (await stat(path)).ino)), admissionInodes)
   assert.equal((await stat(deterministicRelease)).ino, firstReleaseInode)
   assert.equal((await lstat(currentLink)).ino, firstCurrentInode)
   assert.equal(await lstat(stalePending).then(() => true, () => false), false)
@@ -1406,7 +1422,7 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
   assert.equal(await readFile(join(harness.installRoot, "usr/libexec/chariox-app-storage"), "utf8"), "app storage fixture\n")
   assert.equal((await stat(join(harness.installRoot, "usr/libexec/chariox-app-storage"))).mode & 0o777, 0o755)
   assert.deepEqual(JSON.parse(await readFile(join(harness.installRoot, "etc/chariox/app-storage.json"), "utf8")), {
-    schema: "chariox.app-storage-enrollment.v1", owners: [{uid:998,gid:998,cgroup_root:"/sys/fs/cgroup/system.slice/chariox-managed-bootstrap.service/apps",kernel_database_paths:["/var/lib/chariox/home/state/kernel.db"]}],
+    schema: "chariox.app-storage-enrollment.v1", owners: [{uid:998,gid:998,cgroup_root:"/sys/fs/cgroup/system.slice/chariox-managed-bootstrap.service/apps",kernel_database_paths:["/home/chariox/.chariox/state/kernel.db"]}],
   })
   assert.equal((await stat(join(harness.installRoot, "usr/lib/chariox/release-manifest.json"))).mode & 0o777, 0o644)
   const installedProvisioner = join(
