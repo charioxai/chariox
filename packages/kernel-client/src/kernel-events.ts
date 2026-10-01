@@ -1,4 +1,5 @@
 import type {
+  PasskeyPrompt,
   ProviderAccountSummary,
   SliceRecord,
   WaitingRoomPublicSessionSummary,
@@ -145,4 +146,10 @@ export type KernelEvent =
   | {
     event: "transport_closed"
     message: string
+  }
+  | {
+    /** Protocol 394: every passkey prompt pending for this terminal's user;
+     * sent when a subscription starts and whenever the set changes. */
+    event: "passkey_prompts_changed"
+    prompts: PasskeyPrompt[]
   }
