@@ -292,7 +292,7 @@ test("managed environment summaries bind the runtime machine and kernel", () => 
 
 test("managed environment details preserve observed activity and operation history", () => {
   assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 370)
-  assert.equal(managedEnvironmentShutdownObservationMinimumProtocolVersion, 348)
+  assert.equal(managedEnvironmentShutdownObservationMinimumProtocolVersion, 370)
   const environment: ManagedEnvironmentSummary = {
     environmentId: "environment-1",
     accountId: "account-1",
@@ -320,6 +320,7 @@ test("managed environment details preserve observed activity and operation histo
     },
     contextManifestDigest: null,
     autoStopPolicy: { minimumRuntimeSeconds: 10_800, idleDelaySeconds: 900 },
+    runtimeStartedAt: "2026-09-26T00:00:00.000Z",
     runningAgentCount: 0,
     lastActivityReportedAt: "2026-09-26T05:00:02.000Z",
     lastActivityChangedAt: "2026-09-26T04:59:00.000Z",
@@ -352,10 +353,14 @@ test("managed environment details preserve observed activity and operation histo
   assert.deepEqual(parsed, details)
   assert.equal(parsed.operations?.[0]?.operationId, "operation-stop-7")
   assert.equal(parsed.operations?.[0]?.desiredRevision, 7)
+  assert.equal(parsed.environment.runtimeStartedAt, "2026-09-26T00:00:00.000Z")
   assert.equal(parsed.environment.lastActivityChangedAt, "2026-09-26T04:59:00.000Z")
   assert.equal("operations" in parsed.environment, false)
 
-  const legacy: ManagedEnvironmentDetails = { environment }
+  const { runtimeStartedAt: _runtimeStartedAt, ...legacyEnvironment } = environment
+  const legacy: ManagedEnvironmentDetails = { environment: legacyEnvironment }
+  assert.equal(legacy.environment.runtimeStartedAt, undefined)
+  assert.equal(({ ...environment, runtimeStartedAt: null } satisfies ManagedEnvironmentSummary).runtimeStartedAt, null)
   assert.equal(legacy.operations, undefined)
   assert.equal(legacy.environment.lastActivityChangedAt, "2026-09-26T04:59:00.000Z")
 })

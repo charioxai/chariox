@@ -425,6 +425,9 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
         .is_none());
     let shutdown_projection = serde_json::json!({
         "activity": {
+            "runtimeStartedAt": snapshot.pointer(
+                "/10/ManagedEnvironmentCatalog/catalog/environments/0/runtimeStartedAt"
+            ),
             "runningAgentCount": snapshot.pointer(
                 "/10/ManagedEnvironmentCatalog/catalog/environments/0/runningAgentCount"
             ),
@@ -454,7 +457,7 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
         .expect("managed shutdown observation wire projection");
     assert_eq!(
         format!("{:x}", Sha256::digest(shutdown_serialized.as_bytes())),
-        "2888395f73d8e8e3c194da971e09e5ae407f3a6fec2124acf2d3ec76aad6435f"
+        "b81527a4eb1ee6e0360a7d0d449d5c62268bba2d71b35a57fade07e1472e2155"
     );
     let legacy_response = serde_json::json!({
         "ManagedEnvironment": {
@@ -684,6 +687,7 @@ fn managed_environment_summary(
         },
         context_manifest_digest: None,
         auto_stop_policy: policy,
+        runtime_started_at: Some("2026-08-21T00:00:00.000Z".to_string()),
         running_agent_count: Some(0),
         last_activity_reported_at: Some("2026-08-21T00:00:00.000Z".to_string()),
         last_activity_changed_at: Some("2026-08-21T00:00:00.000Z".to_string()),
@@ -722,6 +726,7 @@ fn remove_shutdown_observation_fields(value: &mut serde_json::Value) {
         }
         serde_json::Value::Object(fields) => {
             for key in [
+                "runtimeStartedAt",
                 "runningAgentCount",
                 "lastActivityReportedAt",
                 "lastActivityChangedAt",

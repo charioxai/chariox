@@ -116,5 +116,5 @@ pub use workspace::*;
 /// Version 367 adds bounded, explicitly negotiated Unix guarded-control sessions.
 /// Version 368 adds Cloud-coordinated managed release update requests.
 /// Version 369 coordinates canonical signed relay daemon identity admission.
-/// Version 370 keeps bounded terminal subscriptions draining pending output.
+/// Version 370 drains pending terminal output and projects managed runtime start observations.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 370;

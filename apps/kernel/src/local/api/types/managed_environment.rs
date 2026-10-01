@@ -223,6 +223,8 @@ pub struct ManagedEnvironmentSummary {
     pub context_manifest_digest: Option<String>,
     pub auto_stop_policy: ManagedEnvironmentAutoStopPolicy,
     #[serde(default)]
+    pub runtime_started_at: Option<String>,
+    #[serde(default)]
     pub running_agent_count: Option<u8>,
     #[serde(default)]
     pub last_activity_reported_at: Option<String>,

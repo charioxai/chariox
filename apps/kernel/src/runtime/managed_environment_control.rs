@@ -746,6 +746,38 @@ mod tests {
     }
 
     #[test]
+    fn managed_environment_cloud_runtime_start_survives_public_projection() {
+        let mut environment = environment_json();
+        environment["runtimeStartedAt"] = serde_json::json!("2026-10-01T11:50:04.784Z");
+        let decoded: cloud_contract::EnvironmentSummary =
+            serde_json::from_value(environment).expect("Cloud summary with runtime start");
+        let summary: crate::local::ManagedEnvironmentSummary = decoded.into();
+        let projected = serde_json::to_value(summary).expect("public managed summary");
+        assert_eq!(projected["runtimeStartedAt"], "2026-10-01T11:50:04.784Z");
+    }
+
+    #[test]
+    fn managed_environment_runtime_start_is_nullable_and_validated() {
+        for value in [None, Some(serde_json::Value::Null)] {
+            let mut environment = environment_json();
+            if let Some(value) = value {
+                environment["runtimeStartedAt"] = value;
+            }
+            let decoded: cloud_contract::EnvironmentSummary =
+                serde_json::from_value(environment).expect("legacy or pre-bootstrap summary");
+            let summary: crate::local::ManagedEnvironmentSummary = decoded.into();
+            assert_eq!(summary.runtime_started_at, None);
+        }
+        for value in ["not-a-date", "2026-10-01T11:50:04.784+00:00"] {
+            let mut environment = environment_json();
+            environment["runtimeStartedAt"] = serde_json::json!(value);
+            assert!(
+                serde_json::from_value::<cloud_contract::EnvironmentSummary>(environment).is_err()
+            );
+        }
+    }
+
+    #[test]
     fn managed_environment_cloud_summary_tolerates_pre_kernel_binding_responses() {
         let mut legacy = environment_json();
         legacy

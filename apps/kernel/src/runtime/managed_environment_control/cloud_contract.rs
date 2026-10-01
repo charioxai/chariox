@@ -155,6 +155,8 @@ pub(in crate::runtime) struct EnvironmentSummary {
     context_plan: ContextPlan,
     context_manifest_digest: Option<String>,
     auto_stop_policy: AutoStopPolicy,
+    #[serde(default, deserialize_with = "deserialize_optional_timestamp")]
+    runtime_started_at: Option<String>,
     #[serde(default, deserialize_with = "deserialize_running_agent_count")]
     running_agent_count: Option<u8>,
     #[serde(default, deserialize_with = "deserialize_optional_timestamp")]
@@ -346,6 +348,7 @@ impl From<EnvironmentSummary> for ManagedEnvironmentSummary {
             context_plan: value.context_plan.into(),
             context_manifest_digest: value.context_manifest_digest,
             auto_stop_policy: value.auto_stop_policy.into(),
+            runtime_started_at: value.runtime_started_at,
             running_agent_count: value.running_agent_count,
             last_activity_reported_at: value.last_activity_reported_at,
             last_activity_changed_at: value.last_activity_changed_at,

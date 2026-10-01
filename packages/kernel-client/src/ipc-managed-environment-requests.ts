@@ -23,7 +23,7 @@ export type ManagedEnvironmentReimageReceiptStatus =
 
 export const managedEnvironmentReimagePreflightMinimumProtocolVersion = 341
 export const managedEnvironmentCreateMinimumProtocolVersion = 342
-export const managedEnvironmentShutdownObservationMinimumProtocolVersion = 348
+export const managedEnvironmentShutdownObservationMinimumProtocolVersion = 370
 
 export type ManagedEnvironmentAutoStopPolicy = {
   readonly minimumRuntimeSeconds: number
@@ -109,6 +109,7 @@ export type ManagedEnvironmentSummary = {
   readonly contextPlan: ManagedEnvironmentContextPlan
   readonly contextManifestDigest: string | null
   readonly autoStopPolicy: ManagedEnvironmentAutoStopPolicy
+  readonly runtimeStartedAt?: string | null
   readonly runningAgentCount?: 0 | 1 | null
   readonly lastActivityReportedAt?: string | null
   readonly lastActivityChangedAt?: string | null
