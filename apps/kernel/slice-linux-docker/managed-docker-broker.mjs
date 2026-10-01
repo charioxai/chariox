@@ -123,6 +123,9 @@ const ALLOWED_ENVIRONMENT = new Set([
   "CHARIOX_SLICE_OWNER_KERNEL_ID",
   "CHARIOX_SLICE_OWNER_MACHINE_ID",
   "CHARIOX_SLICE_OWNER_PUBLIC_KEY",
+  "CHARIOX_SLICE_DOCKER_PIDS_LIMIT",
+  "CHARIOX_SLICE_DOCKER_NOFILE_LIMIT",
+  "CHARIOX_SLICE_MIN_FREE_MB",
   "CHARIOX_SLICE_DOCKER_IMAGE",
   "CHARIOX_SLICE_BASE_IMAGE",
   "CHARIOX_SLICE_BUILD_IMAGE",
@@ -561,6 +564,14 @@ function validateProvisioner(action, environment, files) {
   }
   if (environment.CHARIOX_SLICE_DOCKER_CPUS !== undefined && !isPositiveDockerCpuLimit(environment.CHARIOX_SLICE_DOCKER_CPUS)) {
     fail("CHARIOX_SLICE_DOCKER_CPUS is invalid")
+  }
+  for (const [name, minimum, maximum, grammar] of [
+    ["CHARIOX_SLICE_DOCKER_PIDS_LIMIT", 1, 2_147_483_647, /^[1-9][0-9]{0,9}$/],
+    ["CHARIOX_SLICE_DOCKER_NOFILE_LIMIT", 1024, 1_048_576, /^[1-9][0-9]{0,6}$/],
+    ["CHARIOX_SLICE_MIN_FREE_MB", 0, 4_294_967_295, /^[0-9]{1,10}$/],
+  ]) {
+    const value = environment[name]
+    if (value !== undefined && (!grammar.test(value) || Number(value) < minimum || Number(value) > maximum)) fail(`${name} is invalid`)
   }
   const diskLayerMb = environment.CHARIOX_SLICE_DISK_LAYER_MB
   const diskHomeMb = environment.CHARIOX_SLICE_DISK_HOME_MB

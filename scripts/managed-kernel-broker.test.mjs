@@ -1204,3 +1204,14 @@ test("MP-08 MP-10 MP-11 broker lifetime has no placement-selected total deadline
  const provisioner=await readFile(join(repositoryRoot,"apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh"),"utf8")
  assert.doesNotMatch(provisioner,/CHARIOX_SLICE_BROKER_BUILD_TIMEOUT_SECONDS/)
 })
+
+test("MP-08 MP-11 broker admits documented nondefault slice tuning", async context => {
+ const root=await mkdtemp(join(tmpdir(),"chariox-broker-tuning-"))
+ context.after(()=>rm(root,{recursive:true,force:true}))
+ const environment={CHARIOX_SLICE_ID:"slice-dev",CHARIOX_SLICE_NAME:"chariox-slice-dev",CHARIOX_SLICE_HOME_VOLUME:"chariox-slice-dev-home",CHARIOX_SLICE_DOCKER_PIDS_LIMIT:"2048",CHARIOX_SLICE_DOCKER_NOFILE_LIMIT:"32768",CHARIOX_SLICE_MIN_FREE_MB:"768"}
+ const result=validate({kind:"provisioner",action:"recover",environment,files:[]},root)
+ assert.equal(result.status,0,result.stderr)
+ for(const [name,values] of Object.entries({CHARIOX_SLICE_DOCKER_PIDS_LIMIT:["0","-1","2147483648","1.5"],CHARIOX_SLICE_DOCKER_NOFILE_LIMIT:["0","1023","1048577","bad"],CHARIOX_SLICE_MIN_FREE_MB:["-1","4294967296","bad"]})) {
+  for(const value of values) assert.notEqual(validate({kind:"provisioner",action:"recover",environment:{...environment,[name]:value},files:[]},root).status,0,`${name} ${value}`)
+ }
+})

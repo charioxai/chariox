@@ -322,7 +322,7 @@ fn execute(request: &BrokerRequest<'_>) -> io::Result<Output> {
 }
 
 #[cfg(unix)]
-fn provisioner_environment(command: &Command) -> BTreeMap<String, String> {
+pub(super) fn provisioner_environment(command: &Command) -> BTreeMap<String, String> {
     command
         .get_envs()
         .filter_map(|(name, value)| {

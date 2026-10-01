@@ -28,6 +28,7 @@ mod disk_admission;
 mod extension_build;
 mod home_archive_capture;
 mod home_archive_verify;
+mod tuning;
 mod image;
 mod memory_admission;
 mod provider_inputs;
@@ -1093,6 +1094,7 @@ fn configure_local_docker_slice_command(
     if !provision {
         return Ok(());
     }
+    tuning::project(command)?;
     command
         .env("CHARIOX_SLICE_HOSTNAME", local_docker_hostname(record))
         .env(

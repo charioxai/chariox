@@ -570,7 +570,9 @@ available_mb_for_path() {
 require_slice_free_space() {
   local phase="$1"
   shift
-  [[ "$SLICE_MIN_FREE_MB" =~ ^[0-9]+$ ]] || fail "CHARIOX_SLICE_MIN_FREE_MB must be a non-negative integer"
+  [[ "$SLICE_MIN_FREE_MB" =~ ^[0-9]{1,10}$ ]] && (( 10#$SLICE_MIN_FREE_MB <= 4294967295 )) \
+    || fail "CHARIOX_SLICE_MIN_FREE_MB must be a non-negative u32 MiB value"
+  SLICE_MIN_FREE_MB="$((10#$SLICE_MIN_FREE_MB))"
   local paths=("$@")
   local path
   for path in "${paths[@]}"; do
