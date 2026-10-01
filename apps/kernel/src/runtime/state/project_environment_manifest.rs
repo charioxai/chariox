@@ -63,6 +63,14 @@ impl KernelRuntimeState {
                 "caller does not own this Project environment",
             ));
         }
+        // MP-08 / MP-10 / MP-11: A home session is not the worker Project's
+        // environment authority. Fail before touching its manifest until the
+        // existing leased-agent protocol supports worker-owned adjustment.
+        if agent.remote_execution().is_some() {
+            return Err(environment_failure(
+                "adjust this environment on its execution kernel; remote adjustment is unavailable",
+            ));
+        }
         if self
             .owned
             .prompt_state_owner
@@ -298,6 +306,41 @@ mod tests {
             .start_project_environment_adjustment(request.clone(), "another-user")
             .await
             .is_err());
+        runtime
+            .owned
+            .agent_store
+            .bind_remote_execution(
+                agent.id(),
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: "synthetic-worker".into(),
+                    worker_machine_id: "synthetic-machine".into(),
+                    execution_lease_id: "synthetic-lease".into(),
+                    leased_agent_id: "synthetic-leased-agent".into(),
+                    active_worker_provider_run_id: None,
+                    relay_url: None,
+                    relay_token: None,
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
+                },
+            )
+            .unwrap();
+        assert!(runtime
+            .start_project_environment_adjustment(request.clone(), "user-1")
+            .await
+            .is_err());
+        assert_eq!(store.load(session.project_id()).unwrap().unwrap(), state);
+        assert!(runtime
+            .session_snapshot(session.id())
+            .await
+            .unwrap()
+            .active_interactions()
+            .is_empty());
+        runtime
+            .owned
+            .agent_store
+            .clear_remote_execution(agent.id())
+            .unwrap();
         assert!(matches!(
             runtime
                 .start_project_environment_adjustment(request, "user-1")
