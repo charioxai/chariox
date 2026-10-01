@@ -26,7 +26,7 @@ const statusVariants = new Set([
   "created", "running", "waiting", "completing", "paused", "completed", "failed", "stopped",
 ])
 
-export async function createRoomCoordinatedLoadRuntime({ plan, repoRoot, runDirectory, signal = null }, dependencies = {}) {
+export async function createRoomCoordinatedLoadRuntime({ plan, repoRoot, runDirectory, runtimeDirectory = runDirectory, signal = null }, dependencies = {}) {
   if (process.platform !== "linux" && process.platform !== "darwin") {
     throw new Error("the local coordinated load runner currently supports Linux and macOS")
   }
@@ -200,10 +200,10 @@ export async function createRoomCoordinatedLoadRuntime({ plan, repoRoot, runDire
     },
 
     async startTui(_plan, tui) {
-      const automationSocket = path.join(runDirectory, `${tui.id}.sock`)
+      const automationSocket = path.join(runtimeDirectory, `${tui.id}.sock`)
       const cliPath = path.join(repoRoot, "apps/cli/dist/index.js")
       await access(cliPath)
-      const home = path.join(runDirectory, `${tui.id}-home`)
+      const home = path.join(runtimeDirectory, `${tui.id}-home`)
       await mkdir(home, { recursive: true, mode: 0o700 })
       const clientId = `${plan.runId}-${tui.id}`
       const connectionArgs = tui.route === "local"
@@ -282,15 +282,39 @@ export async function createRoomCoordinatedLoadRuntime({ plan, repoRoot, runDire
 
     async injectSlowViewer(task, delayMs) {
       const state = privateTask(task, "viewer")
+      await state.reader.pause()
       const before = performance.now()
-      state.reader.pause()
       try { await processApi.sleep(delayMs, signal) } finally { state.reader.resume() }
-      await state.reader.takeFrame()
-      return {
-        viewerId: task.id,
-        requestedDelayMs: delayMs,
-        observedDelayMs: Math.round(performance.now() - before),
+      const observedDelayMs = Math.round(performance.now() - before)
+      let recovered = false
+      let recoveryMs = 0
+      try {
+        await state.reader.takeFrame({ fresh: true })
+      } catch (error) {
+        if (!error.message.includes("receive buffer exceeded its bounded capacity")) throw error
+        const recoveryStarted = performance.now()
+        const healthy = [...viewers.entries()].find(([id]) => id !== task.id)?.[1]
+        if (!healthy) throw new Error("slow viewer recovery requires an independent healthy viewer")
+        await Promise.all([
+          measureRoomLatency(healthy.client, requests, plan.headedSlices),
+          healthy.reader.takeFrame({ fresh: true }),
+        ])
+        await state.reader.stop()
+        const stream = await openSelkiesDisplayStream({
+          client: state.client, sliceId: targetRoom().sliceId,
+          sessionId: targetRoom().roomId, attachmentId: state.attachmentId,
+          connectTimeoutMs: 10_000, signal,
+        })
+        // Track the replacement before startup so every failure closes it.
+        const reader = startLoadViewerReader(stream, (activeStream) => nextBinaryFrame(activeStream, 10_000, signal))
+        Object.assign(state, { stream, reader })
+        Object.assign(viewers.get(task.id), { stream, reader })
+        await stream.sendControl("START_VIDEO", { signal })
+        await reader.takeFrame({ fresh: true })
+        recovered = true
+        recoveryMs = Math.round(performance.now() - recoveryStarted)
       }
+      return { viewerId: task.id, requestedDelayMs: delayMs, observedDelayMs, recovered, recoveryMs }
     },
 
     async sample(_plan, { sampleIndex, ownedTasks, workflowTask, elapsedMs }) {

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
-import { lstat, mkdir, open, readFile, realpath, stat } from "node:fs/promises"
+import { lstat, mkdir, mkdtemp, open, readFile, realpath, rm, stat } from "node:fs/promises"
 import path from "node:path"
+import os from "node:os"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
 import {
@@ -48,9 +49,16 @@ export async function runCoordinatedLoadCli(argv, io = console) {
     process.once("SIGTERM", abort)
 
     let report
+    let runtimeDirectory
     try {
+      const stateParent = process.env.CHARIOX_DRILL_H_RUNTIME_ROOT
+        ?? path.join(os.homedir(), ".chariox", "dev", "room-coordinated-load")
+      if (!path.isAbsolute(stateParent) || !isOutsideRepo(stateParent)) throw new Error("runtime state root must be absolute and outside the repository")
+      await mkdir(stateParent, { recursive: true, mode: 0o700 })
+      await verifyExternalDirectories([stateParent])
+      runtimeDirectory = await mkdtemp(path.join(stateParent, "h-"))
       const { createRoomCoordinatedLoadRuntime } = await import("./lib/room-coordinated-load-runtime.mjs")
-      const runtime = await createRoomCoordinatedLoadRuntime({ plan, repoRoot, runDirectory, signal: controller.signal })
+      const runtime = await createRoomCoordinatedLoadRuntime({ plan, repoRoot, runDirectory, runtimeDirectory, signal: controller.signal })
       report = await runRoomCoordinatedLoad(plan, runtime, { signal: controller.signal })
     } catch {
       report = {
@@ -71,6 +79,8 @@ export async function runCoordinatedLoadCli(argv, io = console) {
         unrunGates: COORDINATED_LOAD_UNRUN_GATES,
       }
     } finally {
+      // Successful task cleanup settles process groups before deleting their homes.
+      if (runtimeDirectory && report?.cleanup?.clean) await rm(runtimeDirectory, { recursive: true, force: true })
       clearTimeout(totalTimeout)
       process.removeListener("SIGINT", abort)
       process.removeListener("SIGTERM", abort)
@@ -153,6 +163,7 @@ function helpText() {
     "",
     "Drill H attaches two Room-scoped Selkies viewers and two normal TUI clients to exact prepared local headed slices,",
     "invokes one configured workflow, samples bounded resource and latency metrics, delays one viewer, and stops only tasks it started.",
+    "CHARIOX_DRILL_H_RUNTIME_ROOT optionally selects an external scratch parent for TUI homes and short automation sockets.",
     "Execution is opt-in, reads relay credentials only from the named environment variable, and writes mode-0600 evidence outside the repository.",
     "A stalled kernel call uses the existing LocalIpcClient 600-second timeout; the client exposes no per-request abort.",
     "A measured report is not an acceptance verdict. Safe maximum admission, Cloud Web rendering, managed-machine execution, and separate 8h/24h soaks remain gates.",
