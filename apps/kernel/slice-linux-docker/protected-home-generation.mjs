@@ -1,3 +1,4 @@
+import { DURABLE_LAYOUT_ROOT } from "./protected-authority.mjs"
 import { randomUUID } from "node:crypto"
 import { mkdirSync, existsSync } from "node:fs"
 import { join } from "node:path"
@@ -93,7 +94,7 @@ export function createHomeGenerationStore(root) {
 if (process.argv[1]?.endsWith("/protected-home-generation.mjs")) {
   try {
     if (process.getuid() !== 0 || process.argv[2] !== "--require-ready") refuse()
-    createHomeGenerationStore("/var/lib/chariox-docker/private-layout").requireReady({
+    createHomeGenerationStore(DURABLE_LAYOUT_ROOT).requireReady({
       container: process.env.CHARIOX_SLICE_NAME,
       token: process.env.CHARIOX_SLICE_RESTORE_GENERATION,
       volume: process.env.CHARIOX_SLICE_HOME_VOLUME,
