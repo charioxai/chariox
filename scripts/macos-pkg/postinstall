@@ -1,0 +1,101 @@
+#!/bin/bash
+# Postinstall of the Chariox macOS package (dev.chariox.pkg). The macOS Installer
+# runs it as root once the payload is in place; it is the package's one
+# privileged step. The kernel and its Apps then run as ordinary users.
+#   1. checks that the staged App runtime is the one this package pins: the
+#      SHA-256 of its runtime-inventory.json must be RUNTIME_DIGEST;
+#   2. enrolls it with chariox-app-runtime-install, which verifies the inventory's
+#      Ed25519 signature against RUNTIME_KEY before it publishes
+#      /Library/Application Support/Chariox/AppRuntimes/<digest> and the
+#      enrollment. The key and digest are pinned here, in the signed package,
+#      never read from the runtime;
+#   3. removes the staged copy, whatever the outcome;
+#   4. restarts the kernel LaunchAgent in the console user's gui domain; other
+#      users get it at their next login;
+#   5. retires runtime generations no kernel holds any more, so repeated upgrades
+#      stay under the installer's limit of eight generations.
+# A failure in step 1 or 2 fails the installation and does not restart the kernel.
+set -euo pipefail
+umask 022
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
+
+# Empty in the package. Tests render this script with a fake root under which
+# every host path, including the launchctl it drives, resolves.
+R='@@ROOT@@'
+VERSION='@@VERSION@@'
+RUNTIME_KEY='@@RUNTIME_KEY@@'
+RUNTIME_DIGEST='@@RUNTIME_DIGEST@@'
+LABEL=dev.chariox.kernel
+SUPPORT="$R/Library/Application Support/Chariox"
+PACKAGE="$R/usr/local/libexec/chariox"
+STAGING="$PACKAGE/staging"
+STAGED="$STAGING/runtime-$RUNTIME_DIGEST"
+INSTALLER="$PACKAGE/chariox-app-runtime-install"
+RUNTIMES="$SUPPORT/AppRuntimes"
+AGENT="$R/Library/LaunchAgents/$LABEL.plist"
+LAUNCHCTL="$R/bin/launchctl"
+
+say() { printf '[chariox-pkg] %s\n' "$*"; }
+die() { printf '[chariox-pkg] error: %s\n' "$*" >&2; exit 1; }
+# Root runs the runtime installer: only while root owns it and every directory
+# above it, and no one else can write any of them.
+trusted() {
+  local path=$1
+  while :; do
+    [ "$(stat -f %u "$path")" = 0 ] || return 1
+    case "$(stat -f %Sp "$path")" in ?????w????|????????w?) return 1 ;; esac
+    [ "$path" != / ] || return 0
+    path=$(dirname "$path")
+  done
+}
+
+if [ -z "$R" ]; then
+  [ "$(id -u)" = 0 ] || die "the macOS Installer runs this as root"
+  [ "${3:-/}" = / ] || die "Chariox installs only on the startup volume, not ${3:-}"
+  trusted "$INSTALLER" || die "$INSTALLER or a directory above it is not root's alone"
+fi
+trap 'rm -rf -- "$STAGING"' EXIT
+
+# 1. and 2. The runtime.
+say "Chariox $VERSION: enrolling App runtime $RUNTIME_DIGEST"
+inventory="$STAGED/runtime-inventory.json"
+[ -f "$inventory" ] && [ ! -L "$inventory" ] || die "the package's staged runtime is missing"
+actual=$(shasum -a 256 "$inventory")
+actual=${actual%% *}
+[ "$actual" = "$RUNTIME_DIGEST" ] \
+  || die "the staged runtime inventory is $actual, not the pinned $RUNTIME_DIGEST; nothing was enrolled"
+"$INSTALLER" install --source "$STAGED" \
+  --trusted-public-key-hex "$RUNTIME_KEY" --inventory-sha256 "$RUNTIME_DIGEST" \
+  || die "chariox-app-runtime-install refused the runtime; the kernel was not restarted"
+
+# 4. The console user's kernel. bootout stops a running kernel (launchd waits up
+# to the agent's ExitTimeOut) and fails when none is loaded.
+console=$(stat -f %Su "$R/dev/console" 2>/dev/null || true)
+case "$console" in
+  ''|root|loginwindow|_mbsetupuser)
+    say "no user is logged in at the console; the kernel starts at each user's next login" ;;
+  *)
+    domain="gui/$(id -u "$console")"
+    "$LAUNCHCTL" bootout "$domain/$LABEL" 2>/dev/null || true
+    if "$LAUNCHCTL" bootstrap "$domain" "$AGENT"; then
+      say "started the kernel for $console ($domain/$LABEL)"
+    else
+      say "warning: the kernel did not start for $console; it starts at their next login, or now with: launchctl bootstrap $domain '$AGENT'"
+    fi ;;
+esac
+
+# 5. Older generations. cleanup refuses the enrolled one and any a kernel or App
+# worker still holds (its shared lease); those stay for a later install or the
+# uninstaller.
+for generation in "$RUNTIMES"/*; do
+  name=${generation##*/}
+  [ "${#name}" = 64 ] && [ "$name" != "$RUNTIME_DIGEST" ] || continue
+  case "$name" in *[!0-9a-f]*) continue ;; esac
+  if "$INSTALLER" cleanup --inventory-sha256 "$name" >/dev/null 2>&1; then
+    say "retired App runtime $name"
+  else
+    say "kept App runtime $name: it is still in use"
+  fi
+done
+say "done: Chariox $VERSION, App runtime $RUNTIME_DIGEST"
