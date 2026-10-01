@@ -102,7 +102,7 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
       panel.add(header)
       const prompt = view.prompt
       // The request scrolls when the terminal is too short for all of it.
-      const fixedRows = 15 + (view.error ? 2 : 0)
+      const fixedRows = 14 + (view.error ? 2 : 0)
       const wanted = 2 + rows(prompt.title || "Critical approval", width - 5) + rows(prompt.message, width - 5)
       body = new ScrollBoxRenderable(renderer, {
         height: Math.max(2, Math.min(wanted, dimensions.height - top - 1 - fixedRows)),
