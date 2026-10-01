@@ -92,7 +92,7 @@ async fn mcp_catalog_stream_tracks_grant_revoke_register_remove_and_scope() {
         crate::script::CharioxScriptRegistry::project_root(&root),
     ]);
     let source = root.join("fixture.py");
-    std::fs::write(&source, "def run():\n    \"\"\"Return the extension result.\"\"\"\n    return {'marker': 'MP-08-MP-10-live'}\n\ndef test_run():\n    \"\"\"Validate the fixture.\"\"\"\n    assert run()['marker'] == 'MP-08-MP-10-live'\n").unwrap();
+    std::fs::write(&source, "def run() -> dict:\n    \"\"\"Return the extension result.\"\"\"\n    return {'marker': 'MP-08-MP-10-live'}\n\ndef test_run():\n    \"\"\"Validate the fixture.\"\"\"\n    assert run()['marker'] == 'MP-08-MP-10-live'\n").unwrap();
     registry
         .install(&source, Some("extfix_tool"), &environment)
         .unwrap();
@@ -164,7 +164,7 @@ async fn mcp_catalog_stream_tracks_grant_revoke_register_remove_and_scope() {
     // Same-name schema/description replacement is an effective catalog change.
     registry.uninstall("extfix_tool").unwrap();
     receive(&mut socket, "notifications/tools/list_changed").await;
-    std::fs::write(&source, "def run(value: str):\n    \"\"\"Return changed input.\"\"\"\n    return value\n\ndef test_run():\n    \"\"\"Validate changed fixture.\"\"\"\n    assert run('ok') == 'ok'\n").unwrap();
+    std::fs::write(&source, "def run(value: str) -> str:\n    \"\"\"Return changed input.\"\"\"\n    return value\n\ndef test_run():\n    \"\"\"Validate changed fixture.\"\"\"\n    assert run('ok') == 'ok'\n").unwrap();
     registry
         .install(&source, Some("extfix_tool"), &environment)
         .unwrap();
