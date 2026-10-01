@@ -7,7 +7,8 @@ This enrollment is an unsigned development configuration. It does not claim a
 managed release signature or a managed control-plane deployment.
 
 The installer requires root and an immutable, verified worker image with its
-actual kernel SHA-256. The intended ordinary user must already have legitimate
+actual kernel SHA-256 and runtime-source-revision label. The worker runtime
+revision is pinned separately from the installed helper/source manifest digest. The intended ordinary user must already have legitimate
 access to `/run/docker.sock`, usually through the Docker group. The installer
 does not grant socket access or alter account memberships. It verifies the
 canonical root-owned socket and the same unmapped Linux engine at enrollment
@@ -26,6 +27,7 @@ sudo python3 deploy/local-linux/install-local-docker-dev.py \
   --user ordinary-test-user \
   --worker-image sha256:VERIFIED_WORKER_IMAGE_ID \
   --worker-kernel-sha256 VERIFIED_WORKER_KERNEL_SHA256 \
+  --worker-runtime-revision REVIEWED_EXACT_WORKER_RUNTIME_REVISION_LABEL \
   --docker-cli-sha256 REVIEWED_PUBLIC_DOCKER_CLI_SHA256 \
   --node-runtime /absolute/root-controlled/public/node \
   --node-runtime-sha256 REVIEWED_PUBLIC_NODE_SHA256 \
