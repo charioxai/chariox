@@ -1245,7 +1245,7 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     #[test]
-    fn leased_prompt_cancellation_requires_exact_prompt_and_run_at_protocol_65() {
+    fn leased_prompt_cancellation_requires_exact_prompt_and_run_at_protocol_66() {
         assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 66);
         let request = RelayPeerRequest::CancelLeasedPrompt {
             leased_agent_id: "leased-agent-1".to_string(),
@@ -1282,7 +1282,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_room_browser_capability_manifest_is_versioned_at_protocol_65() {
+    fn remote_room_browser_capability_manifest_is_versioned_at_protocol_66() {
         assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 66);
         let request = RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
             leased_agent_id: "leased-agent-1".to_string(),
@@ -1370,7 +1370,7 @@ mod tests {
     }
 
     #[test]
-    fn leased_project_setup_target_resolution_is_versioned_at_protocol_65() {
+    fn leased_project_setup_target_resolution_is_versioned_at_protocol_66() {
         assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 66);
         let request = RelayPeerRequest::ResolveLeasedProjectEnvironmentSetupTarget {
             leased_agent_id: "leased-agent-1".to_string(),
@@ -1414,7 +1414,7 @@ mod tests {
     }
 
     #[test]
-    fn project_environment_setup_relay_shapes_round_trip_at_protocol_65() {
+    fn project_environment_setup_relay_shapes_round_trip_at_protocol_66() {
         assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 66);
         let definition = crate::session::ProjectEnvironmentDefinition {
             schema_version: 1,
@@ -1589,7 +1589,7 @@ mod tests {
     }
 
     #[test]
-    fn leased_prompt_receipt_query_and_steer_reconciliation_are_versioned_at_protocol_65() {
+    fn leased_prompt_receipt_query_and_steer_reconciliation_are_versioned_at_protocol_66() {
         assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 66);
         let request = RelayPeerRequest::GetLeasedPromptReceipt {
             leased_agent_id: "leased-agent-1".to_string(),

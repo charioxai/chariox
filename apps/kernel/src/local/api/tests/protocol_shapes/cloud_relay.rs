@@ -162,7 +162,7 @@ fn legacy_terminal_join_requests_and_responses_remain_unbound() {
 
 #[test]
 fn relay_status_native_process_identity_is_versioned_and_hashed() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 371);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 373);
     let legacy = serde_json::json!({
         "configured": false, "connected": false, "relay_url": null,
         "relay_token_configured": false, "daemon_id": "kernel-1",

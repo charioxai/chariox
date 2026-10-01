@@ -11,6 +11,10 @@ import test from "node:test"
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url))
 const sourceRoot = process.env.CHARIOX_PROVISIONER_PROGRESS_SOURCE ?? repositoryRoot
 const sliceDirectory = join(sourceRoot, "apps/kernel/slice-linux-docker")
+// MP-08/MP-10/MP-11: the synthetic image must declare this selected source's peer contract.
+const relayPeerProtocolVersion = Number((await readFile(join(sourceRoot, "apps/kernel/src/transport/relay_peer.rs"), "utf8"))
+  .match(/RELAY_PEER_PROTOCOL_VERSION: u32 = (\d+)/)?.[1])
+assert.ok(Number.isSafeInteger(relayPeerProtocolVersion) && relayPeerProtocolVersion > 0)
 const digest = `sha256:${"b".repeat(64)}`
 const identity = { container: "chariox-slice-progress", volume: "chariox-slice-progress-home", slice: "slice-progress" }
 
@@ -108,7 +112,7 @@ if (text.includes("{{json .Config.Labels}}") || text.includes("{{json .Labels}}"
 } else if (args[0] === "info") {
   process.stdout.write("amd64")
 } else if (args[0] === "image" && args[1] === "inspect") {
-  process.stdout.write(text.includes("relay-peer-protocol-version") ? "64" : text.includes("runtime-source-revision") ? ${JSON.stringify(digest)} : "synthetic-image")
+  process.stdout.write(text.includes("relay-peer-protocol-version") ? ${JSON.stringify(String(relayPeerProtocolVersion))} : text.includes("runtime-source-revision") ? ${JSON.stringify(digest)} : "synthetic-image")
 } else if (args[0] === "ps") {
   if (fault === "docker-stop") process.stdout.write(container+"\\n")
 } else if (args[0] === "stop") {
