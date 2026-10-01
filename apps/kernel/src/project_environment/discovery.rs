@@ -75,7 +75,13 @@ pub fn parse_project_environment_discovery_output(
         ));
     }
     for file in &mut manifest.private_files {
-        let candidate = input.private_files.iter().find(|candidate| candidate.workspace_id == file.workspace_id && candidate.path == file.path).expect("inventory validated");
+        let candidate = input
+            .private_files
+            .iter()
+            .find(|candidate| {
+                candidate.workspace_id == file.workspace_id && candidate.path == file.path
+            })
+            .expect("inventory validated");
         file.secret_looking = candidate.secret_looking;
     }
     let previous = input

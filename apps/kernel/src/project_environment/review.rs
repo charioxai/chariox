@@ -184,7 +184,8 @@ pub fn flip_project_environment_item(
             .find(|f| project_environment_item_id(&f.workspace_id, &f.path) == id)
             .ok_or_else(|| fail("unknown Project file decision"))?;
         if !decision.bring
-            && (decision.secret_looking || secret_looking_project_path(&decision.path)
+            && (decision.secret_looking
+                || secret_looking_project_path(&decision.path)
                 || crate::workspace_live_sync_ignore::workspace_live_sync_force_excluded_path(
                     &decision.path,
                 ))

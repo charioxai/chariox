@@ -434,7 +434,9 @@ impl RuntimeProviderRun {
         self.touch_activity();
     }
 
-    pub(crate) fn project_environment_revision(&self) -> Option<&str> { self.project_environment_revision.as_deref() }
+    pub(crate) fn project_environment_revision(&self) -> Option<&str> {
+        self.project_environment_revision.as_deref()
+    }
 
     pub(crate) fn metadata_only_discovery(&self) -> bool {
         self.metadata_only_discovery

@@ -850,15 +850,33 @@ fn mp08_m28_stages_selected_environment_and_rejects_an_unauthenticated_import() 
         workspace.to_string_lossy()
     );
     assert_eq!(receipt.schema_version, 4);
-    assert!(recover_development_context_publication_with_environment(&request, "m28-layer-fixture", Some(&authority)).unwrap().is_some());
-    let completion = request.destination_root.join(".chariox-project-environment-complete.json");
+    assert!(recover_development_context_publication_with_environment(
+        &request,
+        "m28-layer-fixture",
+        Some(&authority)
+    )
+    .unwrap()
+    .is_some());
+    let completion = request
+        .destination_root
+        .join(".chariox-project-environment-complete.json");
     let proof = std::fs::read(&completion).unwrap();
     std::fs::remove_file(&completion).unwrap();
-    assert!(recover_development_context_publication_with_environment(&request, "m28-layer-fixture", Some(&authority)).is_err());
+    assert!(recover_development_context_publication_with_environment(
+        &request,
+        "m28-layer-fixture",
+        Some(&authority)
+    )
+    .is_err());
     std::fs::write(&completion, proof).unwrap();
     let store = ProjectEnvironmentStore::new(&target_config.private_runtime_state_root());
     store.remove(&project_id).unwrap();
-    assert!(recover_development_context_publication_with_environment(&request, "m28-layer-fixture", Some(&authority)).is_err());
+    assert!(recover_development_context_publication_with_environment(
+        &request,
+        "m28-layer-fixture",
+        Some(&authority)
+    )
+    .is_err());
     store.save(&state).unwrap();
     let bindings = project_launch_environment(
         &target_config,
@@ -879,7 +897,8 @@ fn review_state() -> StoredProjectEnvironment {
     let mut manifest = fixture_manifest(vec![entry("NEEDED", ProjectEnvironmentLocator::Missing)]);
     manifest.evidence_digest = evidence.digest();
     manifest.private_files.push(ProjectPrivateFileDecision {
-            secret_looking: false,        workspace_id: "web".into(),
+        secret_looking: false,
+        workspace_id: "web".into(),
         path: "CLAUDE.local.md".into(),
         bring: true,
         reason: "Personal Project instructions".into(),
@@ -933,7 +952,8 @@ fn mp08_mp10_review_flip_keeps_secret_files_out_of_plain_overlay() {
         .manifest
         .private_files
         .push(ProjectPrivateFileDecision {
-            secret_looking: false,            workspace_id: "web".into(),
+            secret_looking: false,
+            workspace_id: "web".into(),
             path: ".env.local".into(),
             bring: false,
             reason: "Secrets move through Vault".into(),
@@ -981,7 +1001,8 @@ fn mp08_mp10_review_changed_only_and_unattended_summary() {
         .manifest
         .private_files
         .push(ProjectPrivateFileDecision {
-            secret_looking: false,            workspace_id: "web".into(),
+            secret_looking: false,
+            workspace_id: "web".into(),
             path: "notes.md".into(),
             bring: false,
             reason: "Unused personal notes".into(),
@@ -1034,16 +1055,39 @@ fn mp08_mp10_review_utility_revision_rejects_new_locators() {
 fn mp08_mp10_configfile_reference_reaches_discovery_without_contents() {
     let fixture = Fixture::new();
     std::fs::write(fixture.0.join("app.ts"), "const local = readFileSync('app.local.json');\nconst key = readFileSync('dev.pem');\nconst home = process.env.HOME;\n").unwrap();
-    std::fs::write(fixture.0.join("app.local.json"), "{\"password\":\"synthetic-private-value\"}").unwrap();
+    std::fs::write(
+        fixture.0.join("app.local.json"),
+        "{\"password\":\"synthetic-private-value\"}",
+    )
+    .unwrap();
     std::fs::write(fixture.0.join("dev.pem"), "synthetic-pem-value").unwrap();
     std::fs::write(fixture.0.join(".gitignore"), "app.local.json\ndev.pem\n").unwrap();
-    let status = std::process::Command::new("git").arg("-C").arg(&fixture.0).arg("init").arg("-q").status().unwrap();
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&fixture.0)
+        .arg("init")
+        .arg("-q")
+        .status()
+        .unwrap();
     assert!(status.success());
     let index = index_project_environment(&fixture.workspaces(), &BTreeMap::new()).unwrap();
     assert_eq!(index.references.len(), 2);
-    assert!(index.references.iter().all(|entry| entry.kind == ProjectEnvironmentEntryKind::ConfigFile));
+    assert!(index
+        .references
+        .iter()
+        .all(|entry| entry.kind == ProjectEnvironmentEntryKind::ConfigFile));
     assert!(index.private_files.iter().all(|file| file.secret_looking));
-    let input = ProjectEnvironmentDiscoveryInput {project_id: "fixture-project".into(), evidence_digest: index.evidence.digest(), changed_paths: index.evidence.changed_paths(&ProjectEnvironmentEvidence::default()), previous_manifest: None, references: index.references, private_files: index.private_files, revision: None};
+    let input = ProjectEnvironmentDiscoveryInput {
+        project_id: "fixture-project".into(),
+        evidence_digest: index.evidence.digest(),
+        changed_paths: index
+            .evidence
+            .changed_paths(&ProjectEnvironmentEvidence::default()),
+        previous_manifest: None,
+        references: index.references,
+        private_files: index.private_files,
+        revision: None,
+    };
     let prompt = project_environment_discovery_prompt(&input).unwrap();
     assert!(prompt.contains("app.local.json"));
     assert!(!prompt.contains("synthetic-private-value") && !prompt.contains("synthetic-pem-value"));
@@ -1059,7 +1103,10 @@ fn mp08_mp10_reference_code_changes_invalidate_discovery() {
     assert!(first.evidence.files["web"].contains_key("app.js"));
     std::fs::write(&code, "const password = process.env.OTHER_PASSWORD;\n").unwrap();
     let second = index_project_environment(&fixture.workspaces(), &BTreeMap::new()).unwrap();
-    assert_eq!(second.evidence.changed_paths(&first.evidence)["web"], vec!["app.js"]);
+    assert_eq!(
+        second.evidence.changed_paths(&first.evidence)["web"],
+        vec!["app.js"]
+    );
 }
 
 #[test]
@@ -1070,11 +1117,15 @@ fn mp08_mp10_secret_file_cannot_be_reincluded_by_expert_rules() {
     std::fs::write(fixture.0.join(".worktreeinclude"), "app.local.json\n").unwrap();
     let mut manifest = fixture_manifest(Vec::new());
     manifest.private_files.push(ProjectPrivateFileDecision {
-        workspace_id: "web".into(), path: "app.local.json".into(), bring: false,
-        secret_looking: true, reason: "Referenced secret configuration; Vault only".into(),
+        workspace_id: "web".into(),
+        path: "app.local.json".into(),
+        bring: false,
+        secret_looking: true,
+        reason: "Referenced secret configuration; Vault only".into(),
     });
     register_project_file_rules(&manifest, &fixture.workspaces());
-    let rules = crate::workspace_live_sync_ignore::workspace_live_sync_user_ignore_patterns(&fixture.0);
+    let rules =
+        crate::workspace_live_sync_ignore::workspace_live_sync_user_ignore_patterns(&fixture.0);
     assert_eq!(rules.last().unwrap(), "app.local.json");
     let id = project_environment_item_id("web", "app.local.json");
     let mut state = review_state();
@@ -1090,21 +1141,60 @@ fn mp08_mp10_failed_fresh_materialization_rolls_back_and_preserves_existing_file
     let outside = fixture.0.join("outside");
     std::fs::create_dir(&outside).unwrap();
     std::os::unix::fs::symlink(&outside, fixture.0.join("z")).unwrap();
-    let mut manifest = fixture_manifest(vec![entry("TOKEN", ProjectEnvironmentLocator::EnvFile {path: ".env.local".into(), key: "TOKEN".into()})]);
+    let mut manifest = fixture_manifest(vec![entry(
+        "TOKEN",
+        ProjectEnvironmentLocator::EnvFile {
+            path: ".env.local".into(),
+            key: "TOKEN".into(),
+        },
+    )]);
     manifest.entries.push(ProjectEnvironmentEntry {
-        name: "z/config.json".into(), workspace_id: "web".into(), kind: ProjectEnvironmentEntryKind::ConfigFile,
-        classification: ProjectEnvironmentClassification::Secret, excluded: false, uses: vec![],
-        locator: ProjectEnvironmentLocator::ConfigFile {path: "z/config.json".into()}, status: ProjectEnvironmentEntryStatus::Found,
+        name: "z/config.json".into(),
+        workspace_id: "web".into(),
+        kind: ProjectEnvironmentEntryKind::ConfigFile,
+        classification: ProjectEnvironmentClassification::Secret,
+        excluded: false,
+        uses: vec![],
+        locator: ProjectEnvironmentLocator::ConfigFile {
+            path: "z/config.json".into(),
+        },
+        status: ProjectEnvironmentEntryStatus::Found,
     });
-    let resolved = ResolvedProjectEnvironment {values: BTreeMap::from([
-        (("web".into(), "TOKEN".into()), zeroize::Zeroizing::new("synthetic-token".into())),
-        (("web".into(), "z/config.json".into()), zeroize::Zeroizing::new("synthetic-config".into())),
-    ]), unresolved: Vec::new()};
-    assert!(super::materialization_transaction::ProjectEnvironmentMaterialization::prepare(&manifest, &resolved, &fixture.workspaces()).is_err());
+    let resolved = ResolvedProjectEnvironment {
+        values: BTreeMap::from([
+            (
+                ("web".into(), "TOKEN".into()),
+                zeroize::Zeroizing::new("synthetic-token".into()),
+            ),
+            (
+                ("web".into(), "z/config.json".into()),
+                zeroize::Zeroizing::new("synthetic-config".into()),
+            ),
+        ]),
+        unresolved: Vec::new(),
+    };
+    assert!(
+        super::materialization_transaction::ProjectEnvironmentMaterialization::prepare(
+            &manifest,
+            &resolved,
+            &fixture.workspaces()
+        )
+        .is_err()
+    );
     assert!(!fixture.0.join(".env.local").exists());
     assert!(!outside.join("config.json").exists());
     std::fs::write(fixture.0.join(".env.local"), "target-owned-content").unwrap();
     manifest.entries.pop();
-    assert!(super::materialization_transaction::ProjectEnvironmentMaterialization::prepare(&manifest, &resolved, &fixture.workspaces()).is_err());
-    assert_eq!(std::fs::read_to_string(fixture.0.join(".env.local")).unwrap(), "target-owned-content");
+    assert!(
+        super::materialization_transaction::ProjectEnvironmentMaterialization::prepare(
+            &manifest,
+            &resolved,
+            &fixture.workspaces()
+        )
+        .is_err()
+    );
+    assert_eq!(
+        std::fs::read_to_string(fixture.0.join(".env.local")).unwrap(),
+        "target-owned-content"
+    );
 }

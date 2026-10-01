@@ -75,7 +75,11 @@ impl KernelRuntimeState {
                     .iter()
                     .filter(|file| !review.changed_only || file.changed)
                 {
-                    let is_secret = state.manifest.private_files.iter().any(|decision| decision.secret_looking && project_environment_item_id(&decision.workspace_id, &decision.path) == file.id);
+                    let is_secret = state.manifest.private_files.iter().any(|decision| {
+                        decision.secret_looking
+                            && project_environment_item_id(&decision.workspace_id, &decision.path)
+                                == file.id
+                    });
                     if !is_secret && !secret_looking_project_path(&file.path) && !crate::workspace_live_sync_ignore::workspace_live_sync_force_excluded_path(&file.path) {
                         let action = format!("file-{}", file.id);
                         choices.push(RuntimeInteractionChoice::new(&action, format!("{} {}", if file.bring {"Leave"} else {"Bring"}, file.path), &action, None));

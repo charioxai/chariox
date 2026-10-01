@@ -282,7 +282,12 @@ impl KernelRuntimeOwnedState {
                 .is_some_and(|worktree| worktree == directory);
             if directory == std::path::Path::new(session.worktree_id()) || is_agent_worktree {
                 let config = self.config_projection.snapshot();
-                request.project_environment_revision = crate::project_environment::ProjectEnvironmentStore::new(&config.private_runtime_state_root()).load(session.project_id())?.map(|state| state.manifest.evidence_digest);
+                request.project_environment_revision =
+                    crate::project_environment::ProjectEnvironmentStore::new(
+                        &config.private_runtime_state_root(),
+                    )
+                    .load(session.project_id())?
+                    .map(|state| state.manifest.evidence_digest);
                 let environment = crate::project_environment::project_launch_environment(
                     &config,
                     session.project_id(),

@@ -1477,12 +1477,26 @@ Prefer `slice_find_text` before clicking text in the browser or GUI because it r
         fs::write(root.join("user-rules.md"), "Prefer clear Project names.").unwrap();
         let registry = PromptTemplateRegistry::new(root.join("prompts"));
         registry.materialize_bundled_defaults().unwrap();
-        let envelope = PromptAssemblyService::new(registry).assemble_provider_turn(&test_run(false), "Visible request", None, Vec::new(), PromptAssemblyMode::NormalProviderTurn).unwrap();
-        assert!(envelope.hidden_system_context.contains("<chariox-user-rules>"));
-        assert!(envelope.hidden_system_context.contains("Prefer clear Project names."));
+        let envelope = PromptAssemblyService::new(registry)
+            .assemble_provider_turn(
+                &test_run(false),
+                "Visible request",
+                None,
+                Vec::new(),
+                PromptAssemblyMode::NormalProviderTurn,
+            )
+            .unwrap();
+        assert!(envelope
+            .hidden_system_context
+            .contains("<chariox-user-rules>"));
+        assert!(envelope
+            .hidden_system_context
+            .contains("Prefer clear Project names."));
         assert_eq!(envelope.visible_user_prompt, "Visible request");
         fs::remove_dir_all(root).unwrap();
-        if let Some(old) = old {std::env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", old);}
+        if let Some(old) = old {
+            std::env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", old);
+        }
     }
 
     #[test]

@@ -52,8 +52,10 @@ fn mp08_manifest_fields_are_bound_to_protocol_371_snapshot() {
             status: ProjectEnvironmentEntryStatus::Found,
         }],
         private_files: vec![ProjectPrivateFileDecision {
-            workspace_id: "workspace-1".into(), path: "app.local.json".into(),
-            bring: false, reason: "Referenced secret configuration; Vault only".into(),
+            workspace_id: "workspace-1".into(),
+            path: "app.local.json".into(),
+            bring: false,
+            reason: "Referenced secret configuration; Vault only".into(),
             secret_looking: true,
         }],
         toolchain_hints: vec!["node".into()],

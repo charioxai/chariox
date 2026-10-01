@@ -157,7 +157,10 @@ fn mp08_mp10_claude_account_export_ignores_large_provider_state() {
         .expect("ordinary Claude state keeps the existing transfer budget");
     assert_eq!(export.files.len(), 1);
     assert_eq!(export.files[0].relative_path, ".credentials.json");
-    assert!(!export.files.iter().any(|file| file.relative_path == "stats-cache.json"));
+    assert!(!export
+        .files
+        .iter()
+        .any(|file| file.relative_path == "stats-cache.json"));
     let managed = source
         .registry
         .export_managed_context_materialization("owner", "claude", &profile.profile_id)
@@ -253,7 +256,10 @@ fn mp08_mp10_opencode_account_round_trip_carries_credentials_only() {
         b"fixture-auth"
     );
     for name in config_names {
-        assert!(!Path::new(&environment["XDG_CONFIG_HOME"]).join("opencode").join(name).exists());
+        assert!(!Path::new(&environment["XDG_CONFIG_HOME"])
+            .join("opencode")
+            .join(name)
+            .exists());
     }
     assert!(!Path::new(&environment["XDG_STATE_HOME"])
         .join("opencode/prompt-history.jsonl")
@@ -265,9 +271,7 @@ fn mp08_mp10_opencode_account_round_trip_carries_credentials_only() {
 
 #[test]
 fn opencode_portable_files_still_obey_the_transfer_size_limit() {
-    for (variable, relative) in [
-        ("XDG_DATA_HOME", "opencode/auth.json"),
-    ] {
+    for (variable, relative) in [("XDG_DATA_HOME", "opencode/auth.json")] {
         let source = ProfileFixture::new();
         fs::File::create(source.path(variable, relative))
             .unwrap()
