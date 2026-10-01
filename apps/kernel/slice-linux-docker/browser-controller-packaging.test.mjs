@@ -84,3 +84,14 @@ async function reachableControllerModules(entry) {
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
+
+
+test("physical display and capture dependencies are required recovery overlays", async () => {
+  const [dockerfile, provisioner] = await Promise.all([
+    readFile(dockerfilePath, "utf8"), readFile(provisionerPath, "utf8"),
+  ])
+  for (const name of ["canonical-display.py", "canonical_vnc.py", "xorg-dummy.conf", "selkies-capture.py"]) {
+    assert.match(dockerfile, new RegExp(`docker/${escapeRegExp(name)}\\s+/opt/chariox-slice/${escapeRegExp(name)}`))
+    assert.match(provisioner, new RegExp(`copy_required_slice_overlay[^\\n]*docker/${escapeRegExp(name)}[^\\n]*/opt/chariox-slice/${escapeRegExp(name)}`))
+  }
+})

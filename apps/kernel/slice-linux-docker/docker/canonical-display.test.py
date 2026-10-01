@@ -3,6 +3,8 @@ import importlib.util
 from pathlib import Path
 import unittest
 from unittest.mock import patch, AsyncMock
+import aiohttp
+import selkies_viewers as viewers
 
 spec = importlib.util.spec_from_file_location("canonical_display", Path(__file__).with_name("canonical-display.py"))
 display = importlib.util.module_from_spec(spec)
@@ -16,6 +18,14 @@ class DisplayBoundaryTests(unittest.TestCase):
         for value in [(0, 768), (4098, 768), (391, 844), (True, 768), ("1024", 768)]:
             with self.assertRaises(display.DisplayError):
                 display.dimensions(*value)
+
+    def test_old_xvfb_allows_current_physical_size_without_mutation(self):
+        with patch.dict(display.os.environ, {"CHARIOX_SLICE_DISPLAY_SERVER": "Xvfb"}), patch.object(display, "geometry", return_value=(1280, 800)), patch.object(display, "run") as run:
+            display.resize(1280, 800)
+            run.assert_not_called()
+            with self.assertRaisesRegex(display.DisplayError, "requires the managed Xorg"):
+                display.resize(1024, 768)
+            run.assert_not_called()
 
     def test_physical_readback_refuses_rounding(self):
         with patch.object(display, "geometry", return_value=(392, 844)), patch.object(display, "run") as run:
@@ -47,7 +57,7 @@ class DisplayBoundaryTests(unittest.TestCase):
         import asyncio
         import time
         from types import SimpleNamespace
-        text = display.aiohttp.WSMsgType.TEXT
+        text = aiohttp.WSMsgType.TEXT
         class Socket:
             def __init__(self, messages): self.messages = messages
             async def __aenter__(self): return self
@@ -73,9 +83,9 @@ class DisplayBoundaryTests(unittest.TestCase):
         display._deadline = time.monotonic() + 0.05
         started = time.monotonic()
         try:
-            with patch.object(display.aiohttp, "ClientSession", return_value=Client()), \
+            with patch.object(aiohttp, "ClientSession", return_value=Client()), \
                  patch.object(display.urllib.request, "build_opener") as opener, \
-                 patch.object(display.lifecycle, "endpoint", return_value="http://127.0.0.1:6080"), \
+                 patch.object(viewers.lifecycle, "endpoint", return_value="http://127.0.0.1:6080"), \
                  patch.object(display, "geometry", return_value=(1024, 768)):
                 opener.return_value.open.return_value = Response()
                 with self.assertRaises(TimeoutError):
@@ -91,10 +101,10 @@ class DisplayBoundaryTests(unittest.TestCase):
         deadlines = []
         refresh = AsyncMock(side_effect=[display.DisplayError("capture deadline"), None])
         with patch.dict(display.os.environ, {"DISPLAY": ":93"}), patch.object(display.time, "monotonic", return_value=100), \
-             patch.object(display, "locked_state", return_value=Lock()), patch.object(display.lifecycle, "owned_process", return_value=object()), \
-             patch.object(display.lifecycle, "healthy", return_value=True), patch.object(display, "geometry", return_value=(1280, 800)), \
+             patch.object(viewers, "locked_state", return_value=Lock()), patch.object(viewers.lifecycle, "owned_process", return_value=object()), \
+             patch.object(viewers.lifecycle, "healthy", return_value=True), patch.object(display, "geometry", return_value=(1280, 800)), \
              patch.object(display, "resize", side_effect=lambda *args: deadlines.append(display._deadline)), \
-             patch.object(display, "refresh_stream", refresh), patch.object(display, "publish", side_effect=lambda *args: deadlines.append(display._deadline)):
+             patch.object(display, "refresh_stream", refresh), patch.object(viewers, "publish", side_effect=lambda *args: deadlines.append(display._deadline)):
             with self.assertRaises(display.DisplayError):
                 display.apply(1024, 768)
         self.assertEqual(deadlines, [117, 128, 130])
@@ -105,10 +115,10 @@ class DisplayBoundaryTests(unittest.TestCase):
             def __enter__(self): return "directory", {"master_token": "synthetic"}
             def __exit__(self, *_): pass
         refresh = AsyncMock(side_effect=[display.DisplayError("capture mismatch"), None])
-        with patch.dict(display.os.environ, {"DISPLAY": ":93"}), patch.object(display, "locked_state", return_value=Lock()), \
-             patch.object(display.lifecycle, "owned_process", return_value=object()), patch.object(display.lifecycle, "healthy", return_value=True), \
+        with patch.dict(display.os.environ, {"DISPLAY": ":93"}), patch.object(viewers, "locked_state", return_value=Lock()), \
+             patch.object(viewers.lifecycle, "owned_process", return_value=object()), patch.object(viewers.lifecycle, "healthy", return_value=True), \
              patch.object(display, "geometry", return_value=(1280, 800)), patch.object(display, "resize") as resize, \
-             patch.object(display, "refresh_stream", refresh), patch.object(display, "publish") as publish:
+             patch.object(display, "refresh_stream", refresh), patch.object(viewers, "publish") as publish:
             with self.assertRaisesRegex(display.DisplayError, "apply failed"):
                 display.apply(1024, 768)
             self.assertEqual([call.args for call in resize.call_args_list], [(1024, 768), (1280, 800)])
