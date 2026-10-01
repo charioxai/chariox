@@ -449,7 +449,7 @@ if [ -e "$private_layout_root" ] || [ -L "$private_layout_root" ]; then
   [ -d "$private_layout_root" ] && [ ! -L "$private_layout_root" ] \
     && [ "$(stat -c %u "$private_layout_root")" = "$(id -u chariox-docker)" ] \
     && [ "$(stat -c %a "$private_layout_root")" = 711 ] \
-    || fail "protected slice layout ownership is incompatible; retained private state is unchanged"
+    || { echo "protected slice layout ownership is incompatible; retained private state is unchanged" >&2; exit 1; }
 else
   install -d -o chariox-docker -g chariox-docker -m 0711 "$private_layout_root"
 fi
