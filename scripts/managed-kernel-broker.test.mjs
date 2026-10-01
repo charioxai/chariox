@@ -1,3 +1,4 @@
+import "./managed-home-archive-digest.test.mjs"
 import assert from "node:assert/strict"
 import { access, chmod, mkdtemp, mkdir, readFile, readdir, readlink, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -73,9 +74,9 @@ test("broker start and unpause route Docker mutation through quota admission", a
   const executeSource = source.slice(executeStart, executeEnd)
 
   assert.match(source, /import\s*\{[^}]*\brunWithSliceDiskQuotaAdmission\b[^}]*\}\s*from "\.\/slice-disk-quota-admission\.mjs"/)
-  assert.match(executeSource, /const runPrepared = \(admission\) => \{[\s\S]*?prepareDocker\(request\.args\)[\s\S]*?return spawnBounded\(command, args/)
+  assert.match(executeSource, /const runPrepared = async \(admission\) => \{[\s\S]*?prepareDocker\(request\.args\)[\s\S]*?return spawnBounded\(command, args/)
   assert.match(executeSource, /const isDockerStartOrUnpause = request\.kind === "docker" && \["start", "unpause"\]/)
-  assert.match(executeSource, /const result = isDockerStartOrUnpause\s*\? await sliceDiskQuotaCoordinator\.withContainerLock\(containerName, async \(lock\) => runWithSliceDiskQuotaAdmission\(\{[\s\S]*?quotaMarkerPresent: diskQuotaMarkerPresent\(containerName\),[\s\S]*?run: async \(quotaResult, admission\) => \{[\s\S]*?assertLockHeld\(lock\)[\s\S]*?const started = runPrepared\(admission\)/)
+  assert.match(executeSource, /const result = isDockerStartOrUnpause\s*\? await sliceDiskQuotaCoordinator\.withContainerLock\(containerName, async \(lock\) => runWithSliceDiskQuotaAdmission\(\{[\s\S]*?quotaMarkerPresent: diskQuotaMarkerPresent\(containerName\),[\s\S]*?run: async \(quotaResult, admission\) => \{[\s\S]*?assertLockHeld\(lock\)[\s\S]*?const started = await runPrepared\(admission\)/)
 })
 
 test("home archive identities cannot select the shared state or artifact parent", async context => {
@@ -1024,7 +1025,7 @@ test("archive-bearing provision and restore preserve healthy progress without wi
       withContainerLock: async (_name, run) => run({}),
       assertUnbounded: async () => undefined,
     },
-    prepareProvisioner: request => { prepared++; return { environment: request.environment, handles: new Set(), newHandles: new Set() } },
+    prepareProvisioner: async request => { await new Promise(resolve => setImmediate(resolve)); prepared++; return { environment: request.environment, handles: new Set(), newHandles: new Set() } },
     cleanupPrepared: () => { cleaned++ }, removePersistentHandles: () => {},
     spawnSync: (command, args, options) => {
       calls.push({ command, args, timeout: options.timeout })

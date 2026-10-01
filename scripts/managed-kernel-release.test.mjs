@@ -296,7 +296,7 @@ async function makeFixture(root, variant = "", { dockerfileContents, omitQuotaAs
       "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
       await readFile(join(repositoryRoot, "apps/kernel/slice-linux-docker/managed-docker-broker.mjs")),
     ],
-    ...await Promise.all(["managed-extension-build.py", "managed-home-archive-stream.mjs", "home-archive-policy.json", "docker-image-reference.mjs", "docker-image-reference.json"].map(async (name) => {
+    ...await Promise.all(["managed-extension-build.py", "managed-home-archive-stream.mjs", "managed-home-archive-digest.mjs", "home-archive-policy.json", "docker-image-reference.mjs", "docker-image-reference.json"].map(async (name) => {
       const path = `apps/kernel/slice-linux-docker/${name}`
       return [path, await readFile(join(repositoryRoot, path))]
     })),
@@ -474,6 +474,7 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-publication-acl.awk",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-home-archive-stream.mjs",
+    "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-home-archive-digest.mjs",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/home-archive-policy.json",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-extension-build.py",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/docker-image-reference.mjs",
@@ -496,7 +497,7 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
   assert.deepEqual(await readFile(join(firstOutput, "rootfs/usr/lib/chariox/slice-build-context", archivePolicyPath)),
     await readFile(join(repositoryRoot, archivePolicyPath)))
   assert.deepEqual(JSON.parse(await readFile(join(firstOutput, "rootfs/usr/lib/chariox/slice-build-context", archivePolicyPath), "utf8")),
-    { schemaVersion: 1, minimumFreeBytes: 2 * 1024 ** 3 })
+    { schemaVersion: 1, minimumFreeBytes: 2 * 1024 ** 3, progressTimeoutMs: 300000 })
   const packagedRootlessService = await readFile(
     join(releaseRoot, "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-rootless-service.sh"),
     "utf8",
@@ -515,7 +516,7 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
     )
   }
 
-  for (const name of ["managed-extension-build.py", "managed-home-archive-stream.mjs", "home-archive-policy.json", "docker-image-reference.mjs", "docker-image-reference.json"]) {
+  for (const name of ["managed-extension-build.py", "managed-home-archive-stream.mjs", "managed-home-archive-digest.mjs", "home-archive-policy.json", "docker-image-reference.mjs", "docker-image-reference.json"]) {
     const path = `apps/kernel/slice-linux-docker/${name}`
     assert.deepEqual(await readFile(join(brokerContextRoot, path)), await readFile(join(repositoryRoot, path)))
   }

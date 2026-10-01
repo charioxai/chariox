@@ -2,8 +2,9 @@
 
 import { spawnSync } from "node:child_process"
 import { isDockerImageReference } from "./docker-image-reference.mjs"
-import { capturePrivateHomeArchive, homeArchiveMetadataMatches, isHomeArchiveRestoreRequest } from "./managed-home-archive-stream.mjs"
+import { HOME_ARCHIVE_PROGRESS_TIMEOUT_MS, capturePrivateHomeArchive, homeArchiveMetadataMatches, isHomeArchiveRestoreRequest } from "./managed-home-archive-stream.mjs"
 import { createHash } from "node:crypto"
+import { digestPinnedHomeArchive } from "./managed-home-archive-digest.mjs"
 import {
   chmodSync,
   closeSync,
@@ -769,7 +770,7 @@ function managedHomeArchiveCoordinates(path) {
   return { candidate, relative }
 }
 
-function inspectManagedHomeArchive(path) {
+async function inspectManagedHomeArchive(path) {
   const { candidate, relative } = managedHomeArchiveCoordinates(path)
   const archive = pinnedSharedPath(candidate, "managed saved home archive", "file")
   let directory
@@ -789,12 +790,8 @@ function inspectManagedHomeArchive(path) {
       if (!homeArchiveMetadataMatches(metadata, expectedScope, relative[1], archiveMetadata.size)) {
         fail("managed saved home archive metadata is invalid")
       }
-      const digestResult = spawnSync("/usr/bin/sha256sum", ["--", archive.path], {
-        env: { PATH: "/usr/bin:/bin" },
-        encoding: "utf8",
-        maxBuffer: 64 * 1024,
-      })
-      if (digestResult.status !== 0 || !digestResult.stdout.startsWith(`${metadata.sha256} `)) {
+      const digest = await digestPinnedHomeArchive(archive.fd, HOME_ARCHIVE_PROGRESS_TIMEOUT_MS)
+      if (digest !== metadata.sha256) {
         fail("managed saved home archive digest does not match")
       }
       return { archive, directory, metadata }
@@ -812,8 +809,8 @@ function verifyManagedHomeArchive(path) {
   return inspectManagedHomeArchive(path)
 }
 
-function verifyHomeArchive(request) {
-  const { archive, directory, metadata } = inspectManagedHomeArchive(request.path)
+async function verifyHomeArchive(request) {
+  const { archive, directory, metadata } = await inspectManagedHomeArchive(request.path)
   closeSync(archive.fd)
   closeSync(directory.fd)
   return {
@@ -1423,7 +1420,7 @@ function prepareDocker(args) {
   return { args: prepared, descriptors, output }
 }
 
-function prepareProvisioner(request) {
+async function prepareProvisioner(request) {
   const environment = { ...request.environment }
   const descriptors = []
   const handles = new Set()
@@ -1471,7 +1468,7 @@ function prepareProvisioner(request) {
         if (persistent.created) newHandles.add(persistent.handle)
       } else {
         const pinned = name === "CHARIOX_SLICE_SAVED_HOME_ARCHIVE"
-          ? verifyManagedHomeArchive(value)
+          ? await verifyManagedHomeArchive(value)
           : pinnedSharedPath(value, name, "file")
         if (name === "CHARIOX_SLICE_SAVED_HOME_ARCHIVE") {
           descriptors.push(pinned.archive.fd, pinned.directory.fd)
@@ -1578,7 +1575,7 @@ async function execute(request) {
     return { status: 0, stdoutBase64: "", stderrBase64: "" }
   }
   if (request.kind === "home_archive_verify") {
-    const verified = verifyHomeArchive(request)
+    const verified = await verifyHomeArchive(request)
     return { status: 0, stdoutBase64: Buffer.from(JSON.stringify(verified)).toString("base64"), stderrBase64: "" }
   }
   if (request.kind === "docker" && request.args[0] === "start") {
@@ -1641,8 +1638,8 @@ async function execute(request) {
   }
   let prepared
   try {
-    const runPrepared = (admission) => {
-      prepared = request.kind === "docker" ? prepareDocker(request.args) : prepareProvisioner(request)
+    const runPrepared = async (admission) => {
+      prepared = request.kind === "docker" ? prepareDocker(request.args) : await prepareProvisioner(request)
       if (request.kind === "docker" && admission?.source === "broker-proof") {
         prepared.args[1] = admission.containerId
       }
@@ -1699,7 +1696,7 @@ async function execute(request) {
             }
           }
           sliceDiskQuotaCoordinator.assertLockHeld(lock)
-          const started = runPrepared(admission)
+          const started = await runPrepared(admission)
           if (before && durableUnboundedState && started.status === 0) {
             try {
               const after = unboundedQuotaObservation(containerName)
@@ -1735,7 +1732,7 @@ async function execute(request) {
             } else {
               await sliceDiskQuotaCoordinator.assertUnbounded(lock)
             }
-            const provisioned = runPrepared()
+            const provisioned = await runPrepared()
             if (provisioned.status === 0 && unboundedQuotaStatusVerified && durableUnboundedState) {
               await rememberBrokerUnboundedQuotaProof(
                 unboundedQuotaIdentity,
@@ -1746,7 +1743,7 @@ async function execute(request) {
             return provisioned
           },
         )
-      : runPrepared()
+      : await runPrepared()
     if (request.kind === "docker" && prepared.output && result.status === 0) {
       publishStagedOutput(prepared.output)
     }
