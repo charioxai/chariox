@@ -6,6 +6,7 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } fro
 import { createServer } from 'node:net';
 import { tmpdir, userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { buildMacosPkg, CONTEXT_DIR, formatPlan, packagePlan, PACKAGE_DIR, parseArguments, renderTemplate, UsageError } from './build-macos-pkg.mjs';
 
@@ -25,6 +26,8 @@ const PROVISIONER = 'apps/kernel/slice-linux-docker/provision-linux-docker-slice
 const CONTEXT_FILES = { [PROVISIONER]: '#!/bin/bash\n', 'apps/kernel/.charioxignore': 'target\n',
   'apps/kernel/slice-linux-docker/runtime-source-roots.txt': 'Cargo.toml\napps/kernel\n', 'Cargo.toml': '[workspace]\n' };
 const CONTEXT_BYTES = Object.values(CONTEXT_FILES).join('').length;
+// A release kernel with the installed-context lookup holds its path as a string constant.
+const LOOKUP_KERNEL = `chariox-kernel\0${CONTEXT}\0`;
 const contextManifest = () => Object.entries(CONTEXT_FILES).map(([path, text]) => `${sha256(text)}  /${CONTEXT_DIR}/${path}\n`).join('');
 const darwin = { skip: process.platform !== 'darwin' && 'needs macOS packaging tools and BSD stat' };
 const sha256 = text => createHash('sha256').update(text).digest('hex');
@@ -49,7 +52,7 @@ async function bundle(t) {
   await mkdir(join(dir, 'libexec'));
   await mkdir(join(dir, 'runtime/sdk'), { recursive: true });
   for (const name of ['chariox-kernel', 'chariox-cli', 'chariox-app-package'])
-    await writeFile(join(dir, 'bin', name), Buffer.concat([ARM64, Buffer.from(name)]), { mode: 0o755 });
+    await writeFile(join(dir, 'bin', name), Buffer.concat([ARM64, Buffer.from(name === 'chariox-kernel' ? LOOKUP_KERNEL : name)]), { mode: 0o755 });
   await writeFile(join(dir, 'libexec/chariox-app-runtime-install'), Buffer.concat([ARM64, Buffer.from('installer')]), { mode: 0o755 });
   const inventory = '{"schema":"fixture","target":"darwin-arm64"}\n';
   await writeFile(join(dir, 'runtime/runtime-inventory.json'), inventory, { mode: 0o444 });
@@ -114,6 +117,8 @@ test('the bundle check refuses a different runtime, missing or stray binaries, l
   // A release kernel runs local Docker slices only from the bundle's slice build context.
   const noContext = /the bundle has no executable share\/chariox\/slice-build-context\/apps\/kernel\/slice-linux-docker\/provision-linux-docker-slice\.sh/u;
   await refused(dir => rm(join(dir, 'share'), { recursive: true }), noContext);
+  await refused(dir => writeFile(join(dir, 'bin/chariox-kernel'), Buffer.concat([ARM64, Buffer.from('an older or debug kernel')])),
+    /bin\/chariox-kernel does not look for share\/chariox\/slice-build-context beside its bin\//u);
   await refused(dir => rm(join(dir, CONTEXT, PROVISIONER)), noContext);
   await refused(dir => chmod(join(dir, CONTEXT, PROVISIONER), 0o644), noContext);
   await refused(dir => mkdir(join(dir, 'share/man')), /share\/ must hold only chariox\/slice-build-context/u);
@@ -142,9 +147,6 @@ test('the dry-run plan pins the runtime and orders the release signing steps', a
   assert.match(text, /# payload 0755 \/usr\/local\/bin\/chariox-kernel/u);
   assert.match(text, /# payload 0644 \/Library\/LaunchAgents\/dev\.chariox\.kernel\.plist/u);
   assert.match(text, /# payload 0555 \/usr\/local\/libexec\/chariox\/chariox-app-runtime-install/u);
-  // The slice build context sits where a release kernel installed in /usr/local/bin looks for it:
-  // <the prefix of its real bin/>/share/chariox/slice-build-context.
-  assert.equal(join(dirname(dirname('/usr/local/bin/chariox-kernel')), CONTEXT), `/${CONTEXT_DIR}`);
   assert.match(text, new RegExp(`^# payload 0755 /${CONTEXT_DIR}/: the slice build context, 4 files, ${CONTEXT_BYTES} bytes, `
     + `listed in /${PACKAGE_DIR}/slice-build-context\\.sha256$`, 'mu'));
   assert.match(text, /^# payload 0444 \/usr\/local\/libexec\/chariox\/slice-build-context\.sha256$/mu);
@@ -172,6 +174,17 @@ test('the dry-run plan pins the runtime and orders the release signing steps', a
   assert.deepEqual(unsigned.steps.map(step => step.phase), ['component', 'payload', 'product', 'expand']);
   assert.equal(unsigned.paths.product, unsigned.output);
   assert.match(formatPlan(unsigned), /# unsigned: a test package/u);
+});
+
+test('the package puts the slice build context where this tree\'s release kernel looks for it', async () => {
+  // installed_slice_script looks in <the parent of its canonical executable's bin/>/RELEASE_SLICE_BUILD_CONTEXT,
+  // here /usr/local (realpath /usr/local/bin is itself), before /usr/lib; the kernel's own test covers a link to the executable.
+  const kernel = await readFile(join(dirname(fileURLToPath(import.meta.url)), '../apps/kernel/src/slice/local_docker.rs'), 'utf8');
+  const constant = name => kernel.match(new RegExp(`const ${name}: &str =\\s*"([^"]+)";`, 'u'))?.[1];
+  assert.equal(constant('RELEASE_SLICE_BUILD_CONTEXT'), CONTEXT);
+  assert.equal(join(dirname(dirname('/usr/local/bin/chariox-kernel')), constant('RELEASE_SLICE_BUILD_CONTEXT')), `/${CONTEXT_DIR}`);
+  assert.equal(constant('SLICE_DOCKER_PROVISIONER'), PROVISIONER);
+  assert.match(kernel, /if !cfg!\(debug_assertions\) \{[^}]*return installed_slice_script\(/u);
 });
 
 test('the package scripts render the pinned runtime with an empty root', async () => {

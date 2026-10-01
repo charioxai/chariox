@@ -6,8 +6,10 @@
 //   runtime/  the signed App runtime release (runtime-inventory.json and .sig).
 //   share/chariox/slice-build-context/
 //             the tree a release kernel runs local Docker slices from. The kernel
-//             looks for it beside its real bin/ (apps/kernel/src/slice/local_docker.rs),
-//             so it installs in /usr/local/share/chariox/slice-build-context.
+//             looks for it beside its real bin/ (installed_slice_script in
+//             apps/kernel/src/slice/local_docker.rs), so it installs in
+//             /usr/local/share/chariox/slice-build-context. A kernel without that
+//             lookup is refused.
 // Other top-level entries are not packaged. The runtime's trusted key and
 // inventory digest come from the release authority (the runtime signing
 // receipt), never from the bundle. They are pinned in the postinstall, the
@@ -179,7 +181,11 @@ async function runtimeFiles(bundle) {
 }
 
 // The slice build context. Its files install as root's, 0755 when executable and 0644 otherwise, as the release bundle has them.
-async function contextFiles(bundle) {
+async function contextFiles(bundle, kernel) {
+  // Only a release kernel with that lookup finds it (the path is a string constant of the lookup); an older
+  // or debug kernel would look in /usr/lib, which macOS does not let a package write, or in its build checkout.
+  if (!(await readFile(kernel)).includes(SLICE_CONTEXT))
+    throw new Error(`bin/chariox-kernel does not look for ${SLICE_CONTEXT} beside its bin/; build a release kernel that has that lookup`);
   const provisioner = await lstat(join(bundle, SLICE_CONTEXT, SLICE_PROVISIONER)).catch(() => null);
   if (!provisioner?.isFile() || !(provisioner.mode & 0o100))
     throw new Error(`the bundle has no executable ${SLICE_CONTEXT}/${SLICE_PROVISIONER}: a release kernel runs local Docker slices from that slice build context`);
@@ -227,7 +233,7 @@ export async function readBundle(input, runtimeDigest) {
   for (const file of runtime.files)
     if (file.archs && file.archs.join() !== archs.join())
       throw new Error(`runtime/${file.path} is ${file.archs.join('+')}, but bin/chariox-kernel is ${archs[0]}`);
-  const context = await contextFiles(bundle);
+  const context = await contextFiles(bundle, binaries.find(binary => binary.name === 'chariox-kernel').path);
   return { bundle, binaries, installer, runtime, context, archs, ignored: top.filter(name => !['bin', 'libexec', 'runtime', 'share'].includes(name)) };
 }
 
