@@ -24,7 +24,7 @@ export function createHomeGenerationStore(root) {
   }
   return {
     read,
-    begin({container, oldHomeVolume, oldContainerId, archiveDigest, imageId}) {
+    begin({container, oldHomeVolume, oldContainerId, archiveDigest, imageId, targetOrigin}) {
       if (!identifier(container) || !/^sha256:[a-f0-9]{64}$/.test(imageId)
           || !/^[a-f0-9]{64}$/.test(archiveDigest) || !identifier(oldHomeVolume)) refuse()
       const previous = read(container)
@@ -32,7 +32,7 @@ export function createHomeGenerationStore(root) {
       const token = randomUUID().replaceAll("-", "")
       const record = {version: 1, sliceId: container, container, token,
         phase: "preparing", oldHomeVolume, oldContainerId, newHomeVolume: `${container}-home-g${token}`,
-        archiveDigest, imageId, retainedPreviousHomes: previous
+        archiveDigest, imageId, targetOrigin, retainedPreviousHomes: previous
           ? [...(previous.retainedPreviousHomes ?? []), previous.oldHomeVolume, previous.failedHomeVolume].filter(Boolean)
           : []}
       writeProtectedLayoutReceipt(directory, container, record)
@@ -62,7 +62,7 @@ export function createHomeGenerationStore(root) {
           || origin.homeVolume !== record.oldHomeVolume || origin.containerId !== record.oldContainerId
           || origin.digest !== archiveDigest || !/^sha256:[a-f0-9]{64}$/.test(imageId)) refuse()
       const restored = {...record, phase: "rollback-ready", failedHomeVolume: record.newHomeVolume,
-        newHomeVolume: record.oldHomeVolume, archiveDigest, imageId}
+        newHomeVolume: record.oldHomeVolume, archiveDigest, imageId, targetOrigin: origin}
       writeProtectedLayoutReceipt(directory, container, restored)
       return restored
     },

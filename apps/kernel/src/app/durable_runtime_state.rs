@@ -428,7 +428,10 @@ impl DaemonApp {
                 )
             })?;
             // Startup recovery now references the existing rollback artifacts:
-            crate::slice::resolve_protected_home_restore_retention(&slice, &generation.state);
+            crate::slice::resolve_protected_home_restore_retention(
+                &slice,
+                &transaction.rollback_backup.home_archive_path,
+            );
             // retain them and prior generations rather than deleting live state.
             if generation.state.image_ref != transaction.rollback_backup.image_ref
                 || generation.state.home_archive_path

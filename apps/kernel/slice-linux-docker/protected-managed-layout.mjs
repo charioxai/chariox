@@ -38,6 +38,19 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
     if (!existsSync(join(receiptRoot, `${container}.json`))) return null
     return readProtectedLayoutReceipt(receiptRoot, container)
   }
+  function captureOrigin(container, digest) {
+    const directory = join(root, "capture-origins")
+    verifyPrivateHostDirectory(directory, controlOwner)
+    const names = readdirSync(directory)
+    if (names.length > 10_000) refuse()
+    for (const name of names.sort()) {
+      if (!/^[a-f0-9]{64}\.json$/.test(name)) refuse()
+      const origin = readProtectedLayoutReceipt(directory, name.slice(0, -5))
+      if ((container === undefined || origin.container === container) && origin.digest === digest
+          && name === `${originKey(origin.containerId, digest)}.json`) return origin
+    }
+    refuse()
+  }
   function containerInfo(container) {
     const inventory = docker(["ps", "-a", "--format", "{{.Names}}"])
     if (inventory.status !== 0) refuse()
@@ -84,11 +97,12 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
       const record = receipt(container)
       if (!record) return
       const pending = generations.read(container)
-      const sourceId = pending?.failedHomeVolume && pending.newHomeVolume === pending.oldHomeVolume
-        && pending.archiveDigest === archiveDigest ? pending.oldContainerId : record.containerId
-      const origin = readProtectedLayoutReceipt(join(root, "capture-origins"), originKey(sourceId, archiveDigest))
-      if (origin.container !== container || origin.containerId !== sourceId
-          || origin.homeVolume !== record.homeVolume || origin.digest !== archiveDigest) refuse()
+      if (!pending || pending.archiveDigest !== archiveDigest || pending.newHomeVolume !== record.homeVolume) refuse()
+      const origin = pending.targetOrigin
+      if (!origin || (origin.container !== container && pending.oldContainerId)
+          || origin.digest !== archiveDigest) refuse()
+      const retainedOrigin = readProtectedLayoutReceipt(join(root, "capture-origins"), originKey(origin.containerId, archiveDigest))
+      if (JSON.stringify(retainedOrigin) !== JSON.stringify(origin)) refuse()
       generations.resolve(container, record.homeVolume)
     },
     beginRestore(environment, archiveDigest, action) {
@@ -109,7 +123,7 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
         ? generations.prepareRollback({container, archiveDigest, imageId: images[0].Id,
           origin: readProtectedLayoutReceipt(join(root, "capture-origins"), originKey(prior.oldContainerId, archiveDigest))})
         : generations.begin({container, oldHomeVolume: this.homeVolume(container), oldContainerId: existing?.containerId,
-          archiveDigest, imageId: images[0].Id})
+          archiveDigest, imageId: images[0].Id, targetOrigin: captureOrigin(existing ? container : undefined, archiveDigest)})
       environment.CHARIOX_SLICE_HOME_VOLUME = pending.newHomeVolume
       environment.CHARIOX_SLICE_RESTORE_GENERATION = pending.token
       environment.CHARIOX_SLICE_RESTORE_DIGEST = pending.archiveDigest

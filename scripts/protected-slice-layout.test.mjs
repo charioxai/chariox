@@ -119,6 +119,38 @@ test("managed image proof binds actual immutable image ID to signed source conte
 })
 
 import { createManagedLayoutController } from "../apps/kernel/slice-linux-docker/protected-managed-layout.mjs"
+import { createHash } from "node:crypto"
+test("restore resolution binds the original transaction artifact independently of the replacement container", () => {
+  const root = mkdtempSync(join(process.env.HOME, ".chariox-restore-origin-test-"))
+  try {
+    chmodSync(root, 0o711)
+    const container = "chariox-slice-origin"
+    const archiveDigest = "a".repeat(64)
+    const imageId = `sha256:${"b".repeat(64)}`
+    const originRoot = join(root, "capture-origins")
+    const receiptRoot = join(root, "receipts")
+    mkdirSync(originRoot, {mode: 0o700}); mkdirSync(receiptRoot, {mode: 0o700})
+    const key = createHash("sha256").update(`older-captured-container\0${archiveDigest}`).digest("hex")
+    const origin = {version: 1, sliceId: key, container, containerId: "older-captured-container",
+      homeVolume: `${container}-older-home`, digest: archiveDigest}
+    writeProtectedLayoutReceipt(originRoot, key, origin)
+    const generations = createHomeGenerationStore(root)
+    const pending = generations.begin({container, oldHomeVolume: `${container}-home`,
+      oldContainerId: "recent-container", archiveDigest, imageId, targetOrigin: origin})
+    const parameters = {container, token: pending.token, volume: pending.newHomeVolume, digest: archiveDigest}
+    generations.complete(parameters); generations.publish(parameters)
+    writeProtectedLayoutReceipt(receiptRoot, container, {version: 1, sliceId: container,
+      containerId: "replacement-container", homeVolume: pending.newHomeVolume})
+    const controller = createManagedLayoutController({root, sourceDigest: imageId,
+      dataOwner: process.getuid(), docker: () => { throw new Error("resolution must not run Docker") }})
+    assert.throws(() => controller.resolveRestore(container, "c".repeat(64)))
+    assert.equal(generations.read(container).phase, "published")
+    controller.resolveRestore(container, archiveDigest)
+    assert.equal(generations.read(container).phase, "resolved")
+    assert.equal(generations.read(container).oldHomeVolume, `${container}-home`)
+    assert.equal(readProtectedLayoutReceipt(originRoot, key).containerId, "older-captured-container")
+  } finally { rmSync(root, {recursive: true}) }
+})
 test("fresh controller binds exact image/mount receipt and refuses missing same-slice identity", () => {
   const parent = mkdtempSync(join(process.env.HOME, ".chariox-layout-controller-test-"))
   try {
