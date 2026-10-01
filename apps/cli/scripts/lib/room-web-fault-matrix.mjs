@@ -12,7 +12,7 @@ export function faultRelayCredential(token, ready, mode) {
   const [prefix, payload] = token.split('.')
   const claims = JSON.parse(Buffer.from(payload, 'base64url'))
   if (mode === 'expired') claims.expires_at_ms = Date.now() - 1000
-  else if (mode === 'stale-key') claims.public_key_thumbprint = '0'.repeat(64)
+  else if (mode === 'stale-identity') claims.realm_id = 'webfault-stale-realm'
   else throw new Error('unsupported identity fault')
   const encoded = Buffer.from(JSON.stringify(claims)).toString('base64url')
   return `${prefix}.${encoded}.${createHmac('sha256', ready.relayScopedSecret).update(encoded).digest('base64url')}`
@@ -121,7 +121,7 @@ export async function runRoomWebFaultMatrix({ page, client, ready, coordinationD
     if (error.code === 'ENOENT') return null
     throw error
   })
-  const supportedFaults = ['relay', 'display', 'controller', 'expired', 'stale-key', 'queue', 'kernel']
+  const supportedFaults = ['relay', 'display', 'controller', 'expired', 'stale-identity', 'queue', 'kernel']
   const supportedBoundaries = ['beginning', 'middle', 'commit']
   const faults = selection?.faults ?? supportedFaults
   const boundaries = selection?.boundaries ?? supportedBoundaries
@@ -150,7 +150,7 @@ export async function runRoomWebFaultMatrix({ page, client, ready, coordinationD
       }
       const triggerAt = Date.now()
       const identityBefore = identityFaultStats?.()
-      if (fault === 'relay' || fault === 'expired' || fault === 'stale-key') {
+      if (fault === 'relay' || fault === 'expired' || fault === 'stale-identity') {
         if (fault !== 'relay') setIdentityMode(fault)
         row.trigger = await control('relay_stop')
       } else if (fault === 'kernel') row.trigger = await control('kernel_stop')
@@ -158,10 +158,10 @@ export async function runRoomWebFaultMatrix({ page, client, ready, coordinationD
       else if (fault === 'controller') row.trigger = await control('controller_stop')
       else row.trigger = await control('relay_queue')
       faultApplied = true
-      if (fault === 'expired' || fault === 'stale-key') await control('relay_start')
+      if (fault === 'expired' || fault === 'stale-identity') await control('relay_start')
       // Observe degraded projection while the injected seam remains unhealthy.
       await sleep(fault === 'controller' ? 2000 : 5000)
-      if (fault === 'expired' || fault === 'stale-key') {
+      if (fault === 'expired' || fault === 'stale-identity') {
         const deadline = Date.now() + 15000
         while ((identityFaultStats?.()[fault] ?? 0) <= (identityBefore?.[fault] ?? 0) && Date.now() < deadline) await sleep(200)
         row.identityFault = identityFaultStats?.()
@@ -176,7 +176,7 @@ export async function runRoomWebFaultMatrix({ page, client, ready, coordinationD
       row.detectionSampleMs = Date.now() - triggerAt
       check(row.webFault.timeOrigin === original.timeOrigin, 'document did not reload')
       check(row.webFault.shellMounted && row.webFault.shellSame, 'terminal shell remained mounted')
-      if (['relay', 'kernel', 'display', 'expired', 'stale-key'].includes(fault)) {
+      if (['relay', 'kernel', 'display', 'expired', 'stale-identity'].includes(fault)) {
         if (fault === 'display') check(row.webFault.connection !== 'connected', 'display shows stream loss')
         else check(row.webFault.environmentStatus !== 'ready', 'Room projection marks home authority stale')
         check(row.webFault.frameInputReady !== 'true' || row.webFault.inputEnabled !== 'true', 'input is shielded while unhealthy')
@@ -195,7 +195,7 @@ export async function runRoomWebFaultMatrix({ page, client, ready, coordinationD
       if (fault === 'relay') await control('relay_start')
       else if (fault === 'kernel') await control('kernel_start')
       else if (fault === 'display') await control('streamer_start')
-      else if (fault === 'expired' || fault === 'stale-key' || fault === 'queue') {
+      else if (fault === 'expired' || fault === 'stale-identity' || fault === 'queue') {
         setIdentityMode('valid'); await control('relay_stop'); await control('relay_start')
       }
       faultSettled = true
@@ -249,7 +249,7 @@ export async function runRoomWebFaultMatrix({ page, client, ready, coordinationD
         if (faultApplied && !faultSettled) {
           if (fault === 'kernel') await control('kernel_start')
           else if (fault === 'display') await control('streamer_start')
-          else if (['relay', 'expired', 'stale-key', 'queue'].includes(fault)) { await control('relay_stop'); await control('relay_start') }
+          else if (['relay', 'expired', 'stale-identity', 'queue'].includes(fault)) { await control('relay_stop'); await control('relay_start') }
         }
       } catch (recoveryError) { row.cleanupFaultError = String(recoveryError.message).slice(0, 300) }
     }
