@@ -1955,6 +1955,889 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
       "MP-08/MP-10/MP-11 independent changed-blob review, signed aggregate artifacts and fresh-machine comparison remain pending."
     ]
   },
+  // MP-11 mp11b: exact scopes from the high-risk out-of-scope review.
+  {
+    "id": "mp11b-ready-machine-kernel-projection",
+    "sourceCommit": "06cd95fda1fc07f9dd37a12727f6ed4e5a4adeb2",
+    "path": "apps/web/src/ui/waiting-room-runtime-placement.ts",
+    "blob": "f596c01ba68446d617f0370a30bcb481a757dcac",
+    "ranges": [
+      [
+        47,
+        72
+      ],
+      [
+        109,
+        137
+      ]
+    ],
+    "classification": "open_managed_runtime_difference",
+    "rationale": "MP-08/MP-11: Cloud duplicates the shared-client narrowing: managed machine options replace the ordinary enrolled machine, and a ready managed selection filters to its recorded runtimeKernelId. An ordinary machine retains every discovered authorized kernel. This persists after enrollment and is outside deployment/shutdown.",
+    "anchors": [
+      [
+        "client_projection",
+        "waitingRoomMachineOptions"
+      ],
+      [
+        "client_projection",
+        "waitingRoomKernelsForSelectedMachine"
+      ]
+    ],
+    "openFindings": [
+      "MP-08/MP-11 removal required: Use the common account-authorized kernel list for ready enrolled machines in both Cloud and shared client; keep pending deployment options separate. Compare two eligible kernels on one machine and preserve the selected second kernel."
+    ]
+  },
+  {
+    "id": "mp11b-ready-machine-home-readiness",
+    "sourceCommit": "06cd95fda1fc07f9dd37a12727f6ed4e5a4adeb2",
+    "path": "apps/web/src/ui/waiting-room-launch-readiness.ts",
+    "blob": "eb15c79d3a0b5c09d6cf86e755b0696362b93aae",
+    "ranges": [
+      [
+        101,
+        106
+      ]
+    ],
+    "classification": "open_managed_runtime_difference",
+    "rationale": "MP-08/MP-11: Even a ready managed machine with a connected target is sent back to the connect-home action when target.daemonId differs from runtimeKernelId. Ordinary readiness checks the selected target. This is a second consumer of the same post-enrollment kernel-narrowing defect.",
+    "anchors": [],
+    "openFindings": [
+      "MP-08/MP-11 removal required: Evaluate readiness of the selected authorized kernel after enrollment; use the recorded bootstrap kernel only to connect an initial deployment. Compare connected second-kernel selection, stale target and provider-account readiness."
+    ]
+  },
+  {
+    "id": "mp11b-shared-host-unit",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "deploy/managed-kernel/chariox-managed-bootstrap.service",
+    "blob": "902948442e4ecc771b86e56be1cfa79e83ea583e",
+    "ranges": [
+      [
+        1,
+        58
+      ]
+    ],
+    "classification": "shared_host_isolation",
+    "rationale": "MP-01/MP-11: This unit explicitly selects shared_host and the Bubblewrap isolation marker. Its hardening belongs to that separate topology; Path-1 preparation explicitly chooses chariox-path1-managed-bootstrap.service. This conclusion covers the checked-in unit, not installed overrides.",
+    "anchors": [],
+    "openFindings": [
+      "MP-11: Source-only conclusion; effective host policy, live comparison and program acceptance remain open."
+    ]
+  },
+  {
+    "id": "mp11b-broker-service",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "deploy/managed-kernel/chariox-slice-broker.service",
+    "blob": "8195754884b2c17609ce7812b914c49b8935c6a3",
+    "ranges": [
+      [
+        1,
+        36
+      ]
+    ],
+    "classification": "inner_docker_slice_isolation",
+    "rationale": "MP-01/MP-03/MP-11: Hardening applies to this independently launched slice control/engine service principal, not the Path-1 kernel service or its provider children. Service ordering and Wants are not process ancestry. This does not approve downstream broker/engine runtime policy; existing slice differences remain removal required.",
+    "anchors": [],
+    "openFindings": [
+      "MP-11: Source-only conclusion; effective host policy, live comparison and program acceptance remain open."
+    ]
+  },
+  {
+    "id": "mp11b-rootless-lifecycle-service",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "deploy/managed-kernel/chariox-rootless-docker.service",
+    "blob": "8aae4b3f4809d3bc3d165fdaa137480927edee3b",
+    "ranges": [
+      [
+        1,
+        41
+      ]
+    ],
+    "classification": "inner_docker_slice_isolation",
+    "rationale": "MP-01/MP-03/MP-11: Hardening applies to this independently launched slice control/engine service principal, not the Path-1 kernel service or its provider children. Service ordering and Wants are not process ancestry. This does not approve downstream broker/engine runtime policy; existing slice differences remain removal required.",
+    "anchors": [],
+    "openFindings": [
+      "MP-11: Source-only conclusion; effective host policy, live comparison and program acceptance remain open."
+    ]
+  },
+  {
+    "id": "mp11b-rootless-engine-service",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "apps/kernel/slice-linux-docker/chariox-rootless-engine.service",
+    "blob": "4a146d543dd669d493cb4e446a4269c7939c3c69",
+    "ranges": [
+      [
+        1,
+        17
+      ]
+    ],
+    "classification": "inner_docker_slice_isolation",
+    "rationale": "MP-01/MP-03/MP-11: Hardening applies to this independently launched slice control/engine service principal, not the Path-1 kernel service or its provider children. Service ordering and Wants are not process ancestry. This does not approve downstream broker/engine runtime policy; existing slice differences remain removal required.",
+    "anchors": [],
+    "openFindings": [
+      "MP-11: Source-only conclusion; effective host policy, live comparison and program acceptance remain open."
+    ]
+  },
+  {
+    "id": "mp11b-quota-allocator-service",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "apps/kernel/slice-linux-docker/chariox-slice-disk-quota-allocator.service",
+    "blob": "8e6bee212317d8beea536916e12002ddf7df934c",
+    "ranges": [
+      [
+        1,
+        39
+      ]
+    ],
+    "classification": "inner_docker_slice_isolation",
+    "rationale": "MP-01/MP-03/MP-11: Hardening applies to this independently launched slice control/engine service principal, not the Path-1 kernel service or its provider children. Service ordering and Wants are not process ancestry. This does not approve downstream broker/engine runtime policy; existing slice differences remain removal required.",
+    "anchors": [],
+    "openFindings": [
+      "MP-11: Source-only conclusion; effective host policy, live comparison and program acceptance remain open."
+    ]
+  },
+  {
+    "id": "mp11b-data-volume-admission-service",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "apps/kernel/slice-linux-docker/chariox-data-volume-admission.service",
+    "blob": "cfadfdfca462e4752ea7a69d90351227da145881",
+    "ranges": [
+      [
+        1,
+        30
+      ]
+    ],
+    "classification": "allowed_release_deployment",
+    "rationale": "MP-07/MP-11: The dedicated oneshot checks deployment data-volume admission before separately launched services. Its own filesystem/network restrictions do not become the provider process sandbox. The checked-in ExecStart runs admission, not a provider.",
+    "anchors": [],
+    "openFindings": [
+      "MP-11: Source-only conclusion; effective host policy, live comparison and program acceptance remain open."
+    ]
+  },
+  {
+    "id": "mp11b-image-builder-cleanup-service",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "deploy/managed-kernel/chariox-image-builder-cleanup@.service",
+    "blob": "cf4006dbd65c3a6b4a25c2c543f9b390ed1aa478",
+    "ranges": [
+      [
+        1,
+        19
+      ]
+    ],
+    "classification": "allowed_release_deployment",
+    "rationale": "MP-07/MP-11: This root oneshot expires the exact temporary release image-builder receipt. Its sandbox affects the deployment cleanup helper only and does not select a kernel/provider launch.",
+    "anchors": [],
+    "openFindings": [
+      "MP-11: Source-only conclusion; effective host policy, live comparison and program acceptance remain open."
+    ]
+  },
+  {
+    "id": "mp11b-scm-home-selection",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "apps/kernel/src/managed_context/scm.rs",
+    "blob": "ac4c45f2afb93daefd8749f9f06cdea4642e7562",
+    "ranges": [
+      [
+        108,
+        169
+      ]
+    ],
+    "classification": "ordinary_path1_behavior",
+    "rationale": "MP-04/MP-08/MP-11: Inventory uses process HOME/PATH/XDG/GH settings when CHARIOX_MANAGED_PROVIDER_HOME is absent. Both Path-1 launchers remove that selector; the alternate provider home belongs to shared-host/slice isolation. managed_target is the explicit credential-transfer destination constructor, also used for ordinary targets, not a Path-1-only runtime branch.",
+    "anchors": [
+      [
+        "managed_only_branch",
+        "source_from_process"
+      ],
+      [
+        "managed_only_branch",
+        "managed_target"
+      ]
+    ],
+    "openFindings": [
+      "MP-11: Source-only conclusion; effective host policy, live comparison and program acceptance remain open."
+    ]
+  },
+  {
+    "id": "mp11b-pty-process-marker",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "apps/kernel/src/pty/manager.rs",
+    "blob": "1560ca2dcbc15dae6c0240c477233eb67b8b2867",
+    "ranges": [
+      [
+        261,
+        286
+      ]
+    ],
+    "classification": "ordinary_path1_behavior",
+    "rationale": "MP-08/MP-11: Every newly spawned kernel-owned provider run gets CHARIOX_MANAGED_PROVIDER_PROCESS=1 after the common discovery scrub. The method has no machine-placement check; managed here describes Chariox ownership of the PTY process, not Path-1 placement.",
+    "anchors": [],
+    "openFindings": [
+      "MP-11: Source-only conclusion; effective host policy, live comparison and program acceptance remain open."
+    ]
+  },
+  {
+    "id": "mp11b-opencode-discovery-namespace-adapter",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "apps/kernel/src/provider/opencode/discovery.rs",
+    "blob": "a466ebb02f58b10e08af75464248c86dd792e983",
+    "ranges": [
+      [
+        19,
+        91
+      ]
+    ],
+    "classification": "ordinary_path1_behavior",
+    "rationale": "MP-01/MP-08/MP-11: Read-only OpenCode discovery modifies namespace arguments only when the existing --setenv isolation marker is present. Unwrapped ordinary and Path-1 launches return unchanged. The generic discovery configuration is created under the common preparation HOME on both placements.",
+    "anchors": [
+      [
+        "managed_only_branch",
+        "apply_to_launch_args"
+      ]
+    ],
+    "openFindings": [
+      "MP-11: Source-only conclusion; effective host policy, live comparison and program acceptance remain open."
+    ]
+  },
+  {
+    "id": "mp11b-preparation-namespace-adapters",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "apps/kernel/src/provider/managed_isolation.rs",
+    "blob": "37ae2123aaea0e9eaf82374a3ef45018a69cc017",
+    "ranges": [
+      [
+        211,
+        314
+      ]
+    ],
+    "classification": "ordinary_path1_behavior",
+    "rationale": "MP-01/MP-08/MP-11: Preparation-HOME rewriting and validation inspect the actual isolation-marker arguments. An unwrapped Path-1/ordinary run is a no-op and passes the preparation-home check; only explicit sandbox topologies rewrite bind mounts. No managed-machine selector appears in these branches.",
+    "anchors": [
+      [
+        "managed_only_branch",
+        "apply_preparation_home_to_managed_launch"
+      ],
+      [
+        "managed_only_branch",
+        "managed_launch_has_preparation_home"
+      ]
+    ],
+    "openFindings": [
+      "MP-11: Source-only conclusion; effective host policy, live comparison and program acceptance remain open."
+    ]
+  },
+  {
+    "id": "mp11b-provider-reported-path-adapter",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "apps/kernel/src/provider/managed_isolation.rs",
+    "blob": "37ae2123aaea0e9eaf82374a3ef45018a69cc017",
+    "ranges": [
+      [
+        456,
+        513
+      ]
+    ],
+    "classification": "ordinary_path1_behavior",
+    "rationale": "MP-02/MP-08/MP-11: Without the actual isolation-marker arguments, reported provider paths return unchanged. Namespace bind translation is confined to explicit isolated runs. It is not a managed-machine workspace filter.",
+    "anchors": [
+      [
+        "protected_path_filter",
+        "provider_reported_path_on_kernel"
+      ]
+    ],
+    "openFindings": [
+      "MP-11: Source-only conclusion; effective host policy, live comparison and program acceptance remain open."
+    ]
+  },
+  {
+    "id": "mp11b-runtime-environment-inputs",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "apps/kernel/src/config/env_loader.rs",
+    "blob": "b7707033b9d9fe03f3ad911ddac38e6f119bc5ec",
+    "ranges": [
+      [
+        104,
+        113
+      ],
+      [
+        180,
+        205
+      ]
+    ],
+    "classification": "ordinary_path1_behavior",
+    "rationale": "MP-08/MP-11: Publication control state and machine-owned slice recovery/public-key fields are loaded through common DaemonConfig for ordinary and Path-1 kernels. They identify an explicit publication/slice role, without selecting different provider execution or workspace admission.",
+    "anchors": [],
+    "openFindings": [
+      "MP-11: Source-only conclusion; effective host policy, live comparison and program acceptance remain open."
+    ]
+  },
+  {
+    "id": "mp11b-project-validation-control-scrub",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "apps/kernel/src/runtime/state/project_environment_setup_validation.rs",
+    "blob": "59708026b354c26305d248016dedd1ca47f7fd03",
+    "ranges": [
+      [
+        153,
+        221
+      ],
+      [
+        457,
+        532
+      ]
+    ],
+    "classification": "ordinary_path1_behavior",
+    "rationale": "MP-08/MP-11: Recipe application and validation use one environment constructor on both local ordinary and leased workers. It removes kernel/account/Git controls, retains project/toolchain inputs, and applies the durable preparation HOME/PATH. These managed-selector names are removed controls, not placement-selected project restrictions.",
+    "anchors": [
+      [
+        "managed_only_branch",
+        "worker_validation_environment_with_home_and_definition"
+      ]
+    ],
+    "openFindings": [
+      "MP-11: Source-only conclusion; effective host policy, live comparison and program acceptance remain open."
+    ]
+  },
+  {
+    "id": "mp11b-installer-exact-control-repair",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "deploy/managed-kernel/install-image.sh",
+    "blob": "c3d9d546c6a5d771581a0094338eaf9ab0efea34",
+    "ranges": [
+      [
+        232,
+        279
+      ]
+    ],
+    "classification": "allowed_release_deployment",
+    "rationale": "MP-03/MP-07/MP-11: Installation repairs only named bootstrap files and dedicated managed/disposable-worker/kernels control trees. It does not recursively chmod their shared state_root parent. This is signed deployment control-file ownership, not a workspace path allowlist.",
+    "anchors": [
+      [
+        "protected_path_filter",
+        "repair_root_control_file"
+      ],
+      [
+        "protected_path_filter",
+        "repair_root_control_tree"
+      ],
+      [
+        "protected_path_filter",
+        "repair_root_control_state"
+      ]
+    ],
+    "openFindings": [
+      "MP-11: Source-only conclusion; effective host policy, live comparison and program acceptance remain open."
+    ]
+  },
+  {
+    "id": "mp11b-fresh-rebuild-process-negative-guards",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "apps/kernel/src/managed_bootstrap/freshness.rs",
+    "blob": "d9d5c11b1b9189cbd4fbd2826a2845bfe04e255c",
+    "ranges": [
+      [
+        507,
+        583
+      ]
+    ],
+    "classification": "negative_guard",
+    "rationale": "MP-01/MP-07/MP-10/MP-11: Rebuild admission rejects observable Bubblewrap and retired runtime processes and a malformed ancestor chain. The bwrap strings are negative residue checks, not executable launch selection. This source guard alone does not establish a residue-free rebuild.",
+    "anchors": [
+      [
+        "release_activation",
+        "validate_process_observations"
+      ],
+      [
+        "release_activation",
+        "is_bubblewrap"
+      ]
+    ],
+    "openFindings": [
+      "MP-11: Source-only conclusion; effective host policy, live comparison and program acceptance remain open."
+    ]
+  },
+  {
+    "id": "mp11b-inner-provider-bwrap-launcher",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "apps/kernel/slice-linux-docker/docker/managed-provider-bwrap.sh",
+    "blob": "88741c2c0ebb04f8c2c8ab75a884b87e77b444bc",
+    "ranges": [
+      [
+        1,
+        17
+      ]
+    ],
+    "classification": "inner_docker_slice_isolation",
+    "rationale": "MP-01/MP-11: This packaged inner-slice launcher chooses setpriv only under a rootless UID map and always applies the packaged seccomp descriptor. It is installed in the Docker slice image; Path-1 host providers use the unwrapped common adapter.",
+    "anchors": [],
+    "openFindings": [
+      "MP-11: Source-only conclusion; effective host policy, live comparison and program acceptance remain open."
+    ]
+  },
+  {
+    "id": "mp11b-slice-runtime-provider-home",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "apps/kernel/slice-linux-docker/docker/start-runtime.sh",
+    "blob": "195ce5230578b6ed93068918d0d7f9ce9227c73e",
+    "ranges": [
+      [
+        26,
+        42
+      ]
+    ],
+    "classification": "inner_docker_slice_isolation",
+    "rationale": "MP-04/MP-11: Provider HOME/probe variables initialize the explicit headed Docker-slice runtime, with private slice-local directories. Both ordinary and managed host placements use this same inner runtime script. This does not approve the separately flagged placement-selected sandbox option.",
+    "anchors": [],
+    "openFindings": [
+      "MP-11: Source-only conclusion; effective host policy, live comparison and program acceptance remain open."
+    ]
+  },
+  {
+    "id": "mp11b-image-topology-admission",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "deploy/managed-kernel/prepare-hetzner-image.sh",
+    "blob": "f9c8f12c97fdb7e66df523615e4bf7f30daf8ec8",
+    "ranges": [
+      [
+        211,
+        229
+      ]
+    ],
+    "classification": "allowed_release_deployment",
+    "rationale": "MP-01/MP-07/MP-11: Preparation explicitly selects the Path-1 service or the shared-host service, rejects an absent/unknown topology and verifies an external public builder pin for Path 1. This is deployment selection, not a managed-only provider restriction.",
+    "anchors": [],
+    "openFindings": [
+      "MP-11: Source-only conclusion; effective host policy, live comparison and program acceptance remain open."
+    ]
+  },
+  {
+    "id": "mp11b-bootstrap-api-configuration",
+    "sourceCommit": "06cd95fda1fc07f9dd37a12727f6ed4e5a4adeb2",
+    "path": "apps/api/src/managed-environments/bootstrap-config.ts",
+    "blob": "ebed439b48604dbbea6e0ea539af524ecee1b57c",
+    "ranges": [
+      [
+        1,
+        8
+      ]
+    ],
+    "classification": "allowed_release_deployment",
+    "rationale": "MP-07/MP-11: This Cloud helper selects the bootstrap API origin and rejects missing production configuration when the infrastructure manager is configured. It is Cloud enrollment configuration, not a runtime terminal/proxy or provider path.",
+    "anchors": [
+      [
+        "release_activation",
+        "managedKernelCloudApiUrl"
+      ]
+    ],
+    "openFindings": [
+      "MP-11: Source-only conclusion; effective host policy, live comparison and program acceptance remain open."
+    ]
+  },
+  {
+    "id": "mp11b-placement-catalog-environment",
+    "sourceCommit": "06cd95fda1fc07f9dd37a12727f6ed4e5a4adeb2",
+    "path": "apps/api/src/managed-environments/placement-catalog.ts",
+    "blob": "0bb1a248af873f0739090dd20524136c0dc6b667",
+    "ranges": [
+      [
+        25,
+        97
+      ],
+      [
+        120,
+        207
+      ]
+    ],
+    "classification": "allowed_release_deployment",
+    "rationale": "MP-07/MP-09/MP-11: Environment variables form the Cloud compute/profile/release catalog and server-authoritative CREATE route. The release quiescence gate protects mandatory shutdown support. No provider runtime, cwd, prompt or history behavior is selected here after enrollment.",
+    "anchors": [
+      [
+        "release_activation",
+        "configuredManagedEnvironmentPlacementCatalog"
+      ],
+      [
+        "release_activation",
+        "parsePlacementSelections"
+      ]
+    ],
+    "openFindings": [
+      "MP-11: Source-only conclusion; effective host policy, live comparison and program acceptance remain open."
+    ]
+  },
+  {
+    "id": "mp11b-candidate-placement-environment",
+    "sourceCommit": "06cd95fda1fc07f9dd37a12727f6ed4e5a4adeb2",
+    "path": "apps/api/src/managed-environments/configured-operator-candidate-admission.ts",
+    "blob": "bacffca9218f533a1139c6a0b1ea8610b82e1aa2",
+    "ranges": [
+      [
+        1,
+        51
+      ]
+    ],
+    "classification": "allowed_release_deployment",
+    "rationale": "MP-07/MP-11: Default-off operator candidate admission builds one pinned deployment route and validates its bounded admission window without publishing it in the public catalog. It does not grant runtime capabilities or introduce another kernel execution model.",
+    "anchors": [
+      [
+        "release_activation",
+        "configuredOperatorCandidateAdmission"
+      ]
+    ],
+    "openFindings": [
+      "MP-11: Source-only conclusion; effective host policy, live comparison and program acceptance remain open."
+    ]
+  },
+  {
+    "id": "mp11b-quiescence-release-approval",
+    "sourceCommit": "06cd95fda1fc07f9dd37a12727f6ed4e5a4adeb2",
+    "path": "apps/api/src/managed-environments/auto-stop-quiescence-release-policy.ts",
+    "blob": "f425167d5b1ddbcaed35b8283d6e750aac616c8f",
+    "ranges": [
+      [
+        1,
+        23
+      ]
+    ],
+    "classification": "required_automatic_shutdown",
+    "rationale": "MP-09/MP-11: The approved immutable-release digest list prevents enabling Cloud shutdown against unreviewed quiescence code. The selector governs mandatory shutdown compatibility, one of the two permitted differences; it does not select a provider sandbox.",
+    "anchors": [
+      [
+        "automatic_shutdown_selector",
+        "configuredQuiescenceReleaseDigests"
+      ],
+      [
+        "automatic_shutdown_selector",
+        "requireQuiescenceRelease"
+      ]
+    ],
+    "openFindings": [
+      "MP-11: Source-only conclusion; effective host policy, live comparison and program acceptance remain open."
+    ]
+  },
+  {
+    "id": "mp11b-worker-placement-lifetime-policy",
+    "sourceCommit": "06cd95fda1fc07f9dd37a12727f6ed4e5a4adeb2",
+    "path": "apps/api/src/disposable-workers/placement-policy.ts",
+    "blob": "4aa94f2b02cf027beff46a1981a701866eb6c393",
+    "ranges": [
+      [
+        1,
+        79
+      ]
+    ],
+    "classification": "allowed_release_deployment",
+    "rationale": "MP-07/MP-09/MP-11: Cloud worker policy restricts allocation compute/architecture/concurrency, binds the same reviewed managed placement/storage and requires a bounded lifetime. These are CREATE and required shutdown/cost controls outside the worker, not provider filesystem or session policy.",
+    "anchors": [
+      [
+        "release_activation",
+        "configuredDisposableWorkerPlacementPolicy"
+      ]
+    ],
+    "openFindings": [
+      "MP-11: Source-only conclusion; effective host policy, live comparison and program acceptance remain open."
+    ]
+  },
+  {
+    "id": "mp11b-activity-registration-selection",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "apps/kernel/src/runtime/managed_kernel_activity.rs",
+    "blob": "c194aff6b1c348d518f9e4854bc22defa1abcbd1",
+    "ranges": [
+      [
+        74,
+        122
+      ]
+    ],
+    "classification": "required_automatic_shutdown",
+    "rationale": "MP-09/MP-11: Reporter selection uses the confirmed machine or disposable-worker activity receipt and machine credential solely for the mandatory Cloud activity/shutdown lifecycle. Ordinary unregistered kernels have no reporter. Source selection does not prove idle timing or every live shutdown trigger.",
+    "anchors": [
+      [
+        "automatic_shutdown_selector",
+        "from_runtime"
+      ]
+    ],
+    "openFindings": [
+      "MP-11: Source-only conclusion; effective host policy, live comparison and program acceptance remain open."
+    ]
+  },
+  {
+    "id": "mp11b-publication-route-path-filter",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "apps/server/src/publication-agent-app-effects.ts",
+    "blob": "901d042896a86a189454443e4c1bda057f6c3622",
+    "ranges": [
+      [
+        167,
+        196
+      ]
+    ],
+    "classification": "ordinary_path1_behavior",
+    "rationale": "MP-02/MP-11: protected_paths match URL asset overlay routes in an Agent App publication, not Unix workspaces. Every publication uses the same route policy; no managed-machine/Path-1 selector exists in the helper.",
+    "anchors": [
+      [
+        "protected_path_filter",
+        "routeAllowsOverlay"
+      ]
+    ],
+    "openFindings": [
+      "MP-11: Source-only conclusion; effective host policy, live comparison and program acceptance remain open."
+    ]
+  },
+  {
+    "id": "mp11b-publication-route-filter-schema",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "apps/server/src/publication-agent-app-schema.ts",
+    "blob": "ff5b4032af14e220d34bab413921f4d416a98ff9",
+    "ranges": [
+      [
+        100,
+        135
+      ]
+    ],
+    "classification": "ordinary_path1_behavior",
+    "rationale": "MP-02/MP-11: allowed/protected_paths validate user-authored publication route patterns and action IDs. They are shared HTTP asset manipulation policy, not provider cwd or repository restrictions.",
+    "anchors": [
+      [
+        "protected_path_filter",
+        "validateRoute"
+      ]
+    ],
+    "openFindings": [
+      "MP-11: Source-only conclusion; effective host policy, live comparison and program acceptance remain open."
+    ]
+  },
+  {
+    "id": "mp11b-release-archive-service-mount",
+    "sourceCommit": "06cd95fda1fc07f9dd37a12727f6ed4e5a4adeb2",
+    "path": "deploy/openship/cloud-release.compose.yml",
+    "blob": "bcb3933e17543c24410c9710f7f9ac3d890a5cf7",
+    "ranges": [
+      [
+        63,
+        67
+      ]
+    ],
+    "classification": "allowed_release_deployment",
+    "rationale": "MP-07/MP-11: This Cloud service environment/mount reads signed release archives for authorized in-place upgrades. The volume is a deployment artifact source, not a runtime terminal/history/provider-state path.",
+    "anchors": [],
+    "openFindings": [
+      "MP-11: Source-only conclusion; effective host policy, live comparison and program acceptance remain open."
+    ]
+  },
+  {
+    "id": "mp11b-shared-live-sync-mode-projection",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "packages/kernel-client/src/workspace-live-sync-mode.ts",
+    "blob": "d19e756e1c7c1aafa1d8815ea94674dbb47cd60d",
+    "ranges": [
+      [
+        1,
+        69
+      ]
+    ],
+    "classification": "ordinary_path1_behavior",
+    "rationale": "MP-08/MP-11: managed is an explicit user-selected Workspace Live Sync mode, alongside tracked/off, and maps to the common protocol value. The formatter has no managed-machine selector and states the selected-workspace scope.",
+    "anchors": [
+      [
+        "client_projection",
+        "parseWorkspaceLiveSyncModeCommand"
+      ],
+      [
+        "client_projection",
+        "formatWorkspaceLiveSyncModeLabel"
+      ]
+    ],
+    "openFindings": [
+      "MP-11: Source-only conclusion; effective host policy, live comparison and program acceptance remain open."
+    ]
+  },
+  {
+    "id": "mp11b-web-live-sync-mode-projection",
+    "sourceCommit": "06cd95fda1fc07f9dd37a12727f6ed4e5a4adeb2",
+    "path": "apps/web/src/terminal/workspace-live-sync-mode.ts",
+    "blob": "5e125bd795151913a7baaae4dd29749fdc44e77c",
+    "ranges": [
+      [
+        1,
+        46
+      ]
+    ],
+    "classification": "ordinary_path1_behavior",
+    "rationale": "MP-08/MP-11: Web normalizes and labels the same user-selected managed/tracked/unrestricted Live Sync modes. These are shared session settings, not managed placement or an additional parity exception.",
+    "anchors": [
+      [
+        "client_projection",
+        "normalizeWorkspaceLiveSyncMode"
+      ]
+    ],
+    "openFindings": [
+      "MP-11: Source-only conclusion; effective host policy, live comparison and program acceptance remain open."
+    ]
+  },
+  {
+    "id": "mp11b-ios-live-sync-mode-command",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "apps/ios/CharioxPackage/Sources/CharioxFeature/State/CharioxAppModelCommands.swift",
+    "blob": "76084e6866b37607d0c30b2122e84597c1821ea6",
+    "ranges": [
+      [
+        150,
+        175
+      ]
+    ],
+    "classification": "ordinary_path1_behavior",
+    "rationale": "MP-08/MP-11: Swift dispatches explicit /workspace sync managed/tracked/off choices to the same session mode command. managed is user-selected Live Sync behavior, not a Cloud-machine branch. No native build/live parity is claimed.",
+    "anchors": [],
+    "openFindings": [
+      "MP-11: Source-only conclusion; effective host policy, live comparison and program acceptance remain open."
+    ]
+  },
+  {
+    "id": "mp11b-runtime-projection-fixture",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "packages/kernel-client/src/session-runtime-projection.test-support.ts",
+    "blob": "e196b7a3d2fe1ca8af77ce037f667fc3c0f93922",
+    "ranges": [
+      [
+        17,
+        32
+      ]
+    ],
+    "classification": "test_evidence",
+    "rationale": "MP-11: This test-support constructor returns synthetic session-1 Live Sync status with empty force_excludes. It has no environment/topology branch and does not install runtime path protection. Its lexical managed value is fixture data.",
+    "anchors": [
+      [
+        "client_projection",
+        "workspaceLiveSyncStatus"
+      ]
+    ],
+    "openFindings": [
+      "MP-11: Source-only conclusion; effective host policy, live comparison and program acceptance remain open."
+    ]
+  },
+  {
+    "id": "mp11b-soak-sandbox-root-guard",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "apps/cli/scripts/lib/browser-computer-soak-runtime.mjs",
+    "blob": "d2041162b4ed01208f69dd2e91cbd888ec093a54",
+    "ranges": [
+      [
+        853,
+        862
+      ]
+    ],
+    "classification": "negative_guard",
+    "rationale": "MP-01/MP-11: This validation preflight rejects root Chromium on every placement. The inherited isolation marker changes only the failure advice, not production browser launch or runtime permissions. The source conclusion does not count as an executed soak.",
+    "anchors": [
+      [
+        "managed_env_selector",
+        "assertSandboxCapableChromiumIdentity"
+      ]
+    ],
+    "openFindings": [
+      "MP-11: Source-only conclusion; effective host policy, live comparison and program acceptance remain open."
+    ]
+  },
+  {
+    "id": "mp11b-ready-machine-forced-preparation",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "apps/cli/src/waiting-room-controller.ts",
+    "blob": "50804dc9c5f5437bab6ee140681edddc0330292a",
+    "ranges": [
+      [
+        394,
+        412
+      ]
+    ],
+    "classification": "open_managed_runtime_difference",
+    "rationale": "MP-02/MP-08/MP-11: Every managed-environment machine reference produces an existing managed launch selection, even when ready and connected. Unlike an ordinary enrolled-machine selection it therefore re-enters preparation and the original transfer-target rewrite before each new session.",
+    "anchors": [
+      [
+        "client_projection",
+        "waitingRoomManagedLaunchSelection"
+      ]
+    ],
+    "openFindings": [
+      "MP-02/MP-08/MP-11 removal required: Send already-ready enrolled-machine selections through the common ordinary launch path; reserve managed preparation for pending deployment/start. Preserve user Project, cwd, worktree, worker and slice choices."
+    ]
+  },
+  {
+    "id": "mp11b-ready-machine-transfer-workspace-reset",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "apps/cli/src/waiting-room-managed-environment-launch-controller.ts",
+    "blob": "425614771545f3ef80e7ff14c1f04136e9336b64",
+    "ranges": [
+      [
+        245,
+        275
+      ],
+      [
+        304,
+        340
+      ]
+    ],
+    "classification": "open_managed_runtime_difference",
+    "rationale": "MP-02/MP-08/MP-11: Existing-ready preparation always returns the original transferred primary workspace as both workspacePath and worktreePath and its original Project selection. The Project callback additionally rejects any other workspace. This is post-enrollment session policy, not signed deployment.",
+    "anchors": [
+      [
+        "client_projection",
+        "workspacePath"
+      ],
+      [
+        "client_projection",
+        "managedProjectPreparation"
+      ]
+    ],
+    "openFindings": [
+      "MP-02/MP-08/MP-11 removal required: Preserve explicit ready-machine Project/workspace/worktree choices and run common Project setup for that selection; use the transferred primary only as the initial default. Compare a new /tmp repository and separate worktree after enrollment."
+    ]
+  },
+  {
+    "id": "mp11b-ready-machine-launch-choice-reset",
+    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "path": "apps/cli/src/cli-waiting-room-composition.ts",
+    "blob": "ab33e3ceb9b296663ff7d7365c1ab89a6a26e3af",
+    "ranges": [
+      [
+        547,
+        632
+      ]
+    ],
+    "classification": "open_managed_runtime_difference",
+    "rationale": "MP-02/MP-08/MP-11: The prepared existing-machine result overwrites pending workspace/worktree and selected Project, strips workerKernelRef/sliceRef/sliceCreate and sets sliceSelectionId to none. The common activation controller then reads these overwritten targets for createSession. Managed provenance thus changes user choices after enrollment.",
+    "anchors": [
+      [
+        "client_projection",
+        "prepareManagedSessionLaunch"
+      ]
+    ],
+    "openFindings": [
+      "MP-02/MP-08/MP-11 removal required: After readiness use the common owner-client pivot and session launcher without stripping explicit worker/slice/Project/path inputs. Keep the initial transfer defaults only for first creation; compare ordinary and ready-managed launches with the same choices."
+    ]
+  },
+  {
+    "id": "mp11b-ready-machine-execution-worker-reset",
+    "sourceCommit": "06cd95fda1fc07f9dd37a12727f6ed4e5a4adeb2",
+    "path": "apps/web/src/terminal/waiting-room-managed-environment-launch-controller.ts",
+    "blob": "62386857e98ec574b9f84465f1dd2c982aa2c094",
+    "ranges": [
+      [
+        326,
+        398
+      ]
+    ],
+    "classification": "open_managed_runtime_difference",
+    "rationale": "MP-08/MP-11: applyReadyTarget recognizes an existing-ready bound selection and preserves some workspace/Project choices, but unconditionally clears selectedExecutionKernelRef. The ordinary ready-machine path preserves the explicit execution worker. The real pinned transition reproduces this reset with synthetic identities.",
+    "anchors": [
+      [
+        "client_projection",
+        "readyState"
+      ]
+    ],
+    "openFindings": [
+      "MP-08/MP-11 removal required: Preserve the explicit execution kernel for an existing-ready bound machine and validate it through the shared kernel directory/setup path. Default it only on initial deployment or explicit user change; compare a selected remote worker before/after Start."
+    ]
+  },
 ]);
 
 function rulesFor(file, embeddedPath, lineNumber = null) {

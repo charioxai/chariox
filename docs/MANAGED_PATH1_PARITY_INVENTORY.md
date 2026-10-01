@@ -15,6 +15,92 @@ new boot/machine/enrollment/relay identities, reviewed release, absence of old
 runtime residue, and retirement of the prior identity before the parity matrix
 or remaining acceptance gates run.
 
+## MP-11 out-of-scope follow-up, lane mp11b (2026-10-01)
+
+This follow-up starts from the independent review commit
+`f3dfb5bce3f3034e29b4f72c2549838d0bf984f3`. It reviews the same frozen
+OSS `686ec57d5e46cdd46e723155b7eb89f6f25202a2`
+(tree `60dadc622701c79c63ef5d3bb6c5ff1006244aac`) and Cloud
+`06cd95fda1fc07f9dd37a12727f6ed4e5a4adeb2`
+(tree `d67400efc1591db7a7f47572517cae3264277f47`). The runtime and protocol
+identities remain those frozen sources; the follow-up changes inventory rules,
+review data, scanner tests and this ledger.
+
+Reading the actual source added 39 exact-blob, bounded scopes across all 12
+investigation patterns. Their 254 independently dispositioned anchors comprise
+219 previously unreviewed candidates and 35 new declaration anchors. The
+original 493 reviews retain identical report records. Each new review binds
+commit, tree, path, blob, line, column, symbol, category, selector and context
+hash. Pattern membership grants no approval to candidates outside these scopes.
+
+| MP-11 updated exact scan | Candidates | Reviewed scoped | Removal required | Unreviewed |
+| --- | ---: | ---: | ---: | ---: |
+| OSS 686 | 6,218 | 627 | 50 | 5,591 |
+| Cloud 06cd95fd | 2,870 | 120 | 15 | 2,750 |
+| Total | 9,088 | 747 | 65 | 8,341 |
+
+### MP-02/MP-08/MP-11 new client findings
+
+Six scopes add 28 removal-required anchors for three source issues. The Cloud
+projection issue extends the shared-client finding from the previous review.
+The concrete fixes below belong to later runtime implementation work.
+
+| MP-02/MP-08/MP-11 first failing source seam | Concrete correction |
+| --- | --- |
+| Cloud ready-machine kernel narrowing: `apps/web/src/ui/waiting-room-runtime-placement.ts:47,109` replaces the ordinary enrolled-machine option and lists only recorded `runtimeKernelId`. `apps/web/src/ui/waiting-room-launch-readiness.ts:101` also forces reconnection to that home kernel. | Use the common authorized kernel list and selected-target readiness for ready enrolled machines. Keep pending deployment separate. Compare two eligible kernels and retain the explicit second selection. |
+| CLI ready-machine launch rewrites user choices: `apps/cli/src/waiting-room-controller.ts:394` enters managed preparation for every managed reference. `waiting-room-managed-environment-launch-controller.ts:245,304` returns the original transferred workspace/worktree/Project and restricts setup to it. `cli-waiting-room-composition.ts:547` applies those defaults and removes selected worker/slice choices before common activation consumes them. | Route already-ready enrolled machines through ordinary session launch. Use transferred targets as initial defaults; preserve explicit cwd, worktree, Project, worker and slice choices through common setup and activation. |
+| Cloud ready-machine preparation clears the selected execution worker: `apps/web/src/terminal/waiting-room-managed-environment-launch-controller.ts:326` recognizes a bound ready selection, then clears `selectedExecutionKernelRef` at line 370. | Preserve a valid explicit worker on the already-ready path; apply initial defaults only for deployment or an actual user machine change, with common directory validation. |
+
+The pinned-source reproduction executes the actual Cloud projection and ready
+transition, plus the actual CLI existing-machine preparation controller, with
+synthetic identities and callback responses. It reproduces a missing second
+kernel, the original transfer workspace overriding the selected workspace, and
+a cleared execution worker. CLI composition and launch readiness are traced
+in source. These checks establish reachable source seams, not a live
+ordinary-versus-managed parity comparison.
+
+### MP-11 bounded common behavior and exceptions
+
+The other 33 scopes distinguish common behavior from explicit topology or
+permitted exceptions. The common PTY marker means Chariox process ownership;
+it is set for every owned provider run. Provider preparation/path translation
+branches inspect actual isolation arguments and leave ordinary/Path-1 runs
+unchanged. SCM inventory uses ordinary HOME/XDG/GH inputs when the isolated
+provider-home selector is absent; the Path-1 launchers remove that selector.
+Publication `protected_paths` are URL overlay policies, and Live Sync
+`managed` is a user-selected shared session mode.
+
+The checked-in shared-host unit explicitly selects its separate topology.
+Broker/rootless/quota service hardening affects independently launched helper
+principals; ordering does not make those services ancestors of provider runs.
+Those scopes do not approve the downstream broker runtime differences already
+marked for removal. Inner-slice launcher and HOME handling remain explicit
+slice behavior. Deployment/catalog/admission/control-file repair scopes and
+mandatory activity/quiescence shutdown scopes describe the two permitted
+exceptions. Negative rebuild/validation guards and a synthetic projection
+fixture supply source evidence only. Installed service overrides, native live
+behavior and fresh-machine acceptance remain unverified here.
+
+Focused scanner validation passes 142/142 without skips. New per-scope tests
+retain candidates on blob drift, reject synthetic-source approval reuse, and
+leave out-of-range candidates unreviewed. Every frozen review is tested for
+anchor and source-identity drift. The fixture now replaces a tracked entry
+when rewriting a file, matching Git's unique-path tree semantics. Independent
+receipt verification checks all 254 new contexts against pinned blobs and
+preserves all prior reviewed records.
+
+Both scans still exit 1: 65 removal-required and 8,341 unreviewed candidates
+remain, with zero unresolved source audit gaps or unapplied same-source
+reviews. Other-repository reviews remain pending in each individual scan, as
+do the three historical predicates. The tool bundle SHA-256 is
+`b753c5342720250b31f3c4d7365a89fab5b6d4b7c14fce083cb312fe31ce8e10`.
+External evidence under
+`/root/.codex/evidence/browser-resume-20260930/mp11b/` contains exact reports,
+bounded source excerpts, reproduction code/results, per-pattern remaining
+candidate triage and command/resource receipts. MP-01 through MP-11 remain
+open; the remaining source review and canonical fresh-machine matrix are
+still required.
+
 ## Independent MP-11 source review (2026-10-01)
 
 The independent MP-11 lane reviewed the original 90 scopes against their actual

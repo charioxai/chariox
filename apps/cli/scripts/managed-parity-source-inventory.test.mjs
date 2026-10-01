@@ -149,7 +149,10 @@ function makeFixture(options = {}) {
     const absolute = join(root, file);
     mkdirSync(dirname(absolute), { recursive: true });
     writeFileSync(absolute, contents);
-    entries.push(`${mode} blob ${(blob ?? String(index).padStart(40, "0"))}\t${file}`);
+    const entry = `${mode} blob ${(blob ?? String(index).padStart(40, "0"))}\t${file}`;
+    const existingIndex = entries.findIndex((tracked) => tracked.endsWith(`\t${file}`));
+    if (existingIndex === -1) entries.push(entry);
+    else entries[existingIndex] = entry;
     index += 1;
   };
   for (const [file, contents] of Object.entries(files)) {
@@ -1927,9 +1930,9 @@ for (const pinned of FINAL_ARCHIVE_DECLARATIONS) {
 
 // MP-11: frozen independent conclusions may bind only the reviewed source.
 test("MP-11 independent ledger covers each inspected scope without authorizing scope expansion", () => {
-  assert.equal(new Set(INDEPENDENT_REVIEW_GROUPS.map(group => group.ruleId)).size, 95);
+  assert.equal(new Set(INDEPENDENT_REVIEW_GROUPS.map(group => group.ruleId)).size, 134);
   assert.ok(INDEPENDENT_REVIEW_GROUPS.every(group => SOURCE_AUDIT_RULES.some(rule => rule.id === group.ruleId)));
-  assert.equal(SOURCE_AUDIT_RULES.length, 98);
+  assert.equal(SOURCE_AUDIT_RULES.length, 137);
   assert.equal(new Set(DEFAULT_SEMANTIC_DISPOSITIONS.map(review => review.id)).size, DEFAULT_SEMANTIC_DISPOSITIONS.length);
   const first = DEFAULT_SEMANTIC_DISPOSITIONS[0];
   assert.equal(evaluateSemanticDisposition(first.anchor, { commit: first.sourceCommit, tree: first.sourceTree }, DEFAULT_SEMANTIC_DISPOSITIONS).status, "reviewed");
@@ -2011,3 +2014,77 @@ for (const [id, declaration] of [
   assert.equal(report.status,"fail")
  })
 })
+
+// MP-11: reviewed high-risk triage scopes must retain candidates on drift.
+const MP11B_SCOPE_FIXTURES = [
+  {"id": "mp11b-ready-machine-kernel-projection", "path": "apps/web/src/ui/waiting-room-runtime-placement.ts", "blob": "f596c01ba68446d617f0370a30bcb481a757dcac", "excerpt": [[47, "export function waitingRoomMachineOptions("], [109, "export function waitingRoomKernelsForSelectedMachine("]], "outsideLine": 142},
+  {"id": "mp11b-ready-machine-home-readiness", "path": "apps/web/src/ui/waiting-room-launch-readiness.ts", "blob": "eb15c79d3a0b5c09d6cf86e755b0696362b93aae", "excerpt": [[105, "      return managedEnvironmentLaunchReadiness(`Connect to ${managedEnvironment.name} and start session`)"]], "outsideLine": 111},
+  {"id": "mp11b-shared-host-unit", "path": "deploy/managed-kernel/chariox-managed-bootstrap.service", "blob": "902948442e4ecc771b86e56be1cfa79e83ea583e", "excerpt": [[26, "Environment=CHARIOX_MANAGED_BOOTSTRAP_PATH=/var/lib/chariox/managed-bootstrap.json"]], "outsideLine": 63},
+  {"id": "mp11b-broker-service", "path": "deploy/managed-kernel/chariox-slice-broker.service", "blob": "8195754884b2c17609ce7812b914c49b8935c6a3", "excerpt": [[32, "ReadWritePaths=/var/lib/chariox-docker /var/lib/chariox-slice-disk-quota /var/lib/chariox-slice-share /run/chariox-docker"]], "outsideLine": 41},
+  {"id": "mp11b-rootless-lifecycle-service", "path": "deploy/managed-kernel/chariox-rootless-docker.service", "blob": "8aae4b3f4809d3bc3d165fdaa137480927edee3b", "excerpt": [[30, "ProtectSystem=strict"]], "outsideLine": 46},
+  {"id": "mp11b-rootless-engine-service", "path": "apps/kernel/slice-linux-docker/chariox-rootless-engine.service", "blob": "4a146d543dd669d493cb4e446a4269c7939c3c69", "excerpt": [[17, "UMask=0077"]], "outsideLine": 22},
+  {"id": "mp11b-quota-allocator-service", "path": "apps/kernel/slice-linux-docker/chariox-slice-disk-quota-allocator.service", "blob": "8e6bee212317d8beea536916e12002ddf7df934c", "excerpt": [[27, "ProtectHome=true"]], "outsideLine": 44},
+  {"id": "mp11b-data-volume-admission-service", "path": "apps/kernel/slice-linux-docker/chariox-data-volume-admission.service", "blob": "cfadfdfca462e4752ea7a69d90351227da145881", "excerpt": [[20, "ProtectSystem=strict"]], "outsideLine": 35},
+  {"id": "mp11b-image-builder-cleanup-service", "path": "deploy/managed-kernel/chariox-image-builder-cleanup@.service", "blob": "cf4006dbd65c3a6b4a25c2c543f9b390ed1aa478", "excerpt": [[17, "PrivateTmp=true"]], "outsideLine": 24},
+  {"id": "mp11b-scm-home-selection", "path": "apps/kernel/src/managed_context/scm.rs", "blob": "ac4c45f2afb93daefd8749f9f06cdea4642e7562", "excerpt": [[113, "    pub(crate) fn source_from_process() -> Result<Self, DaemonError> {"], [139, "    pub(crate) fn managed_target(home: PathBuf) -> Result<Self, DaemonError> {"]], "outsideLine": 174},
+  {"id": "mp11b-pty-process-marker", "path": "apps/kernel/src/pty/manager.rs", "blob": "1560ca2dcbc15dae6c0240c477233eb67b8b2867", "excerpt": [[271, "            \"CHARIOX_MANAGED_PROVIDER_PROCESS\".to_string(),"]], "outsideLine": 291},
+  {"id": "mp11b-opencode-discovery-namespace-adapter", "path": "apps/kernel/src/provider/opencode/discovery.rs", "blob": "a466ebb02f58b10e08af75464248c86dd792e983", "excerpt": [[19, "    pub(crate) fn apply_to_launch_args("]], "outsideLine": 96},
+  {"id": "mp11b-preparation-namespace-adapters", "path": "apps/kernel/src/provider/managed_isolation.rs", "blob": "37ae2123aaea0e9eaf82374a3ef45018a69cc017", "excerpt": [[213, "pub(crate) fn apply_preparation_home_to_managed_launch("], [293, "pub(crate) fn managed_launch_has_preparation_home(args: &[String], host_home: &Path) -> bool {"]], "outsideLine": 319},
+  {"id": "mp11b-provider-reported-path-adapter", "path": "apps/kernel/src/provider/managed_isolation.rs", "blob": "37ae2123aaea0e9eaf82374a3ef45018a69cc017", "excerpt": [[458, "pub(crate) fn provider_reported_path_on_kernel("]], "outsideLine": 518},
+  {"id": "mp11b-runtime-environment-inputs", "path": "apps/kernel/src/config/env_loader.rs", "blob": "b7707033b9d9fe03f3ad911ddac38e6f119bc5ec", "excerpt": [[188, "                \"CHARIOX_MANAGED_SLICE_RELAY_OWNER_PUBLIC_KEY\","]], "outsideLine": 210},
+  {"id": "mp11b-project-validation-control-scrub", "path": "apps/kernel/src/runtime/state/project_environment_setup_validation.rs", "blob": "59708026b354c26305d248016dedd1ca47f7fd03", "excerpt": [[489, "pub(super) fn worker_validation_environment_with_home_and_definition("]], "outsideLine": 537},
+  {"id": "mp11b-installer-exact-control-repair", "path": "deploy/managed-kernel/install-image.sh", "blob": "c3d9d546c6a5d771581a0094338eaf9ab0efea34", "excerpt": [[232, "repair_root_control_file() {"], [246, "repair_root_control_tree() {"], [272, "repair_root_control_state() {"]], "outsideLine": 284},
+  {"id": "mp11b-fresh-rebuild-process-negative-guards", "path": "apps/kernel/src/managed_bootstrap/freshness.rs", "blob": "d9d5c11b1b9189cbd4fbd2826a2845bfe04e255c", "excerpt": [[510, "pub(super) fn validate_process_observations("], [573, "fn is_bubblewrap(observation: &ProcessObservation) -> bool {"]], "outsideLine": 588},
+  {"id": "mp11b-inner-provider-bwrap-launcher", "path": "apps/kernel/slice-linux-docker/docker/managed-provider-bwrap.sh", "blob": "88741c2c0ebb04f8c2c8ab75a884b87e77b444bc", "excerpt": [[12, "bwrap=(/usr/bin/bwrap)"]], "outsideLine": 22},
+  {"id": "mp11b-slice-runtime-provider-home", "path": "apps/kernel/slice-linux-docker/docker/start-runtime.sh", "blob": "195ce5230578b6ed93068918d0d7f9ce9227c73e", "excerpt": [[33, "PROVIDER_HOME=\"${CHARIOX_MANAGED_PROVIDER_HOME:-$HOME/.chariox/provider-home}\""]], "outsideLine": 47},
+  {"id": "mp11b-image-topology-admission", "path": "deploy/managed-kernel/prepare-hetzner-image.sh", "blob": "f9c8f12c97fdb7e66df523615e4bf7f30daf8ec8", "excerpt": [[227, "  '') fail \"CHARIOX_MANAGED_PROVIDER_TOPOLOGY must be explicitly set to path1 or shared_host\" ;;"]], "outsideLine": 234},
+  {"id": "mp11b-bootstrap-api-configuration", "path": "apps/api/src/managed-environments/bootstrap-config.ts", "blob": "ebed439b48604dbbea6e0ea539af524ecee1b57c", "excerpt": [[1, "export function managedKernelCloudApiUrl(env: NodeJS.ProcessEnv): string {"]], "outsideLine": 13},
+  {"id": "mp11b-placement-catalog-environment", "path": "apps/api/src/managed-environments/placement-catalog.ts", "blob": "0bb1a248af873f0739090dd20524136c0dc6b667", "excerpt": [[25, "export function configuredManagedEnvironmentPlacementCatalog("], [120, "function parsePlacementSelections("]], "outsideLine": 212},
+  {"id": "mp11b-candidate-placement-environment", "path": "apps/api/src/managed-environments/configured-operator-candidate-admission.ts", "blob": "bacffca9218f533a1139c6a0b1ea8610b82e1aa2", "excerpt": [[13, "export function configuredOperatorCandidateAdmission(env: NodeJS.ProcessEnv) {"]], "outsideLine": 56},
+  {"id": "mp11b-quiescence-release-approval", "path": "apps/api/src/managed-environments/auto-stop-quiescence-release-policy.ts", "blob": "f425167d5b1ddbcaed35b8283d6e750aac616c8f", "excerpt": [[6, "export function configuredQuiescenceReleaseDigests(env: Readonly<Record<string, string | undefined>>): readonly string[] {"], [19, "export function requireQuiescenceRelease(digest: string | null, approved: readonly string[]): void {"]], "outsideLine": 28},
+  {"id": "mp11b-worker-placement-lifetime-policy", "path": "apps/api/src/disposable-workers/placement-policy.ts", "blob": "4aa94f2b02cf027beff46a1981a701866eb6c393", "excerpt": [[9, "export function configuredDisposableWorkerPlacementPolicy(env: NodeJS.ProcessEnv): DisposableWorkerPlacementPolicy {"]], "outsideLine": 84},
+  {"id": "mp11b-activity-registration-selection", "path": "apps/kernel/src/runtime/managed_kernel_activity.rs", "blob": "c194aff6b1c348d518f9e4854bc22defa1abcbd1", "excerpt": [[74, "    pub(crate) fn from_runtime("]], "outsideLine": 127},
+  {"id": "mp11b-publication-route-path-filter", "path": "apps/server/src/publication-agent-app-effects.ts", "blob": "901d042896a86a189454443e4c1bda057f6c3622", "excerpt": [[168, "function routeAllowsOverlay(route: AgentAppRouteConfig | undefined, path: string): boolean {"]], "outsideLine": 201},
+  {"id": "mp11b-publication-route-filter-schema", "path": "apps/server/src/publication-agent-app-schema.ts", "blob": "ff5b4032af14e220d34bab413921f4d416a98ff9", "excerpt": [[100, "function validateRoute(route: AgentAppRouteConfig, actionIds: Set<string>): void {"]], "outsideLine": 140},
+  {"id": "mp11b-release-archive-service-mount", "path": "deploy/openship/cloud-release.compose.yml", "blob": "bcb3933e17543c24410c9710f7f9ac3d890a5cf7", "excerpt": [[67, "      - chariox-managed-releases:/var/lib/chariox-managed-releases:ro"]], "outsideLine": 72},
+  {"id": "mp11b-shared-live-sync-mode-projection", "path": "packages/kernel-client/src/workspace-live-sync-mode.ts", "blob": "d19e756e1c7c1aafa1d8815ea94674dbb47cd60d", "excerpt": [[11, "export function parseWorkspaceLiveSyncModeCommand(value: string): WorkspaceLiveSyncModeCommandInput | null {"], [22, "export function formatWorkspaceLiveSyncModeLabel(mode: WorkspaceLiveSyncModeLabelInput): string {"]], "outsideLine": 74},
+  {"id": "mp11b-web-live-sync-mode-projection", "path": "apps/web/src/terminal/workspace-live-sync-mode.ts", "blob": "5e125bd795151913a7baaae4dd29749fdc44e77c", "excerpt": [[7, "export function normalizeWorkspaceLiveSyncMode(value: unknown): WorkspaceLiveSyncMode | null {"]], "outsideLine": 51},
+  {"id": "mp11b-ios-live-sync-mode-command", "path": "apps/ios/CharioxPackage/Sources/CharioxFeature/State/CharioxAppModelCommands.swift", "blob": "76084e6866b37607d0c30b2122e84597c1821ea6", "excerpt": [[157, "    case \"managed\", \"tracked\":"]], "outsideLine": 180},
+  {"id": "mp11b-runtime-projection-fixture", "path": "packages/kernel-client/src/session-runtime-projection.test-support.ts", "blob": "e196b7a3d2fe1ca8af77ce037f667fc3c0f93922", "excerpt": [[17, "export function workspaceLiveSyncStatus("]], "outsideLine": 37},
+  {"id": "mp11b-soak-sandbox-root-guard", "path": "apps/cli/scripts/lib/browser-computer-soak-runtime.mjs", "blob": "d2041162b4ed01208f69dd2e91cbd888ec093a54", "excerpt": [[853, "export function assertSandboxCapableChromiumIdentity({"]], "outsideLine": 867},
+  {"id": "mp11b-ready-machine-forced-preparation", "path": "apps/cli/src/waiting-room-controller.ts", "blob": "50804dc9c5f5437bab6ee140681edddc0330292a", "excerpt": [[394, "function waitingRoomManagedLaunchSelection("]], "outsideLine": 417},
+  {"id": "mp11b-ready-machine-transfer-workspace-reset", "path": "apps/cli/src/waiting-room-managed-environment-launch-controller.ts", "blob": "425614771545f3ef80e7ff14c1f04136e9336b64", "excerpt": [[257, "          const workspacePath = primaryWorkspacePath(launchTarget)"], [304, "function managedProjectPreparation("], [314, "  const workspacePath = primaryWorkspacePath(launchTarget)"]], "outsideLine": 345},
+  {"id": "mp11b-ready-machine-launch-choice-reset", "path": "apps/cli/src/cli-waiting-room-composition.ts", "blob": "ab33e3ceb9b296663ff7d7365c1ab89a6a26e3af", "excerpt": [[547, "  const prepareManagedSessionLaunch = async ("]], "outsideLine": 637},
+  {"id": "mp11b-ready-machine-execution-worker-reset", "path": "apps/web/src/terminal/waiting-room-managed-environment-launch-controller.ts", "blob": "62386857e98ec574b9f84465f1dd2c982aa2c094", "excerpt": [[365, "    const readyState = updateWaitingRoomKernelData(this.deps.state(), {"]], "outsideLine": 403}
+];
+
+for (const pinned of MP11B_SCOPE_FIXTURES) {
+  test(`MP-11 out-of-scope review retains fail-closed fixture and drift: ${pinned.id}`, () => {
+    const rule = SOURCE_AUDIT_RULES.find(rule => rule.id === pinned.id);
+    assert.ok(rule, "MP-11 reviewed branch needs an exact scope");
+    assert.equal(rule.path, pinned.path);
+    assert.equal(rule.blob, pinned.blob);
+    const lines = Array.from({ length: pinned.outsideLine }, () => "");
+    for (const [line, excerpt] of pinned.excerpt) lines[line - 1] = excerpt;
+    lines[pinned.outsideLine - 1] = 'const outside = "CHARIOX_MANAGED_MP11B_UNINSPECTED";';
+    let inspectedCount;
+    for (const blob of [pinned.blob, "e".repeat(40)]) {
+      withFixture({}, fixture => {
+        fixture.addFile(pinned.path, `${lines.join("\n")}\n`, "100644", blob);
+        const report = collect(fixture);
+        const candidates = report.entries.filter(entry => entry.sourceClassification?.ruleId === pinned.id);
+        assert.ok(candidates.length > 0);
+        assert.ok(candidates.every(entry => entry.sourceClassification.status === (blob === pinned.blob ? "source_inspected" : "source_drift")));
+        assert.ok(candidates.every(entry => entry.semanticDisposition.status === "unreviewed"), "fixture source/context cannot reuse frozen real-source approvals");
+        assert.ok(candidates.every(entry => entry.sourceClassification.independentDisposition === "pending"));
+        for (const [, symbol] of rule.anchors) assert.ok(candidates.some(entry => entry.candidateOrigin === "manual_source_rule" && entry.symbol === symbol));
+        const outside = report.entries.filter(entry => entry.line === pinned.outsideLine && entry.path === pinned.path);
+        assert.ok(outside.length > 0);
+        assert.ok(outside.every(entry => entry.sourceClassification?.ruleId !== pinned.id && entry.semanticDisposition.status === "unreviewed"));
+        if (blob === pinned.blob) inspectedCount = candidates.length;
+        else assert.equal(candidates.length, inspectedCount);
+        assert.equal(report.status, "fail");
+      });
+    }
+  });
+}
