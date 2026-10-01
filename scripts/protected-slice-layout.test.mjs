@@ -165,7 +165,12 @@ test("daemon namespace proof pins actual maps and namespace identity without tre
   const uidMap = "0 997 1\n1 231072 65536\n"
   const gidMap = "0 998 1\n1 231072 65536\n"
   const receipt = {version: 1, daemonUid: 997, daemonGid: 998, dataUid: 1001,
-    hostDataUid: 232072, uidMap, gidMap, namespaces, ancestors: [{}, {}, {}]}
+    hostDataUid: 232072, uidMap, gidMap, namespaces, ancestors: [
+      ["/", 0, 0o755], ["/var", 0, 0o755], ["/var/lib", 0, 0o755],
+      ["/var/lib/chariox-docker", 997, 0o700], ["/var/lib/chariox-docker/private-layout", 997, 0o711],
+      ["/var/lib/chariox-slice-share", 0, 0o710], ["/var/lib/chariox-slice-share/.broker-private", 0, 0o711],
+      ["/var/lib/chariox-slice-share/.broker-private/artifacts", 997, 0o700],
+    ].map(([path,hostUid,mode],index) => ({path,hostUid,mode,dev:"4",ino:String(200+index)}))}
   const current = {uid: 0, gid: 0, uidMap, gidMap, namespaces,
     subuids: "chariox-docker:231072:65536", subgids: "chariox-docker:231072:65536"}
   assert.equal(verifyNamespaceEntryDocuments(receipt, current).dataUid, 1001)

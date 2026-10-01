@@ -1,8 +1,10 @@
-import { constants, lstatSync, statSync, readFileSync, openSync, closeSync, writeFileSync, fsyncSync, renameSync, mkdirSync, realpathSync } from "node:fs"
+import { constants, fstatSync, lstatSync, statSync, readFileSync, openSync, closeSync, writeFileSync, fsyncSync, renameSync, mkdirSync, realpathSync } from "node:fs"
 import { join, parse } from "node:path"
 import { spawnSync } from "node:child_process"
 
 export const DURABLE_LAYOUT_ROOT = "/var/lib/chariox-docker/private-layout"
+export const MANAGED_ARCHIVE_ROOT = "/var/lib/chariox-slice-share/.broker-private/artifacts"
+const VERIFIED_ROOTS = [DURABLE_LAYOUT_ROOT, MANAGED_ARCHIVE_ROOT]
 const ENTRY_PATH = join(DURABLE_LAYOUT_ROOT, "namespace-entry.json")
 export const SLICE_CONTAINER_UID = 1001
 function refuse() { throw new Error("Protected slice storage requires a verified managed rootless namespace") }
@@ -62,8 +64,14 @@ export function prepareNamespaceEntry(targetPid) {
   try { mkdirSync(DURABLE_LAYOUT_ROOT, {mode: 0o711}) } catch (error) { if (error.code !== "EEXIST") throw error }
   const ancestors = ancestry(DURABLE_LAYOUT_ROOT, daemonUid)
   if (ancestors.at(-1).hostUid !== daemonUid || ancestors.at(-1).mode !== 0o711) refuse()
+  const sinkAncestors = ancestry(MANAGED_ARCHIVE_ROOT, daemonUid)
+  if (sinkAncestors.at(-1).hostUid !== daemonUid || sinkAncestors.at(-1).mode !== 0o700) refuse()
+  const sharedRoot = sinkAncestors.find(anchor => anchor.path === "/var/lib/chariox-slice-share")
+  const brokerRoot = sinkAncestors.find(anchor => anchor.path === "/var/lib/chariox-slice-share/.broker-private")
+  if (sharedRoot?.hostUid !== 0 || sharedRoot.mode !== 0o710 || brokerRoot?.hostUid !== 0 || brokerRoot.mode !== 0o711) refuse()
+  const verifiedAncestors = [...new Map([...ancestors, ...sinkAncestors].map(anchor => [anchor.path, anchor])).values()]
   const receipt = {version: 1, daemonUid, daemonGid, dataUid: SLICE_CONTAINER_UID, hostDataUid,
-    uidMap: maps.uidMap, gidMap: maps.gidMap, ancestors,
+    uidMap: maps.uidMap, gidMap: maps.gidMap, ancestors: verifiedAncestors,
     namespaces: Object.fromEntries(["user", "mnt", "net"].map(name => [name, identity(`${proc}/ns/${name}`)]))}
   const temporary = `${ENTRY_PATH}.${process.pid}.pending`
   const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
@@ -71,6 +79,28 @@ export function prepareNamespaceEntry(targetPid) {
   renameSync(temporary, ENTRY_PATH)
   const directory = openSync(DURABLE_LAYOUT_ROOT, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
   try { fsyncSync(directory) } finally { closeSync(directory) }
+}
+
+export function verifyNamespaceAnchorDocuments(receipt) {
+  const expected = new Set()
+  for (const root of VERIFIED_ROOTS) {
+    let path = parse(root).root
+    expected.add(path)
+    for (const part of root.slice(path.length).split("/").filter(Boolean)) { path = join(path, part); expected.add(path) }
+  }
+  if (!Array.isArray(receipt.ancestors) || receipt.ancestors.length !== expected.size) refuse()
+  for (const anchor of receipt.ancestors) {
+    if (!expected.delete(anchor.path) || !/^[0-9]+$/.test(anchor.dev) || !/^[1-9][0-9]*$/.test(anchor.ino)
+        || ![0, receipt.daemonUid].includes(anchor.hostUid) || !Number.isInteger(anchor.mode)
+        || anchor.mode < 0 || anchor.mode > 0o777 || (anchor.mode & 0o022)) refuse()
+  }
+  const required = [[DURABLE_LAYOUT_ROOT, receipt.daemonUid, 0o711], [MANAGED_ARCHIVE_ROOT, receipt.daemonUid, 0o700],
+    ["/var/lib/chariox-slice-share", 0, 0o710], ["/var/lib/chariox-slice-share/.broker-private", 0, 0o711]]
+  for (const [path, uid, mode] of required) {
+    const anchor = receipt.ancestors.find(value => value.path === path)
+    if (anchor?.hostUid !== uid || anchor.mode !== mode) refuse()
+  }
+  return receipt
 }
 
 export function verifyNamespaceEntryDocuments(receipt, current) {
@@ -82,6 +112,7 @@ export function verifyNamespaceEntryDocuments(receipt, current) {
     daemonUid: receipt.daemonUid, daemonGid: receipt.daemonGid, processUid: receipt.daemonUid,
     subuids: current.subuids, subgids: current.subgids})
   if (mapped !== receipt.hostDataUid || !Array.isArray(receipt.ancestors) || receipt.ancestors.length < 3) refuse()
+  verifyNamespaceAnchorDocuments(receipt)
   for (const name of ["user", "mnt", "net"]) {
     if (JSON.stringify(receipt.namespaces?.[name]) !== JSON.stringify(current.namespaces?.[name])) refuse()
   }
@@ -93,7 +124,7 @@ export function readNamespaceEntry() {
   const fd = openSync(ENTRY_PATH, constants.O_RDONLY | constants.O_NOFOLLOW)
   let receipt
   try {
-    const metadata = lstatSync(ENTRY_PATH)
+    const metadata = fstatSync(fd)
     if (!metadata.isFile() || metadata.nlink !== 1 || metadata.uid !== 0 || (metadata.mode & 0o077) || metadata.size > 64 * 1024) refuse()
     receipt = JSON.parse(readFileSync(fd, "utf8"))
   } finally { closeSync(fd) }
@@ -112,7 +143,9 @@ export function readNamespaceEntry() {
   return receipt
 }
 export function isVerifiedHostAncestor(path, metadata) {
-  const receipt = readNamespaceEntry()
+  return matchesVerifiedHostAncestor(readNamespaceEntry(), path, metadata)
+}
+export function matchesVerifiedHostAncestor(receipt, path, metadata) {
   const anchor = receipt.ancestors.find(record => record.path === path)
   return anchor?.hostUid === 0 && metadata.uid === 65534
     && String(metadata.dev) === anchor.dev && String(metadata.ino) === anchor.ino
