@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { tmpdir, userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
@@ -14,6 +15,9 @@ const IDENTITY = 'Developer ID Installer: Example Owner (ABCDE12345)';
 const PROFILE = 'chariox-notary';
 const ARM64 = Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0x0c, 0x00, 0x00, 0x01]);
 const X86_64 = Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0x07, 0x00, 0x00, 0x01]);
+// A universal (fat) header with arm64 and x86_64 slices.
+const UNIVERSAL = Buffer.from('cafebabe00000002' + '0100000c' + '00'.repeat(16) + '01000007' + '00'.repeat(16), 'hex');
+const INSTALLER_TOOL = 'chariox-app-runtime-install';
 const SUPPORT = 'Library/Application Support/Chariox';
 const darwin = { skip: process.platform !== 'darwin' && 'needs macOS packaging tools and BSD stat' };
 const sha256 = text => createHash('sha256').update(text).digest('hex');
@@ -34,7 +38,7 @@ async function bundle(t) {
   for (const name of ['chariox-kernel', 'chariox-cli', 'chariox-app-package'])
     await writeFile(join(dir, 'bin', name), Buffer.concat([ARM64, Buffer.from(name)]), { mode: 0o755 });
   await writeFile(join(dir, 'libexec/chariox-app-runtime-install'), Buffer.concat([ARM64, Buffer.from('installer')]), { mode: 0o755 });
-  const inventory = '{"schema":"fixture"}\n';
+  const inventory = '{"schema":"fixture","target":"darwin-arm64"}\n';
   await writeFile(join(dir, 'runtime/runtime-inventory.json'), inventory, { mode: 0o444 });
   await writeFile(join(dir, 'runtime/runtime-inventory.sig'), 'signature', { mode: 0o444 });
   await writeFile(join(dir, 'runtime/chariox-app-worker'), Buffer.concat([ARM64, Buffer.from('worker')]), { mode: 0o555 });
@@ -78,7 +82,8 @@ test('the bundle check refuses a different runtime, missing or stray binaries, l
   const refused = async (change, pattern) => {
     const copy = await bundle(t);
     await change(copy.dir);
-    await assert.rejects(packagePlan(parseArguments(args(copy, ['--unsigned']), {})), pattern);
+    const digest = sha256(readFileSync(join(copy.dir, 'runtime/runtime-inventory.json')));
+    await assert.rejects(packagePlan(parseArguments(args({ ...copy, digest }, ['--unsigned']), {})), pattern);
   };
   await refused(dir => rm(join(dir, 'bin/chariox-kernel')), /missing|no bin\/chariox-kernel/u);
   await refused(dir => writeFile(join(dir, 'bin/helper'), ARM64), /bin\/helper is not a Chariox release binary/u);
@@ -87,6 +92,15 @@ test('the bundle check refuses a different runtime, missing or stray binaries, l
   await refused(dir => symlink('/etc/hosts', join(dir, 'runtime/sdk/hosts')), /link or special file/u);
   await refused(dir => writeFile(join(dir, 'libexec/extra'), ARM64), /libexec\/ must hold only/u);
   await refused(dir => rm(join(dir, 'runtime/runtime-inventory.sig')), /no runtime-inventory\.sig/u);
+  // The runtime files are read-only, as in a release.
+  const replace = (path, bytes) => rm(path).then(() => writeFile(path, bytes));
+  // The runtime must match the package's one architecture, by its inventory target and every Mach-O.
+  await refused(dir => replace(join(dir, 'runtime/chariox-app-worker'), X86_64), /runtime\/chariox-app-worker is x86_64, but bin\/chariox-kernel is arm64/u);
+  await refused(dir => replace(join(dir, 'runtime/runtime-inventory.json'), '{"target":"darwin-x64"}'), /runtime\/ targets darwin-x64, but bin\/chariox-kernel is arm64/u);
+  await refused(dir => replace(join(dir, 'runtime/runtime-inventory.json'), 'not json'), /not JSON/u);
+  await refused(async dir => {
+    for (const path of ['bin/chariox-kernel', 'bin/chariox-cli', 'bin/chariox-app-package', `libexec/${INSTALLER_TOOL}`]) await writeFile(join(dir, path), UNIVERSAL);
+  }, /arm64\+x86_64; build one package per architecture/u);
   await writeFile(fixture.output, '');
   await assert.rejects(packagePlan(parseArguments(args(fixture, ['--unsigned']), {})), /already exists/u);
 });
@@ -102,6 +116,7 @@ test('the dry-run plan pins the runtime and orders the release signing steps', a
   assert.match(text, /# payload 0555 \/usr\/local\/libexec\/chariox\/chariox-app-runtime-install/u);
   // Every Mach-O, the runtime worker included, must be Developer ID code of the team.
   assert.equal(plan.checks.filter(step => step.phase === 'code-describe').length, 5);
+  assert.deepEqual(plan.checks[0].command, [join(fixture.dir, 'libexec', INSTALLER_TOOL)]);
   assert.deepEqual(plan.steps.map(step => step.phase), ['component', 'payload', 'product', 'expand', 'sign', 'signature',
     'notarize', 'notary-log', 'staple', 'staple-check', 'gatekeeper']);
   const command = phase => plan.steps.find(step => step.phase === phase).command.join(' ');
@@ -113,7 +128,7 @@ test('the dry-run plan pins the runtime and orders the release signing steps', a
   assert.match(plan.distribution, /<os-version min="13\.5"\/>/u);
   assert.match(plan.distribution, /enable_localSystem="true"/u);
   const unsigned = await packagePlan(parseArguments(args(fixture, ['--unsigned']), {}));
-  assert.deepEqual(unsigned.checks, []);
+  assert.deepEqual(unsigned.checks.map(step => step.phase), ['installer-probe']);
   assert.deepEqual(unsigned.steps.map(step => step.phase), ['component', 'payload', 'product', 'expand']);
   assert.equal(unsigned.paths.product, unsigned.output);
   assert.match(formatPlan(unsigned), /# unsigned: a test package/u);
@@ -240,12 +255,20 @@ test('uninstall removes what the package installed and keeps changed binaries', 
   assert.ok(fake.calls().includes('pkgutil --forget dev.chariox.pkg'));
 });
 
-test('start-kernel sets the kernel environment and applies kernel.env', async t => {
+const listen = () => new Promise(done => { const server = createServer().listen(0, '127.0.0.1', () => done(server)); });
+
+test('start-kernel sets the kernel environment, applies kernel.env, and stays down when its endpoint is taken', async t => {
   const root = await scratch(t);
   const home = join(root, 'home');
+  const busy = await listen();
+  t.after(() => busy.close());
+  const probe = await listen();
+  const free = probe.address().port;
+  await new Promise(done => probe.close(done));
   await mkdir(join(home, '.config/chariox'), { recursive: true });
-  await writeFile(join(home, '.config/chariox/kernel.env'),
-    '# comment\nCHARIOX_KERNEL_PORT=4999\nnot a pair\n1BAD=x\nCHARIOX_KERNEL_HOST=0.0.0.0\nCHARIOX_TOKEN_FILE=a=b c');
+  const env = port => writeFile(join(home, '.config/chariox/kernel.env'),
+    `# comment\nCHARIOX_KERNEL_PORT=${port}\nnot a pair\n1BAD=x\nCHARIOX_KERNEL_HOST=127.0.0.1\nCHARIOX_TOKEN_FILE=a=b c`);
+  await env(free);
   await mkdir(join(root, 'usr/local/bin'), { recursive: true });
   await writeFile(join(root, 'usr/local/bin/chariox-kernel'), '#!/bin/sh\npwd\nenv | grep ^CHARIOX_ | sort\n', { mode: 0o755 });
   const script = join(root, 'start-kernel.sh');
@@ -253,14 +276,25 @@ test('start-kernel sets the kernel environment and applies kernel.env', async t 
   const result = spawnSync(script, [], { encoding: 'utf8', env: { HOME: home, PATH: '/usr/bin:/bin' } });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stderr.match(/not KEY=VALUE/gu).length, 2);
-  assert.deepEqual(readFileSync(join(home, '.chariox/logs/kernel.launchd.log'), 'utf8').trim().split('\n'), [
-    home, `CHARIOX_HOME=${home}/.chariox`, 'CHARIOX_KERNEL_HOST=0.0.0.0', 'CHARIOX_KERNEL_PORT=4999',
+  const log = join(home, '.chariox/logs/kernel.launchd.log');
+  assert.deepEqual(readFileSync(log, 'utf8').trim().split('\n'), [
+    home, `CHARIOX_HOME=${home}/.chariox`, 'CHARIOX_KERNEL_HOST=127.0.0.1', `CHARIOX_KERNEL_PORT=${free}`,
     `CHARIOX_LOG_DIR=${home}/.chariox/logs`, 'CHARIOX_TOKEN_FILE=a=b c']);
+  // Exit 0, so launchd does not restart it, and the kernel never runs.
+  await rm(log);
+  await env(busy.address().port);
+  const taken = spawnSync(script, [], { encoding: 'utf8', env: { HOME: home, PATH: '/usr/bin:/bin' } });
+  assert.equal(taken.status, 0, taken.stderr);
+  assert.match(readFileSync(log, 'utf8'), new RegExp(`^start-kernel: 127\\.0\\.0\\.1:${busy.address().port} is already in use; not starting`, 'u'));
+  assert.doesNotMatch(readFileSync(log, 'utf8'), /CHARIOX_HOME=/u);
 });
 
 test('an unsigned package builds from a release bundle with the pinned postinstall', darwin, async t => {
   const fixture = await bundle(t);
-  const { receipt } = await buildMacosPkg(parseArguments(args(fixture, ['--unsigned']), {}));
+  // The fixture installer is no real executable; the probe gets the macOS installer's answer to an ordinary user.
+  const run = command => command[0].endsWith(INSTALLER_TOOL) ? { status: 1, stdout: '', stderr: 'app_runtime_installer_requires_root\n' }
+    : spawnSync(command[0], command.slice(1), { encoding: 'utf8' });
+  const { receipt } = await buildMacosPkg(parseArguments(args(fixture, ['--unsigned']), {}), { run });
   assert.equal(receipt.signing, 'unsigned test package: Gatekeeper refuses it');
   assert.equal(receipt.sha256, sha256(readFileSync(fixture.output)));
   assert.deepEqual(receipt.payload.map(entry => entry.path), ['/usr/local/bin/chariox-app-package', '/usr/local/bin/chariox-cli',
@@ -272,11 +306,13 @@ test('an unsigned package builds from a release bundle with the pinned postinsta
   assert.match(await readFile(join(expanded, 'chariox.pkg/Scripts/postinstall'), 'utf8'), new RegExp(`RUNTIME_DIGEST='${fixture.digest}'`, 'u'));
 });
 
-test('a signed build requires Developer ID code and an accepted notarization', darwin, async t => {
+test('a signed build requires a macOS-capable installer, Developer ID code and an accepted notarization', darwin, async t => {
   const fixture = await bundle(t);
   const real = command => spawnSync(command[0], command.slice(1), { encoding: 'utf8' });
-  const fake = ({ authority = 'Developer ID Application: Example Owner (ABCDE12345)', status = 'Accepted' } = {}) => command => {
+  const fake = ({ authority = 'Developer ID Application: Example Owner (ABCDE12345)', status = 'Accepted',
+    installer = 'app_runtime_installer_requires_root' } = {}) => command => {
     const tool = command[0].split('/').pop();
+    if (tool === INSTALLER_TOOL) return { status: 1, stdout: '', stderr: `${installer}\n` };
     if (tool === 'codesign') return { status: 0, stdout: '', stderr: command[1] === '--verify' ? 'valid on disk\n'
       : `Authority=${authority}\nTimestamp=Oct 1, 2026\nTeamIdentifier=ABCDE12345\nCodeDirectory v=20500 size=1 flags=0x10000(runtime)\n` };
     if (tool === 'productsign') { copyFileSync(command.at(-2), command.at(-1)); return { status: 0, stdout: '', stderr: '' }; }
@@ -287,6 +323,10 @@ test('a signed build requires Developer ID code and an accepted notarization', d
       + 'Signed with a trusted timestamp on: 2026-10-01\n1. Developer ID Installer: Example Owner (ABCDE12345)\n' };
     return real(command);
   };
+  // An installer built without macOS enrollment is refused before anything is written.
+  await assert.rejects(buildMacosPkg(signed(fixture), { run: fake({ installer: 'app_runtime_installer_platform_unsupported' }) }),
+    /cannot enroll on macOS \(it answered "app_runtime_installer_platform_unsupported"\)/u);
+  assert.equal(existsSync(`${fixture.output}.build`), false);
   await assert.rejects(buildMacosPkg(signed(fixture), { run: fake({ authority: 'Apple Development: Someone (ZZZZZ99999)' }) }),
     /not Developer ID Application-signed by team ABCDE12345/u);
   assert.equal(existsSync(`${fixture.output}.build`), false);

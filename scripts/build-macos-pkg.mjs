@@ -45,6 +45,11 @@ const VERSION = /^\d{1,6}(\.\d{1,6}){0,3}$/u;
 const RUNTIME_FILES = 256;
 const RUNTIME_BYTES = 512 * 1024 * 1024;
 const CPU = new Map([[0x0100000c, 'arm64'], [0x01000007, 'x86_64']]);
+// The runtime inventory's target for each Mach-O architecture (runtime_enrollment::manifest::target).
+const TARGETS = new Map([['arm64', 'darwin-arm64'], ['x86_64', 'darwin-x64']]);
+// What the runtime installer prints when an ordinary user runs it without arguments, or root does:
+// a build without macOS enrollment prints app_runtime_installer_platform_unsupported instead.
+const INSTALLER_ANSWERS = new Set(['app_runtime_installer_requires_root', 'app_runtime_installer_arguments']);
 const TOOLS = { codesign: '/usr/bin/codesign', pkgbuild: '/usr/bin/pkgbuild', productbuild: '/usr/bin/productbuild',
   productsign: '/usr/bin/productsign', pkgutil: '/usr/sbin/pkgutil', spctl: '/usr/sbin/spctl', xcrun: '/usr/bin/xcrun' };
 
@@ -173,6 +178,16 @@ export async function readBundle(input, runtimeDigest) {
     if (!runtime.files.some(file => file.path === name)) throw new Error(`runtime/ has no ${name}`);
   const digest = await hashFile(join(runtime.path, 'runtime-inventory.json'));
   if (digest !== runtimeDigest) throw new Error(`runtime/runtime-inventory.json has SHA-256 ${digest}, not the --runtime-digest ${runtimeDigest}`);
+  // The installer enrolls only a runtime built for its own native target, so a package holds exactly one.
+  if (archs.length !== 1) throw new Error(`bin/chariox-kernel is ${archs.join('+')}; build one package per architecture`);
+  let target;
+  try { ({ target } = JSON.parse(await readFile(join(runtime.path, 'runtime-inventory.json'), 'utf8'))); } catch {
+    throw new Error('runtime/runtime-inventory.json is not JSON');
+  }
+  if (target !== TARGETS.get(archs[0])) throw new Error(`runtime/ targets ${target}, but bin/chariox-kernel is ${archs[0]}`);
+  for (const file of runtime.files)
+    if (file.archs && file.archs.join() !== archs.join())
+      throw new Error(`runtime/${file.path} is ${file.archs.join('+')}, but bin/chariox-kernel is ${archs[0]}`);
   return { bundle, binaries, installer, runtime, archs, ignored: top.filter(name => !['bin', 'libexec', 'runtime'].includes(name)) };
 }
 
@@ -242,6 +257,8 @@ export async function packagePlan(options) {
   const code = options.unsigned ? [] : [...release.binaries, release.installer,
     ...release.runtime.files.filter(file => file.archs).map(file => ({ path: file.source }))];
   const checks = [
+    // It exits before reading anything; see INSTALLER_ANSWERS.
+    { phase: 'installer-probe', file: release.installer, command: [release.installer.path] },
     ...code.map(file => ({ phase: 'code-verify', file, command: [TOOLS.codesign, '--verify', '--strict', '--verbose=2', file.path] })),
     ...code.map(file => ({ phase: 'code-describe', file, command: [TOOLS.codesign, '--display', '--verbose=2', file.path] })),
   ];
@@ -390,6 +407,13 @@ export async function buildMacosPkg(options, { run = runCommand, platform = proc
   if (options.dryRun) return { plan };
   if (platform !== 'darwin') throw new Error('the macOS package builds on macOS');
   for (const step of plan.checks) {
+    if (step.phase === 'installer-probe') {
+      const answer = run(step.command);
+      const said = `${answer.stderr}`.trim().split('\n')[0].slice(0, 200);
+      if (!INSTALLER_ANSWERS.has(said))
+        throw new Error(`libexec/${RUNTIME_INSTALLER} cannot enroll on macOS (it answered "${said}"); build it from a tree with the macOS installer`);
+      continue;
+    }
     const result = checked(run, step);
     if (step.phase === 'code-describe') describeCode(result, step, options.teamId);
   }
