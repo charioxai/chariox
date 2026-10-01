@@ -111,7 +111,7 @@ export async function runLocalRustFaultDrill({
 }
 
 function parseArgs(argv, { name, description }) {
-  const options = { cargoTarget: defaultCargoTarget, reportPath: null, dryRun: false, help: false }
+  const options = { cargoTarget: process.env.CARGO_TARGET_DIR ?? defaultCargoTarget, reportPath: null, dryRun: false, help: false }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
     if (arg === "--dry-run") options.dryRun = true
