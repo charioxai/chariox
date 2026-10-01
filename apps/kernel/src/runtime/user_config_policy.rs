@@ -118,6 +118,7 @@ pub(crate) fn user_config_path_is_unwired(path: &str) -> bool {
             | "artifacts.operational.retention_days"
             | "slices.linux.idle_timeout_minutes"
     ) || path.starts_with("ui.worktree_aliases.")
+        || path.starts_with("kernel_access.")
 }
 
 #[cfg(test)]
@@ -153,6 +154,9 @@ mod tests {
     #[test]
     fn user_config_policy_identifies_unwired_paths() {
         assert!(user_config_path_is_unwired("ui.worktree_aliases.repo"));
+        assert!(user_config_path_is_unwired(
+            "kernel_access.grant_default_minutes"
+        ));
         assert!(user_config_path_is_unwired(
             "history.archive.archive_before_delete"
         ));

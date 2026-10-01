@@ -2594,6 +2594,22 @@ Workflow trigger and deployment direction:
   leaves the set, a passkey sent for it is no longer checked, and the
   decision times out to whoever raised it. Clients no longer ask for the
   passkey inside their approval panels; it is typed only into the popup.
+- protocol 395: kernel user config responses include `kernel_access` lifetime
+  settings, with minute values `grant_default_minutes` (30),
+  `grant_max_minutes` (240), `grant_extend_notice_minutes` (5), and
+  `request_timeout_minutes` (10). The settings support config set/unset;
+  unset restores the default. These defaults await the owner's explicit
+  confirmation and each is a one-line config change. Grant transport and
+  enforcement are separate from this config addition, so config schema marks
+  these keys unwired until the grant lifecycle consumes them.
+
+  ```toml
+  [kernel_access]
+  grant_default_minutes = 30
+  grant_max_minutes = 240
+  grant_extend_notice_minutes = 5
+  request_timeout_minutes = 10
+  ```
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

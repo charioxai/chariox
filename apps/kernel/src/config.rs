@@ -36,6 +36,7 @@ pub use credentials::{
 use identity::{generate_identity_suffix, RuntimeIdentity};
 pub(crate) use identity::{load_or_create_managed_runtime_identity, ManagedRuntimeIdentity};
 pub use identity::prepare_protected_slice_identity;
+pub use kernel_access::UserKernelAccessConfig;
 #[cfg(test)]
 use persisted_daemon::PersistedDaemonConfig;
 #[cfg(test)]
@@ -61,7 +62,6 @@ pub use storage::{
     UserOperationalArtifactsConfig, UserOperationalHistoryConfig, UserStateConfig,
 };
 pub use user_config_schema::UserConfigSchemaEntry;
-pub use kernel_access::UserKernelAccessConfig;
 
 pub const DEFAULT_KERNEL_WEBSOCKET_WRITE_DELAY_MS: u64 = 33;
 pub const DEFAULT_RELAY_HEARTBEAT_MS: u64 = 5_000;

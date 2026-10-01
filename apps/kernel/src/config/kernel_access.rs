@@ -26,10 +26,19 @@ impl Default for UserKernelAccessConfig {
 impl UserKernelAccessConfig {
     pub(super) fn validate(&self) -> Result<(), DaemonError> {
         for (field, value) in [
-            ("kernel_access.grant_default_minutes", self.grant_default_minutes),
+            (
+                "kernel_access.grant_default_minutes",
+                self.grant_default_minutes,
+            ),
             ("kernel_access.grant_max_minutes", self.grant_max_minutes),
-            ("kernel_access.grant_extend_notice_minutes", self.grant_extend_notice_minutes),
-            ("kernel_access.request_timeout_minutes", self.request_timeout_minutes),
+            (
+                "kernel_access.grant_extend_notice_minutes",
+                self.grant_extend_notice_minutes,
+            ),
+            (
+                "kernel_access.request_timeout_minutes",
+                self.request_timeout_minutes,
+            ),
         ] {
             if value == 0 {
                 return Err(DaemonError::InvalidConfig {

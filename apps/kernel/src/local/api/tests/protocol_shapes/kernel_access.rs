@@ -3,6 +3,31 @@ use crate::local::{KernelConnectionClass, PasskeyPrompt, PasskeyPromptKind};
 use crate::runtime::state::{critical_approval_audit_payload, PASSKEY_ALREADY_ANSWERED};
 use crate::transport::kernel_protocol::KernelEvent;
 
+#[test]
+fn kernel_access_lifetime_config_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 395);
+    let response = LocalDaemonResponse::UserConfig {
+        path: "/state/config.toml".into(),
+        config: crate::config::CharioxUserConfig::default(),
+    };
+    let wire = serde_json::to_value(&response).unwrap();
+    let lifetimes = &wire["UserConfig"]["config"]["kernel_access"];
+    assert_eq!(
+        lifetimes,
+        &serde_json::json!({
+            "grant_default_minutes": 30,
+            "grant_max_minutes": 240,
+            "grant_extend_notice_minutes": 5,
+            "request_timeout_minutes": 10,
+        })
+    );
+    let digest = Sha256::digest(serde_json::to_vec(lifetimes).unwrap());
+    assert_eq!(
+        format!("{digest:x}"),
+        "d1286fb0a2b6dd753fa9691cdc9c1338b823fd1d0c8c8df115108edf30fbd012"
+    );
+}
+
 /// Exhaustive, so a new class fails to compile here until it is versioned.
 fn wire_name(class: KernelConnectionClass) -> &'static str {
     match class {
@@ -17,7 +42,7 @@ fn wire_name(class: KernelConnectionClass) -> &'static str {
 
 #[test]
 fn kernel_connection_classes_and_their_audit_attribution_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 394);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 395);
     let classes = [
         KernelConnectionClass::Terminal,
         KernelConnectionClass::ExternalAgent,
@@ -74,7 +99,7 @@ fn kernel_connection_classes_and_their_audit_attribution_are_versioned() {
 
 #[test]
 fn passkey_prompts_and_their_popup_event_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 394);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 395);
     let prompt = |session_alias: Option<&str>, interaction_id: &str| PasskeyPrompt {
         kind: PasskeyPromptKind::CriticalApproval,
         session_id: "session-1".into(),
