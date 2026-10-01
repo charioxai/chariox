@@ -36,6 +36,19 @@ export function findRetainedCaptureOrigin(directory, container, digest) {
   refuse()
 }
 
+// Discover identity file paths only; never read their credential contents. The
+// kernel keeps its active-registration files in kernels/active, which is not an
+// identity directory.
+export function retainedIdentityPaths(privateHostRoot) {
+  const kernels = join(privateHostRoot, "kernel/kernels")
+  const identityPaths = readdirSync(kernels)
+    .filter(name => /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,179}$/.test(name) && name !== "registry.json" && name !== "active")
+    .filter(name => lstatSync(join(kernels, name)).isDirectory())
+    .map(name => `kernel/kernels/${name}/identity.json`)
+  identityPaths.push("kernel/kernels/registry.json")
+  return identityPaths
+}
+
 export function createManagedLayoutController({root, sourceDigest, docker, dataOwner}) {
   const controlOwner = process.getuid()
   const homeRoot = join(root, "homes")
@@ -194,12 +207,7 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
       requireManagedImageProof(imageRoot, sourceDigest, info.Image)
       const privateHostRoot = environment.CHARIOX_SLICE_PRIVATE_HOST_ROOT
       if (!identifier(environment.CHARIOX_SLICE_ID) || privateHostRoot !== join(homeRoot, environment.CHARIOX_SLICE_ID)) refuse()
-      // Discover identity file paths only; never read their credential contents.
-      const kernels = join(privateHostRoot, "kernel/kernels")
-      const identityPaths = readdirSync(kernels).filter(name => /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,179}$/.test(name) && name !== "registry.json")
-        .filter(name => lstatSync(join(kernels, name)).isDirectory())
-        .map(name => `kernel/kernels/${name}/identity.json`)
-      identityPaths.push("kernel/kernels/registry.json")
+      const identityPaths = retainedIdentityPaths(privateHostRoot)
       const record = {version: 1, sliceId: environment.CHARIOX_SLICE_NAME,
         ownerSliceId: environment.CHARIOX_SLICE_ID, containerId: info.Id,
         imageId: info.Image, baseImageId: info.Image, privateHostRoot,
