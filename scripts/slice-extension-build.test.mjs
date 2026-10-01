@@ -194,7 +194,7 @@ test("signed extension helper request, descriptor, supervision and projection fi
  const helper=fileURLToPath(new URL("../apps/kernel/slice-linux-docker/managed-extension-build.test.py",import.meta.url))
  const result=spawnSync("python3",["-I","-S","-B",helper],{encoding:"utf8",env:process.env,timeout:20000})
  assert.equal(result.status,0,result.stderr)
- assert.match(result.stderr,/Ran 16 tests/)
+ assert.match(result.stderr,/Ran 18 tests/)
 })
 test("privileged Python startup ignores caller import and site hooks",async(context)=>{
  const root=await mkdtemp(join(tmpdir(),"chariox-extension-startup-"));context.after(()=>rm(root,{recursive:true,force:true}))

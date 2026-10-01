@@ -523,6 +523,84 @@ finally:os.close(fd);os.close(cwd);os.close(procfd);os.close(pidfd);server.close
             self.assertEqual(process.returncode, 0, process.stderr)
             self.assertEqual(process.stdout.strip(), "writable")
 
+    def test_saturated_stale_leases_reclaim_before_live_limit_and_keep_fail_closed_entries(self):
+        with tempfile.TemporaryDirectory(prefix="chariox-extension-saturated-") as scratch:
+            top = pathlib.Path(scratch)
+            stale_root = top / "stale"
+            extension.mkdir_exact(stale_root, 0o711)
+            for index in range(256):
+                extension.mkdir_exact(stale_root / f"999999999-1-{index:016x}", 0o700)
+            lease = extension.scratch_lease(stale_root)
+            self.assertEqual(list(stale_root.iterdir()), [lease])
+            lease.rmdir()
+            live_root = top / "live"
+            extension.mkdir_exact(live_root, 0o711)
+            for index in range(256):
+                extension.mkdir_exact(live_root / f"{os.getpid()}-{extension.process_start(os.getpid())}-{index:016x}", 0o700)
+            with self.assertRaisesRegex(ValueError, "lease limit"):
+                extension.scratch_lease(live_root)
+            self.assertEqual(len(list(live_root.iterdir())), 256)
+            for problem in ("unknown", "unowned", "nonempty"):
+                root = top / problem
+                extension.mkdir_exact(root, 0o711)
+                entry = root / ("unknown-name" if problem == "unknown" else f"999999999-1-{'e'*16}")
+                extension.mkdir_exact(entry, 0o700)
+                if problem == "unowned":
+                    os.chown(entry, 23456, 23456)
+                elif problem == "nonempty":
+                    (entry / "retained").touch()
+                with self.assertRaises(OSError if problem == "nonempty" else ValueError):
+                    extension.scratch_lease(root)
+                self.assertTrue(entry.exists())
+                if problem == "nonempty":
+                    self.assertTrue((entry / "retained").exists())
+
+    def test_concurrent_helpers_can_reclaim_the_same_dead_empty_lease(self):
+        with tempfile.TemporaryDirectory(prefix="chariox-extension-concurrent-") as scratch:
+            top = pathlib.Path(scratch)
+            leases = top / "leases"
+            extension.mkdir_exact(leases, 0o711)
+            extension.mkdir_exact(leases / f"999999999-1-{'f'*16}", 0o700)
+            script = top / "reclaim.py"
+            script.write_text("""
+import importlib.util,pathlib,sys,time
+sys.dont_write_bytecode=True
+source,top,identity=sys.argv[1:];top=pathlib.Path(top)
+spec=importlib.util.spec_from_file_location("extension",source);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+original=m.process_start
+def process_start(pid):
+ result=original(pid)
+ if pid==999999999:
+  assert result is None
+  (top/("ready-"+identity)).touch()
+  until=time.monotonic()+5
+  while not (top/"go").exists():
+   assert time.monotonic()<until,"reclaim barrier timeout"
+   time.sleep(.01)
+ return result
+m.process_start=process_start
+print(m.scratch_lease(top/"leases").name)
+""")
+            workers = [subprocess.Popen([sys.executable, "-I", "-S", "-B", str(script), str(SOURCE), str(top), str(index)],
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for index in range(2)]
+            try:
+                for _ in range(300):
+                    if all((top / f"ready-{index}").exists() for index in range(2)):
+                        break
+                    if any(worker.poll() is not None for worker in workers):
+                        break
+                    time.sleep(.01)
+                self.assertTrue(all((top / f"ready-{index}").exists() for index in range(2)), "helpers did not reach stale identity barrier")
+                (top / "go").touch()
+                outputs = [worker.communicate(timeout=10) for worker in workers]
+                self.assertEqual([worker.returncode for worker in workers], [0, 0], outputs)
+                self.assertEqual(len(list(leases.iterdir())), 2)
+            finally:
+                for worker in workers:
+                    if worker.poll() is None:
+                        worker.kill()
+                        worker.wait(timeout=5)
+
     def test_stale_empty_lease_cleanup_preserves_live_and_refuses_nonempty(self):
         with tempfile.TemporaryDirectory(prefix="chariox-extension-leases-") as scratch:
             root = pathlib.Path(scratch)

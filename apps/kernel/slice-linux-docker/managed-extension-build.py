@@ -313,16 +313,23 @@ def scratch_lease(root=SCRATCH):
     info = root.lstat()
     require(stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and stat.S_IMODE(info.st_mode) == 0o711, "extension scratch root is not protected")
     children = list(root.iterdir())
-    require(len(children) < 256, "extension scratch lease limit reached")
     for path in children:
         match = re.fullmatch(r"([0-9]+)-([0-9]+)-([a-f0-9]{16})", path.name)
         require(match is not None, "unrecognized extension scratch entry")
-        entry = path.lstat()
+        try:
+            entry = path.lstat()
+        except FileNotFoundError:
+            # Another helper may have reclaimed this listed stale lease.
+            continue
         require(stat.S_ISDIR(entry.st_mode) and entry.st_uid == 0 and stat.S_IMODE(entry.st_mode) == 0o700, "unowned extension scratch entry")
         if process_start(int(match[1])) != match[2]:
             # SIGKILL leaves an empty mountpoint only. Never recursively remove
             # caller context, mounted contents, or another live helper's lease.
-            path.rmdir()
+            try:
+                path.rmdir()
+            except FileNotFoundError:
+                pass
+    require(len(list(root.iterdir())) < 256, "extension scratch lease limit reached")
     name = f"{os.getpid()}-{process_start(os.getpid())}-{os.urandom(8).hex()}"
     lease = root / name
     mkdir_exact(lease, 0o700)
