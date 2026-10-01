@@ -256,9 +256,13 @@ container_running() {
 volume_inspect_reports_not_found() {
   local diagnostic="$1" status="$2"
   [[ "$status" == 1 ]] || return 1
-  # Docker may emit its empty inspect array before the one error line.
-  if [[ "$diagnostic" == "[]"$'\n'* ]]; then
-    diagnostic="${diagnostic#"[]"$'\n'}"
+  # The supervisor forwards stdout and stderr independently; Docker's empty
+  # inspect array may arrive before or after the one supported error line.
+  local array_prefix="[]"$'\n' array_suffix=$'\n'"[]"
+  if [[ "$diagnostic" == "$array_prefix"* ]]; then
+    diagnostic="${diagnostic#"$array_prefix"}"
+  elif [[ "$diagnostic" == *"$array_suffix" ]]; then
+    diagnostic="${diagnostic%"$array_suffix"}"
   fi
   [[ "$diagnostic" != *$'\n'* ]] || return 1
   case "$diagnostic" in

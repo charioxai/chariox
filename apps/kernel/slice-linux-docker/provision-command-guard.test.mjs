@@ -289,6 +289,8 @@ test("control inspection failures are not successful absence decisions", async (
     assert.equal(missing.status, 0, missing.stderr)
     const emptyArray = await runShell(root, `docker() { if [[ "$1" == ps ]]; then return 0; fi; printf '[]\\n'; printf 'Error response from daemon: get %s: no such volume' "$SLICE_HOME_VOLUME" >&2; return 1; }; destroy_container`)
     assert.equal(emptyArray.status, 0, emptyArray.stderr)
+    const reversedArray = await runShell(root, `docker() { if [[ "$1" == ps ]]; then return 0; fi; printf 'Error response from daemon: get %s: no such volume\\n' "$SLICE_HOME_VOLUME" >&2; printf '[]'; return 1; }; destroy_container`)
+    assert.equal(reversedArray.status, 0, reversedArray.stderr)
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
