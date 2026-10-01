@@ -382,14 +382,27 @@ test("provider preparation refuses a kernel_ref response bound to another worker
   assert.equal(run.calls.some((call) => call.name === "submitPrompt"), false)
 })
 
-test("home-kernel preparation fails closed when authoritative remote_execution is missing", async () => {
+test("home-kernel preparation accepts the omitted local remote_execution projection", async () => {
   const missingBinding = fixture({
     spawnedAgent: { id: "agent-2" },
     state: { SessionState: { session: { id: "room", agents: [providerAgent()] } } },
+    slices: [],
   })
   missingBinding.input.agentPlacement = { kind: "home_kernel" }
-  await assert.rejects(prepareRoomRealProviderAgent(missingBinding.input), /requested home kernel/)
+  assert.deepEqual((await prepareRoomRealProviderAgent(missingBinding.input)).placement, { kind: "home_kernel" })
   assert.equal(missingBinding.calls.some((call) => call.name === "submitPrompt"), false)
+})
+
+test("home-kernel preparation rejects a remote binding or slice membership", async () => {
+  for (const [agent, slices] of [
+    [providerAgent({ remote_execution: remoteBinding("worker") }), []],
+    [providerAgent(), [{ id: "slice", agent_ids: ["agent-2"] }]],
+  ]) {
+    const run = fixture({ state: { SessionState: { session: { id: "room", agents: [agent] } } }, slices })
+    run.input.agentPlacement = { kind: "home_kernel" }
+    await assert.rejects(prepareRoomRealProviderAgent(run.input), /requested home kernel|duplicated on a slice/)
+    assert.equal(run.calls.some((call) => call.name === "submitPrompt"), false)
+  }
 })
 
 test("provider placement is mutually exclusive and unsupported imports fail before requests", async () => {

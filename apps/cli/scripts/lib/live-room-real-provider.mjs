@@ -109,7 +109,7 @@ export async function prepareRoomRealProviderAgent(input) {
   const memberships = slices.filter((item) => item.agent_ids?.includes?.(agent.id))
   let slice = null
   if (placement.kind === "home_kernel") {
-    assert.equal(agent.remote_execution, null,
+    assert.ok(agent.remote_execution == null,
       "authoritative provider placement does not match the requested home kernel")
     assert.equal(memberships.length, 0,
       "home-kernel provider must not be duplicated on a slice")
