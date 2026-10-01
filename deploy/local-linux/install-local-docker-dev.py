@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+"""Explicit fresh Linux rootful slice DEV enrollment. Never migrates private assets.
+Run after building/attesting the worker image; root publishes public source/image
+pins. The trusted helper is built here from that immutable public source.
+"""
+import argparse, grp, hashlib, json, os, pathlib, pwd, re, shutil, stat, subprocess, tempfile
+
+ENV = {'PATH': '/usr/bin:/bin', 'HOME': '/nonexistent', 'DOCKER_HOST': 'unix:///run/docker.sock', 'DOCKER_CONFIG': '/nonexistent'}
+def refuse(message): raise SystemExit('Local Docker DEV enrollment refused: ' + message)
+def command(args):
+    return subprocess.run(['/usr/bin/docker', *args], env=ENV, check=True, capture_output=True, text=True, timeout=1200).stdout
+
+def directory(path, mode):
+    try: path.mkdir(mode=mode)
+    except FileExistsError: pass
+    metadata = path.lstat()
+    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != 0 or stat.S_IMODE(metadata.st_mode) != mode or path.resolve() != path:
+        refuse('incompatible existing public/control directory')
+
+def publish(path, payload, mode):
+    if path.exists() or path.is_symlink():
+        m = path.lstat()
+        if not stat.S_ISREG(m.st_mode) or m.st_uid != 0 or m.st_nlink != 1 or stat.S_IMODE(m.st_mode) != mode or path.read_bytes() != payload:
+            refuse('existing enrollment differs; private state was not changed')
+        return
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+    try: os.write(fd, payload); os.fsync(fd)
+    finally: os.close(fd)
+
+p = argparse.ArgumentParser(description=__doc__)
+p.add_argument('--source', required=True, type=pathlib.Path)
+p.add_argument('--user', required=True)
+p.add_argument('--worker-image', required=True)
+p.add_argument('--worker-kernel-sha256', required=True)
+a = p.parse_args()
+if os.geteuid() != 0: refuse('root installation required')
+user = pwd.getpwnam(a.user)
+if not re.fullmatch('sha256:[a-f0-9]{64}', a.worker_image) or not re.fullmatch('[a-f0-9]{64}', a.worker_kernel_sha256): refuse('immutable image/kernel pins required')
+socket = pathlib.Path('/run/docker.sock').lstat()
+if not stat.S_ISSOCK(socket.st_mode) or socket.st_uid != 0 or socket.st_mode & 0o007: refuse('canonical rootful socket required')
+# Enrollment grants no Docker socket permission. The ordinary launch must
+# succeed using its real current groups; do not mutate account memberships.
+engine = json.loads(command(['info', '--format', '{{json .}}']))
+if engine.get('OSType') != 'linux' or any(re.search('rootless|userns', x) for x in engine.get('SecurityOptions', [])): refuse('only unmapped Linux rootful engine supported')
+worker = json.loads(command(['image', 'inspect', a.worker_image]))[0]
+if worker['Id'] != a.worker_image or worker['Config']['User'] != 'slice': refuse('worker image identity/user mismatch')
+proof = command(['run', '--rm', '--read-only', '--network', 'none', '--cap-drop', 'ALL', '--memory', '64m', '--pids-limit', '16', '--user', '0:0', '--entrypoint', '/usr/bin/sha256sum', a.worker_image, '/opt/chariox-slice/bin/chariox-kernel']).split()[0]
+if proof != a.worker_kernel_sha256: refuse('actual worker runtime hash mismatch')
+source = a.source.resolve()
+files = []
+for name in subprocess.check_output(['git', '-C', str(source), 'ls-files', 'apps/kernel/slice-linux-docker', 'apps/kernel/src/transport/relay_peer.rs', 'apps/browser-session-import'], text=True).splitlines():
+    relative = pathlib.PurePosixPath(name)
+    if 'prebuilt' in relative.parts: continue
+    original = source / name
+    if original.is_symlink() or not original.is_file(): refuse('non-regular source input')
+    if original.stat().st_size > 16 * 1024 * 1024: refuse('oversized source input')
+    files.append((str(relative), original.read_bytes()))
+# Include staged owned source changes only after their normal tracked publication.
+required = {f'apps/kernel/slice-linux-docker/{name}' for name in ['protected-local-docker-authority.mjs', 'protected-authority.mjs', 'local-docker-broker-launch.mjs', 'docker/LocalBroker.Dockerfile']}
+if not required <= {name for name, _ in files}: refuse('local implementation must be tracked in the selected source')
+manifest = json.dumps({'version': 1, 'files': [{'path': name, 'sha256': hashlib.sha256(data).hexdigest()} for name, data in sorted(files)]}, separators=(',', ':')).encode()
+digest = hashlib.sha256(manifest).hexdigest()
+for parent in ['/usr/lib/chariox', '/usr/lib/chariox/slice-local-dev', '/etc/chariox', '/etc/chariox/slice-local-dev', '/var/lib/chariox', '/var/lib/chariox/slice-local-dev']:
+    directory(pathlib.Path(parent), 0o755)
+root = pathlib.Path('/usr/lib/chariox/slice-local-dev') / digest
+directory(root, 0o755)
+for name, data in files:
+    target = root / name
+    for parent in reversed(list(target.parent.parents)):
+        if parent != root and root not in parent.parents: continue
+        directory(parent, 0o755)
+    directory(target.parent, 0o755)
+    publish(target, data, 0o555 if name.endswith('.sh') else 0o444)
+publish(root / 'source-manifest.json', manifest, 0o444)
+# Unique tag and iid receipt. No profile, credential or private state enters context.
+with tempfile.TemporaryDirectory(prefix='chariox-local-broker-build-', dir='/run') as scratch:
+    iid = pathlib.Path(scratch) / 'image.id'
+    command(['build', '--network', 'default', '--iidfile', str(iid), '--build-arg', f'CHARIOX_LOCAL_SOURCE_DIGEST=sha256:{digest}', '-f', str(root / 'apps/kernel/slice-linux-docker/docker/LocalBroker.Dockerfile'), '-t', f'chariox-local-broker-dev:{digest}', str(root)])
+    helper = iid.read_text().strip()
+if not re.fullmatch('sha256:[a-f0-9]{64}', helper): refuse('helper build identity unavailable')
+owner_root = pathlib.Path(f'/var/lib/chariox/slice-local-dev/u-{user.pw_uid}')
+directory(owner_root, 0o755)
+directory(owner_root / 'private', 0o700)
+layout = owner_root / 'private/layout'
+directory(layout, 0o711)
+for child in ['homes', 'receipts', 'images', 'backups', 'share', 'handles']:
+    directory(layout / child, 0o711 if child == 'homes' else 0o700)
+directory(layout / 'share/.broker-private', 0o700)
+directory(layout / 'share/.broker-private/output', 0o700)
+directory(layout / 'share/.broker-private/artifacts', 0o700)
+record = {'version': 1, 'topology': 'linux-local-rootful-dev', 'ownerUid': user.pw_uid, 'ownerGid': user.pw_gid, 'engineId': engine['ID'], 'socket': {'path': '/run/docker.sock', 'dev': socket.st_dev, 'ino': socket.st_ino, 'uid': socket.st_uid, 'gid': socket.st_gid, 'mode': stat.S_IMODE(socket.st_mode)}, 'helperImageId': helper, 'workerImageId': a.worker_image, 'workerKernelHash': a.worker_kernel_sha256, 'sourceDigest': f'sha256:{digest}', 'sourceRoot': str(root), 'controlRoot': str(layout)}
+publish(pathlib.Path(f'/etc/chariox/slice-local-dev/{user.pw_uid}.json'), json.dumps(record, separators=(',', ':')).encode(), 0o644)
+launcher = f'#!/bin/sh\nexec /usr/bin/node {root}/apps/kernel/slice-linux-docker/local-docker-broker-launch.mjs\n'.encode()
+publish(pathlib.Path(f'/usr/libexec/chariox-local-docker-broker-{user.pw_uid}'), launcher, 0o555)
+print(json.dumps({'topology': record['topology'], 'ownerUid': user.pw_uid, 'sourceDigest': record['sourceDigest'], 'helperImageId': helper, 'workerImageId': a.worker_image, 'workerKernelHash': proof}))
