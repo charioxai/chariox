@@ -46,6 +46,7 @@ export const TEMPLATES = join(dirname(fileURLToPath(import.meta.url)), 'macos-pk
 export const PACKAGE_DIR = 'usr/local/libexec/chariox';
 const DEPLOY = join(dirname(TEMPLATES), '../deploy');
 export const ADMISSION_LABEL = 'dev.chariox.docker-admission-locks';
+export const ADMISSION_CONTRACT = 'chariox.docker-admission-locks.read-only.v1';
 const SLICE_CONTEXT = 'share/chariox/slice-build-context';
 // Beside usr/local/bin, where a release kernel looks for it.
 export const CONTEXT_DIR = `usr/local/${SLICE_CONTEXT}`;
@@ -189,8 +190,11 @@ async function runtimeFiles(bundle) {
 async function contextFiles(bundle, kernel) {
   // Only a release kernel with that lookup finds it (the path is a string constant of the lookup); an older
   // or debug kernel would look in /usr/lib, which macOS does not let a package write, or in its build checkout.
-  if (!(await readFile(kernel)).includes(SLICE_CONTEXT))
+  const kernelBytes = await readFile(kernel);
+  if (!kernelBytes.includes(SLICE_CONTEXT))
     throw new Error(`bin/chariox-kernel does not look for ${SLICE_CONTEXT} beside its bin/; build a release kernel that has that lookup`);
+  if (!kernelBytes.includes(ADMISSION_CONTRACT))
+    throw new Error('bin/chariox-kernel cannot use provisioned root-owned read-only Docker admission locks; build a release kernel with the admission-lock contract from #715 before packaging');
   const provisioner = await lstat(join(bundle, SLICE_CONTEXT, SLICE_PROVISIONER)).catch(() => null);
   if (!provisioner?.isFile() || !(provisioner.mode & 0o100))
     throw new Error(`the bundle has no executable ${SLICE_CONTEXT}/${SLICE_PROVISIONER}: a release kernel runs local Docker slices from that slice build context`);

@@ -8,7 +8,7 @@ import { tmpdir, userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { ADMISSION_LABEL, buildMacosPkg, CONTEXT_DIR, formatPlan, packagePlan, PACKAGE_DIR, parseArguments, renderTemplate, UsageError } from './build-macos-pkg.mjs';
+import { ADMISSION_CONTRACT, ADMISSION_LABEL, buildMacosPkg, CONTEXT_DIR, formatPlan, packagePlan, PACKAGE_DIR, parseArguments, renderTemplate, UsageError } from './build-macos-pkg.mjs';
 
 const KEY = 'a'.repeat(64);
 const OLD = 'b'.repeat(64);
@@ -27,7 +27,7 @@ const CONTEXT_FILES = { [PROVISIONER]: '#!/bin/bash\n', 'apps/kernel/.charioxign
   'apps/kernel/slice-linux-docker/runtime-source-roots.txt': 'Cargo.toml\napps/kernel\n', 'Cargo.toml': '[workspace]\n' };
 const CONTEXT_BYTES = Object.values(CONTEXT_FILES).join('').length;
 // A release kernel with the installed-context lookup holds its path as a string constant.
-const LOOKUP_KERNEL = `chariox-kernel\0${CONTEXT}\0`;
+const LOOKUP_KERNEL = `chariox-kernel\0${CONTEXT}\0${ADMISSION_CONTRACT}\0`;
 const contextManifest = () => Object.entries(CONTEXT_FILES).map(([path, text]) => `${sha256(text)}  /${CONTEXT_DIR}/${path}\n`).join('');
 const darwin = { skip: process.platform !== 'darwin' && 'needs macOS packaging tools and BSD stat' };
 const sha256 = text => createHash('sha256').update(text).digest('hex');
@@ -120,6 +120,8 @@ test('the bundle check refuses a different runtime, missing or stray binaries, l
   await refused(dir => rm(join(dir, 'share'), { recursive: true }), noContext);
   await refused(dir => writeFile(join(dir, 'bin/chariox-kernel'), Buffer.concat([ARM64, Buffer.from('an older or debug kernel')])),
     /bin\/chariox-kernel does not look for share\/chariox\/slice-build-context beside its bin\//u);
+  await refused(dir => writeFile(join(dir, 'bin/chariox-kernel'), Buffer.concat([ARM64, Buffer.from(`old-kernel\0${CONTEXT}\0`)])),
+    /cannot use provisioned root-owned read-only Docker admission locks/u);
   await refused(dir => rm(join(dir, CONTEXT, PROVISIONER)), noContext);
   await refused(dir => chmod(join(dir, CONTEXT, PROVISIONER), 0o644), noContext);
   await refused(dir => mkdir(join(dir, 'share/man')), /share\/ must hold only chariox\/slice-build-context/u);

@@ -7,6 +7,11 @@ at `/usr/local/libexec/chariox/provision-docker-admission-locks.py` and
 enrollment or kernel restart, then enables and bootstraps the root daemon. It
 runs again at boot to recreate the two locks after `/tmp` clears.
 
+The builder rejects a kernel missing the read-only admission contract
+`chariox.docker-admission-locks.read-only.v1` from #715. The older #688 kernel
+opens locks for writing and cannot run with these root-owned 0444 files; build
+the release kernel after integrating #670 and #715.
+
 The interpreter `/usr/bin/python3` must be available through Apple's Command
 Line Tools. An unsafe legacy lock fails installation. Stop every kernel sharing
 Docker before an administrator inspects and removes such a lock, then reinstall.
