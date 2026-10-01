@@ -902,6 +902,33 @@ mod tests {
     }
 
     #[test]
+    fn local_docker_slice_start_proceeds_when_its_first_port_set_is_taken() {
+        let first_choice = LocalDockerSlicePorts::from_assignment(
+            ports::allocate_local_docker_ports_for_slice(&std::collections::BTreeMap::new())
+                .expect("a free port set should exist"),
+        );
+        // Other tests' allocations probe ports with brief binds; retry past them.
+        let _taken = (0..100)
+            .find_map(|_| {
+                let taken = TcpListener::bind(("127.0.0.1", first_choice.codex_range_start + 3));
+                if taken.is_err() {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                taken.ok()
+            })
+            .expect("the first free set's port should be bindable");
+        let store = SliceStore::default();
+        let slice = store
+            .create("kernel-1", "machine-1", create_input("dev"))
+            .expect("slice should create around the taken port");
+
+        let ports = LocalDockerSlicePorts::for_record(&slice);
+        assert_ne!(ports, first_choice);
+        ensure_local_docker_slice_ports_available(&slice)
+            .expect("the slice's own ports should be free to start");
+    }
+
+    #[test]
     fn slice_store_assigns_distinct_local_docker_ports_per_slice() {
         let store = SliceStore::default();
         let mut first_input = create_input("one");
