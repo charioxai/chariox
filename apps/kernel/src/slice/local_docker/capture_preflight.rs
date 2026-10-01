@@ -9,7 +9,7 @@ pub(super) fn require_supported_layout(operation: &'static str) -> Result<(), Da
     // container configuration and the archive sink before introducing acceptance.
     Err(DaemonError::LocalTransport {
         operation,
-        message: "slice save/backup is unavailable for this capture layout: kernel identities, provider profiles, runtime tokens, container environment and image layers are not proven excluded from capture; existing saved state and credentials are preserved; no migration is implemented".to_string(),
+        message: "Slice save/backup is unavailable because this storage layout may include credentials. Existing saved state is preserved.".to_string(),
     })
 }
 
@@ -27,8 +27,10 @@ mod tests {
             let error = require_supported_layout(operation).unwrap_err();
             assert!(error
                 .to_string()
-                .contains("unavailable for this capture layout"));
-            assert!(error.to_string().contains("no migration is implemented"));
+                .contains("unavailable because this storage layout"));
+            assert!(error
+                .to_string()
+                .contains("Existing saved state is preserved"));
         }
     }
 }

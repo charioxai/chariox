@@ -344,75 +344,39 @@ exit 0
     options.root = root.clone();
     let mut record = test_record();
     record.display_mode = SliceDisplayMode::Headless;
-    let rejection = state::save_local_docker_slice_state_live(&record, &options)
-        .expect_err("low Docker capacity must reject the real live-save path");
+    let rejection = disk_admission::with_slice_snapshot_disk_admission(|guard| {
+        disk_admission::validate_slice_snapshot_disk_admission(&record, &options, guard)
+    })
+    .expect_err("low Docker capacity must reject the admission seam");
     let pressured_calls = std::fs::read_to_string(&log).expect("Docker log should read");
-    let screen_stop = pressured_calls
-        .find("/opt/chariox-slice/slice-screen.sh stop")
-        .expect("headless desktop must stop before live snapshot");
-    let pause = pressured_calls
-        .find("pause chariox-slice-dev")
-        .expect("source container must pause");
-    let measurement = pressured_calls
-        .find("du -sb /home-src")
-        .expect("real admission must measure the home volume");
-    let unpause = pressured_calls
-        .rfind("unpause chariox-slice-dev")
-        .expect("rejected snapshot must resume the source container");
-    let screen_restart = pressured_calls
-        .rfind("/opt/chariox-slice/slice-screen.sh start")
-        .expect("headless desktop must restart after live snapshot rejection");
-    assert!(screen_stop < pause && unpause < screen_restart);
-    assert!(pause < measurement && measurement < unpause);
     assert!(rejection
         .to_string()
         .contains("slice snapshot needs more disk headroom"));
+    assert!(pressured_calls.contains("du -sb /home-src"));
     assert!(!pressured_calls
         .lines()
         .any(|call| call.starts_with("commit ")));
-    assert!(
-        pressured_calls
-            .lines()
-            .any(|call| call.starts_with("rm -f chariox-slice-dev-disk-admission-")),
-        "measurement helper must be removed after rejection: {pressured_calls}"
-    );
-    assert_eq!(
-        std::fs::read(&manifest).expect("prior manifest should remain"),
-        prior_manifest
-    );
-
-    std::fs::write(&capacity, b"107374182400\n").expect("recovered capacity should write");
-    let recovered = state::save_local_docker_slice_state_live(&record, &options)
-        .expect_err("capacity recovery must not bypass unsupported credential capture");
-    assert!(recovered
-        .to_string()
-        .contains("unavailable for this capture layout"));
-    let recovered_calls = std::fs::read_to_string(&log).expect("Docker log should read");
-    assert!(!recovered_calls
-        .lines()
-        .any(|call| call.starts_with("commit ") || call.contains("tar --zstd")));
     assert_eq!(std::fs::read(&manifest).unwrap(), prior_manifest);
-    assert!(recovered_calls.contains("unpause chariox-slice-dev"));
-    assert!(recovered_calls.contains("/opt/chariox-slice/slice-screen.sh start"));
-    assert!(state::create_local_docker_slice_backup_live(
-        &record,
-        &options,
-        Some("synthetic-refusal")
-    )
-    .unwrap_err()
-    .to_string()
-    .contains("unavailable for this capture layout"));
-    assert!(
-        state::save_local_docker_slice_state_retaining_replaced(&record, &options)
+    std::fs::write(&capacity, b"107374182400\n").unwrap();
+    disk_admission::with_slice_snapshot_disk_admission(|guard| {
+        disk_admission::validate_slice_snapshot_disk_admission(&record, &options, guard)
+    })
+    .expect("recovered capacity should pass the independent admission seam");
+    std::fs::write(&log, "").unwrap();
+    for result in [
+        state::save_local_docker_slice_state_live(&record, &options).map(|_| ()),
+        state::create_local_docker_slice_backup_live(&record, &options, Some("synthetic-refusal"))
+            .map(|_| ()),
+        state::save_local_docker_slice_state_retaining_replaced(&record, &options).map(|_| ()),
+    ] {
+        assert!(result
             .unwrap_err()
             .to_string()
-            .contains("unavailable for this capture layout")
-    );
-    let final_calls = std::fs::read_to_string(&log).unwrap();
-    assert!(!final_calls
-        .lines()
-        .any(|call| call.starts_with("commit ") || call.contains("tar --zstd")));
+            .contains("unavailable because this storage layout"));
+    }
+    assert_eq!(std::fs::read_to_string(&log).unwrap(), "");
     assert_eq!(std::fs::read(&manifest).unwrap(), prior_manifest);
+    assert!(!root.join("backups").exists());
 
     match previous_path {
         Some(path) => std::env::set_var("PATH", path),
@@ -421,17 +385,6 @@ exit 0
     std::env::remove_var("DOCKER_LOG");
     std::env::remove_var("DOCKER_CAPACITY");
 
-    println!(
-        "CHARIOX_DISK_PRESSURE_PROBE:{}",
-        serde_json::json!({
-            "schema": "chariox.disk_pressure_admission_probe.v1",
-            "admissionClosesBeforeEnospc": !pressured_calls.lines().any(|call| call.starts_with("commit ")),
-            "activeStateRemainsConsistent": pause < measurement && measurement < unpause,
-            "lastKnownGoodPreserved": true,
-            "resourceRecoveryRecorded": recovered.to_string().contains("unavailable for this capture layout"),
-            "reserveBytes": 2_u64 * 1024 * 1024 * 1024,
-        })
-    );
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -537,59 +490,20 @@ exit 0
     let mut options = test_options();
     options.root = root.clone();
 
-    let error = state::save_local_docker_slice_state(&record, &options)
-        .expect_err("a failed graceful screen stop must reject public state save");
-    assert!(error.to_string().contains("slice screen `stop`"));
-    let failed_calls = std::fs::read_to_string(&log).expect("failed-call log should read");
-    assert!(failed_calls.contains("/opt/chariox-slice/slice-screen.sh stop"));
-    assert!(!failed_calls
-        .lines()
-        .any(|call| call == "stop chariox-slice-dev"));
-    assert!(!failed_calls
-        .lines()
-        .any(|call| call.starts_with("commit chariox-slice-dev ")));
-
-    std::env::set_var("DOCKER_FAIL_SCREEN_STOP", "0");
-    let error = state::save_local_docker_slice_state(&record, &options)
-        .expect_err("legacy headless capture must refuse after graceful shutdown");
-    assert!(error
-        .to_string()
-        .contains("unavailable for this capture layout"));
-    assert!(!running.exists());
-    let calls = std::fs::read_to_string(&log).unwrap();
-    assert!(calls.contains("CHARIOX_SLICE_DISPLAY_MODE=headless"));
-    let screen_stop = calls
-        .rfind("/opt/chariox-slice/slice-screen.sh stop")
-        .unwrap();
-    let kernel_shutdown = calls
-        .rfind("screen -S chariox-slice-kernel -X quit")
-        .unwrap();
-    let container_stop = calls.rfind("stop chariox-slice-dev").unwrap();
-    assert!(screen_stop < kernel_shutdown && kernel_shutdown < container_stop);
-    assert!(!calls
-        .lines()
-        .any(|call| call.starts_with("commit ") || call.contains("tar --zstd")));
-    assert!(!calls.contains("-home-archive-"));
-
-    let screen = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("slice-linux-docker/docker/slice-screen.sh"),
-    )
-    .expect("slice screen script should be readable");
-    assert!(screen.contains("slice_selkies stop >/dev/null"));
-    assert!(screen.contains("node \"$ROOT/browser-cdp.mjs\" close-browser"));
-    assert!(screen.contains("stop_process_pattern \"websockify.*$NOVNC_PORT\""));
-    assert!(screen.contains("$HOME/.chariox/browser/chromium"));
-
-    std::fs::write(&log, "").expect("stopped-slice log should reset");
-    std::env::set_var("DOCKER_FAIL_SCREEN_STOP", "1");
-    state::save_local_docker_slice_state(&record, &options)
-        .expect_err("already-stopped slices must also refuse unsupported capture");
-    let stopped_calls = std::fs::read_to_string(&log).expect("stopped-slice log should read");
-    assert!(!stopped_calls.contains("slice-screen.sh stop"));
-    assert!(!stopped_calls
-        .lines()
-        .any(|call| call == "stop chariox-slice-dev"));
-    assert!(!running.exists());
+    for fail_stop in ["1", "0"] {
+        std::env::set_var("DOCKER_FAIL_SCREEN_STOP", fail_stop);
+        let error = state::save_local_docker_slice_state(&record, &options)
+            .expect_err("unsupported capture must refuse before stopping the running slice");
+        assert!(error
+            .to_string()
+            .contains("unavailable because this storage layout"));
+        assert!(running.exists());
+        assert!(
+            !log.exists(),
+            "no Docker operation should occur before refusal"
+        );
+        assert!(!root.join("states").exists());
+    }
 }
 
 fn saved_state(manifest_path: String) -> SliceSavedStateRecord {

@@ -69,6 +69,7 @@ fn save_local_docker_slice_state_inner(
     quiesce: SliceSnapshotQuiesce,
     retain_replaced_state: bool,
 ) -> Result<LocalDockerSavedStateGeneration, DaemonError> {
+    super::capture_preflight::require_supported_layout("slice.state.save")?;
     ensure_local_docker_state_target(record, "slice.state.save")?;
     ensure_host_docker_ready()?;
     let state_id = active_state_id(record);
@@ -536,6 +537,7 @@ fn create_local_docker_slice_backup_inner(
     name: Option<&str>,
     quiesce: SliceSnapshotQuiesce,
 ) -> Result<SliceBackupRecord, DaemonError> {
+    super::capture_preflight::require_supported_layout("slice.backup.create")?;
     ensure_local_docker_state_target(record, "slice.backup.create")?;
     ensure_host_docker_ready()?;
     let backup_id = backup_id(record, name);
