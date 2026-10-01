@@ -1055,6 +1055,14 @@ mod tests {
         std::fs::create_dir_all(&root).expect("test root should exist");
         let previous_home = std::env::var_os("CHARIOX_HOME");
         let previous_claude_bin = std::env::var_os("CHARIOX_CLAUDE_BIN");
+        struct RestoreEnvironment(Option<std::ffi::OsString>, Option<std::ffi::OsString>);
+        impl Drop for RestoreEnvironment {
+            fn drop(&mut self) {
+                restore_env("CHARIOX_HOME", self.0.take());
+                restore_env("CHARIOX_CLAUDE_BIN", self.1.take());
+            }
+        }
+        let _restore = RestoreEnvironment(previous_home, previous_claude_bin);
         std::env::set_var("CHARIOX_HOME", &root);
         std::env::set_var(
             "CHARIOX_CLAUDE_BIN",
@@ -1285,8 +1293,6 @@ mod tests {
 
         let _ = crate::secret::lock_chariox_encrypted_vault(&vault_path);
         let _ = crate::secret::clear_vault_secret_process_cache();
-        restore_env("CHARIOX_HOME", previous_home);
-        restore_env("CHARIOX_CLAUDE_BIN", previous_claude_bin);
         let _ = std::fs::remove_dir_all(root);
     }
 

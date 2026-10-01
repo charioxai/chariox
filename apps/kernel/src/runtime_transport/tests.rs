@@ -582,6 +582,11 @@ async fn slice_backup_restore_interruption_after_container_creation_rolls_back_o
     let recovered_runtime = root.path().join("recovered-rollback-runtime");
     std::fs::create_dir_all(&bin).expect("fixture bin should create");
     std::fs::write(
+        root.path().join("slice-command-guard.py"),
+        include_str!("../../slice-linux-docker/slice-command-guard.py"),
+    )
+    .expect("restore fixture should include its provisioner's archive verifier");
+    std::fs::write(
         &docker,
         r#"#!/bin/sh
 set -eu
