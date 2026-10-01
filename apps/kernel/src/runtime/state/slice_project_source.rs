@@ -200,6 +200,31 @@ mod tests {
             .status()
             .unwrap()
             .success());
+        std::fs::write(workspace.join("app.ts"), "original home file\n").unwrap();
+        let git = |args: &[&str]| {
+            assert!(std::process::Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.invalid"
+                ])
+                .args(args)
+                .current_dir(&workspace)
+                .status()
+                .unwrap()
+                .success());
+        };
+        git(&["add", "app.ts"]);
+        git(&["commit", "--quiet", "-m", "fixture"]);
+        let worktree = root.join("worktree");
+        git(&[
+            "worktree",
+            "add",
+            "--quiet",
+            "--detach",
+            worktree.to_str().unwrap(),
+        ]);
         let mut config =
             crate::DaemonConfig::for_tests().with_session_history_root(root.join("sessions"));
         config.user_config_path = root.join("config.toml");
@@ -216,7 +241,7 @@ mod tests {
             .create_session(
                 crate::session::CreateSessionRequest::new(
                     workspace.display().to_string(),
-                    workspace.display().to_string(),
+                    worktree.display().to_string(),
                 )
                 .with_owner_user_id("user-1"),
             )
@@ -230,7 +255,7 @@ mod tests {
             project_id: session.project_id().into(),
             repositories: vec![DevelopmentSourceRepositoryBinding {
                 workspace_id: session.workspace_id().into(),
-                worktree_id: Some(session.workspace_id().into()),
+                worktree_id: Some(worktree.display().to_string()),
                 role: DevelopmentRepositoryRole::Primary,
             }],
         };
@@ -242,7 +267,7 @@ mod tests {
             display_mode: crate::slice::SliceDisplayMode::Headless,
             display_backend: crate::slice::SliceDisplayBackend::default(),
             workspace_id: Some(session.workspace_id().into()),
-            worktree_id: Some(session.workspace_id().into()),
+            worktree_id: Some(worktree.display().to_string()),
             workspace_mount: None,
             development: Some(development.clone()),
             worker_kernel_ref: None,
@@ -276,6 +301,7 @@ mod tests {
             .set_status(&first.id, crate::slice::SliceStatus::Running, 2)
             .unwrap();
         std::fs::remove_dir_all(&workspace).unwrap();
+        std::fs::remove_dir_all(&worktree).unwrap();
         assert!(runtime
             .create_slice(request("home-unavailable", None))
             .await
