@@ -1,8 +1,28 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+
+# MP-08/MP-11: image production and slice execution use one configured engine.
+# bash -p ignores inherited shell startup/functions before this script runs.
+for slice_override in BUILDX_BUILDER BUILDX_HOST BUILDKIT_HOST BASH_ENV ENV; do
+  if [[ -v "$slice_override" ]]; then
+    printf '[slice-linux] slice engine ignores caller override %s\n' "$slice_override" >&2
+    unset "$slice_override"
+  fi
+done
+export -n SHELLOPTS BASHOPTS
+if [[ -n "${CHARIOX_SLICE_MANAGED_DOCKER_HOST:-}" ]]; then
+  export CHARIOX_SLICE_DOCKER_HOST="$CHARIOX_SLICE_MANAGED_DOCKER_HOST"
+fi
+if [[ -n "${CHARIOX_SLICE_DOCKER_HOST:-${DOCKER_HOST:-}}" ]]; then
+  export DOCKER_HOST="${CHARIOX_SLICE_DOCKER_HOST:-$DOCKER_HOST}"
+  if [[ -v DOCKER_CONTEXT ]]; then
+    printf '[slice-linux] slice engine ignores caller override DOCKER_CONTEXT\n' >&2
+    unset DOCKER_CONTEXT
+  fi
+fi
 
 # The Path-1 extension helper supplies only its pinned local socket. Caller
 # Docker config and credential helpers remain available after it drops UID.
@@ -675,15 +695,11 @@ run_build_command() {
 
 docker_build() {
   if docker buildx version >/dev/null 2>&1; then
-    if [[ -n "${CHARIOX_SLICE_MANAGED_DOCKER_HOST:-}" ]]; then
-      run_build_command docker buildx build --builder default --load "$@"
-    else
-      run_build_command docker buildx build --load "$@"
-    fi
+    run_build_command docker buildx build --builder default --load "$@"
     return
   fi
   if [[ -z "${CHARIOX_SLICE_MANAGED_DOCKER_HOST:-}" ]] && command -v docker-buildx >/dev/null 2>&1; then
-    run_build_command docker-buildx build --load "$@"
+    run_build_command docker-buildx build --builder default --load "$@"
     return
   fi
   fail "Docker Buildx is required to build the slice runtime image"

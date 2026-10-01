@@ -410,6 +410,9 @@ def namespace_build(request, lease, socket_fd, context_fd, dockerfile_fd, uid, g
     os.chown(temporary, uid, gid)
     # Credential helpers inherit caller settings only in the UID-dropped child.
     # Endpoint, shell startup and signed-script policy selectors stay owned here.
+    for name in sorted(request["environment"]):
+        if name in CLIENT_CONTROL_ENV:
+            print("[slice-linux] slice engine ignores caller override " + name, file=sys.stderr, flush=True)
     environment = {name: value for name, value in request["environment"].items()
                    if name not in CLIENT_CONTROL_ENV and not name.startswith(("CHARIOX_SLICE_", "BASH_FUNC_"))}
     environment.update({
@@ -427,7 +430,7 @@ def namespace_build(request, lease, socket_fd, context_fd, dockerfile_fd, uid, g
         context, dockerfile = project_context(lease, context_fd, dockerfile_fd, request["basename"], uid, gid)
         environment["CHARIOX_SLICE_EXTENSION_BUILD_CONTEXT"] = str(context)
         environment["CHARIOX_SLICE_EXTENSION_DOCKERFILE"] = str(dockerfile)
-    return capture_build(["/bin/bash", str(provisioner), "build-image"], environment, uid, gid, groups, caller_cwd_fd=caller_cwd_fd)
+    return capture_build(["/bin/bash", "-p", str(provisioner), "build-image"], environment, uid, gid, groups, caller_cwd_fd=caller_cwd_fd)
 
 
 def run_namespace(build, lease, timeout=None, caller_pidfd=None):

@@ -23,6 +23,10 @@ async function fixture(context, images = []) {
   const docker = join(bin, "docker")
   await writeFile(docker, `#!${process.execPath}
 import {appendFileSync} from "node:fs"
+if(process.env.FIXTURE_ENGINE_CONTRACT==="1") {
+ if(process.env.DOCKER_HOST!=="unix:///synthetic-slice.sock" || ["DOCKER_CONTEXT","BUILDX_BUILDER","BUILDX_HOST","BUILDKIT_HOST","BASH_ENV"].some(k=>process.env[k])) process.exit(98)
+ if(process.env.ARBITRARY_HELPER_SETTING!=="kept") process.exit(97)
+}
 const args=process.argv.slice(2)
 appendFileSync(process.env.FIXTURE_CALLS,JSON.stringify(args)+"\\n")
 if(args[0]==="info") console.log(args.includes("--format")?"amd64":"ready")
@@ -45,7 +49,7 @@ else {console.error("unexpected Docker fixture call");process.exit(99)}
       CHARIOX_SLICE_EXTENSION_DOCKERFILE: join(source, "Customfile"),
       FIXTURE_PROTOCOL: protocol, FIXTURE_CALLS: calls, FIXTURE_IMAGES: JSON.stringify(images),
     },
-    run(extra={}) { return spawnSync("/bin/bash",[provisioner,"build-image"],{env:{...this.env,...extra},encoding:"utf8",timeout:10000}) },
+    run(extra={}) { return spawnSync("/bin/bash",["-p",provisioner,"build-image"],{env:{...this.env,...extra},encoding:"utf8",timeout:10000}) },
     async commands() { return (await readFile(calls,"utf8")).trim().split("\n").map(JSON.parse) },
   }
 }
@@ -216,4 +220,18 @@ test("snapshot-helper consumes a typed custom image without widening helper or v
  for(const [index,value] of [[2,"foreign-helper"],[16,"foreign-home:/home-src:ro"],[16,"chariox-slice-other-home:/home-src:ro"],[17,"--privileged"]]){
   const denied=[...args];denied[index]=value;assert.notEqual(validate({kind:"docker",args:denied},root).status,0)
  }
+})
+
+test("MP-08 MP-11 builds use the configured slice engine despite caller builder overrides", async context => {
+ const f=await fixture(context,["chariox-slice-linux:0.1.0"])
+ const hook=join(f.root,"startup"), marker=join(f.root,"startup-ran")
+ await writeFile(hook,`touch '${marker}'\n`)
+ const result=f.run({FIXTURE_ENGINE_CONTRACT:"1",ARBITRARY_HELPER_SETTING:"kept",BASH_ENV:hook,DOCKER_CONTEXT:"foreign",CHARIOX_SLICE_BUILD_IMAGE:"always",BUILDX_BUILDER:"foreign",BUILDX_HOST:"tcp://foreign",BUILDKIT_HOST:"tcp://foreign",DOCKER_HOST:"unix:///synthetic-slice.sock"})
+ assert.equal(result.status,0,result.stderr)
+ const builds=(await f.commands()).filter(a=>a[0]==="buildx"&&a[1]==="build")
+ assert(builds.length>0)
+ for(const build of builds) assert.equal(build[build.indexOf("--builder")+1],"default")
+ assert.match(result.stderr,/slice engine.*BUILDX_BUILDER/)
+ assert.match(result.stderr,/slice engine.*BUILDKIT_HOST/)
+ await assert.rejects(readFile(marker),{code:"ENOENT"})
 })

@@ -588,6 +588,16 @@ These decisions were confirmed by the user and join the same completion gate:
   package install (`apt-get install`) on a fresh machine, alongside
   user-level installs.
 
+### MP-08/MP-11 slice-engine decision for 2026-10-01
+
+The coordinator selected one explicit slice-engine contract: ordinary and managed
+image/extension builds target the Docker engine that runs the slice. Ordinary
+placement uses its configured Docker endpoint (normally the caller's); managed
+placement uses the protected rootless socket consumed by the broker. Caller
+buildx builder/host and shell startup overrides cannot redirect image production.
+Ignored override names receive a diagnostic without their values. This decision
+does not weaken the managed socket boundary or close MP-08/MP-10/MP-11 acceptance.
+
 ## Product and architecture decisions
 
 ### One Room environment
