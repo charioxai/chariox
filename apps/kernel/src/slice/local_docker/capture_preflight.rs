@@ -2,7 +2,7 @@
 //! Home-volume filtering cannot attest environment secrets or committed image layers.
 use crate::error::DaemonError;
 
-pub(super) fn require_supported_layout(operation: &'static str) -> Result<(), DaemonError> {
+pub(crate) fn require_supported_layout(operation: &'static str) -> Result<(), DaemonError> {
     // No current provisioner produces a verified protected capture layout. Do not
     // accept a label, environment flag, or synthetic mount list as that proof.
     // A completing change must verify actual private mounts, the immutable base,
