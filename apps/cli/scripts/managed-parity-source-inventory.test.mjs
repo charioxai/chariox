@@ -1932,14 +1932,14 @@ for (const pinned of FINAL_ARCHIVE_DECLARATIONS) {
 test("MP-11 independent ledger covers each inspected scope without authorizing scope expansion", () => {
   assert.equal(new Set(INDEPENDENT_REVIEW_GROUPS.map(group => group.ruleId)).size, 134);
   assert.ok(INDEPENDENT_REVIEW_GROUPS.every(group => SOURCE_AUDIT_RULES.some(rule => rule.id === group.ruleId)));
-  assert.equal(SOURCE_AUDIT_RULES.length, 137);
+  assert.equal(SOURCE_AUDIT_RULES.length, 140);
   assert.equal(new Set(DEFAULT_SEMANTIC_DISPOSITIONS.map(review => review.id)).size, DEFAULT_SEMANTIC_DISPOSITIONS.length);
   const first = DEFAULT_SEMANTIC_DISPOSITIONS[0];
   assert.equal(evaluateSemanticDisposition(first.anchor, { commit: first.sourceCommit, tree: first.sourceTree }, DEFAULT_SEMANTIC_DISPOSITIONS).status, "reviewed");
   for (const group of INDEPENDENT_REVIEW_GROUPS) {
     const rule = SOURCE_AUDIT_RULES.find(rule => rule.id === group.ruleId);
     assert.equal(group.path, rule.path);
-    if (group.blob === rule.blob) {
+    if (group.blob === rule.blob && group.sourceCommit === rule.sourceCommit) {
       assert.equal(group.sourceCommit, rule.sourceCommit);
     } else {
       // MP-08/MP-11 fixes do not inherit frozen independent approval.
@@ -2017,8 +2017,8 @@ for (const [id, declaration] of [
 
 // MP-11: reviewed high-risk triage scopes must retain candidates on drift.
 const MP11B_SCOPE_FIXTURES = [
-  {"id": "mp11b-ready-machine-kernel-projection", "path": "apps/web/src/ui/waiting-room-runtime-placement.ts", "blob": "f596c01ba68446d617f0370a30bcb481a757dcac", "excerpt": [[47, "export function waitingRoomMachineOptions("], [109, "export function waitingRoomKernelsForSelectedMachine("]], "outsideLine": 142},
-  {"id": "mp11b-ready-machine-home-readiness", "path": "apps/web/src/ui/waiting-room-launch-readiness.ts", "blob": "eb15c79d3a0b5c09d6cf86e755b0696362b93aae", "excerpt": [[105, "      return managedEnvironmentLaunchReadiness(`Connect to ${managedEnvironment.name} and start session`)"]], "outsideLine": 111},
+  {"id": "mp11b-ready-machine-kernel-projection", "path": "apps/web/src/ui/waiting-room-runtime-placement.ts", "blob": "5eb52b577ba4a3f85925e1f543b4b339167438b0", "excerpt": [[47, "export function waitingRoomMachineOptions("], [103, "export function waitingRoomKernelsForSelectedMachine("]], "outsideLine": 134},
+  {"id": "mp11b-ready-machine-home-readiness", "path": "apps/web/src/ui/waiting-room-launch-readiness.ts", "blob": "e3ad8eb2976de03c725bdc2bd6a33b2479aa476f", "excerpt": [[108, "      return managedEnvironmentLaunchReadiness(`Connect to ${managedEnvironment.name} and start session`)"]], "outsideLine": 115},
   {"id": "mp11b-shared-host-unit", "path": "deploy/managed-kernel/chariox-managed-bootstrap.service", "blob": "902948442e4ecc771b86e56be1cfa79e83ea583e", "excerpt": [[26, "Environment=CHARIOX_MANAGED_BOOTSTRAP_PATH=/var/lib/chariox/managed-bootstrap.json"]], "outsideLine": 63},
   {"id": "mp11b-broker-service", "path": "deploy/managed-kernel/chariox-slice-broker.service", "blob": "8195754884b2c17609ce7812b914c49b8935c6a3", "excerpt": [[32, "ReadWritePaths=/var/lib/chariox-docker /var/lib/chariox-slice-disk-quota /var/lib/chariox-slice-share /run/chariox-docker"]], "outsideLine": 41},
   {"id": "mp11b-rootless-lifecycle-service", "path": "deploy/managed-kernel/chariox-rootless-docker.service", "blob": "8aae4b3f4809d3bc3d165fdaa137480927edee3b", "excerpt": [[30, "ProtectSystem=strict"]], "outsideLine": 46},
@@ -2052,10 +2052,10 @@ const MP11B_SCOPE_FIXTURES = [
   {"id": "mp11b-ios-live-sync-mode-command", "path": "apps/ios/CharioxPackage/Sources/CharioxFeature/State/CharioxAppModelCommands.swift", "blob": "76084e6866b37607d0c30b2122e84597c1821ea6", "excerpt": [[157, "    case \"managed\", \"tracked\":"]], "outsideLine": 180},
   {"id": "mp11b-runtime-projection-fixture", "path": "packages/kernel-client/src/session-runtime-projection.test-support.ts", "blob": "e196b7a3d2fe1ca8af77ce037f667fc3c0f93922", "excerpt": [[17, "export function workspaceLiveSyncStatus("]], "outsideLine": 37},
   {"id": "mp11b-soak-sandbox-root-guard", "path": "apps/cli/scripts/lib/browser-computer-soak-runtime.mjs", "blob": "d2041162b4ed01208f69dd2e91cbd888ec093a54", "excerpt": [[853, "export function assertSandboxCapableChromiumIdentity({"]], "outsideLine": 867},
-  {"id": "mp11b-ready-machine-forced-preparation", "path": "apps/cli/src/waiting-room-controller.ts", "blob": "50804dc9c5f5437bab6ee140681edddc0330292a", "excerpt": [[394, "function waitingRoomManagedLaunchSelection("]], "outsideLine": 417},
-  {"id": "mp11b-ready-machine-transfer-workspace-reset", "path": "apps/cli/src/waiting-room-managed-environment-launch-controller.ts", "blob": "425614771545f3ef80e7ff14c1f04136e9336b64", "excerpt": [[257, "          const workspacePath = primaryWorkspacePath(launchTarget)"], [304, "function managedProjectPreparation("], [314, "  const workspacePath = primaryWorkspacePath(launchTarget)"]], "outsideLine": 345},
+  {"id": "mp11b-ready-machine-forced-preparation", "path": "apps/cli/src/waiting-room-controller.ts", "blob": "be39b058449d1d81ff7ff48a95b19d92dba20a23", "excerpt": [[396, "function waitingRoomManagedLaunchSelection("]], "outsideLine": 429},
+  {"id": "mp11b-ready-machine-transfer-workspace-reset", "path": "apps/cli/src/waiting-room-managed-environment-launch-controller.ts", "blob": "425614771545f3ef80e7ff14c1f04136e9336b64", "excerpt": [[257, "          const workspacePath = primaryWorkspacePath(launchTarget)"], [304, "function managedProjectPreparation("]], "outsideLine": 345},
   {"id": "mp11b-ready-machine-launch-choice-reset", "path": "apps/cli/src/cli-waiting-room-composition.ts", "blob": "ab33e3ceb9b296663ff7d7365c1ab89a6a26e3af", "excerpt": [[547, "  const prepareManagedSessionLaunch = async ("]], "outsideLine": 637},
-  {"id": "mp11b-ready-machine-execution-worker-reset", "path": "apps/web/src/terminal/waiting-room-managed-environment-launch-controller.ts", "blob": "62386857e98ec574b9f84465f1dd2c982aa2c094", "excerpt": [[365, "    const readyState = updateWaitingRoomKernelData(this.deps.state(), {"]], "outsideLine": 403}
+  {"id": "mp11b-ready-machine-execution-worker-reset", "path": "apps/web/src/terminal/waiting-room-managed-environment-launch-controller.ts", "blob": "51c98a6e90f1e48ca1097bf6ac172f6b70caa95b", "excerpt": [[122, "    const attempt: ManagedLaunchAttempt = {"], [196, "          const selectedKernelId = waitingRoomSelectedKernelRef(this.deps.state())"]], "outsideLine": 248}
 ];
 
 for (const pinned of MP11B_SCOPE_FIXTURES) {
@@ -2086,5 +2086,24 @@ for (const pinned of MP11B_SCOPE_FIXTURES) {
         assert.equal(report.status, "fail");
       });
     }
+  });
+}
+
+// MP-08/MP-11: new corrected seams remain provisional and fail closed on drift.
+for (const id of ["parity3-supervisor-broker-response-owner", "parity3-interactive-slice-protocol-admission", "parity3-interactive-slice-create-admission"]) {
+  test(`MP-08/MP-11 corrected parity3 scope retains unreviewed anchors on drift: ${id}`, () => {
+    const rule = SOURCE_AUDIT_RULES.find(rule => rule.id === id);
+    assert.ok(rule);
+    const lines = Array.from({ length: Math.max(...rule.ranges.map(([, end]) => end)) }, () => "");
+    rule.anchors.forEach(([, symbol], index) => { lines[rule.ranges[0][0] + index - 1] = `function ${symbol}() {}`; });
+    for (const blob of [rule.blob, "e".repeat(40)]) withFixture({}, fixture => {
+      fixture.addFile(rule.path, lines.join("\n") + "\n", "100644", blob);
+      const report = collect(fixture);
+      const candidates = report.entries.filter(entry => entry.sourceClassification?.ruleId === id);
+      assert.ok(candidates.length >= rule.anchors.length);
+      assert.ok(candidates.every(entry => entry.sourceClassification.status === (blob === rule.blob ? "source_inspected" : "source_drift")));
+      assert.ok(candidates.every(entry => entry.semanticDisposition.status === "unreviewed"));
+      assert.equal(report.status, "fail");
+    });
   });
 }

@@ -5,6 +5,7 @@ const OSS = "686ec57d5e46cdd46e723155b7eb89f6f25202a2";
 const OSS_RUNTIME = "686ec57d5e46cdd46e723155b7eb89f6f25202a2";
 const CLOUD = "06cd95fda1fc07f9dd37a12727f6ed4e5a4adeb2";
 const CLOUD_CURRENT = "06cd95fda1fc07f9dd37a12727f6ed4e5a4adeb2";
+const CLOUD_PARITY3 = "d0638173d10e1fa6040741d72da455d9847b4322";
 export const SOURCE_AUDIT_RULES = Object.freeze([
   {
     "id": "broker-runtime-output-budget",
@@ -490,13 +491,35 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
     anchors: [["managed_only_branch", "managed_provider_topology"]],
   },
   {
-    id: "verified-path1-kernel-launch-and-broker-handoff", sourceCommit: OSS_RUNTIME,
-    path: "apps/kernel/src/managed_bootstrap/supervisor.rs",
-    blob: "8f691b7fb7d44e031c6d078aada14daff164f473",
-    ranges: [[182, 292], [458, 525]],
-    classification: "deployment_bootstrap_and_kernel_slice_capability",
-    rationale: "Verified Path-1 launch selects ordinary process HOME/login PATH and no provider isolation roots; shared-host roots are a separate branch. Handoff removes inherited controls and passes only a private kernel broker FD or a required marker. Provider launch scrub removes those controls before provider execution.",
-    anchors: [["managed_only_branch", "spawn_kernel_with_handoff"], ["kernel_slice_broker_control", "spawn_with_broker_lease"]],
+    "id": "verified-path1-kernel-launch-and-broker-handoff",
+    "sourceCommit": "ead7d3d89a9d80377a2f9f60513715b3d3bd9780",
+    "path": "apps/kernel/src/managed_bootstrap/supervisor.rs",
+    "blob": "b7b0be372087afbe570d3fb59fa3fef876da8727",
+    "ranges": [
+      [
+        184,
+        295
+      ],
+      [
+        460,
+        528
+      ]
+    ],
+    "classification": "deployment_bootstrap_and_kernel_slice_capability",
+    "rationale": "MP-08/MP-11: Reinspected verified launch and inherited private-FD handoff on parity3. Provider controls remain scrubbed; response lifetime is owned by the broker producer, not a supervisor timer. Delayed socket and child handoff checks cover this seam; signed deployment and mandatory shutdown remain the only exceptions.",
+    "anchors": [
+      [
+        "managed_only_branch",
+        "spawn_kernel_with_handoff"
+      ],
+      [
+        "kernel_slice_broker_control",
+        "spawn_with_broker_lease"
+      ]
+    ],
+    "openFindings": [
+      "MP-08/MP-10/MP-11: Implementation-source disposition only; independent exact-head review, signed aggregate, fresh ordinary/Path-1 comparison and cleanup acceptance remain open. Historical removal findings are not rewritten."
+    ]
   },
   {
     id: "verified-path1-worker-kernel-launch", sourceCommit: OSS_RUNTIME,
@@ -525,11 +548,11 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
   },
   {
     "id": "managed-waiting-room-placement-projection",
-    "sourceCommit": "7ada4504adaffe7a352ea0130c681dbf9230dde4",
+    "sourceCommit": "ead7d3d89a9d80377a2f9f60513715b3d3bd9780",
     "path": "packages/kernel-client/src/waiting-room-runtime-placement.ts",
-    "blob": "0efadb2fd07a1c1401df3863aa429ef42cd01677",
+    "blob": "47d3bb3f5ac2b333b9a09dfb6873edb26a1b8abc",
     "classification": "shared_enrolled_machine_client_projection",
-    "rationale": "MP-08/MP-11: Ordinary discovered Machines remain visible. Ready environment aliases use the same account-authorized Machine kernel list; pending/deleted/revision-mismatched aliases still fail readiness. Frozen removal dispositions remain historical; changed source requires independent review and MP-10 comparison.",
+    "rationale": "MP-02/MP-08/MP-11: Ready aliases retain all authorized kernels and resolve their ordinary runtime Machine ID for common launch. Pending/revision-mismatched enrollment remains gated.",
     "anchors": [
       [
         "client_projection",
@@ -545,7 +568,7 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
       ]
     ],
     "openFindings": [
-      "Independent exact-blob disposition and MP-10 fresh-machine comparison pending."
+      "MP-08/MP-10/MP-11: Implementation-source disposition only; independent exact-head review, signed aggregate, fresh ordinary/Path-1 comparison and cleanup acceptance remain open. Historical removal findings are not rewritten."
     ]
   },
   {
@@ -1958,21 +1981,21 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
   // MP-11 mp11b: exact scopes from the high-risk out-of-scope review.
   {
     "id": "mp11b-ready-machine-kernel-projection",
-    "sourceCommit": "06cd95fda1fc07f9dd37a12727f6ed4e5a4adeb2",
+    "sourceCommit": "d0638173d10e1fa6040741d72da455d9847b4322",
     "path": "apps/web/src/ui/waiting-room-runtime-placement.ts",
-    "blob": "f596c01ba68446d617f0370a30bcb481a757dcac",
+    "blob": "5eb52b577ba4a3f85925e1f543b4b339167438b0",
     "ranges": [
       [
         47,
-        72
+        66
       ],
       [
-        109,
-        137
+        103,
+        129
       ]
     ],
-    "classification": "open_managed_runtime_difference",
-    "rationale": "MP-08/MP-11: Cloud duplicates the shared-client narrowing: managed machine options replace the ordinary enrolled machine, and a ready managed selection filters to its recorded runtimeKernelId. An ordinary machine retains every discovered authorized kernel. This persists after enrollment and is outside deployment/shutdown.",
+    "classification": "shared_enrolled_machine_client_projection",
+    "rationale": "MP-08/MP-11: Ordinary runtime Machines remain selectable. A ready environment alias exposes the same account-authorized kernel list as that Machine; deployment readiness still gates pending aliases.",
     "anchors": [
       [
         "client_projection",
@@ -1984,25 +2007,25 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
       ]
     ],
     "openFindings": [
-      "MP-08/MP-11 removal required: Use the common account-authorized kernel list for ready enrolled machines in both Cloud and shared client; keep pending deployment options separate. Compare two eligible kernels on one machine and preserve the selected second kernel."
+      "MP-08/MP-10/MP-11: Implementation-source disposition only; independent exact-head review, signed aggregate, fresh ordinary/Path-1 comparison and cleanup acceptance remain open. Historical removal findings are not rewritten."
     ]
   },
   {
     "id": "mp11b-ready-machine-home-readiness",
-    "sourceCommit": "06cd95fda1fc07f9dd37a12727f6ed4e5a4adeb2",
+    "sourceCommit": "d0638173d10e1fa6040741d72da455d9847b4322",
     "path": "apps/web/src/ui/waiting-room-launch-readiness.ts",
-    "blob": "eb15c79d3a0b5c09d6cf86e755b0696362b93aae",
+    "blob": "e3ad8eb2976de03c725bdc2bd6a33b2479aa476f",
     "ranges": [
       [
         101,
-        106
+        110
       ]
     ],
-    "classification": "open_managed_runtime_difference",
-    "rationale": "MP-08/MP-11: Even a ready managed machine with a connected target is sent back to the connect-home action when target.daemonId differs from runtimeKernelId. Ordinary readiness checks the selected target. This is a second consumer of the same post-enrollment kernel-narrowing defect.",
+    "classification": "shared_selected_kernel_readiness",
+    "rationale": "MP-08/MP-11: Ready alias admission compares the connected target with the common selected authorized kernel, then applies ordinary heartbeat/provider readiness. The bootstrap home is not forced after enrollment.",
     "anchors": [],
     "openFindings": [
-      "MP-08/MP-11 removal required: Evaluate readiness of the selected authorized kernel after enrollment; use the recorded bootstrap kernel only to connect an initial deployment. Compare connected second-kernel selection, stale target and provider-account readiness."
+      "MP-08/MP-10/MP-11: Implementation-source disposition only; independent exact-head review, signed aggregate, fresh ordinary/Path-1 comparison and cleanup acceptance remain open. Historical removal findings are not rewritten."
     ]
   },
   {
@@ -2740,17 +2763,17 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
   },
   {
     "id": "mp11b-ready-machine-forced-preparation",
-    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "sourceCommit": "ead7d3d89a9d80377a2f9f60513715b3d3bd9780",
     "path": "apps/cli/src/waiting-room-controller.ts",
-    "blob": "50804dc9c5f5437bab6ee140681edddc0330292a",
+    "blob": "be39b058449d1d81ff7ff48a95b19d92dba20a23",
     "ranges": [
       [
-        394,
-        412
+        396,
+        424
       ]
     ],
-    "classification": "open_managed_runtime_difference",
-    "rationale": "MP-02/MP-08/MP-11: Every managed-environment machine reference produces an existing managed launch selection, even when ready and connected. Unlike an ordinary enrolled-machine selection it therefore re-enters preparation and the original transfer-target rewrite before each new session.",
+    "classification": "shared_ready_machine_launch",
+    "rationale": "MP-02/MP-08/MP-11: Ready environments return no managed-preparation selection. The normal client pivot and session creation retain cwd/worktree/Project/worker/slice inputs; pending deployment still uses preparation.",
     "anchors": [
       [
         "client_projection",
@@ -2758,12 +2781,12 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
       ]
     ],
     "openFindings": [
-      "MP-02/MP-08/MP-11 removal required: Send already-ready enrolled-machine selections through the common ordinary launch path; reserve managed preparation for pending deployment/start. Preserve user Project, cwd, worktree, worker and slice choices."
+      "MP-08/MP-10/MP-11: Implementation-source disposition only; independent exact-head review, signed aggregate, fresh ordinary/Path-1 comparison and cleanup acceptance remain open. Historical removal findings are not rewritten."
     ]
   },
   {
     "id": "mp11b-ready-machine-transfer-workspace-reset",
-    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "sourceCommit": "ead7d3d89a9d80377a2f9f60513715b3d3bd9780",
     "path": "apps/cli/src/waiting-room-managed-environment-launch-controller.ts",
     "blob": "425614771545f3ef80e7ff14c1f04136e9336b64",
     "ranges": [
@@ -2776,8 +2799,8 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
         340
       ]
     ],
-    "classification": "open_managed_runtime_difference",
-    "rationale": "MP-02/MP-08/MP-11: Existing-ready preparation always returns the original transferred primary workspace as both workspacePath and worktreePath and its original Project selection. The Project callback additionally rejects any other workspace. This is post-enrollment session policy, not signed deployment.",
+    "classification": "initial_enrollment_transfer_defaults",
+    "rationale": "MP-02/MP-08/MP-11: This unchanged transfer-target constructor is now reachable only from initial or pending enrollment preparation. Ready launch bypasses it at waitingRoomManagedLaunchSelection. Its defaults no longer replace ordinary ready-session choices.",
     "anchors": [
       [
         "client_projection",
@@ -2789,12 +2812,12 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
       ]
     ],
     "openFindings": [
-      "MP-02/MP-08/MP-11 removal required: Preserve explicit ready-machine Project/workspace/worktree choices and run common Project setup for that selection; use the transferred primary only as the initial default. Compare a new /tmp repository and separate worktree after enrollment."
+      "MP-08/MP-10/MP-11: Implementation-source disposition only; independent exact-head review, signed aggregate, fresh ordinary/Path-1 comparison and cleanup acceptance remain open. Historical removal findings are not rewritten."
     ]
   },
   {
     "id": "mp11b-ready-machine-launch-choice-reset",
-    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "sourceCommit": "ead7d3d89a9d80377a2f9f60513715b3d3bd9780",
     "path": "apps/cli/src/cli-waiting-room-composition.ts",
     "blob": "ab33e3ceb9b296663ff7d7365c1ab89a6a26e3af",
     "ranges": [
@@ -2803,8 +2826,8 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
         632
       ]
     ],
-    "classification": "open_managed_runtime_difference",
-    "rationale": "MP-02/MP-08/MP-11: The prepared existing-machine result overwrites pending workspace/worktree and selected Project, strips workerKernelRef/sliceRef/sliceCreate and sets sliceSelectionId to none. The common activation controller then reads these overwritten targets for createSession. Managed provenance thus changes user choices after enrollment.",
+    "classification": "initial_enrollment_transfer_defaults",
+    "rationale": "MP-02/MP-08/MP-11: The unchanged prepared-launch composition applies transfer defaults only after initial/pending enrollment. Ready launch carries no managedEnvironment input and enters common activation directly. This caller restriction is tested; unchanged historical findings remain frozen.",
     "anchors": [
       [
         "client_projection",
@@ -2812,30 +2835,127 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
       ]
     ],
     "openFindings": [
-      "MP-02/MP-08/MP-11 removal required: After readiness use the common owner-client pivot and session launcher without stripping explicit worker/slice/Project/path inputs. Keep the initial transfer defaults only for first creation; compare ordinary and ready-managed launches with the same choices."
+      "MP-08/MP-10/MP-11: Implementation-source disposition only; independent exact-head review, signed aggregate, fresh ordinary/Path-1 comparison and cleanup acceptance remain open. Historical removal findings are not rewritten."
     ]
   },
   {
     "id": "mp11b-ready-machine-execution-worker-reset",
-    "sourceCommit": "06cd95fda1fc07f9dd37a12727f6ed4e5a4adeb2",
+    "sourceCommit": "d0638173d10e1fa6040741d72da455d9847b4322",
     "path": "apps/web/src/terminal/waiting-room-managed-environment-launch-controller.ts",
-    "blob": "62386857e98ec574b9f84465f1dd2c982aa2c094",
+    "blob": "51c98a6e90f1e48ca1097bf6ac172f6b70caa95b",
     "ranges": [
       [
-        326,
-        398
+        119,
+        149
+      ],
+      [
+        183,
+        243
       ]
     ],
-    "classification": "open_managed_runtime_difference",
-    "rationale": "MP-08/MP-11: applyReadyTarget recognizes an existing-ready bound selection and preserves some workspace/Project choices, but unconditionally clears selectedExecutionKernelRef. The ordinary ready-machine path preserves the explicit execution worker. The real pinned transition reproduces this reset with synthetic identities.",
+    "classification": "shared_ready_machine_launch",
+    "rationale": "MP-02/MP-08/MP-11: Initial detail readiness selects the common existing-ready route. It connects the chosen authorized kernel, keeps workspace/Project/worker/slice choices, and clears the obsolete transfer setup target. It skips getLaunchTarget/applyReadyTarget; initial deployment still receives transfer defaults.",
     "anchors": [
       [
         "client_projection",
-        "readyState"
+        "attempt"
+      ],
+      [
+        "client_projection",
+        "selectedKernelId"
       ]
     ],
     "openFindings": [
-      "MP-08/MP-11 removal required: Preserve the explicit execution kernel for an existing-ready bound machine and validate it through the shared kernel directory/setup path. Default it only on initial deployment or explicit user change; compare a selected remote worker before/after Start."
+      "MP-08/MP-10/MP-11: Implementation-source disposition only; independent exact-head review, signed aggregate, fresh ordinary/Path-1 comparison and cleanup acceptance remain open. Historical removal findings are not rewritten."
+    ]
+  },
+  {
+    "id": "parity3-supervisor-broker-response-owner",
+    "sourceCommit": "ead7d3d89a9d80377a2f9f60513715b3d3bd9780",
+    "path": "apps/kernel/src/managed_bootstrap/supervisor.rs",
+    "ranges": [
+      [
+        41,
+        98
+      ],
+      [
+        578,
+        642
+      ]
+    ],
+    "classification": "shared_owned_operation_lifetime",
+    "rationale": "MP-08/MP-11: Supervisor backend read timeout is explicitly cleared, including inherited timeout state. Request writes retain30seconds. Framed EOF/error loses the lease; normal/archive/build delayed responses retain it. This closes the upstream timer seam left by the kernel-socket correction.",
+    "anchors": [
+      [
+        "kernel_slice_broker_control",
+        "configure_broker_stream_deadlines"
+      ],
+      [
+        "kernel_slice_broker_control",
+        "proxy_kernel_broker"
+      ]
+    ],
+    "blob": "b7b0be372087afbe570d3fb59fa3fef876da8727",
+    "openFindings": [
+      "MP-08/MP-10/MP-11: independent exact-head source review and signed/fresh-machine acceptance remain open."
+    ]
+  },
+  {
+    "id": "parity3-interactive-slice-protocol-admission",
+    "sourceCommit": "d0638173d10e1fa6040741d72da455d9847b4322",
+    "path": "apps/web/src/kernel/slice-requests.ts",
+    "ranges": [
+      [
+        148,
+        163
+      ]
+    ],
+    "classification": "shared_protocol_feature_admission",
+    "rationale": "MP-08/MP-11: Interactive StartSlice requires the actual target protocol371 before sending; missing/noninteger/legacy advertisement fails with an upgrade action. Noninteractive shape remains unchanged. The kernel owns export review.",
+    "anchors": [
+      [
+        "client_projection",
+        "assertInteractiveSliceStartSupported"
+      ],
+      [
+        "client_projection",
+        "startSliceRequest"
+      ]
+    ],
+    "blob": "788f010e49dd5c50d40e1a4bb8fb5d95572a34ab",
+    "openFindings": [
+      "MP-08/MP-10/MP-11: independent exact-head source review and signed/fresh-machine acceptance remain open."
+    ]
+  },
+  {
+    "id": "parity3-interactive-slice-create-admission",
+    "sourceCommit": "d0638173d10e1fa6040741d72da455d9847b4322",
+    "path": "apps/web/src/terminal/slice-launch-helpers.ts",
+    "ranges": [
+      [
+        53,
+        88
+      ],
+      [
+        88,
+        119
+      ]
+    ],
+    "classification": "shared_protocol_feature_admission",
+    "rationale": "MP-08/MP-11: Interactive create checks the connected client target protocol before CreateSlice; every StartSlice goes through the same request admission. Helpers retain common scope checks and forward kernel review without client approval authority.",
+    "anchors": [
+      [
+        "client_projection",
+        "createAndStartSlice"
+      ],
+      [
+        "client_projection",
+        "ensureSliceStarted"
+      ]
+    ],
+    "blob": "9529266788619d744c966071a369ed2617c2810d",
+    "openFindings": [
+      "MP-08/MP-10/MP-11: independent exact-head source review and signed/fresh-machine acceptance remain open."
     ]
   },
 ]);
@@ -2911,7 +3031,7 @@ export function sourceAuditGaps(files, locatedAnchors) {
   const gaps = [];
   for (const rule of SOURCE_AUDIT_RULES) {
     const file = byPath.get(rule.path);
-    const applies = (rule.sourceCommit === CLOUD || rule.sourceCommit === CLOUD_CURRENT) ? cloud : oss;
+    const applies = ([CLOUD, CLOUD_CURRENT, CLOUD_PARITY3].includes(rule.sourceCommit)) ? cloud : oss;
     if (!file) {
       if (applies) gaps.push({ kind: "expected_source_missing", ruleId: rule.id, path: rule.path,
         auditedBlob: rule.blob, auditSourceCommit: rule.sourceCommit, authoritative: false });

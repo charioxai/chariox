@@ -15,6 +15,86 @@ new boot/machine/enrollment/relay identities, reviewed release, absence of old
 runtime residue, and retirement of the prior identity before the parity matrix
 or remaining acceptance gates run.
 
+## MP-02/MP-08/MP-11 parity3 source correction (2026-10-01)
+
+This lane starts from release B OSS `b37f4504e4ce040a2d6c35dc56475315defbc861`.
+Its runtime checkpoint is `ead7d3d89a9d80377a2f9f60513715b3d3bd9780`.
+The Cloud branch starts at B `94fda0ec`, then fast-forwards to frozen C
+`d42bd5f0d2dbdef1b9cb9536085573f442cffab8` for the existing interactive
+request prerequisite. Cloud runtime correction is
+`d0638173d10e1fa6040741d72da455d9847b4322`; fixture head is
+`48b05016d559d31468d068a817e40ef5b37a36f3`.
+Only this lane's fix commits should be integrated; prerequisite C history is
+already in the coordinator aggregate.
+
+The wp06 findings were confirmed against source before correction:
+
+- MP-08/MP-11 supervisor backend responses retained 1,260 seconds even though
+  the kernel-side socket had no read deadline. The supervisor now clears
+  inherited read timeouts, retains a 30-second request-write guard, and keeps
+  framed EOF/error and lease-loss supervision. Actual socket regressions cover
+  delayed runtime/archive/build replies, lease retention, EOF loss and stale
+  generation draining. The existing process handoff fixture also delays its
+  reply after clearing an inherited 40 ms read timer. These bounded tests do
+  not establish a real 21-minute Docker build or a signed release run.
+- MP-02/MP-08/MP-11 ready CLI enrollment bypasses managed preparation and
+  resolves the alias to its runtime Machine ID before common session launch.
+  Explicit workspace/worktree/Project/worker/slice choices therefore avoid
+  the transferred-primary rewrite. Initial/pending enrollment still applies
+  its transfer defaults.
+- MP-02/MP-08/MP-11 Web retains the ordinary enrolled Machine option and all
+  its authorized kernels. Readiness checks the selected kernel. Existing-ready
+  preparation connects that selected target, preserves workspace, worktree,
+  Project, execution worker and slice choices, and bypasses transfer defaults
+  and the obsolete transferred-Project setup binding.
+- MP-08/MP-11 every interactive Web slice request uses the connected client's
+  actual advertised protocol. Create-and-start rejects before CreateSlice;
+  raw start requests reject before StartSlice. Legacy/unknown/noninteger
+  advertisements receive an upgrade action to protocol 371. Intentional
+  noninteractive requests retain their prior shape. The kernel continues to
+  own export review; clients introduce no approval authority.
+
+MP-11 provisional rules rebind eight inspected scopes and add three explicit
+supervisor/admission scopes. Historical independent reviews and all original
+removal findings remain unchanged. Even unchanged transfer-default blobs need
+new review because their caller reachability changed. Source classifications
+are implementation observations, not independent semantic approvals. The
+scanner remains fail-closed on unreviewed candidates and the three unavailable
+historical predicates; signed deployment and mandatory shutdown remain the
+only exceptions.
+
+MP-08/MP-11 focused verification: CLI/shared waiting-room suites 280/280,
+Web affected suites 235/235, scanner 148/148, all zero skips; Web typecheck
+passes. The extracted production Rust socket seam passes 4/4 after its fail-first
+1260-second assertion. Final compiled handoff/full-Web results and cleanup are
+recorded in the external lane evidence and status, without treating a passing
+source test as MP acceptance. Earlier diagnostics remain retained.
+
+MP-08/MP-11 runtime files changed:
+
+- OSS: `apps/kernel/src/managed_bootstrap/supervisor.rs`,
+  `apps/cli/src/waiting-room-controller.ts`,
+  `packages/kernel-client/src/waiting-room-runtime-placement.ts`.
+- Cloud: `apps/web/src/kernel/browser-kernel-client.ts`,
+  `apps/web/src/kernel/slice-requests.ts`,
+  `apps/web/src/terminal/slice-launch-helpers.ts`,
+  `apps/web/src/terminal/slice-slash-command-runtime.ts`,
+  `apps/web/src/terminal/slices-panel-controller.ts`,
+  `apps/web/src/terminal/freeform-slice-actions.ts`,
+  `apps/web/src/terminal/freeform-agent-dialog-controller.ts`,
+  `apps/web/src/terminal/waiting-room-session-start-controller.ts`,
+  `apps/web/src/terminal/waiting-room-managed-environment-launch-controller.ts`,
+  `apps/web/src/ui/waiting-room-runtime-placement.ts`,
+  `apps/web/src/ui/waiting-room-launch-readiness.ts`.
+
+MP-08/MP-11 no serialized shape is added. B retains protocol 370; this lane's
+Web gate targets the coordinator's single C protocol 371 / peer 65. Aggregate
+C must rebind source provenance and rerun its checks. Independent exact-head
+review, signed C artifacts, effective host policy, the real long-response
+ordinary/Path-1 comparison and the complete MP-10 fresh-machine matrix remain
+open. Evidence is outside repositories under
+`/root/.codex/evidence/browser-resume-20260930/parity3/`.
+
 ## MP-11 out-of-scope follow-up, lane mp11b (2026-10-01)
 
 This follow-up starts from the independent review commit
