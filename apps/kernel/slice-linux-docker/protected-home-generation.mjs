@@ -56,6 +56,19 @@ export function createHomeGenerationStore(root) {
       // the restore transaction. This store never deletes home/private data.
       writeProtectedLayoutReceipt(directory, container, {...record, phase: "published"})
     },
+    resolveInitialization(container, publishedLayout) {
+      const record = read(container)
+      if (!record || record.phase === "resolved" || record.oldContainerId !== undefined) return
+      // A fresh slice has no previous container to roll back. Its trusted,
+      // durable layout receipt completes initialization, including recovery
+      // after interruption between layout publication and journal publication.
+      if (!["ready", "published"].includes(record.phase)
+          || publishedLayout?.sliceId !== container
+          || typeof publishedLayout.containerId !== "string" || !publishedLayout.containerId
+          || publishedLayout.homeVolume !== record.newHomeVolume
+          || publishedLayout.imageId !== record.imageId) refuse()
+      writeProtectedLayoutReceipt(directory, container, {...record, phase: "resolved"})
+    },
     prepareRollback({container, archiveDigest, imageId, origin}) {
       const record = read(container)
       if (!record || record.phase === "resolved" || origin?.container !== container
