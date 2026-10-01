@@ -329,7 +329,15 @@ test("first-boot barrier invokes only offline preparation and refuses partial id
   } finally { rmSync(parent, {recursive: true}) }
 })
 
-import { verifyHomeEntryMetadata } from "../apps/kernel/slice-linux-docker/protected-home-capture.mjs"
+import { verifyHomeEntryMetadata, verifyCaptureHelperVolume } from "../apps/kernel/slice-linux-docker/protected-home-capture.mjs"
+test("capture helper remains bound to its owner after a restored home generation replaces the default", () => {
+  const helper = "chariox-slice-synthetic-home-archive-123"
+  assert.doesNotThrow(() => verifyCaptureHelperVolume(helper, "chariox-slice-synthetic-home"))
+  assert.doesNotThrow(() => verifyCaptureHelperVolume(helper, `chariox-slice-synthetic-home-g${"a".repeat(32)}`))
+  for (const volume of ["chariox-slice-foreign-home", "chariox-slice-synthetic-home-gbad", "chariox-slice-synthetic-home-g../private"]) {
+    assert.throws(() => verifyCaptureHelperVolume(helper, volume))
+  }
+})
 test("capture inspects filenames and link metadata before streaming any browser data", () => {
   assert.doesNotThrow(() => verifyHomeEntryMetadata(Buffer.from(".config\0d\0\0.config/chromium\0d\0\0notes\0f\0\0shortcut\0l\0notes\0")))
   assert.throws(() => verifyHomeEntryMetadata(Buffer.from(".claude/.credentials.json\0f\0\0")))

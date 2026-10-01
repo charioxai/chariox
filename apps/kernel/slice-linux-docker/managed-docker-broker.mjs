@@ -714,7 +714,7 @@ function artifactDirectory(scope, id) {
 function captureHomeArchive(request) {
   const owner = request.container.match(/^(chariox-slice-[A-Za-z0-9_.:-]+)-home-archive-[0-9]+$/)?.[1]
   if (!owner) fail("slice home capture helper ownership is invalid")
-  protectedLayouts.preflight(owner)
+  const layout = protectedLayouts.preflight(owner)
   protectedLayouts.requireQuiescedHome(owner)
   const scopeRoot = artifactScopeRoot(request.scope)
   mkdirSync(scopeRoot, { recursive: true, mode: 0o700 })
@@ -728,7 +728,7 @@ function captureHomeArchive(request) {
   const staged = join(staging, "home.tar.zst")
   try {
     const captured = spawnSync(process.execPath,
-      [join(dirname(fileURLToPath(import.meta.url)), "protected-home-capture.mjs"), request.container, `${owner}-home`, staged],
+      [join(dirname(fileURLToPath(import.meta.url)), "protected-home-capture.mjs"), request.container, layout.homeVolume, staged],
       {env: dockerEnvironment(), encoding: "utf8", maxBuffer: 64 * 1024, timeout: 11 * 60_000})
     if (captured.status !== 0) fail("slice home capture was refused; existing saved state is preserved")
     const result = JSON.parse(captured.stdout)

@@ -21,10 +21,14 @@ export function verifyHomeEntryMetadata(bytes) {
   }
 }
 
+export function verifyCaptureHelperVolume(helper, volume) {
+  const owner = helper.match(/^(chariox-slice-[A-Za-z0-9_.:-]+)-home-archive-[0-9]+$/)?.[1]
+  if (!owner || !(volume === `${owner}-home`
+      || (volume.startsWith(`${owner}-home-g`) && /^[a-f0-9]{32}$/.test(volume.slice(`${owner}-home-g`.length))))) refuse()
+}
+
 export async function captureProtectedHome({helper, volume, path, docker, environment, maxBytes, reserveBytes}) {
-  if (!/^chariox-slice-[A-Za-z0-9_.:-]+-home$/.test(volume)
-      || !helper.startsWith(`${volume.slice(0, -5)}-home-archive-`)
-      || !/^[0-9]+$/.test(helper.slice(`${volume.slice(0, -5)}-home-archive-`.length))) refuse()
+  verifyCaptureHelperVolume(helper, volume)
   verifyPrivateHostDirectory(dirname(path), process.getuid())
   const inspected = docker(["container", "inspect", helper])
   if (inspected.status !== 0) refuse()
