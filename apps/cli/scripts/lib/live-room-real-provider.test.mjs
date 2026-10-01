@@ -732,6 +732,31 @@ test("Browser discovery diagnostics retain at most sixteen bounded counts", asyn
   assert.equal(diagnostic.truncated, true)
 })
 
+test("MP-08/MP-10 diagnostics unwrap Codex MCP text results without retaining their contents", async () => {
+  const record = entry("provider_tool", JSON.stringify({
+    tool: "mcp__chariox__slice_browser_find", status: "completed", input: { query: "Browser sample" },
+    output: { _meta: { private: secret }, content: [
+      { type: "text", text: JSON.stringify({ browser: { matches: [{ label: secret }] } }) },
+    ] },
+  }))
+  const run = fixture({ turns: [{ lifecycle: "completed", blobs: [], entries: [record] }] })
+  await assert.rejects(runRoomRealProvider(run.input))
+  assert.deepEqual(run.checkpoints.at(-1).diagnostic.browserFindResults, [{ query: "field", matches: 1 }])
+  assert.equal(JSON.stringify(run.checkpoints).includes(secret), false)
+})
+
+test("MP-08/MP-10 diagnostics recognize doubly prefixed OpenCode tool names", async () => {
+  const record = entry("provider_tool", JSON.stringify({
+    tool: "mcp__chariox__chariox_slice_browser_find", status: "completed", input: { query: "Browser sample" },
+    output: { browser: { matches: [{ label: secret }] } },
+  }))
+  const run = fixture({ turns: [{ lifecycle: "completed", blobs: [], entries: [record] }] })
+  await assert.rejects(runRoomRealProvider(run.input))
+  assert.deepEqual(run.checkpoints.at(-1).diagnostic.observedTools, ["slice_browser_find"])
+  assert.deepEqual(run.checkpoints.at(-1).diagnostic.browserFindResults, [{ query: "field", matches: 1 }])
+  assert.equal(JSON.stringify(run.checkpoints).includes(secret), false)
+})
+
 test("Browser discovery counts one entry represented by both preview and hydrated history", async () => {
   const record = entry("provider_tool", JSON.stringify({ tool: "slice_browser_find", status: "completed",
     input: { query: "Submit Browser form" }, output: { browser: { matches: [] } } }), 7)
