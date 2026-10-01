@@ -340,7 +340,10 @@ async fn mcp_catalog_reregistration_marks_existing_grant_pending_synchronously()
         .unwrap();
     assert_eq!(agent.provider(), "opencode");
     let app = Arc::new(Mutex::new(app));
-    let runtime = owned_runtime_state(&app).await;
+    let mut runtime = owned_runtime_state(&app).await;
+    // MP-08/MP-10: other daemon fixtures reuse agent IDs in the shared
+    // continuation store. This catalog-only fixture owns an empty store.
+    runtime.owned.pending_mcp_continuations = PendingMcpContinuationStore::default();
     let previous = runtime.runtime_catalog_signature_for_agent(&agent);
     assert_eq!(
         runtime.runtime_catalog_grant_effect(&agent, true),
