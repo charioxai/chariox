@@ -366,12 +366,12 @@ mod tests {
         let left = root.join("left");
         let right = root.join("right");
         assert!(!left.exists() && !right.exists());
-        assert!(!same_fs_path_buf(&left, &right));
+        assert!(!super::same_fs_path_buf(&left, &right));
         assert!(!same_fs_path(
             left.to_str().unwrap(),
             right.to_str().unwrap()
         ));
-        assert!(same_fs_path_buf(&left, &left));
+        assert!(super::same_fs_path_buf(&left, &left));
     }
 
     #[test]
