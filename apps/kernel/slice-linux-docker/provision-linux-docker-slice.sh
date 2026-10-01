@@ -314,6 +314,10 @@ restore_saved_home_volume() {
 prepare_home_volume() {
   local inspect_output
   if inspect_output="$(run_with_timeout 20 docker volume inspect "$SLICE_HOME_VOLUME" 2>&1)"; then
+    if [[ -n "${CHARIOX_SLICE_RESTORE_GENERATION:-}" ]]; then
+      node "$REPO_ROOT/apps/kernel/slice-linux-docker/protected-home-generation.mjs" --require-ready \
+        || fail "restored home generation is incomplete; previous home is preserved"
+    fi
     log "preserving existing home volume $SLICE_HOME_VOLUME; saved home archive is only used for an initial restore"
     return 0
   fi
@@ -1036,7 +1040,7 @@ recover_existing_container() {
   refresh_slice_support_files
 }
 
-start_slice_services() {
+ensure_protected_runtime_barrier() {
   if [[ -n "${CHARIOX_SLICE_PRIVATE_HOST_ROOT:-}" ]]; then
     # This reserved runtime tree is installed by the signed provisioner. Keep
     # ordinary slice applications from replacing code after its hash is pinned.
@@ -1051,6 +1055,10 @@ start_slice_services() {
     ' || fail "protected runtime ownership could not be established"
     node "$REPO_ROOT/apps/kernel/slice-linux-docker/protected-first-boot.mjs"
   fi
+}
+
+start_slice_services() {
+  ensure_protected_runtime_barrier
   if [[ "$SLICE_IMPORT_PROVIDER_AUTH" == "1" ]]; then
     import_provider_auth
   fi
@@ -1482,13 +1490,15 @@ start_provider_login() {
   local safe_provider
   safe_provider="$(printf '%s' "$SLICE_LOGIN_PROVIDER" | tr -c 'A-Za-z0-9_.-' '-')"
   local session_name="chariox-slice-login-${safe_provider}"
-  local log_file="/opt/chariox-slice/logs/provider-login-${safe_provider}.log"
+  local login_logs="/opt/chariox-slice/logs"
+  if [[ -n "$SLICE_PRIVATE_HOST_ROOT" ]]; then login_logs="$SLICE_PRIVATE_ROOT/runtime/logs"; fi
+  local log_file="$login_logs/provider-login-${safe_provider}.log"
   local command_text
   command_text="$(provider_login_command)"
   log "starting $SLICE_LOGIN_PROVIDER login in $session_name"
   run_with_timeout 30 docker exec -u slice "$SLICE_NAME" bash -lc "
     set -euo pipefail
-    mkdir -p /opt/chariox-slice/logs
+    mkdir -p '$login_logs'
     rm -f '$log_file'
     screen -S '$session_name' -X quit >/dev/null 2>&1 || true
     screen -dmS '$session_name' bash -lc \"set +e; $command_text 2>&1 | tee -a '$log_file'; printf '\\n[chariox] provider login exited with status %s\\n' \\\${PIPESTATUS[0]} | tee -a '$log_file'; exec bash\"
@@ -1611,8 +1621,19 @@ main() {
       require_docker
       [[ -n "$SLICE_SAVED_HOME_ARCHIVE" ]] || fail "restore-state requires a saved home archive"
       build_image
-      destroy_container
+      if [[ -n "${CHARIOX_SLICE_RESTORE_GENERATION:-}" ]]; then
+        # Materialize and durably verify the fresh generation while the old
+        # container/home still exist. Never remove retained previous data here.
+        prepare_home_volume
+        node "$REPO_ROOT/apps/kernel/slice-linux-docker/protected-home-generation.mjs" --require-ready \
+          || fail "restored home generation is incomplete; previous home is preserved"
+        stop_container
+        if container_exists; then run_with_timeout 30 docker rm "$SLICE_NAME" >/dev/null; fi
+      else
+        destroy_container
+      fi
       ensure_container
+      ensure_protected_runtime_barrier
       stop_container
       log "saved slice state restored; container remains stopped"
       ;;

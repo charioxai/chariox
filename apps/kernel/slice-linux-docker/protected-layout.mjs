@@ -34,6 +34,7 @@ export function verifyProtectedCaptureLayout(inspect, receipt, trustedBaseDigest
   const nss = mounts.find(m => m.Destination === "/home/slice/.local/share/pki/nssdb")
   if (privateMount?.Type !== "bind" || privateMount.Source !== receipt.privateHostRoot || privateMount.RW !== true) refuse()
   if (home?.Type !== "volume" || home.Name !== receipt.homeVolume || home.RW !== true) refuse()
+  if (receipt.homeSource !== undefined && home.Source !== receipt.homeSource) refuse()
   if (nss?.Type !== "bind" || nss.Source !== `${receipt.privateHostRoot}/nssdb` || nss.RW !== true) refuse()
   for (const mount of mounts) {
     const destination = mount.Destination

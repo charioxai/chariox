@@ -42,6 +42,7 @@ pub(crate) use snapshot_pause::recover as recover_local_docker_snapshot_pause;
 pub(crate) use state::{
     cleanup_replaced_saved_state_generation, recover_pending_local_docker_slice_backup_restore,
     remove_local_docker_slice_backup_best_effort, restore_local_docker_slice_backup,
+    resolve_protected_home_restore_retention,
     SliceBackupRestoreResolution,
 };
 pub use state::{

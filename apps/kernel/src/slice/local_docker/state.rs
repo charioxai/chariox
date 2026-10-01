@@ -412,7 +412,9 @@ pub(crate) fn restore_local_docker_slice_backup(
         },
         || save_local_docker_slice_state_retaining_replaced(record, options),
         |generation, resolution| {
-            persist_restore_resolution(&transaction, &generation.state, resolution)
+            persist_restore_resolution(&transaction, &generation.state, resolution)?;
+            resolve_protected_home_restore_retention(record, &generation.state);
+            Ok(())
         },
         || {
             super::run_local_docker_slice_action(
@@ -429,6 +431,20 @@ pub(crate) fn restore_local_docker_slice_backup(
         || remove_local_docker_slice_backup_best_effort(&rollback),
     )?;
     Ok(generation.state)
+}
+
+pub(crate) fn resolve_protected_home_restore_retention(
+    record: &SliceRecord,
+    state: &SliceSavedStateRecord,
+) {
+    // Invoke only after durable transaction resolution, for either restored or
+    // rolled-back state. Failure retains references and never triggers another
+    // rollback after publication.
+    if broker::resolve_home_restore(&local_docker_container_name(record), &state.home_archive_path)
+        .is_err()
+    {
+        tracing::warn!("protected home restore retention resolution remains pending");
+    }
 }
 
 pub(super) fn restore_local_docker_slice_backup_with_rollback<T>(

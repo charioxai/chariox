@@ -6,10 +6,13 @@ import { requireManagedImageProof, requireManagedRuntimeHash } from "./protected
 import { requireRuntimeProof } from "./protected-runtime-proof.mjs"
 import { requireIdentityRetention } from "./protected-identity-retention.mjs"
 import { PRIVATE_ROOT, verifyProtectedCaptureLayout } from "./protected-layout.mjs"
+import { createHomeGenerationStore } from "./protected-home-generation.mjs"
+import { createHash } from "node:crypto"
 
 function identifier(value) { return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,179}$/.test(value) }
 
 function refuse() { throw new Error("Protected slice layout is unavailable; existing identity and saved state are preserved") }
+function originKey(containerId, digest) { return createHash("sha256").update(`${containerId}\0${digest}`).digest("hex") }
 
 export function createManagedLayoutController({root, sourceDigest, docker, dataOwner}) {
   const controlOwner = process.getuid()
@@ -17,6 +20,7 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
   const receiptRoot = join(root, "receipts")
   const imageRoot = join(root, "images")
   const backupRoot = join(root, "backups")
+  const generations = createHomeGenerationStore(root)
   const owner = () => typeof dataOwner === "function" ? dataOwner() : dataOwner
   const trusted = /^sha256:[a-f0-9]{64}$/.test(sourceDigest ?? "")
   function initialize() {
@@ -52,6 +56,65 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
   }
   return {
     imageRoot,
+    homeVolume(container) {
+      const record = receipt(container)
+      if (!record) return `${container}-home`
+      retained(record)
+      const pending = generations.read(container)
+      const info = containerInfo(container)
+      if (info && info.Id !== record.containerId) {
+        if (!pending || !["ready", "rollback-ready", "published"].includes(pending.phase)
+            || info.Image !== pending.imageId
+            || info.Mounts?.find(mount => mount.Destination === "/home/slice")?.Name !== pending.newHomeVolume) refuse()
+        return pending.newHomeVolume
+      }
+      return record.homeVolume
+    },
+    recordCapture(container, digest) {
+      const record = receipt(container)
+      if (!record || !/^[a-f0-9]{64}$/.test(digest)) refuse()
+      const origins = join(root, "capture-origins")
+      try { mkdirSync(origins, {mode: 0o700}) } catch (error) { if (error.code !== "EEXIST") throw error }
+      verifyPrivateHostDirectory(origins, controlOwner)
+      const key = originKey(record.containerId, digest)
+      writeProtectedLayoutReceipt(origins, key, {version: 1, sliceId: key, container,
+        containerId: record.containerId, homeVolume: record.homeVolume, digest})
+    },
+    resolveRestore(container, archiveDigest) {
+      const record = receipt(container)
+      if (!record) return
+      const pending = generations.read(container)
+      const sourceId = pending?.failedHomeVolume && pending.newHomeVolume === pending.oldHomeVolume
+        && pending.archiveDigest === archiveDigest ? pending.oldContainerId : record.containerId
+      const origin = readProtectedLayoutReceipt(join(root, "capture-origins"), originKey(sourceId, archiveDigest))
+      if (origin.container !== container || origin.containerId !== sourceId
+          || origin.homeVolume !== record.homeVolume || origin.digest !== archiveDigest) refuse()
+      generations.resolve(container, record.homeVolume)
+    },
+    beginRestore(environment, archiveDigest, action) {
+      if (!environment.CHARIOX_SLICE_PRIVATE_HOST_ROOT || !environment.CHARIOX_SLICE_SAVED_HOME_ARCHIVE) return
+      const container = environment.CHARIOX_SLICE_NAME
+      if (action !== "restore-state" && receipt(container)) {
+        environment.CHARIOX_SLICE_HOME_VOLUME = this.homeVolume(container)
+        return
+      }
+      const image = docker(["image", "inspect", environment.CHARIOX_SLICE_DOCKER_IMAGE ?? "chariox-slice-linux:0.1.0"])
+      if (image.status !== 0) refuse()
+      const images = JSON.parse(image.stdout)
+      if (!Array.isArray(images) || images.length !== 1) refuse()
+      requireManagedRuntimeHash(imageRoot, sourceDigest, images[0].Id)
+      const existing = receipt(container)
+      const prior = generations.read(container)
+      const pending = prior && prior.phase !== "resolved"
+        ? generations.prepareRollback({container, archiveDigest, imageId: images[0].Id,
+          origin: readProtectedLayoutReceipt(join(root, "capture-origins"), originKey(prior.oldContainerId, archiveDigest))})
+        : generations.begin({container, oldHomeVolume: this.homeVolume(container), oldContainerId: existing?.containerId,
+          archiveDigest, imageId: images[0].Id})
+      environment.CHARIOX_SLICE_HOME_VOLUME = pending.newHomeVolume
+      environment.CHARIOX_SLICE_RESTORE_GENERATION = pending.token
+      environment.CHARIOX_SLICE_RESTORE_DIGEST = pending.archiveDigest
+      environment.CHARIOX_SLICE_PREVIOUS_HOME_VOLUME = pending.oldHomeVolume
+    },
     privateMounts(container) {
       const record = receipt(container)
       if (!record) return []
@@ -65,6 +128,16 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
       if (!trusted) return null // Legacy compatibility never enables capture.
       const container = environment.CHARIOX_SLICE_NAME
       if (!identifier(container) || !identifier(environment.CHARIOX_SLICE_ID)) refuse()
+      if (["provision", "restore-state"].includes(action) && environment.CHARIOX_SLICE_SAVED_HOME_ARCHIVE) {
+        // Reject an unknown/missing lineage before creating roots or allowing
+        // the provisioner to replace a container/volume. Never fall back to a
+        // standard image and discard installed software implicitly.
+        const inspected = docker(["image", "inspect", environment.CHARIOX_SLICE_DOCKER_IMAGE ?? "chariox-slice-linux:0.1.0"])
+        if (inspected.status !== 0) refuse()
+        const images = JSON.parse(inspected.stdout)
+        if (!Array.isArray(images) || images.length !== 1) refuse()
+        requireManagedRuntimeHash(imageRoot, sourceDigest, images[0].Id)
+      }
       const existing = receipt(container)
       if (existing) {
         if (existing.ownerSliceId !== environment.CHARIOX_SLICE_ID) refuse()
@@ -104,11 +177,28 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
         ownerSliceId: environment.CHARIOX_SLICE_ID, containerId: info.Id,
         imageId: info.Image, baseImageId: info.Image, privateHostRoot,
         homeVolume: environment.CHARIOX_SLICE_HOME_VOLUME ?? `${environment.CHARIOX_SLICE_NAME}-home`,
+        homeSource: info.Mounts?.find(mount => mount.Destination === "/home/slice")?.Source,
         identityPaths, dataOwner: owner()}
       retained(record)
       verifyProtectedCaptureLayout(info, record, new Set([info.Image]))
-      requireRuntimeProof(docker, record.sliceId, requireManagedRuntimeHash(imageRoot, sourceDigest, info.Image))
+      const kernelHash = requireManagedRuntimeHash(imageRoot, sourceDigest, info.Image)
+      if (info.State?.Running === true && info.State?.Paused !== true) {
+        requireRuntimeProof(docker, record.sliceId, kernelHash)
+      } else {
+        const runtime = readProtectedLayoutReceipt(join(root, "runtime-proofs"), record.sliceId)
+        if (runtime.containerId !== info.Id || runtime.imageId !== info.Image
+            || runtime.sourceDigest !== sourceDigest || runtime.kernelHash !== kernelHash) refuse()
+      }
+      record.protectedRuntimeHash = kernelHash
+      if (environment.CHARIOX_SLICE_RESTORE_GENERATION) {
+        generations.requireReady({container: record.sliceId, token: environment.CHARIOX_SLICE_RESTORE_GENERATION,
+          volume: record.homeVolume, digest: environment.CHARIOX_SLICE_RESTORE_DIGEST})
+      }
       writeProtectedLayoutReceipt(receiptRoot, record.sliceId, record)
+      if (environment.CHARIOX_SLICE_RESTORE_GENERATION) {
+        generations.publish({container: record.sliceId, token: environment.CHARIOX_SLICE_RESTORE_GENERATION,
+          volume: record.homeVolume, digest: environment.CHARIOX_SLICE_RESTORE_DIGEST})
+      }
     },
     requireQuiescedHome(container) {
       const record = receipt(container)
@@ -124,7 +214,10 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
         if (result.status !== 0) refuse()
         const mounts = JSON.parse(result.stdout)
         if (!Array.isArray(mounts) || mounts.some(mount =>
-          mount.Type === "volume" && mount.Name === record.homeVolume && mount.RW !== false)) refuse()
+          mount.RW !== false && ((mount.Type === "volume" && mount.Name === record.homeVolume)
+            || (typeof record.homeSource === "string" && typeof mount.Source === "string"
+              && (mount.Source === record.homeSource || mount.Source.startsWith(`${record.homeSource}/`)
+                || record.homeSource.startsWith(`${mount.Source}/`)))))) refuse()
       }
     },
     preflight(container) {
@@ -134,7 +227,15 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
       requireManagedImageProof(imageRoot, sourceDigest, record.baseImageId)
       const info = containerInfo(container)
       if (!info) refuse()
-      requireRuntimeProof(docker, container, requireManagedRuntimeHash(imageRoot, sourceDigest, record.imageId))
+      const kernelHash = requireManagedRuntimeHash(imageRoot, sourceDigest, record.imageId)
+      if (record.protectedRuntimeHash !== kernelHash) refuse()
+      // Docker cannot exec in a paused/stopped source. Its reserved runtime was
+      // verified before first boot and cannot be changed by the ordinary slice
+      // user. The engine/root administrator remains trusted; no writer runs
+      // while the low-level capture defense checks the quiesced source.
+      if (info.State?.Running === true && info.State?.Paused !== true) {
+        requireRuntimeProof(docker, container, kernelHash)
+      }
       return verifyProtectedCaptureLayout(info, record, new Set([record.baseImageId]))
     },
   }

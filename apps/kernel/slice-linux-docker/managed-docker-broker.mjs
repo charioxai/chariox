@@ -80,7 +80,8 @@ function signedBuildContextDigest() {
 
 const SIGNED_BUILD_CONTEXT_DIGEST = signedBuildContextDigest()
 const protectedLayouts = createManagedLayoutController({
-  root: DURABLE_LAYOUT_ROOT, sourceDigest: process.platform === "linux" && process.getuid() === 0 ? SIGNED_BUILD_CONTEXT_DIGEST : undefined,
+  root: DURABLE_LAYOUT_ROOT, sourceDigest: process.platform === "linux" && process.getuid() === 0
+    && DOCKER_HOST === "unix:///run/chariox-docker/docker.sock" ? SIGNED_BUILD_CONTEXT_DIGEST : undefined,
   dataOwner: () => {
     if (DOCKER_HOST !== "unix:///run/chariox-docker/docker.sock") fail("protected slice layout requires the verified managed Docker engine")
     return managedRootlessSliceOwner()
@@ -647,6 +648,12 @@ function validateRequest(request) {
     validateResource(request.container, "slice capture container")
     return
   }
+  if (request?.kind === "home_restore_resolve") {
+    exactKeys(request, ["kind", "container", "path"], "home restore resolution")
+    validateSliceContainer(request.container, "home restore container")
+    managedHomeArchiveCoordinates(request.path)
+    return
+  }
   if (request?.kind === "home_archive_capture") {
     exactKeys(request, ["kind", "container", "scope", "id"], "home archive capture request")
     validateResource(request.container, "home archive container")
@@ -758,6 +765,7 @@ function captureHomeArchive(request) {
     fsyncDirectory(identityRoot)
     fsyncDirectory(scopeRoot)
     const finalPath = join(destination, "home.tar.zst")
+    protectedLayouts.recordCapture(owner, digest)
     return { path: finalPath, sizeBytes: expectedSize, sha256: digest }
   } finally {
     rmSync(staging, { recursive: true, force: true })
@@ -827,7 +835,8 @@ function inspectManagedHomeArchive(path) {
 }
 
 function verifyManagedHomeArchive(path) {
-  return inspectManagedHomeArchive(path).archive
+  const {archive, metadata} = inspectManagedHomeArchive(path)
+  return {...archive, digest: metadata.sha256}
 }
 
 function verifyHomeArchive(request) {
@@ -1307,6 +1316,13 @@ function prepareDocker(args) {
   const prepared = [...args]
   const descriptors = []
   let output
+  if (prepared[0] === "create" && prepared.length === 20) {
+    const suffix = /-(?:disk-admission-[a-f0-9]{16}|home-archive-[0-9]{1,20})$/.exec(prepared[2])
+    if (suffix) {
+      const container = prepared[2].slice(0, suffix.index)
+      prepared[16] = `${protectedLayouts.homeVolume(container)}:/home-src:ro`
+    }
+  }
   if (prepared[0] === "cp") {
     const hostIndex = prepared[1].includes(":") ? 2 : 1
     const hostPath = prepared[hostIndex]
@@ -1322,11 +1338,15 @@ function prepareDocker(args) {
 function prepareProvisioner(request) {
   const environment = { ...request.environment }
   const privateRoot = protectedLayouts.prepare(request.action, environment)
-  if (privateRoot) environment.CHARIOX_SLICE_PRIVATE_HOST_ROOT = privateRoot
+  if (privateRoot) {
+    environment.CHARIOX_SLICE_PRIVATE_HOST_ROOT = privateRoot
+    environment.CHARIOX_SLICE_HOME_VOLUME = protectedLayouts.homeVolume(environment.CHARIOX_SLICE_NAME)
+  }
   const descriptors = []
   const handles = new Set()
   const newHandles = new Set()
   let inputDirectory
+  let restoreDigest
   try {
     const provisionsContainer = new Set(["provision", "restore-state"]).has(request.action)
     if (provisionsContainer) {
@@ -1373,6 +1393,7 @@ function prepareProvisioner(request) {
           : pinnedSharedPath(value, name, "file")
         descriptors.push(pinned.fd)
         environment[name] = pinned.path
+        if (name === "CHARIOX_SLICE_SAVED_HOME_ARCHIVE") restoreDigest = pinned.digest
       }
     }
     const mountCount = provisionsContainer
@@ -1395,6 +1416,7 @@ function prepareProvisioner(request) {
       handles.add(persistent.handle)
       if (persistent.created) newHandles.add(persistent.handle)
     }
+    if (restoreDigest) protectedLayouts.beginRestore(environment, restoreDigest, request.action)
     if (request.action === "import-provider-auth") {
       mkdirSync(BROKER_INPUT_ROOT, { recursive: true, mode: 0o700 })
       chmodSync(BROKER_INPUT_ROOT, 0o700)
@@ -1464,6 +1486,12 @@ function execute(request) {
     const layout = protectedLayouts.preflight(request.container)
     requireSafeHomeVolume({volume: layout.homeVolume,
       docker: args => spawnSync("/usr/bin/docker", args, {env: dockerEnvironment(), timeout: 30_000, maxBuffer: 1024 * 1024})})
+    return {status: 0, stdoutBase64: "", stderrBase64: ""}
+  }
+  if (request.kind === "home_restore_resolve") {
+    const {archive, metadata} = inspectManagedHomeArchive(request.path)
+    try { protectedLayouts.resolveRestore(request.container, metadata.sha256) }
+    finally { closeSync(archive.fd) }
     return {status: 0, stdoutBase64: "", stderrBase64: ""}
   }
   if (request.kind === "home_archive_capture") {

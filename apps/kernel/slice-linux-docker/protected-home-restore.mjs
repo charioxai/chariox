@@ -3,6 +3,7 @@ import { openSync, closeSync, fstatSync, constants, createReadStream, statfsSync
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { pipeline } from "node:stream/promises"
+import { createHomeGenerationStore } from "./protected-home-generation.mjs"
 
 function refuse() { throw new Error("Saved slice home cannot be restored safely; existing identity and saved state are preserved") }
 export function verifyFreshRestoreTarget(inspect, helper, volume, inventory) {
@@ -59,9 +60,12 @@ if (process.argv[1]?.endsWith("/protected-home-restore.mjs")) {
   const onSignal = () => { abort(); process.exitCode = 1 }
   try {
     const [helper, volume, archive] = process.argv.slice(2)
-    if (!/^chariox-slice-[A-Za-z0-9_.:-]+-home$/.test(volume)
-        || !helper.startsWith(`${volume.slice(0, -5)}-home-restore-`)
-        || !/^[0-9]+$/.test(helper.slice(`${volume.slice(0, -5)}-home-restore-`.length))
+    const container = process.env.CHARIOX_SLICE_NAME
+    const generation = process.env.CHARIOX_SLICE_RESTORE_GENERATION
+    if (!/^chariox-slice-[A-Za-z0-9_.:-]+$/.test(container ?? "") || !/^[a-f0-9]{32}$/.test(generation ?? "")
+        || volume !== `${container}-home-g${generation}`
+        || !helper.startsWith(`${container}-home-restore-`)
+        || !/^[0-9]+$/.test(helper.slice(`${container}-home-restore-`.length))
         || !/^\/proc\/[1-9][0-9]*\/fd\/[0-9]+$/.test(archive)) refuse()
     // This kernel-owned proc descriptor is pinned and hash-verified by the
     // broker. Following it opens the same archive inode, never a caller path.
@@ -88,6 +92,10 @@ if (process.argv[1]?.endsWith("/protected-home-restore.mjs")) {
     await validateCompressedArchive(fd, helper, environment, abort)
     await extractCompressedArchive(fd, helper, environment, abort)
     if (docker(["exec", "-u", "root", helper, "chown", "-R", "1001:1001", "/home-dst"]).status !== 0) refuse()
+    if (docker(["exec", "-u", "root", helper, "/usr/bin/sync", "-f", "/home-dst"]).status !== 0) refuse()
+    createHomeGenerationStore("/var/lib/chariox-docker/private-layout").complete({
+      container, token: generation, volume, digest: process.env.CHARIOX_SLICE_RESTORE_DIGEST,
+    })
     succeeded = true
   } catch {
     console.error("Saved slice home restore was refused; existing identity and saved state are preserved")

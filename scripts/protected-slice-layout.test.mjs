@@ -196,6 +196,71 @@ test("managed host owner derives from the actual rootless mapping rather than co
 })
 
 import { ensureFirstBootRetention, verifyFirstBootTopology } from "../apps/kernel/slice-linux-docker/protected-first-boot.mjs"
+import { createHomeGenerationStore } from "../apps/kernel/slice-linux-docker/protected-home-generation.mjs"
+import { spawnSync } from "node:child_process"
+test("process interruption during staged extraction cannot boot partial data or replace the prior home", () => {
+  const root = mkdtempSync(join(process.env.HOME, ".chariox-generation-interruption-test-"))
+  try {
+    chmodSync(root, 0o711)
+    const prior = join(root, "prior-home")
+    mkdirSync(prior, {mode: 0o700})
+    writeFileSync(join(prior, "browser-state"), "synthetic retained browser state")
+    const module = new URL("../apps/kernel/slice-linux-docker/protected-home-generation.mjs", import.meta.url).href
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
+      import {createHomeGenerationStore} from ${JSON.stringify(module)};
+      import {mkdirSync,writeFileSync} from 'node:fs';
+      import {join} from 'node:path';
+      const root=process.argv[1];
+      const pending=createHomeGenerationStore(root).begin({container:'chariox-slice-fault',
+        oldHomeVolume:'chariox-slice-fault-home',oldContainerId:'old-container',
+        archiveDigest:'a'.repeat(64),imageId:'sha256:'+ 'b'.repeat(64)});
+      const staged=join(root,pending.newHomeVolume);
+      mkdirSync(staged,{mode:0o700});
+      writeFileSync(join(staged,'partial-browser-state'),'synthetic incomplete extraction');
+      process.kill(process.pid,'SIGKILL');
+    `, root], {timeout: 5000})
+    assert.equal(child.signal, "SIGKILL")
+    const restarted = createHomeGenerationStore(root)
+    const pending = restarted.read("chariox-slice-fault")
+    assert.equal(pending.phase, "preparing")
+    assert.throws(() => restarted.requireReady({container: pending.container, token: pending.token,
+      volume: pending.newHomeVolume, digest: pending.archiveDigest}))
+    assert.equal(readFileSync(join(prior, "browser-state"), "utf8"), "synthetic retained browser state")
+    assert.equal(pending.oldHomeVolume, "chariox-slice-fault-home")
+    assert.throws(() => restarted.resolve(pending.container, pending.newHomeVolume))
+    const rollback = restarted.prepareRollback({container: pending.container, archiveDigest: "c".repeat(64),
+      imageId: `sha256:${"b".repeat(64)}`, origin: {container: pending.container,
+        homeVolume: pending.oldHomeVolume, containerId: pending.oldContainerId, digest: "c".repeat(64)}})
+    restarted.publish({container: rollback.container, token: rollback.token,
+      volume: rollback.newHomeVolume, digest: rollback.archiveDigest})
+    assert.equal(restarted.read(pending.container).failedHomeVolume, pending.newHomeVolume)
+    restarted.resolve(pending.container, pending.oldHomeVolume)
+    assert.equal(restarted.read(pending.container).phase, "resolved")
+    assert.equal(existsSync(join(root, pending.newHomeVolume, "partial-browser-state")), true,
+      "publication must retain interrupted data references until separate retirement")
+  } finally { rmSync(root, {recursive: true}) }
+})
+test("interrupted restore generations cannot become ready or discard the previous home reference", () => {
+  const root = mkdtempSync(join(process.env.HOME, ".chariox-generation-metadata-test-"))
+  try {
+    chmodSync(root, 0o711)
+    const store = createHomeGenerationStore(root)
+    const container = "chariox-slice-synthetic"
+    const digest = "a".repeat(64)
+    const pending = store.begin({container, oldHomeVolume: `${container}-home`, archiveDigest: digest, imageId: `sha256:${digest}`})
+    const parameters = {container, token: pending.token, volume: pending.newHomeVolume, digest}
+    assert.throws(() => store.requireReady(parameters))
+    assert.throws(() => store.begin({container, oldHomeVolume: `${container}-home`, archiveDigest: digest, imageId: `sha256:${digest}`}))
+    assert.throws(() => store.complete({...parameters, token: "foreign"}))
+    assert.equal(store.read(container).oldHomeVolume, `${container}-home`)
+    assert.equal(store.read(container).phase, "preparing")
+    store.complete(parameters)
+    assert.equal(store.requireReady(parameters).oldHomeVolume, `${container}-home`)
+    store.publish(parameters)
+    assert.equal(store.read(container).phase, "published")
+    assert.equal(store.read(container).oldHomeVolume, `${container}-home`, "publication alone must not retire rollback data")
+  } finally { rmSync(root, {recursive: true}) }
+})
 test("real first-boot preflight passes the declared host root into topology verification", () => {
   const {inspect, receipt} = fixture()
   assert.deepEqual(verifyFirstBootTopology(inspect, receipt.privateHostRoot, receipt.homeVolume),
@@ -253,6 +318,10 @@ test("first-boot barrier invokes only offline preparation and refuses partial id
     assert.equal(calls.length, 1)
     assert.equal(calls[0].at(-2), "--prepare-protected-slice-identity")
     assert.equal(calls[0][2], "1001", "container UID is distinct from host owner")
+    const started = join(backupRoot, "synthetic.initialization-started.json")
+    assert.equal(lstatSync(started).mode & 0o777, 0o600)
+    assert.throws(() => ensureFirstBootRetention(parameters))
+    assert.equal(calls.length, 1, "missing identity and receipt after a failed first attempt must not generate a substitute")
     writeFileSync(join(privateRoot, "kernel/machine/identity.json"), "synthetic incomplete sentinel", {mode: 0o600})
     assert.throws(() => ensureFirstBootRetention(parameters))
     assert.equal(calls.length, 1, "partial identity must not trigger initialization again")
@@ -318,7 +387,7 @@ test("capture requires a paused or stopped source and rejects every other writab
     mkdirSync(receiptRoot, {mode: 0o700})
     const container = "chariox-slice-synthetic"
     const home = `${container}-home`
-    writeProtectedLayoutReceipt(receiptRoot, container, {version: 1, sliceId: container, containerId: "synthetic-container", homeVolume: home})
+    writeProtectedLayoutReceipt(receiptRoot, container, {version: 1, sliceId: container, containerId: "synthetic-container", homeVolume: home, homeSource: "/synthetic/volumes/home/_data"})
     const info = {Id: "synthetic-container", State: {Running: true, Paused: true}}
     let otherMounts = [{Type: "volume", Name: home, RW: false}]
     const controller = createManagedLayoutController({root, sourceDigest: digest, dataOwner: process.getuid(), docker: args => {
@@ -333,6 +402,10 @@ test("capture requires a paused or stopped source and rejects every other writab
     assert.doesNotThrow(() => controller.requireQuiescedHome(container))
     otherMounts[0].RW = true
     assert.throws(() => controller.requireQuiescedHome(container))
+    for (const source of ["/synthetic/volumes/home/_data", "/synthetic/volumes/home/_data/subdir", "/synthetic/volumes"]) {
+      otherMounts = [{Type: "bind", Source: source, RW: true}]
+      assert.throws(() => controller.requireQuiescedHome(container))
+    }
     otherMounts = []
     info.Id = "foreign-container"
     assert.throws(() => controller.requireQuiescedHome(container))

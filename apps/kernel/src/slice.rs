@@ -10,6 +10,7 @@ pub(crate) use local_docker::{
     recover_pending_local_docker_slice_backup_restore,
     remove_local_docker_slice_backup_best_effort, require_supported_slice_capture_layout,
     restore_local_docker_slice_backup, SliceBackupRestoreResolution,
+    resolve_protected_home_restore_retention,
 };
 pub use local_docker::{
     collect_local_docker_slice_logs, create_local_docker_slice_backup,

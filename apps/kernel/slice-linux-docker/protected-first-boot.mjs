@@ -1,5 +1,5 @@
 import { managedRootlessSliceOwner, SLICE_CONTAINER_UID } from "./protected-rootless-owner.mjs"
-import { existsSync, mkdirSync, readdirSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, openSync, closeSync, writeFileSync, fsyncSync, constants } from "node:fs"
 import { join } from "node:path"
 import { spawnSync } from "node:child_process"
 import { verifyPrivateHostDirectory } from "./protected-host-root.mjs"
@@ -7,6 +7,7 @@ import { requireManagedImageProof, requireManagedRuntimeHash } from "./protected
 import { requireRuntimeProof } from "./protected-runtime-proof.mjs"
 import { verifyProtectedCaptureLayout } from "./protected-layout.mjs"
 import { retainFreshIdentity, requireIdentityRetention } from "./protected-identity-retention.mjs"
+import { writeProtectedLayoutReceipt } from "./protected-layout-store.mjs"
 
 export const DURABLE_LAYOUT_ROOT = "/var/lib/chariox-docker/private-layout"
 function refuse() { throw new Error("Protected identity retention is required before this slice can start") }
@@ -18,14 +19,15 @@ export function verifyFirstBootTopology(info, privateRoot, homeVolume) {
 
 function publishBootPin(docker, container, receipt) {
   const pin = Object.fromEntries(["kernelId", "machineId", "relayPublicKey", "host", "port", "restorationVerified"].map(key => [key, receipt[key]]))
-  const script = `import {openSync,writeFileSync,fsyncSync,closeSync,renameSync,constants} from 'node:fs';
-    const path='/opt/chariox-slice/identity-retention.json';
-    const temporary=path+'.pending';
-    const fd=openSync(temporary,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o444);
-    try {writeFileSync(fd,await new Promise(resolve=>{let value='';process.stdin.setEncoding('utf8');process.stdin.on('data',chunk=>value+=chunk);process.stdin.on('end',()=>resolve(value))}));fsyncSync(fd)} finally {closeSync(fd)};
-    renameSync(temporary,path);
-    const directory=openSync('/opt/chariox-slice',constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);try{fsyncSync(directory)}finally{closeSync(directory)};`
-  if (docker(["exec", "-i", "-u", "0", container, "/usr/bin/node", "--input-type=module", "-e", script], {input: JSON.stringify(pin)}).status !== 0) refuse()
+  const script = `set -eu; umask 077
+    path=/opt/chariox-slice/identity-retention.json
+    temporary="$path.pending"
+    (set -C; /bin/cat > "$temporary")
+    /bin/chmod 0444 "$temporary"
+    /usr/bin/sync -f "$temporary"
+    /bin/mv -T "$temporary" "$path"
+    /usr/bin/sync -f /opt/chariox-slice`
+  if (docker(["exec", "-i", "-u", "0", container, "/bin/sh", "-ec", script], {input: JSON.stringify(pin)}).status !== 0) refuse()
   return receipt
 }
 
@@ -41,6 +43,17 @@ export function ensureFirstBootRetention({privateRoot, backupRoot, sliceId, cont
   // Any prior or partial initialization requires restoration, never new keys.
   if (readdirSync(join(privateRoot, "kernel/kernels")).length !== 0
       || existsSync(join(privateRoot, "kernel/machine/identity.json"))) refuse()
+  // A missing receipt cannot prove freshness after initialization started. Keep
+  // this root-owned marker outside the worker's private mount, including when
+  // initialization or retention fails. Recovery must restore, never regenerate.
+  const marker = join(backupRoot, `${sliceId}.initialization-started.json`)
+  const fd = openSync(marker, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
+  try {
+    writeFileSync(fd, JSON.stringify({version: 1, sliceId, privateRoot, port}))
+    fsyncSync(fd)
+  } finally { closeSync(fd) }
+  const directoryFd = openSync(backupRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
+  try { fsyncSync(directoryFd) } finally { closeSync(directoryFd) }
   const result = docker(["exec", "-u", String(containerUid),
     "-e", "CHARIOX_HOME=/var/lib/chariox/slice-private/kernel",
     "-e", "CHARIOX_SLICE_PRIVATE_ROOT=/var/lib/chariox/slice-private", container,
@@ -78,6 +91,13 @@ if (process.argv[1]?.endsWith("/protected-first-boot.mjs")) {
     ensureFirstBootRetention({privateRoot, backupRoot, sliceId, dataOwner,
       container: environment.CHARIOX_SLICE_NAME, port: Number(environment.CHARIOX_SLICE_KERNEL_PORT ?? 43119),
       docker})
+    const runtimeProofRoot = join(DURABLE_LAYOUT_ROOT, "runtime-proofs")
+    try { mkdirSync(runtimeProofRoot, {mode: 0o700}) } catch (error) { if (error.code !== "EEXIST") throw error }
+    verifyPrivateHostDirectory(runtimeProofRoot, 0)
+    writeProtectedLayoutReceipt(runtimeProofRoot, environment.CHARIOX_SLICE_NAME, {
+      version: 1, sliceId: environment.CHARIOX_SLICE_NAME, containerId: info.Id,
+      imageId: info.Image, sourceDigest: environment.CHARIOX_SLICE_BUILD_CONTEXT_DIGEST, kernelHash,
+    })
   } catch {
     console.error("Protected identity retention is required before this slice can start; existing identity is preserved")
     process.exitCode = 1

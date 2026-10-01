@@ -74,6 +74,10 @@ enum BrokerRequest<'a> {
         id: &'a str,
         path: &'a str,
     },
+    HomeRestoreResolve {
+        container: &'a str,
+        path: &'a str,
+    },
 }
 
 #[cfg(unix)]
@@ -232,6 +236,18 @@ fn broker_is_configured() -> bool {
 
 pub(super) fn configured() -> bool {
     broker_is_configured()
+}
+
+pub(super) fn resolve_home_restore(container: &str, path: &str) -> io::Result<()> {
+    if !broker_is_configured() { return Ok(()); }
+    #[cfg(unix)]
+    {
+        let output = execute(&BrokerRequest::HomeRestoreResolve {container, path})?;
+        if !output.status.success() {
+            return Err(io::Error::other("protected home restore resolution remains pending"));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(not(unix))]
