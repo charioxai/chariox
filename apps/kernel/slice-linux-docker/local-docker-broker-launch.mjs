@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { spawn, spawnSync } from "node:child_process"
 import { readLocalDevEnrollment, verifyInstalledLocalSource } from "./protected-local-docker-authority.mjs"
+import { watchLocalBrokerLifetime } from "./local-docker-broker-lifetime.mjs"
 
 // Only the ordinary home kernel starts this launcher. No private input is placed
 // in argv, environment, image or transport directory.
@@ -13,8 +14,11 @@ const parentBirth = () => {
 }
 const originalParentBirth = parentBirth()
 let directory, child, container
+let cleaned = false
 const env = {PATH: "/usr/bin:/bin", HOME: "/nonexistent", DOCKER_HOST: "unix:///run/docker.sock"}
 function cleanup() {
+  if (cleaned) return
+  cleaned = true
   if (container) spawnSync("/usr/bin/docker", ["stop", "-t", "3", container], {env, stdio: "ignore", timeout: 10_000})
   // This exact mkdtemp directory contains only the owned public transport socket.
   if (directory) {
@@ -23,6 +27,8 @@ function cleanup() {
     try { rmdirSync(directory) } catch (error) { if (!["ENOENT", "ENOTEMPTY"].includes(error.code)) throw error }
   }
 }
+const quit = watchLocalBrokerLifetime(cleanup,
+  () => Boolean(originalParentBirth) && parentBirth() === originalParentBirth)
 try {
   const enrollment = readLocalDevEnrollment(uid)
   verifyInstalledLocalSource(enrollment)
@@ -53,6 +59,8 @@ try {
     "-e", `CHARIOX_SLICE_DOCKER_HANDLE_STATE=${enrollment.controlRoot}/handles.json`,
     "--entrypoint", "/usr/local/bin/node", enrollment.helperImageId,
     `${enrollment.sourceRoot}/apps/kernel/slice-linux-docker/managed-docker-broker.mjs`], {env, stdio: "ignore"})
+  child.once("error", quit)
+  child.once("exit", quit)
   const deadline = performance.now() + 30_000
   while (!existsSync(socket)) {
     if (child.exitCode !== null || performance.now() >= deadline) throw new Error("startup refused")
@@ -61,12 +69,8 @@ try {
   const metadata = lstatSync(socket)
   if (!metadata.isSocket() || metadata.uid !== uid || (metadata.mode & 0o777) !== 0o600) throw new Error("transport refused")
   process.stdout.write(`${socket}\n`)
-  const quit = () => { cleanup(); process.exit(0) }
-  process.on("SIGTERM", quit); process.on("SIGINT", quit); process.on("SIGHUP", quit)
-  child.once("exit", () => { cleanup(); process.exit(0) })
-  setInterval(() => { if (!originalParentBirth || parentBirth() !== originalParentBirth) quit() }, 1000)
 } catch {
   cleanup()
   process.stderr.write("Verified local Docker DEV broker startup refused\n")
-  process.exitCode = 1
+  process.exit(1)
 }
