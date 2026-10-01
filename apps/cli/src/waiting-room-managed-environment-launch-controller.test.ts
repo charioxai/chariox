@@ -30,6 +30,7 @@ test("managed TUI launch creates Empty context and returns the target workspace"
   })
 
   const prepared = await harness.controller.prepare(newSelection(emptyPlan()), harness.attempt)
+  assert.equal(prepared.kind, "deployment")
 
   assert.equal(harness.createdInputs.length, 1)
   assert.equal(harness.createdInputs[0]?.clientRequestId, "key-1")
@@ -59,6 +60,7 @@ test("managed TUI launch starts and monitors direct source transfer", async () =
   })
 
   const prepared = await harness.controller.prepare(newSelection(plan), harness.attempt)
+  assert.equal(prepared.kind, "deployment")
 
   assert.deepEqual(harness.transferStarts, ["context-1"])
   assert.deepEqual(harness.transferStatusRequests, ["context-1"])
@@ -91,6 +93,7 @@ test("managed TUI launch keeps Project preparation pending until kernel setup is
     setupGate,
   })
   const prepared = await harness.controller.prepare(newSelection(plan), harness.attempt)
+  assert.equal(prepared.kind, "deployment")
   let settled = false
   const pending = prepared.prepareProject(session({ project_id: "project-1" })).then(() => {
     settled = true
@@ -117,6 +120,7 @@ test("managed TUI launch rejects a superseded Project setup before committing th
     setupGate,
   })
   const prepared = await harness.controller.prepare(newSelection(plan), harness.attempt)
+  assert.equal(prepared.kind, "deployment")
   const pending = prepared.prepareProject(session({ project_id: "project-1" }))
 
   await Promise.resolve()
@@ -128,6 +132,26 @@ test("managed TUI launch rejects a superseded Project setup before committing th
   assert.equal(harness.connectionCommits, 0)
   await prepared.rollback()
   assert.equal(harness.connectionRollbacks, 1)
+})
+
+test("MP-02/MP-08/MP-11 enrolled CLI launch does not reload transfer defaults", async () => {
+  for (const observedState of ["ready", "stopped"] as const) {
+    const initial = environment(observedState, {
+      desiredState: observedState === "stopped" ? "stopped" : "running",
+      observedRevision: 1, runtimeMachineId: "machine-managed", runtimeKernelId: "kernel-managed",
+      contextManifestDigest: "sha256:manifest",
+    })
+    const harness = createHarness({ existing: initial,
+      lifecycleResults: [result(environment("starting", { desiredRevision: 2 }))],
+      getResults: [environment("ready", { desiredRevision: 2, observedRevision: 2 })],
+    })
+    const prepared = await harness.controller.prepare({ kind: "existing", environmentId: "environment-1" }, harness.attempt)
+    assert.deepEqual(harness.launchTargetRequests, [])
+    assert.equal(prepared.kind, "enrolled")
+    assert.deepEqual(harness.setupInputs, [])
+    await prepared.commit()
+    assert.equal(harness.connectionCommits, 1)
+  }
 })
 
 test("managed TUI launch starts a converged stopped environment", async () => {
@@ -169,6 +193,7 @@ test("managed TUI launch retries the READY to local-Consumed target gap", async 
   })
 
   const prepared = await harness.controller.prepare(newSelection(emptyPlan()), harness.attempt)
+  assert.equal(prepared.kind, "deployment")
 
   assert.equal(prepared.workspacePath, "/managed/empty/context-1")
   assert.equal(harness.launchTargetRequests.length, 2)
@@ -185,6 +210,7 @@ test("managed TUI launch retries transient target connection failures", async ()
   })
 
   const prepared = await harness.controller.prepare(newSelection(emptyPlan()), harness.attempt)
+  assert.equal(prepared.kind, "deployment")
 
   assert.equal(prepared.workspacePath, "/managed/empty/context-1")
   assert.equal(harness.connectAttempts, 3)

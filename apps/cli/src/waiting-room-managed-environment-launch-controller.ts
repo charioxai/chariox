@@ -21,16 +21,17 @@ import type { SessionProjectSelection } from "./waiting-room-projects.js"
 
 type ManagedEnvironmentLaunchSelection = NonNullable<WaitingRoomLaunchConfig["managedEnvironment"]>
 
-export type PreparedManagedEnvironmentLaunch = {
+export type PreparedManagedEnvironmentLaunch = ManagedEnvironmentKernelConnection & {
   readonly environment: ManagedEnvironmentSummary
+  readonly kernelId: string
+} & ({
+  readonly kind: "deployment"
   readonly launchTarget: ManagedContextLaunchTarget
   readonly workspacePath: string
   readonly worktreePath: string
   readonly projectSelection: SessionProjectSelection
   prepareProject(session: RuntimeSession): Promise<void>
-  commit(): Promise<void>
-  rollback(): Promise<void>
-}
+} | { readonly kind: "enrolled" })
 
 export type ManagedEnvironmentKernelConnection = {
   commit(): Promise<void>
@@ -94,7 +95,8 @@ export class WaitingRoomManagedEnvironmentLaunchController {
       ? await this.create(selection, attempt)
       : await this.deps.getEnvironment(selection.environmentId)
     attempt.assertActive()
-    return await this.waitUntilReady(initial, attempt)
+    const enrolled = selection.kind === "existing" && Boolean(initial.contextManifestDigest)
+    return await this.waitUntilReady(initial, attempt, enrolled)
   }
 
   private async create(
@@ -127,6 +129,7 @@ export class WaitingRoomManagedEnvironmentLaunchController {
   private async waitUntilReady(
     initial: ManagedEnvironmentSummary,
     attempt: ManagedEnvironmentLaunchAttempt,
+    enrolled: boolean,
   ): Promise<PreparedManagedEnvironmentLaunch> {
     const deadline = this.deps.nowMs() + (this.deps.timeoutMs ?? 15 * 60 * 1_000)
     let current = initial
@@ -137,7 +140,7 @@ export class WaitingRoomManagedEnvironmentLaunchController {
       attempt.assertActive()
       attempt.environmentChanged(current)
       if (environmentReadyForSession(current)) {
-        return await this.prepareReadyEnvironment(current, deadline, attempt)
+        return await this.prepareReadyEnvironment(current, deadline, attempt, enrolled)
       }
       if (current.desiredState === "deleted"
         || current.observedState === "deleted"
@@ -209,6 +212,7 @@ export class WaitingRoomManagedEnvironmentLaunchController {
     environment: ManagedEnvironmentSummary,
     deadline: number,
     attempt: ManagedEnvironmentLaunchAttempt,
+    enrolled: boolean,
   ): Promise<PreparedManagedEnvironmentLaunch> {
     const machineId = environment.runtimeMachineId as string
     const kernelId = environment.runtimeKernelId as string
@@ -244,6 +248,9 @@ export class WaitingRoomManagedEnvironmentLaunchController {
 
     try {
       attempt.assertActive()
+      if (enrolled) {
+        return { kind: "enrolled", environment, kernelId, commit: connection.commit, rollback: connection.rollback }
+      }
       while (true) {
         try {
           const launchTarget = validateLaunchTarget(
@@ -262,7 +269,9 @@ export class WaitingRoomManagedEnvironmentLaunchController {
             this.deps.ensureProjectSetup,
           )
           return {
+            kind: "deployment",
             environment,
+            kernelId,
             launchTarget,
             workspacePath,
             worktreePath: workspacePath,

@@ -4,6 +4,8 @@ import { updateAgentConfig, updateAgentProfile } from "./agent-api.js"
 import { createDetachedKernelConnectController } from "./detached-kernel-connect-controller.js"
 import { importExternalProviderSession, listExternalProviderSessions } from "./external-provider-session-api.js"
 import type { SliceRecord } from "./cli-types.js"
+import type { RuntimeSession } from "@chariox/kernel-client/kernel-types"
+import { prepareWaitingRoomEnrolledLaunch } from "./waiting-room-enrolled-launch.js"
 import {
   saveProviderPreferences,
   saveUiPreferences,
@@ -544,6 +546,15 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     nowMs: Date.now,
   })
 
+  const prepareProjectEnvironment = async (session: RuntimeSession, assertActive?: () => void) => {
+    await projectEnvironmentSetupProjection.ensureReady(waitingRoomProjectEnvironmentSetupInput(session), {
+      ...(assertActive ? { assertActive } : {}),
+      delay: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      nowMs: Date.now,
+      isRetryableTransportError: (error) => error instanceof LocalIpcError && error.retryable,
+    })
+  }
+
   const prepareManagedSessionLaunch = async (
     launch: WaitingRoomLaunchConfig,
   ): Promise<WaitingRoomPreparedManagedLaunch> => {
@@ -592,6 +603,9 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     })
     try {
       assertActive()
+      if (prepared.kind === "enrolled") {
+        return prepareWaitingRoomEnrolledLaunch({ launch, prepared, assertActive, prepareProjectEnvironment })
+      }
       deps.setPendingWorkspaceTarget(prepared.workspacePath)
       deps.setPendingWorktreeTarget(prepared.worktreePath)
       clearStagedWaitingRoomWorktreeSelection()
@@ -684,13 +698,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
         permission_level: launch.permission_level,
       }, launch.sliceRef, launch.workspaceLiveSyncMode, launch.sliceRef ? null : (launch.workerKernelRef ?? null), null, launch.projectSelection)
     },
-    prepareProjectEnvironment: async (session) => {
-      await projectEnvironmentSetupProjection.ensureReady(waitingRoomProjectEnvironmentSetupInput(session), {
-        delay: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-        nowMs: Date.now,
-        isRetryableTransportError: (error) => error instanceof LocalIpcError && error.retryable,
-      })
-    },
+    prepareProjectEnvironment,
     deleteCreatedSession: async (sessionId, workspacePath) => {
       await deleteSessionByRef(deps.client, sessionId, workspacePath)
     },
