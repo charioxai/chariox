@@ -187,6 +187,46 @@ pub(crate) fn load_or_create_managed_runtime_identity(
     })
 }
 
+/// Prepare a fresh managed slice identity without starting transport or providers.
+/// The host broker must retain and verify its protected backup before normal boot.
+pub fn prepare_protected_slice_identity(host: &str, port: u16) -> Result<serde_json::Value, crate::error::DaemonError> {
+    let refuse = || crate::error::DaemonError::LocalTransport {
+        operation: "prepare protected slice identity",
+        message: "fresh protected identity storage is required; existing identity is preserved".to_string(),
+    };
+    if std::env::var("CHARIOX_SLICE_PRIVATE_ROOT").as_deref() != Ok("/var/lib/chariox/slice-private")
+        || std::env::var("CHARIOX_HOME").as_deref() != Ok("/var/lib/chariox/slice-private/kernel")
+        || host != "127.0.0.1" || port == 0 {
+        return Err(refuse());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        for directory in ["/var/lib/chariox/slice-private", "/var/lib/chariox/slice-private/kernel", "/var/lib/chariox/slice-private/kernel/kernels"] {
+            let metadata = fs::symlink_metadata(directory).map_err(|_| refuse())?;
+            if !metadata.is_dir() || metadata.file_type().is_symlink()
+                || metadata.uid() != unsafe { libc::geteuid() }
+                || metadata.permissions().mode() & 0o077 != 0 {
+                return Err(refuse());
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    return Err(refuse());
+    // This command is fresh-only. A partial or previous initialization must be
+    // recovered from its retained identity, never silently regenerated.
+    if fs::read_dir("/var/lib/chariox/slice-private/kernel/kernels")
+        .map_err(|_| refuse())?.next().is_some()
+        || DaemonConfig::default_kernel_registry_path().exists()
+        || DaemonConfig::default_machine_identity_path().exists()
+        || DaemonConfig::default_runtime_identity_path().exists() {
+        return Err(refuse());
+    }
+    let identity = load_or_create_managed_runtime_identity(host, port)?;
+    Ok(serde_json::json!({"kernel_id": identity.kernel_id,
+        "machine_id": identity.machine_id, "relay_public_key": identity.relay_public_key}))
+}
+
 fn prune_kernel_registry(registry: &mut KernelRegistry, current_endpoint_key: &str) {
     let mut recent = registry
         .kernels

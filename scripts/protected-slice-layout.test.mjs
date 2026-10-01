@@ -159,3 +159,24 @@ test("fresh controller binds exact image/mount receipt and refuses missing same-
     assert.equal(existsSync(privateRoot), true, "retained private root must remain")
   } finally { rmSync(parent, {recursive: true}) }
 })
+
+import { retainFreshIdentity } from "../apps/kernel/slice-linux-docker/protected-identity-retention.mjs"
+test("first-use retention refuses missing or invalid synthetic identity without starting a runtime", () => {
+  const parent = mkdtempSync(join(process.env.HOME, ".chariox-retention-metadata-test-"))
+  try {
+    const privateRoot = preparePrivateHostRoot(parent, "private-retention", process.getuid(), true)
+    const backupRoot = join(parent, "backups")
+    mkdirSync(backupRoot, {mode: 0o700})
+    assert.throws(() => retainFreshIdentity({privateRoot, backupRoot, sliceId: "synthetic", dataOwner: process.getuid()}))
+    assert.equal(existsSync(join(backupRoot, "synthetic")), false)
+    const kernel = join(privateRoot, "kernel/kernels/synthetic-kernel")
+    mkdirSync(kernel, {mode: 0o700})
+    writeFileSync(join(kernel, "identity.json"), JSON.stringify({daemon_id: "synthetic-kernel", relay_public_key: "invalid synthetic sentinel", relay_private_key: "not a key"}), {mode: 0o600})
+    writeFileSync(join(privateRoot, "kernel/kernels/registry.json"), "synthetic registry", {mode: 0o600})
+    writeFileSync(join(privateRoot, "kernel/machine/identity.json"), "synthetic machine", {mode: 0o600})
+    assert.throws(() => retainFreshIdentity({privateRoot, backupRoot, sliceId: "synthetic", dataOwner: process.getuid()}))
+    assert.equal(existsSync(join(backupRoot, "synthetic.json")), false, "invalid identity cannot publish first-use proof")
+    assert.equal(existsSync(join(kernel, "identity.json")), true, "original identity remains untouched")
+    assert.throws(() => retainFreshIdentity({privateRoot, backupRoot, sliceId: "synthetic", dataOwner: process.getuid()}), "interrupted backup must not be replaced")
+  } finally { rmSync(parent, {recursive: true}) }
+})
