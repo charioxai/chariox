@@ -95,3 +95,18 @@ test("trusted host receipts and retained identity cannot be replaced by labels o
     assert.throws(() => requireRetainedRuntimeIdentity(privateRoot, [identity], process.getuid()))
   } finally { rmSync(root, {recursive: true}) }
 })
+
+import { recordManagedImageProof, requireManagedImageProof } from "../apps/kernel/slice-linux-docker/protected-image-proof.mjs"
+test("managed image proof binds actual immutable image ID to signed source context", () => {
+  const root = mkdtempSync(join(process.env.HOME, ".chariox-layout-image-test-"))
+  try {
+    const source = `sha256:${"b".repeat(64)}`
+    const image = {Id: digest, Config: {User: "slice"}, RootFS: {Layers: [`sha256:${"c".repeat(64)}`]}}
+    assert.throws(() => requireManagedImageProof(root, source, digest))
+    recordManagedImageProof(root, source, image)
+    assert.equal(requireManagedImageProof(root, source, digest), digest)
+    assert.throws(() => requireManagedImageProof(root, `sha256:${"d".repeat(64)}`, digest))
+    assert.throws(() => recordManagedImageProof(root, "self-asserted", image))
+    assert.throws(() => recordManagedImageProof(root, source, {...image, Config: {User: "root"}}))
+  } finally { rmSync(root, {recursive: true}) }
+})

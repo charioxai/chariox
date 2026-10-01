@@ -876,6 +876,7 @@ ensure_container() {
       # The trusted host provisioner prepares and verifies this retained root.
       # Existing legacy containers are not retrofitted or migrated here.
       docker_create_args+=(
+        -e "HOME=/home/slice"
         -e "CHARIOX_HOME=$SLICE_KERNEL_HOME"
         -e "CHARIOX_MANAGED_PROVIDER_HOME=$SLICE_PROVIDER_HOME"
         -e "CHARIOX_SLICE_PRIVATE_ROOT=$SLICE_PRIVATE_ROOT"
