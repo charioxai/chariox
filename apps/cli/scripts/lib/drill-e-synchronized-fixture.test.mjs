@@ -26,7 +26,7 @@ test("MP-08/MP-10: closing fixture unblocks incomplete provider preparation", as
   const pending = fetch(`http://127.0.0.1:${fixture.port}/ready/mutations/a`)
   while (fixture.evidence().mutations.ready.length === 0) await new Promise(resolve => setTimeout(resolve, 5))
   fixture.close()
-  assert.equal((await pending).status, 200)
+  assert.equal((await pending).status, 409)
   assert.equal(fixture.evidence().mutations.releaseReason, "cleanup")
   await fixture.stop()
 })

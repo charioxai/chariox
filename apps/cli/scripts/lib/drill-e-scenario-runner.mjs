@@ -165,9 +165,15 @@ function runningMutation(environment, agentId, tabId) {
     && action.kind === reloadKind) ?? null
 }
 
+function runningSelectedMutation(environment, agentId, tabId, options) {
+  return environment.actions.find((action) => action?.state === "running"
+    && action.actor_id === "agent:" + agentId && tabTarget(action) === tabId
+    && action.kind === (options.mutationKind ?? reloadKind)) ?? null
+}
+
 function runningSameTabMutation(environment, options) {
-  return runningMutation(environment, options.agentA, options.sameTabId)
-    ?? runningMutation(environment, options.agentB, options.sameTabId)
+  return runningSelectedMutation(environment, options.agentA, options.sameTabId, options)
+    ?? runningSelectedMutation(environment, options.agentB, options.sameTabId, options)
 }
 
 function queuePair(environment, options) {
@@ -175,7 +181,7 @@ function queuePair(environment, options) {
   const second = environment.actions.find((action) => action?.state === "queued"
     && [options.agentA, options.agentB].some((id) => action.actor_id === "agent:" + id)
     && action.actor_id !== first?.actor_id
-    && tabTarget(action) === options.sameTabId && action.kind === reloadKind)
+    && tabTarget(action) === options.sameTabId && action.kind === (options.mutationKind ?? reloadKind))
   return first && second && second.submitted_at_ms >= first.started_at_ms
     ? { first, second }
     : null
@@ -201,7 +207,7 @@ function relevantSnapshotKinds(environment, options) {
   const first = runningSameTabMutation(environment, options)
   const third = environment.actions.find((action) => action?.state === "running"
     && action.actor_id === "agent:" + options.agentC
-    && tabTarget(action) === options.otherTabId && action.kind === reloadKind)
+    && tabTarget(action) === options.otherTabId && action.kind === (options.mutationKind ?? reloadKind))
   if (first && third) kinds.push("independent:" + first.action_id + ":" + third.action_id)
   if (environment.pending_input_takeovers.some((takeover) =>
     takeover?.target?.kind === "browser_tab" && takeover.target.id === options.sameTabId)) {
@@ -539,6 +545,7 @@ export async function runDrillEScenario({
 }) {
   assert.ok(options.execute, "scenario execution requires explicit --execute opt-in")
   assert.ok(client && typeof client.send === "function", "Drill E requires LocalIpcClient.send")
+  options = { ...options, mutationKind: synchronization?.mutationKind ?? reloadKind }
   for (const name of [
     "attachToSessionRequest", "detachFromSessionRequest", "getSessionStateRequest",
     "getRoomEnvironmentStateRequest", "listRoomEnvironmentActionHistoryRequest",
@@ -623,6 +630,7 @@ export async function runDrillEScenario({
       const environment = unwrap(response, "RoomEnvironmentState")?.environment
       observationCount += 1
       retain(environment)
+      synchronization?.tick?.(environment)
       return environment
     }
     const waitFor = async (predicate, stageDeadline) => {
@@ -638,6 +646,8 @@ export async function runDrillEScenario({
 
     const phasePrompt = (phase, agentId, prompt) =>
       (synchronization?.promptPrefix(phase, agentId) ?? "") + prompt
+    const mutationPrompt = (agentId, tabId, purpose) =>
+      synchronization?.mutationPrompt?.(agentId, tabId) ?? historyPrompt(tabId, purpose)
     stage = "read_prompt_submission"
     await synchronization?.beforePhase("reads")
     await submitTogether(bounded, requests, options.sessionId, attachmentId, [
@@ -664,9 +674,9 @@ export async function runDrillEScenario({
       stage = "first_mutation_prompt_submission"
       await synchronization?.beforePhase("mutations")
       await submitTogether(bounded, requests, options.sessionId, attachmentId, [
-        [options.agentA, phasePrompt("mutations", options.agentA, historyPrompt(options.sameTabId, "first same-tab mutation")), "first mutation A"],
-        [options.agentC, phasePrompt("mutations", options.agentC, historyPrompt(options.otherTabId, "independent-tab concurrency")), "independent mutation C"],
-        [options.agentB, phasePrompt("mutations", options.agentB, historyPrompt(options.sameTabId, "second same-tab mutation")), "second mutation B"],
+        [options.agentA, phasePrompt("mutations", options.agentA, mutationPrompt(options.agentA, options.sameTabId, "first same-tab mutation")), "first mutation A"],
+        [options.agentC, phasePrompt("mutations", options.agentC, mutationPrompt(options.agentC, options.otherTabId, "independent-tab concurrency")), "independent mutation C"],
+        [options.agentB, phasePrompt("mutations", options.agentB, mutationPrompt(options.agentB, options.sameTabId, "second same-tab mutation")), "second mutation B"],
       ], prompts)
       stage = "first_mutation_observation"
       firstMutation = await waitFor((environment) =>
@@ -679,7 +689,7 @@ export async function runDrillEScenario({
       const pair = now() < deadline
         ? await waitFor((environment) => {
           const pair = queuePair(environment, options)
-          const independent = runningMutation(environment, options.agentC, options.otherTabId)
+          const independent = runningSelectedMutation(environment, options.agentC, options.otherTabId, options)
           return pair && (!synchronization || independent) ? { ...pair, independent } : null
         },
           startedAt + Math.floor(options.timeoutMs * 0.8))
