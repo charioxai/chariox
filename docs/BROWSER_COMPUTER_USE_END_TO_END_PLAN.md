@@ -1647,6 +1647,19 @@ Use three agents. Two inspect one tab while the third works in another tab.
 Queue two mutations on the same tab, then perform human takeover. Prove reads,
 serialization, cancellation, attribution, and independent-tab concurrency.
 
+MP-08/MP-10 timing-exact local acceptance uses
+`node apps/cli/scripts/live-browser-controller-concurrency-drill.mjs --test-binary /absolute/path/to/chariox-kernel-tests --image sha256:<image-id> --output /absolute/external/evidence`.
+Build the test artifact from the same clean checkout with
+`cargo test -p chariox-kernel --lib --no-run`. The runner owns a credential-free
+headed slice and uses three synthetic Room actors, actual controller/CDP reads,
+page-acknowledged gates, native clicks and fills, and the shared kernel takeover
+path. It checks physical read overlap, independent status during held input,
+same-tab ordering, independent typing, exact cancellation and effect counts,
+and selected-tab preservation within the existing controller bounds. Retain
+artifact/source/image identities and cleanup. Run the mixed official-provider
+Drill E separately as a realism smoke; provider dispatch timing is not a clock
+for these deterministic checks. Neither run alone closes an MP item.
+
 ### Drill F: managed-machine recovery
 
 Provision a fresh OpenShip-backed managed machine, complete a browser task,

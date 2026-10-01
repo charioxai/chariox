@@ -40,6 +40,8 @@ while IFS= read -r request; do
   case "$request" in
     *'"method":"health"'*)
       printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
+    *'"method":"browser.reconcile"'*)
+      printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"tabs":[],"focused_target_id":null,"resource_inventory":{"browser_ids":["browser-1"],"profile_ids":["profile-1"]},"viewport":{"css_width":1280,"css_height":800,"device_scale_factor":1,"desktop_pixel_width":1280,"desktop_pixel_height":800}}}\n' "$id" ;;
     *'"method":"browser.navigate"'*'"url":"https://example.test/first"'*)
       : > "$root/first-a-started"
       (
@@ -271,4 +273,32 @@ fn lifecycle_recovery_and_duplicate_execution_replay_without_redispatch() {
         .filter(|line| line.contains("\"method\":\"browser.navigate\""))
         .count();
     assert_eq!(navigation_count, 1);
+}
+
+// MP-08/MP-10: exercise both preflight seams while a real stdio request is pending.
+#[test]
+fn unchanged_reconciliation_and_acquire_do_not_drain_independent_mutation() {
+    let fixture = Fixture::new();
+    let viewport = CanonicalViewport::new(1280, 800, 1, 1280, 800).unwrap();
+    fixture.store.reconcile_browser("room", &viewport).unwrap();
+    let first_store = fixture.store.clone();
+    let first = std::thread::spawn(move || navigate(first_store, FIRST, "tab-a", "first"));
+    assert!(fixture.wait_for("first-a-started", Duration::from_secs(1)));
+    let (tx, rx) = mpsc::channel();
+    let store = fixture.store.clone();
+    let read = std::thread::spawn(move || {
+        let result = store
+            .acquire("room")
+            .and_then(|_| store.reconcile_browser("room", &viewport));
+        tx.send(result.is_ok()).unwrap();
+        result
+    });
+    let completed = rx.recv_timeout(Duration::from_millis(300)).ok() == Some(true);
+    fs::write(fixture.root.join("release-a"), "").unwrap();
+    first.join().unwrap().unwrap();
+    read.join().unwrap().unwrap();
+    assert!(
+        completed,
+        "MP-08/MP-10 unchanged read preflight drained unrelated input"
+    );
 }

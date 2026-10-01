@@ -36,6 +36,7 @@ mod lifecycle_cancellation;
 mod pending_action;
 mod pending_mutation;
 mod pending_responses;
+mod reconciliation;
 use self::pending_mutation::BrowserTabMutationLanes;
 pub(crate) use configuration_cancellation::BrowserConfiguration;
 #[cfg(test)]
@@ -538,33 +539,12 @@ impl BrowserControllerProcessStdioBackend {
         target_id: &str,
         document_id: &str,
     ) -> Result<pending_responses::PendingResponse<BrowserControllerRpcResponse>, String> {
-        let request_id = self.next_request_id;
-        self.next_request_id = self.next_request_id.saturating_add(1);
-        let process = self
-            .process
-            .as_mut()
-            .ok_or_else(|| "browser controller is not running".to_string())?;
-        let pending = process
-            .pending_responses
-            .register(request_id, "browser controller exited during snapshot")?;
-        let mut stdin = process
-            .stdin
-            .lock()
-            .map_err(|_| "controller stdin lock poisoned")?;
-        serde_json::to_writer(
-            &mut *stdin,
-            &BrowserControllerRpcRequest {
-                id: request_id,
-                method: "browser.snapshot",
-                params: &serde_json::json!({ "target_id": target_id, "document_id": document_id }),
-            },
+        self.begin_observation_request(
+            "browser.snapshot",
+            serde_json::json!({
+                "target_id": target_id, "document_id": document_id,
+            }),
         )
-        .map_err(|error| format!("failed to encode browser controller snapshot: {error}"))?;
-        stdin
-            .write_all(b"\n")
-            .and_then(|()| stdin.flush())
-            .map_err(|error| format!("failed to send browser controller snapshot: {error}"))?;
-        Ok(pending)
     }
 
     fn take_exited_process(&mut self) -> Result<Option<u32>, String> {
@@ -1162,6 +1142,7 @@ pub(crate) struct BrowserControllerProcessSupervisor<B> {
     backend: B,
     snapshot: BrowserControllerProcessSnapshot,
     recovery_pending: bool,
+    reconciled_viewport: Option<CanonicalViewport>,
 }
 
 type StdioOwnership = BrowserControllerProcessOwnership<BrowserControllerProcessStdioBackend>;
@@ -1429,6 +1410,9 @@ impl BrowserControllerProcessStore {
         &self,
         session_id: &str,
     ) -> Result<Option<BrowserControllerProcessSnapshot>, String> {
+        if let Some(snapshot) = self.acquire_busy_lease(session_id)? {
+            return Ok(Some(snapshot));
+        }
         let _barrier = self.lock_global_tab_mutation_barrier()?;
         let Some(ownership) = &self.ownership else {
             return Ok(None);
@@ -1458,14 +1442,7 @@ impl BrowserControllerProcessStore {
         session_id: &str,
         viewport: &CanonicalViewport,
     ) -> Result<Option<BrowserControllerReconciliation>, String> {
-        let _barrier = self.lock_global_tab_mutation_barrier()?;
-        let Some(ownership) = &self.ownership else {
-            return Ok(None);
-        };
-        let mut ownership = ownership
-            .lock()
-            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
-        ownership.reconcile_browser(session_id, viewport).map(Some)
+        self.reconcile_browser_observation(session_id, viewport)
     }
 
     pub(crate) fn capture_browser_snapshot(
@@ -1550,15 +1527,7 @@ impl BrowserControllerProcessStore {
         wait: &BrowserCompatibilityWait,
         timeout_ms: u64,
     ) -> Result<Option<BrowserControllerCompatibilityWaitResult>, String> {
-        let Some(ownership) = &self.ownership else {
-            return Ok(None);
-        };
-        let mut ownership = ownership
-            .lock()
-            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
-        ownership
-            .wait_for_browser(session_id, target_id, document_id, wait, timeout_ms)
-            .map(Some)
+        self.wait_for_browser_observation(session_id, target_id, document_id, wait, timeout_ms)
     }
 
     pub(crate) fn handle_browser_dialog(
@@ -1701,6 +1670,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
                 restart_count: 0,
             },
             recovery_pending: false,
+            reconciled_viewport: None,
         }
     }
 
@@ -1750,6 +1720,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
             return Ok(&self.snapshot);
         }
         self.backend.stop()?;
+        self.reconciled_viewport = None;
         self.snapshot.state = BrowserControllerProcessState::Stopped;
         self.snapshot.process_id = None;
         self.snapshot.diagnostic_code = None;
@@ -1763,6 +1734,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         let process = self.ensure_started()?.clone();
         let browser = self.backend.reconcile_browser(viewport)?;
         self.recovery_pending = false;
+        self.reconciled_viewport = Some(viewport.clone());
         Ok(BrowserControllerReconciliation { process, browser })
     }
 
@@ -1930,6 +1902,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         self.snapshot.runtime_generation = self.snapshot.runtime_generation.saturating_add(1);
         self.snapshot.restart_count = self.snapshot.restart_count.saturating_add(1);
         self.recovery_pending = true;
+        self.reconciled_viewport = None;
         self.snapshot.process_id = None;
         self.start()
     }

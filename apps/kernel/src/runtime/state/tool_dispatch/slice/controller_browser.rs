@@ -659,7 +659,7 @@ mod observation_tests {
         assert!(cancelled.finished_at_ms.unwrap() >= cancelled.started_at_ms.unwrap());
     }
 
-    struct TestRoot(std::path::PathBuf);
+    pub(super) struct TestRoot(std::path::PathBuf);
 
     impl TestRoot {
         fn new() -> Self {
@@ -679,7 +679,7 @@ mod observation_tests {
         }
     }
 
-    fn runtime_with_room() -> (TestRoot, KernelRuntimeState, String, String) {
+    pub(super) fn runtime_with_room() -> (TestRoot, KernelRuntimeState, String, String) {
         let test_root = TestRoot::new();
         let test_root_path = test_root.0.to_string_lossy().into_owned();
         let mut app = crate::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
@@ -1307,3 +1307,7 @@ fn slice_environment_viewport(
         }
     })
 }
+
+#[cfg(test)]
+#[path = "controller_browser_concurrency_drill.rs"]
+mod concurrency_drill;

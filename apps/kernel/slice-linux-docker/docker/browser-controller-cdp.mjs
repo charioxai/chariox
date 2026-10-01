@@ -1,3 +1,4 @@
+import { BrowserInputCapture } from "./browser-controller-input.mjs";
 import {
   BrowserSnapshotError,
 } from "./browser-controller-snapshot.mjs";
@@ -91,10 +92,22 @@ export class BrowserCdpClient {
     this.networkRequestsBySession = new Map();
     this.cookieWriterFence = null;
     this.cookieWriterFenceInUse = false;
+    this.inputCapture = new BrowserInputCapture();
+    this.appliedViewport = null;
+    this.viewportByTarget = new Map();
+  }
+
+  // MP-08/MP-10: discovery is observational once the canonical viewport is applied.
+  canReconcileConcurrently(rawViewport) {
+    try {
+      return this.connection?.isOpen() === true
+        && this.appliedViewport === JSON.stringify(canonicalViewport(rawViewport));
+    } catch { return false; }
   }
 
   async reconcile(rawViewport) {
     const viewport = canonicalViewport(rawViewport);
+    if (this.appliedViewport !== JSON.stringify(viewport)) this.appliedViewport = null;
     const connection = await this.ensureConnection();
     try {
       const { targetInfos = [] } = await connection.send("Target.getTargets");
@@ -114,6 +127,7 @@ export class BrowserCdpClient {
           this.targetsBySession.delete(sessionId);
           this.networkRequestsBySession.delete(sessionId);
           this.sessionsByTarget.delete(targetId);
+          this.viewportByTarget.delete(targetId);
           this.documentIdsByTarget.delete(targetId);
           this.snapshotStateByTarget.delete(targetId);
           this.dialogDefaults.delete(targetId);
@@ -127,6 +141,7 @@ export class BrowserCdpClient {
       await Promise.all(
         writerTargets.map((target) => this.ensureWriterTargetSession(connection, target.targetId)),
       );
+      this.appliedViewport = JSON.stringify(viewport);
       const focused = inspected.find((tab) => tab.focused)?.target_id ?? null;
       return {
         browser_generation: this.browserGeneration,
@@ -138,6 +153,8 @@ export class BrowserCdpClient {
     } catch (error) {
       if (!connection.isOpen()) {
         this.connection = null;
+        this.appliedViewport = null;
+        this.viewportByTarget.clear();
         this.sessionsByTarget.clear();
         this.targetsBySession.clear();
         this.targetsByFrame.clear();
@@ -159,6 +176,8 @@ export class BrowserCdpClient {
   async close() {
     const connection = this.connection;
     this.connection = null;
+    this.appliedViewport = null;
+    this.viewportByTarget.clear();
     this.unsubscribeFromConnection?.();
     this.unsubscribeFromConnection = null;
     this.sessionsByTarget.clear();
@@ -272,6 +291,8 @@ export class BrowserCdpClient {
   }
 
   async openConnection() {
+    this.appliedViewport = null;
+    this.viewportByTarget.clear();
     this.unsubscribeFromConnection?.();
     this.unsubscribeFromConnection = null;
     this.sessionsByTarget.clear();
@@ -322,22 +343,14 @@ export class BrowserCdpClient {
 
   async inspectPage(connection, target, viewport) {
     const sessionId = await this.ensureTargetSession(connection, target.targetId);
-    await connection.send(
-      "Emulation.setDeviceMetricsOverride",
-      deviceMetricsFor(viewport),
-      sessionId,
-    );
+    const viewportKey = JSON.stringify(viewport);
+    if (this.viewportByTarget.get(target.targetId) !== viewportKey) {
+      await connection.send("Emulation.setDeviceMetricsOverride", deviceMetricsFor(viewport), sessionId);
+      this.viewportByTarget.set(target.targetId, viewportKey);
+    }
     const [frameTree, focus] = await Promise.all([
       connection.send("Page.getFrameTree", {}, sessionId),
-      connection.send(
-        "Runtime.evaluate",
-        {
-          expression: "document.visibilityState === 'visible'",
-          returnByValue: true,
-          awaitPromise: false,
-        },
-        sessionId,
-      ),
+      this.inputCapture.visibility(connection, sessionId),
     ]);
     const documentId = frameTree?.frameTree?.frame?.loaderId;
     if (typeof documentId !== "string" || !documentId) {
@@ -353,7 +366,7 @@ export class BrowserCdpClient {
       document_id: documentId,
       url: typeof target.url === "string" ? target.url : "",
       title: typeof target.title === "string" ? target.title : "",
-      focused: focus?.result?.value === true,
+      focused: focus === true,
     };
   }
 
@@ -500,6 +513,7 @@ export class BrowserCdpClient {
         action: rawRequest?.action,
         timeoutMs: rawRequest?.timeout_ms,
         signal,
+        withInput: operation => this.inputCapture.run(connection, sessionId, operation),
       }, performBrowserAction);
       return {
         browser_generation: this.browserGeneration,
@@ -879,7 +893,9 @@ export class BrowserCdpClient {
         this.networkRequestsBySession.delete(sessionId);
       }
       if (typeof targetId === "string") {
+        this.appliedViewport = null;
         this.sessionsByTarget.delete(targetId);
+        this.viewportByTarget.delete(targetId);
         this.dialogDefaults.delete(targetId);
         this.targetsByFrame.removeTarget(targetId);
         void this.frameSessions.removeTarget(targetId);

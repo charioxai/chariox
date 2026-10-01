@@ -78,6 +78,8 @@ test("persistent browser connection returns page identities, focus, and applied 
     },
   ]);
   assert.equal(first.focused_target_id, "target-b");
+  assert.equal(connection.calls.filter(call => call.method === "Emulation.setDeviceMetricsOverride").length, 2,
+    "MP-08/MP-10 unchanged reconciliation must not resize either tab again");
   assert.deepEqual(first.viewport, viewport);
   assert.equal(
     connection.calls.filter((call) => call.method === "Target.attachToTarget").length,
@@ -1320,3 +1322,19 @@ class DialogFaultSocket extends FakeSocket {
       .then((result) => this.message({ id: request.id, result }));
   }
 }
+
+// MP-08/MP-10: a partially failed resize is never an observational preflight.
+test("failed viewport change invalidates concurrent reconciliation admission", async () => {
+  const connection = new FakeConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  await browser.reconcile(viewport);
+  assert.equal(browser.canReconcileConcurrently(viewport), true);
+  const send = connection.send.bind(connection);
+  connection.send = async (method, params, sessionId) => {
+    if (method === "Emulation.setDeviceMetricsOverride") throw new Error("resize failed");
+    return send(method, params, sessionId);
+  };
+  await assert.rejects(browser.reconcile({ ...viewport, css_width: 900 }), /resize failed/);
+  assert.equal(browser.canReconcileConcurrently(viewport), false);
+  await browser.close();
+});

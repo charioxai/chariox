@@ -165,3 +165,26 @@ test("stdio global barriers drain active and queued reads and mutations", { time
   releaseBarrier.resolve();
   assert.ok((await Promise.all([mutation, read, queued, barrier, later])).every(response => response.ok));
 });
+
+// MP-08/MP-10: normal read preflight must not reserve every target.
+test("unchanged-viewport reconciliation does not block independent input", { timeout: 3000 }, async t => {
+  const started = deferred(), release = deferred();
+  const server = startServer(t, {
+    canReconcileConcurrently: () => true,
+    async performAction(params) {
+      if (params.target_id === "held") { started.resolve(); await release.promise; }
+      return { target_id: params.target_id };
+    },
+    async reconcile(viewport) { return { tabs: [], viewport, focused_target_id: null,
+      resource_inventory: { browser_ids: ["browser-1"], profile_ids: ["profile-1"] } }; },
+  }, () => release.resolve());
+  const held = server.request(1, "browser.action", { target_id: "held" });
+  await started.promise;
+  const read = server.request(2, "browser.reconcile", { viewport: { css_width: 1280 } });
+  const other = server.request(3, "browser.action", { target_id: "other" });
+  const completed = await Promise.race([Promise.all([read, other]).then(() => true),
+    new Promise(resolve => setTimeout(() => resolve(false), 100))]);
+  release.resolve();
+  await Promise.all([held, read, other]);
+  assert.equal(completed, true, "MP-08/MP-10 read preflight blocked an independent target");
+});

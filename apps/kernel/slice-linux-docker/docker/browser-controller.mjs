@@ -254,7 +254,7 @@ export class BrowserControllerStdioServer {
       if (action) actions.set(request.id, action);
       pendingRequestIds.add(request.id);
       queued += 1;
-      waiting.push({ request, action, stopAction, scheduling: classifyScheduling(request) });
+      waiting.push({ request, action, stopAction, scheduling: classifyScheduling(request, server.browser) });
       pump();
       if (request.method === "shutdown") {
         lines.close();
@@ -265,6 +265,12 @@ export class BrowserControllerStdioServer {
 
     function pump() {
       while (!activeBarrier) {
+        // A queued resize may have changed the applied viewport since admission.
+        for (const operation of waiting) {
+          if (operation.request.method === "browser.reconcile") {
+            operation.scheduling = classifyScheduling(operation.request, server.browser);
+          }
+        }
         const barrierIndex = waiting.findIndex(({ scheduling }) => scheduling.kind === "barrier");
         if (barrierIndex === 0) {
           if (activeOperations === 0) {
@@ -372,8 +378,11 @@ export class BrowserControllerStdioServer {
   }
 }
 
-function classifyScheduling(request) {
+function classifyScheduling(request, browser) {
   const method = request?.method;
+  if (method === "browser.reconcile" && browser?.canReconcileConcurrently?.(request.params?.viewport)) {
+    return { kind: "read" };
+  }
   if (["health", "browser.reconcile", "browser.tab", "browser.downloads.configure",
     "browser.downloads.cancel", "browser.permission", "browser.cookies.import",
     "browser.cookies.recover", "shutdown"].includes(method)) return { kind: "barrier" };
