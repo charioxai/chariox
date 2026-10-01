@@ -5,7 +5,7 @@ export class BrowserInputCapture {
   constructor() { this.visibilityBySession = new Map(); }
 
   async visibility(connection, sessionId) {
-    if (this.visibilityBySession.has(sessionId)) return this.visibilityBySession.get(sessionId);
+    if (this.visibilityBySession.has(sessionId)) return this.visibilityBySession.get(sessionId).visible;
     const result = await connection.send("Runtime.evaluate", {
       expression: "document.visibilityState === 'visible'",
       returnByValue: true,
@@ -13,19 +13,20 @@ export class BrowserInputCapture {
     }, sessionId);
     // Reconciliation may have begun its evaluation just before input enabled
     // emulation. Preserve the physical visibility captured by that input.
-    return this.visibilityBySession.get(sessionId) ?? result?.result?.value === true;
+    return this.visibilityBySession.get(sessionId)?.visible ?? result?.result?.value === true;
   }
 
   async run(connection, sessionId, operation) {
     const visible = await this.visibility(connection, sessionId);
     if (visible) return operation();
-    this.visibilityBySession.set(sessionId, visible);
+    const capture = { visible };
+    this.visibilityBySession.set(sessionId, capture);
     let dialogOpened = false;
     const restore = async () => {
       try {
         await connection.send("Emulation.setFocusEmulationEnabled", { enabled: false }, sessionId);
       } finally {
-        this.visibilityBySession.delete(sessionId);
+        if (this.visibilityBySession.get(sessionId) === capture) this.visibilityBySession.delete(sessionId);
       }
     };
     try {

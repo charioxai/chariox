@@ -49,3 +49,24 @@ test("MP-08/MP-10 dialog input releases capture without waiting for the dialog r
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(capture.visibilityBySession.size, 0);
 });
+
+test("MP-08/MP-10 pending dialog restore cannot clear a later input visibility capture", async () => {
+  const capture = new BrowserInputCapture();
+  const releaseDialog = Promise.withResolvers();
+  let restoring = 0;
+  let evaluations = 0;
+  const connection = { async send(method, params) {
+    if (method === "Emulation.setFocusEmulationEnabled" && !params.enabled && ++restoring === 1) {
+      await releaseDialog.promise;
+    }
+    return { result: { value: method === "Runtime.evaluate" && ++evaluations > 1 } };
+  } };
+  // First physical visibility is hidden; later CDP evaluates emulated visibility.
+  await capture.run(connection, "background", async () => ({ dialogOpened: true }));
+  await capture.run(connection, "background", async () => {
+    releaseDialog.resolve();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(await capture.visibility(connection, "background"), false);
+  });
+  assert.equal(capture.visibilityBySession.size, 0);
+});
