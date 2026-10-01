@@ -25,6 +25,11 @@ impl KernelRuntimeState {
             &defaults.provider,
         );
         request.agent_defaults = Some(defaults);
+        if request.kernel_ref.as_deref().is_some_and(|kernel_ref| {
+            kernel_ref_matches_local_config(&self.owned.config_projection.snapshot(), kernel_ref)
+        }) {
+            request.kernel_ref = None;
+        }
         let slice_ref = request.slice_ref.clone();
         let kernel_ref = request.kernel_ref.clone();
         if request.metaagent {
@@ -563,14 +568,19 @@ impl KernelRuntimeState {
         &self,
         mut request: crate::agent::CreateAgentRequest,
     ) -> Result<crate::agent::CreateAgentRequest, DaemonError> {
-        let Some(placement) = request.worktree_placement.take() else {
-            return Ok(request);
-        };
         let session = self.owned.session_store.get_session(&request.session_id)?;
         let base_worktree = request
             .worktree_id
             .as_deref()
             .unwrap_or_else(|| session.worktree_id());
+        crate::git_worktree_placement::preflight_existing_absolute_directory(
+            base_worktree,
+            "worktree_id",
+            "agent.spawn",
+        )?;
+        let Some(placement) = request.worktree_placement.take() else {
+            return Ok(request);
+        };
         let resolved = crate::git_worktree_placement::prepare_git_worktree(
             &placement,
             std::path::Path::new(base_worktree),
@@ -1103,6 +1113,16 @@ impl Drop for UnpublishedSessionGuard {
 fn prepare_local_session_worktree_placement(
     mut request: crate::session::CreateSessionRequest,
 ) -> Result<crate::session::CreateSessionRequest, DaemonError> {
+    crate::git_worktree_placement::preflight_existing_absolute_directory(
+        &request.workspace_id,
+        "workspace_id",
+        "session.create",
+    )?;
+    crate::git_worktree_placement::preflight_existing_absolute_directory(
+        &request.worktree_id,
+        "worktree_id",
+        "session.create",
+    )?;
     let Some(placement) = request.worktree_placement.take() else {
         return Ok(request);
     };

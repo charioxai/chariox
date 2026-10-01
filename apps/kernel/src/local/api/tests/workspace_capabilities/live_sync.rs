@@ -12,7 +12,7 @@ fn local_request_api_sets_workspace_live_sync_mode_through_dedicated_request_inn
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "/tmp/chariox-worktree-sync-mode"),
+            harness.fixture_session_request("workspace-1"),
         ))
         .expect("session create should succeed")
     {
@@ -70,7 +70,7 @@ fn local_request_api_sets_workspace_live_sync_mode_through_dedicated_request_inn
         .find(|event| event.kind == crate::history::HistoryEventKind::WorkspaceLiveSyncModeChanged)
         .expect("workspace live sync mode change should be recorded");
     assert_eq!(event.session_id.as_deref(), Some(session.id()));
-    assert_eq!(event.workspace_id.as_deref(), Some("workspace-1"));
+    assert_eq!(event.workspace_id.as_deref(), Some(session.workspace_id()));
     assert_eq!(
         event.metadata["caller_user_id"],
         serde_json::json!(crate::session::DEFAULT_LOCAL_USER_ID)
@@ -152,7 +152,7 @@ fn local_request_api_reports_workspace_live_sync_ignore_rules_inner() {
 
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", &worktree_id),
+            CreateSessionRequest::new(&worktree_id, &worktree_id),
         ))
         .expect("session create should succeed")
     {

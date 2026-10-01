@@ -13,7 +13,7 @@ fn failed_schedule_tick_does_not_leave_a_queued_prompt_inner() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-schedule-failure", "worktree-schedule-failure"),
+            harness.fixture_session_request("workspace-schedule-failure"),
         ))
         .expect("session should be created")
     {

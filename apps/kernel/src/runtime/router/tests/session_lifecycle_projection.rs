@@ -82,9 +82,12 @@ async fn session_runtime_publishes_attach_and_focus_projection_without_router_sn
 
 #[tokio::test]
 async fn agent_lifecycle_refresh_uses_published_projection_without_app_lock() {
+    let worktree = crate::test_support::TestWorktree::new(
+        "agent_lifecycle_refresh_uses_published_projection_without_app_lock",
+    );
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let session_id = session.id().to_string();
     let app = Arc::new(Mutex::new(app));
@@ -611,14 +614,16 @@ async fn spawn_agent_rejects_slice_from_another_worktree() {
 
 #[tokio::test]
 async fn delete_session_uses_owned_runtime_state_without_app_lock() {
+    let worktree = crate::test_support::TestWorktree::new(
+        "delete_session_uses_owned_runtime_state_without_app_lock",
+    );
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
     ));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
 
-    let create_request = LocalDaemonRequest::CreateSession(
-        CreateSessionRequest::new("workspace-delete-projection", "worktree").with_alias("doomed"),
-    );
+    let create_request =
+        LocalDaemonRequest::CreateSession(worktree.session_request().with_alias("doomed"));
     let create_command = KernelCommand::from_local_request(
         "cmd-delete-projection-create",
         None,
@@ -637,7 +642,7 @@ async fn delete_session_uses_owned_runtime_state_without_app_lock() {
     let app_guard = app.lock().await;
     let delete_request = LocalDaemonRequest::DeleteSession(DeleteSessionRequest {
         session_ref: "doomed".to_string(),
-        workspace_id: Some("workspace-delete-projection".to_string()),
+        workspace_id: Some(worktree.path().display().to_string()),
     });
     let delete_command =
         KernelCommand::from_local_request("cmd-delete-projection", None, None, &delete_request);

@@ -17,7 +17,10 @@ fn local_request_api_rejects_conflicting_workspace_write_claims_inner() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", worktree_root.display().to_string()),
+            CreateSessionRequest::new(
+                worktree_root.display().to_string(),
+                worktree_root.display().to_string(),
+            ),
         ))
         .expect("session create should succeed")
     {
@@ -102,7 +105,10 @@ fn local_request_api_returns_structured_screenshot_unavailable_result_inner() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", std::env::temp_dir().display().to_string()),
+            CreateSessionRequest::new(
+                std::env::temp_dir().display().to_string(),
+                std::env::temp_dir().display().to_string(),
+            ),
         ))
         .expect("session create should succeed")
     {
@@ -162,7 +168,10 @@ fn local_request_api_stores_transferred_file_under_session_artifacts_inner() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", worktree_root.display().to_string()),
+            CreateSessionRequest::new(
+                worktree_root.display().to_string(),
+                worktree_root.display().to_string(),
+            ),
         ))
         .expect("session create should succeed")
     {

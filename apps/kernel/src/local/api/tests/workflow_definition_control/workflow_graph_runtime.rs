@@ -5,7 +5,7 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-1"),
+            harness.fixture_session_request("workspace-1"),
         ))
         .expect("session create should succeed")
     {
@@ -338,7 +338,7 @@ fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session
     let harness = LocalRouterTestHarness::with_config(config);
     let source_session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-1"),
+            harness.fixture_session_request("workspace-1"),
         ))
         .expect("source session should be created")
     {

@@ -13,7 +13,7 @@ fn local_request_api_rejects_ambiguous_workflow_code_run_endpoint_without_applyi
         crate::session::unix_epoch_ms()
     ));
     let worktree_root = workspace_root.join("worktree");
-    std::fs::create_dir_all(&workspace_root).expect("temporary workspace should be created");
+    std::fs::create_dir_all(&worktree_root).expect("temporary workspace should be created");
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
@@ -175,7 +175,7 @@ fn local_request_api_rejects_unknown_workflow_code_run_queue_without_applying() 
         crate::session::unix_epoch_ms()
     ));
     let worktree_root = workspace_root.join("worktree");
-    std::fs::create_dir_all(&workspace_root).expect("temporary workspace should be created");
+    std::fs::create_dir_all(&worktree_root).expect("temporary workspace should be created");
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
@@ -322,7 +322,7 @@ fn local_request_api_rejects_duplicate_workflow_code_edges_without_applying() {
         crate::session::unix_epoch_ms()
     ));
     let worktree_root = workspace_root.join("worktree");
-    std::fs::create_dir_all(&workspace_root).expect("temporary workspace should be created");
+    std::fs::create_dir_all(&worktree_root).expect("temporary workspace should be created");
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
@@ -436,7 +436,7 @@ fn local_request_api_rejects_duplicate_workflow_code_endpoint_aliases_without_ap
         crate::session::unix_epoch_ms()
     ));
     let worktree_root = workspace_root.join("worktree");
-    std::fs::create_dir_all(&workspace_root).expect("temporary workspace should be created");
+    std::fs::create_dir_all(&worktree_root).expect("temporary workspace should be created");
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
@@ -543,7 +543,7 @@ fn local_request_api_rejects_workflow_code_over_runtime_queue_limit_without_appl
         crate::session::unix_epoch_ms()
     ));
     let worktree_root = workspace_root.join("worktree");
-    std::fs::create_dir_all(&workspace_root).expect("temporary workspace should be created");
+    std::fs::create_dir_all(&worktree_root).expect("temporary workspace should be created");
     let mut config = crate::DaemonConfig::for_tests();
     config.user_config.workflow.max_queues_per_workflow = Some(2);
     config.user_config.workflow.code = Some(crate::config::UserWorkflowCodeConfig {
@@ -657,7 +657,7 @@ fn local_request_api_rejects_workflow_code_over_session_agent_limit_without_spaw
         crate::session::unix_epoch_ms()
     ));
     let worktree_root = workspace_root.join("worktree");
-    std::fs::create_dir_all(&workspace_root).expect("temporary workspace should be created");
+    std::fs::create_dir_all(&worktree_root).expect("temporary workspace should be created");
     let mut config = crate::DaemonConfig::for_tests();
     config.user_config.workflow.session_default_max_agents = Some(1);
     let harness = LocalRouterTestHarness::with_config(config);

@@ -87,11 +87,12 @@ fn create_publication_test_graph(
     harness: &LocalRouterTestHarness,
     label: &str,
 ) -> PublicationTestGraph {
+    let request = harness.fixture_session_request(label);
     create_publication_test_graph_in_workspace(
         harness,
         label,
-        &format!("workspace-{label}"),
-        &format!("worktree-{label}"),
+        &request.workspace_id,
+        &request.worktree_id,
     )
 }
 

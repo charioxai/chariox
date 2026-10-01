@@ -411,7 +411,7 @@ fn local_request_api_enqueues_into_a_disabled_workflow_queue_without_launching_i
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-disabled-queue", "worktree-disabled-queue"),
+            harness.fixture_session_request("workspace-disabled-queue"),
         ))
         .expect("session create should succeed")
     {
@@ -1501,7 +1501,7 @@ fn local_request_api_runs_independent_workflows_concurrently_inner() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-independent-workflows", "worktree-root"),
+            harness.fixture_session_request("workspace-independent-workflows"),
         ))
         .expect("session create should succeed")
     {

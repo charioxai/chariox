@@ -177,7 +177,7 @@ fn project_workspace_membership_updates_through_the_local_api() {
     let first = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new(
-                "workspace-primary",
+                primary_worktree.path().display().to_string(),
                 primary_worktree.path().display().to_string(),
             )
             .with_project_selection(SessionProjectSelection::New),
@@ -193,8 +193,8 @@ fn project_workspace_membership_updates_through_the_local_api() {
             UpdateProjectWorkspacesRequest {
                 project_id: first.project_id().to_string(),
                 workspace_ids: vec![
-                    "workspace-primary".to_string(),
-                    "workspace-supporting".to_string(),
+                    primary_worktree.path().display().to_string(),
+                    supporting_worktree.path().display().to_string(),
                 ],
             },
         ))
@@ -205,13 +205,16 @@ fn project_workspace_membership_updates_through_the_local_api() {
     };
     assert_eq!(
         project.workspace_ids(),
-        &["workspace-primary", "workspace-supporting"]
+        &[
+            primary_worktree.path().display().to_string(),
+            supporting_worktree.path().display().to_string()
+        ]
     );
 
     let supporting = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new(
-                "workspace-supporting",
+                supporting_worktree.path().display().to_string(),
                 supporting_worktree.path().display().to_string(),
             )
             .with_project_selection(SessionProjectSelection::Existing {
@@ -223,7 +226,10 @@ fn project_workspace_membership_updates_through_the_local_api() {
         LocalDaemonResponse::SessionCreated { session, .. } => session,
         other => panic!("unexpected local response: {other:?}"),
     };
-    assert_eq!(supporting.workspace_id(), "workspace-supporting");
+    assert_eq!(
+        supporting.workspace_id(),
+        supporting_worktree.path().to_str().unwrap()
+    );
     assert_eq!(supporting.project_id(), first.project_id());
 }
 
@@ -235,7 +241,7 @@ fn archived_default_project_rejects_default_session_creation_until_restored() {
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new(
-                "workspace-default-archive",
+                first_worktree.path().display().to_string(),
                 first_worktree.path().display().to_string(),
             ),
         ))
@@ -253,7 +259,7 @@ fn archived_default_project_rejects_default_session_creation_until_restored() {
     let error = harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new(
-                "workspace-default-archive",
+                first_worktree.path().display().to_string(),
                 second_worktree.path().display().to_string(),
             ),
         ))
