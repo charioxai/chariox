@@ -866,3 +866,10 @@ lifetime, preverification cancellation, broker output, inherited tuning and
 builder/environment findings remain unimplemented. Frozen independent
 removal dispositions are preserved; changed rules are provisional and pending
 independent exact-blob review, never approvals copied from the 686 source.
+
+The five corrected scopes are rebound to the reachable runtime checkpoint
+`7ada4504adaffe7a352ea0130c681dbf9230dde4`, with exact Git blob checks. The
+scanner still retains all 95 scopes and passes 103/103 tests without skips.
+Client placement tests pass 7/7 and focused TypeScript type checking passes.
+The retained evidence distinguishes RED reproductions, corrected fixture/tool
+failures and GREEN results; none is relabeled as a signed 686 artifact run.

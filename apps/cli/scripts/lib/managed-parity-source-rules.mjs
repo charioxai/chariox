@@ -8,21 +8,21 @@ const CLOUD_CURRENT = "06cd95fda1fc07f9dd37a12727f6ed4e5a4adeb2";
 export const SOURCE_AUDIT_RULES = Object.freeze([
   {
     "id": "broker-runtime-output-budget",
-    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
+    "sourceCommit": "7ada4504adaffe7a352ea0130c681dbf9230dde4",
     "path": "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
-    "blob": "d606e2c5ca6caa824d883c3a385f375101461160",
+    "blob": "519ac05c7ac7d92e308d441bf95fab26a2ea2467",
     "ranges": [
       [
-        42,
-        42
+        43,
+        43
       ],
       [
-        1581,
-        1663
+        1582,
+        1664
       ],
       [
-        1678,
-        1678
+        1679,
+        1679
       ]
     ],
     "classification": "open_managed_runtime_difference",
@@ -43,7 +43,7 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
   },
   {
     "id": "placement-selected-slice-sandbox-policy",
-    "sourceCommit": "c86033afd14a13ca5cdf71842583cbbe3f5b7867",
+    "sourceCommit": "7ada4504adaffe7a352ea0130c681dbf9230dde4",
     "path": "apps/kernel/src/slice/local_docker.rs",
     "blob": "7ae6cc5b83e1b6da6d4975d6ad2134b3c3ac4ea3",
     "ranges": [
@@ -66,7 +66,7 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
   },
   {
     "id": "broker-slice-resource-admission",
-    "sourceCommit": "0680c4358f84a89297411425ca7daf46f3bc3ebb",
+    "sourceCommit": "7ada4504adaffe7a352ea0130c681dbf9230dde4",
     "path": "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
     "blob": "519ac05c7ac7d92e308d441bf95fab26a2ea2467",
     "ranges": [
@@ -93,7 +93,7 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
   },
   {
     "id": "placement-selected-kernel-dumpability",
-    "sourceCommit": "8cab790db16062cd7d7f0c6240f2989bdba00bd6",
+    "sourceCommit": "7ada4504adaffe7a352ea0130c681dbf9230dde4",
     "path": "apps/kernel/src/slice/local_docker/broker.rs",
     "blob": "d32ddedc3bf60fc3d1df03b438dae1e23732bdee",
     "ranges": [
@@ -517,7 +517,7 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
   },
   {
     "id": "managed-waiting-room-placement-projection",
-    "sourceCommit": "f14ded556968ca16b7d50b48125fb21ef5be2bb3",
+    "sourceCommit": "7ada4504adaffe7a352ea0130c681dbf9230dde4",
     "path": "packages/kernel-client/src/waiting-room-runtime-placement.ts",
     "blob": "0efadb2fd07a1c1401df3863aa429ef42cd01677",
     "classification": "shared_enrolled_machine_client_projection",
@@ -1252,7 +1252,7 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
   },
   {
     "id": "path1-pinned-user-extension-helper",
-    "sourceCommit": "da5c5e1bab4871aa9bd186bd08892f3e627adab8",
+    "sourceCommit": "7ada4504adaffe7a352ea0130c681dbf9230dde4",
     "path": "apps/kernel/slice-linux-docker/managed-extension-build.py",
     "blob": "22d027168dc10dcce770eae3e9ccdef352401097",
     "ranges": [

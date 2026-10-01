@@ -1961,7 +1961,7 @@ test("MP-11 independent ledger covers each inspected scope without authorizing s
 });
 
 const MP11_NEW_RULE_EXCERPTS = {
-  "broker-runtime-output-budget": [[42, "const MAX_OUTPUT_BYTES = 4 * 1024 * 1024"], [1581, "async function execute(request) {"], [1678, "return spawnBounded(command, args, { env, maxBuffer: MAX_OUTPUT_BYTES }, false)"]],
+  "broker-runtime-output-budget": [[43, "const MAX_OUTPUT_BYTES = 4 * 1024 * 1024"], [1582, "async function execute(request) {"], [1679, "return spawnBounded(command, args, { env, maxBuffer: MAX_OUTPUT_BYTES }, false)"]],
   "placement-selected-slice-sandbox-policy": [[125, "pub fn from_config(config: &DaemonConfig) -> Self {"], [140, "allow_provider_sandbox_compatibility: managed_docker_broker_configured()"]],
   "broker-slice-resource-admission": [[434, "function validateProvisioner(action, environment, files) {"], [560, 'if (environment.CHARIOX_SLICE_DOCKER_CPUS) fail("CHARIOX_SLICE_DOCKER_CPUS is invalid")']],
   "placement-selected-kernel-dumpability": [[126, "pub fn initialize() {"], [150, "if configured && !make_process_nondumpable() {"], [215, "fn make_process_nondumpable() -> bool {"], [216, "libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0)"]],
