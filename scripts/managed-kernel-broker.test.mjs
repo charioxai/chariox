@@ -625,7 +625,7 @@ test("managed slice broker rejects symlink escapes from the shared root", async 
   assert.match(result.stderr, /resolves outside|symbolic link/)
 })
 
-test("managed slice broker pins lazy builds to the signed context digest", async (context) => {
+test("managed slice broker pins authorized provisioner calls to the signed context digest", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-broker-digest-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const share = join(root, "share")
@@ -644,7 +644,7 @@ test("managed slice broker pins lazy builds to the signed context digest", async
   await chmod(provisioner, 0o755)
   const request = {
     kind: "provisioner",
-    action: "provision",
+    action: "stop",
     environment: {
       CHARIOX_SLICE_NAME: "chariox-slice-dev",
       CHARIOX_SLICE_ID: "slice-dev",
