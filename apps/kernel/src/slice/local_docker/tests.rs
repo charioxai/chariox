@@ -385,6 +385,17 @@ exit 0
     std::env::remove_var("DOCKER_LOG");
     std::env::remove_var("DOCKER_CAPACITY");
 
+    println!(
+        "CHARIOX_DISK_PRESSURE_PROBE:{}",
+        serde_json::json!({
+            "schema": "chariox.disk_pressure_admission_probe.v2",
+            "independentAdmissionRejectsLowCapacity": true,
+            "independentAdmissionAcceptsRecoveredCapacity": true,
+            "unsupportedCaptureRefusesBeforeMutation": true,
+            "lastKnownGoodPreserved": true,
+            "reserveBytes": 2_u64 * 1024 * 1024 * 1024,
+        })
+    );
     let _ = std::fs::remove_dir_all(root);
 }
 
