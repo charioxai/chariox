@@ -291,3 +291,49 @@ async fn panicked_execution_settles_duplicates_without_redispatch() {
         unavailable
     );
 }
+
+#[tokio::test]
+async fn successful_effect_with_failed_append_reports_unknown_and_never_reexecutes() {
+    let journal = Journal::new();
+    let receipts = AppRequestReceipts::new(journal.0.clone());
+    let request = restart();
+    let input = command("failed-settlement", &request);
+    let accepted_path = journal.0.with_extension("accepted.jsonl");
+    let journal_path = journal.0.clone();
+    let task_backup = accepted_path.clone();
+    let executions = Arc::new(AtomicUsize::new(0));
+    let count = executions.clone();
+    let unavailable = LocalDaemonResponse::AppRequestFailed {
+        code: AppRequestErrorCode::StorageUnavailable,
+    };
+    let result = receipts
+        .execute("alice", &input, &request, move || async move {
+            count.fetch_add(1, Ordering::SeqCst);
+            // Acceptance has succeeded. Make final append fail after the effect.
+            std::fs::rename(&journal_path, &task_backup).unwrap();
+            std::fs::create_dir(&journal_path).unwrap();
+            answer()
+        })
+        .await;
+    // Restore the durable acceptance journal before assertions and recovery.
+    std::fs::remove_dir(&journal.0).unwrap();
+    std::fs::rename(&accepted_path, &journal.0).unwrap();
+    assert_eq!(result, unavailable);
+    assert_eq!(
+        receipts
+            .execute("alice", &input, &request, || async {
+                panic!("failed settlement executed twice")
+            })
+            .await,
+        unavailable
+    );
+    assert_eq!(
+        AppRequestReceipts::new(journal.0.clone())
+            .execute("alice", &input, &request, || async {
+                panic!("failed settlement executed after recovery")
+            })
+            .await,
+        unavailable
+    );
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+}

@@ -2,6 +2,8 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
@@ -194,6 +196,8 @@ pub(crate) struct CommandResultCache {
     memory_accounting: Mutex<CommandResultMemoryAccounting>,
     retention: CommandResultRetentionPolicy,
     persistence: Option<CommandResultPersistence>,
+    #[cfg(test)]
+    fail_settlement_sync: AtomicBool,
 }
 
 impl Default for CommandResultCache {
@@ -204,6 +208,8 @@ impl Default for CommandResultCache {
             memory_accounting: Mutex::new(CommandResultMemoryAccounting::default()),
             retention: CommandResultRetentionPolicy::memory(),
             persistence: None,
+            #[cfg(test)]
+            fail_settlement_sync: AtomicBool::new(false),
         }
     }
 }
@@ -238,6 +244,8 @@ impl CommandResultCache {
             order: Mutex::new(VecDeque::new()),
             memory_accounting: Mutex::new(CommandResultMemoryAccounting::default()),
             retention,
+            #[cfg(test)]
+            fail_settlement_sync: AtomicBool::new(false),
             persistence: Some(CommandResultPersistence {
                 path: path.clone(),
                 io_lock: Mutex::new(()),
@@ -339,10 +347,15 @@ impl CommandResultCache {
             response: response.clone(),
             error: error.clone(),
         };
+        self.publish_completed_result(&command_id, &cached).await;
+        self.record_completed_order(command_id, cached).await;
+    }
+
+    async fn publish_completed_result(&self, command_id: &str, cached: &CachedCommandResult) {
         let waiters = {
             let mut results = self.results.lock().await;
             match results.insert(
-                command_id.clone(),
+                command_id.to_owned(),
                 CommandResultEntry::Completed(cached.clone()),
             ) {
                 Some(CommandResultEntry::Pending { waiters, .. }) => waiters,
@@ -352,7 +365,6 @@ impl CommandResultCache {
         for waiter in waiters {
             let _ = waiter.send(cached.clone());
         }
-        self.record_completed_order(command_id, cached).await;
     }
 
     async fn record_completed_order(&self, command_id: String, cached: CachedCommandResult) {
@@ -418,6 +430,10 @@ impl CommandResultCache {
         }
         append_persistent_result(&persistence.path, &persisted)?;
         if self.retention.at_most_once {
+            #[cfg(test)]
+            if self.fail_settlement_sync.swap(false, Ordering::SeqCst) {
+                return Err(io::Error::other("injected settlement sync failure"));
+            }
             fs::OpenOptions::new()
                 .write(true)
                 .open(&persistence.path)?

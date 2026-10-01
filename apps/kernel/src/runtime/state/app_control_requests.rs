@@ -72,6 +72,13 @@ impl KernelRuntimeState {
             request,
             LocalDaemonRequest::ControlAppWorker(_) | LocalDaemonRequest::UninstallApp(_)
         ) {
+            if let Err(code) = self
+                .app_control()
+                .require_owned_installation(&owner, &installation, &command.command_id)
+                .await
+            {
+                return Some(failed(code));
+            }
             let state = self.clone();
             let input = request.clone();
             let execute_owner = owner.clone();

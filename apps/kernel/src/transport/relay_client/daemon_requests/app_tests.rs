@@ -645,3 +645,83 @@ async fn uninstall_replay() {
             > generation
     );
 }
+
+#[test]
+fn rejected_app_requests_cannot_exhaust_another_owners_receipts() {
+    std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(rejected_app_requests());
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn rejected_app_requests() {
+    use crate::local::{
+        AppRequestErrorCode, AppWorkerAction, ControlAppWorkerRequest, UninstallAppRequest,
+    };
+    let root = TestRoot::new();
+    let app = crate::DaemonApp::bootstrap(root.config()).unwrap();
+    crate::durable_state::app_state::fixture_event_catalog(&app.durable_state_store());
+    let router =
+        CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 8);
+    let cache = CommandResultCache::default();
+    for n in 0..crate::runtime_transport::COMMAND_RESULT_CACHE_LIMIT {
+        let request = if n % 2 == 0 {
+            LocalDaemonRequest::ControlAppWorker(ControlAppWorkerRequest {
+                installation_id: "nonexistent".into(),
+                action: AppWorkerAction::Restart,
+            })
+        } else {
+            LocalDaemonRequest::UninstallApp(UninstallAppRequest {
+                installation_id: "installed".into(),
+                expected_generation: "1".into(),
+                delete_data: false,
+            })
+        };
+        assert_eq!(
+            dispatch(
+                &router,
+                &cache,
+                Some("bob"),
+                request,
+                &format!("rejected-{n}")
+            )
+            .await,
+            LocalDaemonResponse::AppRequestFailed {
+                code: AppRequestErrorCode::NotFound
+            }
+        );
+    }
+    let stop = LocalDaemonRequest::ControlAppWorker(ControlAppWorkerRequest {
+        installation_id: "installed".into(),
+        action: AppWorkerAction::Stop,
+    });
+    let stopped = dispatch(
+        &router,
+        &cache,
+        Some("alice"),
+        stop.clone(),
+        "authorized-stop",
+    )
+    .await;
+    assert!(matches!(&stopped, LocalDaemonResponse::AppWorker { .. }));
+    // A previously authorized receipt remains replayable while fresh App I/O
+    // admission is exhausted. No ownership/generation operation runs again.
+    let state = router.runtime_state();
+    let mut permits = Vec::new();
+    while let Ok(permit) = state.app_control().try_admit() {
+        permits.push(permit);
+    }
+    assert!(!permits.is_empty());
+    assert_eq!(
+        dispatch(&router, &cache, Some("alice"), stop, "authorized-stop").await,
+        stopped
+    );
+}

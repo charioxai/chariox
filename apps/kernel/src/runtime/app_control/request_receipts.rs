@@ -7,7 +7,6 @@ use crate::{
     runtime_transport::command_cache::{
         CommandFingerprint, CommandReservation, CommandResultCache,
     },
-    transport::kernel_protocol::KernelOutgoingFrame,
 };
 
 #[derive(Clone)]
@@ -28,6 +27,15 @@ impl AppRequestReceipts {
             }
         };
         Self(cache)
+    }
+
+    async fn has_reserved(&self, owner: &str, command_id: &str) -> bool {
+        let Some(cache) = self.0.as_ref() else {
+            return false;
+        };
+        cache
+            .has_reserved(&serde_json::to_string(&(owner, command_id)).unwrap())
+            .await
     }
 
     pub(super) async fn execute<F, Fut>(
@@ -66,18 +74,25 @@ impl AppRequestReceipts {
             {
                 Ok(CommandReservation::Dispatch) => {
                     let response = tokio::spawn(execute()).await.unwrap_or_else(|_| failed());
-                    cache
-                        .complete(
+                    match cache
+                        .complete_at_most_once(
                             key,
                             fingerprint,
-                            &KernelOutgoingFrame::Response {
-                                request_id: String::new(),
-                                response: Box::new(Some(serde_json::to_value(&response).unwrap())),
-                                error: None,
-                            },
+                            serde_json::to_value(&response).unwrap(),
+                            serde_json::to_value(failed()).unwrap(),
                         )
-                        .await;
-                    response
+                        .await
+                    {
+                        Ok(()) => response,
+                        Err(error) => {
+                            crate::logging::warn_with_fields(
+                                "daemon.app_control",
+                                "failed to settle App request receipt",
+                                serde_json::json!({"error": error.to_string()}),
+                            );
+                            failed()
+                        }
+                    }
                 }
                 Ok(CommandReservation::Wait(wait)) => wait
                     .await
@@ -126,6 +141,31 @@ impl super::AppControlService {
         self.request_receipts
             .execute(owner, command, request, execute)
             .await
+    }
+
+    pub(crate) async fn require_owned_installation(
+        &self,
+        owner: &str,
+        installation: &str,
+        command_id: &str,
+    ) -> Result<(), AppRequestErrorCode> {
+        // A matching owner-scoped receipt already proves installation authority
+        // at acceptance. Replay still checks the authenticated caller/input, but
+        // must not repeat a generation fence or wait for fresh I/O admission.
+        if self.request_receipts.has_reserved(owner, command_id).await {
+            return Ok(());
+        }
+        let store = self.store.clone();
+        let (owner, installation) = (owner.to_owned(), installation.to_owned());
+        let permit = self.try_admit()?;
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            store.get_app_installation(&owner, &installation)
+        })
+        .await
+        .map_err(|_| AppRequestErrorCode::StorageUnavailable)?
+        .map(|_| ())
+        .map_err(super::registry_error)
     }
 }
 

@@ -17,12 +17,64 @@ impl CommandFingerprint {
 }
 
 impl CommandResultCache {
+    pub(crate) async fn has_reserved(&self, command_id: &str) -> bool {
+        self.results.lock().await.contains_key(command_id)
+    }
+
+    /// No result is visible until its final receipt has been appended and synced.
+    pub(crate) async fn complete_at_most_once(
+        &self,
+        command_id: String,
+        fingerprint: CommandFingerprint,
+        response: Value,
+        interrupted_response: Value,
+    ) -> io::Result<()> {
+        let mut cached = CachedCommandResult {
+            response: Box::new(Some(response)),
+            error: None,
+            fingerprint,
+            completed_at_ms: crate::session::unix_epoch_ms(),
+        };
+        let record = PersistentCommandResult {
+            command_id: command_id.clone(),
+            completed_at_ms: cached.completed_at_ms,
+            result: cached.clone(),
+        };
+        let settled = match persistent_result_jsonl_bytes(&record) {
+            Err(error) => Err(error),
+            Ok(bytes) if bytes > COMMAND_RESULT_CACHE_MAX_PERSISTED_RECORD_BYTES => {
+                Err(io::Error::other("oversized at-most-once settlement"))
+            }
+            Ok(_) => {
+                self.persist_completed_result(command_id.clone(), cached.clone())
+                    .await
+            }
+        };
+        if settled.is_err() {
+            // Acceptance remains durable. Never expose an uncommitted success,
+            // and never redispatch the effect after an ambiguous settlement.
+            cached.response = Box::new(Some(interrupted_response));
+        }
+        self.publish_completed_result(&command_id, &cached).await;
+        self.apply_retention_to_completed_results(
+            &command_id,
+            cached_command_result_memory_bytes(&command_id, &cached),
+        )
+        .await;
+        settled
+    }
+
     pub(crate) async fn reserve_at_most_once(
         &self,
         command_id: &str,
         fingerprint: &CommandFingerprint,
         interrupted_response: Value,
     ) -> io::Result<CommandReservation> {
+        if !self.retention.at_most_once {
+            return Err(io::Error::other(
+                "at-most-once reservation requires non-evicting persistence",
+            ));
+        }
         let mut results = self.results.lock().await;
         match results.get_mut(command_id) {
             Some(CommandResultEntry::Completed(cached)) => {
