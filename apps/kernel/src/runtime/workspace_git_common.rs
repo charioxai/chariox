@@ -160,7 +160,11 @@ pub(crate) fn canonical_workspace_path(
 }
 
 fn same_fs_path_buf(left: &Path, right: &Path) -> bool {
-    std::fs::canonicalize(left).ok() == std::fs::canonicalize(right).ok() || left == right
+    left == right
+        || matches!(
+            (std::fs::canonicalize(left), std::fs::canonicalize(right)),
+            (Ok(left), Ok(right)) if left == right
+        )
 }
 
 pub(crate) fn worktree_display_label(
@@ -184,8 +188,7 @@ pub(crate) fn worktree_display_label(
 }
 
 pub(crate) fn same_fs_path(left: &str, right: &str) -> bool {
-    std::fs::canonicalize(left).ok() == std::fs::canonicalize(right).ok()
-        || Path::new(left) == Path::new(right)
+    same_fs_path_buf(Path::new(left), Path::new(right))
 }
 
 pub(crate) fn detect_git_branch(path: &str) -> Result<String, DaemonError> {
@@ -354,6 +357,21 @@ mod tests {
     #[test]
     fn same_fs_path_accepts_literal_matches() {
         assert!(same_fs_path("/repo/main", "/repo/main"));
+    }
+
+    #[test]
+    fn mp08_mp10_mp11_distinct_absent_worktrees_do_not_match() {
+        let root =
+            std::env::temp_dir().join(format!("chariox-absent-worktree-{}", rand::random::<u64>()));
+        let left = root.join("left");
+        let right = root.join("right");
+        assert!(!left.exists() && !right.exists());
+        assert!(!same_fs_path_buf(&left, &right));
+        assert!(!same_fs_path(
+            left.to_str().unwrap(),
+            right.to_str().unwrap()
+        ));
+        assert!(same_fs_path_buf(&left, &left));
     }
 
     #[test]
