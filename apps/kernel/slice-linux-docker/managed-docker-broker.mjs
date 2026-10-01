@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 import { recordCapturedImageProof } from "./protected-image-proof.mjs"
-import { requireSafeHomeVolume } from "./protected-home-preflight.mjs"
+import { requireSafeHomeVolume as requireSafeManagedHomeVolume } from "./protected-home-preflight.mjs"
+import { requireSafeLocalHomeVolume } from "./protected-local-home-scan.mjs"
 import { createManagedLayoutController } from "./protected-managed-layout.mjs"
 import { verifiedProtectedAuthority } from "./protected-authority.mjs"
 import { recordManagedImageProof } from "./protected-image-proof.mjs"
@@ -1535,7 +1536,7 @@ function execute(request) {
     const layout = protectedLayouts.preflight(request.args[1])
     protectedLayouts.requireQuiescedHome(request.args[1])
     requireSafeHomeVolume({volume: layout.homeVolume,
-      docker: args => spawnSync("/usr/bin/docker", args, {env: dockerEnvironment(), timeout: 30_000, maxBuffer: 1024 * 1024})})
+      docker: args => spawnSync("/usr/bin/docker", args, {env: dockerEnvironment(), timeout: 30_000, maxBuffer: 8 * 1024 * 1024})})
     commitSource = inspectDockerObject("container", request.args[1])
     commitParent = inspectDockerObject("image", commitSource.Image)
   }
@@ -1546,7 +1547,7 @@ function execute(request) {
   if (request.kind === "capture_preflight") {
     const layout = protectedLayouts.preflight(request.container)
     requireSafeHomeVolume({volume: layout.homeVolume, quiesced: false,
-      docker: args => spawnSync("/usr/bin/docker", args, {env: dockerEnvironment(), timeout: 30_000, maxBuffer: 1024 * 1024})})
+      docker: args => spawnSync("/usr/bin/docker", args, {env: dockerEnvironment(), timeout: 30_000, maxBuffer: 8 * 1024 * 1024})})
     return {status: 0, stdoutBase64: "", stderrBase64: ""}
   }
   if (request.kind === "home_restore_resolve") {
@@ -1737,4 +1738,9 @@ if (process.argv[2] === "--validate-request") {
       rmSync(SOCKET_PATH, { force: true })
     }
   }, 6000).unref()
+}
+
+function requireSafeHomeVolume(options) {
+  if (LOCAL_AUTHORITY) return requireSafeLocalHomeVolume({...options, enrollment: LOCAL_AUTHORITY.enrollment})
+  return requireSafeManagedHomeVolume(options)
 }
