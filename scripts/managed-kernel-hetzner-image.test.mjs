@@ -457,7 +457,7 @@ test("managed Docker authority and publication access remain narrowly separated"
     "ProtectSystem=strict",
     "ProtectHome=read-only",
     "ProtectKernelModules=true",
-    "ProtectControlGroups=true",
+    "ProtectControlGroups=false",
     "RestrictSUIDSGID=true",
     "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
     "UMask=0007",
@@ -526,6 +526,8 @@ test("managed Docker authority and publication access remain narrowly separated"
   assert.match(rootless, /ReadWritePaths=.*\/var\/lib\/chariox-slice-share\/slices\/development/)
   assert.doesNotMatch(rootless, /ReadWritePaths=.*\/var\/lib\/chariox(?:\/home)?(?:\s|$)/)
   assert.match(broker, /^Restart=no$/m)
+  // The kernel delegates its App subtree; the Docker broker has no such authority.
+  assert.match(broker, /^ProtectControlGroups=true$/m)
   assert.match(broker, /^Group=chariox-docker$/m)
   assert.doesNotMatch(broker, /^SupplementaryGroups=/m)
   assert.match(broker, /enter-rootless-docker-namespace\.sh \/usr\/bin\/node/)
