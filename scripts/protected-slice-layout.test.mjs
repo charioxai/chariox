@@ -78,7 +78,7 @@ test("archive streams only into protected durable sink and preserves prior gener
 })
 
 import { writeProtectedLayoutReceipt, readProtectedLayoutReceipt, requireRetainedRuntimeIdentity } from "../apps/kernel/slice-linux-docker/protected-layout-store.mjs"
-import { chmodSync } from "node:fs"
+import { mkdirSync, chmodSync } from "node:fs"
 test("trusted host receipts and retained identity cannot be replaced by labels or missing files", () => {
   const root = mkdtempSync(join(process.env.HOME, ".chariox-layout-receipt-test-"))
   try {
@@ -109,4 +109,53 @@ test("managed image proof binds actual immutable image ID to signed source conte
     assert.throws(() => recordManagedImageProof(root, "self-asserted", image))
     assert.throws(() => recordManagedImageProof(root, source, {...image, Config: {User: "root"}}))
   } finally { rmSync(root, {recursive: true}) }
+})
+
+import { createManagedLayoutController } from "../apps/kernel/slice-linux-docker/protected-managed-layout.mjs"
+test("fresh controller binds exact image/mount receipt and refuses missing same-slice identity", () => {
+  const parent = mkdtempSync(join(process.env.HOME, ".chariox-layout-controller-test-"))
+  try {
+    const root = join(parent, "durable")
+    const source = `sha256:${"b".repeat(64)}`
+    const environment = {CHARIOX_SLICE_NAME: "chariox-slice-synthetic", CHARIOX_SLICE_ID: "slice-synthetic"}
+    let info = null
+    const docker = args => {
+      if (args[0] === "ps") return {status: 0, stdout: info ? `${environment.CHARIOX_SLICE_NAME}\n` : ""}
+      if (args[0] === "volume") return {status: 0, stdout: ""}
+      if (args[0] === "container") return {status: 0, stdout: JSON.stringify([info])}
+      throw new Error("unexpected synthetic Docker operation")
+    }
+    const controller = createManagedLayoutController({root, sourceDigest: source, docker, dataOwner: process.getuid()})
+    assert.throws(() => controller.prepare("provision", {...environment, CHARIOX_SLICE_NAME: "../foreign"}))
+    const privateRoot = controller.prepare("provision", environment)
+    assert.throws(() => controller.prepare("provision", environment), "existing retained root cannot be silently initialized again")
+    recordManagedImageProof(controller.imageRoot, source, {Id: digest, Config: {User: "slice"}, RootFS: {Layers: [digest]}})
+    const directory = join(privateRoot, "kernel/kernels/synthetic-kernel")
+    mkdirSync(directory, {mode: 0o700})
+    const identity = join(directory, "identity.json")
+    writeFileSync(identity, "synthetic identity sentinel, no private key", {mode: 0o600})
+    writeFileSync(join(privateRoot, "kernel/kernels/registry.json"), "synthetic registry sentinel", {mode: 0o600})
+    info = fixture().inspect
+    info.Id = "synthetic-container"
+    info.Mounts[0].Source = privateRoot
+    info.Mounts[1].Name = `${environment.CHARIOX_SLICE_NAME}-home`
+    info.Mounts[2].Source = `${privateRoot}/nssdb`
+    environment.CHARIOX_SLICE_PRIVATE_HOST_ROOT = privateRoot
+    controller.complete(environment)
+    assert.equal(controller.preflight(environment.CHARIOX_SLICE_NAME).privateHostRoot, privateRoot)
+    assert.equal(controller.prepare("recover", environment), privateRoot)
+    const foreignOwnerController = createManagedLayoutController({root, sourceDigest: source, docker, dataOwner: process.getuid() + 1})
+    assert.throws(() => foreignOwnerController.preflight(environment.CHARIOX_SLICE_NAME))
+    const priorSource = info.Mounts[0].Source
+    info.Mounts[0].Source = join(parent, "foreign-root")
+    assert.throws(() => controller.preflight(environment.CHARIOX_SLICE_NAME))
+    info.Mounts[0].Source = priorSource
+    info.Config.Env.push("TOKEN=synthetic-private-sentinel")
+    assert.throws(() => controller.preflight(environment.CHARIOX_SLICE_NAME), e => !e.message.includes("sentinel"))
+    info.Config.Env.pop()
+    rmSync(identity)
+    assert.throws(() => controller.prepare("recover", environment))
+    assert.equal(existsSync(identity), false, "missing identity must not be generated")
+    assert.equal(existsSync(privateRoot), true, "retained private root must remain")
+  } finally { rmSync(parent, {recursive: true}) }
 })

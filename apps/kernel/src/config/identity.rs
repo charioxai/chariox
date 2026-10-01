@@ -302,6 +302,20 @@ fn persist_kernel_identity(identity: &RuntimeIdentity, record: &KernelIdentityRe
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
+    // Fresh protected slice layouts retain these keys on a host private mount.
+    // Keep the key directory private without modifying legacy home layouts.
+    #[cfg(unix)]
+    if std::env::var("CHARIOX_SLICE_PRIVATE_ROOT").as_deref()
+        == Ok("/var/lib/chariox/slice-private")
+        && std::env::var("CHARIOX_HOME").as_deref() == Ok("/var/lib/chariox/slice-private/kernel")
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Some(parent) = path.parent() {
+            if fs::set_permissions(parent, fs::Permissions::from_mode(0o700)).is_err() {
+                return;
+            }
+        }
+    }
     if let Ok(contents) = serde_json::to_string_pretty(record) {
         let _ = write_private_file(&path, contents.as_bytes());
     }
