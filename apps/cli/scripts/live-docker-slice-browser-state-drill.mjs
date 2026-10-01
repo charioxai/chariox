@@ -17,6 +17,7 @@ import { finalizeDrillArtifacts } from "./lib/drill-artifacts.mjs"
 import { resolveBuiltBinary } from "./lib/drill-runtime-helpers.mjs"
 import { completeBrowserStateEditorHandoff, createBrowserStateEditorDrill } from "./lib/browser-state-drill-editor.mjs"
 import { createDrillInterruption } from "./lib/drill-interruption.mjs"
+import { verifyRetainedRoomArchive } from "./lib/room-provider-retention.mjs"
 import {
   browserStateDrillWorkspaceSliceOptions,
   cleanupBrowserStateDrillWorkspace,
@@ -260,6 +261,9 @@ async function run() {
   assert.ok(saved.state?.id, "save-state should create a saved state record")
   savedState = saved.state
   await writeFile(path.join(artifactDir, "save-state-response.json"), JSON.stringify(saved, null, 2))
+  const verifiedArchive = await verifyRetainedRoomArchive(savedState)
+  await writeFile(path.join(artifactDir, "saved-home-verification.json"),
+    `${JSON.stringify({ stateId: savedState.id, ...verifiedArchive }, null, 2)}\n`)
   log("removing container and home volume to force saved-state restore")
   await removeContainerAndHomeVolume()
 
