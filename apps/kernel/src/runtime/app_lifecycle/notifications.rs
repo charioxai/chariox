@@ -101,7 +101,7 @@ pub(super) fn serve(
         if matches!(context.kind, StartKind::Active { .. })
             && context
                 .publisher
-                .is_dormant(&context.owner, &context.installation)
+                .is_suspended(&context.owner, &context.installation)
         {
             if let Some(previous) = context
                 .publisher

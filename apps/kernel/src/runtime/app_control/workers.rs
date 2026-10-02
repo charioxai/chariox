@@ -170,6 +170,36 @@ impl AppWorkerPublisher {
     pub(crate) fn is_dormant(&self, owner: &str, installation: &str) -> bool {
         self.workers.is_dormant(owner, installation)
     }
+    /// Seed a verified release for first-call discovery without claiming it
+    /// previously ran or sending a resume callback on its first start.
+    pub(crate) fn retain_dormant(&self, owner: &str, catalog: Arc<EventCatalog>) -> bool {
+        let Ok(mut dormant) = self.workers.1.lock() else {
+            return false;
+        };
+        let key = (owner.to_owned(), catalog.installation_id().to_owned());
+        if dormant.contains_key(&key) {
+            return true;
+        }
+        if dormant.len() >= MAX_PROJECTIONS {
+            return false;
+        }
+        dormant.insert(
+            key,
+            Dormant {
+                catalog,
+                configuration: serde_json::Value::Null,
+                suspended: false,
+            },
+        );
+        true
+    }
+    pub(crate) fn is_suspended(&self, owner: &str, installation: &str) -> bool {
+        self.workers.1.lock().is_ok_and(|dormant| {
+            dormant
+                .get(&(owner.to_owned(), installation.to_owned()))
+                .is_some_and(|entry| entry.suspended)
+        })
+    }
     /// Last notified configuration, retained with the dormant catalog.
     pub(crate) fn dormant_configuration(
         &self,
