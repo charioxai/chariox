@@ -21,6 +21,7 @@ use crate::workflow_code::{
 
 pub(crate) struct KernelSessionService<'a> {
     app: &'a mut DaemonApp,
+    authorizer: Option<&'a (dyn Fn() -> Result<(), DaemonError> + Send + Sync)>,
 }
 
 mod workflow_code;
@@ -82,7 +83,27 @@ impl<'a> KernelSessionReadService<'a> {
 
 impl<'a> KernelSessionService<'a> {
     pub(crate) fn new(app: &'a mut DaemonApp) -> Self {
-        Self { app }
+        Self {
+            app,
+            authorizer: None,
+        }
+    }
+
+    pub(crate) fn with_authorization(
+        app: &'a mut DaemonApp,
+        authorizer: &'a (dyn Fn() -> Result<(), DaemonError> + Send + Sync),
+    ) -> Self {
+        Self {
+            app,
+            authorizer: Some(authorizer),
+        }
+    }
+
+    fn authorize(&self) -> Result<(), DaemonError> {
+        match self.authorizer {
+            Some(authorize) => authorize(),
+            None => Ok(()),
+        }
     }
 
     pub(crate) fn create_session(
@@ -245,7 +266,10 @@ impl<'a> KernelSessionService<'a> {
         &mut self,
         request: CreateAgentRequest,
     ) -> Result<AgentInstance, DaemonError> {
-        self.spawn_agent_authorized(request, &|| Ok(()))
+        match self.authorizer {
+            Some(authorize) => self.spawn_agent_authorized(request, authorize),
+            None => self.spawn_agent_authorized(request, &|| Ok(())),
+        }
     }
 
     pub(crate) fn spawn_agent_authorized(

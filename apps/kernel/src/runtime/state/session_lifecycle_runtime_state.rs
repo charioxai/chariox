@@ -676,6 +676,7 @@ impl KernelRuntimeState {
         machine_ref: &str,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.authorize_current_external_command()?;
         let local_agent =
             self.owned
                 .ensure_agent_ref_owner(agent_ref, caller_user_id, "move agent to remote")?;
@@ -710,9 +711,13 @@ impl KernelRuntimeState {
         }
         let agent = self
             .with_app_side_effect(|app| {
-                app.move_agent_to_remote(session_id, agent_ref, &worker_ref)
+                self.authorize_current_external_command()?;
+                app.move_agent_to_remote_authorized(session_id, agent_ref, &worker_ref, &|| {
+                    self.authorize_current_external_command()
+                })
             })
             .await?;
+        self.authorize_current_external_command()?;
         if let Some(slice_ref) = target_slice_id {
             self.attach_slice_agent(&slice_ref, session_id, agent.id())
                 .await?;
@@ -726,6 +731,7 @@ impl KernelRuntimeState {
         agent_ref: &str,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.authorize_current_external_command()?;
         let remote_agent =
             self.owned
                 .ensure_agent_ref_owner(agent_ref, caller_user_id, "move agent to local")?;
@@ -748,8 +754,13 @@ impl KernelRuntimeState {
                 &remote_agent,
             )?;
         let agent = self
-            .with_app_side_effect(|app| app.move_agent_to_local(session_id, agent_ref))
+            .with_authorized_app_side_effect(|app| {
+                app.move_agent_to_local_authorized(session_id, agent_ref, &|| {
+                    self.authorize_current_external_command()
+                })
+            })
             .await?;
+        self.authorize_current_external_command()?;
         if let Some(slice_ref) = slice_ref {
             let slice = self.owned.slice_store.detach_agent(
                 &slice_ref,

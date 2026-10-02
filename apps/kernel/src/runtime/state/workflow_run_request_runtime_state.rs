@@ -16,6 +16,9 @@ impl KernelRuntimeState {
         Result<LocalDaemonResponse, DaemonError>,
         Option<crate::session::RuntimeSession>,
     ) {
+        if let Err(error) = self.authorize_current_external_command() {
+            return (Err(error), None);
+        }
         let owned = &self.owned;
         let result = match owned.ensure_workflow_endpoint_owner(
             &request.session_id,
