@@ -166,10 +166,12 @@ COPY apps/kernel/slice-linux-docker/docker/slice-selkies.py \
 
 WORKDIR /opt/chariox-toolchain
 COPY apps/kernel/slice-linux-docker/toolchain/package.json apps/kernel/slice-linux-docker/toolchain/package-lock.json ./
-RUN npm_config_cache=/tmp/chariox-npm-cache npm ci --omit=dev \
-  && test "$(node_modules/.bin/codex --version)" = "codex-cli 0.144.5" \
-  && test "$(node_modules/.bin/opencode --version)" = "1.18.23" \
-  && test "$(node_modules/.bin/claude --version)" = "2.1.212 (Claude Code)" \
+COPY deploy/managed-kernel/provider-versions.env ./
+RUN . ./provider-versions.env \
+  && npm_config_cache=/tmp/chariox-npm-cache npm ci --omit=dev \
+  && test "$(node_modules/.bin/codex --version)" = "codex-cli ${CHARIOX_CODEX_VERSION}" \
+  && test "$(node_modules/.bin/opencode --version)" = "${CHARIOX_OPENCODE_VERSION}" \
+  && test "$(node_modules/.bin/claude --version)" = "${CHARIOX_CLAUDE_VERSION} (Claude Code)" \
   && test "$(node_modules/.bin/pnpm --version)" = "11.22.0" \
   && rm -rf /tmp/chariox-npm-cache /root/.npm
 ENV PATH=/opt/chariox-toolchain/node_modules/.bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin

@@ -454,7 +454,7 @@ test("managed image and publication runtimes pin the same provider releases", as
   )
   const dockerfile = await readFile(publicationDockerfileUrl, "utf8")
   assert.deepEqual(versions, {
-    CHARIOX_CODEX_VERSION: "0.144.5",
+    CHARIOX_CODEX_VERSION: "0.159.3",
     CHARIOX_OPENCODE_VERSION: "1.18.23",
     CHARIOX_CLAUDE_VERSION: "2.1.212",
   })
@@ -509,7 +509,7 @@ test("managed slice image locks every network and compiler input", async () => {
   assert.doesNotMatch(dockerfile, /npm install|rustup\.rs|deb\.nodesource\.com/)
   assert.deepEqual(toolchainPackage.dependencies, {
     "@anthropic-ai/claude-code": "2.1.212",
-    "@openai/codex": "0.144.5",
+    "@openai/codex": "0.159.3",
     "opencode-ai": "1.18.23",
     pnpm: "11.22.0",
     ws: "8.21.3",

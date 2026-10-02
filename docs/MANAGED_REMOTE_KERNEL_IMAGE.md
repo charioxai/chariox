@@ -233,7 +233,14 @@ compiling them again on the managed host. Ordinary local source builds retain
 the Cargo build path. The cache fingerprint covers the Dockerfile and all build
 inputs; base images, Debian snapshots, the Cargo lock, and the provider npm
 integrity lock are pinned. Host provider commands are installed with `npm ci`
-from the same signed lock. The script enables the bootstrap and rootless Docker
+from the same signed lock. Provider CLI policy lives in
+`deploy/managed-kernel/provider-versions.env`: Codex 0.159.3, OpenCode 1.18.23
+and Claude Code 2.1.212. Headed slice and publication builds verify their
+installed CLIs against that policy. Update both toolchain manifests and npm
+integrity locks together; `scripts/provider-cli-pins.test.mjs` rejects drift
+in the manifests, resolved lock entries, build checks and publication labels.
+This shared packaging policy supports MP-08/MP-11; source checks alone do not
+close MP-10 live acceptance. The script enables the bootstrap and rootless Docker
 services; the broker stays disabled and bootstrap republishes its one-claim
 endpoint from a privileged prestart on each supervisor restart. The script
 rejects runtime state, then removes package caches,
