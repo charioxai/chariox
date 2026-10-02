@@ -173,16 +173,19 @@ test("actual broker verification delegates safe large metadata to hashing withou
   let hashes = 0
   // IO is synthetic: exercise the actual broker policy and hash argv without
   // allocating, reading, or copying a multi-GiB archive.
+  const brokerLifetime = new AbortController()
   const context = {
+    brokerLifetime,
     managedHomeArchiveCoordinates: () => ({ candidate: "/private/archive", relative: ["states", "owned", "generation-abcdef", "home.tar.zst"] }),
     pinnedSharedPath: path => ({ path, fd: 7 }), dirname, join, homeArchiveMetadataMatches,
     readdirSync: () => ["home.tar.zst", "metadata.json"], readFileSync: () => JSON.stringify(metadata),
     fstatSync: () => ({ size: metadata.sizeBytes }), closeSync: () => {}, HOME_ARCHIVE_PROGRESS_TIMEOUT_MS,
     exactKeys: (value, keys) => assert.equal(Object.keys(value).sort().join(","), Array.from(keys).sort().join(",")),
     fail: message => { throw new Error(message) },
-    digestPinnedHomeArchive: async (fd, timeout) => {
+    digestPinnedHomeArchive: async (fd, timeout, signal) => {
       assert.equal(fd, 7)
       assert.equal(timeout, HOME_ARCHIVE_PROGRESS_TIMEOUT_MS)
+      assert.equal(signal, brokerLifetime.signal)
       hashes++
       return metadata.sha256
     },
