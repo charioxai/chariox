@@ -20,7 +20,7 @@ pub(in crate::worker_process) fn prepare(
     release: VerifiedReleaseLease,
     binding: &StageTrustBinding,
     migrate_from: Option<u32>,
-    committed_generation: u64,
+    committed_generation: Option<u64>,
 ) -> Result<PreparedWorker> {
     if release.package_digest() != binding.package_digest() {
         return Err(WorkerError::Identity);

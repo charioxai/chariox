@@ -32,14 +32,6 @@ pub(in crate::worker_process) struct Lease {
 #[derive(Serialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 enum Operation<'a> {
-    Acquire {
-        owner: &'a str,
-        installation: &'a str,
-        generation: u64,
-        cgroup_leaf: &'a str,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        committed_generation: Option<u64>,
-    },
     VerifyWorkerGroupsV1,
     Release {
         lease: &'a str,
@@ -58,9 +50,6 @@ enum Operation<'a> {
 
 /// Before its first install commits, an installation's committed generation is
 /// 0: there is no committed data to snapshot, and the helper refuses 0.
-fn committed(generation: u64) -> Option<u64> {
-    (generation != 0).then_some(generation)
-}
 
 /// The helper's authenticated per-UID socket, served by root.
 fn connect(uid: u32) -> Result<UnixStream> {
@@ -138,39 +127,29 @@ impl Lease {
 
     /// `committed_generation` is the installation's committed generation: a
     /// newer, staged generation starts on a copy the helper can roll back to.
-    /// It is 0 until the first install commits; that start names none.
+    /// `None` means this is a fresh installation with no committed release.
     pub fn acquire(
         owner: &str,
         installation: &str,
         generation: u64,
-        committed_generation: u64,
+        committed_generation: Option<u64>,
         cgroup_leaf: &str,
     ) -> Result<Self> {
         let uid = unsafe { libc::geteuid() };
         if uid == 0 {
             return Err(Error::Identity);
         }
-        let committed_generation = committed(committed_generation);
-        let request = model::Request::Acquire {
-            owner: owner.into(),
-            installation: installation.into(),
+        let request = acquire_request(
+            owner,
+            installation,
             generation,
-            cgroup_leaf: cgroup_leaf.into(),
             committed_generation,
-        };
+            cgroup_leaf,
+        );
         request.validate()?;
         let name = model::installation_name(owner, installation)?;
         let mut stream = connect(uid)?;
-        wire::send(
-            &mut stream,
-            &Operation::Acquire {
-                owner,
-                installation,
-                generation,
-                cgroup_leaf,
-                committed_generation,
-            },
-        )?;
+        wire::send(&mut stream, &request)?;
         let reply: Reply = wire::receive(&stream, 150)?;
         if reply.status != "acquired" || reply.code.is_some() {
             return Err(reply.refusal());
@@ -353,33 +332,61 @@ fn verify(dir: &Dir, root: &model::Identity, capacity: u64, uid: u32) -> Result<
     Ok(stat.stx_mnt_id)
 }
 
+fn acquire_request(
+    owner: &str,
+    installation: &str,
+    generation: u64,
+    committed_generation: Option<u64>,
+    cgroup_leaf: &str,
+) -> model::Request {
+    model::Request::Acquire {
+        owner: owner.into(),
+        installation: installation.into(),
+        generation,
+        cgroup_leaf: cgroup_leaf.into(),
+        committed_generation,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn a_first_install_names_no_committed_generation() {
-        // Every first Linux install used to name committed generation 0, which
-        // validation refuses, so its worker preparation always failed.
-        let leaf = format!("app-{}", "a".repeat(32));
-        for (committed_generation, named) in [(0, None), (1, Some(1)), (7, Some(7))] {
-            let committed_generation = committed(committed_generation);
-            assert_eq!(committed_generation, named);
-            let bytes = serde_json::to_vec(&Operation::Acquire {
-                owner: "owner",
-                installation: "app_1",
-                generation: 8,
-                cgroup_leaf: &leaf,
-                committed_generation,
-            })
-            .unwrap();
-            // The helper parses the same bytes with its own strict model.
-            let request: model::Request = serde_json::from_slice(&bytes).unwrap();
+    fn acquire_request_preserves_absent_and_committed_generations_on_the_wire() {
+        for committed in [None, Some(1), Some(2)] {
+            let request = acquire_request(
+                "owner",
+                "installation",
+                2,
+                committed,
+                "app-11111111111111111111111111111111",
+            );
             request.validate().unwrap();
-            assert!(matches!(
-                request,
-                model::Request::Acquire { committed_generation: parsed, .. } if parsed == named
-            ));
+            let wire = serde_json::to_value(&request).unwrap();
+            assert_eq!(wire["committed_generation"], serde_json::json!(committed));
+            let received: model::Request = serde_json::from_value(wire).unwrap();
+            received.validate().unwrap();
+            let model::Request::Acquire {
+                committed_generation,
+                ..
+            } = received
+            else {
+                panic!("expected acquire request");
+            };
+            assert_eq!(committed_generation, committed);
         }
+        // Zero is still invalid: the caller must represent absence as None.
+        assert_eq!(
+            acquire_request(
+                "owner",
+                "installation",
+                1,
+                Some(0),
+                "app-11111111111111111111111111111111"
+            )
+            .validate(),
+            Err(Error::Invalid),
+        );
     }
 }

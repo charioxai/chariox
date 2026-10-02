@@ -151,7 +151,7 @@ async fn pending_interaction_replay_waits_for_one_volatile_result() {
     });
     let frame = KernelOutgoingFrame::Response {
         request_id: "interaction-attempt-1".to_string(),
-        response: Box::new(Some(response.clone())),
+        response: serialized_response(&Some(response.clone())),
         error: None,
     };
 
@@ -756,7 +756,7 @@ async fn at_most_once_receipts_never_evict_and_refuse_new_identity_at_capacity()
             fingerprint.clone(),
             &KernelOutgoingFrame::Response {
                 request_id: "one".into(),
-                response: Box::new(Some(response.clone())),
+                response: serialized_response(&Some(response.clone())),
                 error: None,
             },
         )
@@ -828,7 +828,7 @@ async fn at_most_once_duplicates_wait_for_durable_settlement() {
     );
     drop(guard);
     completion.await.unwrap().unwrap();
-    assert_eq!(*duplicate.await.unwrap().response, Some(success.clone()));
+    assert_eq!(*duplicate.await.unwrap().response_value(), Some(success.clone()));
     let restored = CommandResultCache::new_at_most_once(path.clone()).unwrap();
     let replay = match restored
         .reserve_at_most_once("one", &fingerprint, serde_json::Value::Null)
@@ -873,7 +873,7 @@ async fn at_most_once_sync_failure_reports_unknown_to_every_caller() {
         )
         .await
         .is_err());
-    assert_eq!(*duplicate.await.unwrap().response, Some(unknown.clone()));
+    assert_eq!(*duplicate.await.unwrap().response_value(), Some(unknown.clone()));
     let replay = match cache
         .reserve_at_most_once("one", &fingerprint, unknown.clone())
         .await

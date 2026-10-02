@@ -1,7 +1,10 @@
 //! Signed tiny bytes exercise preparation and mounts; they are never executed.
 use super::*;
 use crate::{
-    installation::{InstallationRegistry, StageTrustBinding, VerifiedInstallCandidate},
+    installation::{
+        CapabilityApproval, CapabilityDecision, InstallationRegistry, StageTrustBinding,
+        VerifiedInstallCandidate,
+    },
     publisher_trust::{PublisherTrustRegistry, TrustDecision},
     release_store::{ReleaseStore, StageBudget, VerifiedReleaseLease},
     runtime_enrollment::EnrolledRuntime,
@@ -16,6 +19,16 @@ use std::{
 };
 
 pub(super) fn proofs() -> (VerifiedReleaseLease, EnrolledRuntime, StageTrustBinding) {
+    let (package, runtime, binding, _) = proofs_with_registry();
+    (package, runtime, binding)
+}
+
+fn proofs_with_registry() -> (
+    VerifiedReleaseLease,
+    EnrolledRuntime,
+    StageTrustBinding,
+    rusqlite::Connection,
+) {
     let key = crate::storage_drill_fixture::signing_key([27; 32]);
     let publisher = TrustedPublisher {
         publisher_id: "com.example".into(),
@@ -88,7 +101,12 @@ pub(super) fn proofs() -> (VerifiedReleaseLease, EnrolledRuntime, StageTrustBind
     let binding = installs
         .staged_trust("hosted-owner", &update.token)
         .unwrap();
-    (lease, EnrolledRuntime::open_installed().unwrap(), binding)
+    (
+        lease,
+        EnrolledRuntime::open_installed().unwrap(),
+        binding,
+        connection,
+    )
 }
 
 #[test]
@@ -144,9 +162,14 @@ fn hosted_readonly_code_views_match_verified_roots_in_kernel_namespace() {
 fn hosted_prepared_worker_uses_only_enrolled_sources_and_reclaims_unstarted_domain() {
     let context = Context::open("55555555555555555555555555555555");
     let (package, runtime, binding) = proofs();
-    let prepared =
-        PreparedWorker::prepare_linux(runtime, package, &binding, None, binding.token().generation)
-            .unwrap();
+    let prepared = PreparedWorker::prepare_linux(
+        runtime,
+        package,
+        &binding,
+        None,
+        Some(binding.token().generation),
+    )
+    .unwrap();
     assert_eq!(prepared.record.installation, "factory-only");
     assert_eq!(prepared.record.generation, "1");
     assert_eq!(
@@ -170,4 +193,63 @@ fn hosted_prepared_worker_uses_only_enrolled_sources_and_reclaims_unstarted_doma
     drop(prepared);
     assert!(!prepared_leaves[0].exists());
     println!("Actual production factory prepared exact signed roots, platform graph and cgroup, then released without executing fixture code");
+}
+
+#[test]
+#[ignore = "dedicated hosted fresh Linux preparation with signed tiny graph; never spawns it"]
+fn hosted_fresh_first_install_prepares_without_a_committed_generation() {
+    let context = Context::open("66666666666666666666666666666666");
+    let (package, runtime, binding, mut connection) = proofs_with_registry();
+    let token = binding.token();
+    assert_eq!(token.base_generation, 0);
+    assert_eq!(token.generation, 1);
+    let mut installs = InstallationRegistry::new(&mut connection);
+    let fresh = installs.get(&token.installation_id).unwrap();
+    assert_eq!(fresh.generation, 0);
+    let committed = fresh.data_release().map(|release| release.generation);
+    assert_eq!(committed, None);
+    installs
+        .decide(
+            token,
+            CapabilityDecision::Approved {
+                approval: CapabilityApproval {
+                    decision_id: "fresh-approval".into(),
+                    authority_ref: "dedicated-root-drill".into(),
+                },
+            },
+            3,
+        )
+        .unwrap();
+    installs.quiesce(token, 4).unwrap();
+    let prepared =
+        PreparedWorker::prepare_linux(runtime, package, &binding, None, committed).unwrap();
+    assert_eq!(prepared.record.generation, "1");
+    assert_eq!(prepared.record.installation, "factory-only");
+    installs.mark_prepared(token, 5).unwrap();
+    let snapshot = PublisherTrustRegistry::new(&mut connection)
+        .trusted_publisher("hosted-owner", "com.example", "fixture")
+        .unwrap();
+    let mut installs = InstallationRegistry::new(&mut connection);
+    let active = installs
+        .commit_verified(token, "hosted-owner", &snapshot, 6)
+        .unwrap();
+    assert_eq!(active.generation, 1);
+    let committed = installs
+        .get(&token.installation_id)
+        .unwrap()
+        .data_release()
+        .map(|release| release.generation);
+    assert_eq!(committed, Some(1));
+    drop(prepared);
+    let (package, runtime, _) = proofs();
+    let restarted =
+        PreparedWorker::prepare_linux(runtime, package, &binding, None, committed).unwrap();
+    drop(restarted);
+    let leaves: Vec<_> = fs::read_dir(context.cgroup.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.is_dir() && path != &context.cgroup)
+        .collect();
+    assert!(leaves.is_empty());
+    println!("Fresh signed generation 1 over base 0 reached production Linux PreparedWorker and verified registry commit with no prior generation; restart with Some(1) and domain reclamation passed; tiny graph never executed");
 }
