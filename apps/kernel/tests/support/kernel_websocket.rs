@@ -385,3 +385,52 @@ pub fn response_variant<'a>(frame: &'a Value, variant: &str) -> &'a Value {
         .map(|_| &frame["response"][variant])
         .unwrap_or_else(|| panic!("expected response variant `{variant}`, got: {frame}"))
 }
+
+// MP-08/MP-10: workflow launch preflight requires an existing workspace;
+// opaque labels are suitable for transport-only fixtures, not provider execution.
+pub struct ExecutionWorkspace(std::path::PathBuf);
+
+impl ExecutionWorkspace {
+    pub fn new() -> Self {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-websocket-execution-{}-{:016x}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir(&root).expect("create isolated workflow workspace");
+        let workspace = Self(root);
+        for args in [
+            vec!["init", "--quiet"],
+            vec![
+                "-c",
+                "user.name=Workflow fixture",
+                "-c",
+                "user.email=fixture@example.test",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                "fixture",
+            ],
+        ] {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(&workspace.0)
+                .status()
+                .expect("run fixture git")
+                .success());
+        }
+        workspace
+    }
+
+    pub fn session_request(&self) -> chariox_kernel::session::CreateSessionRequest {
+        let root = self.0.display().to_string();
+        chariox_kernel::session::CreateSessionRequest::new(&root, &root)
+    }
+}
+
+impl Drop for ExecutionWorkspace {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
