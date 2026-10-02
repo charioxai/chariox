@@ -498,6 +498,8 @@ async fn runtime_with_substitutes(
         .expect("isolated account");
     // MP-08/MP-10: this fixture submits a turn, so its synthetic model must
     // exist in the isolated native account catalog used by model preflight.
+    // The credential-free fixture declares zero cost so native catalog admission
+    // does not require paid-provider authentication.
     let environment = registry
         .resolve_environment(
             crate::session::DEFAULT_LOCAL_USER_ID,
@@ -510,7 +512,7 @@ async fn runtime_with_substitutes(
     std::fs::write(
         config_directory.join("opencode.json"),
         serde_json::json!({"provider": {"opencode": {"models": {
-            "deepseek-v4-pro": {"name": "Substitution fixture"}
+            "deepseek-v4-pro": {"name": "Substitution fixture", "cost": {"input": 0, "output": 0}}
         }}}})
         .to_string(),
     )
