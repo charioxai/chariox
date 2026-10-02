@@ -413,7 +413,26 @@ async fn kernel_websocket_delivers_terminal_workflow_run_update_without_reload()
         Some("Running")
     );
 
-    let completed_event = wait_for_event(&mut socket, "workflow_run_updated").await;
+    // MP-08/MP-10: launch and delivery can publish additional Running updates.
+    // Keep the original deadline and reject any unexpected run or status.
+    let completed_event = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = wait_for_event(&mut socket, "workflow_run_updated").await;
+            assert_eq!(
+                event["event"]["workflow_run"]["id"].as_str(),
+                Some(expected_run_id.as_str())
+            );
+            if event["event"]["workflow_run"]["status"].as_str() == Some("Completed") {
+                break event;
+            }
+            assert_eq!(
+                event["event"]["workflow_run"]["status"].as_str(),
+                Some("Running")
+            );
+        }
+    })
+    .await
+    .expect("terminal workflow update should arrive within the event budget");
     assert_eq!(
         completed_event["event"]["workflow_run"]["id"].as_str(),
         Some(expected_run_id.as_str())
