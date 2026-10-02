@@ -222,7 +222,7 @@ test("App clipboard and link offers show the payload, explicit typed acceptance 
   const harness = await createTestRenderer({ width: 100, height: 26, useThread: false })
   const box = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0 })
   harness.renderer.root.add(box)
-  const surface = createKernelApprovalRenderer(harness.renderer, { show() {}, choose() {} })
+  const surface = createKernelApprovalRenderer(harness.renderer, { show() {}, choose() {}, cycleRemember() {}, submitPasskey() {} })
   surface.assign(box)
   try {
     for (const [title, payload] of [["Open a link from an App", "Exact URL: https://example.org/a?x=%20"], ["Copy text from an App", 'Text (11 UTF-8 bytes): "copy\\ntext"']] as const) {
