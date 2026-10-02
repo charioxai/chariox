@@ -2058,3 +2058,14 @@ The correction is shared by ordinary and worker provider runs. Local protocol
 Web/native minimum versions remain unchanged because they do not depend on this
 MCP-only behavior. Provider-free transport/script tests are focused source
 proof, not MP-08 or MP-10 acceptance on a signed fresh Path-1 release.
+
+### MP-08 / MP-10 terminal workflow event authority (protocol 376)
+
+Terminal `workflow_run_updated` events come from the kernel's archival update
+stream exactly once per recipient. Hot-session snapshot diffs publish only
+nonterminal workflow runs; they cannot duplicate the archival terminal event.
+The focused WebSocket terminal-transition drill verifies Running, Completed,
+durable lookup after archival, and absence of duplicate terminal updates.
+Serialized fields and relay peer protocol 67 are unchanged. Existing web/native
+minimum supported versions stay unchanged because this restores the existing
+terminal-event contract without adding a required client field or operation.
