@@ -737,7 +737,7 @@ async fn automatic_substitution_skips_a_missing_account_and_reaches_the_next_can
             .add_agent_substitute(
                 &agent_id,
                 crate::agent::AgentSubstituteProfile::new(
-                    substitute_provider,
+                    "opencode",
                     model,
                     Some("high".to_string()),
                 )
