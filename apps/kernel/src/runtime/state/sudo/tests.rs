@@ -1059,3 +1059,111 @@ async fn sudo_session_end_removes_running_and_pending_authorizations() {
         }
     }
 }
+
+#[tokio::test]
+async fn external_sudo_source_cannot_reopen_a_session_ended_before_attach() {
+    let f = fixture();
+    f.state.end_session(&f.request.session_id).await.unwrap();
+    // Model end_session winning between grant admission and source attachment.
+    assert!(f
+        .state
+        .attach_external_sudo_source(&f.request.session_id, "local")
+        .is_err());
+    let session = f
+        .state
+        .owned
+        .session_store
+        .get_session(&f.request.session_id)
+        .unwrap();
+    assert_eq!(session.status(), SessionStatus::Ended);
+    assert!(f
+        .state
+        .owned
+        .attachment_store
+        .list_session_attachment_ids(&f.request.session_id)
+        .is_empty());
+}
+
+#[tokio::test]
+async fn sudo_admission_waiting_for_grants_does_not_block_a_critical_receipt() {
+    let f = fixture();
+    let running_turn = running(&f);
+    let responder = f
+        .state
+        .create_kernel_operation_interaction(
+            &f.request.session_id,
+            "local",
+            RuntimeInteraction::for_kernel_operation(
+                "sudo-lock-order-approval",
+                "payment",
+                "Payment",
+                "Fixture only",
+                vec![
+                    RuntimeInteractionChoice::new("deny", "Deny", "deny", None),
+                    RuntimeInteractionChoice::new("approve", "Approve", "approve", None)
+                        .requiring_passkey(),
+                ],
+            ),
+        )
+        .await
+        .unwrap();
+    let grant_id = f.state.insert_access_grant_for_test(&f.request.session_id);
+    let mut pending = running_turn.clone();
+    pending.entry_id = "sudo:queued-lock-order".into();
+    pending.prompt_id = None;
+    pending.provider_run_id = None;
+    pending.requester = Some(
+        f.state.owned.kernel_access.lock().unwrap().grants[&grant_id]
+            .summary
+            .clone(),
+    );
+    f.state
+        .owned
+        .sudo_turns
+        .lock()
+        .unwrap()
+        .insert(pending.entry_id.clone(), pending.clone());
+    let mut admitted = pending.clone();
+    admitted.prompt_id = Some("next-fixture-prompt".into());
+    admitted.provider_run_id = Some(f.run.id().into());
+    // A busy grant writer stalls final admission, as the transport sweep can.
+    let grants = f.state.owned.kernel_access.lock().unwrap();
+    let (entered, enter) = std::sync::mpsc::channel();
+    let state = f.state.clone();
+    let admission = std::thread::spawn(move || {
+        entered.send(()).unwrap();
+        state.admit_sudo_turn(&pending, &admitted, true)
+    });
+    enter.recv_timeout(Duration::from_secs(5)).unwrap();
+    // Let the admission thread reach its blocked grant writer.
+    std::thread::sleep(Duration::from_millis(100));
+    let (completed, completion) = std::sync::mpsc::channel();
+    let state = f.state.clone();
+    let turn = running_turn.clone();
+    let approval = std::thread::spawn(move || {
+        let result = state.owned.resolve_runtime_interaction_authorized(
+            &turn.session_id,
+            "sudo-lock-order-approval",
+            "approve",
+            None,
+            Some("local"),
+            true,
+            Some(&turn),
+            None,
+        );
+        completed.send(result).unwrap();
+    });
+    let answered_while_grants_busy = completion.recv_timeout(Duration::from_secs(2));
+    // Release before asserting: the opposite lock order must fail this test
+    // without leaving its threads blocked in the rest of the test process.
+    drop(grants);
+    admission.join().unwrap().unwrap();
+    approval.join().unwrap();
+    answered_while_grants_busy
+        .expect("grant contention blocked a critical sudo receipt")
+        .unwrap();
+    assert_eq!(
+        responder.await.unwrap().choice_id.as_deref(),
+        Some("approve")
+    );
+}
