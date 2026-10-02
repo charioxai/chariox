@@ -53,7 +53,7 @@ if (cmd === "new" || cmd === "new-remote") {
     throw error
   }
   const agent = first(spawned, "agent_id") ?? first(spawned, "id")
-  if (!session || !agent) throw new Error("kernel did not confirm session and agent creation")
+  if (!agent) throw new Error("kernel did not confirm agent creation")
   db[alias] = { session, agent, workspace, worktree: remote ? arg : worktree, kernel: remote ? REMOTE_KERNEL : null, created: new Date().toISOString() }; save()
   console.log(alias, "session", session, "agent", agent, "worktree", remote ? arg : worktree)
 } else if (cmd === "say") {
@@ -93,22 +93,37 @@ if (cmd === "new" || cmd === "new-remote") {
   const outline = await client.send({ GetSessionHistoryOutline: { session_id: session, agent_ids: [agent], latest_prompt_count: 1 } })
   const turn = (outline.SessionHistoryOutline?.agents?.[0]?.turns ?? []).at(-1) ?? {}
   const entries = [], sequences = new Set()
-  const collect = (x) => { if (x && typeof x === "object") { if (typeof x.entry_index === "number") sequences.add(x.entry_index); if (typeof x.kind === "string" && typeof x.text === "string") entries.push(x); else for (const v of Object.values(x)) collect(v) } }
+  const collect = (x, parentIndex) => {
+    if (!x || typeof x !== "object") return
+    const index = typeof x.entry_index === "number" ? x.entry_index : parentIndex
+    if (typeof index === "number") sequences.add(index)
+    if (typeof x.kind === "string" && typeof x.text === "string") entries.push({ ...x, entry_index: index })
+    else for (const v of Object.values(x)) collect(v, index)
+  }
   for (const b of turn.blobs ?? []) collect(await client.send({ GetSessionHistoryBlobContent: { session_id: session, agent_id: agent, blob_id: b.blob_id } }).catch(() => null))
   for (const e of turn.entries ?? []) collect(e)
   // The final provider message can live only in the outline summary.
   const summary = turn.summary?.entry
-  if (summary?.kind === "provider_output" && !sequences.has(turn.summary.entry_index) && !entries.some((e) => e.kind === summary.kind && e.text === summary.text && e.timestamp_ms === summary.timestamp_ms && e.merge_key === summary.merge_key)) collect(summary)
+  if (summary?.kind === "provider_output" && !sequences.has(turn.summary.entry_index) && !entries.some((e) => e.kind === summary.kind && e.text === summary.text && e.timestamp_ms === summary.timestamp_ms && e.merge_key === summary.merge_key)) collect(turn.summary)
+  entries.sort((a, b) => (a.entry_index ?? a.timestamp_ms ?? 0) - (b.entry_index ?? b.timestamp_ms ?? 0))
   let text = "", key = null, tools = 0
   for (const e of entries) {
-    if (e.kind === "provider_output") { if (key && e.merge_key !== key) text += "\n"; text += e.text; key = e.merge_key }
+    if (e.kind === "provider_output") { if (text && (!key || !e.merge_key || e.merge_key !== key)) text += "\n"; text += e.text; key = e.merge_key }
     else if (e.kind === "provider_tool") tools++
   }
   console.log(`[${tools} tool entries; turn ${turn.completed_at_ms ? "completed" : "open"}]\n` + text.slice(-Number(arg ?? 2500)))
 } else if (cmd === "drop") {
   const { session, agent, workspace } = db[alias]
-  await client.send({ DestroyAgent: { session_id: session, agent_id: agent } })
-  console.log(JSON.stringify(await client.send({ DeleteSession: { session_ref: session, workspace_id: workspace ?? null } })).slice(0, 200))
+  await client.send({ DestroyAgent: { session_id: session, agent_id: agent } }).catch((error) => {
+    // AgentNotFound currently uses the general kernel-request error code.
+    // Match only this exact missing-agent error, preserving cleanup failures.
+    if (error.code !== "kernel_request_failed" || !error.message.endsWith(`agent \`${agent}\` was not found`)) throw error
+  })
+  const deleted = await client.send({ DeleteSession: { session_ref: session, workspace_id: workspace ?? null } }).catch((error) => {
+    if (error.code !== "session_not_found") throw error
+    return { SessionAlreadyDeleted: { session_id: session } }
+  })
+  console.log(JSON.stringify(deleted).slice(0, 200))
   delete db[alias]; save()
 } else {
   console.log("usage: new <alias> <dir> | new-remote <alias> <worker-dir> | say <alias> <file> | wait <alias> [min] | st | out <alias> [chars] | drop <alias>")

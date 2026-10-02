@@ -21,6 +21,10 @@ function fixture(t, options = {}) {
         appendFileSync(${JSON.stringify(calls)}, JSON.stringify(r)+'\\n');
         if(r.CreateSession) return options.missingSession ? {} : {SessionCreated:{session:{id:'session-1'}}};
         if(r.SpawnAgent) {if(options.failSpawn) throw new Error('worker offline'); return {AgentSpawned:{agent:{id:'agent-1',remote_execution:{worker_kernel_id:'builder'}}}};}
+        if(r.DestroyAgent && options.destroyError) throw Object.assign(new Error(options.destroyError === 'missing' ? 'agent \`agent-1\` was not found' : 'worker offline'), {code: 'kernel_request_failed'});
+        if(r.DeleteSession && options.missingSessionOnDrop) throw Object.assign(new Error('session missing'), {code: 'session_not_found'});
+        if(r.GetSessionHistoryOutline && options.longFinal) return {SessionHistoryOutline:{agents:[{turns:[{completed_at_ms:Date.now(),lifecycle:'completed',blobs:[{blob_id:'final-blob'}],entries:[{entry_index:1,entry:{kind:'provider_output',merge_key:'earlier',text:'EARLIER'.repeat(500)}}],summary:{entry_index:2,fragment_end:12,total_chars:17015,entry:{kind:'provider_output',merge_key:'final',text:'REMOTE FINAL'}}}]}]}};
+        if(r.GetSessionHistoryBlobContent) return {SessionHistoryBlobContent:{entries:[{entry_index:2,entry:{kind:'provider_output',merge_key:'final',text:'x'.repeat(17000)+'LONG_FINAL_TAIL'}}]}};
         if(r.GetSessionHistoryOutline) return {SessionHistoryOutline:{agents:[{turns:[{started_at_ms:Date.now(),completed_at_ms:Date.now(),lifecycle:options.lifecycle??'completed',entries: options.earlierOutput ? [{entry:{kind:'provider_output',text:'EARLIER'}}] : options.inline ? [{entry:{kind:'provider_output',merge_key:options.noMergeKey?undefined:'final',text:'REMOTE FINAL'}}] : [],summary:{entry:{kind:'provider_output',merge_key:options.noMergeKey?undefined:'final',text:'REMOTE FINAL'}}}]}]}};
         if(r.AttachToSession) return {SessionAttached:{attachment:{id:'attachment-1'}}};
         if(r.SubmitPrompt) return {PromptSubmitted:{}};
@@ -105,7 +109,7 @@ test('out retains an unkeyed final after an earlier unkeyed message', t => {
   const r = f.run('out', 'worker')
   assert.equal(r.status, 0, r.stderr)
   assert.match(r.stdout, /EARLIER/)
-  assert.match(r.stdout, /REMOTE FINAL/)
+  assert.match(r.stdout, /EARLIER\nREMOTE FINAL/)
 })
 
 test('missing session confirmation causes no agent spawn or deletion', t => {
@@ -121,4 +125,31 @@ test('drop destroys the leased agent before deleting its home session', t => {
   assert.equal(r.status, 0, r.stderr)
   assert.deepEqual(f.requests().map(r => Object.keys(r)[0]), ['DestroyAgent', 'DeleteSession'])
   assert.deepEqual(JSON.parse(readFileSync(f.db)), {})
+})
+
+
+test('out orders a long final blob after earlier inline commentary', t => {
+  const f = fixture(t, { longFinal: true, db: { worker: { session: 'session-1', agent: 'agent-1' } } })
+  const r = f.run('out', 'worker')
+  assert.equal(r.status, 0, r.stderr)
+  assert.match(r.stdout, /LONG_FINAL_TAIL/)
+  assert.doesNotMatch(r.stdout, /EARLIER|REMOTE FINAL/)
+})
+
+test('drop can retry after the agent or whole session was already removed', t => {
+  for (const missingSessionOnDrop of [false, true]) {
+    const f = fixture(t, { destroyError: 'missing', missingSessionOnDrop, db: { worker: { session: 'session-1', agent: 'agent-1' } } })
+    const r = f.run('drop', 'worker')
+    assert.equal(r.status, 0, r.stderr)
+    assert.deepEqual(f.requests().map(r => Object.keys(r)[0]), ['DestroyAgent', 'DeleteSession'])
+    assert.deepEqual(JSON.parse(readFileSync(f.db)), {})
+  }
+})
+
+test('drop preserves the alias and session when worker cleanup fails', t => {
+  const f = fixture(t, { destroyError: 'offline', db: { worker: { session: 'session-1', agent: 'agent-1' } } })
+  const r = f.run('drop', 'worker')
+  assert.notEqual(r.status, 0)
+  assert.deepEqual(f.requests().map(r => Object.keys(r)[0]), ['DestroyAgent'])
+  assert.equal(JSON.parse(readFileSync(f.db)).worker.session, 'session-1')
 })
