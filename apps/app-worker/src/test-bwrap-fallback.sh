@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Takes the source/build scratch created by build-app-bwrap.sh.
 set -euo pipefail
-repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
+repo=$(cd -- "$(dirname -- "$0")/../../.." && pwd)
 scratch=$1
 cc=${CC:-cc}
 common=(-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -D_GNU_SOURCE -std=gnu11 -Wall -Wextra -Werror -O2 -ffunction-sections -fdata-sections -I "$scratch/source" -I "$scratch/build" -I "$repo/apps/app-worker/src")
