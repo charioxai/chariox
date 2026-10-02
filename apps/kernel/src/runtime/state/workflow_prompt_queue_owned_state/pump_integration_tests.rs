@@ -269,7 +269,19 @@ fn one_pass_without_a_view_queues_the_original_event_and_recovers_its_prompt_rec
     drop(async_runtime);
     drop(runtime);
     drop(store);
-    let reopened = DurableKernelStateStore::open_owned(path.clone()).unwrap();
+    let owner_release_deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let reopened = loop {
+        match DurableKernelStateStore::open_owned(path.clone()) {
+            Ok(store) => break store,
+            Err(crate::error::DaemonError::LocalTransport {
+                operation: "durable_state.acquire_owner",
+                ..
+            }) if std::time::Instant::now() < owner_release_deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("released workflow fixture should reopen: {error}"),
+        }
+    };
     assert_eq!(
         receipt(&reopened, &catalog, &accepted.receipt_id).state,
         ReceiptState::Delivered
