@@ -664,7 +664,13 @@ mod tests {
             .provider_run_projection
             .update(ended.into_run());
         runtime
-            .resolve_terminal_runtime_interaction(session.id(), interaction.id(), "unlock_operation", None, Some(crate::session::DEFAULT_LOCAL_USER_ID))
+            .resolve_terminal_runtime_interaction(
+                session.id(),
+                interaction.id(),
+                "unlock_operation",
+                None,
+                Some(crate::session::DEFAULT_LOCAL_USER_ID),
+            )
             .await
             .expect("vault unlock interaction should resolve");
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
