@@ -137,18 +137,34 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .cloned()
             .collect::<std::collections::BTreeSet<_>>();
         let mut history_keys = Vec::new();
+        let mut tool_states = std::collections::BTreeMap::new();
         let mut projected_output_stream_keys = std::collections::BTreeSet::new();
         let mut deduplicated_chunks = Vec::with_capacity(output_chunks.len());
         for chunk in output_chunks.drain(..) {
             let snapshot_key =
                 leased_provider_run_history_chunk_key(&leased_agent, provider_run_id, &chunk);
             if chunk.kind == TerminalOutputKind::ProviderTool {
+                let stream_key =
+                    leased_tool_stream_key(&leased_agent, provider_run_id, &chunk.merge_key);
+                let tool = match tool_states.entry(stream_key.clone()) {
+                    std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(crate::history::leased_projection::ProjectedToolState {
+                            state: history_store.load_leased_tool_state(&stream_key)?,
+                            stream_key,
+                            session_id: leased_agent.backing_session_id.clone(),
+                            agent_id: leased_agent.backing_agent_id.clone(),
+                            provider_run_id: provider_run_id.to_string(),
+                            merge_key: chunk.merge_key.clone(),
+                        })
+                    }
+                };
                 if pending_keys.contains(&snapshot_key)
                     || history_store.leased_projection_key_exists(&snapshot_key)?
+                    || !tool.state.record(snapshot_key, &chunk.bytes)
                 {
                     continue;
                 }
-                pending_keys.insert(snapshot_key);
             }
             if chunk.kind == TerminalOutputKind::ProviderOutput {
                 let stream_key =
@@ -188,6 +204,29 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         merge_key: entry.merge_key.clone(),
                         bytes: entry.text.as_bytes().to_vec(),
                     };
+                    if chunk.kind == TerminalOutputKind::ProviderTool {
+                        // Retire pending tool state by identity, even when the
+                        // terminal carried a delta and history a full snapshot.
+                        let stream_key = leased_tool_stream_key(
+                            &leased_agent,
+                            provider_run_id,
+                            &chunk.merge_key,
+                        );
+                        if !tool_states.contains_key(&stream_key) {
+                            tool_states.insert(
+                                stream_key.clone(),
+                                crate::history::leased_projection::ProjectedToolState {
+                                    state: history_store.load_leased_tool_state(&stream_key)?,
+                                    stream_key,
+                                    session_id: leased_agent.backing_session_id.clone(),
+                                    agent_id: leased_agent.backing_agent_id.clone(),
+                                    provider_run_id: provider_run_id.to_string(),
+                                    merge_key: chunk.merge_key,
+                                },
+                            );
+                        }
+                        continue;
+                    }
                     let snapshot_key = leased_provider_run_history_chunk_key(
                         &leased_agent,
                         provider_run_id,
@@ -201,14 +240,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     let already_projected = pending_keys.contains(&snapshot_key)
                         || stream_projected
                         || history_store.leased_projection_key_exists(&snapshot_key)?;
-                    // Tool history is not a fallback output source. Compact only
-                    // snapshots actually emitted from terminal records.
-                    if chunk.kind == TerminalOutputKind::ProviderTool
-                        && !pending_keys.contains(&snapshot_key)
-                        && !history_store.leased_projection_key_exists(&snapshot_key)?
-                    {
-                        continue;
-                    }
                     if chunk.kind == TerminalOutputKind::ProviderOutput && !already_projected {
                         projected_output_stream_keys.insert(stream_key.clone());
                         latest_output_history_completion_key = Some(snapshot_key.clone());
@@ -687,12 +718,14 @@ impl<'a> RemoteLeaseRuntime<'a> {
         if history_cursor != initial_history_cursor
             || !pending_keys.is_empty()
             || !history_keys.is_empty()
+            || !tool_states.is_empty()
         {
             history_store.commit_leased_projection_cursor(
                 &projection_id,
                 &history_cursor,
                 &pending_keys.into_iter().collect::<Vec<_>>(),
                 &history_keys,
+                &tool_states.into_values().collect::<Vec<_>>(),
             )?;
         }
         if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
@@ -2572,4 +2605,13 @@ mod explicit_completion_tests {
             .expect("duplicate projection check should succeed");
         assert!(duplicate.is_none());
     }
+}
+
+fn leased_tool_stream_key(leased: &LeasedAgent, run: &str, merge_key: &Option<String>) -> String {
+    format!(
+        "{}:{}:{run}:ProviderTool:{}",
+        leased.backing_session_id,
+        leased.backing_agent_id,
+        merge_key.as_deref().unwrap_or("none")
+    )
 }

@@ -5,7 +5,7 @@
 // kernel's RSS exceeds --max-rss-mb.
 import { execFileSync, spawn, spawnSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { chmodSync, cpSync, mkdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
@@ -28,7 +28,7 @@ const promptEveryMs = argNumber("--prompt-every-ms", 3_000)
 const idleSessions = argNumber("--idle-sessions", 35)
 const maxRssMb = argNumber("--max-rss-mb", 1_200)
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-const root = path.join(os.tmpdir(), `chariox-leased-home-memory-soak-${process.pid}-${Date.now()}`)
+const root = mkdtempSync(path.join(os.tmpdir(), "chariox-leased-home-memory-soak-"))
 const children = []
 
 // Claude Code stand-in: every prompt starts a long turn of thinking, text and tool deltas.

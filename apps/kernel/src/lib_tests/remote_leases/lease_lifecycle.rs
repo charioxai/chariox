@@ -416,6 +416,13 @@ fn partial_provider_cleanup_retries_ended_runs_before_releasing_capacity() {
             (second, first)
         };
         assert_eq!(sibling.backing_session_id, leased_agent.backing_session_id);
+        // Lease cleanup follows BTreeMap key order. IDs include a timestamp XOR,
+        // so creation order does not guarantee which sibling is cleaned first.
+        let (leased_agent, sibling) = if leased_agent.id < sibling.id {
+            (leased_agent, sibling)
+        } else {
+            (sibling, leased_agent)
+        };
 
         let run_id = format!("provider-cleanup-{failure_point:?}");
         let request = crate::provider::LaunchProviderRequest::new(
