@@ -81,6 +81,13 @@ impl AppLifecycleService {
             // It is not a user stop: a failed update restarts the old
             // generation on demand.
             drop(entries);
+            if !entry.control.finished() {
+                // Preparation precedes both the worker drain and the writer's
+                // update fence/snapshot in claim_first_app_install.
+                entry.control.notify("prepare_update", serde_json::json!({
+                    "request_id": match &kind { StartKind::First { request_id, .. } => request_id, _ => unreachable!() },
+                }))?;
+            }
             entry.control.cancel(false);
             entry.join();
             entries = self
@@ -307,14 +314,12 @@ impl AppLifecycleService {
             return Ok(());
         };
         // A concurrent manual stop, a finished owner or new use wins.
-        if entry.control.stopped()
-            || entry.control.pending_manual_stop()
-            || !still_idle()
-            || !self.0.publisher.retain_dormant(owner, catalog)
-        {
+        if entry.control.stopped() || entry.control.pending_manual_stop() || !still_idle() {
             return Ok(());
         }
-        entry.control.cancel(false);
+        entry
+            .control
+            .notify("suspend", serde_json::json!({"reason":"idle"}))?;
         entry.join();
         let mut entries = self
             .0

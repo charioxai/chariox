@@ -18,15 +18,32 @@ impl AppLifecycleService {
             InstallPhase::Committed => {
                 self.start(owner, &operation.token.installation_id, true, runtime)
             }
-            InstallPhase::AwaitingApproval | InstallPhase::Starting => self.start_kind(
-                owner,
-                &operation.token.installation_id,
-                StartKind::First {
-                    request_id: request_id.into(),
-                    replace: operation.token.base_generation > 0,
-                },
-                runtime,
-            ),
+            InstallPhase::AwaitingApproval | InstallPhase::Starting => {
+                let result = self.start_kind(
+                    owner,
+                    &operation.token.installation_id,
+                    StartKind::First {
+                        request_id: request_id.into(),
+                        replace: operation.token.base_generation > 0,
+                    },
+                    runtime,
+                );
+                if result == Err(LifecycleError::Notification) {
+                    // A failed old-worker preparation refuses this precommit
+                    // operation. Nothing has fenced or snapshotted App data.
+                    if let Err(error) = self.0.store.cancel_first_app_install(
+                        owner,
+                        request_id,
+                        AppOperationBudget::from_supervisor(|| false),
+                    ) {
+                        if error == InstallOperationError::CommitUnknown {
+                            let _ = self.0.store.fence_writer();
+                        }
+                        return Err(error.into());
+                    }
+                }
+                result
+            }
             InstallPhase::Cancelled | InstallPhase::Failed => Err(LifecycleError::Authority),
         }
     }

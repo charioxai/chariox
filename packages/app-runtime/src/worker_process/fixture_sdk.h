@@ -5,7 +5,7 @@
 #include <time.h>
 
 static int fixture_sdk_mode(const char* mode) {
-  return !strcmp(mode, "sdk_ready") || !strcmp(mode, "sdk_wrong_handlers") ||
+  return !strncmp(mode, "sdk_lifecycle", 13) || !strcmp(mode, "sdk_ready") || !strcmp(mode, "sdk_wrong_handlers") ||
       !strcmp(mode, "sdk_no_report") || !strcmp(mode, "sdk_broker_call") || !strcmp(mode, "sdk_tool") ||
       !strcmp(mode, "sdk_other_installation") || !strcmp(mode, "sdk_files") ||
       !strcmp(mode, "sdk_health") || !strcmp(mode, "sdk_bad_health") || !strcmp(mode, "sdk_http") || !strcmp(mode, "sdk_http_paused") ||
@@ -128,6 +128,7 @@ static int fixture_sdk_tool(const struct cx_launch_record* record) {
 }
 
 #include "fixture_health.h"
+#include "fixture_lifecycle.h"
 #include "fixture_http.h"
 
 /* A staged worker migrating schema 0 to 1 before it registers: it reads and
@@ -167,16 +168,25 @@ static int fixture_sdk_run(const struct cx_launch_record* record, const char* mo
   }
   const char* report = !strcmp(mode, "sdk_wrong_handlers") ?
       "{\"tools\":[\"undeclared\"],\"events\":[],\"lifecycle\":[]}" :
+      !strncmp(mode, "sdk_lifecycle", 13) ? "{\"tools\":[],\"events\":[],\"lifecycle\":[\"health_check\",\"startup\",\"suspend\",\"resume\",\"prepare_update\",\"configuration_change\",\"shutdown\"]}" :
       fixture_health_mode(mode) ? "{\"tools\":[],\"events\":[],\"lifecycle\":[\"health_check\",\"startup\"]}" :
       !strcmp(mode, "sdk_tool") ? "{\"tools\":[\"echo\"],\"events\":[],\"lifecycle\":[]}" :
       "{\"tools\":[],\"events\":[],\"lifecycle\":[]}";
   if (fixture_sdk_request("ready", "worker.ready", report) != 1) return 99;
-  if (fixture_health_mode(mode)) {
+  if (fixture_health_mode(mode) && strncmp(mode, "sdk_lifecycle", 13)) {
     if (fixture_health_before(mode, response) != 1) return 121;
     if (!strcmp(mode, "sdk_bad_health")) return fixture_sdk_receive(response, cx_monotonic_ms()+5000)==0 ? 0 : 122;
   }
   char startup[8193] = {0};
   int received = fixture_sdk_receive(response, cx_monotonic_ms() + 5000);
+  if (received==1 && !strncmp(mode,"sdk_lifecycle",13)) {
+    char id[129];
+    // First installs health-check before ACK; active restarts ACK directly.
+    if (fixture_health_parse(response,"health_check",id)==1) {
+      if (fixture_health_reply(id,0)!=1) return 147;
+      received=fixture_sdk_receive(response,cx_monotonic_ms()+5000);
+    }
+  }
   if (received==1 && fixture_health_mode(mode) && strstr(response,"\"method\":\"lifecycle.dispatch\"")) {
     char id[129];
     if (fixture_health_parse(response,"startup",id)!=1) return 124;
@@ -196,6 +206,7 @@ static int fixture_sdk_run(const struct cx_launch_record* record, const char* mo
   if (file < 0) return 103;
   if (fsync(file) || close(file)) return 104;
   if (fixture_sdk_event("worker.fixture.ready_ack") != 1) return 105;
+  if (!strncmp(mode, "sdk_lifecycle", 13)) return fixture_lifecycle_run(record, mode, response, startup);
   if (fixture_health_mode(mode)) return fixture_health_after(response,startup)==1 ? 0 : 123;
   if (!strcmp(mode, "sdk_http") || !strcmp(mode, "sdk_http_paused")) { int result=fixture_http_run(response,!strcmp(mode, "sdk_http_paused")); if (result) return result; }
   if (!strcmp(mode, "sdk_files")) {

@@ -2,6 +2,7 @@
 //! Data migrations and terminal approval projection remain separate duties.
 mod first_install;
 mod manual_stop;
+mod notifications;
 mod operations;
 mod owner;
 mod ownership;
@@ -58,6 +59,8 @@ pub(crate) enum LifecycleError {
     CommitUnknown,
     #[error("app_lifecycle_startup")]
     Startup,
+    #[error("app_lifecycle_notification")]
+    Notification,
     #[error("app_lifecycle_worker_exit")]
     WorkerExit,
     #[error("app_lifecycle_supervisor")]
@@ -85,10 +88,15 @@ impl From<InstallOperationError> for LifecycleError {
 }
 #[derive(Clone)]
 enum StartKind {
-    Active { recovery: bool },
+    Active {
+        recovery: bool,
+    },
     /// A supervised install operation. `replace` is a local update: the
     /// installation's current worker is drained (not user-stopped) first.
-    First { request_id: String, replace: bool },
+    First {
+        request_id: String,
+        replace: bool,
+    },
 }
 type Result<T> = std::result::Result<T, LifecycleError>;
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,6 +147,8 @@ struct Control {
     done: Mutex<bool>,
     wake: Condvar,
     drain: Mutex<Option<crate::runtime::app_worker::AppWorkerDrain>>,
+    notification: Mutex<Option<notifications::Request>>,
+    idle: AtomicBool,
 }
 struct Operation<'a> {
     inner: &'a Inner,

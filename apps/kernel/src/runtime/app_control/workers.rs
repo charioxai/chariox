@@ -10,13 +10,17 @@ use std::{
 
 const MAX_PROJECTIONS: usize = 64;
 type Key = (String, String);
+struct Dormant {
+    catalog: Arc<EventCatalog>,
+    configuration: serde_json::Value,
+}
 /// Live worker projections, plus the verified catalogs of Apps stopped while
 /// idle. A dormant catalog keeps tools discoverable; invoking one starts the
 /// App on demand. Current generation and signer are rechecked before use.
 #[derive(Clone, Default)]
 pub(super) struct ActiveWorkers(
     Arc<Mutex<BTreeMap<Key, ActivatedApp>>>,
-    Arc<Mutex<BTreeMap<Key, Arc<EventCatalog>>>>,
+    Arc<Mutex<BTreeMap<Key, Dormant>>>,
 );
 
 impl ActiveWorkers {
@@ -75,9 +79,27 @@ impl AppWorkerPublisher {
     pub(crate) fn is_dormant(&self, owner: &str, installation: &str) -> bool {
         self.workers.is_dormant(owner, installation)
     }
-    /// Recorded before an idle stop so tools stay discoverable while stopped.
-    /// False when the bounded set is full; the caller then keeps the worker.
-    pub(crate) fn retain_dormant(&self, owner: &str, catalog: Arc<EventCatalog>) -> bool {
+    /// Last notified configuration, retained with the dormant catalog.
+    pub(crate) fn dormant_configuration(
+        &self,
+        owner: &str,
+        installation: &str,
+    ) -> Option<serde_json::Value> {
+        self.workers
+            .1
+            .lock()
+            .ok()?
+            .get(&(owner.into(), installation.into()))
+            .map(|d| d.configuration.clone())
+    }
+    /// Record successful suspension in the bounded dormant catalog.
+    /// If full, the quiesced worker ends without advertising dormancy.
+    pub(crate) fn retain_dormant(
+        &self,
+        owner: &str,
+        catalog: Arc<EventCatalog>,
+        configuration: serde_json::Value,
+    ) -> bool {
         let Ok(mut dormant) = self.workers.1.lock() else {
             return false;
         };
@@ -85,7 +107,13 @@ impl AppWorkerPublisher {
         if !dormant.contains_key(&key) && dormant.len() >= MAX_PROJECTIONS {
             return false;
         }
-        dormant.insert(key, catalog);
+        dormant.insert(
+            key,
+            Dormant {
+                catalog,
+                configuration,
+            },
+        );
         true
     }
     pub(crate) fn forget_dormant(&self, owner: &str, installation: &str) {
@@ -146,7 +174,7 @@ impl AppControlService {
                 dormant
                     .iter()
                     .filter(|((key_owner, _), _)| key_owner == owner)
-                    .map(|(_, catalog)| catalog.clone())
+                    .map(|(_, dormant)| dormant.catalog.clone())
                     .collect()
             },
         )
