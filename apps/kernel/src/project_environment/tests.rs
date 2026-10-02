@@ -1601,3 +1601,223 @@ fn mp08_mp10_mp11_mounted_config_reconciliation_preserves_rollback_and_target_st
         0o600
     );
 }
+
+// MP-08 / MP-10 / MP-11: Docker shares a fresh checkout by group, not file UID.
+// The worker must import a matching tracked config as a private target-owned file.
+#[cfg(target_os = "linux")]
+#[test]
+fn mp08_mp10_mp11_foreign_owned_mounted_config_is_private_and_transactional() {
+    use super::materialization_transaction::{
+        MaterializationTarget, ProjectEnvironmentMaterialization,
+    };
+    use std::os::unix::{
+        fs::{MetadataExt, PermissionsExt},
+        process::CommandExt,
+    };
+    const CHILD_ROOT: &str = "CHARIOX_TEST_FOREIGN_CONFIG_ROOT";
+    if let Ok(root) = std::env::var(CHILD_ROOT) {
+        let root = PathBuf::from(root);
+        let mut manifest = fixture_manifest(vec![ProjectEnvironmentEntry {
+            name: "config.json".into(),
+            workspace_id: "web".into(),
+            kind: ProjectEnvironmentEntryKind::ConfigFile,
+            classification: ProjectEnvironmentClassification::Secret,
+            excluded: false,
+            uses: vec![ProjectEnvironmentUse {
+                path: "app.c".into(),
+                line: 1,
+            }],
+            locator: ProjectEnvironmentLocator::ConfigFile {
+                path: "config.json".into(),
+            },
+            status: ProjectEnvironmentEntryStatus::Found,
+        }]);
+        let mut resolved = ResolvedProjectEnvironment {
+            values: BTreeMap::from([(
+                ("web".into(), "config.json".into()),
+                zeroize::Zeroizing::new("synthetic selected config".into()),
+            )]),
+            unresolved: vec![],
+        };
+        let mode = std::env::var("CHARIOX_TEST_FOREIGN_CONFIG_MODE").unwrap();
+        if mode == "fail-later" {
+            let mut entry = manifest.entries[0].clone();
+            entry.name = "z/config.json".into();
+            entry.locator = ProjectEnvironmentLocator::ConfigFile {
+                path: entry.name.clone(),
+            };
+            resolved.values.insert(
+                ("web".into(), entry.name.clone()),
+                zeroize::Zeroizing::new("synthetic selected config".into()),
+            );
+            manifest.entries.push(entry);
+        }
+        let prepared = ProjectEnvironmentMaterialization::prepare(
+            &manifest,
+            &resolved,
+            &BTreeMap::from([("web".into(), root.clone())]),
+            MaterializationTarget::MountedSource,
+        );
+        if mode == "fail-later" {
+            assert!(prepared.is_err());
+            return;
+        }
+        let transaction =
+            prepared.expect("matching shared configuration must become private on the worker");
+        let metadata = std::fs::metadata(root.join("config.json")).unwrap();
+        assert_eq!(metadata.uid(), unsafe { libc::geteuid() });
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        if mode == "replacement" {
+            std::fs::write(root.join("replacement"), "synthetic target edit").unwrap();
+            std::fs::rename(root.join("replacement"), root.join("config.json")).unwrap();
+        }
+        if mode == "rollback-denied" {
+            // MP-08 / MP-10 / MP-11: reject only this child's rollback syscall,
+            // while leaving unlink available to expose destructive cleanup.
+            let mut filters = [
+                libc::sock_filter {
+                    code: 0x20,
+                    jt: 0,
+                    jf: 0,
+                    k: 0,
+                },
+                libc::sock_filter {
+                    code: 0x15,
+                    jt: 0,
+                    jf: 1,
+                    k: libc::SYS_renameat2 as u32,
+                },
+                libc::sock_filter {
+                    code: 0x06,
+                    jt: 0,
+                    jf: 0,
+                    k: libc::SECCOMP_RET_ERRNO | libc::EACCES as u32,
+                },
+                libc::sock_filter {
+                    code: 0x06,
+                    jt: 0,
+                    jf: 0,
+                    k: libc::SECCOMP_RET_ALLOW,
+                },
+            ];
+            let program = libc::sock_fprog {
+                len: filters.len() as u16,
+                filter: filters.as_mut_ptr(),
+            };
+            assert_eq!(
+                unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) },
+                0
+            );
+            assert_eq!(
+                unsafe { libc::prctl(libc::PR_SET_SECCOMP, libc::SECCOMP_MODE_FILTER, &program) },
+                0
+            );
+        }
+        if mode == "commit" {
+            transaction.commit();
+        }
+        return;
+    }
+    if unsafe { libc::geteuid() } != 0 {
+        return;
+    }
+    let fixture = Fixture::new();
+    std::fs::set_permissions(&fixture.0, std::fs::Permissions::from_mode(0o775)).unwrap();
+    let directory = std::ffi::CString::new(fixture.0.as_os_str().as_encoded_bytes()).unwrap();
+    assert_eq!(unsafe { libc::chown(directory.as_ptr(), 0, 31001) }, 0);
+    let path = fixture.0.join("config.json");
+    std::fs::write(&path, "synthetic selected config").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o664)).unwrap();
+    // The child UID cannot traverse a root-owned builder checkout.
+    let executable = fixture.0.join("worker-test");
+    std::fs::copy(std::env::current_exe().unwrap(), &executable).unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    for mode in [
+        "drop",
+        "fail-later",
+        "replacement",
+        "rollback-denied",
+        "commit",
+    ] {
+        let file_name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::chown(file_name.as_ptr(), 0, 31001) }, 0);
+        std::fs::write(&path, "synthetic selected config").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o664)).unwrap();
+        let original = std::fs::metadata(&path).unwrap();
+        if mode == "fail-later" {
+            std::os::unix::fs::symlink(&fixture.0, fixture.0.join("z")).unwrap();
+        }
+        let mut command = std::process::Command::new(&executable);
+        command.args(["--exact", "project_environment::tests::mp08_mp10_mp11_foreign_owned_mounted_config_is_private_and_transactional", "--test-threads=1"])
+            .env(CHILD_ROOT, &fixture.0).env("CHARIOX_TEST_FOREIGN_CONFIG_MODE", mode);
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setgroups(0, std::ptr::null()) != 0
+                    || libc::setgid(31001) != 0
+                    || libc::setuid(31001) != 0
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "isolated worker import failed: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let after = std::fs::metadata(&path).unwrap();
+        if mode == "rollback-denied" {
+            let backups: Vec<_> = std::fs::read_dir(&fixture.0)
+                .unwrap()
+                .map(Result::unwrap)
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".chariox-env-")
+                })
+                .collect();
+            assert_eq!(
+                backups.len(),
+                1,
+                "failed restore must retain the original inode"
+            );
+            assert_eq!(backups[0].metadata().unwrap().ino(), original.ino());
+            assert_eq!(backups[0].metadata().unwrap().uid(), 0);
+            std::fs::remove_file(backups[0].path()).unwrap();
+            assert_eq!(after.uid(), 31001);
+            assert_eq!(after.permissions().mode() & 0o777, 0o600);
+        } else if mode == "replacement" {
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                "synthetic target edit"
+            );
+            assert_eq!(after.uid(), 31001);
+        } else if mode == "commit" {
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                "synthetic selected config"
+            );
+            assert_eq!(after.uid(), 31001);
+            assert_eq!(after.permissions().mode() & 0o777, 0o600);
+        } else {
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                "synthetic selected config"
+            );
+            assert_eq!(after.ino(), original.ino());
+            assert_eq!(after.uid(), 0);
+            assert_eq!(after.permissions().mode() & 0o777, 0o664);
+        }
+        if mode == "fail-later" {
+            std::fs::remove_file(fixture.0.join("z")).unwrap();
+        }
+        assert_eq!(
+            std::fs::read_dir(&fixture.0).unwrap().count(),
+            2,
+            "no transaction backup remains"
+        );
+    }
+}

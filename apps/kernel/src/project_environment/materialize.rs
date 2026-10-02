@@ -347,6 +347,12 @@ fn reuse_matching_config(
             "mounted configuration changed during reconciliation",
         ));
     }
+    // MP-08 / MP-10 / MP-11: a shared checkout may belong to the publishing
+    // kernel. Group write access does not authorize chmod on its config inode.
+    #[cfg(target_os = "linux")]
+    if metadata.uid() != unsafe { libc::geteuid() } && unsafe { libc::geteuid() } != 0 {
+        return replace_matching_foreign_config(parent, name, value, &metadata).map(Some);
+    }
     let rollback_file = file
         .try_clone()
         .map_err(|_| environment_error("mounted configuration unavailable"))?;
@@ -364,4 +370,47 @@ fn reuse_matching_config(
         .map_err(|_| environment_error("private mounted configuration permissions failed"))?;
     owned.sync()?;
     Ok(Some(owned))
+}
+
+/// MP-08 / MP-10 / MP-11: make the matching config target-owned while retaining
+/// its original inode for rollback. Never replace a differing source/target file.
+#[cfg(target_os = "linux")]
+fn replace_matching_foreign_config(
+    parent: &std::fs::File,
+    name: &std::ffi::CString,
+    value: &[u8],
+    original: &std::fs::Metadata,
+) -> Result<super::materialization_transaction::MaterializedFile, DaemonError> {
+    use std::io::Write;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let temporary =
+        std::ffi::CString::new(format!(".chariox-env-{}", rand::random::<u64>())).unwrap();
+    let fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            temporary.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600,
+        )
+    };
+    if fd < 0 {
+        return Err(environment_error(
+            "create private mounted configuration failed",
+        ));
+    }
+    let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+    let mut staged = super::materialization_transaction::MaterializedFile::new(
+        parent
+            .try_clone()
+            .map_err(|_| environment_error("target config directory unavailable"))?,
+        temporary.clone(),
+        &file,
+    )?;
+    let written = file.write_all(value).and_then(|_| file.sync_all());
+    // Even a partial write belongs to this transaction's failure cleanup.
+    staged.refresh_identity(&file)?;
+    written.map_err(|_| environment_error("write private mounted configuration failed"))?;
+    staged.exchange_matching(name, original)?;
+    staged.sync()?;
+    Ok(staged)
 }
