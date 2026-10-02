@@ -203,6 +203,7 @@ pub struct DaemonApp {
     /// A provider run can have one active turn plus queued turns, each with a
     /// different workflow context and capability snapshot.
     leased_workflow_turns: BTreeMap<String, LeasedWorkflowTurnBinding>,
+    leased_turns_waiting_for_capacity: VecDeque<remote_lease::LeasedTurnWaitingForCapacity>,
     remote_git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore,
     completed_git_turn_snapshots: crate::git_observer::CompletedGitTurnSnapshotStore,
     slices: crate::slice::SliceStore,
@@ -383,6 +384,7 @@ impl DaemonApp {
             #[cfg(test)]
             leased_agent_provider_cleanup_failures: BTreeMap::new(),
             leased_workflow_turns: BTreeMap::new(),
+            leased_turns_waiting_for_capacity: VecDeque::new(),
             remote_git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
             completed_git_turn_snapshots:
                 crate::git_observer::CompletedGitTurnSnapshotStore::default(),

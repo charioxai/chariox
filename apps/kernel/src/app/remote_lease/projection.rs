@@ -47,6 +47,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
         pump_output: bool,
         replay_settled_completion: bool,
     ) -> Result<Option<(String, RelayPeerEvent)>, DaemonError> {
+        // Home drains poll every active remote turn, including held ones, so
+        // this is where a freed capacity slot is noticed.
+        self.admit_leased_turns_waiting_for_capacity();
         let leased_agent = self
             .app
             .leased_agents
@@ -672,6 +675,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
         leased_agent: &LeasedAgent,
         provider_run_id: &str,
     ) -> Result<bool, DaemonError> {
+        if self.leased_turn_is_waiting_for_capacity(&leased_agent.id) {
+            return Ok(false);
+        }
         let provider_run = self.app.providers.get_run(provider_run_id).ok();
         if leased_provider_requires_explicit_completion(
             &leased_agent.provider,
@@ -745,6 +751,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
     pub(crate) fn pump_leased_runtime_projections(
         &mut self,
     ) -> Result<Vec<(String, RelayPeerEvent)>, DaemonError> {
+        self.admit_leased_turns_waiting_for_capacity();
         let leased_agents = self.app.leased_agents.values().cloned().collect::<Vec<_>>();
         let mut events = Vec::new();
         for leased_agent in leased_agents {

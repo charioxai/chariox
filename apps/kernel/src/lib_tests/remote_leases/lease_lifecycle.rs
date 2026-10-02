@@ -31,32 +31,47 @@ fn execution_leases_are_enabled_by_default_and_can_be_disabled() {
 }
 
 #[test]
-fn execution_lease_capacity_rejects_concurrent_lease_and_reopens_after_destroy() {
-    let mut config = DaemonConfig::for_tests();
-    config.remote_lease_capacity = Some(1);
-    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+fn execution_lease_capacity_does_not_count_idle_leased_agents() {
+    for role in [
+        crate::config::KernelRuntimeRole::General,
+        crate::config::KernelRuntimeRole::RemoteLeaseWorker,
+    ] {
+        let mut config = DaemonConfig::for_tests();
+        config.kernel_runtime_role = role;
+        config.remote_lease_capacity = Some(1);
+        let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
 
-    assert!(app.relay_registration().accepting_remote_leases);
-    let first = RemoteLeaseRuntime::new(&mut app)
+        for index in 0..3 {
+            let lease = RemoteLeaseRuntime::new(&mut app)
+                .create_execution_lease(
+                    "home-kernel",
+                    &format!("session-{index}"),
+                    &format!("agent-{index}"),
+                    false,
+                    "user-home",
+                )
+                .expect("an idle leased agent must not consume capacity");
+            RemoteLeaseRuntime::new(&mut app)
+                .create_leased_agent(
+                    &lease.id, "dev-stub", "default", None, None, None, None, None, None, None,
+                )
+                .expect("leased agent should create");
+            assert!(app.relay_registration().accepting_remote_leases);
+        }
+        assert_eq!(RemoteLeaseRuntime::new(&mut app).execution_lease_count(), 3);
+        assert_eq!(RemoteLeaseRuntime::new(&mut app).leased_agent_count(), 3);
+    }
+
+    let mut disabled_config = DaemonConfig::for_tests();
+    disabled_config.accept_remote_leases = false;
+    disabled_config.remote_lease_capacity = Some(1);
+    let mut disabled =
+        DaemonApp::bootstrap(disabled_config).expect("daemon bootstrap should succeed");
+    assert!(!disabled.relay_registration().accepting_remote_leases);
+    let error = RemoteLeaseRuntime::new(&mut disabled)
         .create_execution_lease("home-kernel", "session-1", "agent-1", false, "user-home")
-        .expect("first execution lease should fit capacity");
-    assert!(!app.relay_registration().accepting_remote_leases);
-
-    let error = RemoteLeaseRuntime::new(&mut app)
-        .create_execution_lease("home-kernel", "session-2", "agent-2", false, "user-home")
-        .expect_err("second concurrent execution lease should exceed capacity");
+        .expect_err("disabled remote leases must still refuse");
     assert!(matches!(error, DaemonError::RemoteLeasesDisabled { .. }));
-    assert_eq!(RemoteLeaseRuntime::new(&mut app).execution_lease_count(), 1);
-
-    RemoteLeaseRuntime::new(&mut app)
-        .destroy_execution_lease(&first.id)
-        .expect("first execution lease should be removed");
-    assert!(app.relay_registration().accepting_remote_leases);
-
-    RemoteLeaseRuntime::new(&mut app)
-        .create_execution_lease("home-kernel", "session-2", "agent-2", false, "user-home")
-        .expect("capacity should reopen after lease destruction");
-    assert!(!app.relay_registration().accepting_remote_leases);
 }
 
 #[test]
@@ -94,7 +109,6 @@ fn expired_worker_execution_lease_reconciliation_cleans_up_once_and_reopens_capa
             None,
         )
         .expect("leased agent should create");
-    assert!(!app.relay_registration().accepting_remote_leases);
 
     let reaped = RemoteLeaseRuntime::new(&mut app)
         .reconcile_expired_execution_leases(
@@ -158,7 +172,6 @@ fn unexpired_worker_execution_lease_reconciliation_leaves_runtime_untouched() {
         .expect("unexpired lease reconciliation should complete")
         .is_empty());
     assert_eq!(RemoteLeaseRuntime::new(&mut app).execution_lease_count(), 1);
-    assert!(!app.relay_registration().accepting_remote_leases);
 }
 
 #[test]
@@ -319,7 +332,6 @@ fn leased_agent_cleanup_is_retryable_and_retains_authority_and_capacity() {
         RemoteLeaseRuntime::new(&mut app)
             .authorize_leased_agent_caller(&leased_agent.id, &caller)
             .expect("draining agent must retain authenticated caller binding");
-        assert!(!app.relay_registration().accepting_remote_leases);
     }
 
     RemoteLeaseRuntime::new(&mut app)
@@ -460,7 +472,6 @@ fn partial_provider_cleanup_retries_ended_runs_before_releasing_capacity() {
         assert!(matches!(error, DaemonError::AgentWorkerCleanup { .. }));
         assert_eq!(RemoteLeaseRuntime::new(&mut app).execution_lease_count(), 1);
         assert_eq!(RemoteLeaseRuntime::new(&mut app).leased_agent_count(), 2);
-        assert!(!app.relay_registration().accepting_remote_leases);
 
         RemoteLeaseRuntime::new(&mut app)
             .destroy_leased_agent_for_caller(&leased_agent.id, &caller)

@@ -162,8 +162,8 @@ pub struct DaemonConfig {
     pub relay_request_timeout_ms: u64,
     pub accept_remote_leases: bool,
     pub kernel_runtime_role: KernelRuntimeRole,
-    /// Maximum concurrent remote execution leases accepted by this kernel.
-    /// `None` preserves the ordinary remote-worker behavior of no fixed limit.
+    /// Optional operator limit on leased turns running at once; further turns
+    /// wait for a slot. Idle leased agents never count. `None` means no limit.
     pub remote_lease_capacity: Option<usize>,
     pub lease_worker_home_caller: Option<LeaseWorkerHomeCaller>,
     lease_worker_home_caller_parse_error: bool,
