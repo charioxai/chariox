@@ -38,12 +38,10 @@ mod slice_tools;
 
 #[tokio::test]
 async fn mcp_initialize_and_tools_list_return_runtime_tools() {
+    let worktree = crate::test_support::TestWorktree::new("mcp-workflow-tools-worktree");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "mcp-workflow-tools-workspace",
-            "mcp-workflow-tools-worktree",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let run = app
         .launch_provider(

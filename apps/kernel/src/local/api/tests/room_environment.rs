@@ -426,6 +426,7 @@ fn room_environment_human_input_requires_takeover_and_rejects_invalid_arguments(
 
 #[test]
 fn room_environment_pointer_click_executes_once_and_returns_terminal_state() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!(
         "chariox-human-pointer-click-test-{}",
@@ -633,6 +634,7 @@ fn room_environment_pointer_click_executes_once_and_returns_terminal_state() {
 
 #[test]
 fn room_environment_pointer_motion_executes_and_records_coordinates() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!(
         "chariox-human-pointer-move-test-{}",
@@ -857,6 +859,7 @@ fn room_environment_pointer_motion_executes_and_records_coordinates() {
 
 #[test]
 fn room_environment_keyboard_input_executes_without_persisting_input() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!(
         "chariox-human-keyboard-text-test-{}",
@@ -1061,6 +1064,7 @@ fn room_environment_keyboard_input_executes_without_persisting_input() {
 
 #[test]
 fn room_environment_clipboard_write_and_read_use_kernel_authority_without_persisting_content() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!(
         "chariox-human-clipboard-test-{}",
@@ -1211,6 +1215,7 @@ fn room_environment_clipboard_write_and_read_use_kernel_authority_without_persis
 
 #[test]
 fn running_computer_input_cancels_the_physical_helper_and_resets_before_takeover() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!(
         "chariox-human-computer-cancellation-test-{}",
@@ -1524,6 +1529,7 @@ fn running_computer_input_cancels_the_physical_helper_and_resets_before_takeover
 
 #[test]
 fn queued_human_pointer_click_promotes_after_agent_action_finishes_outside_room_lane() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!(
         "chariox-queued-human-pointer-click-test-{}",

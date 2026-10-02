@@ -3,6 +3,7 @@ use futures_util::FutureExt;
 
 #[test]
 fn bound_worker_applies_authenticated_mouse_and_keyboard_input_without_a_browser_controller() {
+    crate::test_support::isolated_env_test!();
     run_test(applies_authenticated_mouse_and_keyboard_input_without_a_browser_controller);
 }
 
@@ -154,6 +155,7 @@ async fn applies_authenticated_mouse_and_keyboard_input_without_a_browser_contro
 
 #[test]
 fn room_environment_cancels_worker_computer_input_over_the_relay_before_takeover() {
+    crate::test_support::isolated_env_test!();
     run_test(cancels_worker_computer_input_over_the_relay_before_takeover);
 }
 

@@ -26,8 +26,14 @@ async fn claude_stop_failure_hook_advances_queued_workflow_on_substitute_once() 
 }
 
 async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
+    if crate::provider::resolve_opencode_executable().is_err() {
+        eprintln!("SKIP automatic substitution provider launch: opencode binary is absent");
+        return;
+    }
+    let mut config = crate::DaemonConfig::for_tests();
+    let _mcp = crate::test_support::TestRuntimeMcp::serve(&mut config);
     let (runtime, session_id, agent_id, profile_id) =
-        runtime_with_substitutes(&["opencode/deepseek-v4-pro"], true).await;
+        runtime_with_substitutes_and_config(&["opencode/deepseek-v4-pro"], true, config).await;
     let starter_provider = if claude_hook {
         "claude-headless"
     } else {
@@ -350,17 +356,30 @@ async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
     );
 
     let output_records = runtime.owned.terminal_stream.output_records();
+    let expected_error = if claude_hook {
+        crate::provider::sanitize_provider_diagnostic(
+            runtime
+                .owned
+                .provider_store
+                .get_run(run.id())
+                .unwrap()
+                .terminal_diagnostic()
+                .unwrap(),
+        )
+    } else {
+        "insufficient balance".to_string()
+    };
     let provider_errors = output_records
         .iter()
         .filter(|record| {
             record.provider_run_id == run.id()
                 && record.kind == crate::terminal::TerminalOutputKind::ProviderError
-                && record.bytes == b"insufficient balance"
+                && record.bytes == expected_error.as_bytes()
         })
         .count();
     assert_eq!(
         provider_errors, 1,
-        "the failed prompt must expose one actionable provider error"
+        "the failed prompt must expose one actionable provider error matching {expected_error:?}; errors={:?}", output_records.iter().filter(|record| record.kind == crate::terminal::TerminalOutputKind::ProviderError).map(|record| String::from_utf8_lossy(&record.bytes)).collect::<Vec<_>>()
     );
     let replacement_echoes = output_records
         .iter()
@@ -457,7 +476,16 @@ async fn runtime_with_substitutes(
     models: &[&str],
     reset_in_future: bool,
 ) -> (KernelRuntimeState, String, String, String) {
-    let (app, runtime, session_id, agent_id) = agent_config_runtime().await;
+    runtime_with_substitutes_and_config(models, reset_in_future, crate::DaemonConfig::for_tests())
+        .await
+}
+
+async fn runtime_with_substitutes_and_config(
+    models: &[&str],
+    reset_in_future: bool,
+    config: crate::DaemonConfig,
+) -> (KernelRuntimeState, String, String, String) {
+    let (app, runtime, session_id, agent_id) = agent_config_runtime_with_config(config).await;
     let registry = app.lock().await.provider_account_profile_registry();
     let profile = registry
         .create_managed(

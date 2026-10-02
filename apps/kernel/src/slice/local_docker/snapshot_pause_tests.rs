@@ -98,6 +98,7 @@ impl Drop for Fixture {
 
 #[test]
 fn snapshot_resume_unpauses_then_restarts_desktop_and_retires_record() {
+    crate::test_support::isolated_env_test!();
     let _lock = crate::env_lock::lock();
     let f = Fixture::new();
     f.begin();
@@ -113,6 +114,7 @@ fn snapshot_resume_unpauses_then_restarts_desktop_and_retires_record() {
 
 #[test]
 fn snapshot_resume_retains_record_until_unpause_and_desktop_both_succeed() {
+    crate::test_support::isolated_env_test!();
     let _lock = crate::env_lock::lock();
     let f = Fixture::new();
     f.begin();
@@ -133,6 +135,7 @@ fn snapshot_resume_retains_record_until_unpause_and_desktop_both_succeed() {
 
 #[test]
 fn snapshot_resume_handles_crash_before_pause_without_unpausing_running_container() {
+    crate::test_support::isolated_env_test!();
     let _lock = crate::env_lock::lock();
     let f = Fixture::new();
     f.status("true running");
@@ -144,6 +147,7 @@ fn snapshot_resume_handles_crash_before_pause_without_unpausing_running_containe
 
 #[test]
 fn snapshot_resume_never_starts_a_stopped_container_or_an_unowned_pause() {
+    crate::test_support::isolated_env_test!();
     let _lock = crate::env_lock::lock();
     let f = Fixture::new();
     f.recover().unwrap();
@@ -158,6 +162,7 @@ fn snapshot_resume_never_starts_a_stopped_container_or_an_unowned_pause() {
 
 #[test]
 fn snapshot_resume_distinguishes_missing_container_from_daemon_failure() {
+    crate::test_support::isolated_env_test!();
     let _lock = crate::env_lock::lock();
     let f = Fixture::new();
     f.begin();
@@ -176,6 +181,7 @@ fn snapshot_resume_distinguishes_missing_container_from_daemon_failure() {
 
 #[test]
 fn snapshot_resume_rejects_corrupt_wrong_identity_and_symlink_records() {
+    crate::test_support::isolated_env_test!();
     let _lock = crate::env_lock::lock();
     let f = Fixture::new();
     f.begin();
@@ -199,6 +205,7 @@ fn snapshot_resume_rejects_corrupt_wrong_identity_and_symlink_records() {
 
 #[test]
 fn snapshot_resume_removes_abandoned_helpers_before_resuming_the_slice() {
+    crate::test_support::isolated_env_test!();
     let _lock = crate::env_lock::lock();
     let f = Fixture::new();
     f.begin();
@@ -224,6 +231,7 @@ fn snapshot_resume_removes_abandoned_helpers_before_resuming_the_slice() {
 
 #[test]
 fn snapshot_resume_cleans_stopped_snapshot_helpers_without_starting_the_slice() {
+    crate::test_support::isolated_env_test!();
     let _lock = crate::env_lock::lock();
     let f = Fixture::new();
     f.status("false exited");
@@ -262,6 +270,7 @@ impl Drop for ChildGuard {
 
 #[test]
 fn snapshot_resume_survives_sigkill_between_pause_and_resume() {
+    crate::test_support::isolated_env_test!();
     const CHILD_ROOT: &str = "CHARIOX_SNAPSHOT_PAUSE_TEST_CHILD";
     if let Some(root) = std::env::var_os(CHILD_ROOT) {
         let mut options = super::super::tests::test_options();

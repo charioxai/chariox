@@ -1749,14 +1749,18 @@ fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
         std::sync::Arc::new(bridge.clone());
     app.providers()
         .set_native_interaction_bridge(bridge_ref.clone());
-    crate::app::provider_output::ProviderOutputPump::new(&mut app)
-        .pump_provider_output(crate::app::provider_output::ProviderOutputPumpRequest {
-            session_id: session.id(),
-            provider_run_id: run.id(),
-            recipient_attachment_ids: vec![attachment.id().to_string()],
-            initial_liveness_already_checked: false,
-        })
-        .expect("trust prompt should be projected by the normal output pump");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while bridge.interactions.lock().unwrap().is_empty() && std::time::Instant::now() < deadline {
+        crate::app::provider_output::ProviderOutputPump::new(&mut app)
+            .pump_provider_output(crate::app::provider_output::ProviderOutputPumpRequest {
+                session_id: session.id(),
+                provider_run_id: run.id(),
+                recipient_attachment_ids: vec![attachment.id().to_string()],
+                initial_liveness_already_checked: false,
+            })
+            .expect("trust prompt should be projected by the normal output pump");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     let interaction = bridge.wait_for_interaction();
     assert_eq!(interaction.default_on_timeout(), Some("deny"));
     bridge.resolve_default_no();

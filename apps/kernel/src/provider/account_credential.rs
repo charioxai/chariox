@@ -251,6 +251,7 @@ mod tests {
 
     #[test]
     fn vault_requirement_is_derived_from_the_registered_credential_source() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-provider-account-vault-requirement-{}-{}",
@@ -288,6 +289,7 @@ mod tests {
 
     #[test]
     fn configured_provider_credential_resolves_only_into_secret_environment() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-provider-account-credential-{}-{}",
@@ -332,6 +334,7 @@ mod tests {
 
     #[test]
     fn store_provider_credential_uses_vault_source_and_provider_policy() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-provider-account-store-{}-{}",

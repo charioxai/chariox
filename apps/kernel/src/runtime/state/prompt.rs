@@ -110,7 +110,12 @@ impl KernelRuntimeOwnedState {
             );
             self.mark_prompt_completion_recorded(provider_run_id);
         }
-        let released_claim = self.clear_prompt_activity(provider_run_id);
+        let observed_at_ms = self
+            .active_turns
+            .get(provider_run_id)
+            .filter(|turn| turn.prompt_id == completed.id())
+            .and_then(|turn| turn.completion_retry_observed_at_ms);
+        let released_claim = self.clear_prompt_activity_at(provider_run_id, observed_at_ms);
         let _ = self.session_snapshot(session_id)?;
         Ok(OwnedPromptCompletion {
             completion: crate::session::PromptCompletion {

@@ -143,6 +143,40 @@ fn assert_external_active_prompt_and_queued_chariox_prompt(
     );
 }
 
+struct InertPtyCleanup {
+    app: Arc<Mutex<DaemonApp>>,
+    provider_run_id: String,
+}
+
+impl Drop for InertPtyCleanup {
+    fn drop(&mut self) {
+        if let Ok(mut app) = self.app.try_lock() {
+            let _ = app.pty_mut().remove_process(&self.provider_run_id);
+        }
+    }
+}
+
+/// Gives a fixture provider run a live process (`sleep 300`), so liveness
+/// reconciliation does not treat the run as exited.
+fn spawn_inert_pty_for_run(app: &mut DaemonApp, provider_run_id: &str) {
+    app.pty_mut()
+        .spawn(crate::pty::PtySpawnRequest {
+            process_key: provider_run_id.to_string(),
+            provider_run_id: provider_run_id.to_string(),
+            program: "/bin/sh".to_string(),
+            args: ["-c", "exec sleep 300"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            env: Default::default(),
+            env_remove: Vec::new(),
+            working_directory: None,
+            cols: 80,
+            rows: 24,
+        })
+        .expect("inert provider fixture PTY should stay live");
+}
+
 mod browser_import_execution_gate;
 mod cleanup_liveness;
 mod completion_settlement;
@@ -150,9 +184,9 @@ mod detached_provider_run;
 mod diagnostics_timeouts;
 mod external_queue;
 mod history_projection;
-mod mcp_catalog_reload;
 mod large_codex_resume;
 mod leased_output;
+mod mcp_catalog_reload;
 mod prompt_cancellation;
 mod publication_settlement;
 mod pump_selection;

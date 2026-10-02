@@ -1,4 +1,5 @@
 use crate::support::kernel_websocket::*;
+use crate::support::test_worktree::TestWorktree;
 use chariox_kernel::agent::CreateAgentRequest;
 use chariox_kernel::attachment::ClientCapabilityLevel;
 use chariox_kernel::local::{
@@ -117,6 +118,7 @@ async fn kernel_websocket_streams_session_snapshot_and_unavailable_events() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_streams_workflow_run_updates() {
+    let worktree = TestWorktree::new("workflow-run-events");
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
@@ -142,7 +144,7 @@ async fn kernel_websocket_streams_workflow_run_updates() {
         "create-session-workflow-run-events",
         LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
             "workspace-workflow-run-events",
-            "worktree-workflow-run-events",
+            worktree.path_string(),
         )),
     )
     .await;
@@ -302,6 +304,7 @@ async fn kernel_websocket_streams_workflow_run_updates() {
 // `workflow_run_updated` per terminal transition.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_delivers_terminal_workflow_run_update_without_reload() {
+    let worktree = TestWorktree::new("terminal-run-events");
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
@@ -312,7 +315,7 @@ async fn kernel_websocket_delivers_terminal_workflow_run_update_without_reload()
         .sessions_mut()
         .create_session(CreateSessionRequest::new(
             "workspace-terminal-run-events",
-            "worktree-terminal-run-events",
+            worktree.path_string(),
         ))
         .expect("session should be created");
     let agent = app
@@ -417,11 +420,22 @@ async fn kernel_websocket_delivers_terminal_workflow_run_update_without_reload()
         Some("Running")
     );
 
-    let completed_event = wait_for_event(&mut socket, "workflow_run_updated").await;
-    assert_eq!(
-        completed_event["event"]["workflow_run"]["id"].as_str(),
-        Some(expected_run_id.as_str())
-    );
+    // Non-terminal progress (for example the node's provider starting) may
+    // publish further Running updates before the terminal one.
+    let completed_event = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let event = wait_for_event(&mut socket, "workflow_run_updated").await;
+            assert_eq!(
+                event["event"]["workflow_run"]["id"].as_str(),
+                Some(expected_run_id.as_str())
+            );
+            if event["event"]["workflow_run"]["status"].as_str() != Some("Running") {
+                break event;
+            }
+        }
+    })
+    .await
+    .expect("terminal workflow event should arrive after progress updates");
     assert_eq!(
         completed_event["event"]["workflow_run"]["status"].as_str(),
         Some("Completed")

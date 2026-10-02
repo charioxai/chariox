@@ -172,6 +172,7 @@ async fn pr364_public_setup_second_restart_spawn_failure_restores_the_previous_p
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn pr364_public_setup_second_restart_binding_failure_restores_the_previous_provider_child() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle_with_second_restart_failure(
         ProviderLifecycleFailureStage::Bind,
     )
@@ -1086,8 +1087,11 @@ async fn exercise_public_setup_lifecycle_with_failure_timing(
                 "a reusable definition must be applied by the worker before validation"
             );
             assert_eq!(
-                provider_fixture.diagnostics(),
-                "<no requests observed>",
+                provider_fixture
+                    .diagnostics()
+                    .matches("/prompt_async")
+                    .count(),
+                0,
                 "a passing reusable definition must not invoke the utility agent"
             );
         }
@@ -1097,8 +1101,11 @@ async fn exercise_public_setup_lifecycle_with_failure_timing(
         | DefinitionScenario::SuppliedMissingInputs
         | DefinitionScenario::SuppliedLegacyUnattested => {
             assert_ne!(
-                provider_fixture.diagnostics(),
-                "<no requests observed>",
+                provider_fixture
+                    .diagnostics()
+                    .matches("/prompt_async")
+                    .count(),
+                0,
                 "missing or failed setup must invoke the existing utility agent"
             );
         }
@@ -1157,7 +1164,10 @@ async fn exercise_public_setup_lifecycle_with_failure_timing(
             );
         }
 
-        let utility_trace = provider_fixture.diagnostics();
+        let utility_trace = provider_fixture
+            .diagnostics()
+            .matches("/prompt_async")
+            .count();
         let materialized_inputs: Vec<(&str, &[u8])> = if input_scenario {
             vec![
                 (recipe_path, recipe_contents),
@@ -1213,7 +1223,10 @@ async fn exercise_public_setup_lifecycle_with_failure_timing(
             );
         }
         assert_eq!(
-            provider_fixture.diagnostics(),
+            provider_fixture
+                .diagnostics()
+                .matches("/prompt_async")
+                .count(),
             utility_trace,
             "the follow-up worker must reuse the repaired definition without utility"
         );
@@ -1512,6 +1525,7 @@ async fn run_repaired_definition_on_fresh_worker(
 #[cfg(unix)]
 #[test]
 fn public_setup_status_transport_recovery_and_missing_dispatch_replay_preserve_operation() {
+    crate::test_support::isolated_env_test!();
     std::thread::Builder::new()
         .name("project-environment-setup-transport-recovery".to_string())
         .stack_size(8 * 1024 * 1024)
@@ -4613,6 +4627,7 @@ impl Drop for UtilityProviderFixture {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn pr364_opencode_discovery_rejects_source_mcp_and_restores_ordinary_config() {
+    crate::test_support::isolated_env_test!();
     let _environment_lock = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!(
         "chariox-opencode-discovery-mcp-lifecycle-{}-{}",

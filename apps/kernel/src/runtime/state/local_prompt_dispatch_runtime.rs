@@ -422,6 +422,7 @@ mod tests {
 
     #[tokio::test]
     async fn workflow_launch_retains_vaulted_environment_until_detached_spawn() {
+        crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-workflow-provider-credentials-{}-{}",
@@ -523,6 +524,7 @@ mod tests {
 
     #[tokio::test]
     async fn retired_workflow_run_does_not_spawn_after_vault_unlock() {
+        crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-retired-workflow-vault-unlock-{}-{}",
@@ -1376,9 +1378,32 @@ mod tests {
         crate::provider::RuntimeProviderRun,
         crate::app::KernelPromptDispatch,
     ) {
+        let worktree = crate::test_support::TestWorktree::new("local-prompt-claude-headless");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let executable = worktree.path().join("claude-fixture");
+            std::fs::write(
+                &executable,
+                "#!/bin/sh\nprintf '❯ '\nwhile IFS= read -r line; do printf '❯ '; done\n",
+            )
+            .expect("Claude lifecycle fixture should write");
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
+                .expect("Claude lifecycle fixture should be executable");
+            std::env::set_var("CHARIOX_CLAUDE_BIN", executable);
+            let profile =
+                std::path::PathBuf::from(std::env::var_os("HOME").unwrap()).join(".claude");
+            std::fs::create_dir_all(&profile).unwrap();
+            // Synthetic refresh data satisfies launch preflight. The fixture
+            // CLI never contacts a provider or reads real account credentials.
+            std::fs::write(
+                profile.join(".credentials.json"),
+                br#"{"claudeAiOauth":{"refreshToken":"synthetic-lifecycle-fixture"}}"#,
+            )
+            .unwrap();
+        }
         let mut app = crate::test_support::bootstrap_authenticated_app(DaemonConfig::for_tests())
             .expect("daemon should boot");
-        let worktree = crate::test_support::TestWorktree::new("local-prompt-claude-headless");
         let (session, agent) = KernelSessionService::new(&mut app)
             .create_session(worktree.session_request())
             .expect("session should create");
@@ -1851,6 +1876,11 @@ mod tests {
 
     #[tokio::test]
     async fn claude_headless_ack_failure_retires_poisoned_provider_run() {
+        crate::test_support::isolated_env_test!();
+        if cfg!(not(unix)) && crate::provider::resolve_claude_executable().is_err() {
+            eprintln!("SKIP claude_headless_ack_failure_retires_poisoned_provider_run: claude binary is absent");
+            return;
+        }
         let (_worktree, runtime, session_id, agent_id, source_id, provider_run, dispatch) =
             runtime_with_claude_headless_active_prompt().await;
         let PromptSubmissionOutcome::Queued {
@@ -1942,6 +1972,11 @@ mod tests {
 
     #[tokio::test]
     async fn claude_headless_ack_failure_intent_finishes_resume_clear_after_restart() {
+        crate::test_support::isolated_env_test!();
+        if cfg!(not(unix)) && crate::provider::resolve_claude_executable().is_err() {
+            eprintln!("SKIP claude_headless_ack_failure_intent_finishes_resume_clear_after_restart: claude binary is absent");
+            return;
+        }
         let (_worktree, runtime, session_id, agent_id, _, provider_run, dispatch) =
             runtime_with_claude_headless_active_prompt().await;
         let durable_path = runtime.owned.durable_state_store.path().to_path_buf();
@@ -2059,6 +2094,11 @@ mod tests {
 
     #[tokio::test]
     async fn claude_headless_ack_failure_does_not_clear_resume_without_durable_intent() {
+        crate::test_support::isolated_env_test!();
+        if cfg!(not(unix)) && crate::provider::resolve_claude_executable().is_err() {
+            eprintln!("SKIP claude_headless_ack_failure_does_not_clear_resume_without_durable_intent: claude binary is absent");
+            return;
+        }
         let (_worktree, runtime, session_id, agent_id, _, provider_run, dispatch) =
             runtime_with_claude_headless_active_prompt().await;
         let durable_path = runtime.owned.durable_state_store.path().to_path_buf();
@@ -2168,6 +2208,11 @@ mod tests {
 
     #[tokio::test]
     async fn claude_headless_late_resume_update_wins_before_delivery_phase_commit() {
+        crate::test_support::isolated_env_test!();
+        if cfg!(not(unix)) && crate::provider::resolve_claude_executable().is_err() {
+            eprintln!("SKIP claude_headless_late_resume_update_wins_before_delivery_phase_commit: claude binary is absent");
+            return;
+        }
         let (_worktree, runtime, session_id, agent_id, _, provider_run, dispatch) =
             runtime_with_claude_headless_active_prompt().await;
         let current_resume_state =
@@ -2267,6 +2312,11 @@ mod tests {
 
     #[tokio::test]
     async fn claude_headless_delivered_phase_wins_over_late_timeout() {
+        crate::test_support::isolated_env_test!();
+        if cfg!(not(unix)) && crate::provider::resolve_claude_executable().is_err() {
+            eprintln!("SKIP claude_headless_delivered_phase_wins_over_late_timeout: claude binary is absent");
+            return;
+        }
         let (_worktree, runtime, session_id, agent_id, _, provider_run, dispatch) =
             runtime_with_claude_headless_active_prompt().await;
         runtime
@@ -2319,6 +2369,11 @@ mod tests {
 
     #[tokio::test]
     async fn claude_headless_delivery_settlement_claim_blocks_timeout_retirement() {
+        crate::test_support::isolated_env_test!();
+        if cfg!(not(unix)) && crate::provider::resolve_claude_executable().is_err() {
+            eprintln!("SKIP claude_headless_delivery_settlement_claim_blocks_timeout_retirement: claude binary is absent");
+            return;
+        }
         let (_worktree, runtime, session_id, agent_id, _, provider_run, dispatch) =
             runtime_with_claude_headless_active_prompt().await;
         let session = runtime
@@ -2399,6 +2454,11 @@ mod tests {
 
     #[tokio::test]
     async fn stale_claude_headless_ack_failure_preserves_replacement_prompt_and_provider() {
+        crate::test_support::isolated_env_test!();
+        if cfg!(not(unix)) && crate::provider::resolve_claude_executable().is_err() {
+            eprintln!("SKIP stale_claude_headless_ack_failure_preserves_replacement_prompt_and_provider: claude binary is absent");
+            return;
+        }
         let (_worktree, runtime, session_id, agent_id, source_id, provider_run, stale_dispatch) =
             runtime_with_claude_headless_active_prompt().await;
         runtime

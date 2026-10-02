@@ -503,6 +503,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn exact_path_discovery_accepts_home_tmp_nested_and_post_enrollment_repo() {
+        crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let root = unique_test_dir("workspace-search-path1-exact-paths");
         let home = root.join("user-home");
@@ -616,6 +617,7 @@ mod tests {
 
     #[test]
     fn empty_query_filters_protected_workspace_children() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let root = unique_test_dir("workspace-search-protected-children");
         let home = root.join("home");
@@ -652,6 +654,7 @@ mod tests {
 
     #[test]
     fn directory_completion_prioritizes_hidden_dirs_when_query_starts_hidden() {
+        crate::test_support::isolated_env_test!();
         let root = unique_test_dir("workspace-directory-completion-hidden");
         create_test_dir(root.join(".chariox"));
         create_test_dir(root.join(".chariox-cache"));

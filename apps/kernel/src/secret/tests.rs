@@ -138,6 +138,7 @@ fn secret_like_env_name_matches_common_tokens() {
 
 #[test]
 fn http_request_with_credential_injects_header_without_returning_secret() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
     let port = listener.local_addr().unwrap().port();
@@ -199,6 +200,7 @@ fn http_request_with_credential_injects_header_without_returning_secret() {
 
 #[test]
 fn http_request_with_credential_rejects_wrong_host_before_secret_read() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     std::env::remove_var("CHARIOX_TEST_SECRET_MISSING_TOKEN");
     let service = RuntimeSecretService::new(vec![UserCredentialConfig {
@@ -237,6 +239,7 @@ fn http_request_with_credential_rejects_wrong_host_before_secret_read() {
 
 #[test]
 fn browser_secret_input_rejects_wrong_host_before_secret_read() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     std::env::remove_var("CHARIOX_TEST_SECRET_MISSING_BROWSER_TOKEN");
     let service = RuntimeSecretService::new(vec![UserCredentialConfig {
@@ -263,6 +266,7 @@ fn browser_secret_input_rejects_wrong_host_before_secret_read() {
 
 #[test]
 fn terminal_secret_input_requires_pty_injection() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     std::env::set_var("CHARIOX_TEST_TERMINAL_PASSWORD", "terminal-secret");
     let service = RuntimeSecretService::new(vec![UserCredentialConfig {
@@ -288,6 +292,7 @@ fn terminal_secret_input_requires_pty_injection() {
 
 #[test]
 fn provider_secret_input_requires_provider_policy() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     std::env::set_var("CHARIOX_TEST_PROVIDER_TOKEN", "provider-secret");
     let service = RuntimeSecretService::new(vec![UserCredentialConfig {
@@ -314,6 +319,7 @@ fn provider_secret_input_requires_provider_policy() {
 
 #[test]
 fn provider_secret_input_rejects_terminal_policy_before_secret_read() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     std::env::remove_var("CHARIOX_TEST_PROVIDER_TOKEN_MISSING");
     let service = RuntimeSecretService::new(vec![UserCredentialConfig {
@@ -339,6 +345,7 @@ fn provider_secret_input_rejects_terminal_policy_before_secret_read() {
 
 #[test]
 fn browser_secret_input_requires_browser_use() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     std::env::set_var("CHARIOX_TEST_BROWSER_PASSWORD", "browser-secret");
     let service = RuntimeSecretService::new(vec![UserCredentialConfig {
@@ -364,6 +371,7 @@ fn browser_secret_input_requires_browser_use() {
 
 #[test]
 fn browser_secret_input_requires_browser_injection() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     std::env::set_var("CHARIOX_TEST_BROWSER_PASSWORD", "browser-secret");
     let service = RuntimeSecretService::new(vec![UserCredentialConfig {
@@ -392,6 +400,7 @@ fn browser_secret_input_requires_browser_injection() {
 
 #[test]
 fn computer_secret_input_requires_explicit_computer_policy() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     std::env::set_var("CHARIOX_TEST_COMPUTER_PASSWORD", "computer-secret");
     let service = RuntimeSecretService::new(vec![UserCredentialConfig {
@@ -417,6 +426,7 @@ fn computer_secret_input_requires_explicit_computer_policy() {
 
 #[test]
 fn computer_secret_input_rejects_browser_policy_before_secret_read() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     std::env::remove_var("CHARIOX_TEST_COMPUTER_SECRET_MISSING");
     let service = RuntimeSecretService::new(vec![UserCredentialConfig {
@@ -775,6 +785,7 @@ fn vault_delete_clears_process_cache() {
 
 #[test]
 fn process_memory_backend_round_trips_across_services() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     std::env::set_var("CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT", "1");
     let config = UserCredentialVaultConfig {
@@ -818,6 +829,7 @@ fn process_memory_backend_round_trips_across_services() {
 
 #[test]
 fn process_memory_backend_requires_explicit_volatile_context() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     std::env::remove_var("CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT");
     std::env::remove_var("CHARIOX_SLICE_MACHINE_ID");

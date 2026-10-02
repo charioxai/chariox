@@ -2,6 +2,7 @@ use super::*;
 
 #[test]
 fn room_environment_worker_partial_batch_failure_rolls_back_created_agents() {
+    crate::test_support::isolated_env_test!();
     run_test(partial_batch_failure_rolls_back_created_agents);
 }
 

@@ -11,6 +11,7 @@ fn temp_root(name: &str) -> PathBuf {
 
 #[test]
 fn managed_user_isolation_preserves_repository_scoped_skills() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let isolation_root = temp_root("managed-slice-isolation");
     std::env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", &isolation_root);
@@ -49,6 +50,7 @@ fn detects_explicit_skill_requests() {
 
 #[test]
 fn granted_skill_prompt_context_uses_the_prompt_catalog_template() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let home = temp_root("prompt-context-home");
     let skill_dir = home.join(".chariox").join("skills").join("browser-qa");

@@ -7,6 +7,7 @@ use futures_util::FutureExt;
 
 #[test]
 fn worker_computer_tools_use_home_room_authority() {
+    crate::test_support::isolated_env_test!();
     std::thread::Builder::new()
         .stack_size(64 * 1024 * 1024)
         .spawn(|| {

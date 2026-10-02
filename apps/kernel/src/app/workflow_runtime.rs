@@ -1064,6 +1064,7 @@ mod tests {
 
     #[test]
     fn workflow_context_flush_waits_for_an_active_user_prompt_before_replacing_provider() {
+        crate::test_support::isolated_env_test!();
         // Provider setup reads environment-backed account paths. Config tests
         // may replace and remove those roots while this test promotes the queue.
         let _environment = crate::env_lock::lock();
@@ -1193,6 +1194,7 @@ mod tests {
 
     #[test]
     fn app_event_prompt_never_attaches_invocation_artifacts() {
+        crate::test_support::isolated_env_test!();
         let _environment = crate::env_lock::lock();
         let worktree = crate::test_support::TestWorktree::new("workflow-runtime-event");
         let mut app = crate::test_support::bootstrap_authenticated_app(
@@ -1323,6 +1325,7 @@ mod tests {
 
     #[test]
     fn queued_workflow_scheduler_continues_after_invalid_candidate() {
+        crate::test_support::isolated_env_test!();
         let _environment = crate::env_lock::lock();
         let worktree = crate::test_support::TestWorktree::new("workflow-runtime-scheduler");
         let mut app = crate::test_support::bootstrap_authenticated_app(

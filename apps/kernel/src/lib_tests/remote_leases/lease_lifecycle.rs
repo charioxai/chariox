@@ -456,7 +456,10 @@ fn partial_provider_cleanup_retries_ended_runs_before_releasing_capacity() {
         // the failing agent stops the loop; the failing agent always remains
         // (the retry below destroys it).
         let remaining = RemoteLeaseRuntime::new(&mut app).leased_agent_count();
-        assert!((1..=2).contains(&remaining), "remaining leased agents: {remaining}");
+        assert!(
+            (1..=2).contains(&remaining),
+            "remaining leased agents: {remaining}"
+        );
         assert!(!app.relay_registration().accepting_remote_leases);
 
         RemoteLeaseRuntime::new(&mut app)
@@ -476,7 +479,10 @@ fn partial_provider_cleanup_retries_ended_runs_before_releasing_capacity() {
             );
         } else {
             // The sibling went first; the retry removed the last user.
-            assert!(backing_session.is_err(), "unused backing session is deleted");
+            assert!(
+                backing_session.is_err(),
+                "unused backing session is deleted"
+            );
         }
         RemoteLeaseRuntime::new(&mut app)
             .destroy_execution_lease_for_caller(&lease.id, &caller)
@@ -655,6 +661,7 @@ fn leased_agents_reject_missing_working_directory() {
 
 #[test]
 fn leased_agents_materialize_remote_git_worktree_before_creation() {
+    crate::test_support::isolated_env_test!();
     let root = std::env::temp_dir().join(format!(
         "chariox-remote-git-worktree-base-{}",
         crate::session::unix_epoch_ms()

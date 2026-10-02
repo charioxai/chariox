@@ -1,4 +1,5 @@
 use crate::support::kernel_websocket::*;
+use crate::support::test_worktree::TestWorktree;
 use chariox_kernel::attachment::ClientCapabilityLevel;
 use chariox_kernel::local::{
     AttachToSessionRequest, GetSessionStateRequest, LaunchProviderRunRequest, LocalDaemonRequest,
@@ -13,6 +14,7 @@ use tokio::sync::oneshot;
 #[test]
 fn kernel_websocket_replayed_prompt_submit_reuses_original_prompt() {
     crate::run_kernel_websocket_runtime_test(async {
+        let worktree = TestWorktree::new("prompt-replay");
         let mut config = DaemonConfig::for_tests();
         let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
         config.kernel_websocket_port = kernel_websocket_port;
@@ -39,7 +41,7 @@ fn kernel_websocket_replayed_prompt_submit_reuses_original_prompt() {
             "create-session-for-prompt-replay",
             LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
                 "workspace-prompt-replay",
-                "worktree-prompt-replay",
+                worktree.path_string(),
             )),
         )
         .await;

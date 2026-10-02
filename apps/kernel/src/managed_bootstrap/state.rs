@@ -692,6 +692,7 @@ mod tests {
 
     #[test]
     fn managed_paths_keep_process_home_separate_from_chariox_state() {
+        crate::test_support::isolated_env_test!();
         let _lock = crate::env_lock::lock();
         let previous_home = env::var_os("HOME");
         let previous_chariox_home = env::var_os("CHARIOX_HOME");
@@ -748,6 +749,7 @@ mod tests {
 
     #[test]
     fn path1_requires_an_explicit_external_builder_key_path() {
+        crate::test_support::isolated_env_test!();
         let _lock = crate::env_lock::lock();
         let previous_topology = env::var_os(MANAGED_PROVIDER_TOPOLOGY_ENV);
         let previous_key = env::var_os(TRUSTED_BUILDER_PUBLIC_KEY_ENV);

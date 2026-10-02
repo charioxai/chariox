@@ -328,7 +328,20 @@ async fn output_seen_ack_survives_kernel_restart() {
         (session_id, agent_id)
     };
 
-    let restored = DaemonApp::bootstrap(config).expect("second daemon should boot");
+    let restored = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match DaemonApp::bootstrap(config.clone()) {
+                Ok(app) => break app,
+                Err(crate::DaemonError::LocalTransport {
+                    operation: "durable_state.acquire_owner",
+                    ..
+                }) => tokio::task::yield_now().await,
+                Err(error) => panic!("second daemon should boot: {error}"),
+            }
+        }
+    })
+    .await
+    .expect("first daemon should release its durable state owner");
     let session = restored
         .sessions()
         .get_session(&session_id)

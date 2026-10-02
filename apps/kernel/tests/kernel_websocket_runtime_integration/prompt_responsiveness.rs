@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use crate::support::kernel_websocket::*;
+use crate::support::test_worktree::TestWorktree;
 use chariox_kernel::attachment::ClientCapabilityLevel;
 use chariox_kernel::local::{
     AttachToSessionRequest, GetProviderCatalogRequest, GetSessionHistoryOutlineRequest,
@@ -17,6 +18,7 @@ use tokio::time::sleep;
 #[test]
 fn kernel_websocket_prompt_submit_acks_while_history_read_is_slow() {
     crate::run_kernel_websocket_runtime_test(async {
+        let worktree = TestWorktree::new("history-responsive");
         let mut config = DaemonConfig::for_tests();
         let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
         config.kernel_websocket_port = kernel_websocket_port;
@@ -43,7 +45,7 @@ fn kernel_websocket_prompt_submit_acks_while_history_read_is_slow() {
             "create-session",
             LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
                 "workspace-history-responsive",
-                "worktree-history-responsive",
+                worktree.path_string(),
             )),
         )
         .await;
@@ -158,6 +160,7 @@ fn kernel_websocket_prompt_submit_acks_while_history_read_is_slow() {
 #[test]
 fn kernel_websocket_prompt_submit_acks_while_provider_catalog_is_slow() {
     crate::run_kernel_websocket_runtime_test(async {
+        let worktree = TestWorktree::new("catalog-responsive");
         let mut config = DaemonConfig::for_tests();
         let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
         config.kernel_websocket_port = kernel_websocket_port;
@@ -184,7 +187,7 @@ fn kernel_websocket_prompt_submit_acks_while_provider_catalog_is_slow() {
             "create-session",
             LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
                 "workspace-catalog-responsive",
-                "worktree-catalog-responsive",
+                worktree.path_string(),
             )),
         )
         .await;
@@ -293,6 +296,7 @@ fn kernel_websocket_prompt_submit_acks_while_provider_catalog_is_slow() {
 #[test]
 fn kernel_websocket_prompt_submit_acks_while_provider_process_list_is_slow() {
     crate::run_kernel_websocket_runtime_test(async {
+        let worktree = TestWorktree::new("provider-process-responsive");
         let mut config = DaemonConfig::for_tests();
         let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
         config.kernel_websocket_port = kernel_websocket_port;
@@ -319,7 +323,7 @@ fn kernel_websocket_prompt_submit_acks_while_provider_process_list_is_slow() {
             "create-session",
             LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
                 "workspace-provider-process-responsive",
-                "worktree-provider-process-responsive",
+                worktree.path_string(),
             )),
         )
         .await;
@@ -430,6 +434,7 @@ fn kernel_websocket_prompt_submit_acks_while_provider_process_list_is_slow() {
 #[test]
 fn kernel_websocket_prompt_submit_acks_while_provider_launch_is_initializing() {
     crate::run_kernel_websocket_runtime_test(async {
+        let worktree = TestWorktree::new("provider-launch-responsive");
         let mut config = DaemonConfig::for_tests();
         let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
         config.kernel_websocket_port = kernel_websocket_port;
@@ -456,7 +461,7 @@ fn kernel_websocket_prompt_submit_acks_while_provider_launch_is_initializing() {
             "create-session",
             LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
                 "workspace-provider-launch-responsive",
-                "worktree-provider-launch-responsive",
+                worktree.path_string(),
             )),
         )
         .await;

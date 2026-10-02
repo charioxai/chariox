@@ -241,14 +241,12 @@ async fn leased_provider_tool_list_exposes_workflow_tools_for_fresh_and_reused_d
             .to_string()
     };
 
+    let worktree = crate::test_support::TestWorktree::new("ordinary-workflow-tools");
     let (ordinary_token, reused_provider_run_id) = {
         let mut app_guard = app.try_lock().expect("app should be available");
         let (ordinary_session, ordinary_agent) =
             crate::app::KernelSessionService::new(&mut app_guard)
-                .create_session(CreateSessionRequest::new(
-                    "ordinary-workflow-tools",
-                    "ordinary-workflow-tools",
-                ))
+                .create_session(worktree.session_request())
                 .expect("ordinary session should create");
         let ordinary_run = launch_test_provider(
             &mut app_guard,

@@ -1482,6 +1482,7 @@ mod tests {
 
     #[test]
     fn private_source_snapshot_freezes_bytes_and_rejects_links_and_growth() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let root = fs::canonicalize(std::env::temp_dir())
             .expect("temporary root should canonicalize")

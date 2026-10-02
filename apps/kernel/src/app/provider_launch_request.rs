@@ -568,6 +568,7 @@ mod tests {
 
     #[test]
     fn app_launch_preparation_scopes_workspace_live_sync_roots_to_selected_repo_and_local_links() {
+        crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let base = std::env::temp_dir().join(format!(
             "chariox-app-live-sync-root-scope-{}-{}",
@@ -729,6 +730,7 @@ mod tests {
 
     #[test]
     fn app_launch_preparation_allows_hidden_remote_lease_session_under_managed_isolation() {
+        crate::test_support::isolated_env_test!();
         let root = std::env::temp_dir().join(format!(
             "chariox-hidden-provider-launch-{}-{}",
             std::process::id(),
