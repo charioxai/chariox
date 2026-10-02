@@ -45,29 +45,29 @@ impl KernelRuntimeState {
                 )
             })
             .await;
-        match cancellation_response {
-            Ok(RelayPeerResponse::LeasedPromptCancelled { .. }) => {
-                if prompt_already_cancelling {
-                    Ok(Some(
-                        owned.finalize_remote_prompt_cancellation_after_worker_settled(
-                            session_id,
-                            target_agent_id,
-                            attachment_id,
-                        )?,
-                    ))
-                } else {
-                    Ok(Some(owned.begin_remote_prompt_cancellation(
-                        session_id,
-                        target_agent_id,
-                        attachment_id,
-                    )?))
-                }
+        let mut cancellation = match cancellation_response {
+            Ok(RelayPeerResponse::LeasedPromptCancelled { .. }) if !prompt_already_cancelling => {
+                return Ok(Some(owned.begin_remote_prompt_cancellation(
+                    session_id,
+                    target_agent_id,
+                    attachment_id,
+                )?));
             }
-            Ok(other) => Err(DaemonError::LocalTransport {
-                operation: "cancel remote prompt",
-                message: format!("unexpected remote prompt cancellation response: {other:?}"),
-            }),
-            Err(error) if remote_prompt_completion_should_treat_as_settled(&error) => {
+            Ok(RelayPeerResponse::LeasedPromptCancelled { .. }) => owned
+                .finalize_remote_prompt_cancellation_after_worker_settled(
+                    session_id,
+                    target_agent_id,
+                    attachment_id,
+                )?,
+            Ok(other) => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "cancel remote prompt",
+                    message: format!("unexpected remote prompt cancellation response: {other:?}"),
+                });
+            }
+            // The worker has nothing left to cancel, so the home prompt is
+            // stale. Reconcile it instead of leaving the agent blocked.
+            Err(error) if error.is_no_active_prompt() => {
                 crate::logging::warn_with_fields(
                     "daemon.remote_prompt_dispatch",
                     "remote prompt cancellation already settled on worker",
@@ -79,16 +79,62 @@ impl KernelRuntimeState {
                         "error": error.to_string(),
                     }),
                 );
-                Ok(Some(
-                    owned.finalize_remote_prompt_cancellation_after_worker_settled(
-                        session_id,
-                        target_agent_id,
-                        attachment_id,
-                    )?,
-                ))
+                owned.finalize_remote_prompt_cancellation_after_worker_settled(
+                    session_id,
+                    target_agent_id,
+                    attachment_id,
+                )?
             }
-            Err(error) => Err(error),
+            Err(error) => return Err(error),
+        };
+        // Local cancellation finalization cannot dispatch to the worker, so
+        // drain the remote queue here. The cancellation itself already holds.
+        match self
+            .spawn_next_queued_remote_prompt(session_id, target_agent_id)
+            .await
+        {
+            Ok(Some(submission)) => {
+                if let crate::session::PromptSubmissionOutcome::Started { prompt } =
+                    submission.outcome
+                {
+                    cancellation.cancellation.started_next = Some(prompt);
+                }
+                cancellation.session = submission.session;
+            }
+            Ok(None) => {}
+            Err(error) => crate::logging::warn_with_fields(
+                "daemon.remote_prompt_dispatch",
+                "remote queue did not advance after cancellation",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "agent_id": target_agent_id,
+                    "error": error.to_string(),
+                }),
+            ),
         }
+        Ok(Some(cancellation))
+    }
+
+    /// Activates the next queued prompt of an idle remote agent and starts its
+    /// worker dispatch.
+    pub(super) async fn spawn_next_queued_remote_prompt(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<Option<crate::app::KernelPromptSubmission>, DaemonError> {
+        let Some(mut submission) = self
+            .owned
+            .advance_next_queued_remote_prompt_dispatch(session_id, agent_id)?
+        else {
+            return Ok(None);
+        };
+        self.finish_owned_prompt_submission_workflow_start(&mut submission)
+            .await?;
+        self.spawn_remote_prompt_projection_drain_if_needed(&submission);
+        if let Some(dispatch) = submission.remote_dispatch.take() {
+            self.spawn_remote_prompt_dispatch(dispatch);
+        }
+        Ok(Some(submission))
     }
 
     pub(super) async fn complete_remote_agent_prompt_if_remote(
@@ -163,7 +209,7 @@ impl KernelRuntimeState {
                         provider_termination,
                     )
                 }
-                Err(error) if remote_prompt_completion_should_treat_as_settled(&error) => {
+                Err(error) if error.is_no_active_prompt() => {
                     crate::logging::warn_with_fields(
                         "daemon.remote_prompt_dispatch",
                         "remote prompt completion already settled on worker",
@@ -345,18 +391,6 @@ impl KernelRuntimeState {
             );
         }
         Ok(Some(completion))
-    }
-}
-
-fn remote_prompt_completion_should_treat_as_settled(error: &DaemonError) -> bool {
-    match error {
-        DaemonError::NoActivePrompt { .. } => true,
-        DaemonError::LocalTransport { message, .. } => {
-            message.contains("no active prompt")
-                || message.contains("NoActivePrompt")
-                || message.contains("no_active_prompt")
-        }
-        _ => false,
     }
 }
 

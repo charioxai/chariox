@@ -920,6 +920,14 @@ impl KernelRuntimeState {
             )
             .await?;
         }
+        if outcome
+            .completions
+            .iter()
+            .any(|completion| completion.started_next.is_some())
+        {
+            // The promoted prompt runs a new worker turn; keep draining it.
+            self.spawn_remote_prompt_projection_drain(session_id.clone(), agent_id.clone());
+        }
         for completion in outcome.completions {
             self.inject_metaagent_turn_completion_event(&session_id, &agent_id, &completion)?;
         }
