@@ -979,3 +979,140 @@ async fn mcp_get_catalog_stream_requires_running_agent_auth() {
         "MP-08/MP-10 catalog stream must authenticate: {response}"
     );
 }
+
+// MP-08/MP-10: scripts may return any JSON value, but MCP structuredContent is an object.
+#[test]
+fn runtime_tool_content_wraps_non_objects_as_structured_results() {
+    for payload in [
+        serde_json::json!("crm result"),
+        serde_json::json!([1, 2]),
+        serde_json::json!(3),
+        serde_json::json!(true),
+        serde_json::Value::Null,
+    ] {
+        let (content, structured) = super::runtime_tool_content(payload.clone());
+        assert!(
+            structured.is_object(),
+            "MCP structuredContent must be an object"
+        );
+        assert_eq!(structured, serde_json::json!({"result": payload}));
+        assert_eq!(content[0]["text"], structured.to_string());
+    }
+}
+
+#[test]
+fn runtime_tool_content_preserves_objects_and_extracts_images() {
+    let payload = serde_json::json!({"result": "crm result"});
+    let (content, structured) = super::runtime_tool_content(payload.clone());
+    assert_eq!(structured, payload.clone());
+    assert_eq!(content[0]["text"], payload.to_string());
+    let (content, structured) = super::runtime_tool_content(serde_json::json!({
+        "mime_type": "image/png", "image_base64": "aW1hZ2U=", "width": 1
+    }));
+    assert_eq!(content[0]["type"], "image");
+    assert_eq!(content[0]["data"], "aW1hZ2U=");
+
+    assert!(structured.get("image_base64").is_none());
+    assert_eq!(content[1]["text"], structured.to_string());
+}
+
+#[test]
+fn primitive_mcp_result_shape_is_versioned_and_hashed() {
+    use sha2::{Digest, Sha256};
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 375);
+    let (content, structured) = super::runtime_tool_content(serde_json::json!("crm result"));
+    let response = serde_json::json!({"jsonrpc": "2.0", "id": 7, "result": {
+        "content": content, "structuredContent": structured, "isError": false
+    }});
+    let hash = Sha256::digest(serde_json::to_string(&response).unwrap().as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "88bc1a9e72ce7fc22c80259bf0c3c2a3b52634867849331c4fc0b91dada72b1a"
+    );
+}
+
+// MP-08/MP-10: real script execution through the authenticated shared MCP dispatcher.
+#[tokio::test]
+async fn mcp_script_string_result_remains_available_to_strict_clients() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-efix7-mcp-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let _cleanup = catalog_changes::Scratch(root.clone());
+    let environment = crate::script::CharioxEnvironmentConfig {
+        name: "efix7_python".into(),
+        runtime: crate::script::CharioxEnvironmentRuntime::Python {
+            python: "/usr/bin/python3".into(),
+        },
+    };
+    crate::script::CharioxEnvironmentRegistry::new(vec![
+        crate::script::CharioxEnvironmentRegistry::project_root(&root),
+    ])
+    .install(&environment)
+    .unwrap();
+    let source = root.join("crm.py");
+    std::fs::write(&source, "import json\ndef run(rows: list[str]) -> str:\n    \"\"\"Serialize CRM rows without logs.\"\"\"\n    return json.dumps(rows)\n\ndef test_run():\n    assert json.loads(run(['fixture'])) == ['fixture']\n").unwrap();
+    crate::script::CharioxScriptRegistry::new(vec![
+        crate::script::CharioxScriptRegistry::project_root(&root),
+    ])
+    .install(&source, Some("efix7_crm"), &environment)
+    .unwrap();
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            root.to_string_lossy(),
+            root.to_string_lossy(),
+        ))
+        .unwrap();
+    app.agents()
+        .grant_extension(
+            agent.id(),
+            crate::extension::ExtensionGrant::script("efix7_crm", "efix7_python"),
+        )
+        .unwrap();
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .unwrap();
+    let token = run.runtime_mcp_auth_token().unwrap().to_string();
+    let router = Arc::new(CommandRouter::with_interactive_capacity(
+        Arc::new(Mutex::new(app)),
+        8,
+    ));
+    let response = handle_json_rpc_value(
+        router,
+        &token,
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {
+                "name": "efix7_crm", "arguments": {"rows": ["fixture"]}
+            }
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let value: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(value["result"]["isError"], false);
+    assert!(value["result"]["structuredContent"].is_object());
+    let original: Value = serde_json::from_str(
+        value["result"]["structuredContent"]["result"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(original, serde_json::json!(["fixture"]));
+    let text: Value =
+        serde_json::from_str(value["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(text, value["result"]["structuredContent"]);
+}

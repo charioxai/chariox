@@ -348,6 +348,10 @@ async fn handle_json_rpc_value(
 }
 
 fn runtime_tool_content(mut payload: Value) -> (Vec<Value>, Value) {
+    // MCP structuredContent is an object, while script results may be any JSON value.
+    if !payload.is_object() {
+        payload = serde_json::json!({ "result": payload });
+    }
     let image = payload.as_object_mut().and_then(|object| {
         let mime_type = object
             .get("mime_type")

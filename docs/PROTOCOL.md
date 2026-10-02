@@ -2027,3 +2027,16 @@ MP-08 / MP-10 / MP-11: The Project environment feature stays at local protocol 3
 MP-08 / MP-10 / MP-11: Local protocol v373 and relay peer v66 add lease-bound worker Environment query/Adjust, explicit selected private-file retrieval, and source-worker export/reuse. GetProjectEnvironmentManifest.agentId selects the execution kernel. Pending interactions are projected in waiting-room activity, including unattached utility sessions. CreateSlice.source_slice_ref selects a running home-owned Docker slice of the same Project/repository selection; its actual worker refreshes the manifest and seals values directly to the next worker, while the existing development exporter captures its owned mounted repository snapshot. The home routes the opaque sealed layer and does not decrypt worker values. The target binds subsequent leases to its existing Project state without source contact. Reaching the source is required only for explicit retrieval of a previously omitted private file. Imported manifests and source receipts are independent private target state; values remain absent from public projections. Metadata-only Codex utilities use ephemeral native threads and settle through native item/completion events, without durable turn-list reads.
 
 MP-08 / MP-10 / MP-11: Ordinary local prompt admission and leased-worker reuse resolve the exporting kernel's current Project bindings before reusing an idle provider process. Changed bindings retire the idle process before native conversation resume, releasing Codex's thread writer; active turns are never replaced for environment changes. Native TUI refresh reports that the TUI must restart when its selected inputs change. Account activation merges native credentials without dropping Project bindings. Secret-file length changes do not trigger metadata discovery; incremental discovery preserves kernel-owned unchanged selections, while unsupported names/locators remain rejected. Automatic queued-turn promotion and native-TUI refresh require further validation before acceptance.
+
+### MP-08 / MP-10 primitive MCP results (protocol 375)
+
+Runtime script results may be any JSON value. The shared MCP response producer
+wraps non-object values as `{ "result": <value> }` before serializing both
+`structuredContent` and its text representation. Object results retain their
+existing fields; image extraction is unchanged. This follows the
+[MCP structured content contract](https://modelcontextprotocol.io/specification/2025-06-18/server/tools#structured-content).
+The correction is shared by ordinary and worker provider runs. Local protocol
+375 records the serialized result correction; relay peer protocol remains 67.
+Web/native minimum versions remain unchanged because they do not depend on this
+MCP-only behavior. Provider-free transport/script tests are focused source
+proof, not MP-08 or MP-10 acceptance on a signed fresh Path-1 release.
