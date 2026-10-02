@@ -1341,6 +1341,7 @@ mod tests {
 
     #[test]
     fn stale_snapshot_scavenging_is_exact_and_preserves_active_leases() {
+        crate::test_support::isolated_env_test!();
         let parent = fs::canonicalize(std::env::temp_dir())
             .expect("temporary root should canonicalize")
             .join(format!(
@@ -1430,6 +1431,7 @@ mod tests {
 
     #[test]
     fn startup_scavenger_bounds_work_and_cleans_recent_orphans_on_retry() {
+        crate::test_support::isolated_env_test!();
         let parent = fs::canonicalize(std::env::temp_dir())
             .expect("temporary root should canonicalize")
             .join(format!(
