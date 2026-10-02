@@ -72,6 +72,15 @@ export async function roomsExtra(input){
   };
   const args=['--execute','--kernel-url',input.kernelUrl,'--session',sessionId,'--agent',provider.agentId,'--output-dir',path.join(out,'office-suite'),'--timeout-ms','300000'];
   for(const scenario of scenarios)args.push('--scenario',scenario,'--task',scenario+'='+tasks[scenario],'--confirm-external-actions',scenario);
+  // MP-08/MP-10: permission-policy restoration can refresh a provider run.
+  // The suite requires a started business prompt, so settle that refresh first.
+  await waitFor(async()=>{
+   const state=unwrap(await client.send(requests.getSessionStateRequest(sessionId)),'SessionState');
+   const activity=state.agent_activity?.[provider.agentId];
+   if(activity?.status==='error'&&activity?.prompt_status==='none')throw new Error('MP-08/MP-10 provider failed before office-suite submission');
+   return activity?.status==='idle'&&activity?.prompt_status==='none'
+    &&!state.session.agents.find(a=>a.id===provider.agentId)?.is_processing;
+  },180000,'MP-08/MP-10 provider refresh did not settle before office-suite submission');
   const suite=await runCli('live-room-office-scenario-suite-drill.mjs',args);
   // MP-08/MP-10: the suite captures its original prompt; also wait for the kernel's automatic resume continuation.
   const wanted=scenarios.includes('public-api-extension')?'rooms_public_api':'rooms_vendor';
