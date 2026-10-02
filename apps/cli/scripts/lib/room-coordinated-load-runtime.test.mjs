@@ -7,6 +7,7 @@ import test from "node:test"
 
 import { COORDINATED_LOAD_SCHEMA, validateCoordinatedLoadConfig } from "./room-coordinated-load-plan.mjs"
 import { createRoomCoordinatedLoadRuntime } from "./room-coordinated-load-runtime.mjs"
+import { sleep } from "./room-coordinated-load-tui-process.mjs"
 
 const portMap = {
   codex: 44000, opencode: 44300, kernel: 44600, mcp: 44900, relay: 45200, novnc: 45500,
@@ -352,7 +353,7 @@ test("stalled viewer reconnects after bounded-buffer failure while the other rou
   }
   const runtime = await createRoomCoordinatedLoadRuntime({ plan: approvedPlan(), ...scratch }, {
     protocol: fixture.protocol, relayToken: "fixture-relay-token", localKernelAuthEnvironment: {},
-    tuiProcess: { sleep: async (ms) => { assert.equal(ms, 100); overloaded = true; await new Promise(resolve => setTimeout(resolve, ms)) } },
+    tuiProcess: { sleep: async (ms) => { assert.equal(ms, 100); overloaded = true; await sleep(ms) } },
   })
   const local = await runtime.startViewer(null, { id: "web-local", route: "local" })
   const remote = await runtime.startViewer(null, { id: "web-relay", route: "relay" })

@@ -163,9 +163,15 @@ export function tuiEnvironment(home, relayToken, tokenEnv, localKernelAuthEnviro
 
 export async function sleep(milliseconds, signal) {
   if (signal?.aborted) throw new Error("coordinated load interrupted")
+  const deadline = performance.now() + milliseconds
   await new Promise((resolve, reject) => {
-    const timer = setTimeout(done, milliseconds)
+    let timer = setTimeout(done, milliseconds)
     function done() {
+      const remaining = deadline - performance.now()
+      if (remaining > 0) {
+        timer = setTimeout(done, Math.ceil(remaining))
+        return
+      }
       signal?.removeEventListener("abort", abort)
       resolve()
     }
