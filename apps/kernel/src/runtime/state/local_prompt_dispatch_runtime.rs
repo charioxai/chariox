@@ -621,11 +621,12 @@ mod tests {
             .await
             .expect("workflow vault unlock interaction should appear");
         runtime
-            .resolve_runtime_interaction(
+            .resolve_terminal_runtime_interaction(
                 session.id(),
                 passphrase_interaction.id(),
                 "passphrase",
                 Some("correct horse battery staple"),
+                Some(crate::session::DEFAULT_LOCAL_USER_ID),
             )
             .await
             .expect("vault passphrase interaction should resolve");
@@ -661,7 +662,7 @@ mod tests {
             .provider_run_projection
             .update(ended.into_run());
         runtime
-            .resolve_runtime_interaction(session.id(), interaction.id(), "unlock_operation", None)
+            .resolve_terminal_runtime_interaction(session.id(), interaction.id(), "unlock_operation", None, Some(crate::session::DEFAULT_LOCAL_USER_ID))
             .await
             .expect("vault unlock interaction should resolve");
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
