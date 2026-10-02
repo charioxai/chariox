@@ -1,0 +1,333 @@
+import json
+import os
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from bridge import collect, write_mirror, valid_branch, FOOTER
+from relay import Relay, TransportFailure, choose_pr, validate_commits, validate_request, TRAILER
+
+
+class RelayTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+
+    def request(self, **overrides):
+        return dict(branch="apps/p1-proof", base="main", title="proof", body="proof\n\n" + FOOTER, **overrides)
+
+    def test_ref_and_flag_injection_rejected(self):
+        for value in ("--all", "main", "apps/p1-../x", "apps/p1-x//y", "apps/p1-x.lock", "apps/p1-x@{x", "apps/p1-x;touch x"):
+            self.assertFalse(valid_branch(value), value)
+        self.assertTrue(valid_branch("apps/p1-proof/nested"))
+        request = self.request()
+        request["base"] = "--delete"
+        with self.assertRaises(ValueError):
+            validate_request(request)
+
+    def test_commit_range_requires_skip_ci_and_trailer(self):
+        good = "fix [skip ci]\n\n" + TRAILER
+        validate_commits([good])
+        for message in ("fix\n\n" + TRAILER, "fix [skip ci]", "fix\n\n[skip ci]\n" + TRAILER):
+            with self.assertRaises(ValueError):
+                validate_commits([good, message])
+
+    def test_closed_pr_is_not_recreated_and_open_pr_wins(self):
+        closed = dict(number=3, headRefName="apps/p1-proof", state="CLOSED")
+        opened = dict(number=2, headRefName="apps/p1-proof", state="OPEN")
+        self.assertEqual(choose_pr([closed], "apps/p1-proof"), closed)
+        self.assertEqual(choose_pr([closed, opened], "apps/p1-proof"), opened)
+        self.assertIsNone(choose_pr([closed], "apps/p1-other"))
+
+    def make_inbox(self):
+        directory = self.root / "chariox/apps"
+        directory.mkdir(parents=True)
+        body = self.root / "chariox/body.md"
+        body.write_text("proof\n\n" + FOOTER)
+        request = dict(base="main", title="proof", body_file=str(body), draft=True)
+        (directory / "p1-proof.json").write_text(json.dumps(request))
+        return body, directory
+
+    def test_request_reads_body_without_running_it(self):
+        body, directory = self.make_inbox()
+        body.write_text("$(touch forbidden) `echo hidden`\n\n" + FOOTER)
+        result = collect(self.root)
+        self.assertEqual(result["errors"], [])
+        request = result["requests"]["chariox"][0]
+        validate_request(request)
+        self.assertEqual(request["branch"], "apps/p1-proof")
+        self.assertIn("$(touch forbidden)", request["body"])
+
+    def test_external_body_and_symlink_rejected(self):
+        body, directory = self.make_inbox()
+        outside = self.root.parent / "outside.md"
+        request = json.loads((directory / "p1-proof.json").read_text())
+        request["body_file"] = str(outside)
+        (directory / "p1-proof.json").write_text(json.dumps(request))
+        self.assertEqual(len(collect(self.root)["errors"]), 1)
+        request["body_file"] = str(body)
+        (directory / "p1-proof.json").write_text(json.dumps(request))
+        body.unlink()
+        body.symlink_to("/etc/passwd")
+        self.assertEqual(len(collect(self.root)["errors"]), 1)
+
+    def test_fifo_does_not_block(self):
+        body, directory = self.make_inbox()
+        body.unlink()
+        os.mkfifo(body)
+        self.assertEqual(len(collect(self.root)["errors"]), 1)
+
+    def test_atomic_mirror_and_symlink_parent(self):
+        write_mirror(self.root, "chariox/12.json", {"reviews": []})
+        self.assertEqual(json.loads((self.root / "chariox/12.json").read_text()), {"reviews": []})
+        self.assertEqual((self.root / "chariox/12.json").stat().st_mode & 0o777, 0o600)
+        (self.root / "chariox/link").symlink_to(self.root, target_is_directory=True)
+        with self.assertRaises(OSError):
+            write_mirror(self.root, "chariox/link/evil.json", {})
+
+    def test_invalid_draft_and_missing_footer(self):
+        request = self.request(draft="false")
+        with self.assertRaises(ValueError):
+            validate_request(request)
+        request = self.request()
+        request["body"] = "no footer"
+        with self.assertRaises(ValueError):
+            validate_request(request)
+
+
+class GitPublicationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.source = self.root / "source"
+        self.remote = self.root / "remote.git"
+        self.cache = self.root / "chariox.git"
+        self.command("git", "init", "-b", "main", str(self.source))
+        self.command("git", "-C", str(self.source), "config", "user.name", "test")
+        self.command("git", "-C", str(self.source), "config", "user.email", "test@example.com")
+        self.base = self.commit("base")
+        self.command("git", "clone", "--bare", str(self.source), str(self.remote))
+        self.command("git", "clone", "--bare", str(self.source), str(self.cache))
+        self.command("git", "--git-dir", str(self.cache), "remote", "set-url", "origin", str(self.remote))
+        self.relay = Relay(SimpleNamespace(ssh_config=self.root / "unused", git_root=self.root))
+
+    def command(self, *argv):
+        return subprocess.run(argv, text=True, capture_output=True, check=True).stdout.strip()
+
+    def commit(self, subject, trailer=True):
+        message = subject + ("\n\n" + TRAILER if trailer else "")
+        self.command("git", "-C", str(self.source), "commit", "--allow-empty", "-m", message)
+        return self.command("git", "-C", str(self.source), "rev-parse", "HEAD")
+
+    def fetch(self):
+        self.command("git", "--git-dir", str(self.cache), "fetch", str(self.source), "HEAD")
+
+    def test_new_branch_and_fast_forward_publish(self):
+        head = self.commit("one [skip ci]")
+        self.fetch()
+        self.relay.publish("chariox", "apps/p1-proof", head, None, {"main": self.base})
+        self.assertEqual(self.command("git", "--git-dir", str(self.remote), "rev-parse", "apps/p1-proof"), head)
+        next_head = self.commit("two [skip ci]")
+        self.fetch()
+        self.relay.publish("chariox", "apps/p1-proof", next_head, head, {"main": self.base, "apps/p1-proof": head})
+        self.assertEqual(self.command("git", "--git-dir", str(self.remote), "rev-parse", "apps/p1-proof"), next_head)
+
+    def test_hidden_bad_commit_blocks_entire_range(self):
+        self.commit("would trigger CI")
+        head = self.commit("valid head [skip ci]")
+        self.fetch()
+        with self.assertRaises(ValueError):
+            self.relay.publish("chariox", "apps/p1-proof", head, None, {"main": self.base})
+        self.assertNotIn("apps/p1-proof", self.command("git", "--git-dir", str(self.remote), "for-each-ref", "--format=%(refname)"))
+
+    def test_workflow_change_is_never_published(self):
+        workflow = self.source / ".github/workflows/unsafe.yml"
+        workflow.parent.mkdir(parents=True)
+        workflow.write_text("on: create\n")
+        self.command("git", "-C", str(self.source), "add", ".github")
+        head = self.commit("workflow [skip ci]")
+        self.fetch()
+        with self.assertRaises(ValueError):
+            self.relay.publish("chariox", "apps/p1-proof", head, None, {"main": self.base})
+        self.assertNotIn("apps/p1-proof", self.command("git", "--git-dir", str(self.remote), "for-each-ref", "--format=%(refname)"))
+
+    def test_reverted_workflow_in_new_range_is_rejected(self):
+        workflow = self.source / ".github/workflows/unsafe.yml"
+        workflow.parent.mkdir(parents=True)
+        workflow.write_text("on: create\n")
+        self.command("git", "-C", str(self.source), "add", ".github")
+        self.commit("workflow [skip ci]")
+        workflow.unlink()
+        self.command("git", "-C", str(self.source), "add", ".github")
+        head = self.commit("revert workflow [skip ci]")
+        self.fetch()
+        with self.assertRaises(ValueError):
+            self.relay.publish("chariox", "apps/p1-proof", head, None, {"main": self.base})
+
+        self.assertNotIn("apps/p1-proof", self.command("git", "--git-dir", str(self.remote), "for-each-ref", "--format=%(refname)"))
+
+    def prepare_upstream_merge(self):
+        self.command("git", "-C", str(self.source), "switch", "-c", "feature")
+        feature = self.commit("feature [skip ci]")
+        self.fetch()
+        self.relay.publish("chariox", "apps/p1-proof", feature, None, {"main": self.base})
+        self.command("git", "-C", str(self.source), "switch", "main")
+        workflow = self.source / ".github/workflows/upstream.yml"
+        workflow.parent.mkdir(parents=True)
+        workflow.write_text("trusted upstream content\n")
+        self.command("git", "-C", str(self.source), "add", ".github")
+        main = self.commit("upstream workflow [skip ci]")
+        self.command("git", "-C", str(self.source), "push", str(self.remote), "main")
+        self.command("git", "-C", str(self.source), "switch", "feature")
+        self.command("git", "-C", str(self.source), "merge", "--no-ff", "--no-commit", "main")
+        return feature, main, workflow
+
+    def test_trusted_upstream_workflow_merge_can_publish(self):
+        feature, main, workflow = self.prepare_upstream_merge()
+        head = self.commit("sync upstream [skip ci]")
+        self.fetch()
+        self.relay.publish("chariox", "apps/p1-proof", head, feature, {"main": main, "apps/p1-proof": feature})
+        self.assertEqual(self.command("git", "--git-dir", str(self.remote), "rev-parse", "apps/p1-proof"), head)
+
+    def test_merge_authored_workflow_content_is_rejected(self):
+        feature, main, workflow = self.prepare_upstream_merge()
+        workflow.write_text("builder-authored unsafe merge content\n")
+        self.command("git", "-C", str(self.source), "add", ".github")
+        head = self.commit("evil merge [skip ci]")
+        self.fetch()
+        with self.assertRaises(ValueError):
+            self.relay.publish("chariox", "apps/p1-proof", head, feature, {"main": main, "apps/p1-proof": feature})
+        self.assertEqual(self.command("git", "--git-dir", str(self.remote), "rev-parse", "apps/p1-proof"), feature)
+
+    def test_divergence_and_racing_remote_never_overwritten(self):
+        head = self.commit("one [skip ci]")
+        self.fetch()
+        self.relay.publish("chariox", "apps/p1-proof", head, None, {"main": self.base})
+        self.command("git", "-C", str(self.source), "reset", "--hard", self.base)
+        divergent = self.commit("divergent [skip ci]")
+        self.fetch()
+        with self.assertRaises(RuntimeError):
+            self.relay.publish("chariox", "apps/p1-proof", divergent, head, {"main": self.base})
+        with self.assertRaises(RuntimeError):
+            self.relay.publish("chariox", "apps/p1-proof", divergent, None, {"main": self.base})
+        self.assertEqual(self.command("git", "--git-dir", str(self.remote), "rev-parse", "apps/p1-proof"), head)
+
+
+class PublicationFlowTests(unittest.TestCase):
+    def test_create_retry_reply_and_feedback(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "chariox.git").mkdir()
+            args = SimpleNamespace(ssh_config=root / "unused", git_root=root, state_dir=root)
+            sha = "a" * 40
+            review = dict(author={"login": "reviewer"}, state="COMMENTED", body="finding", commit={"oid": sha})
+            comment = dict(author={"login": "owner"}, body="issue comment")
+            class FakeRelay(Relay):
+                created = 0
+                commented = 0
+                closed = False
+                marker = None
+                def git(self, repo, *arguments):
+                    return ""
+                def refs(self, repo, prefix):
+                    return {"apps/p1-proof": sha} if prefix == "refs/builder/" else {"main": "b" * 40}
+                def publish(self, *arguments):
+                    pass
+                def gh(self, repo, *arguments, data=None):
+                    pull = dict(number=10, url="https://example.test/10", state="CLOSED" if self.closed else "OPEN",
+                                headRefName="apps/p1-proof", headRefOid=sha, reviews=[review], comments=[comment])
+                    if arguments[:2] == ("pr", "list"):
+                        return json.dumps([pull] if self.created else [])
+                    if arguments[:2] == ("pr", "create"):
+                        self.created += 1
+                        return pull["url"]
+                    if arguments[:2] == ("pr", "comment"):
+                        self.commented += 1
+                        self.marker = data
+                        return ""
+                    return json.dumps(pull)
+                def api(self, repo, suffix):
+                    if suffix.startswith("issues/"):
+                        return [[dict(body=self.marker)]] if self.marker else [[]]
+                    return [[dict(id=1, pull_request_url="https://example.test/pulls/10", user={"login": "reviewer"},
+                                  body="inline finding", commit_id=sha, path="file", line=1)]]
+            relay = FakeRelay(args)
+            request = dict(branch="apps/p1-proof", base="main", title="proof", body=FOOTER, draft=True,
+                           reply=dict(commit=sha, body=f"Addressed in {sha}. Fixed it."))
+            relay.repository("chariox", [request])
+            self.assertEqual((relay.created, relay.commented), (1, 1))
+            mirror = [x["value"] for x in relay.records if x["key"] == "10"][0]
+            self.assertEqual(mirror["reviews"][0]["commit_id"], sha)
+            self.assertIsNone(mirror["comments"][0]["commit_id"])
+            self.assertEqual(mirror["comments"][1]["commit_id"], sha)
+            relay.records = []
+            relay.repository("chariox", [request])
+            self.assertEqual((relay.created, relay.commented), (1, 1))
+            # Simulate lost local receipt; remote marker still prevents duplicate reply.
+            (root / f"reply-chariox-10-{sha}").unlink()
+            relay.repository("chariox", [request])
+            self.assertEqual(relay.commented, 1)
+            request["reply"] = dict(commit="b" * 40, body=f"Addressed in {'b' * 40}. Previous fix.")
+            relay.records = []
+            relay.repository("chariox", [request])
+            self.assertEqual(relay.records[0]["value"]["status"], "published")
+            self.assertEqual(relay.records[0]["value"]["reply_status"], "stale_skipped")
+            self.assertEqual(relay.records[0]["value"]["published_sha"], sha)
+            self.assertEqual(relay.commented, 1)
+            relay.closed = True
+            relay.records = []
+            relay.repository("chariox", [request])
+            self.assertEqual(relay.created, 1)
+            self.assertEqual(relay.records[0]["value"]["state"], "CLOSED")
+
+    def test_ack_first_chunked_mirrors_and_isolated_failures(self):
+        args = SimpleNamespace(ssh_config=Path("unused"), git_root=Path("unused"))
+        class FakeRelay(Relay):
+            def __init__(self, args):
+                super().__init__(args)
+                self.sent = []
+                self.success = []
+            def remote(self, action, data=None):
+                records = json.loads(data)
+                self.sent.append(records)
+                if any(r["key"] == "broken" for r in records):
+                    raise RuntimeError("bad record")
+                self.success.extend(r["key"] for r in records)
+        relay = FakeRelay(args)
+        relay.records = [dict(repo="chariox", key="oversized", value="x" * (9 * 1024 * 1024)),
+                         dict(repo="chariox", key="one", value="x" * (3 * 1024 * 1024)),
+                         dict(repo="chariox", key="two", value="x" * (3 * 1024 * 1024)),
+                         dict(repo="chariox", key="broken", value={}),
+                         dict(repo="chariox", key="good", value={}),
+                         dict(repo="chariox", key="branches/apps/p1-proof", value={})]
+        relay.flush()
+        self.assertEqual(relay.sent[0][0]["key"], "branches/apps/p1-proof")
+        self.assertEqual(set(relay.success), {"branches/apps/p1-proof", "one", "two", "good"})
+        self.assertEqual(len(relay.failures), 2)
+        self.assertTrue(all(len(json.dumps(batch).encode()) <= 8 * 1024 * 1024 for batch in relay.sent))
+
+    def test_transport_outage_does_not_split_or_retry_every_record(self):
+        args = SimpleNamespace(ssh_config=Path("unused"), git_root=Path("unused"))
+        class OfflineRelay(Relay):
+            attempts = 0
+            def remote(self, action, data=None):
+                self.attempts += 1
+                raise TransportFailure("offline")
+        relay = OfflineRelay(args)
+        relay.records = [dict(repo="chariox", key=str(i), value={}) for i in range(1, 556)]
+        with self.assertRaises(TransportFailure):
+            relay.flush()
+        self.assertEqual(relay.attempts, 1)
+
+    def test_review_reply_must_match_full_sha(self):
+        request = dict(branch="apps/p1-proof", base="main", title="proof", body=FOOTER,
+                       reply=dict(commit="abc", body="Addressed in abc. Done."))
+        with self.assertRaises(ValueError):
+            validate_request(request)
+
+
+if __name__ == "__main__":
+    unittest.main()
