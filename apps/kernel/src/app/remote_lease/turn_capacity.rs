@@ -8,13 +8,18 @@
 
 use crate::app::{KernelAgentService, KernelPromptDispatch};
 use crate::error::DaemonError;
-use crate::session::{PromptCancellation, PromptStatus};
+use crate::session::{PromptAttachment, PromptCancellation, PromptStatus};
+use crate::transport::relay_peer::RemoteGitTurnContext;
 
+use super::prompt_lifecycle::join_hidden_context;
 use super::RemoteLeaseRuntime;
 
 pub(crate) struct LeasedTurnWaitingForCapacity {
     leased_agent_id: String,
     dispatch: KernelPromptDispatch,
+    /// Observed when the turn starts, so the git baseline excludes edits
+    /// made by other turns while this one waited.
+    git_context: Option<RemoteGitTurnContext>,
 }
 
 impl<'a> RemoteLeaseRuntime<'a> {
@@ -35,6 +40,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         &mut self,
         leased_agent_id: &str,
         dispatch: KernelPromptDispatch,
+        git_context: Option<RemoteGitTurnContext>,
     ) {
         let message = format!(
             "Waiting for worker capacity: `{}` runs at most {} leased turns at once. This turn starts automatically when a running turn finishes.",
@@ -56,7 +62,41 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .push_back(LeasedTurnWaitingForCapacity {
                 leased_agent_id: leased_agent_id.to_string(),
                 dispatch,
+                git_context,
             });
+    }
+
+    /// A steer for a turn that has not reached its provider yet is delivered
+    /// with that turn.
+    pub(super) fn add_steer_to_held_turn(
+        &mut self,
+        leased_agent_id: &str,
+        prompt: &str,
+        hidden_system_context: &str,
+        attachments: Vec<PromptAttachment>,
+    ) {
+        let Some(waiting) = self
+            .app
+            .leased_turns_waiting_for_capacity
+            .iter_mut()
+            .find(|waiting| waiting.leased_agent_id == leased_agent_id)
+        else {
+            return;
+        };
+        let dispatch = &mut waiting.dispatch;
+        dispatch.prompt = format!("{}\n\n{prompt}", dispatch.prompt.trim_end());
+        dispatch.hidden_system_context =
+            join_hidden_context(&dispatch.hidden_system_context, hidden_system_context);
+        dispatch.attachments.extend(attachments);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn held_turn_prompt(&self, leased_agent_id: &str) -> Option<String> {
+        self.app
+            .leased_turns_waiting_for_capacity
+            .iter()
+            .find(|waiting| waiting.leased_agent_id == leased_agent_id)
+            .map(|waiting| waiting.dispatch.prompt.clone())
     }
 
     /// Starts held turns, oldest first, while running turns are below capacity.
@@ -72,26 +112,48 @@ impl<'a> RemoteLeaseRuntime<'a> {
         while !self.app.leased_turns_waiting_for_capacity.is_empty()
             && !self.running_turns_at_capacity()
         {
-            let Some(waiting) = self.app.leased_turns_waiting_for_capacity.pop_front() else {
+            let Some(LeasedTurnWaitingForCapacity {
+                leased_agent_id,
+                dispatch,
+                git_context,
+            }) = self.app.leased_turns_waiting_for_capacity.pop_front()
+            else {
                 return;
             };
-            if let Err(error) = KernelAgentService::new(self.app)
-                .finish_compat_prompt_dispatch(Some(waiting.dispatch))
+            if let (Some(git_context), Some(leased_agent)) = (
+                git_context,
+                self.app.leased_agents.get(&leased_agent_id).cloned(),
+            ) {
+                self.observe_leased_git_before(
+                    &leased_agent,
+                    &dispatch.provider_run_id,
+                    git_context,
+                );
+            }
+            let (session_id, provider_run_id, prompt_id) = (
+                dispatch.session_id.clone(),
+                dispatch.provider_run_id.clone(),
+                dispatch.prompt_id.clone(),
+            );
+            if let Err(error) =
+                KernelAgentService::new(self.app).finish_compat_prompt_dispatch(Some(dispatch))
             {
                 crate::logging::warn_with_fields(
                     "daemon.remote_lease_capacity",
                     "held leased turn failed to start",
                     serde_json::json!({
-                        "leased_agent_id": waiting.leased_agent_id,
+                        "leased_agent_id": leased_agent_id,
                         "error": error.to_string(),
                     }),
                 );
+                // The dispatch failure cancelled the backing prompt, but the
+                // home was already told the turn is running.
+                self.record_held_turn_settlement(&session_id, &provider_run_id, &prompt_id);
             }
         }
     }
 
-    /// Cancels a turn that never reached its provider. No provider settlement
-    /// will follow, so record the completion that the home drain projects.
+    /// Cancels a turn that never reached its provider.
     pub(super) fn cancel_leased_turn_waiting_for_capacity(
         &mut self,
         leased_agent_id: &str,
@@ -120,18 +182,30 @@ impl<'a> RemoteLeaseRuntime<'a> {
             &dispatch.agent_id,
             Some(&dispatch.provider_run_id),
         )?;
-        let recipients = self
-            .app
-            .attachments
-            .list_session_attachment_ids(&dispatch.session_id);
-        self.app.record_assistant_message_completion(
+        self.record_held_turn_settlement(
             &dispatch.session_id,
             &dispatch.provider_run_id,
-            recipients,
-            &format!("prompt-complete:{}", dispatch.prompt_id),
-            crate::session::unix_epoch_ms(),
+            &dispatch.prompt_id,
         );
         Ok(Some(cancellation))
+    }
+
+    /// A held turn that ends without reaching its provider gets no provider
+    /// settlement, so record the completion the home drain projects.
+    fn record_held_turn_settlement(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        prompt_id: &str,
+    ) {
+        let recipients = self.app.attachments.list_session_attachment_ids(session_id);
+        self.app.record_assistant_message_completion(
+            session_id,
+            provider_run_id,
+            recipients,
+            &format!("prompt-complete:{prompt_id}"),
+            crate::session::unix_epoch_ms(),
+        );
     }
 
     fn turn_is_still_held(&mut self, waiting: &LeasedTurnWaitingForCapacity) -> bool {

@@ -93,7 +93,7 @@ fn turn_at_capacity_waits_and_starts_when_the_running_turn_completes() {
 }
 
 #[test]
-fn held_turn_rejects_steering_until_it_starts() {
+fn steering_a_held_turn_is_delivered_when_the_turn_starts() {
     let mut app = capacity_one_worker();
     let first = leased_agent(&mut app, "agent-first");
     let second = leased_agent(&mut app, "agent-second");
@@ -125,19 +125,32 @@ fn held_turn_rejects_steering_until_it_starts() {
         .expect("held prompt should be accepted");
     assert!(waiting(&mut app, &second.id));
 
-    let error = match RemoteLeaseRuntime::new(&mut app).prepare_leased_prompt_steer(
-        &second.id,
-        "steer-1",
-        "home-prompt-second",
-        "more context",
-        "",
-        Vec::new(),
-        None,
-    ) {
-        Ok(_) => panic!("steering a held turn must not reach the provider"),
-        Err(error) => error,
-    };
-    assert!(error.to_string().contains("waiting for worker capacity"));
+    let (_run, dispatch) = RemoteLeaseRuntime::new(&mut app)
+        .prepare_leased_prompt_steer(
+            &second.id,
+            "steer-1",
+            "home-prompt-second",
+            "more context",
+            "",
+            Vec::new(),
+            None,
+        )
+        .unwrap_or_else(|error| panic!("steering a held turn should be accepted: {error}"));
+    assert!(
+        dispatch.is_none(),
+        "a held turn's steer must not reach the provider early"
+    );
+    assert_eq!(
+        RemoteLeaseRuntime::new(&mut app)
+            .held_turn_prompt(&second.id)
+            .as_deref(),
+        Some("held remote prompt\n\nmore context")
+    );
+
+    RemoteLeaseRuntime::new(&mut app)
+        .complete_leased_prompt(&first.id)
+        .expect("running turn should complete");
+    assert!(!waiting(&mut app, &second.id));
 }
 
 #[test]
@@ -170,4 +183,68 @@ fn cancelling_a_held_turn_settles_it_without_reaching_the_provider() {
         .complete_leased_prompt(&first.id)
         .expect("running turn should complete");
     assert!(!turn_reached_provider(&app, &second_run));
+}
+
+fn settle_on_worker(app: &mut DaemonApp, leased_agent: &crate::execution_lease::LeasedAgent) {
+    app.complete_active_prompt(
+        &leased_agent.backing_session_id,
+        &leased_agent.backing_agent_id,
+        None,
+    )
+    .expect("running turn should settle on the worker");
+}
+
+#[test]
+fn home_drain_starts_a_held_turn_after_the_running_turn_settles() {
+    let mut app = capacity_one_worker();
+    let first = leased_agent(&mut app, "agent-first");
+    let second = leased_agent(&mut app, "agent-second");
+    submit(&mut app, &first.id);
+    let second_run = submit(&mut app, &second.id);
+
+    settle_on_worker(&mut app, &first);
+    assert!(waiting(&mut app, &second.id));
+    RemoteLeaseRuntime::new(&mut app)
+        .drain_leased_runtime_projection(&second.id, &second_run, false)
+        .expect("held turn projection should drain");
+    assert!(!waiting(&mut app, &second.id));
+    assert!(turn_reached_provider(&app, &second_run));
+}
+
+#[test]
+fn held_turn_that_fails_to_start_settles_the_home_turn() {
+    let mut app = capacity_one_worker();
+    let first = leased_agent(&mut app, "agent-first");
+    let second = leased_agent(&mut app, "agent-second");
+    submit(&mut app, &first.id);
+    let second_run = submit(&mut app, &second.id);
+    app.providers_mut()
+        .park_run_provider_only(&second.backing_session_id, &second_run)
+        .expect("held turn's provider run should park");
+
+    settle_on_worker(&mut app, &first);
+    let events = RemoteLeaseRuntime::new(&mut app)
+        .pump_leased_runtime_projections()
+        .expect("worker pump should run");
+    assert!(!waiting(&mut app, &second.id));
+    assert!(app
+        .prompt_owner_active_prompt_for_agent(&second.backing_session_id, &second.backing_agent_id)
+        .expect("backing prompt should load")
+        .is_none());
+    let completions = events
+        .into_iter()
+        .map(
+            |(
+                _target,
+                RelayPeerEvent::LeasedRuntimeProjection {
+                    home_agent_id,
+                    completions,
+                    ..
+                },
+            )| { (home_agent_id, completions) },
+        )
+        .filter(|(home_agent_id, _)| home_agent_id == "agent-second")
+        .flat_map(|(_, completions)| completions)
+        .count();
+    assert_eq!(completions, 1, "the home turn must not stay running");
 }

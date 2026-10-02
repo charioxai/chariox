@@ -266,9 +266,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let home_prompt_id = git_context
             .as_ref()
             .map(|context| context.home_prompt_id.clone());
-        if let Some(git_context) = git_context {
-            self.observe_leased_git_before(&leased_agent, &provider_run_id, git_context);
-        }
         let must_wait_for_capacity = self.leased_turn_must_wait_for_capacity();
         let (outcome, dispatch) = crate::app::KernelAgentService::new(self.app)
             .submit_prompt_holding_dispatch(
@@ -282,10 +279,15 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let held_for_capacity = must_wait_for_capacity && dispatch.is_some();
         match dispatch {
             Some(dispatch) if held_for_capacity => {
-                self.hold_leased_turn_for_capacity(&leased_agent.id, dispatch)
+                self.hold_leased_turn_for_capacity(&leased_agent.id, dispatch, git_context)
             }
-            dispatch => crate::app::KernelAgentService::new(self.app)
-                .finish_compat_prompt_dispatch(dispatch)?,
+            dispatch => {
+                if let Some(git_context) = git_context {
+                    self.observe_leased_git_before(&leased_agent, &provider_run_id, git_context);
+                }
+                crate::app::KernelAgentService::new(self.app)
+                    .finish_compat_prompt_dispatch(dispatch)?
+            }
         }
         crate::app::KernelSessionReadService::new(self.app)
             .session_snapshot(&leased_agent.backing_session_id)?;
@@ -383,14 +385,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 ),
             });
         }
-        if self.leased_turn_is_waiting_for_capacity(leased_agent_id) {
-            return Err(DaemonError::LocalTransport {
-                operation: "steer leased prompt",
-                message: format!(
-                    "leased agent `{leased_agent_id}` is waiting for worker capacity; its turn has not started yet"
-                ),
-            });
-        }
         let provider_run = self
             .app
             .providers
@@ -429,6 +423,18 @@ impl<'a> RemoteLeaseRuntime<'a> {
         }
         let materialized_attachments =
             self.materialize_leased_prompt_attachments(&leased_agent, attachments)?;
+        if self.leased_turn_is_waiting_for_capacity(leased_agent_id) {
+            self.add_steer_to_held_turn(
+                leased_agent_id,
+                prompt,
+                hidden_system_context,
+                materialized_attachments,
+            );
+            if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
+                agent.applied_home_steer_ids.push(steer_id.to_string());
+            }
+            return Ok((provider_run.id().to_string(), None));
+        }
         Ok((
             provider_run.id().to_string(),
             Some(crate::app::KernelPromptDispatch {
@@ -616,7 +622,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
     }
 }
 
-fn join_hidden_context(first: &str, second: &str) -> String {
+pub(super) fn join_hidden_context(first: &str, second: &str) -> String {
     match (first.trim(), second.trim()) {
         ("", "") => String::new(),
         ("", second) => second.to_string(),
