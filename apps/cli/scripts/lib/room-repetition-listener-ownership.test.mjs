@@ -28,3 +28,17 @@ test('MP-10: a proxy that ceased after ss is a stale snapshot, not a live leak',
  assert.deepEqual(result.owned,[])
  assert.equal(result.reused.length,1)
 })
+test('MP-10: confirmed foreign proxy may share its inherited socket with dockerd',()=>{
+ const shared=listener.replace('pid=21,fd=7))','pid=21,fd=7),("dockerd",pid=99,fd=8))')
+ const result=classifyOwnedListeners([shared],new Set([44001]),[],'our-run',[],new Set(),new Set(),new Set([21]))
+ assert.deepEqual(result.owned,[])
+ assert.equal(result.reused.length,1)
+ // A known owned holder takes precedence over the foreign proof.
+ assert.deepEqual(classifyOwnedListeners([shared],new Set([44001]),[],'our-run',[],new Set([99]),new Set(),new Set([21])).owned,[shared])
+})
+test('MP-10: ss column padding changes do not create extra listeners',async()=>{
+ const {compareCycle}=await import('./room-repetition-gates.mjs')
+ const base={containers:[],volumes:[],images:[],ownedPids:[],listeners:[listener],kernel:{fds:1,rss:1},relay:{fds:1,rss:1},diskBytes:1}
+ assert.deepEqual(compareCycle(base,{...base,listeners:[listener.replaceAll(' ','   ')+'    ']}),[])
+ assert.equal(compareCycle(base,{...base,listeners:[listener.replace(':44001',':44002')]}).length,1)
+})

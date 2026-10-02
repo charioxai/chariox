@@ -4,7 +4,9 @@ import {createHash} from 'node:crypto'
 export function compareCycle(before, after) {
   const errors = []
   for (const key of ['containers', 'volumes', 'images', 'ownedPids', 'listeners']) {
-    const extra = after[key].filter(value => !before[key].includes(value))
+    const normalize = value => key === 'listeners' ? value.trim().replace(/\s+/g, ' ') : value
+    const prior = new Set(before[key].map(normalize))
+    const extra = after[key].map(normalize).filter(value => !prior.has(value))
     if (extra.length) errors.push(`${key}: ${extra.join(', ')}`)
   }
   for (const key of ['kernel', 'relay']) {
@@ -33,7 +35,7 @@ export function classifyOwnedListeners(listeners, historicalPorts, containers, r
    for(let port=Number(match[1]);port<=Number(match[2]??match[1]);port++)foreignPorts.set(port,{containerId,containerName})
   }
  }
- const owned=[],reused=[]
+ const owned=[],reused=[],unresolved=[]
  for(const listener of listeners) {
   const port=Number(listener.trim().split(/\s+/)[3]?.match(/:(\d+)$/)?.[1])
   if(!historicalPorts.has(port))continue
@@ -41,12 +43,12 @@ export function classifyOwnedListeners(listeners, historicalPorts, containers, r
   const ownService=listenerPids.some(pid=>servicePids.includes(pid)||observedOwnedPids.has(pid))
   const foreign=foreignPorts.get(port)
   if(listenerPids.length&&listenerPids.every(pid=>ceasedProxyPids.has(pid)))reused.push({listener,port,ceasedProxyPids:listenerPids})
-  else if(!ownService&&listenerPids.length&&listenerPids.every(pid=>confirmedForeignProxyPids.has(pid)))reused.push({listener,port,confirmedForeignProxyPids:listenerPids})
+  else if(!ownService&&listenerPids.length&&listenerPids.some(pid=>confirmedForeignProxyPids.has(pid)))reused.push({listener,port,confirmedForeignProxyPids:listenerPids})
   else if(foreign&&!ownService)reused.push({listener,port,...foreign})
   else if(!ownService&&!listener.includes('docker-proxy')&&listenerPids.length&&listenerPids.every(pid=>foreignHostPids.has(pid)))reused.push({listener,port,foreignHostPids:listenerPids})
-  else owned.push(listener)
+  else {owned.push(listener);if(!ownService&&(!listenerPids.length||listener.includes('docker-proxy')||listener.includes('dockerd')))unresolved.push(listener)}
  }
- return {owned,reused}
+ return {owned,reused,unresolved}
 }
 
 export function assertRestoredMachineIdentity(before, after, oldSliceId, newSliceId) {

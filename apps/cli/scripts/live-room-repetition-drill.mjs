@@ -47,7 +47,7 @@ const launch=(binary,env,name)=>{const child=spawn(binary,[],{env,cwd:root,detac
 const cname=s=>`chariox-slice-${s.name}`
 const screen=(...args)=>docker(['exec','-u','slice',cname(slice),'/opt/chariox-slice/slice-screen.sh',...args])
 const proc=async pid=>{try{const text=await readFile(`/proc/${pid}/stat`,'utf8');const f=text.slice(text.lastIndexOf(')')+2).split(' ');return {pid,name:(await readFile(`/proc/${pid}/comm`,'utf8')).trim(),role:(await readFile(`/proc/${pid}/cmdline`,'utf8')).includes('browser-controller')?'browser-controller':null,state:f[0],rss:Number(f[21])*4096,fds:(await readdir(`/proc/${pid}/fd`)).length,startTicks:Number(f[19])}}catch{return null}}
-async function inventory(label){
+async function inventory(label,ownershipAttempt=0){
  const listeners=(await cmd('ss',['-ltnp'])).split('\n')
  const containers=(await docker(['ps','-a','--format','{{.ID}}|{{.Names}}|{{.Status}}|{{.Ports}}'])).split('\n').filter(Boolean)
  const volumes=(await docker(['volume','ls','--format','{{.Name}}'])).split('\n').filter(Boolean)
@@ -61,7 +61,11 @@ async function inventory(label){
  const foreignHostPids=new Set(processRows.map(row=>Number(row[0])).filter(pid=>!descendants.has(pid)&&!aliveOwnedPids.has(pid)))
  const publicProxyOwnership=await readForeignProxyOwnership(listeners,containers,runId,docker,readFile)
  const listenerOwnership=classifyOwnedListeners(listeners,ownedPorts,containers,runId,servicePids,aliveOwnedPids,foreignHostPids,publicProxyOwnership.confirmedPids,publicProxyOwnership.ceasedPids)
- const row={label,at:new Date().toISOString(),containers:containers.filter(x=>x.includes(runId)),volumes:volumes.filter(x=>x.includes(runId)),images:images.filter(x=>x.includes(runId)),ownedPids:[],listeners:listenerOwnership.owned,reusedForeignListeners:listenerOwnership.reused,publicForeignBindings:publicProxyOwnership.containers,kernel:await proc(kernelChild?.pid)??{rss:0,fds:0},relay:await proc(relayChild?.pid)??{rss:0,fds:0},diskBytes:Number((await cmd('du',['-sb',root])).split(/\s+/)[0]),resources:await guard(),global:{containers,volumes,images,listeners,processes}}
+ if(listenerOwnership.unresolved.length&&ownershipAttempt<3){
+  await write(`${label}-unresolved-${ownershipAttempt}`,{ownershipAttempt,unresolvedListeners:listenerOwnership.unresolved,publicForeignBindings:publicProxyOwnership.containers})
+  await sleep(250);return inventory(label,ownershipAttempt+1)
+ }
+ const row={ownershipAttempts:ownershipAttempt+1,label,at:new Date().toISOString(),containers:containers.filter(x=>x.includes(runId)),volumes:volumes.filter(x=>x.includes(runId)),images:images.filter(x=>x.includes(runId)),ownedPids:[],listeners:listenerOwnership.owned,reusedForeignListeners:listenerOwnership.reused,publicForeignBindings:publicProxyOwnership.containers,kernel:await proc(kernelChild?.pid)??{rss:0,fds:0},relay:await proc(relayChild?.pid)??{rss:0,fds:0},diskBytes:Number((await cmd('du',['-sb',root])).split(/\s+/)[0]),resources:await guard(),global:{containers,volumes,images,listeners,processes}}
  for(const [pid,startTicks] of observedPids){const p=await proc(pid);if(p&&p.startTicks===startTicks)row.ownedPids.push(`${pid}:${p.state}`)}
  await write(label,row);return row
 }
