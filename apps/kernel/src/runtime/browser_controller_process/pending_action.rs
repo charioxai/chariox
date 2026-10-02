@@ -13,6 +13,7 @@ pub(super) struct PendingAction {
 }
 
 impl StdioOwnership {
+    #[expect(clippy::too_many_arguments, reason = "Binds the document, mutation identity, cancellation and result mapping in one admission.")]
     pub(super) fn begin_action(
         &mut self,
         session_id: &str,
