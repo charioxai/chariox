@@ -540,8 +540,35 @@ mod tests {
         }));
     }
 
+    fn read_fixture_request(stream: &mut std::net::TcpStream) {
+        use std::io::{BufRead, BufReader, Read};
+
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .expect("bound fixture request read");
+        let mut reader = BufReader::new(stream);
+        let mut content_length = 0;
+        let mut line = String::new();
+        loop {
+            line.clear();
+            assert!(reader.read_line(&mut line).expect("read request headers") > 0);
+            if line == "\r\n" {
+                break;
+            }
+            if let Some((name, value)) = line.split_once(':') {
+                if name.eq_ignore_ascii_case("content-length") {
+                    content_length = value.trim().parse().expect("request body length");
+                }
+            }
+        }
+        let mut body = vec![0; content_length];
+        reader
+            .read_exact(&mut body)
+            .expect("read complete request body");
+    }
+
     fn acknowledgement_fixture(status: u16, body: &str) -> Result<(), DaemonError> {
-        use std::io::{Read, Write};
+        use std::io::Write;
         let listener =
             std::net::TcpListener::bind("127.0.0.1:0").expect("bind Cloud acknowledgement fixture");
         let address = listener.local_addr().expect("Cloud fixture address");
@@ -551,8 +578,7 @@ mod tests {
         );
         let fixture = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accept Cloud request");
-            let mut request = [0; 4096];
-            stream.read(&mut request).expect("read Cloud request");
+            read_fixture_request(&mut stream);
             stream
                 .write_all(response.as_bytes())
                 .expect("send Cloud acknowledgement fixture");
@@ -596,13 +622,12 @@ mod tests {
 
     #[test]
     fn cloud_acknowledgement_does_not_follow_a_redirect_to_success() {
-        use std::io::{Read, Write};
+        use std::io::Write;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind redirect fixture");
         let address = listener.local_addr().expect("redirect fixture address");
         let fixture = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accept original logout");
-            let mut request = [0; 4096];
-            stream.read(&mut request).expect("read original logout");
+            read_fixture_request(&mut stream);
             let response = format!("HTTP/1.1 302 Found\r\nLocation: http://{address}/redirected\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
             stream
                 .write_all(response.as_bytes())
@@ -614,7 +639,7 @@ mod tests {
             let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
             while std::time::Instant::now() < deadline {
                 if let Ok((mut followed, _)) = listener.accept() {
-                    followed.read(&mut request).expect("read followed redirect");
+                    read_fixture_request(&mut followed);
                     followed
                         .write_all(
                             b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
