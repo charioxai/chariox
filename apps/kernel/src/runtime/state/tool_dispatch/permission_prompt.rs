@@ -53,7 +53,12 @@ impl KernelRuntimeState {
                     operation: OPERATION,
                     message: "provider run is not bound to an agent".to_string(),
                 })?;
-        let interaction = claude_permission_prompt_interaction(provider_run.id(), agent_id, &args);
+        let interaction = claude_permission_prompt_interaction(provider_run.id(), agent_id, &args)
+            .with_native_origin(self.owned.capture_native_interaction_origin(
+                provider_run.session_id(),
+                agent_id,
+                provider_run.id(),
+            ));
         let resolution =
             crate::runtime::native_interaction_bridge::request_provider_native_interaction(
                 self,

@@ -118,7 +118,7 @@ async fn start_prompt(
 ) {
     let call_router = router.clone();
     let (token, tool_use) = (token.to_string(), tool_use_id.to_string());
-    let call = tokio::spawn(async move {
+    let mut call = tokio::spawn(async move {
         rpc(
             &call_router,
             &token,
@@ -136,6 +136,12 @@ async fn start_prompt(
     });
     let interaction = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
+            if call.is_finished() {
+                panic!(
+                    "permission {tool_use_id} returned before publishing: {:?}",
+                    (&mut call).await
+                );
+            }
             if let Some(interaction) = active_interactions(router, session_id)
                 .into_iter()
                 .find(|interaction| interaction.id().ends_with(tool_use_id))
@@ -246,6 +252,15 @@ async fn claude_print_permission_prompt_asks_the_user_and_maps_the_answer() {
         NATIVE_TUI_TOKEN,
         crate::provider::ProviderClientInterface::NativeTui,
     );
+    // Only the current print run owns a live turn; other fixture runs model
+    // discovery/refusal without replacing that turn.
+    let active_turns = app.active_turn_store();
+    active_turns.start(crate::app::ActiveTurnState::new(
+        session.id().into(),
+        agent.id().into(),
+        "fixture-print-turn".into(),
+        "provider-run-claude-print".into(),
+    ));
     let router = Arc::new(CommandRouter::with_interactive_capacity(
         Arc::new(Mutex::new(app)),
         8,
@@ -283,6 +298,26 @@ async fn claude_print_permission_prompt_asks_the_user_and_maps_the_answer() {
     let denied = prompt_and_answer(&router, session.id(), agent.id(), "toolu_deny", "deny").await;
     assert_eq!(denied["behavior"], "deny");
     assert_eq!(denied["message"], "Denied through Chariox.");
+
+    // Once the originating turn ends, the same still-running print provider
+    // must deny a delayed request without publishing an approval prompt.
+    active_turns.clear("provider-run-claude-print");
+    let late = rpc(
+        &router,
+        CLAUDE_TOKEN,
+        "tools/call",
+        serde_json::json!({
+            "name": "chariox.permission_prompt",
+            "arguments": {
+                "tool_name": "Bash",
+                "input": {"command": "touch late.txt"},
+                "tool_use_id": "toolu_late",
+            }
+        }),
+    )
+    .await;
+    assert_eq!(decision(&late)["behavior"], "deny");
+    assert!(active_interactions(&router, session.id()).is_empty());
 
     let arguments = serde_json::json!({
         "name": "chariox.permission_prompt",
@@ -362,6 +397,15 @@ async fn claude_print_permission_prompt_fails_closed_and_closes_an_abandoned_pro
         BROKEN_TOKEN,
         crate::provider::ProviderClientInterface::Chariox,
     );
+    // Only the current print run owns a live turn; other fixture runs model
+    // discovery/refusal without replacing that turn.
+    let active_turns = app.active_turn_store();
+    active_turns.start(crate::app::ActiveTurnState::new(
+        session.id().into(),
+        agent.id().into(),
+        "fixture-print-turn".into(),
+        "provider-run-claude-print".into(),
+    ));
     let router = Arc::new(CommandRouter::with_interactive_capacity(
         Arc::new(Mutex::new(app)),
         8,
@@ -435,6 +479,12 @@ async fn claude_print_permission_prompt_fails_closed_and_closes_an_abandoned_pro
     .expect("an abandoned permission prompt should close");
 
     // A bridge failure denies.
+    active_turns.start(crate::app::ActiveTurnState::new(
+        session.id().into(),
+        agent.id().into(),
+        "fixture-broken-turn".into(),
+        format!("provider-run-{}", "x".repeat(120)),
+    ));
     let broken = rpc(&router, BROKEN_TOKEN, "tools/call", call("toolu_broken")).await;
     assert_eq!(
         decision(&broken),
@@ -472,6 +522,15 @@ async fn claude_closing_the_connection_during_a_permission_prompt_closes_it() {
         CLAUDE_TOKEN,
         crate::provider::ProviderClientInterface::Chariox,
     );
+    // Only the current print run owns a live turn; other fixture runs model
+    // discovery/refusal without replacing that turn.
+    let active_turns = app.active_turn_store();
+    active_turns.start(crate::app::ActiveTurnState::new(
+        session.id().into(),
+        agent.id().into(),
+        "fixture-print-turn".into(),
+        "provider-run-claude-print".into(),
+    ));
     let router = Arc::new(CommandRouter::with_interactive_capacity(
         Arc::new(Mutex::new(app)),
         8,
@@ -566,6 +625,15 @@ async fn claude_waiting_on_a_runtime_popup_is_not_a_turn_stall() {
         "claude-print-popup-wait-token",
         crate::provider::ProviderClientInterface::Chariox,
     );
+    // Only the current print run owns a live turn; other fixture runs model
+    // discovery/refusal without replacing that turn.
+    let active_turns = app.active_turn_store();
+    active_turns.start(crate::app::ActiveTurnState::new(
+        session.id().into(),
+        agent.id().into(),
+        "fixture-print-turn".into(),
+        RUN.into(),
+    ));
     let router = Arc::new(CommandRouter::with_interactive_capacity(
         Arc::new(Mutex::new(app)),
         8,
