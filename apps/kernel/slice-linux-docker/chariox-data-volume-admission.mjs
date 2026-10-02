@@ -164,8 +164,12 @@ function applyDockerRootOwnership(io, commands) {
   // Rootless dockerd resets its data root to 0710 (group is its private group).
   const current = commands.run("/usr/bin/stat", ["-c", "%u:%g:%a", DATA_ROOT])
   if ([700, 710].some((mode) => current === `${owner.uid}:${owner.gid}:${mode}`)) return
-  commands.run("/usr/bin/chown", ["--", `${owner.uid}:${owner.gid}`, DATA_ROOT])
-  commands.run("/usr/bin/chmod", ["0700", DATA_ROOT])
+  try {
+    commands.run("/usr/bin/chown", ["--", `${owner.uid}:${owner.gid}`, DATA_ROOT])
+    commands.run("/usr/bin/chmod", ["0700", DATA_ROOT])
+  } catch {
+    fail(`Docker data-root ownership/mode mismatch (observed ${current}, expected ${owner.uid}:${owner.gid}:700 or 710); stop dependent services and repair the writable mount before retrying admission`)
+  }
 }
 
 export function admitDataVolume({ commands = systemCommands, io = systemIo } = {}) {

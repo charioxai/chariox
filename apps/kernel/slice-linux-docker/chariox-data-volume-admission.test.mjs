@@ -132,6 +132,7 @@ function fakeAdmission({
     simulateReboot() { mounted = false },
     simulateDockerStart() { ownership = "1001:1001:710" },
     setFilesystemUse(value) { busyFilesystem = value },
+    setOwnership(value) { ownership = value },
     get binding() { return binding },
     get observation() { return observation },
   }
@@ -278,4 +279,18 @@ test("admission sandbox never bind-mounts the data root it must find unmounted",
   const unit = await readFile(new URL("./chariox-data-volume-admission.service", import.meta.url), "utf8")
   const writable = unit.split("\n").filter(line => line.startsWith("ReadWritePaths=")).flatMap(line => line.slice(15).split(/\s+/))
   assert.equal(writable.some(path => "/var/lib/chariox-docker/data".startsWith(path)), false)
+})
+
+
+test("MP-02/MP-08/MP-11 read-only owner/mode drift reports an actionable mismatch", () => {
+  const fake = fakeAdmission()
+  admitDataVolume(fake)
+  fake.setOwnership("0:0:755")
+  const run = fake.commands.run
+  fake.commands.run = (command, args) => {
+    if (command === "/usr/bin/chown" || command === "/usr/bin/chmod") throw new Error("Read-only file system")
+    return run(command, args)
+  }
+  assert.throws(() => admitDataVolume(fake), /data-root ownership\/mode mismatch.*stop.*repair/i)
+  assert.equal(fake.observation, undefined)
 })
