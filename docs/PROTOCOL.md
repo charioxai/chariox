@@ -2636,6 +2636,11 @@ Workflow trigger and deployment direction:
   Direct router paths retain the canonical grant/request too. Setup cancellation
   rechecks after ordering gates, Meta cancellation retains authority, and local
   PTY input and remote terminal sends recheck before enqueue.
+  Capability closures recheck before blocking shell/file/artifact effects. Room
+  controller commands recheck after relay discovery/enqueue and local blocking
+  waits; browser mutations recheck execution-gate and action-admission waits
+  before execution and home-state completion. Invalidated queued actions are
+  retired without execution.
   A Unix connection binds to its first approved or admitted grant and never
   switches authority. Session references resolve once to an authorized session
   ID before dispatch. A later approval on that socket creates a grant for

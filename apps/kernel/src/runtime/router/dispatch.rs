@@ -24,6 +24,10 @@ impl CommandRouter {
         router.runtime_state = self
             .runtime_state
             .with_external_command_authority(grant_id.as_deref().map(|id| (id, &request)));
+        router.capability_runtime =
+            crate::runtime::capability_executor::CapabilityRuntimeStore::new(
+                router.runtime_state.clone(),
+            );
         router.dispatch_authorized(command, request).await
     }
 
