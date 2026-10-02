@@ -1474,10 +1474,20 @@ mod tests {
 
         // MP-08/MP-10: an abrupt native harness exit must not leave its children alive.
         let leader = manager.process_id(provider_run_id).unwrap().unwrap();
-        assert_eq!(unsafe { libc::kill(leader as libc::pid_t, libc::SIGKILL) }, 0);
+        assert_eq!(
+            unsafe { libc::kill(leader as libc::pid_t, libc::SIGKILL) },
+            0
+        );
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !manager.poll_process_state(provider_run_id).unwrap().is_exited() {
-            assert!(std::time::Instant::now() < deadline, "PTY leader did not exit");
+        while !manager
+            .poll_process_state(provider_run_id)
+            .unwrap()
+            .is_exited()
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "PTY leader did not exit"
+            );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(crate::runtime::process_health::process_running(child_pid));

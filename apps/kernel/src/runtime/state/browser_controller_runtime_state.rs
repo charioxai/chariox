@@ -6,7 +6,8 @@ use crate::runtime::browser_controller_process::{
 };
 use crate::session::{
     agent_environment_actor_id, EnvironmentActionRequest, EnvironmentComponent,
-    EnvironmentComponentHealthState, EnvironmentError, EnvironmentLifecycle, RoomEnvironmentSnapshot,
+    EnvironmentComponentHealthState, EnvironmentError, EnvironmentLifecycle,
+    RoomEnvironmentSnapshot,
 };
 
 use super::room_browser_controller::controller_route_error;

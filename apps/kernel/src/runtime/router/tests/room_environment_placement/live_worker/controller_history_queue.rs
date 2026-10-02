@@ -146,12 +146,10 @@ async fn check(fixture: &mut LiveWorker) {
     assert_eq!(after.focused_tab_id, before.focused_tab_id);
     assert!(after.tabs[0].document_revision >= revision + 2);
     assert_eq!(after.actions.len(), 2);
-    assert!(
-        after
-            .actions
-            .iter()
-            .all(|a| a.state == EnvironmentActionState::Completed)
-    );
+    assert!(after
+        .actions
+        .iter()
+        .all(|a| a.state == EnvironmentActionState::Completed));
     assert!(after.actions[1].started_at_ms >= after.actions[0].finished_at_ms);
     let physical: Value = serde_json::from_slice(
         &std::fs::read(fixture._worker_state.root.join("chromium-state.json")).unwrap(),
