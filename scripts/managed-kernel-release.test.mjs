@@ -1183,6 +1183,42 @@ test("Path-1 bootstrap and data-volume artifacts are signed and selected by imag
   assert.doesNotMatch(systemctlCalls, /enable chariox-managed-bootstrap\.service/)
 })
 
+test("MP-01/MP-07/MP-11 signed Path-1 role units reject equivalent inherited restrictions", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-dfix-service-policy-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const fixture = await makeFixture(root)
+  const output = join(root, "release")
+  const packaged = runPackager({ ...fixture, output })
+  assert.equal(packaged.status, 0, packaged.stderr)
+  const rootfs = join(output, "rootfs")
+  const manifestPath = join(rootfs, "usr/lib/chariox/release-manifest.json")
+  const signaturePath = join(rootfs, "usr/lib/chariox/release-manifest.sig")
+  const originalManifest = await readFile(manifestPath)
+  const originalSignature = await readFile(signaturePath)
+  for (const artifactName of ["chariox-path1-managed-bootstrap.service", "chariox-disposable-worker-bootstrap.service"]) {
+    const unitPath = join(rootfs, "etc/systemd/system", artifactName)
+    const originalUnit = await readFile(unitPath, "utf8")
+    for (const directive of ["TemporaryFileSystem=/home:ro", "IPAddressDeny=any", "PrivateMounts=yes"]) {
+      const restricted = originalUnit.replace("[Service]", `[Service]\n${directive}`)
+      await writeFile(unitPath, restricted)
+      const manifest = JSON.parse(originalManifest)
+      manifest.artifacts.find((artifact) => artifact.name === artifactName).sha256 = `sha256:${createHash("sha256").update(restricted).digest("hex")}`
+      const bytes = Buffer.from(JSON.stringify(manifest))
+      await writeFile(manifestPath, bytes)
+      await writeFile(signaturePath, sign(null, bytes, fixture.releasePrivateKey).toString("base64"))
+      const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`
+      const checked = runVerifier(rootfs, digest, fixture.trustedPublicKey, "path1", fixture.trustedBuilderPublicKey)
+      assert.equal(checked.status, 1, `${artifactName} must reject ${directive}: ${checked.stderr}`)
+      assert.match(checked.stderr, new RegExp(`contains ${directive.split("=")[0]}=`))
+      await writeFile(unitPath, originalUnit)
+      await writeFile(manifestPath, originalManifest)
+      await writeFile(signaturePath, originalSignature)
+    }
+  }
+  const ordinary = runVerifier(rootfs, packaged.stdout.trim(), fixture.trustedPublicKey, "path1", fixture.trustedBuilderPublicKey)
+  assert.equal(ordinary.status, 0, ordinary.stderr)
+})
+
 test("release identity rejects unattested binaries and verifier rejects tampering", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-managed-release-binding-"))
   context.after(() => rm(root, { recursive: true, force: true }))
