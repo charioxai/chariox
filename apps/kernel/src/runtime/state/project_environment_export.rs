@@ -218,19 +218,19 @@ impl KernelRuntimeState {
             reviewed_manifest: previous.as_ref().and_then(|s| s.reviewed_manifest.clone()),
             last_review: previous.as_ref().and_then(|s| s.last_review.clone()),
         };
-        let mut review_identity = None;
+        let review_identity;
         let mut additions = ProjectPrivateFileAdditions::default();
         if project_environment_needs_review(&state) {
             let code = project_environment_code_summary(repositories);
             if interactive {
-                review_identity = Some(match utility_identity.take() {
+                review_identity = match utility_identity.take() {
                     Some(identity) => identity,
                     None => {
                         self.environment_utility_identity(&project, repositories)
                             .await?
                     }
-                });
-                let (session, agent, _cleanup) = review_identity.as_ref().expect("review identity");
+                };
+                let (session, agent, _cleanup) = &review_identity;
                 additions = self
                     .review_project_environment(
                         session,
