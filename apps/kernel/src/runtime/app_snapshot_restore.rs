@@ -146,6 +146,7 @@ pub(crate) fn validate(
         }
     }
     crate::durable_state::app_snapshot_restore::validate_state(&state)?;
+    reserve(store)?;
     Ok((path, state))
 }
 
@@ -174,6 +175,12 @@ fn restore_inner(
     snapshot: &str,
     #[cfg(test)] fault: Option<crate::durable_state::app_snapshot_restore::RestoreFault>,
 ) -> Result<()> {
+    if data.installation_id() != catalog.installation_id()
+        || data.generation() != catalog.generation()
+        || data.release_digest() != catalog.app_catalog().package_digest()
+    {
+        return Err(Error::Conflict);
+    }
     recover(store, owner, data)?;
     let (source, state) = validate(
         store,
@@ -183,11 +190,6 @@ fn restore_inner(
         snapshot,
     )?;
     let parent = journal_root(store)?;
-    if super::app_snapshot_broker::free_bytes(&parent)
-        .is_none_or(|free| free < 2 * LIMITS.bytes + 2 * 1024 * 1024 * 1024)
-    {
-        return Err(Error::LimitExceeded);
-    }
     let directory = parent.join(data.installation_id());
     let staging = parent.join(format!(".tmp-{}", data.installation_id()));
     // No destructive write precedes the durable journal publication.
@@ -241,8 +243,6 @@ fn restore_inner(
     let result = store.commit_app_snapshot_restore(
         owner,
         catalog,
-        data.clone(),
-        directory.join("target"),
         journal.restore_id,
         state,
         #[cfg(test)]
@@ -438,4 +438,63 @@ pub(crate) fn fixture_interrupt_replay(
     data: &PrivateData,
 ) -> Result<()> {
     recover_inner(store, owner, data, &mut || false)
+}
+
+fn reserve(store: &DurableKernelStateStore) -> Result<()> {
+    let root = journal_root(store)?;
+    let free = super::app_snapshot_broker::free_bytes(&root);
+    #[cfg(test)]
+    let free = FIXTURE_FREE_BYTES.with(|value| value.get()).or(free);
+    if free.is_none_or(|free| free < 2 * LIMITS.bytes + 2 * 1024 * 1024 * 1024) {
+        return Err(Error::LimitExceeded);
+    }
+    Ok(())
+}
+#[cfg(test)]
+std::thread_local! { static FIXTURE_FREE_BYTES: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) }; }
+#[cfg(test)]
+pub(crate) fn fixture_with_free_bytes<T>(bytes: u64, action: impl FnOnce() -> T) -> T {
+    struct Reset(Option<u64>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            FIXTURE_FREE_BYTES.with(|v| v.set(self.0));
+        }
+    }
+    let _reset = Reset(FIXTURE_FREE_BYTES.with(|v| v.replace(Some(bytes))));
+    action()
+}
+
+pub(crate) fn pending(store: &DurableKernelStateStore, installation: &str) -> Result<bool> {
+    journal_root(store)?
+        .join(installation)
+        .try_exists()
+        .map_err(io)
+}
+/// Called under the lifecycle gate after authoritative uninstall/data deletion.
+/// An inactive installation can no longer adopt this restore's authority/data.
+pub(crate) fn retire_uninstalled(
+    store: &DurableKernelStateStore,
+    owner: &str,
+    installation: &str,
+    generation: u64,
+) -> Result<()> {
+    let current = store
+        .get_app_installation(owner, installation)
+        .map_err(super::app_control::registry_error)?;
+    if current.active.is_some() || current.generation != generation {
+        return Err(Error::Conflict);
+    }
+    let parent = journal_root(store)?;
+    for name in [
+        installation.to_owned(),
+        format!(".tmp-{installation}"),
+        format!(".done-{installation}"),
+    ] {
+        let path = parent.join(name);
+        if path.try_exists().map_err(io)? {
+            require_dir(&path)?;
+            std::fs::remove_dir_all(path).map_err(io)?;
+        }
+    }
+    sync(&parent)
 }

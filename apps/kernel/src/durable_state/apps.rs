@@ -365,6 +365,10 @@ pub(crate) fn forget_uninstalled(
     if uninstalled != Some(true) {
         return Ok(());
     }
+    connection.execute(
+        "DELETE FROM app_restore_receipts WHERE owner_id=?1 AND installation_id=?2",
+        rusqlite::params![owner_id, installation_id],
+    )?;
     super::app_connections::forget_inactive(connection, owner_id, installation_id)?;
     chariox_app_runtime::app_outbox::AppOutbox::disable_all_in(
         connection,
@@ -378,7 +382,7 @@ pub(crate) fn forget_uninstalled(
 /// release it kept: structured state, wakes, logs, and the file contents it was
 /// handed or offered. Its private storage (where a platform has one) is
 /// deleted by the supervisor first.
-const DATA_TABLES: [&str; 9] = [
+const DATA_TABLES: [&str; 10] = [
     "app_state_values",
     "app_state_heads",
     "app_state_snapshot_values",
@@ -388,6 +392,7 @@ const DATA_TABLES: [&str; 9] = [
     "app_file_grants",
     "app_file_picks",
     "app_file_exports",
+    "app_restore_receipts",
 ];
 
 fn forget_data(

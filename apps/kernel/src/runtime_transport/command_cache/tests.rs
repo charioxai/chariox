@@ -664,3 +664,14 @@ fn persistent_result_for_test(
         },
     }
 }
+
+#[test]
+fn saved_snapshot_restore_is_not_transport_cacheable() {
+    let request =
+        LocalDaemonRequest::RestoreAppDataSnapshot(crate::local::RestoreAppDataSnapshotRequest {
+            installation_id: "installed".into(),
+            expected_generation: "1".into(),
+            snapshot_id: "snapshot-saved".into(),
+        });
+    assert!(!request_is_cacheable(&request));
+}

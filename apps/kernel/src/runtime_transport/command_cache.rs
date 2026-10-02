@@ -122,6 +122,7 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::AbortAppPackageUpload(_)
             | LocalDaemonRequest::GetAppWorker(_)
             | LocalDaemonRequest::ControlAppWorker(_)
+            | LocalDaemonRequest::RestoreAppDataSnapshot(_)
             | LocalDaemonRequest::ListAppAutomations(_)
             | LocalDaemonRequest::ConfigureAppAutomation(_)
             | LocalDaemonRequest::DisableAppAutomation(_)

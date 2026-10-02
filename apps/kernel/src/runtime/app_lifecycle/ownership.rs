@@ -1,6 +1,6 @@
 //! Retained operation gates, cancellation and actual thread join ownership.
 use super::*;
-impl Drop for Operation<'_> {
+impl Drop for Operation {
     fn drop(&mut self) {
         self.inner
             .operations
@@ -115,7 +115,7 @@ impl Entry {
 }
 
 impl Inner {
-    pub(super) fn operation(&self, key: Key) -> Result<Operation<'_>> {
+    pub(super) fn operation(self: &Arc<Self>, key: Key) -> Result<Operation> {
         let mut active = self
             .operations
             .lock()
@@ -123,7 +123,10 @@ impl Inner {
         if active.len() >= 8 || !active.insert(key.clone()) {
             return Err(LifecycleError::Busy);
         }
-        Ok(Operation { inner: self, key })
+        Ok(Operation {
+            inner: self.clone(),
+            key,
+        })
     }
     pub(super) fn shutdown(&self) -> Result<()> {
         self.stopped.store(true, Ordering::Release);

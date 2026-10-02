@@ -33,7 +33,8 @@ impl AppLifecycleService {
             .clone()
             .try_acquire_owned()
             .map_err(|_| Error::Busy)?;
-        // All refusals which can be detected without native I/O precede stop.
+        // Snapshot identity/integrity and host-space preflight precede stop;
+        // authority and free space are checked again after draining.
         snapshot_restore::validate(
             &self.0.store,
             owner,
@@ -118,7 +119,7 @@ impl AppLifecycleService {
         }
     }
 }
-fn code(error: LifecycleError) -> Error {
+pub(super) fn code(error: LifecycleError) -> Error {
     match error {
         LifecycleError::Busy | LifecycleError::LiveLimit => Error::Busy,
         LifecycleError::Authority | LifecycleError::Stopped => Error::Conflict,

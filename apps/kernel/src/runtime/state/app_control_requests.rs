@@ -284,8 +284,18 @@ impl KernelRuntimeState {
         if expected != current_generation {
             return Err(AppRequestErrorCode::Conflict);
         }
-        self.control_app_worker(&owner, &installation, AppWorkerAction::Stop)
-            .await?;
+        let lifecycle = self.app_control().lifecycle().clone();
+        let (stop_owner, stop_installation) = (owner.clone(), installation.clone());
+        let _operation = tokio::task::spawn_blocking(move || {
+            lifecycle.begin_uninstall_blocking(
+                &stop_owner,
+                &stop_installation,
+                expected,
+                delete_data,
+            )
+        })
+        .await
+        .map_err(|_| AppRequestErrorCode::StorageUnavailable)??;
         let store = self.owned.durable_state_store.clone();
         let permit = self.app_control().try_admit()?;
         let (view_owner, view_installation) = (owner.clone(), installation.clone());
@@ -342,6 +352,22 @@ impl KernelRuntimeState {
                 _ => Err(AppRequestErrorCode::StorageUnavailable),
             })?;
         }
+        let cleanup_store = self.owned.durable_state_store.clone();
+        let (cleanup_owner, cleanup_installation, cleanup_generation) = (
+            installation.owner_id.clone(),
+            installation.installation_id.clone(),
+            installation.generation,
+        );
+        tokio::task::spawn_blocking(move || {
+            crate::runtime::app_snapshot_restore::retire_uninstalled(
+                &cleanup_store,
+                &cleanup_owner,
+                &cleanup_installation,
+                cleanup_generation,
+            )
+        })
+        .await
+        .map_err(|_| AppRequestErrorCode::StorageUnavailable)??;
         Ok(LocalDaemonResponse::AppInstallation {
             installation: crate::runtime::app_control::installation_summary(installation),
         })

@@ -3,13 +3,14 @@
 mod first_install;
 mod manual_stop;
 mod operations;
-mod restore;
 mod owner;
 mod ownership;
 mod recovery;
+mod restore;
 mod start;
 #[cfg(test)]
 mod tests;
+mod uninstall;
 use crate::{
     durable_state::{
         app_installation_operations::{ApprovedFirstInstall, InstallOperationError, InstallPhase},
@@ -86,10 +87,15 @@ impl From<InstallOperationError> for LifecycleError {
 }
 #[derive(Clone)]
 enum StartKind {
-    Active { recovery: bool },
+    Active {
+        recovery: bool,
+    },
     /// A supervised install operation. `replace` is a local update: the
     /// installation's current worker is drained (not user-stopped) first.
-    First { request_id: String, replace: bool },
+    First {
+        request_id: String,
+        replace: bool,
+    },
 }
 type Result<T> = std::result::Result<T, LifecycleError>;
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,8 +148,8 @@ struct Control {
     wake: Condvar,
     drain: Mutex<Option<crate::runtime::app_worker::AppWorkerDrain>>,
 }
-struct Operation<'a> {
-    inner: &'a Inner,
+pub(crate) struct Operation {
+    inner: Arc<Inner>,
     key: Key,
 }
 pub(crate) type EventConfig =

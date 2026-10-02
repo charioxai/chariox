@@ -409,6 +409,10 @@ fn saved_snapshot_restore_crashes_before_and_after_commit_replay_idempotently_af
             Err(Error::StorageUnavailable)
         ));
         assert!(f.store.require_writer_healthy().is_err());
+        // The writer commits only structured state and its receipt. Even an
+        // after-commit interruption leaves bytes untouched until recovery.
+        assert_eq!(data.read_file("fixture-file", 64).unwrap(), b"prior");
+        assert_eq!(data.read_file("post-snapshot", 64).unwrap(), b"prior-extra");
         // Reopen uses SQLite restart state rather than trusting the dead writer.
         f.store.fence_writer().unwrap();
         let reopened = reopen(&mut f);
@@ -513,7 +517,7 @@ fn saved_snapshot_restore_corrupt_journal_blocks_recovery_and_staged_generation(
     assert!(journal.exists());
     assert_eq!(
         data.read_file("fixture-file", 64).unwrap(),
-        b"saved",
-        "corrupt recovery performs no destructive effect"
+        b"prior",
+        "corrupt recovery leaves the pre-commit private tree untouched"
     );
 }

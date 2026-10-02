@@ -3,15 +3,12 @@
 //! are never decoded from a snapshot or mutated by this operation.
 use super::{DurableKernelStateStore, DurableWriterRequest};
 use crate::{local::AppRequestErrorCode as Error, runtime::app_snapshot_restore::Result};
-use chariox_app_runtime::{
-    app_outbox::EventCatalog, managed_state::*, worker_process::PrivateData,
-};
+use chariox_app_runtime::{app_outbox::EventCatalog, managed_state::*};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::Deserialize;
 use serde_json::Value;
 use std::{
     collections::BTreeSet,
-    path::PathBuf,
     sync::{mpsc, Arc},
 };
 
@@ -47,8 +44,6 @@ struct Head {
 pub(super) struct RestoreRequest {
     owner: String,
     catalog: Arc<EventCatalog>,
-    data: PrivateData,
-    target: PathBuf,
     restore_id: String,
     state: Value,
     response: mpsc::Sender<Result<()>>,
@@ -132,8 +127,6 @@ impl DurableKernelStateStore {
         &self,
         owner: &str,
         catalog: Arc<EventCatalog>,
-        data: PrivateData,
-        target: PathBuf,
         restore_id: String,
         state: Value,
         #[cfg(test)] fault: Option<RestoreFault>,
@@ -143,8 +136,6 @@ impl DurableKernelStateStore {
             .enqueue(DurableWriterRequest::AppRestore(Box::new(RestoreRequest {
                 owner: owner.into(),
                 catalog,
-                data,
-                target,
                 restore_id,
                 state,
                 response,
@@ -179,12 +170,7 @@ pub(super) fn execute(
     if uncertain {
         fatal.store(true, std::sync::atomic::Ordering::Release);
     }
-    // A stopped-worker preparation must regain sole storage ownership when
-    // its callback returns. Release every writer-held descriptor before waking
-    // that caller, rather than racing its PreparedWorker::visit_private_data.
-    let response = request.response.clone();
-    drop(request);
-    let _ = response.send(result);
+    let _ = request.response.send(result);
     uncertain
 }
 fn apply(connection: &mut Connection, request: &RestoreRequest) -> (Result<()>, bool) {
@@ -226,12 +212,6 @@ fn apply_effect<'a>(
         .require_current(&tx, &request.owner)
         .map_err(|_| Error::Conflict)?;
     let installation = request.catalog.installation_id();
-    if request.data.installation_id() != installation
-        || request.data.generation() != request.catalog.generation()
-        || request.data.release_digest() != request.catalog.app_catalog().package_digest()
-    {
-        return Err(Error::Conflict);
-    }
     // Keep versions monotonic even though values are restored from the past.
     let current: Option<i64> = tx
         .query_row(
@@ -277,12 +257,5 @@ fn apply_effect<'a>(
     }
     tx.execute("INSERT INTO app_restore_receipts(owner_id,installation_id,restore_id) VALUES(?1,?2,?3) ON CONFLICT(installation_id) DO UPDATE SET owner_id=excluded.owner_id,restore_id=excluded.restore_id",
             params![request.owner, installation, request.restore_id]).map_err(|_| Error::StorageUnavailable)?;
-    request
-        .data
-        .restore_tree(
-            &request.target,
-            super::super::runtime::app_snapshot_broker::LIMITS,
-        )
-        .map_err(|_| Error::StorageUnavailable)?;
     Ok(tx)
 }
