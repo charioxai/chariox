@@ -61,12 +61,12 @@ Short of host space, the helper refuses with `app_storage_host_reserve` and the
 free and needed bytes (`host_disk`); the worker then fails
 `app_lifecycle_disk_space`, and the App's log tells the owner how much to free.
 
-A kernel acquire also names the installation's committed generation, once one
-exists. Before the first install commits there is none (the kernel's 0): the
-acquire omits the field and nothing is snapshotted, so a failed first install's
-private data is retained (its receipt keeps `cleanup_pending`, see
-`apps/kernel/src/runtime/app_lifecycle/FIRST_INSTALL.md`) until the installation
-is deleted. A staged (uncommitted) generation must start on committed data. When the committed
+A kernel acquire also names the installation's committed data generation when
+one exists; a fresh first install sends `None`, takes no snapshot, and a retry
+of the same staged generation keeps its own writes. Failed first-install data
+is retained with `cleanup_pending` until the installation is deleted (see
+`apps/kernel/src/runtime/app_lifecycle/FIRST_INSTALL.md`). A staged
+(uncommitted) generation must start on committed data. When the committed
 generation ran last, the data image is copied to `data-snapshot.ext4`, which
 counts as a second promised data reservation. On the managed ext4 root this is
 a full 512 MiB copy inside the acquire. The same staged generation retrying
