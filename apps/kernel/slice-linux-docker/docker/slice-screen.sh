@@ -434,7 +434,13 @@ pointer_click() {
     1|2) ;;
     *) printf 'pointer click count must be 1 or 2\n' >&2; return 2 ;;
   esac
-  run_xdotool mousemove "$x" "$y" click --repeat "$click_count" --delay 80 "$button"
+  # xdotool also delays after the last release. A single click needs no
+  # repeat interval; keep the double-click interval unchanged.
+  local delay=0
+  if [[ "$click_count" == 2 ]]; then
+    delay=80
+  fi
+  run_xdotool mousemove "$x" "$y" click --repeat "$click_count" --delay "$delay" "$button"
 }
 
 pointer_drag() {
