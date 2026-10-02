@@ -34,6 +34,8 @@ pub struct ClaudeRuntimeState {
     pub(super) last_usage_file_contents: Option<String>,
     pub(super) mcp_config_file: Option<ClaudeMcpConfigFile>,
     pub(super) child: Child,
+    // Shared with the actor registry while the runtime state is leased for I/O.
+    pub(super) process_identity: crate::runtime::kernel_access::process::ProcessIdentitySlot,
     pub(super) stdin: ChildStdin,
     pub(super) receiver: Receiver<ClaudeRuntimeMessage>,
     pub(super) active_model: String,
@@ -96,6 +98,12 @@ impl std::fmt::Debug for ClaudeRuntimeState {
 }
 
 impl ClaudeRuntimeState {
+    pub(crate) fn process_identity_slot(
+        &self,
+    ) -> crate::runtime::kernel_access::process::ProcessIdentitySlot {
+        self.process_identity.clone()
+    }
+
     pub(crate) fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
     }

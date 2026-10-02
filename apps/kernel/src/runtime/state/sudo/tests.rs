@@ -4,17 +4,22 @@ use crate::provider::{
     AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
 };
 
-const PASSKEY: &str = "sudo fixture passkey";
+pub(super) const PASSKEY: &str = "sudo fixture passkey";
 
-struct Fixture {
+pub(super) struct Fixture {
     _worktree: crate::test_support::TestWorktree,
-    state: KernelRuntimeState,
-    router: crate::runtime::router::CommandRouter,
-    request: SubmitPromptRequest,
-    run: RuntimeProviderRun,
+    pub(super) state: KernelRuntimeState,
+    pub(super) app: Arc<Mutex<crate::app::DaemonApp>>,
+    pub(super) router: crate::runtime::router::CommandRouter,
+    pub(super) request: SubmitPromptRequest,
+    pub(super) run: RuntimeProviderRun,
 }
 
 fn fixture() -> Fixture {
+    fixture_with_provider(None)
+}
+
+pub(super) fn fixture_with_provider(script: Option<&str>) -> Fixture {
     let worktree = crate::test_support::TestWorktree::new("sudo-turn");
     let vault = worktree.path().join("test-vault.json");
     crate::secret::create_chariox_encrypted_vault_for_test(&vault, PASSKEY).unwrap();
@@ -40,11 +45,17 @@ fn fixture() -> Fixture {
         "sudo-fixture-run",
         &launch,
         ProviderLaunchResult {
-            endpoint_mode: AgentEndpointMode::External,
+            endpoint_mode: if script.is_some() {
+                AgentEndpointMode::Managed
+            } else {
+                AgentEndpointMode::External
+            },
             process_label: "metadata-only".into(),
             pty_target: None,
-            pty_program: None,
-            pty_args: vec![],
+            pty_program: script.map(|_| "/bin/bash".into()),
+            pty_args: script
+                .map(|script| vec!["-c".into(), script.into()])
+                .unwrap_or_default(),
             pty_env: Default::default(),
             pty_env_remove: vec![],
             working_directory: Some(worktree.path().to_owned()),
@@ -53,6 +64,11 @@ fn fixture() -> Fixture {
     );
     run.mark_running();
     run.set_runtime_mcp_auth_token(Some("sudo-fixture-bearer".into()));
+    if script.is_some() {
+        crate::app::ProviderLaunchProcessRuntime::new(&mut app)
+            .spawn_for_launch(&run)
+            .unwrap();
+    }
     app.providers_mut().insert_run_for_test(run.clone());
     app.agents_mut()
         .set_agent_runtime_profile_with_account_profile(
@@ -65,12 +81,14 @@ fn fixture() -> Fixture {
         )
         .unwrap();
     let app = Arc::new(Mutex::new(app));
-    let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(app, 32);
+    let router =
+        crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(app.clone(), 32);
     let state = router.runtime_state();
     state.owned.provider_run_projection.update(run.clone());
     Fixture {
         _worktree: worktree,
         state,
+        app,
         router,
         request: SubmitPromptRequest {
             session_id: session.id().into(),
@@ -83,7 +101,7 @@ fn fixture() -> Fixture {
     }
 }
 
-fn running(f: &Fixture) -> KernelSudoTurn {
+pub(super) fn running(f: &Fixture) -> KernelSudoTurn {
     let agent = f.request.target_agent_id.as_deref().unwrap();
     let session = f
         .state
@@ -128,7 +146,15 @@ fn running(f: &Fixture) -> KernelSudoTurn {
     turn
 }
 
-async fn popup(state: &KernelRuntimeState) -> PasskeyPrompt {
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        if let Ok(mut app) = self.app.try_lock() {
+            let _ = crate::app::ProviderProcessTracker::new(&mut app).remove_run(self.run.id());
+        }
+    }
+}
+
+pub(super) async fn popup(state: &KernelRuntimeState) -> PasskeyPrompt {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if let Some(prompt) = state

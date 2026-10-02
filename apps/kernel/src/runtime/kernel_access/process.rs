@@ -1,4 +1,4 @@
-//! OS identity is captured at accept, never supplied in a protocol payload.
+//! OS identity is captured at accept or launch, never supplied in a protocol payload.
 use std::io;
 use std::os::fd::AsRawFd;
 
@@ -10,6 +10,8 @@ pub(crate) struct ProcessIdentity {
     pub(crate) version: u32,
     pub(crate) executable: String,
 }
+
+pub(crate) type ProcessIdentitySlot = std::sync::Arc<std::sync::Mutex<Option<ProcessIdentity>>>;
 
 fn invalid() -> io::Error {
     io::Error::other("process identity unavailable or changed")
