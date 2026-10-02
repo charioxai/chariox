@@ -2066,6 +2066,6 @@ stream exactly once per recipient. Hot-session snapshot diffs publish only
 nonterminal workflow runs; they cannot duplicate the archival terminal event.
 The focused WebSocket terminal-transition drill verifies Running, Completed,
 durable lookup after archival, and absence of duplicate terminal updates.
-Serialized fields and relay peer protocol 67 are unchanged. Existing web/native
+Serialized fields and the relay peer contract are unchanged by this correction. Existing web/native
 minimum supported versions stay unchanged because this restores the existing
 terminal-event contract without adding a required client field or operation.

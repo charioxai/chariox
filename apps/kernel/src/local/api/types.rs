@@ -125,5 +125,6 @@ pub use workspace::*;
 /// Version 373 adds worker Environment queries and waiting-room pending review visibility (MP-08).
 /// Version 374 binds Computer credential approval to a native display target (MP-08).
 /// Version 375 normalizes primitive MCP script results to object structured content (MP-08/MP-10).
-/// Version 376 adds receiving-kernel provider login interaction projection (MP-08/MP-10/MP-11).
+/// Version 376 adds receiving-kernel provider login interaction projection and
+/// restores single terminal workflow event delivery (MP-08/MP-10/MP-11).
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 376;
