@@ -25,5 +25,7 @@ pub mod wire;
 pub mod worker_peer;
 pub mod worker_readiness;
 mod wire_json;
+#[cfg(all(test, target_os = "linux"))]
+mod storage_drill_fixture;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub mod worker_process;

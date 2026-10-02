@@ -6,7 +6,16 @@ trap 'printf "storage_fixture_failed_at_line=%s\n" "$LINENO" >&2' ERR
 [[ $# == 4 && "$(id -u)" == 0 && -d /run/systemd/system ]]
 storage_repo="$(realpath -e "$1")" storage_scratch="$(realpath -e "$2")"
 storage_tests="$(realpath -e "$3")" storage_helper="$(realpath -e "$4")"
-[[ "$storage_scratch" == /home/runner/work/_temp/chariox-storage.* || "$storage_scratch" == /home/runner/work/_temp/*/chariox-storage.* ]]
+storage_env=(GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted GITHUB_REPOSITORY=charioxai/chariox)
+if [[ "${CHARIOX_STORAGE_PRIVATE_VM:-}" == 1 ]]; then
+  [[ -z "${GITHUB_ACTIONS+x}" && "$(hostname)" == chariox-private-storage-drill && "$(systemd-detect-virt --vm)" == qemu ]]
+  [[ "$storage_scratch" == /tmp/chariox-storage.* ]]
+  [[ -f "${CHARIOX_STORAGE_DRILL_KEY:-}" && ! -L "$CHARIOX_STORAGE_DRILL_KEY" && "$(stat -c %a "$CHARIOX_STORAGE_DRILL_KEY")" == 600 ]]
+  storage_env=(CHARIOX_STORAGE_PRIVATE_VM=1 CHARIOX_STORAGE_DRILL_KEY=/run/chariox-storage-drill.key)
+else
+  [[ "${GITHUB_ACTIONS:-}" == true && "${RUNNER_ENVIRONMENT:-}" == github-hosted && "${GITHUB_REPOSITORY:-}" == charioxai/chariox ]]
+  [[ "$storage_scratch" == /home/runner/work/_temp/chariox-storage.* || "$storage_scratch" == /home/runner/work/_temp/*/chariox-storage.* ]]
+fi
 [[ "$storage_tests" == "$storage_scratch/build/"* && "$storage_helper" == "$storage_scratch/build/"* ]]
 for storage_path in /etc/chariox /home/chariox /var/lib/chariox-app-storage /usr/libexec/chariox-app-storage /etc/systemd/system/chariox-managed-bootstrap.service; do
   [[ ! -e "$storage_path" && ! -L "$storage_path" ]]
@@ -17,6 +26,9 @@ getent group chariox >/dev/null || groupadd --system chariox
 getent group chariox-slice >/dev/null || groupadd --system chariox-slice
 useradd --system --gid chariox --home-dir /var/lib/chariox/home --shell /usr/sbin/nologin chariox
 storage_uid="$(id -u chariox)" storage_gid="$(id -g chariox)"
+if [[ "${CHARIOX_STORAGE_PRIVATE_VM:-}" == 1 ]]; then
+  install -o chariox -g chariox -m 600 "$CHARIOX_STORAGE_DRILL_KEY" /run/chariox-storage-drill.key
+fi
 install -d -o root -g root -m 755 /etc/chariox /usr/libexec /etc/systemd/system/chariox-managed-bootstrap.service.d /etc/systemd/system/chariox-app-storage.service.d
 install -d -o root -g root -m 711 /var/lib/chariox-app-storage
 install -d -o chariox -g chariox -m 700 /var/lib/chariox /var/lib/chariox/home /home/chariox
@@ -55,12 +67,12 @@ cleanup() {
   # No force/lazy unmount or foreign-loop cleanup. Preserve journal/identity
   # evidence on failure; this runner is discarded after bounded artifact capture.
   find /var/lib/chariox-app-storage -maxdepth 3 -name journal.json -type f -size -17k -exec cp --parents '{}' "$storage_scratch/evidence/" \;
-  findmnt --json -R /var/lib/chariox-app-storage > "$storage_scratch/evidence/final-mounts.json" 2>/dev/null
+  findmnt --json -R /var/lib/chariox-app-storage > "$storage_scratch/evidence/final-mounts.json" 2>/dev/null || printf '{"filesystems":[]}\n' > "$storage_scratch/evidence/final-mounts.json"
   losetup --json --list --output NAME,BACK-FILE,SIZELIMIT,AUTOCLEAR > "$storage_scratch/evidence/final-loops.json"
   chown -R "$(stat -c %u "$storage_scratch"):$(stat -c %g "$storage_scratch")" "$storage_scratch/evidence"
 }
 trap cleanup EXIT
-/usr/bin/env -i GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted GITHUB_REPOSITORY=charioxai/chariox \
+/usr/bin/env -i "${storage_env[@]}" \
   CHARIOX_STORAGE_HOSTED=fixed-production-helper \
   /usr/libexec/chariox-app-storage-tests \
   runtime_enrollment::installer::tests::hosted_install_signed_graph_for_storage_views \
@@ -85,7 +97,7 @@ run_test() {
     --property=TasksMax=64 --property=RuntimeMaxSec=180 --property=KillMode=control-group \
     /usr/bin/nsenter --target "$storage_kernel" --mount /usr/bin/setpriv \
     --reuid="$storage_uid" --regid="$storage_gid" --clear-groups /usr/bin/env -i \
-    GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted GITHUB_REPOSITORY=charioxai/chariox \
+    "${storage_env[@]}" \
     CHARIOX_STORAGE_HOSTED=fixed-production-helper \
     CHARIOX_STORAGE_CRASH_MARKER=/var/lib/chariox/home/storage-crash-ready \
     /usr/libexec/chariox-app-storage-tests "$storage_filter" --ignored --nocapture --test-threads=1

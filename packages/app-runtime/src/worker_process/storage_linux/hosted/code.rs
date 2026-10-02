@@ -8,7 +8,6 @@ use crate::{
     worker_process::PreparedWorker,
 };
 use chariox_app_package::{pack, verify, Limits, Manifest, TrustedPublisher, VerificationPolicy};
-use ed25519_dalek::SigningKey;
 use serde_json::json;
 use std::{
     collections::BTreeMap,
@@ -17,7 +16,7 @@ use std::{
 };
 
 pub(super) fn proofs() -> (VerifiedReleaseLease, EnrolledRuntime, StageTrustBinding) {
-    let key = SigningKey::from_bytes(&[27; 32]);
+    let key = crate::storage_drill_fixture::signing_key([27; 32]);
     let publisher = TrustedPublisher {
         publisher_id: "com.example".into(),
         key_id: "fixture".into(),
