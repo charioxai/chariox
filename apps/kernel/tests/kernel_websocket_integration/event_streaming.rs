@@ -117,6 +117,7 @@ async fn kernel_websocket_streams_session_snapshot_and_unavailable_events() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_streams_workflow_run_updates() {
+    let workspace = WorkflowEventWorkspace::new();
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
@@ -140,10 +141,7 @@ async fn kernel_websocket_streams_workflow_run_updates() {
     let create_response = send_request(
         &mut socket,
         "create-session-workflow-run-events",
-        LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-            "workspace-workflow-run-events",
-            "worktree-workflow-run-events",
-        )),
+        LocalDaemonRequest::CreateSession(workspace.session_request()),
     )
     .await;
     let session = &response_variant(&create_response, "SessionCreated")["session"];
@@ -302,6 +300,7 @@ async fn kernel_websocket_streams_workflow_run_updates() {
 // `workflow_run_updated` per terminal transition.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_delivers_terminal_workflow_run_update_without_reload() {
+    let workspace = WorkflowEventWorkspace::new();
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
@@ -310,10 +309,7 @@ async fn kernel_websocket_delivers_terminal_workflow_run_update_without_reload()
 
     let session = app
         .sessions_mut()
-        .create_session(CreateSessionRequest::new(
-            "workspace-terminal-run-events",
-            "worktree-terminal-run-events",
-        ))
+        .create_session(workspace.session_request())
         .expect("session should be created");
     let agent = app
         .spawn_agent(
@@ -469,4 +465,53 @@ async fn kernel_websocket_delivers_terminal_workflow_run_update_without_reload()
         .await
         .expect("kernel websocket task should join")
         .expect("kernel websocket server should shut down cleanly");
+}
+
+// MP-08/MP-10: workflow launch preflight requires an existing workspace;
+// opaque labels are suitable for transport-only fixtures, not provider execution.
+struct WorkflowEventWorkspace(std::path::PathBuf);
+
+impl WorkflowEventWorkspace {
+    fn new() -> Self {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-websocket-workflow-{}-{:016x}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir(&root).expect("create isolated workflow workspace");
+        let workspace = Self(root);
+        for args in [
+            vec!["init", "--quiet"],
+            vec![
+                "-c",
+                "user.name=Workflow fixture",
+                "-c",
+                "user.email=fixture@example.test",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                "fixture",
+            ],
+        ] {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(&workspace.0)
+                .status()
+                .expect("run fixture git")
+                .success());
+        }
+        workspace
+    }
+
+    fn session_request(&self) -> CreateSessionRequest {
+        let root = self.0.display().to_string();
+        CreateSessionRequest::new(&root, &root)
+    }
+}
+
+impl Drop for WorkflowEventWorkspace {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
