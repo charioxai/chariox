@@ -6,6 +6,7 @@ import { mkdir, readFile, readdir, readlink, realpath, writeFile } from "node:fs
 import { basename, dirname, isAbsolute, join, resolve } from "node:path"
 
 import { startManagedOrdinaryLiveKernelBinding } from "./lib/managed-ordinary-live-kernel-binding.mjs"
+import { prepareManagedOrdinaryProbeEnvironment } from "./lib/managed-ordinary-kernel-endpoint.mjs"
 import { startManagedOrdinaryProviderTurnBinding } from "./lib/managed-ordinary-provider-turn-binding.mjs"
 import {
   ALLOWED_CAPTURE_BOUNDARIES,
@@ -67,8 +68,12 @@ function stable(value) {
   return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stable(value[key])]))
 }
 
-function redactText(value) {
-  return String(value)
+function redactText(value, secrets = []) {
+  let text = String(value)
+  for (const secret of secrets) {
+    if (typeof secret === "string" && secret.length > 0) text = text.split(secret).join("<redacted>")
+  }
+  return text
     .replace(/("?(?:api[_-]?key|authorization|credential|password|secret|token)"?)\s*:\s*"[^"]*"/gi, '$1:"<redacted>"')
     .replace(/((?:api[_-]?key|authorization|credential|password|secret|token))\s*[:=]\s*[^\s,;]+/gi, "$1=<redacted>")
     .replace(/Bearer\s+[^\s,;]+/gi, "Bearer <redacted>")
@@ -552,6 +557,7 @@ export function createParityCollector({
   clock = () => new Date(),
   processApi = process,
   providerTurnBindingFactory = startManagedOrdinaryProviderTurnBinding,
+  probeEnvironmentFactory = prepareManagedOrdinaryProbeEnvironment,
 } = {}) {
   if (!filesystem || typeof filesystem.mkdir !== "function" || typeof filesystem.readFile !== "function" || typeof filesystem.readdir !== "function" || typeof filesystem.readlink !== "function" || typeof filesystem.realpath !== "function" || typeof filesystem.writeFile !== "function") {
     throw new TypeError("filesystem must provide mkdir, readFile, readdir, readlink, realpath, and writeFile")
@@ -560,13 +566,16 @@ export function createParityCollector({
   if (typeof providerTurnBindingFactory !== "function") throw new TypeError("providerTurnBindingFactory must be a function")
 
   async function executeStep(ctx, rowId, checkId, step, command, args, options = {}) {
+    const commandEnvironment = { ...(processApi.env ?? {}) }
+    for (const name of ["CHARIOX_KERNEL_LOCAL_AUTH_TOKEN", "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE",
+      "CHARIOX_PARITY_PROJECT_SETUP_RELAY_TOKEN", "CHARIOX_PARITY_SIGNING_KEY"]) delete commandEnvironment[name]
     const startedAt = nowIso(clock)
     let raw
     let caught = null
     try {
       raw = await runCommand(command, args, {
         cwd: options.cwd ?? ctx.sourceRoot,
-        env: options.env,
+        env: options.env ?? commandEnvironment,
         timeout: ctx.timeoutMs,
         maxBuffer: 4 * 1024 * 1024,
       })
@@ -592,8 +601,8 @@ export function createParityCollector({
       timed_out: normalized.timedOut,
       stdout_sha256: `sha256:${sha256(normalized.stdout)}`,
       stderr_sha256: `sha256:${sha256(normalized.stderr)}`,
-      stdout_redacted: redactText(normalized.stdout),
-      stderr_redacted: redactText(normalized.stderr),
+      stdout_redacted: redactText(normalized.stdout, [ctx.probeEnvironment?.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN, ctx.probeEnvironment?.CHARIOX_PARITY_PROJECT_SETUP_RELAY_TOKEN]),
+      stderr_redacted: redactText(normalized.stderr, [ctx.probeEnvironment?.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN, ctx.probeEnvironment?.CHARIOX_PARITY_PROJECT_SETUP_RELAY_TOKEN]),
       error_code: typeof caught?.code === "string" ? caught.code : null,
     }
     const evidencePath = join(ctx.evidenceDir, ctx.topology, rowId, checkId, `${step}.json`)
@@ -612,8 +621,8 @@ export function createParityCollector({
     return { text, stepResult }
   }
 
-  async function runJson(ctx, rowId, checkId, step, command, args, { cwd } = {}) {
-    const stepResult = await executeStep(ctx, rowId, checkId, step, command, args, { cwd })
+  async function runJson(ctx, rowId, checkId, step, command, args, { cwd, env } = {}) {
+    const stepResult = await executeStep(ctx, rowId, checkId, step, command, args, { cwd, env })
     if (stepResult.timedOut) throw new CollectorError("command_timeout", `${rowId}/${checkId} timed out`, { rowId, checkId, evidenceRef: stepResult.evidencePath })
     if (stepResult.code !== 0 || stepResult.signal) {
       if (stepResult.record.error_code === "ENOENT") throw new CollectorError("command_not_found", `${rowId}/${checkId} command was not found`, { rowId, checkId, evidenceRef: stepResult.evidencePath })
@@ -656,7 +665,7 @@ export function createParityCollector({
       "probe",
       process.execPath,
       probeArguments,
-      { cwd: probeCwd },
+      { cwd: probeCwd, env: ctx.probeEnvironment },
     )
     if (result.probe_identity_verified !== true
       || result.probe_source_commit !== ctx.reviewedCommit
@@ -782,6 +791,8 @@ export function createParityCollector({
     const relayStep = await runText(ctx, "MP-10", "source_protocol_identity", "relay-protocol", git, ["grep", "-h", "-m1", "RELAY_PEER_PROTOCOL_VERSION", "--", ctx.relayProtocolFile ?? "apps/kernel/src/transport/relay_peer.rs"], { cwd: ctx.sourceRoot })
     const actualRelayProtocol = parseRelayVersion(relayStep.text)
     if (actualRelayProtocol !== ctx.relayProtocol) throw new CollectorError("protocol_identity_mismatch", "relay protocol mismatch")
+
+    ctx.probeEnvironment = await probeEnvironmentFactory(processApi.env ?? {})
 
     let providerTurnBinding
     try {
@@ -1067,6 +1078,7 @@ export async function runCli(argv = process.argv.slice(2), {
   }
   const signingKeyEnv = values.signing_key_env ?? "CHARIOX_PARITY_SIGNING_KEY"
   const signingKey = environment[signingKeyEnv]
+  delete environment[signingKeyEnv]
   let kernelProtocol
   let relayProtocol
   try {

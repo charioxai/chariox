@@ -397,11 +397,12 @@ function makeHarness(topology, overrides = {}) {
     runCommand,
     clock,
     providerTurnBindingFactory,
+    probeEnvironmentFactory: overrides.probeEnvironmentFactory,
     processApi: {
       platform: "linux",
       pid: 77,
       cwd: () => processCwd,
-      env: {
+      env: overrides.environment ?? {
         CHARIOX_DAEMON_SOCKET: LIVE_KERNEL_SOCKET,
         CHARIOX_PARITY_CAPTURE_EVIDENCE_JSON: JSON.stringify({
           observed: false,
@@ -941,4 +942,54 @@ test("unsupported platform fails before any command can claim parity", async () 
     assert.equal(error.code, "unsupported_platform")
     return true
   })
+})
+
+// MP-10: real LocalIpcClient unlinks/removes auth before child probes run.
+for (const topology of ["ordinary", "path1"]) {
+  test(`MP-10 ${topology} probes retain admitted one-shot loopback auth`, async () => {
+    const environment = {
+      CHARIOX_DAEMON_SOCKET: LIVE_KERNEL_SOCKET,
+      CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE: "/private/collector-one-shot",
+      CHARIOX_PARITY_SIGNING_KEY: "fixture-manifest-secret",
+    }
+    let consumed = 0
+    const h = makeHarness(topology, {
+      environment,
+      probeEnvironmentFactory: async (env) => {
+        assert.equal(env, environment)
+        consumed++
+        delete environment.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE
+        const result = { ...environment, CHARIOX_KERNEL_LOCAL_AUTH_TOKEN: "fixture-local-bearer" }
+        delete result.CHARIOX_PARITY_SIGNING_KEY
+        return result
+      },
+    })
+    const manifest = await h.collector.collect(h.options)
+    assert.equal(consumed, 1)
+    const probes = h.calls.filter(([, args]) => args[0] === "/repo/apps/cli/scripts/managed-ordinary-parity-probe.mjs")
+    assert.ok(probes.length > 10)
+    for (const [, , options] of probes) {
+      assert.equal(options.env?.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN, "fixture-local-bearer")
+      assert.equal(options.env?.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE, undefined)
+      assert.equal(options.env?.CHARIOX_PARITY_SIGNING_KEY, undefined)
+    }
+    assert.ok(![...h.filesystem.files.values()].some(value => String(value).includes("fixture-local-bearer")))
+    for (const [, args, options] of h.calls.filter(([, args]) => args[0] !== "/repo/apps/cli/scripts/managed-ordinary-parity-probe.mjs")) {
+      assert.equal(options.env?.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN, undefined, args.join(" "))
+    }
+    assert.ok(!JSON.stringify(manifest).includes("fixture-local-bearer"))
+  })
+}
+
+test("MP-10 evidence redacts admitted bearer bytes even without a secret label", async () => {
+  const h = makeHarness("ordinary", {
+    probeEnvironmentFactory: async () => ({ CHARIOX_KERNEL_LOCAL_AUTH_TOKEN: "fixture-local-bearer" }),
+    command: async (command, args, fallback) => {
+      const result = await fallback(command, args)
+      if (args[0]?.endsWith("managed-ordinary-parity-probe.mjs")) result.stderr = "fixture-local-bearer"
+      return result
+    },
+  })
+  await h.collector.collect(h.options)
+  assert.ok(![...h.filesystem.files.values()].some(value => String(value).includes("fixture-local-bearer")))
 })
