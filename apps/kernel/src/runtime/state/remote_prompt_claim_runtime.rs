@@ -142,8 +142,10 @@ impl RemotePromptAgentClaim {
             }
             return None;
         }
-        let mut entry = RemotePromptRecoveryClaimEntry::default();
-        entry.active_prompt_id = Some(dispatch.prompt_id.clone());
+        let entry = RemotePromptRecoveryClaimEntry {
+            active_prompt_id: Some(dispatch.prompt_id.clone()),
+            ..Default::default()
+        };
         claims_guard.insert(key.clone(), entry);
         drop(claims_guard);
         Some(Self {

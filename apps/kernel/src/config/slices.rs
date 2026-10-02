@@ -191,8 +191,10 @@ mod cpu_policy_tests {
         ))
         .unwrap();
         for case in policy["cases"].as_array().unwrap() {
-            let mut config = UserLinuxSliceConfig::default();
-            config.cpus = Some(case[0].as_str().unwrap().to_string());
+            let config = UserLinuxSliceConfig {
+                cpus: Some(case[0].as_str().unwrap().to_string()),
+                ..Default::default()
+            };
             assert_eq!(
                 config.validate().is_ok(),
                 case[1].as_bool().unwrap(),
