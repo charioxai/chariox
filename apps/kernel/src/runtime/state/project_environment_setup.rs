@@ -1679,7 +1679,6 @@ impl KernelRuntimeState {
                 "definition_persist_failed",
                 "kernel could not persist the target environment definition",
             );
-            return;
         }
     }
 

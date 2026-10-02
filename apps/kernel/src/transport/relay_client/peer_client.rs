@@ -471,7 +471,7 @@ pub async fn send_peer_request_via_temporary_connection_with_timeout(
         } else {
             "temporary_peer_call_returned_error"
         });
-        return result;
+        result
     }
     #[cfg(not(test))]
     send_peer_request_via_temporary_connection_with_timeout_inner(
