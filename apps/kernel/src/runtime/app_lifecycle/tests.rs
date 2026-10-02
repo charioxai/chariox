@@ -1004,3 +1004,4 @@ fn callable_readiness_refuses_terminal_start_failure() {
     control.lifecycle().shutdown_blocking().unwrap();
 }
 mod admission;
+mod snapshot_restore;

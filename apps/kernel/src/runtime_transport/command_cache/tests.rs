@@ -865,3 +865,14 @@ async fn at_most_once_sync_failure_reports_unknown_to_every_caller() {
     assert_eq!(*replay.await.unwrap().response, Some(unknown));
     let _ = fs::remove_file(path);
 }
+
+#[test]
+fn saved_snapshot_restore_is_not_transport_cacheable() {
+    let request =
+        LocalDaemonRequest::RestoreAppDataSnapshot(crate::local::RestoreAppDataSnapshotRequest {
+            installation_id: "installed".into(),
+            expected_generation: "1".into(),
+            snapshot_id: "snapshot-saved".into(),
+        });
+    assert!(!request_is_cacheable(&request));
+}

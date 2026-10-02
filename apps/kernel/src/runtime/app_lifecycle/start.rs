@@ -159,6 +159,15 @@ pub(super) fn register(
     }
     let prepared = spawn(context, binding, &verified, release, migrate_from)?;
     let process = prepared.process;
+    *context
+        .control
+        .restore_data
+        .lock()
+        .map_err(|_| LifecycleError::Supervisor)? = Some(
+        process
+            .private_data()
+            .map_err(|_| LifecycleError::Preparation)?,
+    );
     if context.control.stopped() {
         return Err(LifecycleError::Stopped);
     }
@@ -278,6 +287,13 @@ fn spawn(
                 binding.token().generation,
                 "installation",
             ))?;
+        crate::runtime::app_snapshot_restore::require_recovery_generation(
+            &context.store,
+            binding.owner_id(),
+            &binding.token().installation_id,
+            binding.token().generation,
+        )
+        .map_err(|_| LifecycleError::Preparation)?;
         let prepared = chariox_app_runtime::worker_process::PreparedWorker::prepare_linux(
             runtime,
             release,
@@ -298,6 +314,16 @@ fn spawn(
         if context.control.stopped() {
             return Err(LifecycleError::Stopped);
         }
+        let (prepared, recovered) = prepared
+            .visit_private_data(|data| {
+                crate::runtime::app_snapshot_restore::recover(
+                    &context.store,
+                    binding.owner_id(),
+                    data,
+                )
+            })
+            .map_err(|_| LifecycleError::Preparation)?;
+        recovered.map_err(|_| LifecycleError::Preparation)?;
         let process = WorkerProcess::spawn_blocking(prepared, WorkerLimits::default()).map_err(
             preparation_failed(
                 &binding.token().installation_id,
@@ -339,6 +365,13 @@ fn spawn(
             .get_app_installation(binding.owner_id(), &binding.token().installation_id)
             .map(|installation| installation.generation)
             .map_err(|_| failed("installation", "app_installation_unavailable".into()))?;
+        crate::runtime::app_snapshot_restore::require_recovery_generation(
+            &context.store,
+            binding.owner_id(),
+            &binding.token().installation_id,
+            binding.token().generation,
+        )
+        .map_err(|_| failed("restore_generation", "app_restore_generation_conflict".into()))?;
         let prepared = chariox_app_runtime::worker_process::PreparedWorker::prepare_macos(
             runtime,
             release,
@@ -355,6 +388,16 @@ fn spawn(
         if context.control.stopped() {
             return Err(LifecycleError::Stopped);
         }
+        let (prepared, recovered) = prepared
+            .visit_private_data(|data| {
+                crate::runtime::app_snapshot_restore::recover(
+                    &context.store,
+                    binding.owner_id(),
+                    data,
+                )
+            })
+            .map_err(|_| failed("restore_storage", "app_restore_storage_unavailable".into()))?;
+        recovered.map_err(|_| failed("restore_recovery", "app_restore_recovery_failed".into()))?;
         let process = WorkerProcess::spawn_blocking(prepared, WorkerLimits::default())
             .map_err(|error| failed("spawn", error.to_string()))?;
         Ok(PreparedProcess {

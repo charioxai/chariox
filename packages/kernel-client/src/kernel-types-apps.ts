@@ -147,3 +147,9 @@ export type AppHostAction =
   | { kind: "open_link"; url: string }
 
 export type AppHostActionAccepted = { operation_id: string; action: AppHostAction }
+/** Protocol 401: owner-scoped restore result. Authority is never restored. */
+export interface AppDataSnapshotRestored {
+  installation_id: string
+  generation: string
+  snapshot_id: string
+}

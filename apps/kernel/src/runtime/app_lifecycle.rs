@@ -9,11 +9,13 @@ mod operations;
 mod owner;
 mod ownership;
 mod recovery;
+mod restore;
 mod start;
 #[cfg(target_os = "macos")]
 pub(crate) use start::macos_storage_root;
 #[cfg(test)]
 mod tests;
+mod uninstall;
 use crate::{
     durable_state::{
         app_installation_operations::{ApprovedFirstInstall, InstallOperationError, InstallPhase},
@@ -161,6 +163,7 @@ struct Entry {
 }
 struct Control {
     first_request: Option<String>,
+    restore_data: Mutex<Option<chariox_app_runtime::worker_process::PrivateData>>,
     stop: AtomicBool,
     /// The stop is a local update replacing this owner's generation.
     update: AtomicBool,
@@ -175,8 +178,8 @@ struct Control {
     #[cfg(test)]
     completion_checkpoint: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
-struct Operation<'a> {
-    inner: &'a Inner,
+pub(crate) struct Operation {
+    inner: Arc<Inner>,
     key: Key,
 }
 pub(crate) type EventConfig =

@@ -40,7 +40,7 @@ fn seed(fixture: &Fixture) {
             "INSERT INTO app_state_values(installation_id,key,version,value_json)
                VALUES('{installation}','todos',3,'[\"buy milk\"]');
              INSERT INTO app_state_heads(installation_id,revision,key_count,payload_bytes)
-               VALUES('{installation}',3,1,12);
+               VALUES('{installation}',3,1,17);
              INSERT INTO app_wakes(owner_id,installation_id,wake_id,due_at_ms,revision,attempts,next_attempt_at_ms)
                VALUES('alice','{installation}','reminder',1000,'r1',2,5000);"
         ))

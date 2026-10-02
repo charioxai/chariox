@@ -13,13 +13,16 @@ struct Fixture {
     data: Option<PrivateData>,
     dropped: Arc<AtomicBool>,
 }
-struct Domain(Arc<AtomicBool>);
+struct Domain(Arc<AtomicBool>, File);
 impl ResourceDomain for Domain {
     fn verify_before_continue(&mut self, _: libc::pid_t) -> std::result::Result<(), WorkerError> {
         Ok(())
     }
     fn terminate(&mut self, _: libc::pid_t) {}
     fn reap_domain_blocking(&mut self) {}
+    fn private_data_directory(&self) -> std::result::Result<File, WorkerError> {
+        self.1.try_clone().map_err(|_| WorkerError::Preparation)
+    }
 }
 impl Drop for Domain {
     fn drop(&mut self) {
@@ -56,7 +59,7 @@ impl Fixture {
                 max_file_bytes: 1048576,
             },
             _objects: vec![],
-            domain: Box::new(Domain(dropped.clone())),
+            domain: Box::new(Domain(dropped.clone(), File::open(&path).unwrap())),
         };
         let data = PrivateData {
             root: Arc::new(Dir(File::open(&path).unwrap())),
@@ -402,4 +405,39 @@ fn a_deleted_or_replaced_parent_keeps_the_write_inside_the_root() {
     assert_eq!(fs::read(f.path.join("moved.old/value")).unwrap(), b"held");
     // A later write through the symlinked parent is refused.
     assert!(f.data().prepare_replace("moved/value", b"x").is_err());
+}
+
+#[test]
+fn pre_spawn_storage_visit_keeps_the_domain_pinned_and_refuses_a_retained_descriptor() {
+    let mut f = Fixture::new();
+    let data = f.data.take().unwrap();
+    let preparation = data.preparation.clone();
+    drop(data);
+    let prepared = Arc::try_unwrap(preparation)
+        .ok()
+        .expect("sole owner")
+        .into_inner()
+        .ok()
+        .expect("healthy preparation");
+    let (prepared, bytes) = prepared
+        .visit_private_data(|data| {
+            assert_eq!(data.installation_id(), "installed");
+            assert_eq!(data.generation(), 1);
+            data.prepare_replace("before-start", b"pinned")
+                .unwrap()
+                .publish()
+                .unwrap();
+            data.read_file("before-start", 64).unwrap()
+        })
+        .unwrap();
+    assert_eq!(bytes, b"pinned");
+    assert_eq!(fs::read(f.path.join("before-start")).unwrap(), b"pinned");
+    assert!(!f.dropped.load(Ordering::SeqCst));
+    // Returning a descriptor would outlive preparation ownership. It must
+    // refuse rather than start App code with storage held by another caller.
+    assert!(matches!(
+        prepared.visit_private_data(|data| data.clone()),
+        Err(WorkerError::Preparation)
+    ));
+    assert!(f.dropped.load(Ordering::SeqCst));
 }

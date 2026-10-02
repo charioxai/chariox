@@ -24,6 +24,7 @@ pub enum LocalDaemonRequest {
     OpenAppView(OpenAppViewRequest),
     SetAppViewPanel(SetAppViewPanelRequest),
     UninstallApp(UninstallAppRequest),
+    RestoreAppDataSnapshot(RestoreAppDataSnapshotRequest),
     GetAppLogs(GetAppLogsRequest),
     CreateAppInboxRoute(CreateAppInboxRouteRequest),
     RemoveAppInboxRoute(AppInboxRouteRequest),

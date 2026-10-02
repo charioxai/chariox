@@ -1,6 +1,6 @@
 //! Retained operation gates, cancellation and actual thread join ownership.
 use super::*;
-impl Drop for Operation<'_> {
+impl Drop for Operation {
     fn drop(&mut self) {
         self.inner
             .operations
@@ -13,6 +13,7 @@ impl Control {
     pub(super) fn new() -> Self {
         Self {
             first_request: None,
+            restore_data: Mutex::new(None),
             stop: AtomicBool::new(false),
             update: AtomicBool::new(false),
             manual: AtomicBool::new(false),
@@ -119,6 +120,10 @@ impl Control {
             .notification
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.restore_data
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         *self
             .done
             .lock()
@@ -168,7 +173,7 @@ impl Entry {
 }
 
 impl Inner {
-    pub(super) fn operation(&self, key: Key) -> Result<Operation<'_>> {
+    pub(super) fn operation(self: &Arc<Self>, key: Key) -> Result<Operation> {
         let mut active = self
             .operations
             .lock()
@@ -176,7 +181,10 @@ impl Inner {
         if active.len() >= 8 || !active.insert(key.clone()) {
             return Err(LifecycleError::Busy);
         }
-        Ok(Operation { inner: self, key })
+        Ok(Operation {
+            inner: self.clone(),
+            key,
+        })
     }
     pub(super) fn shutdown(&self) -> Result<()> {
         self.stopped.store(true, Ordering::Release);

@@ -43,6 +43,39 @@ pub struct PrivateData {
     release_digest: String,
 }
 
+impl PreparedWorker {
+    /// Run kernel storage recovery while the domain is pinned, before spawning
+    /// any App process. A callback must release all descriptor clones.
+    pub fn visit_private_data<T>(
+        self,
+        visit: impl FnOnce(&PrivateData) -> T,
+    ) -> std::result::Result<(Self, T), WorkerError> {
+        let directory = self.domain.private_data_directory()?;
+        let installation = self.record.installation.clone();
+        let generation = self
+            .record
+            .generation
+            .parse()
+            .map_err(|_| WorkerError::Identity)?;
+        let release_digest = self.record.release_digest.clone();
+        let preparation = Arc::new(Mutex::new(self));
+        let data = PrivateData {
+            root: Arc::new(Dir(directory)),
+            preparation: preparation.clone(),
+            installation,
+            generation,
+            release_digest,
+        };
+        let result = visit(&data);
+        drop(data);
+        let prepared = Arc::try_unwrap(preparation)
+            .map_err(|_| WorkerError::Preparation)?
+            .into_inner()
+            .map_err(|_| WorkerError::Preparation)?;
+        Ok((prepared, result))
+    }
+}
+
 impl WorkerProcess {
     pub fn private_data(&self) -> std::result::Result<PrivateData, WorkerError> {
         let prepared = self

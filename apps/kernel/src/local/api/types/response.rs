@@ -9,6 +9,7 @@ pub enum LocalDaemonResponse {
     AppInstallationsListed { installations: Vec<AppInstallationSummary>, next_cursor: Option<String>, },
     AppInstallation { installation: AppInstallationSummary, },
     AppInstallationJournal { installation_id: String, updates: Vec<AppUpdateSummary>, },
+    AppDataSnapshotRestored { installation_id: String, generation: String, snapshot_id: String, },
     AppRequestFailed { code: AppRequestErrorCode, },
     AppWorker { worker: AppWorkerSummary, },
     AppAutomations { installation_id: String, automations: Vec<AppAutomationSummary>, },

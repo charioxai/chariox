@@ -36,6 +36,30 @@ impl KernelRuntimeState {
                 Err(code) => failed(code),
             });
         }
+        if let LocalDaemonRequest::RestoreAppDataSnapshot(request) = request {
+            let owner = match crate::runtime::app_control::owner(command) {
+                Ok(owner) => owner,
+                Err(code) => return Some(failed(code)),
+            };
+            let lifecycle = self.app_control().lifecycle().clone();
+            let request = request.clone();
+            let response = LocalDaemonResponse::AppDataSnapshotRestored {
+                installation_id: request.installation_id.clone(),
+                generation: request.expected_generation.clone(),
+                snapshot_id: request.snapshot_id.clone(),
+            };
+            return Some(
+                match tokio::task::spawn_blocking(move || {
+                    lifecycle.restore_snapshot_blocking(&owner, &request)
+                })
+                .await
+                {
+                    Ok(Ok(())) => response,
+                    Ok(Err(code)) => failed(code),
+                    Err(_) => failed(AppRequestErrorCode::StorageUnavailable),
+                },
+            );
+        }
         if let LocalDaemonRequest::GrantAppFile(request) = request {
             return Some(match crate::runtime::app_control::owner(command) {
                 Ok(owner) => self.grant_app_file(owner, request.clone()).await,
@@ -309,8 +333,18 @@ impl KernelRuntimeState {
         if expected != current_generation {
             return Err(AppRequestErrorCode::Conflict);
         }
-        self.control_app_worker(&owner, &installation, AppWorkerAction::Stop)
-            .await?;
+        let lifecycle = self.app_control().lifecycle().clone();
+        let (stop_owner, stop_installation) = (owner.clone(), installation.clone());
+        let _operation = tokio::task::spawn_blocking(move || {
+            lifecycle.begin_uninstall_blocking(
+                &stop_owner,
+                &stop_installation,
+                expected,
+                delete_data,
+            )
+        })
+        .await
+        .map_err(|_| AppRequestErrorCode::StorageUnavailable)??;
         let store = self.owned.durable_state_store.clone();
         let permit = self.app_control().try_admit()?;
         let (view_owner, view_installation) = (owner.clone(), installation.clone());
@@ -366,6 +400,22 @@ impl KernelRuntimeState {
                 _ => Err(AppRequestErrorCode::StorageUnavailable),
             })?;
         }
+        let cleanup_store = self.owned.durable_state_store.clone();
+        let (cleanup_owner, cleanup_installation, cleanup_generation) = (
+            installation.owner_id.clone(),
+            installation.installation_id.clone(),
+            installation.generation,
+        );
+        tokio::task::spawn_blocking(move || {
+            crate::runtime::app_snapshot_restore::retire_uninstalled(
+                &cleanup_store,
+                &cleanup_owner,
+                &cleanup_installation,
+                cleanup_generation,
+            )
+        })
+        .await
+        .map_err(|_| AppRequestErrorCode::StorageUnavailable)??;
         Ok(LocalDaemonResponse::AppInstallation {
             installation: crate::runtime::app_control::installation_summary(installation),
         })

@@ -202,3 +202,9 @@ export function saveAppFileExportRequest(sessionId: string, operationId: string)
 export function acceptAppHostActionRequest(sessionId: string, operationId: string) {
   return { AcceptAppHostAction: { session_id: sessionId, operation_id: operationId } }
 }
+
+/** Protocol 401: restore one same-installation saved snapshot; leaves the App stopped. */
+export function restoreAppDataSnapshotRequest(installationId: string, expectedGeneration: string, snapshotId: string) {
+  return { RestoreAppDataSnapshot: { installation_id: installationId,
+    expected_generation: expectedGeneration, snapshot_id: snapshotId } }
+}

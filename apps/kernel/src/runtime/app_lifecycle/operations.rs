@@ -228,6 +228,9 @@ impl AppLifecycleService {
         }
         let key = (owner.into(), installation.into());
         let _operation_guard = self.0.operation(key.clone())?;
+        self.stop_under_gate(owner, installation, key)
+    }
+    pub(super) fn stop_under_gate(&self, owner: &str, installation: &str, key: Key) -> Result<()> {
         // A manual stop ends on-demand use too; its tools leave the catalog.
         self.0.publisher.forget_dormant(owner, installation);
         let entry = self
