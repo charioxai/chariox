@@ -119,9 +119,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
         effort: "",
         agentId: agent.id,
       })
-      run = !remotePlacement && launched.session_id === session.id
-        ? await waitForOpenCodeRunReady(client, launched.id)
-        : launched
+      run = await waitForOpenCodeRunReady(client, launched.id)
       if (!run.structured_endpoint) {
         throw new Error("OpenCode managed native server did not expose an endpoint")
       }
@@ -156,9 +154,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
         agentId: agent.id,
         native: { structuredEndpoint: proxyUrl },
       })
-      run = !remotePlacement && launched.session_id === session.id
-        ? await waitForOpenCodeRunReady(client, launched.id)
-        : launched
+      run = await waitForOpenCodeRunReady(client, launched.id)
     }
     if (!run) {
       throw new Error("OpenCode provider run was not launched")
