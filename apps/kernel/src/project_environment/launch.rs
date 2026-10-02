@@ -109,8 +109,6 @@ pub(crate) fn project_environment_launch_revision(
         .collect()
 }
 
-
-
 // MP-08 / MP-10 / MP-11: One resolver for ordinary prompt activation and runtime launches.
 pub(crate) fn attach_project_provider_environment(
     config: &DaemonConfig,

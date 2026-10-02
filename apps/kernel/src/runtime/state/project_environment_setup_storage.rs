@@ -1025,8 +1025,6 @@ impl ProjectEnvironmentSetupStore {
         Ok((entry.status.clone(), entry.execution.definition.clone()))
     }
 
-    
-
     pub(super) fn reconcile_remote_with<F>(
         &self,
         operation_id: &str,

@@ -20,8 +20,6 @@ struct Admission {
     envelope: IpcResponseEnvelope,
 }
 
-
-
 pub(super) async fn handle(
     router: &Arc<CommandRouter>,
     sequence: &AtomicU64,

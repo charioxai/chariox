@@ -2109,7 +2109,6 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
         .expect("worker connector should join");
     let _ = server_shutdown_tx.send(());
     server_task.await.expect("server task should join");
-
 }
 #[test]
 fn remote_machine_agents_materialize_file_attachments_on_the_worker() {

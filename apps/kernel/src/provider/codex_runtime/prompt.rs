@@ -220,8 +220,6 @@ fn ensure_codex_thread_ready(
     }
 }
 
-
-
 fn hidden_context_for_provider(value: &str) -> Option<&str> {
     let value = value.trim();
     (!value.is_empty()).then_some(value)

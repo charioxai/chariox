@@ -7,9 +7,7 @@ use crate::attachment::{AttachRequest, ClientCapabilityLevel};
 use crate::managed_bootstrap::ConfirmedManagedKernelRegistration;
 use crate::provider::LaunchProviderRequest;
 use crate::runtime::router::CommandRouter;
-use crate::session::{
-    PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
-};
+use crate::session::{PromptQueueItem, PromptStatus, PromptSubmissionOutcome};
 
 use super::KernelRuntimeState;
 

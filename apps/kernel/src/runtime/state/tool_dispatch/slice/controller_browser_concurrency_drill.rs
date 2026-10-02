@@ -52,7 +52,9 @@ async fn control(query: &str) -> u64 {
             let state = fixture("/state").await;
             ["same", "other"].into_iter().all(|tab| {
                 state["probes"].as_array().unwrap().iter().any(|p| {
-                    p["epoch"].as_str() == Some(epoch_text.as_str()) && p["kind"] == "ready" && p["tab"] == tab
+                    p["epoch"].as_str() == Some(epoch_text.as_str())
+                        && p["kind"] == "ready"
+                        && p["tab"] == tab
                 })
             })
         },
@@ -283,7 +285,9 @@ async fn run(runtime: &KernelRuntimeState, room: &str, agents: [&str; 3]) {
                 let state = fixture("/state").await;
                 ["#read-a", "#read-b", "#read-c"].into_iter().all(|id| {
                     state["probes"].as_array().unwrap().iter().any(|p| {
-                        p["epoch"].as_str() == Some(epoch_text.as_str()) && p["kind"] == "read" && p["id"] == id
+                        p["epoch"].as_str() == Some(epoch_text.as_str())
+                            && p["kind"] == "read"
+                            && p["id"] == id
                     })
                 })
             },

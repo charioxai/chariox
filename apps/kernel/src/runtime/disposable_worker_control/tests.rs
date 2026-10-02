@@ -336,7 +336,9 @@ async fn managed_keep_running_binds_environment_and_uses_normal_cloud_route() {
     {
         let seen = server.requests.lock().unwrap();
         assert_eq!(seen.len(), 1);
-        assert!(seen[0].starts_with("POST /managed-environments/environment-1/auto-stop/keep-running "));
+        assert!(
+            seen[0].starts_with("POST /managed-environments/environment-1/auto-stop/keep-running ")
+        );
         assert!(seen[0].ends_with("{\"accountId\":\"account-1\"}"));
     }
     let mut wrong = environment;

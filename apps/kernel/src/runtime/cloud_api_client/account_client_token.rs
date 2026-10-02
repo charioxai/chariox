@@ -14,7 +14,8 @@ pub(crate) async fn issue_cloud_account_client_runtime_token(
 ) -> Result<CloudRuntimeTokenResponse, DaemonError> {
     if profile
         .cloud_session_token
-        .as_deref().is_none_or(|token| token.trim().is_empty())
+        .as_deref()
+        .is_none_or(|token| token.trim().is_empty())
     {
         return Err(DaemonError::LocalTransport {
             operation: "issue cloud account client relay token",

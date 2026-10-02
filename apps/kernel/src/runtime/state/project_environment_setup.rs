@@ -18,8 +18,7 @@ use crate::local::{
     ProjectEnvironmentCommandResult, ProjectEnvironmentDefinition,
     ProjectEnvironmentDefinitionOrigin, ProjectEnvironmentSetupPhase,
     ProjectEnvironmentSetupStatus, ProjectEnvironmentSetupUtilityInput,
-    ProjectEnvironmentValidation, RunAgentUtilityRequest,
-    StartProjectEnvironmentSetupRequest,
+    ProjectEnvironmentValidation, RunAgentUtilityRequest, StartProjectEnvironmentSetupRequest,
 };
 use crate::provider::{ProviderProcessService, RuntimeProviderRun};
 use crate::runtime::agent_utility_executor::{

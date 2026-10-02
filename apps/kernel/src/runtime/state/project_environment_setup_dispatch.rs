@@ -202,8 +202,6 @@ pub(super) async fn cancel_remote_setup(
     .await
 }
 
-
-
 pub(super) async fn retry_remote_setup_with_deadline(
     state: &KernelRuntimeState,
     execution: &SetupExecution,

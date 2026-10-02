@@ -1151,8 +1151,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
         self.persist_worker_steer_receipt(leased_agent_id, receipt)
     }
 
-    
-
     fn cancelled_leased_prompt_provider_run_id(
         &self,
         leased_agent: &LeasedAgent,

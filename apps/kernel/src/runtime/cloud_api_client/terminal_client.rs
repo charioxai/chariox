@@ -35,7 +35,8 @@ pub(crate) async fn issue_cloud_terminal_client_token(
     } else {
         if profile
             .machine_credential
-            .as_deref().is_none_or(|credential| credential.trim().is_empty())
+            .as_deref()
+            .is_none_or(|credential| credential.trim().is_empty())
         {
             return Err(client_scope_error(
                 "Cloud terminal pairing requires active credentials",

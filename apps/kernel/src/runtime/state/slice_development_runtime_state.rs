@@ -221,8 +221,6 @@ impl KernelRuntimeState {
     }
 }
 
-
-
 fn materialize_slice_development_publication_with_access(
     publication_parent: &Path,
     project_id: &str,

@@ -323,10 +323,10 @@ mod provider_process_runtime_state;
 pub(crate) use provider_process_runtime_state::*;
 mod agent_substitute_transition_owned_state;
 mod project_environment_setup;
+mod provider_auth_recovery;
 #[cfg(test)]
 mod provider_output_runtime_tests;
 mod provider_prompt_failure_runtime;
-mod provider_auth_recovery;
 mod provider_prompt_settlement_runtime;
 mod provider_substitute_runtime;
 mod relay_peer_runtime_state;

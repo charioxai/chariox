@@ -22,8 +22,6 @@ pub struct ProviderProcessServiceStore {
         Arc<Mutex<Option<Arc<crate::runtime::state::ManagedKernelQuiescenceGate>>>>,
 }
 
-
-
 impl std::fmt::Debug for ProviderProcessServiceStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ProviderProcessServiceStore")

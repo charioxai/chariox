@@ -436,8 +436,6 @@ fn enqueue_relay_close(outgoing_tx: &RelayOutgoingSender) -> Result<(), DaemonEr
     )
 }
 
-
-
 #[cfg(test)]
 fn test_peer_response_kind(
     router: &CommandRouter,

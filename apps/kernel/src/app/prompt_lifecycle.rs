@@ -503,8 +503,6 @@ impl DaemonApp {
         Ok(())
     }
 
-    
-
     #[doc(hidden)]
     pub fn complete_active_prompt(
         &mut self,

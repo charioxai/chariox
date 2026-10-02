@@ -137,7 +137,7 @@ pub(crate) trait BrowserControllerProcessBackend {
     ) -> Result<BrowserControllerBrowserSnapshot, String> {
         Err("browser controller backend does not support browser reconciliation".to_string())
     }
-    
+
     #[cfg(test)]
     fn perform_browser_action(
         &mut self,
@@ -149,7 +149,7 @@ pub(crate) trait BrowserControllerProcessBackend {
     ) -> Result<BrowserControllerActionResult, String> {
         Err("browser controller backend does not support locator actions".to_string())
     }
-    
+
     #[cfg(test)]
     fn handle_browser_dialog(
         &mut self,
@@ -694,8 +694,6 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         Ok(snapshot)
     }
 
-    
-
     #[cfg(test)]
     fn perform_browser_action(
         &mut self,
@@ -721,8 +719,6 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         result.validate(target_id, document_id, action.kind())?;
         Ok(result)
     }
-
-    
 
     #[cfg(test)]
     fn handle_browser_dialog(
@@ -1157,8 +1153,6 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
         self.supervisor.reconcile_browser(viewport)
     }
 
-    
-
     #[cfg(test)]
     pub(crate) fn perform_browser_action(
         &mut self,
@@ -1173,8 +1167,6 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
         self.supervisor
             .perform_browser_action(target_id, document_id, node_ref, action, timeout_ms)
     }
-
-    
 
     #[cfg(test)]
     pub(crate) fn handle_browser_dialog(
@@ -1672,8 +1664,6 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         Ok(BrowserControllerReconciliation { process, browser })
     }
 
-    
-
     #[cfg(test)]
     fn perform_browser_action(
         &mut self,
@@ -1687,8 +1677,6 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         self.backend
             .perform_browser_action(target_id, document_id, node_ref, action, timeout_ms)
     }
-
-    
 
     #[cfg(test)]
     fn handle_browser_dialog(

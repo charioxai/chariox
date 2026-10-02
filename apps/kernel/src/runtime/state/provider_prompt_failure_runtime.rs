@@ -57,7 +57,10 @@ impl KernelRuntimeState {
             .ok_or_else(|| DaemonError::AgentNotFound {
                 agent_id: "provider run has no agent".to_string(),
             })?;
-        if self.try_provider_auth_recovery(&provider_run, message, expected_prompt_id).await? {
+        if self
+            .try_provider_auth_recovery(&provider_run, message, expected_prompt_id)
+            .await?
+        {
             return Ok(true);
         }
         let safe_message = crate::provider::sanitize_provider_diagnostic(message);
