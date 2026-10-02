@@ -19,9 +19,11 @@ mod provider_account;
 mod provider_run;
 mod relay_context;
 mod skill_sync;
+mod turn_capacity;
 
 pub(crate) use projection::RemoteProviderFailure;
 pub(crate) use prompt_lifecycle::PreparedLeasedProviderRun;
+pub(crate) use turn_capacity::LeasedTurnWaitingForCapacity;
 
 // Keep only small worker-generated IDs, not completed agents or prompt history.
 // Expiry or a worker restart must fail closed rather than infer successful cleanup.
@@ -134,7 +136,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         home_agent_metaagent: bool,
         owner_user_id: &str,
     ) -> Result<ExecutionLease, DaemonError> {
-        if !self.app.accepting_remote_leases() {
+        if !self.app.config.accept_remote_leases {
             return Err(DaemonError::RemoteLeasesDisabled {
                 machine_id: self.app.config.host_machine_id.clone(),
             });
