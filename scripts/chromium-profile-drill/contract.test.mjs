@@ -52,6 +52,10 @@ test("stale production helper expectation reproduces the old failure; probe is v
 });
 
 test("builder invocation is explicit and cannot claim hosted evidence", () => {
+  if (process.platform !== "linux") {
+    assert.throws(() => drillEnvironment({ CHARIOX_CHROMIUM_DRILL_ENVIRONMENT: "builder" }));
+    return;
+  }
   assert.equal(drillEnvironment({ CHARIOX_CHROMIUM_DRILL_ENVIRONMENT: "builder" }), "builder");
   const hosted = { GITHUB_ACTIONS: "true", RUNNER_ENVIRONMENT: "github-hosted", GITHUB_REPOSITORY: "charioxai/chariox" };
   assert.equal(drillEnvironment(hosted), "github-hosted");
