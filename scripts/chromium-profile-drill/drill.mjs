@@ -69,7 +69,14 @@ try {
   const firstVolume = volume("source");
   const first = create("source", firstVolume);
   startBrowser(first, "initial-sandbox");
-  record("exact-target-controller", runController(scratch, first));
+  try {
+    record("exact-target-controller", runController(scratch, first));
+  } finally {
+    // Controller namespace entry is the last step that needs the leased UID.
+    // Revoke traversal before creating any stopped-home archive.
+    chmodSync(scratch, 0o700);
+  }
+  assert.equal(statSync(scratch).mode & 0o777, 0o700);
   writeFileSync(join(evidence, "versions.txt"), execute(first, ["bash", "-lc", "node --version; chromium --version; dpkg-query -W chromium chromium-sandbox; uname -r"]));
   profile(first, "seed", "seed");
   profile(first, "verify", "initial-storage");
@@ -102,7 +109,7 @@ try {
   assert.equal(restoredLabels["io.chariox.chromium-drill"], owner.id);
   assert.equal(restoredLabels["io.chariox.saved-home.archive-sha256"], createHash("sha256").update(readFileSync(archive)).digest("hex"));
   assert.match(restoredLabels["io.chariox.saved-home.initialization-token"], /^[a-f0-9]{64}$/);
-  record("production-initial-home-restore", { archiveIdentityVerified: true, initializationTokenVerified: true, fullRestoreStateActionValidated: false });
+  record("production-initial-home-restore", { archiveIdentityVerified: true, initializationTokenVerified: true, privateScratchVerified: true, fullRestoreStateActionValidated: false });
   const restored = create("restored", restoredVolume);
   startBrowser(restored, "restored-sandbox");
   const restoredState = profile(restored, "verify", "restored-storage");

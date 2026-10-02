@@ -77,6 +77,9 @@ invocations must set `CHARIOX_CHROMIUM_DRILL_CARGO` (the `bin/cargo` of a public
 the whole drill, for example with a task-owned DynamicUser lease. Use a scratch
 parent that permits this UID to traverse it; only the new harness is chowned,
 and the builder uses a fresh private Cargo home with no coordinator account data.
+The harness must be newly created. Scratch traversal is revoked in a `finally`
+block immediately after the live controller exits, before any browser-home
+archive is written. That archive remains under the private `0700` scratch root.
 The browser and sandbox probe always run as `slice`. This fixture is not an owned kernel Room or protected rootless
 topology-7 qualification. The result explicitly records both exclusions.
 

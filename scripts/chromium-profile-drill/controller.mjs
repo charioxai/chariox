@@ -65,6 +65,8 @@ export function build(scratch) {
   assert.ok(disk.bavail * disk.bsize >= 12 * 1024 ** 3, "controller build requires 12GiB free scratch space");
   const harness = join(scratch, "controller");
   const target = join(harness, "target");
+  // A prior dropped-UID build must never be reused by a root coordinator.
+  mkdirSync(harness, { mode: 0o700 });
   mkdirSync(join(harness, "browser_controller/tests"), { recursive: true, mode: 0o700 });
   const source = join(repository, "apps/kernel/src/runtime");
   const inputs = treeInputs(source);
