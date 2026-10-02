@@ -119,6 +119,9 @@ fn recovery_state_attempt(state: &RemoteSetupRecoveryState) -> u32 {
     }
 }
 
+type ProviderContextGates =
+    Arc<Mutex<BTreeMap<(String, String), std::sync::Weak<tokio::sync::Mutex<()>>>>>;
+
 #[derive(Debug, Clone)]
 pub(in crate::runtime::state) struct ProjectEnvironmentSetupStore {
     entries: Arc<Mutex<BTreeMap<String, SetupEntry>>>,
@@ -129,8 +132,7 @@ pub(in crate::runtime::state) struct ProjectEnvironmentSetupStore {
     durable_state_store: Option<DurableKernelStateStore>,
     execution_settled: Arc<tokio::sync::Notify>,
     ordering_gates: Arc<Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<()>>>>>,
-    provider_context_gates:
-        Arc<Mutex<BTreeMap<(String, String), std::sync::Weak<tokio::sync::Mutex<()>>>>>,
+    provider_context_gates: ProviderContextGates,
 }
 
 pub(super) struct SetupExecutionGuard {

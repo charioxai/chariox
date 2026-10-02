@@ -6,9 +6,11 @@ use std::{
     sync::{OnceLock, RwLock},
 };
 
-fn selections() -> &'static RwLock<BTreeMap<PathBuf, (String, Vec<String>, Vec<String>)>> {
-    static SELECTIONS: OnceLock<RwLock<BTreeMap<PathBuf, (String, Vec<String>, Vec<String>)>>> =
-        OnceLock::new();
+type ProjectFileSelection = (String, Vec<String>, Vec<String>);
+type ProjectFileRegistry = RwLock<BTreeMap<PathBuf, ProjectFileSelection>>;
+
+fn selections() -> &'static ProjectFileRegistry {
+    static SELECTIONS: OnceLock<ProjectFileRegistry> = OnceLock::new();
     SELECTIONS.get_or_init(Default::default)
 }
 pub(crate) fn register_project_file_rules(

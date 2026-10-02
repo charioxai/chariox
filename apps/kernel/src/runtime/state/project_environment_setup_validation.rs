@@ -57,11 +57,13 @@ fn join_validation_output_reader(reader: ValidationOutputReader) -> Result<usize
         .map_err(|_| "worker validation output reader panicked".to_string())?
 }
 
+type SettledValidationOutput = Option<(Option<usize>, Option<usize>)>;
+
 fn settle_validation_output_readers(
     mut stdout: Option<ValidationOutputReader>,
     mut stderr: Option<ValidationOutputReader>,
     timeout: Duration,
-) -> Result<Option<(Option<usize>, Option<usize>)>, String> {
+) -> Result<SettledValidationOutput, String> {
     let deadline = Instant::now() + timeout;
     loop {
         if stdout
