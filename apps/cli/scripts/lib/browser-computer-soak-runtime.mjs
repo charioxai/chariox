@@ -1355,7 +1355,7 @@ async function resourceSnapshot(label, rootPids, diskPath) {
   const ownedIds = descendantIds(rows, rootPids)
   const supervisor = await verifiedSoakSupervisor()
   const ownedRows = includeSoakSupervisor(rows, ownedIds, supervisor)
-  if (supervisor) ownedIds.add(supervisor.pid)
+  for (const row of ownedRows) ownedIds.add(row.pid)
   const disk = await import("node:fs/promises").then(({ statfs }) => statfs(diskPath))
   const openFiles = (await Promise.all([...ownedIds].map(async (pid) => {
     try { return (await readdir(`/proc/${pid}/fd`)).length } catch { return 0 }
