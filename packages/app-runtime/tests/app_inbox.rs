@@ -361,8 +361,8 @@ fn routes_are_scoped_per_owner_and_installation_and_removal_keeps_accepted_work(
     assert!(app_inbox::route(&db, "owner", "installed", "mail")
         .unwrap()
         .is_none());
-    // The accepted, unsettled occurrence is still delivered; the settled one is gone.
-    assert!(app_inbox::state(&db, settled).is_err());
+    // Pending delivery and settled replay receipts both survive route removal.
+    assert_eq!(app_inbox::state(&db, settled).unwrap(), InboxState::Delivered);
     let due = app_inbox::due(&db, 10, 10).unwrap();
     assert_eq!(due.len(), 2);
     let kept = due
@@ -373,11 +373,10 @@ fn routes_are_scoped_per_owner_and_installation_and_removal_keeps_accepted_work(
         (kept.route_id.as_str(), kept.occurrence_id.as_str()),
         ("mail", "occ-1")
     );
-    // A route created again under the name starts without the settled
-    // history; a source replaying the pending occurrence is a duplicate.
+    // A replacement inherits pending work and settled replay receipts.
     app_inbox::create_route_in(&db, &route("mail"), 2).unwrap();
     assert_eq!(app_inbox::counts(&db, &route("mail")).unwrap().pending, 1);
-    assert_eq!(app_inbox::counts(&db, &route("mail")).unwrap().delivered, 0);
+    assert_eq!(app_inbox::counts(&db, &route("mail")).unwrap().delivered, 1);
     assert!(matches!(
         app_inbox::accept_in(&db, &route("mail"), "occ-1", &json!({"text":"a"}), 1, 3).unwrap(),
         Accepted::Duplicate(_)
