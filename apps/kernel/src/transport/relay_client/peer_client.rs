@@ -132,6 +132,27 @@ pub(crate) async fn send_peer_request_to_known_kernel_via_relay_with_timeout(
     request: RelayPeerRequest,
     response_timeout: Duration,
 ) -> Result<RelayPeerResponse, DaemonError> {
+    send_peer_request_to_known_kernel_via_relay_authorized(
+        config,
+        state,
+        target,
+        target_public_key,
+        request,
+        response_timeout,
+        || Ok(()),
+    )
+    .await
+}
+
+async fn send_peer_request_to_known_kernel_via_relay_authorized(
+    config: &crate::config::DaemonConfig,
+    state: &Arc<RwLock<RelayClientState>>,
+    target: ClientTarget,
+    target_public_key: &str,
+    request: RelayPeerRequest,
+    response_timeout: Duration,
+    authorize: impl Fn() -> Result<(), DaemonError> + Send + Sync,
+) -> Result<RelayPeerResponse, DaemonError> {
     let _target_ref = target
         .daemon_id
         .as_deref()
@@ -151,6 +172,8 @@ pub(crate) async fn send_peer_request_to_known_kernel_via_relay_with_timeout(
     )?;
     let (request_id, response_rx, outgoing_tx) = {
         let mut guard = state.write().await;
+        // No await separates this check from inserting and enqueuing the request.
+        authorize()?;
         let Some(outgoing_tx) = guard.outgoing_tx.clone() else {
             return Err(DaemonError::LocalTransport {
                 operation: "send relay peer request",
@@ -296,6 +319,26 @@ pub async fn send_peer_request_via_connected_relay_with_timeout(
     request: RelayPeerRequest,
     response_timeout: Duration,
 ) -> Result<RelayPeerResponse, DaemonError> {
+    send_peer_request_via_connected_relay_authorized(
+        config,
+        state,
+        target,
+        request,
+        response_timeout,
+        || Ok(()),
+    )
+    .await
+}
+
+pub(crate) async fn send_peer_request_via_connected_relay_authorized(
+    config: &crate::config::DaemonConfig,
+    state: &Arc<RwLock<RelayClientState>>,
+    target: ClientTarget,
+    request: RelayPeerRequest,
+    response_timeout: Duration,
+    authorize: impl Fn() -> Result<(), DaemonError> + Send + Sync,
+) -> Result<RelayPeerResponse, DaemonError> {
+    authorize()?;
     let target_ref = target
         .daemon_id
         .as_deref()
@@ -313,6 +356,7 @@ pub async fn send_peer_request_via_connected_relay_with_timeout(
                 state.write().await.forget_peer_public_key(&target_ref);
             }
             let kernel = relay_discovery::get_live_kernel(config, &target_ref).await?;
+            authorize()?;
             let public_key = kernel.public_key;
             relay_crypto::decode_public_key(&public_key)?;
             state
@@ -322,13 +366,14 @@ pub async fn send_peer_request_via_connected_relay_with_timeout(
             public_key
         }
     };
-    let result = send_peer_request_to_known_kernel_via_relay_with_timeout(
+    let result = send_peer_request_to_known_kernel_via_relay_authorized(
         config,
         state,
         target,
         &target_public_key,
         request,
         response_timeout,
+        authorize,
     )
     .await;
     if result.is_err() {

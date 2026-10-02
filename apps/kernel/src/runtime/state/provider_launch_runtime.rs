@@ -386,19 +386,23 @@ impl KernelRuntimeState {
         self.authorize_provider_launch_grant(external_grant_id, request)?;
         match relay_state {
             Some(relay_state) => {
-                crate::transport::relay_client::send_peer_request_via_connected_relay(
+                crate::transport::relay_client::send_peer_request_via_connected_relay_authorized(
                     &relay_config,
                     &relay_state,
                     target,
                     peer_request,
+                    Duration::from_millis(relay_config.relay_request_timeout_ms),
+                    || self.authorize_provider_launch_grant(external_grant_id, request),
                 )
                 .await
             }
             None => {
-                crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized(
                     &relay_config,
                     target,
                     peer_request,
+                    Duration::from_millis(relay_config.relay_request_timeout_ms),
+                    || self.authorize_provider_launch_grant(external_grant_id, request),
                 )
                 .await
             }
