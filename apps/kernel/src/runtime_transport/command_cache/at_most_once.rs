@@ -30,7 +30,7 @@ impl CommandResultCache {
         interrupted_response: Value,
     ) -> io::Result<()> {
         let mut cached = CachedCommandResult {
-            response: Box::new(Some(response)),
+            response: serialized_response(&Some(response)),
             error: None,
             fingerprint,
             completed_at_ms: crate::session::unix_epoch_ms(),
@@ -53,7 +53,7 @@ impl CommandResultCache {
         if settled.is_err() {
             // Acceptance remains durable. Never expose an uncommitted success,
             // and never redispatch the effect after an ambiguous settlement.
-            cached.response = Box::new(Some(interrupted_response));
+            cached.response = serialized_response(&Some(interrupted_response));
         }
         self.publish_completed_result(&command_id, &cached).await;
         self.apply_retention_to_completed_results(
@@ -109,7 +109,7 @@ impl CommandResultCache {
             .as_ref()
             .ok_or_else(|| io::Error::other("at-most-once receipts require persistence"))?;
         let cached = CachedCommandResult {
-            response: Box::new(Some(interrupted_response)),
+            response: serialized_response(&Some(interrupted_response)),
             error: None,
             completed_at_ms: crate::session::unix_epoch_ms(),
             fingerprint: fingerprint.clone(),

@@ -97,7 +97,7 @@ impl AppLifecycleService {
                 release,
                 active.binding(),
                 None,
-                generation,
+                Some(generation),
             )
             .map_err(|_| Error::StorageUnavailable)?;
             let (_, outcome) = prepared
