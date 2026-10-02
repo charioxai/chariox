@@ -5,7 +5,7 @@ use crate::transport::kernel_protocol::KernelEvent;
 
 #[test]
 fn kernel_access_lifetime_config_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 395);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 403);
     let response = LocalDaemonResponse::UserConfig {
         path: "/state/config.toml".into(),
         config: crate::config::CharioxUserConfig::default(),
@@ -42,7 +42,7 @@ fn wire_name(class: KernelConnectionClass) -> &'static str {
 
 #[test]
 fn kernel_connection_classes_and_their_audit_attribution_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 395);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 403);
     let classes = [
         KernelConnectionClass::Terminal,
         KernelConnectionClass::ExternalAgent,
@@ -64,11 +64,10 @@ fn kernel_connection_classes_and_their_audit_attribution_are_versioned() {
             class
         );
     }
-    // Only terminals may submit a passkey; unauthenticated connections keep
-    // their current treatment until enforcement.
+    // Protocol 403: only admitted terminals may submit a passkey.
     assert_eq!(
         classes.map(KernelConnectionClass::may_submit_passkey),
-        [true, false, false, false, false, true]
+        [true, false, false, false, false, false]
     );
 
     let audit = critical_approval_audit_payload(
@@ -99,7 +98,7 @@ fn kernel_connection_classes_and_their_audit_attribution_are_versioned() {
 
 #[test]
 fn passkey_prompts_and_their_popup_event_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 395);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 403);
     let prompt = |session_alias: Option<&str>, interaction_id: &str| PasskeyPrompt {
         kind: PasskeyPromptKind::CriticalApproval,
         session_id: "session-1".into(),
@@ -180,7 +179,7 @@ fn process_bound_access_protocol_395_has_metadata_but_no_bearer() {
         KernelAccessGrant, ListKernelAccessGrantsRequest, RequestKernelAccessRequest,
         RevokeKernelAccessGrantRequest,
     };
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 395);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 403);
     let grant = KernelAccessGrant {
         grant_id: "g".into(),
         session_id: "s".into(),

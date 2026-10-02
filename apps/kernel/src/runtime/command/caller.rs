@@ -157,15 +157,6 @@ impl KernelCommand {
     /// admission. It is never read from an interaction's response payload.
     pub(crate) fn is_terminal_caller(&self) -> bool {
         self.caller.metaagent_id.is_none()
-            && match (&self.source, &self.caller.caller_kind) {
-                (
-                    KernelCommandSource::LocalCli | KernelCommandSource::LocalIpc,
-                    KernelCallerKind::LocalClient,
-                ) => true,
-                (KernelCommandSource::RelayClient, KernelCallerKind::RemoteClient) => {
-                    self.caller.user_id.is_some()
-                }
-                _ => false,
-            }
+            && self.caller.connection_class == Some(KernelConnectionClass::Terminal)
     }
 }

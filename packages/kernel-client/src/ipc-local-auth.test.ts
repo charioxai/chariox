@@ -3,6 +3,7 @@ import { spawn } from "node:child_process"
 import { chmod, mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { createServer } from "node:http"
 import test from "node:test"
 
 import { WebSocketServer } from "ws"
@@ -24,6 +25,41 @@ const localAuthEnvironmentNames = [
   "CHARIOX_PUBLICATION_CLOUD_RUNNER_KEY",
   "XDG_STATE_HOME",
 ] as const
+
+test("LocalIpcClient reports the kernel's 401 diagnostic without replaying a request", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-auth-enforcement-"))
+  let upgrades = 0
+  const diagnostic = "Kernel local authentication required. Token file: /private/state/kernel-local-auth/123.token. Request access over ws+unix:///private/run/kernel.sock."
+  const server = createServer()
+  server.on("upgrade", (_request, socket) => {
+    upgrades += 1
+    socket.end(`HTTP/1.1 401 Unauthorized\r\nContent-Length: ${Buffer.byteLength(diagnostic)}\r\nConnection: close\r\n\r\n${diagnostic}`)
+  })
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+  t.after(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+    await rm(root, { recursive: true, force: true })
+  })
+  const address = server.address()
+  assert.ok(address && typeof address !== "string")
+  const result = await runClientScript(`
+    const client = new LocalIpcClient("ws://127.0.0.1:${address.port}")
+    try {
+      await client.send({ ListSessions: null })
+      throw new Error("unauthenticated request should fail")
+    } catch (error) {
+      process.stdout.write(JSON.stringify({ message: error.message, code: error.code, retryable: error.retryable }))
+    } finally {
+      client.destroy()
+    }
+  `, { CHARIOX_HOME: root })
+  assert.equal(result.code, 0, result.stderr)
+  const error = JSON.parse(result.stdout)
+  assert.ok(error.message.includes(diagnostic), error.message)
+  assert.equal(error.code, "authentication_failed")
+  assert.equal(error.retryable, false)
+  assert.equal(upgrades, 1)
+})
 
 test("LocalIpcClient consumes a private auth file before authenticating local upgrades", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-kernel-local-auth-"))

@@ -304,10 +304,16 @@ impl SessionRuntimeCommandExecutor {
                     .await
             }
             LocalDaemonRequest::RespondToInteraction(request) => {
+                // Managed host controllers keep their existing owner decision
+                // route, without becoming terminals. The interaction gate still
+                // refuses host passkeys and credential-prompt answers.
+                let owner_caller = terminal_caller
+                    || (caller_metaagent_id.is_none()
+                        && connection_class == Some(KernelConnectionClass::Host));
                 self.store
                     .respond_to_interaction(
                         request,
-                        terminal_caller.then_some(caller_user_id),
+                        owner_caller.then_some(caller_user_id),
                         connection_class,
                     )
                     .await

@@ -801,6 +801,13 @@ async fn handle_kernel_connection(
     stream: tokio::net::TcpStream,
 ) -> Result<(), DaemonError> {
     let peer_addr = stream.peer_addr().ok();
+    let unauthorized_message = local_auth.rejection_message(
+        stream
+            .local_addr()
+            .map(|addr| addr.port())
+            .unwrap_or_default(),
+        &router.kernel_local_socket_path(),
+    );
     let mut local_credential = None;
     let socket = accept_hdr_async(
         stream,
@@ -812,7 +819,15 @@ async fn handle_kernel_connection(
                 return Err(error);
             }
             let Some(credential) = local_auth.admit(request.headers().get("authorization")) else {
-                let mut error = ErrorResponse::new(Some("Unauthorized".to_string()));
+                local_auth.record(
+                    if request.headers().contains_key("authorization") {
+                        local_auth::KernelLocalCredential::Wrong
+                    } else {
+                        local_auth::KernelLocalCredential::Missing
+                    },
+                    peer_addr,
+                );
+                let mut error = ErrorResponse::new(Some(unauthorized_message.clone()));
                 *error.status_mut() = StatusCode::UNAUTHORIZED;
                 return Err(error);
             };

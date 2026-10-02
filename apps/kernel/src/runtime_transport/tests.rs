@@ -606,14 +606,15 @@ async fn kernel_websocket_auth_rejects_missing_or_wrong_tokens_before_accepting_
 }
 
 #[tokio::test]
-async fn laptop_kernel_websocket_accepts_missing_or_wrong_tokens_in_log_mode() {
+async fn laptop_kernel_websocket_enforces_local_tokens() {
     let listener = StdTcpListener::bind("127.0.0.1:0").expect("listener should bind");
     let addr = listener.local_addr().expect("listener should have addr");
     let mcp_listener =
         StdTcpListener::bind("127.0.0.1:0").expect("runtime MCP listener should bind");
+    let config = daemon_config_for_runtime_mcp_listener(&mcp_listener);
+    let unix_socket = config.local_socket_path.clone();
     let app = Arc::new(Mutex::new(
-        DaemonApp::bootstrap(daemon_config_for_runtime_mcp_listener(&mcp_listener))
-            .expect("daemon should boot"),
+        DaemonApp::bootstrap(config).expect("daemon should boot"),
     ));
     let auth = Arc::new(local_auth::LocalTokenAuth::new(
         local_auth::generate_kernel_local_auth_token(),
@@ -641,17 +642,32 @@ async fn laptop_kernel_websocket_accepts_missing_or_wrong_tokens_in_log_mode() {
         let mut request = format!("ws://{addr}")
             .into_client_request()
             .expect("request should build");
-        if let Some(authorization) = authorization {
+        if let Some(authorization) = &authorization {
             request.headers_mut().insert(
                 AUTHORIZATION,
-                HeaderValue::from_str(&authorization).expect("header should be valid"),
+                HeaderValue::from_str(authorization).expect("header should be valid"),
             );
         }
-        let (mut socket, _) = connect_async(request)
-            .await
-            .expect("log mode should accept the connection");
+        let result = connect_async(request).await;
+        if authorization.as_deref() != Some(&format!("Bearer {}", auth.token())) {
+            let Err(tokio_tungstenite::tungstenite::Error::Http(response)) = result else {
+                panic!("missing and wrong tokens must fail the upgrade");
+            };
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            let message = String::from_utf8(response.body().clone().unwrap()).unwrap();
+            assert!(message.contains(
+                &DaemonConfig::default_kernel_local_auth_token_path(addr.port())
+                    .display()
+                    .to_string()
+            ));
+            assert!(message.contains(&format!("ws+unix://{}", unix_socket.display())));
+            assert!(!message.contains(auth.token()));
+            assert!(!message.contains("chx_kat_wrong"));
+            continue;
+        }
+        let (mut socket, _) = result.expect("correct token should admit the connection");
         socket
-            .send(Message::Ping(Vec::from("log-mode").into()))
+            .send(Message::Ping(Vec::from("authenticated").into()))
             .await
             .expect("ping should send");
         let pong = timeout(Duration::from_secs(2), async {
@@ -666,7 +682,7 @@ async fn laptop_kernel_websocket_accepts_missing_or_wrong_tokens_in_log_mode() {
         })
         .await
         .expect("pong should arrive");
-        assert_eq!(pong, b"log-mode");
+        assert_eq!(pong, b"authenticated");
         let _ = socket.close(None).await;
     }
     // One authenticated, one missing and one wrong connection were counted.
@@ -701,15 +717,6 @@ async fn kernel_websocket_credentials_attribute_critical_approval_audits_to_thei
         KernelLocalAuth::LocalToken(Arc::clone(&laptop_auth)),
     )
     .await;
-    // Log mode: without the token, or with a wrong one, a wrong passkey is
-    // still checked and counted as before.
-    for authorization in [None, Some("Bearer chx_kat_wrong".to_string())] {
-        let rejected = laptop
-            .answer(authorization, "approve", Some("guess"))
-            .await
-            .expect("a wrong passkey should be rejected");
-        assert!(rejected.contains("PASSKEY_REJECTED"), "{rejected}");
-    }
     let terminal = Some(format!("Bearer {}", laptop_auth.token()));
     assert_eq!(
         laptop.answer(terminal, "approve", Some(PASSKEY)).await,
@@ -717,11 +724,7 @@ async fn kernel_websocket_credentials_attribute_critical_approval_audits_to_thei
     );
     assert_eq!(
         laptop.audits(),
-        [
-            ("rejected".to_string(), serde_json::json!("unauthenticated")),
-            ("rejected".to_string(), serde_json::json!("unauthenticated")),
-            ("verified".to_string(), serde_json::json!("terminal")),
-        ]
+        [("verified".to_string(), serde_json::json!("terminal"))]
     );
     laptop.stop().await;
 

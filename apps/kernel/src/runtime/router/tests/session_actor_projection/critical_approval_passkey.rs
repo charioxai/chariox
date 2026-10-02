@@ -137,7 +137,7 @@ impl Fixture {
             passkey,
             remember,
             KernelCommandSource::LocalCli,
-            KernelCaller::default(),
+            local_caller(KernelConnectionClass::Terminal),
         )
         .await
     }
@@ -226,8 +226,14 @@ impl Fixture {
                     passkey_remember_minutes: None,
                 },
             );
-            let command =
-                KernelCommand::from_local_request(format!("answer-{prompt}"), None, None, &request);
+            let command = KernelCommand::from_local_request_with_caller(
+                format!("answer-{prompt}"),
+                KernelCommandSource::LocalCli,
+                local_caller(KernelConnectionClass::Terminal),
+                None,
+                None,
+                &request,
+            );
             self.router.dispatch(command, request).await.unwrap();
         }
         manage.await.unwrap()
@@ -646,11 +652,10 @@ async fn critical_approval_audits_name_the_answering_connection_class() {
     let f = Fixture::new(true);
     let local = f.critical("local").await;
     let relayed = f.critical("relayed").await;
-    // In log mode a tokenless local connection keeps today's treatment.
-    let tokenless = || local_caller(KernelConnectionClass::Unauthenticated);
+    let terminal = || local_caller(KernelConnectionClass::Terminal);
     let cli = KernelCommandSource::LocalCli;
     Fixture::refused_with(
-        f.answer_as("local", "approve", None, None, cli.clone(), tokenless())
+        f.answer_as("local", "approve", None, None, cli.clone(), terminal())
             .await,
         "PASSKEY_REQUIRED",
     );
@@ -661,7 +666,7 @@ async fn critical_approval_audits_name_the_answering_connection_class() {
             Some("guess"),
             None,
             cli.clone(),
-            tokenless(),
+            terminal(),
         )
         .await,
         "PASSKEY_REJECTED",
@@ -695,8 +700,8 @@ async fn critical_approval_audits_name_the_answering_connection_class() {
     assert_eq!(
         f.audits("local"),
         [
-            audit("missing", "unauthenticated"),
-            audit("rejected", "unauthenticated"),
+            audit("missing", "terminal"),
+            audit("rejected", "terminal"),
             audit("verified", "terminal"),
         ]
     );
@@ -709,6 +714,10 @@ async fn a_passkey_from_a_refused_class_is_neither_verified_nor_counted() {
     let receiver = f.critical("guarded").await;
     let cli = KernelCommandSource::LocalCli;
     let refused = [
+        (
+            cli.clone(),
+            local_caller(KernelConnectionClass::Unauthenticated),
+        ),
         (cli.clone(), local_caller(KernelConnectionClass::Host)),
         (
             cli.clone(),

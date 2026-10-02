@@ -11,6 +11,8 @@ import {
 
 import WebSocket from "ws"
 
+import { kernelUpgradeRejectionHandler } from "./websocket-upgrade-rejection.js"
+
 import { getKernelResourceTelemetryRequest } from "./ipc-kernel-control-requests.js"
 import { isGuardedKernelControl, requireKernelControlCapability } from "./ipc-disposable-worker-requests.js"
 import { sendGuardedLocalSocketRequest } from "./local-socket-session.js"
@@ -756,7 +758,7 @@ export class LocalIpcClient {
     }
     // A laptop kernel writes a new token at each start, so read it for every
     // connection: a reconnect after a kernel restart presents the new one.
-    // Without a readable token the kernel still accepts the connection (log mode).
+    // A missing or stale token receives a non-retryable authentication error.
     const laptopKernelToken = readLocalKernelAuthToken(this.socketPath, this.localAuthEnvironment)
     return laptopKernelToken
       ? new WebSocket(this.socketPath, { headers: { authorization: `Bearer ${laptopKernelToken}` } })
@@ -802,6 +804,9 @@ export class LocalIpcClient {
           !authenticationFailed,
         )
       }
+      const handleUnexpectedResponse = kernelUpgradeRejectionHandler(socket, (message, authenticationFailed) => {
+        fail("connect kernel websocket", message, authenticationFailed ? "authentication_failed" : "connection_closed", !authenticationFailed)
+      })
       const handleConnectClose = (code: number, reason: Buffer) => {
         const closeMessage = reason.length > 0
           ? reason.toString("utf8")
@@ -811,6 +816,7 @@ export class LocalIpcClient {
       const clearConnectListeners = () => {
         socket.off("error", handleConnectError)
         socket.off("close", handleConnectClose)
+        socket.off("unexpected-response", handleUnexpectedResponse)
       }
 
       socket.once("open", () => {
@@ -937,6 +943,7 @@ export class LocalIpcClient {
         }
       })
 
+      socket.on("unexpected-response", handleUnexpectedResponse)
       socket.on("error", handleConnectError)
       socket.on("close", handleConnectClose)
     })
