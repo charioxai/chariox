@@ -2452,7 +2452,9 @@ done
 
     #[test]
     fn stdio_backend_reports_early_exit_without_claiming_ready() {
-        let tool = TestTool::new("#!/bin/sh\nexit 9\n");
+        // MP-08/MP-10: exit after consuming health so the fixture exercises
+        // response EOF, rather than racing the request write with a broken pipe.
+        let tool = TestTool::new("#!/bin/sh\nIFS= read -r request\nexit 9\n");
         let mut backend = BrowserControllerProcessStdioBackend::new(
             tool.path(),
             Vec::new(),
@@ -2461,7 +2463,10 @@ done
 
         let error = backend.start().expect_err("early exit must fail");
 
-        assert!(error.contains("exited during `health`"));
+        assert!(
+            error.contains("exited during `health`"),
+            "unexpected early-exit diagnostic: {error}"
+        );
     }
 
     #[test]
