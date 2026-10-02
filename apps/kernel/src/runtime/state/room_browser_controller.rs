@@ -47,6 +47,7 @@ impl KernelRuntimeState {
         command: Command,
         recovery_authority: bool,
     ) -> Result<Response, DaemonError> {
+        self.authorize_current_external_command()?;
         // Cleanup must remain available while the Room is quarantined, including
         // when the durable store cannot establish that execution is safe.
         if !recovery_authority
@@ -74,12 +75,10 @@ impl KernelRuntimeState {
                 | Command::Navigate { .. }
                 | Command::ComputerInput { .. }
                 | Command::CancelDownload { .. }
-                | Command::ImportCookies { .. }
-                | Command::AppView {
-                    request:
-                        crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Open { .. }
-                            | crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Reload { .. }
-                }
+                | Command::ImportCookies { .. } | Command::AppView {
+                request: crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Open { .. }
+                    | crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Reload { .. }
+            }
         );
         let response = if let Some(slice) = self.owned.slice_store.environment_slice(session_id) {
             // Keep the relay client's large future off callers' async stacks. Local
@@ -99,6 +98,7 @@ impl KernelRuntimeState {
                 ));
             }
             execute_local(
+                self.clone(),
                 self.owned.browser_controller_processes.clone(),
                 self.owned.computer_input_executions.clone(),
                 session_id,
@@ -106,6 +106,7 @@ impl KernelRuntimeState {
             )
             .await?
         };
+        self.authorize_current_external_command()?;
         match response {
             Response::ActionCancelled { controller_fenced } if admitted_mutation_command => {
                 Err(DaemonError::BrowserControllerActionCancelled { controller_fenced })
@@ -191,21 +192,23 @@ impl KernelRuntimeState {
             };
             match self.connected_relay_state_for_config(&config).await {
                 Some(relay_state) => {
-                    crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
+                    crate::transport::relay_client::send_peer_request_via_connected_relay_authorized(
                         &config,
                         &relay_state,
                         target,
                         request(command),
                         timeout,
+                        || self.authorize_current_external_command(),
                     )
                     .await
                 }
                 None => {
-                    crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+                    crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized(
                         &config,
                         target,
                         request(command),
                         timeout,
+                        || self.authorize_current_external_command(),
                     )
                     .await
                 }
@@ -215,6 +218,7 @@ impl KernelRuntimeState {
         let response = match first {
             Ok(response) => response,
             Err(first_error) if recovery.is_some() => {
+                self.authorize_current_external_command()?;
                 send(target, recovery.expect("action recovery command"))
                 .await.map_err(|retry_error| controller_route_error(&format!(
                     "browser action result remained unavailable after non-mutating receipt recovery: {retry_error}; initial delivery error: {first_error}"
@@ -267,6 +271,7 @@ impl KernelRuntimeState {
             ));
         }
         execute_local(
+            self.clone(),
             self.owned.browser_controller_processes.clone(),
             self.owned.computer_input_executions.clone(),
             session_id,
@@ -393,11 +398,13 @@ fn lifecycle_recovery(
 }
 
 async fn execute_local(
+    state: KernelRuntimeState,
     processes: BrowserControllerProcessStore,
     computer_input_executions: crate::runtime::computer_input_execution::ComputerInputExecutionStore,
     session_id: &str,
     command: Command,
 ) -> Result<Response, DaemonError> {
+    state.authorize_current_external_command()?;
     let command = match command {
         Command::ComputerInput {
             action_id,
@@ -530,7 +537,7 @@ async fn execute_local(
     };
     let session_id = session_id.to_string();
     let recovery_processes = processes.clone();
-    let result = tokio::task::spawn_blocking(move || match command {
+    let result = authorized_controller_task(state, move || match command {
         Command::CancelAction { execution_id } => {
             let accepted = computer_input_executions.cancel(&session_id, &execution_id)
                 || processes.cancel_browser_action(&session_id, &execution_id);
@@ -784,8 +791,7 @@ async fn execute_local(
             })
             .map(|()| Response::CookieImportRecovered),
     })
-    .await
-    .map_err(|error| controller_route_error(&error.to_string()))?;
+    .await?;
     match result {
         Err(message) if message == CONTROLLER_RESTARTED_BEFORE_OPERATION => {
             let process = recovery_processes
@@ -796,6 +802,20 @@ async fn execute_local(
         }
         result => result.map_err(|message| controller_route_error(&message)),
     }
+}
+
+async fn authorized_controller_task(
+    state: KernelRuntimeState,
+    task: impl FnOnce() -> Result<Response, String> + Send + 'static,
+) -> Result<Result<Response, String>, DaemonError> {
+    tokio::task::spawn_blocking(move || {
+        state
+            .authorize_current_external_command()
+            .map_err(|error| error.to_string())?;
+        task()
+    })
+    .await
+    .map_err(|error| controller_route_error(&error.to_string()))
 }
 
 pub(super) fn controller_route_error(message: &str) -> DaemonError {

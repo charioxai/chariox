@@ -1071,11 +1071,13 @@ impl KernelRuntimeState {
                 "unexpected controller stop response",
             ));
         };
-        self.owned
+        let mut generations = self
+            .owned
             .browser_controller_generations
             .lock()
-            .map_err(|_| controller_generation_error("generation lock poisoned"))?
-            .remove(session_id);
+            .map_err(|_| controller_generation_error("generation lock poisoned"))?;
+        self.authorize_current_external_command()?;
+        generations.remove(session_id);
         Ok(snapshot)
     }
 
@@ -1083,9 +1085,11 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
     ) -> Result<RoomEnvironmentSnapshot, DaemonError> {
+        self.authorize_current_external_command()?;
         self.begin_stop_room_environment(session_id)
             .map_err(|error| environment_runtime_error("environment.stop", error))?;
         if let Err(error) = self.stop_browser_controller_process(session_id).await {
+            self.authorize_current_external_command()?;
             let _ = self.update_room_environment_component_health(
                 session_id,
                 EnvironmentComponent::BrowserController,
@@ -1095,6 +1099,7 @@ impl KernelRuntimeState {
             let _ = self.transition_room_environment(session_id, EnvironmentLifecycle::Failed);
             return Err(error);
         }
+        self.authorize_current_external_command()?;
         self.update_room_environment_component_health(
             session_id,
             EnvironmentComponent::BrowserController,

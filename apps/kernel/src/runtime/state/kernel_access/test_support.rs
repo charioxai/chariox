@@ -1,5 +1,6 @@
 use super::*;
 
+mod capability_room_authority;
 mod control_authority;
 mod credential_authority;
 mod input_control_authority;

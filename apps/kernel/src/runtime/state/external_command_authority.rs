@@ -47,7 +47,7 @@ impl KernelRuntimeState {
         state
     }
 
-    pub(super) fn authorize_current_external_command(&self) -> Result<(), DaemonError> {
+    pub(crate) fn authorize_current_external_command(&self) -> Result<(), DaemonError> {
         self.authorize_prompt_command(
             self.external_command_authority
                 .as_ref()

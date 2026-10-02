@@ -108,6 +108,7 @@ impl WorkerSpy {
                                     status.retryable = true;
                                     RelayPeerResponse::LeasedProjectEnvironmentSetupCancelled { setup: crate::transport::relay_peer::RelayProjectEnvironmentSetupStatus { status, definition: None } }
                                 }
+                                RelayPeerRequest::RoomBrowserController { session_id, slice_id, command: crate::transport::room_browser_controller::RoomBrowserControllerCommand::Release } => RelayPeerResponse::RoomBrowserController { session_id, slice_id, result: crate::transport::room_browser_controller::RoomBrowserControllerResult::Process { snapshot: None } },
                                 _ => panic!("unexpected worker request"),
                             };
                             send(&mut socket, RelayEnvelope::DaemonPeerResponse { request_id, from_daemon_id: worker_id.clone(), encrypted_response: Some(relay_crypto::encrypt_payload_for_peer(&worker.relay_private_key, &registration.public_key, &serde_json::to_vec(&response).unwrap()).unwrap()), error: None }).await;

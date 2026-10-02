@@ -27,6 +27,7 @@ pub(crate) async fn execute_capability_request(
             Some(match context {
                 Ok(context) => {
                     spawn_capability("run shell command", health, move || {
+                        context.authorize()?;
                         ShellCommandService::new()
                             .run(
                                 RunShellCommandRequest::new(
@@ -57,6 +58,7 @@ pub(crate) async fn execute_capability_request(
             Some(match context {
                 Ok(context) => {
                     spawn_capability("read directory tree", health, move || {
+                        context.authorize()?;
                         DirectoryTreeService::new()
                             .read_tree(ReadDirectoryTreeRequest::new(
                                 request.session_id,
@@ -79,6 +81,7 @@ pub(crate) async fn execute_capability_request(
             Some(match context {
                 Ok(context) => {
                     spawn_capability("read file", health, move || {
+                        context.authorize()?;
                         FileCapabilityService::new()
                             .read_file(ReadFileRequest::new(
                                 request.session_id,
@@ -100,6 +103,7 @@ pub(crate) async fn execute_capability_request(
             Some(match context {
                 Ok(context) => {
                     spawn_capability("edit file", health, move || {
+                        context.authorize()?;
                         let _claim = context.workspace_coordinator.acquire_worktree_write_claim(
                             context.workspace_id.clone(),
                             context.worktree_root.display().to_string(),
@@ -107,6 +111,7 @@ pub(crate) async fn execute_capability_request(
                             Some(request.attachment_id.clone()),
                             "file_edit",
                         )?;
+                        context.authorize()?;
                         FileCapabilityService::new()
                             .edit_file(EditFileRequest::new(
                                 request.session_id,
@@ -129,6 +134,7 @@ pub(crate) async fn execute_capability_request(
             Some(match context {
                 Ok(context) => {
                     spawn_capability("inspect git", health, move || {
+                        context.authorize()?;
                         GitCapabilityService::new()
                             .inspect(InspectGitRequest::new(
                                 request.session_id,
@@ -150,6 +156,7 @@ pub(crate) async fn execute_capability_request(
             Some(match context {
                 Ok(context) => {
                     spawn_capability("capture screenshot", health, move || {
+                        context.authorize()?;
                         ScreenshotCapabilityService::new()
                             .capture(CaptureScreenshotRequest::new(
                                 request.session_id,
@@ -174,6 +181,7 @@ pub(crate) async fn execute_capability_request(
             Some(match context {
                 Ok(context) => {
                     spawn_capability("store transferred file", health, move || {
+                        context.authorize()?;
                         store_transferred_file(context, request)
                     })
                     .await
