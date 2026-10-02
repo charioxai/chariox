@@ -2,6 +2,7 @@
 """Private slice-owned Selkies lifecycle. No Room or input authority lives here."""
 
 import fcntl
+import importlib.resources
 import json
 import os
 from pathlib import Path
@@ -159,6 +160,14 @@ def start(directory, *, port=None, display=None):
         "--command-enabled=false|locked", "--file-transfers=none",
         "--enable-clipboard=false",
     ]
+    # Serve the installed frontend directly. Selkies otherwise copies the whole
+    # package to a temporary directory before opening its health endpoint.
+    try:
+        frontend = importlib.resources.files("selkies.selkies_web")
+        if isinstance(frontend, Path) and (frontend / "index.html").is_file():
+            command.append(f"--web-root={frontend}")
+    except ModuleNotFoundError:
+        pass
     log_descriptor = os.open(directory / "streamer.log", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     child = None
     try:
