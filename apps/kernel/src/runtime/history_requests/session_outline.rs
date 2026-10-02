@@ -720,7 +720,7 @@ fn outline_turn_completed_at_ms(
     prompt_origin: PromptOrigin,
     has_newer_prompt: bool,
 ) -> Option<u64> {
-    if let Some(settled_at_ms) = outline_turn_settlement_observed_at_ms(events) {
+    if let Some(settled_at_ms) = outline_turn_settlement_observed_at_ms(prompt, events) {
         let latest_content_at_ms = events
             .iter()
             .filter(|event| outline_turn_completion_content_is_visible(event))
@@ -793,7 +793,14 @@ fn external_observed_at_ms(event: &HistoryEvent) -> Option<u64> {
         .then_some(entry.observed_at_ms.unwrap_or(event.timestamp_ms))
 }
 
-fn outline_turn_settlement_observed_at_ms(events: &[HistoryEvent]) -> Option<u64> {
+fn outline_turn_settlement_observed_at_ms(
+    prompt: &HistoryEvent,
+    events: &[HistoryEvent],
+) -> Option<u64> {
+    // An observer can import provider history from before this prompt (for
+    // example after a kernel restart). A settlement observed before the turn
+    // began belongs to an earlier provider turn and cannot settle this one.
+    let turn_started_at_ms = external_observed_at_ms(prompt).unwrap_or(prompt.timestamp_ms);
     events
         .iter()
         .filter_map(|event| {
@@ -802,9 +809,9 @@ fn outline_turn_settlement_observed_at_ms(events: &[HistoryEvent]) -> Option<u64
             }
             let entry = event.to_session_history_entry()?;
             let observation = entry.external_observation.as_ref()?;
-            observation
-                .settles_active_prompt
-                .then_some(entry.observed_at_ms.unwrap_or(event.timestamp_ms))
+            let observed_at_ms = entry.observed_at_ms.unwrap_or(event.timestamp_ms);
+            (observation.settles_active_prompt && observed_at_ms >= turn_started_at_ms)
+                .then_some(observed_at_ms)
         })
         .max()
 }
