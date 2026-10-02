@@ -145,7 +145,7 @@ pub(super) fn verify_release(
                     .source_tree
                     .as_deref()
                     .is_some_and(is_git_object_id) => {}
-        1 | 2 | 3 => {
+        1..=3 => {
             return Err(release_error("release manifest source identity is invalid"));
         }
         _ => return Err(release_error("release manifest schema is unsupported")),

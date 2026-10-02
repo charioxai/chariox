@@ -637,7 +637,7 @@ impl BootstrapReceipt {
             }
             _ => false,
         };
-        if !matches!(self.schema_version, 1 | 2 | 3)
+        if !matches!(self.schema_version, 1..=3)
             || !valid_identifier(&self.environment_id)
             || !valid_identifier(&self.machine_id)
             || !valid_identifier(&self.kernel_id)
