@@ -1408,6 +1408,7 @@ export async function networkNamespaceAttribution(ownedIds, maximumForeignPids =
   currentPid = process.pid,
   listProc = () => readdir("/proc"),
   readNamespace = (candidate) => readlink(candidate),
+  readNetworkDevices = (candidate) => readFile(candidate, "utf8"),
 } = {}) {
   let namespace
   try { namespace = await readNamespace(`/proc/${currentPid}/ns/net`) } catch {
@@ -1416,6 +1417,8 @@ export async function networkNamespaceAttribution(ownedIds, maximumForeignPids =
   const foreignPids = []
   const unreadablePids = []
   const mismatchedOwnedPids = []
+  const observedNamespaces = new Map()
+  const isolated = new Map()
   let names
   try { names = await listProc() } catch {
     return { exclusive: false, namespace, foreignPids, unreadablePids, reason: "network namespace inventory unavailable" }
@@ -1429,9 +1432,30 @@ export async function networkNamespaceAttribution(ownedIds, maximumForeignPids =
       unreadablePids.push(pid)
       continue
     }
-    if (ownedIds.has(pid)) {
-      if (observed !== namespace) mismatchedOwnedPids.push(pid)
-    } else if (observed === namespace) {
+    observedNamespaces.set(pid, observed)
+    if (ownedIds.has(pid) && observed !== namespace) {
+      try {
+        // Chromium isolates renderers in an empty network namespace. It can
+        // contribute no unaccounted traffic only while loopback is all-zero.
+        const devices = (await readNetworkDevices(`/proc/${pid}/net/dev`)).split("\n")
+          .filter(line => line.includes(":"))
+        const empty = devices.length === 1 && devices[0].split(":")[0].trim() === "lo"
+          && devices[0].split(":")[1].trim().split(/\s+/).length === 16
+          && devices[0].split(":")[1].trim().split(/\s+/).every(value => /^0+$/.test(value))
+        if (!empty || await readNamespace(`/proc/${pid}/ns/net`) !== observed) {
+          mismatchedOwnedPids.push(pid)
+        } else {
+          const proof = isolated.get(observed) ?? { namespace: observed, pids: [], networkBytes: 0 }
+          proof.pids.push(pid)
+          isolated.set(observed, proof)
+        }
+      } catch {
+        unreadablePids.push(pid)
+      }
+    }
+  }
+  for (const [pid, observed] of observedNamespaces) {
+    if (!ownedIds.has(pid) && (observed === namespace || isolated.has(observed))) {
       foreignPids.push(pid)
       if (foreignPids.length >= maximumForeignPids) break
     }
@@ -1442,6 +1466,7 @@ export async function networkNamespaceAttribution(ownedIds, maximumForeignPids =
     foreignPids,
     unreadablePids,
     mismatchedOwnedPids,
+    isolatedOwnedNamespaces: [...isolated.values()],
     reason: unreadablePids.length > 0 || mismatchedOwnedPids.length > 0 ? "network namespace inventory incomplete" : undefined,
   }
 }
