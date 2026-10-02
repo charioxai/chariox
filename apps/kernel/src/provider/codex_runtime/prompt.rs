@@ -220,6 +220,129 @@ fn ensure_codex_thread_ready(
     }
 }
 
+
+
+fn hidden_context_for_provider(value: &str) -> Option<&str> {
+    let value = value.trim();
+    (!value.is_empty()).then_some(value)
+}
+
+fn is_codex_mcp_handshake_timeout(error: &DaemonError) -> bool {
+    let DaemonError::ProviderProtocol {
+        operation, message, ..
+    } = error
+    else {
+        return false;
+    };
+
+    matches!(*operation, "thread/start" | "thread/resume")
+        && message.contains("required MCP servers failed to initialize")
+        && message.contains("timed out handshaking with MCP server")
+}
+
+pub fn abort_codex_turn(
+    provider_run_id: &str,
+    state: &mut CodexRuntimeState,
+) -> Result<(), DaemonError> {
+    let Some(turn_id) = state.active_turn_id.clone() else {
+        return Ok(());
+    };
+    let thread_id = state.thread_id().to_string();
+    let client = CodexClient::new(provider_run_id, state.endpoint())?;
+    let deadline = Instant::now() + CODEX_TURN_INTERRUPT_RETRY_TIMEOUT;
+    loop {
+        match client.turn_interrupt(
+            &mut state.socket,
+            &mut state.next_request_id,
+            &thread_id,
+            &turn_id,
+            &mut state.buffered_notifications,
+        ) {
+            Ok(()) => {
+                note_codex_turn_interrupt_accepted(
+                    &mut state.active_turn_id,
+                    &mut state.turn_tracker,
+                    &mut state.buffered_notifications,
+                );
+                return Ok(());
+            }
+            Err(error) if codex_turn_interrupt_is_waiting_for_task_start(&error) => {
+                if !state.ephemeral
+                    && client
+                        .thread_turns_list(
+                            &mut state.socket,
+                            &mut state.next_request_id,
+                            &thread_id,
+                            &mut state.buffered_notifications,
+                        )
+                        .is_ok_and(|response| codex_turn_is_terminal(&response, &turn_id))
+                {
+                    note_codex_turn_interrupt_accepted(
+                        &mut state.active_turn_id,
+                        &mut state.turn_tracker,
+                        &mut state.buffered_notifications,
+                    );
+                    return Ok(());
+                }
+                if Instant::now() >= deadline {
+                    return Err(error);
+                }
+                sleep(CODEX_TURN_INTERRUPT_RETRY_INTERVAL);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn codex_turn_interrupt_is_waiting_for_task_start(error: &DaemonError) -> bool {
+    matches!(
+        error,
+        DaemonError::ProviderProtocol {
+            operation: "turn/interrupt",
+            message,
+            ..
+        } if message.contains("no active turn to interrupt")
+    )
+}
+
+fn codex_turn_is_terminal(response: &Value, turn_id: &str) -> bool {
+    response
+        .get("data")
+        .and_then(Value::as_array)
+        .and_then(|turns| {
+            turns
+                .iter()
+                .find(|turn| turn.get("id").and_then(Value::as_str) == Some(turn_id))
+        })
+        .and_then(|turn| turn.get("status"))
+        .and_then(Value::as_str)
+        .is_some_and(|status| matches!(status, "completed" | "failed" | "cancelled" | "canceled"))
+}
+
+fn note_codex_turn_interrupt_accepted(
+    active_turn_id: &mut Option<String>,
+    turn_tracker: &mut CodexTurnTracker,
+    buffered_notifications: &mut Vec<CodexNotification>,
+) {
+    *active_turn_id = None;
+    turn_tracker.reset_for_started();
+    // These notifications were received before the interrupt acknowledgement and belong to the
+    // cancelled turn. Carrying them into the next FIFO submit would project stale output onto the
+    // promoted prompt, which the kernel has already made authoritative.
+    buffered_notifications.clear();
+}
+
+pub(super) fn codex_turn_id_from_start_response(response: &Value) -> Option<String> {
+    response
+        .get("turn")
+        .and_then(|turn| turn.get("id"))
+        .and_then(Value::as_str)
+        .or_else(|| response.get("id").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
 #[cfg(test)]
 mod prompt_tests {
     use super::{
@@ -831,125 +954,4 @@ mod prompt_tests {
         assert_eq!(request["method"], expected_method);
         request
     }
-}
-
-fn hidden_context_for_provider(value: &str) -> Option<&str> {
-    let value = value.trim();
-    (!value.is_empty()).then_some(value)
-}
-
-fn is_codex_mcp_handshake_timeout(error: &DaemonError) -> bool {
-    let DaemonError::ProviderProtocol {
-        operation, message, ..
-    } = error
-    else {
-        return false;
-    };
-
-    matches!(*operation, "thread/start" | "thread/resume")
-        && message.contains("required MCP servers failed to initialize")
-        && message.contains("timed out handshaking with MCP server")
-}
-
-pub fn abort_codex_turn(
-    provider_run_id: &str,
-    state: &mut CodexRuntimeState,
-) -> Result<(), DaemonError> {
-    let Some(turn_id) = state.active_turn_id.clone() else {
-        return Ok(());
-    };
-    let thread_id = state.thread_id().to_string();
-    let client = CodexClient::new(provider_run_id, state.endpoint())?;
-    let deadline = Instant::now() + CODEX_TURN_INTERRUPT_RETRY_TIMEOUT;
-    loop {
-        match client.turn_interrupt(
-            &mut state.socket,
-            &mut state.next_request_id,
-            &thread_id,
-            &turn_id,
-            &mut state.buffered_notifications,
-        ) {
-            Ok(()) => {
-                note_codex_turn_interrupt_accepted(
-                    &mut state.active_turn_id,
-                    &mut state.turn_tracker,
-                    &mut state.buffered_notifications,
-                );
-                return Ok(());
-            }
-            Err(error) if codex_turn_interrupt_is_waiting_for_task_start(&error) => {
-                if !state.ephemeral
-                    && client
-                        .thread_turns_list(
-                            &mut state.socket,
-                            &mut state.next_request_id,
-                            &thread_id,
-                            &mut state.buffered_notifications,
-                        )
-                        .is_ok_and(|response| codex_turn_is_terminal(&response, &turn_id))
-                {
-                    note_codex_turn_interrupt_accepted(
-                        &mut state.active_turn_id,
-                        &mut state.turn_tracker,
-                        &mut state.buffered_notifications,
-                    );
-                    return Ok(());
-                }
-                if Instant::now() >= deadline {
-                    return Err(error);
-                }
-                sleep(CODEX_TURN_INTERRUPT_RETRY_INTERVAL);
-            }
-            Err(error) => return Err(error),
-        }
-    }
-}
-
-fn codex_turn_interrupt_is_waiting_for_task_start(error: &DaemonError) -> bool {
-    matches!(
-        error,
-        DaemonError::ProviderProtocol {
-            operation: "turn/interrupt",
-            message,
-            ..
-        } if message.contains("no active turn to interrupt")
-    )
-}
-
-fn codex_turn_is_terminal(response: &Value, turn_id: &str) -> bool {
-    response
-        .get("data")
-        .and_then(Value::as_array)
-        .and_then(|turns| {
-            turns
-                .iter()
-                .find(|turn| turn.get("id").and_then(Value::as_str) == Some(turn_id))
-        })
-        .and_then(|turn| turn.get("status"))
-        .and_then(Value::as_str)
-        .is_some_and(|status| matches!(status, "completed" | "failed" | "cancelled" | "canceled"))
-}
-
-fn note_codex_turn_interrupt_accepted(
-    active_turn_id: &mut Option<String>,
-    turn_tracker: &mut CodexTurnTracker,
-    buffered_notifications: &mut Vec<CodexNotification>,
-) {
-    *active_turn_id = None;
-    turn_tracker.reset_for_started();
-    // These notifications were received before the interrupt acknowledgement and belong to the
-    // cancelled turn. Carrying them into the next FIFO submit would project stale output onto the
-    // promoted prompt, which the kernel has already made authoritative.
-    buffered_notifications.clear();
-}
-
-pub(super) fn codex_turn_id_from_start_response(response: &Value) -> Option<String> {
-    response
-        .get("turn")
-        .and_then(|turn| turn.get("id"))
-        .and_then(Value::as_str)
-        .or_else(|| response.get("id").and_then(Value::as_str))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
 }

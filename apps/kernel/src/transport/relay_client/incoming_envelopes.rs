@@ -436,6 +436,42 @@ fn enqueue_relay_close(outgoing_tx: &RelayOutgoingSender) -> Result<(), DaemonEr
     )
 }
 
+
+
+#[cfg(test)]
+fn test_peer_response_kind(
+    router: &CommandRouter,
+    request: &chariox_relay::protocol::EncryptedRelayPayload,
+) -> super::connection_state::TestPeerResponseKind {
+    use super::connection_state::TestPeerResponseKind;
+    use crate::transport::relay_peer::RelayPeerRequest;
+    use crate::transport::room_browser_controller::RoomBrowserControllerCommand;
+    crate::transport::relay_crypto::decrypt_payload_for_private_key(
+        &router.relay_private_key(),
+        request,
+    )
+    .ok()
+    .and_then(|payload| serde_json::from_slice::<RelayPeerRequest>(&payload.plaintext).ok())
+    .map(|request| match request {
+        RelayPeerRequest::RoomBrowserController {
+            command:
+                RoomBrowserControllerCommand::Tab { .. }
+                | RoomBrowserControllerCommand::History { .. }
+                | RoomBrowserControllerCommand::Navigate { .. }
+                | RoomBrowserControllerCommand::Dialog { .. }
+                | RoomBrowserControllerCommand::Action { .. }
+                | RoomBrowserControllerCommand::Upload { .. }
+                | RoomBrowserControllerCommand::Permission { .. }
+                | RoomBrowserControllerCommand::ConfigureDownloads { .. },
+            ..
+        } => TestPeerResponseKind::BrowserMutation,
+        RelayPeerRequest::SubmitLeasedPrompt { .. } => TestPeerResponseKind::LeasedPrompt,
+        RelayPeerRequest::SteerLeasedPrompt { .. } => TestPeerResponseKind::LeasedSteer,
+        _ => TestPeerResponseKind::Other,
+    })
+    .unwrap_or(TestPeerResponseKind::Other)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -597,38 +633,4 @@ mod tests {
             Ok(RelayEnvelope::Close { .. })
         ));
     }
-}
-
-#[cfg(test)]
-fn test_peer_response_kind(
-    router: &CommandRouter,
-    request: &chariox_relay::protocol::EncryptedRelayPayload,
-) -> super::connection_state::TestPeerResponseKind {
-    use super::connection_state::TestPeerResponseKind;
-    use crate::transport::relay_peer::RelayPeerRequest;
-    use crate::transport::room_browser_controller::RoomBrowserControllerCommand;
-    crate::transport::relay_crypto::decrypt_payload_for_private_key(
-        &router.relay_private_key(),
-        request,
-    )
-    .ok()
-    .and_then(|payload| serde_json::from_slice::<RelayPeerRequest>(&payload.plaintext).ok())
-    .map(|request| match request {
-        RelayPeerRequest::RoomBrowserController {
-            command:
-                RoomBrowserControllerCommand::Tab { .. }
-                | RoomBrowserControllerCommand::History { .. }
-                | RoomBrowserControllerCommand::Navigate { .. }
-                | RoomBrowserControllerCommand::Dialog { .. }
-                | RoomBrowserControllerCommand::Action { .. }
-                | RoomBrowserControllerCommand::Upload { .. }
-                | RoomBrowserControllerCommand::Permission { .. }
-                | RoomBrowserControllerCommand::ConfigureDownloads { .. },
-            ..
-        } => TestPeerResponseKind::BrowserMutation,
-        RelayPeerRequest::SubmitLeasedPrompt { .. } => TestPeerResponseKind::LeasedPrompt,
-        RelayPeerRequest::SteerLeasedPrompt { .. } => TestPeerResponseKind::LeasedSteer,
-        _ => TestPeerResponseKind::Other,
-    })
-    .unwrap_or(TestPeerResponseKind::Other)
 }

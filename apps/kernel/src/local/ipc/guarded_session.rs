@@ -20,40 +20,7 @@ struct Admission {
     envelope: IpcResponseEnvelope,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn transport_snapshot_requires_protocol_371() {
-        assert_eq!(crate::local::api::LOCAL_DAEMON_PROTOCOL_VERSION, 375);
-        assert_eq!(
-            serde_json::to_value(Negotiation {
-                session: SessionVersion { version: 1 }
-            })
-            .unwrap(),
-            serde_json::json!({"GuardedControlSession":{"version":1}})
-        );
-        let status = serde_json::json!({"configured":false,"connected":false,"relay_url":null,"relay_token_configured":false,"daemon_id":"home","daemon_alias":null,"machine_id":"machine","machine_alias":null,"capabilities":["disposable_worker_control_v1"]});
-        let response = LocalDaemonResponse::RelayStatus {
-            status: serde_json::from_value(status.clone()).unwrap(),
-        };
-        let admission = Admission {
-            session: SessionVersion { version: 1 },
-            envelope: IpcResponseEnvelope {
-                response: Some(response),
-                error: None,
-            },
-        };
-        assert_eq!(
-            serde_json::to_value(admission).unwrap(),
-            serde_json::json!({"session":{"version":1},"error":null,"response":{"RelayStatus":{"status":status}}})
-        );
-        assert!(serde_json::from_value::<Negotiation>(
-            serde_json::json!({"GuardedControlSession":{"version":1},"RelayStatus":null})
-        )
-        .is_err());
-    }
-}
+
 
 pub(super) async fn handle(
     router: &Arc<CommandRouter>,
@@ -148,4 +115,39 @@ async fn run(
         })?,
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn transport_snapshot_requires_protocol_371() {
+        assert_eq!(crate::local::api::LOCAL_DAEMON_PROTOCOL_VERSION, 375);
+        assert_eq!(
+            serde_json::to_value(Negotiation {
+                session: SessionVersion { version: 1 }
+            })
+            .unwrap(),
+            serde_json::json!({"GuardedControlSession":{"version":1}})
+        );
+        let status = serde_json::json!({"configured":false,"connected":false,"relay_url":null,"relay_token_configured":false,"daemon_id":"home","daemon_alias":null,"machine_id":"machine","machine_alias":null,"capabilities":["disposable_worker_control_v1"]});
+        let response = LocalDaemonResponse::RelayStatus {
+            status: serde_json::from_value(status.clone()).unwrap(),
+        };
+        let admission = Admission {
+            session: SessionVersion { version: 1 },
+            envelope: IpcResponseEnvelope {
+                response: Some(response),
+                error: None,
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(admission).unwrap(),
+            serde_json::json!({"session":{"version":1},"error":null,"response":{"RelayStatus":{"status":status}}})
+        );
+        assert!(serde_json::from_value::<Negotiation>(
+            serde_json::json!({"GuardedControlSession":{"version":1},"RelayStatus":null})
+        )
+        .is_err());
+    }
 }

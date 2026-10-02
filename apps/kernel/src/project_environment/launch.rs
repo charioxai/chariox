@@ -109,51 +109,7 @@ pub(crate) fn project_environment_launch_revision(
         .collect()
 }
 
-#[cfg(test)]
-mod revision_tests {
-    use super::*;
-    #[test]
-    fn mp08_mp10_mp11_provider_reuse_changes_with_decisions_and_live_values() {
-        let mut manifest = ProjectEnvironmentManifest {
-            schema_version: 1,
-            project_id: "project".into(),
-            evidence_digest: "evidence".into(),
-            entries: vec![],
-            private_files: vec![],
-            toolchain_hints: vec![],
-            package_hints: vec![],
-            service_hints: vec![],
-        };
-        let mut environment = crate::provider::ProviderCredentialEnvironment::default();
-        environment.insert("INPUT", zeroize::Zeroizing::new("synthetic-one".into()));
-        let first = project_environment_launch_revision(&manifest, &environment);
-        assert_eq!(
-            first,
-            project_environment_launch_revision(&manifest, &environment)
-        );
-        environment.insert("INPUT", zeroize::Zeroizing::new("synthetic-two".into()));
-        assert_ne!(
-            first,
-            project_environment_launch_revision(&manifest, &environment)
-        );
-        let second = project_environment_launch_revision(&manifest, &environment);
-        manifest.private_files.push(ProjectPrivateFileDecision {
-            workspace_id: "workspace".into(),
-            path: "notes.md".into(),
-            bring: false,
-            secret_looking: false,
-            reason: "Personal notes".into(),
-        });
-        let third = project_environment_launch_revision(&manifest, &environment);
-        assert_ne!(second, third);
-        manifest.private_files[0].bring = true;
-        assert_ne!(
-            third,
-            project_environment_launch_revision(&manifest, &environment)
-        );
-        assert!(!format!("{environment:?}").contains("synthetic-two"));
-    }
-}
+
 
 // MP-08 / MP-10 / MP-11: One resolver for ordinary prompt activation and runtime launches.
 pub(crate) fn attach_project_provider_environment(
@@ -218,4 +174,50 @@ pub(crate) fn attach_project_provider_environment(
         }
     }
     Ok(request)
+}
+
+#[cfg(test)]
+mod revision_tests {
+    use super::*;
+    #[test]
+    fn mp08_mp10_mp11_provider_reuse_changes_with_decisions_and_live_values() {
+        let mut manifest = ProjectEnvironmentManifest {
+            schema_version: 1,
+            project_id: "project".into(),
+            evidence_digest: "evidence".into(),
+            entries: vec![],
+            private_files: vec![],
+            toolchain_hints: vec![],
+            package_hints: vec![],
+            service_hints: vec![],
+        };
+        let mut environment = crate::provider::ProviderCredentialEnvironment::default();
+        environment.insert("INPUT", zeroize::Zeroizing::new("synthetic-one".into()));
+        let first = project_environment_launch_revision(&manifest, &environment);
+        assert_eq!(
+            first,
+            project_environment_launch_revision(&manifest, &environment)
+        );
+        environment.insert("INPUT", zeroize::Zeroizing::new("synthetic-two".into()));
+        assert_ne!(
+            first,
+            project_environment_launch_revision(&manifest, &environment)
+        );
+        let second = project_environment_launch_revision(&manifest, &environment);
+        manifest.private_files.push(ProjectPrivateFileDecision {
+            workspace_id: "workspace".into(),
+            path: "notes.md".into(),
+            bring: false,
+            secret_looking: false,
+            reason: "Personal notes".into(),
+        });
+        let third = project_environment_launch_revision(&manifest, &environment);
+        assert_ne!(second, third);
+        manifest.private_files[0].bring = true;
+        assert_ne!(
+            third,
+            project_environment_launch_revision(&manifest, &environment)
+        );
+        assert!(!format!("{environment:?}").contains("synthetic-two"));
+    }
 }
