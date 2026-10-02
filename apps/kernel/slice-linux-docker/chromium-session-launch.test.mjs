@@ -8,16 +8,20 @@ import { fileURLToPath } from "node:url"
 
 const script = fileURLToPath(new URL("./docker/slice-screen.sh", import.meta.url))
 
-for (const session of [null, "Sessions/Session_1", "Last Session", "Current Session"]) {
-  test(`URL recovery ${session ? `restores ${session}` : "uses a fresh profile"} without treating the URL as flags`, async () => {
+for (const session of [undefined, null, "Sessions/Session_1", "Last Session", "Current Session", "Cookies"]) {
+  test(`URL recovery ${session ? `restores ${session}` : session === null ? "restores a profile without tab-session files" : "uses a fresh profile"} without treating the URL as flags`, async () => {
     const root = await mkdtemp(join(tmpdir(), "chariox-chromium-launch-"))
     try {
       const bin = join(root, "bin")
       const profile = join(root, "profile")
       const argsFile = join(root, "args.json")
       await mkdir(bin)
-      await mkdir(join(profile, "Default", "Sessions"), { recursive: true })
+      if (session !== undefined) await mkdir(join(profile, "Default", "Sessions"), { recursive: true })
       if (session) await writeFile(join(profile, "Default", session), "saved-session-fixture")
+      // MP-08/MP-10: argv-only fixture substitutes process ownership as well
+      // as Chromium. Real child retirement is tested by the lifecycle suite.
+      await writeFile(join(root, "browser-lifecycle.py"),
+        "import subprocess, sys\nif sys.argv[1] == 'start': subprocess.run(sys.argv[4:], check=True)\n")
       // Only OS/browser boundaries are substituted. Run the full production
       // entry point with private profile state; never touch a user's browser.
       await writeFile(join(bin, "pgrep"), `#!/bin/sh
@@ -41,12 +45,12 @@ require('node:fs').writeFileSync(process.env.CHARIOX_TEST_ARGS, JSON.stringify(p
           CHARIOX_SLICE_DISPLAY_MODE: "headed" },
       })
       assert.equal(result.error, undefined)
-      assert.equal(result.status, 0, result.stderr)
+      assert.equal(result.status, 0, result.stdout + result.stderr)
       const args = JSON.parse(await readFile(argsFile, "utf8"))
       const separator = args.indexOf("--")
       assert.ok(separator > 0)
       assert.deepEqual(args.slice(separator), ["--", url])
-      assert.equal(args.includes("--restore-last-session"), Boolean(session))
+      assert.equal(args.includes("--restore-last-session"), session !== undefined)
       assert.ok(args.includes("--new-window"))
       assert.ok(args.includes(`--user-data-dir=${profile}`))
       assert.equal(args.slice(0, separator).includes("--no-sandbox"), false)

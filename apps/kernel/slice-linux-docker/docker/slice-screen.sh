@@ -76,6 +76,12 @@ process_running() {
   pgrep -af "$1" | grep -v defunct >/dev/null
 }
 
+chromium_running() {
+  # The lifetime supervisor carries Chromium's argv after the browser exits.
+  # Match the browser executable, never that retiring Python owner.
+  process_running "^(/[^[:space:]]*/)?chromium[[:space:]].*--user-data-dir=$CHROME_PROFILE"
+}
+
 stop_process_pattern() {
   local pattern="$1"
   local attempt
@@ -125,16 +131,6 @@ clear_chromium_profile_locks() {
   fi
 }
 
-chromium_has_restorable_session() {
-  local default_profile="$CHROME_PROFILE/Default"
-  if [[ -d "$default_profile/Sessions" ]] \
-    && find "$default_profile/Sessions" -maxdepth 1 -type f -name 'Session_*' -size +0c -print -quit \
-      | grep -q .; then
-    return 0
-  fi
-  [[ -s "$default_profile/Last Session" || -s "$default_profile/Current Session" ]]
-}
-
 screen_missing_components() {
   local missing=()
   if ! xdpyinfo -display "$DISPLAY_ID" >/dev/null 2>&1; then
@@ -158,7 +154,7 @@ screen_missing_components() {
       missing+=("novnc")
     fi
   fi
-  if ! process_running "chromium.*$CHROME_PROFILE"; then
+  if ! chromium_running; then
     missing+=("chromium")
   fi
   if [[ "${#missing[@]}" -eq 0 ]]; then
@@ -175,7 +171,7 @@ tool_blocking_missing_components() {
   if ! process_running "Xvfb $DISPLAY_ID"; then
     missing+=("xvfb")
   fi
-  if ! process_running "chromium.*$CHROME_PROFILE"; then
+  if ! chromium_running; then
     missing+=("chromium")
   fi
   if [[ "${#missing[@]}" -eq 0 ]]; then
@@ -202,10 +198,15 @@ require_screen_available() {
 launch_chromium() {
   local -a chrome_startup_target_args=()
   local -a chrome_launcher=(nohup chromium)
-  if ! process_running "chromium.*$CHROME_PROFILE"; then
+  if ! chromium_running; then
     chrome_launcher=(python3 "$ROOT/browser-lifecycle.py" start "$CHROME_PROFILE" "$LOGS/chromium-gui.log" chromium)
+    # Wait for the previous owned child tree to retire before replacing it.
+    python3 "$ROOT/browser-lifecycle.py" stop "$CHROME_PROFILE" >>"$LOGS/chromium-gui.log" 2>&1
     clear_chromium_profile_locks
-    if chromium_has_restorable_session; then
+    # Browser.close can retire every tab-session file while session cookies
+    # remain in the profile. Restore cookie policy for every owned cold launch
+    # of an existing profile, independently of those tab files.
+    if [[ -d "$CHROME_PROFILE/Default" ]]; then
       chrome_startup_target_args+=(--restore-last-session)
     fi
   fi
@@ -234,7 +235,7 @@ launch_chromium() {
 }
 
 start_desktop() {
-  if process_running "chromium.*$CHROME_PROFILE" || process_running "Xvfb $DISPLAY_ID" || process_running "x11vnc.*$DISPLAY_ID" || novnc_running; then
+  if chromium_running || process_running "Xvfb $DISPLAY_ID" || process_running "x11vnc.*$DISPLAY_ID" || novnc_running; then
     stop_desktop
   fi
   # Stop an owned previous Selkies process even when switching to noVNC.
@@ -280,7 +281,7 @@ start_desktop() {
     require_process "x11vnc.*$DISPLAY_ID" "x11vnc" "$LOGS/x11vnc.log"
     require_process "websockify.*$NOVNC_PORT" "noVNC websockify" "$LOGS/novnc.log"
   fi
-  require_process "chromium.*$CHROME_PROFILE" "Chromium" "$LOGS/chromium-gui.log"
+  require_process "^(/[^[:space:]]*/)?chromium[[:space:]].*--user-data-dir=$CHROME_PROFILE" "Chromium" "$LOGS/chromium-gui.log"
   status
 }
 
@@ -694,14 +695,14 @@ open_url() {
     status
     return 1
   fi
-  if process_running "chromium.*$CHROME_PROFILE" && run_browser_cdp navigate "$1" >/dev/null 2>&1; then
+  if chromium_running && run_browser_cdp navigate "$1" >/dev/null 2>&1; then
     sleep 1
     focus_chromium
     return 0
   fi
   launch_chromium "$1"
   sleep 2
-  require_process "chromium.*$CHROME_PROFILE" "Chromium" "$LOGS/chromium-gui.log"
+  require_process "^(/[^[:space:]]*/)?chromium[[:space:]].*--user-data-dir=$CHROME_PROFILE" "Chromium" "$LOGS/chromium-gui.log"
   focus_chromium
 }
 
