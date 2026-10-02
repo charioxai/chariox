@@ -40,17 +40,67 @@ impl KernelRuntimeOwnedState {
         if agent.session_id() != pending.session_id {
             return false;
         }
-        if let Some(worker_run_id) = &lifetime.worker_provider_run_id {
-            if !agent.remote_execution().is_some_and(|remote| {
-                remote.active_worker_provider_run_id.as_ref() == Some(worker_run_id)
-            }) {
-                return false;
-            }
-        }
         let Ok(session) = self.session_store.get_session(&pending.session_id) else {
             return false;
         };
+        if !self.worker_interaction_binding_is_live(lifetime, agent.remote_execution(), &session) {
+            return false;
+        }
         self.agent_interaction_turn_is_live(pending, &session)
+    }
+
+    pub(super) fn worker_interaction_binding_is_live(
+        &self,
+        lifetime: &super::super::PendingAgentInteractionLifetime,
+        remote: Option<&crate::agent::RemoteAgentBinding>,
+        session: &crate::session::RuntimeSession,
+    ) -> bool {
+        let Some(worker) = &lifetime.worker else {
+            return true;
+        };
+        let Some(remote) = remote else {
+            return false;
+        };
+        if remote.leased_agent_id != worker.leased_agent_id
+            || remote.execution_lease_id != worker.execution_lease_id
+        {
+            return false;
+        }
+        match remote.active_worker_provider_run_id.as_deref() {
+            Some(id) if id == worker.provider_run_id => {
+                worker
+                    .binding_observed
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                true
+            }
+            // The pre-ACK allowance ends permanently once this run is observed.
+            _ if worker
+                .binding_observed
+                .load(std::sync::atomic::Ordering::Relaxed) =>
+            {
+                false
+            }
+            // The forward arrives independently of the dispatch ACK/projection.
+            // A previous run may still be bound while this fixed prompt dispatches.
+            _ if lifetime.prompt_id.as_deref().is_some_and(|id| {
+                self.prompt_state_owner
+                    .active_prompt_for_agent(session, &lifetime.agent_id)
+                    .is_some_and(|prompt| prompt.id() == id && prompt.delivery_pending())
+            }) =>
+            {
+                true
+            }
+            None => lifetime.prompt_id.as_deref().is_none_or(|id| {
+                self.prompt_state_owner
+                    .active_prompt_for_agent(session, &lifetime.agent_id)
+                    .is_some_and(|prompt| {
+                        prompt.id() == id
+                            && (prompt.delivery_pending()
+                                || prompt.durable_delivery_provider_run_id().is_none())
+                    })
+            }),
+            Some(_) => false,
+        }
     }
 
     pub(super) fn agent_interaction_turn_is_live(
@@ -104,6 +154,21 @@ impl KernelRuntimeOwnedState {
                                     )
                             })
                 })
+            {
+                return false;
+            }
+        }
+        if let Some(worker) = &lifetime.worker {
+            let projected_id = crate::provider::projected_leased_provider_run_id(
+                &worker.leased_agent_id,
+                &worker.provider_run_id,
+            );
+            // No local worker run exists on the home kernel. If a projection is
+            // present, it is authoritative for provider exit even before a sweep.
+            if self
+                .provider_store
+                .get_run(&projected_id)
+                .is_ok_and(|run| run.state() != crate::provider::ProviderRunState::Running)
             {
                 return false;
             }

@@ -8,6 +8,16 @@ impl KernelRuntimeState {
         session_id: &str,
         interaction: crate::session::RuntimeInteraction,
     ) -> Result<oneshot::Receiver<PendingInteractionResolution>, DaemonError> {
+        self.create_runtime_interaction_with_forwarding(session_id, interaction, None)
+            .await
+    }
+
+    pub(in crate::runtime) async fn create_runtime_interaction_with_forwarding(
+        &self,
+        session_id: &str,
+        interaction: crate::session::RuntimeInteraction,
+        forwarding: Option<&crate::transport::relay_peer::RemoteNativeInteractionContext>,
+    ) -> Result<oneshot::Receiver<PendingInteractionResolution>, DaemonError> {
         let agent_id = interaction
             .agent_id()
             .ok_or_else(|| DaemonError::LocalTransport {
@@ -18,7 +28,7 @@ impl KernelRuntimeState {
         let (tx, rx) = oneshot::channel();
         let event_interaction = interaction.clone();
         self.owned
-            .register_runtime_interaction(session_id, interaction, tx, None)?;
+            .register_runtime_interaction(session_id, interaction, tx, None, forwarding)?;
         let source_attachment_id =
             crate::scheduler::runtime::workflow_prompt_source_attachment_id(event_interaction.id());
         let dispatches = self.owned.metaagent_owned_agent_event_prompt_dispatches(
@@ -78,6 +88,7 @@ impl KernelRuntimeState {
             interaction,
             tx,
             Some(owner_user_id),
+            None,
         )?;
         // Human-only decisions are projected to terminals, never dispatched to
         // an agent's prompt or Meta delegation tools.

@@ -295,31 +295,27 @@ async fn forwarded_native_interactions_resolve_back_to_worker_over_temporary_con
     ));
     {
         let app = app_home.lock().await;
-        let request = crate::provider::LaunchProviderRequest::new(
-            &home_session_id,
-            "dev-stub",
-            "claude-code",
-            "default",
-            "sonnet",
-        )
-        .with_agent_id(&home_agent_id);
-        let mut run = crate::provider::RuntimeProviderRun::new(
-            "provider-run-test",
-            &request,
-            crate::provider::ProviderLaunchResult {
-                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
-                process_label: "relay-native-interaction-test".into(),
-                pty_target: None,
-                pty_program: None,
-                pty_args: Vec::new(),
-                pty_env: Default::default(),
-                pty_env_remove: Vec::new(),
-                working_directory: None,
-                structured_endpoint: None,
-            },
-        );
-        run.mark_running();
-        app.providers.write().insert_run_for_test(run);
+        app.agents
+            .bind_remote_execution(
+                &home_agent_id,
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: "daemon-worker".into(),
+                    worker_machine_id: "machine-worker".into(),
+                    execution_lease_id: "execution-lease-test".into(),
+                    leased_agent_id: "leased-agent-test".into(),
+                    active_worker_provider_run_id: None,
+                    relay_url: None,
+                    relay_token: None,
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
+                },
+            )
+            .unwrap();
+        assert!(app
+            .providers
+            .get_run_for_agent(&home_session_id, &home_agent_id)
+            .is_none());
     }
     let context = crate::transport::relay_peer::RemoteNativeInteractionContext {
         home_session_id: home_session_id.clone(),

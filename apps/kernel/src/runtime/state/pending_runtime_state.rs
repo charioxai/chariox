@@ -73,8 +73,16 @@ pub(super) struct PendingAgentInteractionLifetime {
     pub(super) agent_id: String,
     pub(super) prompt_id: Option<String>,
     pub(super) native_turn_id: Option<String>,
-    pub(super) worker_provider_run_id: Option<String>,
+    pub(super) worker: Option<PendingWorkerInteractionLifetime>,
     pub(super) provider_run_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct PendingWorkerInteractionLifetime {
+    pub(super) leased_agent_id: String,
+    pub(super) execution_lease_id: String,
+    pub(super) provider_run_id: String,
+    pub(super) binding_observed: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl PendingInteraction {

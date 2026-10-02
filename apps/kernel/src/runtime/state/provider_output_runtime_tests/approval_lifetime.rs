@@ -627,3 +627,6 @@ async fn approval_lifetime_explicit_startup_scope_survives_until_provider_exit()
         .unwrap();
     f.assert_withdrawn(&mut receiver).await;
 }
+
+#[path = "approval_lifetime_remote.rs"]
+mod remote;

@@ -157,6 +157,7 @@ pub(crate) async fn execute_native_provider_interaction_request(
         &session_id,
         interaction,
         "native_provider_interaction_request",
+        None,
     )
     .await?;
     Ok(LocalDaemonResponse::NativeProviderInteractionResolved {
@@ -210,6 +211,7 @@ pub(crate) async fn forward_relay_native_interaction(
         &context.home_session_id,
         interaction,
         "relay_forward_native_interaction",
+        Some(&context),
     )
     .await
 }
@@ -219,12 +221,13 @@ async fn request_runtime_interaction_with_timeout(
     session_id: &str,
     interaction: RuntimeInteraction,
     operation: &'static str,
+    forwarding: Option<&RemoteNativeInteractionContext>,
 ) -> Result<ProviderNativeInteractionResolution, DaemonError> {
     let timeout = interaction.timeout_sec().map(Duration::from_secs);
     let timeout_session_id = session_id.to_string();
     let timeout_interaction_id = interaction.id().to_string();
     let receiver = state
-        .create_runtime_interaction(session_id, interaction)
+        .create_runtime_interaction_with_forwarding(session_id, interaction, forwarding)
         .await?;
     if let Some(timeout) = timeout {
         let state = state.clone();

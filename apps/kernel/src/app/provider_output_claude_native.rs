@@ -1017,9 +1017,6 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 {
                     b"\r".to_vec()
                 }
-                Ok(resolution) if resolution.choice_id.is_none() && resolution.reply.is_none() => {
-                    return
-                }
                 Ok(_) => vec![0x03],
                 Err(error) => {
                     crate::logging::warn_with_fields(
@@ -1733,9 +1730,6 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                         || resolution.choice_id.as_deref() == Some("allow_once") =>
                 {
                     b"\r".to_vec()
-                }
-                Ok(resolution) if resolution.choice_id.is_none() && resolution.reply.is_none() => {
-                    return
                 }
                 Ok(_) => vec![0x03],
                 Err(error) => {

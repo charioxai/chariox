@@ -99,6 +99,7 @@ impl Fixture {
             interaction,
             send,
             Some(DEFAULT_LOCAL_USER_ID),
+            None,
         )?;
         Ok(receive)
     }

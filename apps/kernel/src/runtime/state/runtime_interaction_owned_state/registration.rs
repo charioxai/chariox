@@ -7,6 +7,7 @@ impl KernelRuntimeOwnedState {
         interaction: crate::session::RuntimeInteraction,
         responder: tokio::sync::oneshot::Sender<super::super::PendingInteractionResolution>,
         kernel_operation_owner: Option<&str>,
+        forwarding: Option<&crate::transport::relay_peer::RemoteNativeInteractionContext>,
     ) -> Result<(), DaemonError> {
         let _mutation = self
             .pending_interactions
@@ -23,12 +24,10 @@ impl KernelRuntimeOwnedState {
         }
         // Resolve agent identity before taking the session write guard; session
         // updates must not acquire the agent store in the opposite lock order.
-        let mut remote_run_id = None;
+        let mut remote_binding = None;
         if let Some(agent_id) = interaction.agent_id() {
             let agent = self.agent_store.get_agent(agent_id)?;
-            remote_run_id = agent
-                .remote_execution()
-                .and_then(|remote| remote.active_worker_provider_run_id.clone());
+            remote_binding = agent.remote_execution().cloned();
             if agent.session_id() != session_id {
                 return Err(DaemonError::AgentNotInSession {
                     session_id: session_id.into(),
@@ -89,7 +88,7 @@ impl KernelRuntimeOwnedState {
         let agent_lifetime = interaction.agent_id().map(|agent_id| {
             if let Some(origin) = interaction.native_origin() {
                 use crate::session::NativeInteractionOrigin;
-                let (prompt_id, native_turn_id) = match origin {
+                let (mut prompt_id, native_turn_id) = match origin {
                     NativeInteractionOrigin::Prompt { prompt_id, .. } => {
                         (Some(prompt_id.clone()), None)
                     }
@@ -98,15 +97,39 @@ impl KernelRuntimeOwnedState {
                     }
                     NativeInteractionOrigin::ProviderStartup { .. } => (None, None),
                 };
+                let worker = forwarding.map(|context| {
+                    super::super::pending_runtime_state::PendingWorkerInteractionLifetime {
+                        leased_agent_id: context.leased_agent_id.clone(),
+                        execution_lease_id: remote_binding
+                            .as_ref()
+                            .map(|remote| remote.execution_lease_id.clone())
+                            .unwrap_or_default(),
+                        provider_run_id: context.worker_provider_run_id.clone(),
+                        binding_observed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                            false,
+                        )),
+                    }
+                });
+                // Startup dialogs can precede the dispatch ACK and even the worker
+                // prompt registration. Fence that launch to its pending home dispatch.
+                if worker.is_some()
+                    && matches!(origin, NativeInteractionOrigin::ProviderStartup { .. })
+                {
+                    prompt_id = forwarding
+                        .and_then(|context| context.home_prompt_id.clone())
+                        .or_else(|| {
+                            self.prompt_state_owner
+                                .active_prompt_for_agent(&session, agent_id)
+                                .filter(|prompt| prompt.delivery_pending())
+                                .map(|prompt| prompt.id().to_owned())
+                        });
+                }
                 return super::super::PendingAgentInteractionLifetime {
                     agent_id: agent_id.into(),
                     prompt_id,
                     native_turn_id,
-                    provider_run_id: (remote_run_id.as_deref() != Some(origin.provider_run_id()))
-                        .then(|| origin.provider_run_id().into()),
-                    worker_provider_run_id: (remote_run_id.as_deref()
-                        == Some(origin.provider_run_id()))
-                    .then(|| origin.provider_run_id().into()),
+                    provider_run_id: worker.is_none().then(|| origin.provider_run_id().into()),
+                    worker,
                 };
             }
             let prompt_id = self
@@ -131,7 +154,7 @@ impl KernelRuntimeOwnedState {
                 prompt_id,
                 native_turn_id,
                 provider_run_id,
-                worker_provider_run_id: None,
+                worker: None,
             }
         });
         let pending = super::super::PendingInteraction {
@@ -149,7 +172,10 @@ impl KernelRuntimeOwnedState {
             }),
             responder: std::sync::Arc::new(std::sync::Mutex::new(Some(responder))),
         };
-        if !self.agent_interaction_turn_is_live(&pending, &session) {
+        let worker_live = pending.agent_lifetime.as_ref().is_none_or(|lifetime| {
+            self.worker_interaction_binding_is_live(lifetime, remote_binding.as_ref(), &session)
+        });
+        if !worker_live || !self.agent_interaction_turn_is_live(&pending, &session) {
             if let Some(sender) = pending
                 .responder
                 .lock()
