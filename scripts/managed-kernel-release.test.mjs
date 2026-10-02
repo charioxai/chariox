@@ -315,7 +315,6 @@ async function makeFixture(root, variant = "", { dockerfileContents, omitQuotaAs
       return [path, await readFile(join(repositoryRoot, path))]
     })),
     ...await Promise.all(quotaRuntimeAssets
-      .filter((path) => path !== omitQuotaAsset)
       .map(async (path) => [path, await readFile(join(repositoryRoot, path))])),
     ["apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh", "#!/bin/sh\nSLICE_BUILD_IMAGE=fixture\n"],
     ["apps/kernel/slice-linux-docker/managed-publication-access.sh", "#!/bin/sh\nexit 0\n"],
@@ -338,6 +337,7 @@ async function makeFixture(root, variant = "", { dockerfileContents, omitQuotaAs
     ["packages/aegs-sdk/Cargo.toml", "[package]\nname = \"sdk-fixture\"\n"],
     ["packages/event-protocol/Cargo.toml", "[package]\nname = \"event-fixture\"\n"],
   ])
+  if (omitQuotaAsset) sourceFiles.delete(omitQuotaAsset)
   if (variant) sourceFiles.set("release-variant.txt", `${variant}\n`)
   for (const [path, contents] of sourceFiles) {
     const destination = join(sourceRepository, path)
