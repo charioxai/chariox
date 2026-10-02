@@ -46,6 +46,7 @@ fn state(f: &Fixture, key: &str, value: &str) {
                 )
                 .unwrap(),
                 occurrences: vec![],
+                wakes_count_as_use: false,
                 wakes: vec![WakeChange::Set(Wake {
                     id: "reminder".into(),
                     due_at_ms: 1000,
@@ -295,7 +296,6 @@ fn saved_snapshot_restore_overwrites_deletes_preserves_neighbour_and_authority()
         .claim_app_file_grant(FileGrantCommand::Claim {
             owner: "alice".into(),
             installation: f.catalog.installation_id().into(),
-            generation: f.catalog.generation(),
             grant_id: grant,
             now_ms: crate::session::unix_epoch_ms()
         })
