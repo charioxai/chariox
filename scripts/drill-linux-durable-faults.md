@@ -37,7 +37,12 @@ view recovery remain separate live-kernel legs.
 `removed_route_keeps_accepted_occurrence` is an acceptance check. Older stack
 bases discard accepted occurrences on removal and therefore fail it; retain that
 failure rather than changing the expected result or duplicating a later fix.
-The three tests are ignored in ordinary test runs and the child entrypoint is
+The runner's exit status covers the two storage tests. The route-removal
+acceptance result is reported separately: on this base the expected vector is
+`process_kill_matrix=0`, `enospc_without_restart=0`,
+`removed_route_keeps_accepted_occurrence=101`, `storage_drill_exit=0`. A failed
+acceptance check remains FAIL and does not close its row. The three tests are
+ignored in ordinary test runs and the child entrypoint is
 never selected by the runner on its own.
 
 For real fixed-capacity ext4 storage and helper leases, adapt VM mechanics into a
@@ -56,7 +61,8 @@ The scratch directory must already have `build` and `evidence` directories. The
 fixture refuses existing enrollment/helper/service/storage paths. Both shell
 and test admission require the explicit mode, dedicated hostname and actual
 QEMU virtualization, and reject any `GITHUB_ACTIONS` variable. Hosted CI retains
-its original environment contract. The guest enrolls tiny publisher-signed
+its original environment contract. The guest derives distinct runtime and App
+signing keys from its throwaway seed and enrolls tiny publisher-signed
 validation bytes for readonly code-mount mechanics; those bytes are never
 executed and are not a production native runtime. It tests actual data/tmp
 ENOSPC, noexec, generation rollback, committed data persistence, mount identity,

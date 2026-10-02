@@ -45,7 +45,7 @@ pub fn run() {
         0
     );
     let stat = unsafe { stat.assume_init() };
-    let capacity = stat.f_blocks as u64 * stat.f_frsize as u64;
+    let capacity = stat.f_blocks * stat.f_frsize;
     assert!(
         capacity <= 128 * 1024 * 1024,
         "refuse to fill any unbounded filesystem"

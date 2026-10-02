@@ -13,7 +13,7 @@ if [[ "${CHARIOX_STORAGE_PRIVATE_VM:-}" == 1 ]]; then
   [[ -f "${CHARIOX_STORAGE_DRILL_KEY:-}" && ! -L "$CHARIOX_STORAGE_DRILL_KEY" && "$(stat -c %a "$CHARIOX_STORAGE_DRILL_KEY")" == 600 ]]
   storage_env=(CHARIOX_STORAGE_PRIVATE_VM=1 CHARIOX_STORAGE_DRILL_KEY=/run/chariox-storage-drill.key)
 else
-  [[ "${GITHUB_ACTIONS:-}" == true && "${RUNNER_ENVIRONMENT:-}" == github-hosted && "${GITHUB_REPOSITORY:-}" == charioxai/chariox ]]
+  # The hosted caller checks CI identity before sudo, which resets its env.
   [[ "$storage_scratch" == /home/runner/work/_temp/chariox-storage.* || "$storage_scratch" == /home/runner/work/_temp/*/chariox-storage.* ]]
 fi
 [[ "$storage_tests" == "$storage_scratch/build/"* && "$storage_helper" == "$storage_scratch/build/"* ]]

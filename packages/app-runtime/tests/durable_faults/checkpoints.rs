@@ -83,7 +83,7 @@ pub fn child(root: &Path, point: &str) {
             Ok(())
         }).unwrap();
     }
-    let verified = verify(
+    verify(
         &package.bytes,
         &VerificationPolicy::new(367, vec![package.publisher.clone()]),
     )
@@ -238,25 +238,24 @@ pub fn recover(root: &Path, point: &str) {
         installation.active.as_ref().unwrap().generation,
         if committed { 2 } else { 1 }
     );
-    if point == "snapshot_fence"
+    if (point == "snapshot_fence"
         || point.starts_with("migration")
         || point.starts_with("switch_")
-        || point == "preparation"
+        || point == "preparation")
+        && !committed
     {
-        if !committed {
-            assert!(ManagedStateStore::new(&mut db)
-                .transaction(scope(1), &changes(0, "fenced"))
-                .is_err());
-            assert_ne!(
-                db.query_row(
-                    "SELECT value_json FROM app_state_values WHERE key='saved'",
-                    [],
-                    |row| row.get::<_, String>(0)
-                )
-                .unwrap(),
-                json!({"text":"fenced"}).to_string()
-            );
-        }
+        assert!(ManagedStateStore::new(&mut db)
+            .transaction(scope(1), &changes(0, "fenced"))
+            .is_err());
+        assert_ne!(
+            db.query_row(
+                "SELECT value_json FROM app_state_values WHERE key='saved'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            json!({"text":"fenced"}).to_string()
+        );
     }
     // Supervisor recovery explicitly aborts its pending operation; the registry
     // cannot attest process health or choose the kernel's recovery policy.
