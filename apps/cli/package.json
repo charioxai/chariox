@@ -54,6 +54,7 @@
     "browser-computer:m0:red-cap": "node scripts/live-browser-computer-red-cap.mjs",
     "browser-computer:persistence-drill": "node scripts/live-docker-slice-browser-state-drill.mjs",
     "browser-computer:soak": "node scripts/live-browser-computer-soak.mjs",
+    "leased-home-memory:soak": "node scripts/live-leased-home-memory-soak.mjs",
     "test:browser-computer-soak": "node --test scripts/lib/browser-computer-soak.test.mjs",
     "browser-computer:idle-authenticated-soak": "node scripts/live-idle-authenticated-browser-soak.mjs",
     "test:browser-computer-idle-authenticated-soak": "node --test scripts/lib/idle-authenticated-browser-soak.test.mjs",
