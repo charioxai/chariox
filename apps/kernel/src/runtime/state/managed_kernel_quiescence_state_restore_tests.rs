@@ -117,15 +117,13 @@ fn persist_snapshot_payload(
 
 fn restore(
     store: &DurableKernelStateStore,
-    transitions: &ManagedActivityTransitionState,
     mutation_lock: &Arc<Mutex<()>>,
 ) -> Result<Arc<ManagedKernelQuiescenceGate>, DaemonError> {
     ManagedKernelQuiescenceGate::restore(
         store.clone(),
         "kernel-1".into(),
         Arc::clone(mutation_lock),
-        transitions.clone(),
-    )
+        )
 }
 
 fn current_idle(
@@ -136,10 +134,9 @@ fn current_idle(
 
 fn assert_restore_fails_closed(
     store: &DurableKernelStateStore,
-    transitions: &ManagedActivityTransitionState,
     mutation_lock: &Arc<Mutex<()>>,
 ) {
-    let error = match restore(store, transitions, mutation_lock) {
+    let error = match restore(store, mutation_lock) {
         Ok(_) => panic!("invalid persisted quiescence state must fail restore"),
         Err(error) => error,
     };
@@ -147,7 +144,6 @@ fn assert_restore_fails_closed(
         store.clone(),
         "kernel-1".into(),
         Arc::clone(mutation_lock),
-        transitions.clone(),
         error.to_string(),
     );
     assert!(
@@ -195,7 +191,7 @@ fn persisted_restore_rejects_duplicate_tombstone_challenge_ids_and_fails_closed(
     state.tombstones[1].challenge.stop_operation_id = "stop-rebound".into();
     let (path, store, transitions, mutation_lock) = persist_legacy_snapshot("duplicate", &state);
 
-    assert_restore_fails_closed(&store, &transitions, &mutation_lock);
+    assert_restore_fails_closed(&store, &mutation_lock);
 
     cleanup(&path, store, transitions);
 }
@@ -225,7 +221,7 @@ fn legacy_restore_prunes_large_tombstones_and_preserves_replay_floor_after_resta
     transitions
         .record_current_transition(|| (0, 0, 1_000))
         .expect("persist current idle observation");
-    let first_gate = restore(&store, &transitions, &mutation_lock)
+    let first_gate = restore(&store, &mutation_lock)
         .expect("upgrade legacy tombstones into a bounded replay floor");
     let upgraded = first_gate
         .inner
@@ -241,7 +237,7 @@ fn legacy_restore_prunes_large_tombstones_and_preserves_replay_floor_after_resta
     );
     drop(first_gate);
 
-    let gate = restore(&store, &transitions, &mutation_lock)
+    let gate = restore(&store, &mutation_lock)
         .expect("restore the persisted bounded state after restart");
 
     gate.apply_release(
@@ -398,7 +394,7 @@ fn persisted_restore_rejects_reservation_that_overlaps_a_tombstone() {
     let (path, store, transitions, mutation_lock) =
         persist_legacy_snapshot("reservation-overlap", &state);
 
-    assert_restore_fails_closed(&store, &transitions, &mutation_lock);
+    assert_restore_fails_closed(&store, &mutation_lock);
 
     cleanup(&path, store, transitions);
 }
@@ -430,7 +426,7 @@ fn legacy_restore_fails_closed_when_tombstones_cross_replay_scopes() {
     let (path, store, transitions, mutation_lock) =
         persist_legacy_snapshot("legacy-mixed-scope", &state);
 
-    assert_restore_fails_closed(&store, &transitions, &mutation_lock);
+    assert_restore_fails_closed(&store, &mutation_lock);
 
     cleanup(&path, store, transitions);
 }
@@ -449,7 +445,7 @@ fn legacy_restore_migrates_exact_canceled_reservation_tombstone_mirror() {
     };
     let (path, store, transitions, mutation_lock) =
         persist_legacy_snapshot("exact-cancel-mirror", &state);
-    let gate = restore(&store, &transitions, &mutation_lock)
+    let gate = restore(&store, &mutation_lock)
         .expect("migrate the exact legacy cancellation receipt written by apply_release");
     let migrated = gate
         .inner
@@ -506,7 +502,7 @@ fn live_cancellations_keep_a_stable_bound_and_reject_pruned_replay_after_restart
     transitions
         .record_current_transition(|| (0, 0, 1_000))
         .expect("persist current idle observation");
-    let gate = restore(&store, &transitions, &mutation_lock).expect("restore empty bounded state");
+    let gate = restore(&store, &mutation_lock).expect("restore empty bounded state");
     let observation = ManagedActivityObservation {
         running_agent_count: 0,
         changed_at_ms: 1_000,
@@ -566,7 +562,7 @@ fn live_cancellations_keep_a_stable_bound_and_reject_pruned_replay_after_restart
     );
     drop(gate);
 
-    let restored = restore(&store, &transitions, &mutation_lock)
+    let restored = restore(&store, &mutation_lock)
         .expect("restart restores the bounded tombstones and durable replay floor");
     let oldest = oldest.expect("at least one challenge was canceled");
     restored.confirm_activity_report(oldest.idle_sequence, 1, observation);
@@ -615,7 +611,7 @@ fn live_cancellations_keep_a_stable_bound_and_reject_pruned_replay_after_restart
     );
 
     drop(restored);
-    let after_fresh_restart = restore(&store, &transitions, &mutation_lock)
+    let after_fresh_restart = restore(&store, &mutation_lock)
         .expect("restart loads the compacted snapshot with the latest replay floor");
     after_fresh_restart
         .apply_release(
@@ -661,7 +657,7 @@ fn malformed_quiescence_snapshot_does_not_prune_the_last_valid_snapshot() {
         DurableKernelStateStore::open(path.clone()).expect("restart durable store");
     let restarted_transitions =
         ManagedActivityTransitionState::new(restarted_store.clone(), Some("kernel-1".into()));
-    restore(&restarted_store, &restarted_transitions, &mutation_lock)
+    restore(&restarted_store, &mutation_lock)
         .expect("valid snapshot remains recoverable after rejected malformed write");
 
     cleanup(&path, restarted_store, restarted_transitions);
@@ -678,7 +674,7 @@ fn malformed_bounded_state_missing_its_replay_floor_fails_closed() {
     ));
     let (path, store, transitions, mutation_lock) = persist_snapshot("missing-floor", &state);
 
-    assert_restore_fails_closed(&store, &transitions, &mutation_lock);
+    assert_restore_fails_closed(&store, &mutation_lock);
 
     cleanup(&path, store, transitions);
 }

@@ -592,8 +592,7 @@ impl KernelRuntimeState {
                 durable_state_store.clone(),
                 kernel_id.clone(),
                 Arc::clone(&managed_activity_mutation_lock),
-                managed_activity_transitions.clone(),
-            ) {
+                ) {
                 Ok(gate) => gate,
                 Err(error) => {
                     crate::logging::error_with_fields(
@@ -608,7 +607,6 @@ impl KernelRuntimeState {
                         durable_state_store.clone(),
                         kernel_id,
                         Arc::clone(&managed_activity_mutation_lock),
-                        managed_activity_transitions.clone(),
                         error.to_string(),
                     )
                 }

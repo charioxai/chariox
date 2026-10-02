@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 use crate::durable_state::{DurableKernelStateStore, QUIESCENCE_STATE_SNAPSHOT_KIND};
 use crate::error::DaemonError;
 
-use super::managed_activity_persistence::{
-    ManagedActivityObservation, ManagedActivityTransitionState,
-};
+use super::managed_activity_persistence::ManagedActivityObservation;
+#[cfg(test)]
+use super::managed_activity_persistence::ManagedActivityTransitionState;
 
 const QUIESCENCE_EVENT_KIND: &str = QUIESCENCE_STATE_SNAPSHOT_KIND;
 const QUIESCENCE_STATE_SCHEMA_VERSION: u8 = 1;
@@ -114,7 +114,7 @@ pub(crate) struct ManagedKernelQuiescenceGate {
     store: DurableKernelStateStore,
     kernel_id: String,
     mutation_lock: Arc<Mutex<()>>,
-    activity_transitions: ManagedActivityTransitionState,
+    
     admission_lock: Mutex<()>,
     inner: Mutex<GateInner>,
 }
@@ -128,8 +128,7 @@ impl ManagedKernelQuiescenceGate {
         store: DurableKernelStateStore,
         kernel_id: String,
         mutation_lock: Arc<Mutex<()>>,
-        activity_transitions: ManagedActivityTransitionState,
-    ) -> Result<Arc<Self>, DaemonError> {
+        ) -> Result<Arc<Self>, DaemonError> {
         let persisted = store
             .load_subject_events_by_kind(&kernel_id, QUIESCENCE_EVENT_KIND, 1)?
             .into_iter()
@@ -157,7 +156,7 @@ impl ManagedKernelQuiescenceGate {
             store,
             kernel_id,
             mutation_lock,
-            activity_transitions,
+            
             admission_lock: Mutex::new(()),
             inner: Mutex::new(GateInner {
                 state: persisted,
@@ -173,14 +172,13 @@ impl ManagedKernelQuiescenceGate {
         store: DurableKernelStateStore,
         kernel_id: String,
         mutation_lock: Arc<Mutex<()>>,
-        activity_transitions: ManagedActivityTransitionState,
         error: impl Into<String>,
     ) -> Arc<Self> {
         Arc::new(Self {
             store,
             kernel_id: kernel_id.clone(),
             mutation_lock,
-            activity_transitions,
+            
             admission_lock: Mutex::new(()),
             inner: Mutex::new(GateInner {
                 state: PersistedQuiescenceState {
@@ -997,8 +995,7 @@ mod tests {
             store.clone(),
             "kernel-1".into(),
             Arc::clone(&mutation_lock),
-            transitions.clone(),
-        )
+            )
         .expect("restore empty admission fence");
         (path, store, transitions, gate, mutation_lock)
     }
@@ -1118,8 +1115,7 @@ mod tests {
             store.clone(),
             "kernel-1".into(),
             mutation_lock,
-            transitions.clone(),
-        )
+            )
         .expect("restore stopped receipt and retained fence");
         assert!(
             gate.admission_guard().is_err(),
@@ -1217,8 +1213,7 @@ mod tests {
             store.clone(),
             "kernel-1".into(),
             mutation_lock,
-            transitions.clone(),
-        )
+            )
         .expect("restore durable cancellation receipt");
         assert!(
             restored.admission_guard().is_ok(),
@@ -1282,8 +1277,7 @@ mod tests {
             store.clone(),
             "kernel-1".into(),
             mutation_lock,
-            transitions.clone(),
-        )
+            )
         .expect("restore persisted fence");
         assert!(restored.admission_guard().is_err());
         assert!(restored
@@ -1336,8 +1330,7 @@ mod tests {
             store.clone(),
             "kernel-1".into(),
             mutation_lock,
-            transitions.clone(),
-        )
+            )
         .expect("restore canceled challenge tombstone");
         gate.apply_release(
             &canceled,
