@@ -1418,6 +1418,7 @@ impl BrowserControllerProcessStore {
         Ok(Some(snapshot))
     }
 
+    #[cfg(test)]
     pub(crate) fn perform_browser_action(
         &self,
         session_id: &str,
@@ -1456,6 +1457,7 @@ impl BrowserControllerProcessStore {
         self.wait_for_browser_observation(session_id, target_id, document_id, wait, timeout_ms)
     }
 
+    #[cfg(test)]
     pub(crate) fn handle_browser_dialog(
         &self,
         session_id: &str,
