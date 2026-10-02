@@ -460,8 +460,11 @@ fn opencode_auth_status(
         return Err(DaemonError::LocalTransport {
             operation: "get_provider_auth_status",
             message: format!(
-                "OpenCode auth list failed ({}); authentication state is inconclusive",
-                output.status
+                "OpenCode auth list failed ({}); authentication state is inconclusive; {}",
+                output.status,
+                crate::provider::startup_diagnostic::summarize_provider_startup_output(
+                    &output.stderr
+                ),
             ),
         });
     }

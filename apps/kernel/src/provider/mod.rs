@@ -32,6 +32,7 @@ mod registry;
 mod run_actor;
 mod runtime_run;
 mod service;
+pub(crate) mod startup_diagnostic;
 mod termination;
 mod types;
 mod workspace_live_sync_policy;
