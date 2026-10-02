@@ -26,15 +26,34 @@ impl KernelRuntimeState {
         else {
             return Ok(());
         };
+        if !self
+            .owned
+            .project_prompt_provider_requires_resolution(&session, &run)
+        {
+            return Ok(());
+        }
+        self.with_project_prompt_environment(session_id, agent_id, |app| {
+            app.ensure_prompt_provider_run_for_agent(session_id, agent_id)
+                .map(|_| ())
+        })
+        .await
+    }
+
+    // MP-08/MP-10/MP-11: keep an Always-policy unlock alive through resolution,
+    // replacement and queue activation; failures leave the unactivated queue intact.
+    pub(super) async fn with_project_prompt_environment<T>(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        operation: impl FnOnce(&mut DaemonApp) -> Result<T, DaemonError>,
+    ) -> Result<T, DaemonError> {
+        let session = self.owned.session_store.get_session(session_id)?;
         let config = self.owned.config_projection.snapshot();
         let has_environment = crate::project_environment::ProjectEnvironmentStore::new(
             &config.private_runtime_state_root(),
         )
         .load(session.project_id())?
         .is_some();
-        if !has_environment && run.project_environment_revision().is_none() {
-            return Ok(());
-        }
         let _vault = if has_environment {
             Some(
                 self.ensure_vault_unlocked_for_agent(
@@ -47,13 +66,7 @@ impl KernelRuntimeState {
         } else {
             None
         };
-        let session_id = session_id.to_string();
-        let agent_id = agent_id.to_string();
-        self.with_app_side_effect(move |app| {
-            app.ensure_prompt_provider_run_for_agent(&session_id, &agent_id)
-        })
-        .await?;
-        Ok(())
+        self.with_app_side_effect(operation).await
     }
 
     pub(crate) fn project_environment_for_shell(

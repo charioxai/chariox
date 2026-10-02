@@ -41,6 +41,7 @@ mod config_runtime_state;
 mod project_environment_export;
 mod project_environment_files;
 mod project_environment_manifest;
+mod project_prompt_promotion;
 mod project_environment_placement;
 mod project_environment_remote;
 mod project_environment_review;

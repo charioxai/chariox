@@ -3333,6 +3333,14 @@ impl KernelRuntimeState {
     }
 
     pub(super) fn spawn_workflow_prompt_dispatches(&self, dispatches: WorkflowPromptDispatches) {
+        for (session_id, agent_id) in dispatches.project_queue_promotions {
+            let state = self.clone();
+            tokio::spawn(async move {
+                state
+                    .advance_project_queued_prompt_after_settlement(&session_id, &agent_id)
+                    .await;
+            });
+        }
         for task in dispatches.starting_metaagent_tasks {
             let state = self.clone();
             tokio::spawn(async move {

@@ -402,6 +402,19 @@ impl KernelRuntimeOwnedState {
         };
         let mut dispatches = WorkflowPromptDispatches::default();
         if let Some(mut completion) = completion {
+            if completion.completion.started_next.is_none()
+                && next_queued_prompt.is_some()
+                && provider_run_id
+                    .as_deref()
+                    .and_then(|id| self.provider_store.get_run(id).ok())
+                    .is_some_and(|run| {
+                        self.project_prompt_provider_requires_resolution(&session, &run)
+                    })
+            {
+                dispatches
+                    .project_queue_promotions
+                    .push((session_id.to_string(), agent_id.clone()));
+            }
             if let Some(dispatch) = completion.dispatch.take() {
                 dispatches.local.push(dispatch);
             }

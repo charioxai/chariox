@@ -1211,12 +1211,16 @@ impl KernelRuntimeState {
                 }
             }
         } else if let Some(next_queued_prompt) = next_queued_prompt {
-            if let Some(completion) = owned.complete_local_prompt_with_queued_advance(
-                session_id,
-                target_agent_id,
-                owned_provider_run_id.as_deref(),
-                next_queued_prompt,
-            )? {
+            if let Some(completion) =
+                Box::pin(self.complete_local_prompt_with_queued_advance_if_matches(
+                    session_id,
+                    target_agent_id,
+                    owned_provider_run_id.as_deref(),
+                    next_queued_prompt,
+                    None,
+                ))
+                .await?
+            {
                 let completion_result = completion.completion;
                 self.observe_git_after_completed_prompt(
                     Some(session_id),

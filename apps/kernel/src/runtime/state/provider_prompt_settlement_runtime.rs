@@ -560,13 +560,15 @@ impl KernelRuntimeState {
             (completion, Some(workflow_dispatches))
         } else {
             let completion = if let Some(next_queued_prompt) = next_queued_prompt.as_ref() {
-                owned.complete_local_prompt_with_queued_advance_if_matches(
+                // Keep the Vault-aware promotion future off the settlement caller's stack.
+                Box::pin(self.complete_local_prompt_with_queued_advance_if_matches(
                     session_id,
                     &agent_id,
                     Some(provider_run_id),
                     next_queued_prompt,
                     Some(active_prompt.id()),
-                )
+                ))
+                .await
             } else {
                 owned.complete_local_prompt_without_advance_if_matches(
                     session_id,
@@ -703,66 +705,11 @@ impl KernelRuntimeState {
                 .write()
                 .clear_workflow_run_settling(session_id, workflow_run_id)?;
         }
-        if defer_queued_prompt {
-            let session_id_for_queue = session_id.to_string();
-            let agent_id_for_queue = agent_id.clone();
-            match self
-                .with_app_side_effect(move |app| {
-                    app.advance_next_queued_prompt(&session_id_for_queue, &agent_id_for_queue)
-                })
-                .await
-            {
-                Ok(Some(_)) => {}
-                Ok(None) => {}
-                Err(error) => {
-                    self.owned.record_notice(
-                        session_id,
-                        Some(provider_run_id),
-                        self.owned
-                            .attachment_store
-                            .list_session_attachment_ids(session_id),
-                        format!(
-                            "Queued workflow prompt remained pending while preparing its provider context: {error}"
-                        ),
-                    );
-                }
-            }
-        }
-        if completion.completion.started_next.is_none() && !provider_run_was_running {
-            let session_id_for_queue = session_id.to_string();
-            let agent_id_for_queue = agent_id.clone();
-            let agent_id_for_log = agent_id_for_queue.clone();
-            match self
-                .with_app_side_effect(move |app| {
-                    app.advance_next_queued_prompt(&session_id_for_queue, &agent_id_for_queue)
-                })
-                .await
-            {
-                Ok(Some(_started_next)) => {
-                    crate::logging::info_with_fields(
-                        "daemon.provider",
-                        "advanced queued prompt after terminal provider recovery",
-                        serde_json::json!({
-                            "session_id": session_id,
-                            "agent_id": agent_id_for_log,
-                            "ended_provider_run_id": provider_run_id,
-                        }),
-                    );
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    self.owned.record_notice(
-                        session_id,
-                        Some(provider_run_id),
-                        self.owned
-                            .attachment_store
-                            .list_session_attachment_ids(session_id),
-                        format!(
-                            "Queued prompt remained pending after terminal provider recovery: {error}"
-                        ),
-                    );
-                }
-            }
+        if defer_queued_prompt
+            || (completion.completion.started_next.is_none() && !provider_run_was_running)
+        {
+            Box::pin(self.advance_project_queued_prompt_after_settlement(session_id, &agent_id))
+                .await;
         }
         self.spawn_workflow_prompt_dispatches(
             owned.workflow_maybe_start_next_queued_prompt(session_id),

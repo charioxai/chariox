@@ -433,6 +433,17 @@ impl KernelRuntimeOwnedState {
                 ),
             _ => false,
         };
+        // MP-08/MP-10/MP-11: Project inputs require normal activation after the
+        // old turn settles. Never dispatch this queue head to an unvalidated process.
+        if self.project_prompt_provider_requires_resolution(&session, &provider_run) {
+            return self.finalize_local_completion_without_queued_advance(
+                session_id,
+                agent_id,
+                completed,
+                &provider_run_id,
+                released_workflow_claim,
+            );
+        }
         if !self.provider_account_allows_queued_prompt_advance(
             session_id,
             &target_agent,
