@@ -125,8 +125,7 @@ fn resumed_session_permission_changes_before_next_native_prompt() {
             assert!(requests[..index]
                 .iter()
                 .rev()
-                .find(|(line, _)| line.starts_with("PATCH "))
-                .is_some());
+                .any(|(line, _)| line.starts_with("PATCH ")));
         }
     }
 }
