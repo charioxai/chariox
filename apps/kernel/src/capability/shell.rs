@@ -1,11 +1,10 @@
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::process::{Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use wait_timeout::ChildExt;
 
 use crate::error::DaemonError;
 
@@ -95,74 +94,153 @@ impl ShellCommandService {
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
 
-        let mut child = command
-            .spawn()
-            .map_err(|error| DaemonError::ShellCommandFailed {
-                session_id: request.session_id.clone(),
-                command: request.command.clone(),
-                message: error.to_string(),
-            })?;
-
-        // Drain both pipes while the child runs: waiting first can block the
-        // child on a full stdout or stderr pipe until the timeout expires.
-        let stdout_reader = drain_output(child.stdout.take().expect("stdout is piped"));
-        let stderr_reader = drain_output(child.stderr.take().expect("stderr is piped"));
-
-        let timeout = Duration::from_millis(request.timeout_ms);
-        let status =
-            child
-                .wait_timeout(timeout)
-                .map_err(|error| DaemonError::ShellCommandFailed {
+        let output = capture_output(command, Duration::from_millis(request.timeout_ms)).map_err(
+            |error| match error {
+                CaptureError::TimedOut => DaemonError::ShellCommandTimedOut {
+                    session_id: request.session_id.clone(),
+                    command: request.command.clone(),
+                    timeout_ms: request.timeout_ms,
+                },
+                CaptureError::Io(error) => DaemonError::ShellCommandFailed {
                     session_id: request.session_id.clone(),
                     command: request.command.clone(),
                     message: error.to_string(),
-                })?;
-
-        let status = match status {
-            Some(status) => status,
-            None => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(DaemonError::ShellCommandTimedOut {
-                    session_id: request.session_id,
-                    command: request.command,
-                    timeout_ms: request.timeout_ms,
-                });
-            }
-        };
-
-        let read_error = |error: io::Error| DaemonError::ShellCommandFailed {
-            session_id: request.session_id.clone(),
-            command: request.command.clone(),
-            message: error.to_string(),
-        };
-        let stdout = join_output(stdout_reader).map_err(read_error)?;
-        let stderr = join_output(stderr_reader).map_err(read_error)?;
+                },
+            },
+        )?;
 
         Ok(RunShellCommandResult {
             session_id: request.session_id,
             command: request.command,
             args: request.args,
             working_directory: Some(working_directory),
-            exit_code: status.code().unwrap_or(-1),
-            stdout: String::from_utf8_lossy(&stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&stderr).into_owned(),
+            exit_code: output.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         })
     }
 }
 
-fn drain_output(mut pipe: impl Read + Send + 'static) -> JoinHandle<io::Result<Vec<u8>>> {
-    thread::spawn(move || {
-        let mut bytes = Vec::new();
-        pipe.read_to_end(&mut bytes)?;
-        Ok(bytes)
-    })
+#[derive(Debug)]
+enum CaptureError {
+    Io(io::Error),
+    TimedOut,
 }
 
-fn join_output(reader: JoinHandle<io::Result<Vec<u8>>>) -> io::Result<Vec<u8>> {
-    reader
-        .join()
-        .map_err(|_| io::Error::other("shell output reader panicked"))?
+impl From<io::Error> for CaptureError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+#[cfg(windows)]
+use crate::io::windows_pipe_process as platform;
+
+#[cfg(unix)]
+mod platform {
+    use std::io;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+    use std::process::{Child, Command};
+
+    pub(super) trait Pipe: AsRawFd {}
+    impl<T: AsRawFd> Pipe for T {}
+
+    pub(super) fn available(_pipe: &impl Pipe) -> io::Result<usize> {
+        Ok(8192)
+    }
+
+    pub(super) struct Process {
+        pub(super) child: Child,
+    }
+
+    impl Process {
+        pub(super) fn spawn(command: &mut Command) -> io::Result<Self> {
+            command.process_group(0);
+            let process = Self {
+                child: command.spawn()?,
+            };
+            for fd in [
+                process.child.stdout.as_ref().unwrap().as_raw_fd(),
+                process.child.stderr.as_ref().unwrap().as_raw_fd(),
+            ] {
+                let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+                if flags < 0
+                    || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+                {
+                    return Err(io::Error::last_os_error());
+                }
+            }
+            Ok(process)
+        }
+    }
+
+    impl Drop for Process {
+        fn drop(&mut self) {
+            // MP-08/MP-10/MP-11: the child group and both pipe readers have
+            // one lifetime on success, timeout, read error and wait error.
+            unsafe {
+                libc::kill(-(self.child.id() as i32), libc::SIGKILL);
+            }
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
+fn capture_output(mut command: Command, timeout: Duration) -> Result<Output, CaptureError> {
+    let mut process = platform::Process::spawn(&mut command)?;
+    let started = Instant::now();
+    let mut status = None;
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    loop {
+        // Nonblocking, bounded read batches drain both pipes without detached
+        // threads. A flooding stream cannot starve the other or the deadline.
+        let stdout_closed = drain_output(process.child.stdout.as_mut().unwrap(), &mut stdout)?;
+        let stderr_closed = drain_output(process.child.stderr.as_mut().unwrap(), &mut stderr)?;
+        if status.is_none() {
+            status = process.child.try_wait()?;
+        }
+        if let Some(status) = status.filter(|_| stdout_closed && stderr_closed) {
+            return Ok(Output {
+                status,
+                stdout,
+                stderr,
+            });
+        }
+        // The deadline also covers pipes retained after the launcher exits.
+        if started.elapsed() >= timeout {
+            return Err(CaptureError::TimedOut);
+        }
+        thread::sleep(
+            timeout
+                .saturating_sub(started.elapsed())
+                .min(Duration::from_millis(5)),
+        );
+    }
+}
+
+fn drain_output(pipe: &mut (impl Read + platform::Pipe), bytes: &mut Vec<u8>) -> io::Result<bool> {
+    let mut chunk = [0; 8192];
+    for _ in 0..8 {
+        let available = platform::available(pipe)?;
+        if available == 0 {
+            #[cfg(windows)]
+            return Ok(platform::readiness(pipe)?.is_none());
+            #[cfg(unix)]
+            return Ok(false);
+        }
+        let len = available.min(chunk.len());
+        match pipe.read(&mut chunk[..len]) {
+            Ok(0) => return Ok(true),
+            Ok(len) => bytes.extend_from_slice(&chunk[..len]),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(false),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(false)
 }
 
 fn resolve_working_directory(request: &RunShellCommandRequest) -> Result<PathBuf, DaemonError> {
@@ -249,6 +327,113 @@ mod tests {
         assert_eq!(result.exit_code, 0);
         assert_eq!(result.stdout.as_bytes(), vec![0; 262144]);
         assert_eq!(result.stderr.as_bytes(), vec![0; 262144]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn timed_out_descendants_and_output_readers_settle() {
+        const PROBE: &str = "CHARIOX_SHELL_LIFETIME_TEST";
+        if std::env::var_os(PROBE).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "capability::shell::tests::timed_out_descendants_and_output_readers_settle",
+                    "--nocapture",
+                ])
+                .env(PROBE, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        // Isolate /proc counts from other tests and always remove the fixture.
+        let root =
+            std::env::temp_dir().join(format!("chariox-shell-lifetime-{}", std::process::id()));
+        fs::create_dir(&root).unwrap();
+        struct Fixture(std::path::PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                if let Ok(pid) = fs::read_to_string(self.0.join("producer.pid")) {
+                    if let Ok(pid) = pid.trim().parse::<i32>() {
+                        unsafe {
+                            libc::kill(pid, libc::SIGKILL);
+                        }
+                    }
+                }
+                fs::remove_dir_all(&self.0).unwrap();
+            }
+        }
+        let fixture = Fixture(root.clone());
+        let count = |path| fs::read_dir(path).unwrap().count();
+        let threads = count("/proc/self/task");
+        let descriptors = count("/proc/self/fd");
+        for (producer, wait) in [
+            ("while :; do printf output; sleep 0.01; done", "wait"),
+            ("while :; do printf error >&2; sleep 0.01; done", "wait"),
+            ("exec sleep 30", "wait"),
+            ("exec sleep 30", "exit 0"),
+        ] {
+            let command = format!("sh -c 'echo $$ > producer.pid; {producer}' & {wait}");
+            let started = std::time::Instant::now();
+            let error = ShellCommandService::new()
+                .run(
+                    RunShellCommandRequest::new(
+                        "timeout-descendant",
+                        "attachment",
+                        "/bin/sh",
+                        vec!["-c".into(), command],
+                        root.clone(),
+                        None,
+                    )
+                    .with_timeout_ms(100),
+                )
+                .expect_err("descendant should time out");
+            assert!(matches!(error, DaemonError::ShellCommandTimedOut { .. }));
+            assert!(started.elapsed() < std::time::Duration::from_secs(2));
+            let pid: i32 = fs::read_to_string(root.join("producer.pid"))
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            let running = || {
+                fs::read_to_string(format!("/proc/{pid}/stat"))
+                    .is_ok_and(|stat| !stat.split_once(") ").unwrap().1.starts_with('Z'))
+            };
+            for _ in 0..50 {
+                if !running() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            let readers_settled =
+                count("/proc/self/task") == threads && count("/proc/self/fd") == descriptors;
+            assert!(
+                !running(),
+                "timed-out descendant is still running: {producer}"
+            );
+            assert!(
+                readers_settled,
+                "timed-out readers retained threads or pipe descriptors"
+            );
+            let next = ShellCommandService::new()
+                .run(RunShellCommandRequest::new(
+                    "after-timeout",
+                    "attachment",
+                    "/bin/sh",
+                    vec!["-c".into(), "printf usable".into()],
+                    root.clone(),
+                    None,
+                ))
+                .unwrap();
+            assert_eq!(next.stdout, "usable");
+            fs::remove_file(root.join("producer.pid")).unwrap();
+        }
+        drop(fixture);
     }
 
     #[test]
