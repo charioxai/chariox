@@ -1434,7 +1434,7 @@ mod tests {
 
         let submit_runtime = runtime.clone();
         let submit_prompt = dispatch.prompt.clone();
-        let mut submit_task = tokio::spawn(async move {
+        let submit_task = tokio::spawn(async move {
             submit_remote_prompt_to_worker_with_binding_refresh(
                 &submit_runtime,
                 &mut dispatch,

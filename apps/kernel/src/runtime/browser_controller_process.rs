@@ -645,7 +645,7 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         match self.health_request() {
             Ok(health) => Ok(health),
             Err(error) => {
-                if let Some(mut process) = self.process.take() {
+                if let Some(process) = self.process.take() {
                     kill_child(
                         &mut process
                             .child
@@ -663,7 +663,7 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
             return Ok(());
         }
         let shutdown_requested = self.request("shutdown", serde_json::json!({})).is_ok();
-        if let Some(mut process) = self.process.take() {
+        if let Some(process) = self.process.take() {
             if shutdown_requested {
                 terminate_child(
                     &mut process

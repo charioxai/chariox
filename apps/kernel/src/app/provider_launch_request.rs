@@ -265,7 +265,7 @@ mod tests {
     #[test]
     fn mp08_mp10_mp11_account_activation_preserves_resolved_project_environment() {
         let worktree = crate::test_support::TestWorktree::new("project-environment-activation");
-        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
         let session = app
             .sessions_mut()
             .create_session(CreateSessionRequest::new(

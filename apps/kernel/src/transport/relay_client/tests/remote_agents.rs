@@ -1732,7 +1732,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
             let mut reconciled = false;
             for _ in 0..240 {
                 let (queued, active, matching_history) = {
-                    let mut home = app_home.lock().await;
+                    let home = app_home.lock().await;
                     let snapshot = home
                         .sessions()
                         .get_session(&session_id)
@@ -1769,7 +1769,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
                 "the exact accepted worker receipt should remove only its queue item and merge one history event"
             );
             let (queued, active, history) = {
-                let mut home = app_home.lock().await;
+                let home = app_home.lock().await;
                 let snapshot = home
                     .sessions()
                     .get_session(&session_id)

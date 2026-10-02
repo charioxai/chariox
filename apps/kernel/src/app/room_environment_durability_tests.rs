@@ -9,7 +9,7 @@ use crate::session::{
 fn room_environment_restart_retains_tabs_actions_and_idempotency_after_old_checkpoint() {
     let config = DaemonConfig::for_tests();
     let (room_id, tab_id, completed, running, request, cursor, generation) = {
-        let mut app = DaemonApp::bootstrap(config.clone()).unwrap();
+        let app = DaemonApp::bootstrap(config.clone()).unwrap();
         let session = app
             .sessions_mut()
             .create_session(CreateSessionRequest::new("workspace-env", "worktree-env"))

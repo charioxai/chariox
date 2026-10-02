@@ -705,7 +705,7 @@ async fn slice_selector_move_to_canonical_worker_does_not_treat_it_as_machine() 
 #[tokio::test(flavor = "multi_thread")]
 async fn slice_selector_recovery_refuses_observed_id_disagreeing_with_persisted_identity() {
     let fixture = Fixture::new().await;
-    let mut home = fixture.home.lock().await;
+    let home = fixture.home.lock().await;
     let mut records = home.slices().list();
     records
         .iter_mut()
