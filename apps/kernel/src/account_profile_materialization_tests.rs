@@ -271,7 +271,8 @@ fn mp08_mp10_opencode_account_round_trip_carries_credentials_only() {
 
 #[test]
 fn opencode_portable_files_still_obey_the_transfer_size_limit() {
-    for (variable, relative) in [("XDG_DATA_HOME", "opencode/auth.json")] {
+    {
+        let (variable, relative) = ("XDG_DATA_HOME", "opencode/auth.json");
         let source = ProfileFixture::new();
         fs::File::create(source.path(variable, relative))
             .unwrap()

@@ -4035,7 +4035,8 @@ fn materialization_files(
             claude_config_dir,
             ambient_default,
         } => {
-            for name in [".credentials.json"] {
+            {
+                let name = ".credentials.json";
                 collect_optional_file(claude_config_dir, name, name, &mut files)?;
             }
             discard_nonportable_claude_credentials(&mut files);
