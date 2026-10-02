@@ -150,8 +150,8 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
 
 # Nested Docker cannot write an unprivileged uid_map on every host. The
 # setuid helper only sets up Bubblewrap's namespace and drops its caps
-# before the provider starts. Managed provider launches use the unprivileged
-# no-new-privs path validated by the provisioner sandbox probe.
+# before the provider starts. Slice launches select the supported Bubblewrap
+# path through managed-provider-bwrap; the provisioner probes that wrapper.
 RUN chmod 4755 /usr/bin/bwrap
 
 RUN --mount=type=bind,source=apps/kernel/slice-linux-docker/docker/managed-provider-seccomp.c,target=/tmp/managed-provider-seccomp.c \
