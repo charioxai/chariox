@@ -1,8 +1,6 @@
 use chariox_kernel::{DaemonApp, DaemonConfig};
 use std::time::Instant;
 
-// Return freed provider-output and response buffers to the OS so a leased-agent
-// home kernel's RSS follows its live heap.
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
