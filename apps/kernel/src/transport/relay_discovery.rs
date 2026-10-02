@@ -709,7 +709,7 @@ async fn query_relay_once_inner(
     })
     .await;
     #[cfg(test)]
-    if let Some(trace) = trace.as_deref_mut() {
+    if let Some(trace) = trace {
         trace.record(
             "discovery_close_drained",
             socket_trace.as_ref().and_then(|trace| trace.local_addr),
