@@ -99,7 +99,7 @@ Each row's status follows the audit in `CHARIOX_APPS_PHASE1_VERIFICATION.md` (ma
 | V1-INT-05 | Storage exhaustion | No cross-installation exhaustion or loss of accepted state | Partial; interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
 | V1-INT-06 | Event crash windows | One durable enqueue per scoped occurrence; visible terminal outcomes and bounded queues | Partial; interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
 | V1-INT-07 | Rollback dedupe and generations | Dedupe receipts survive rollback; incompatible generations cannot operate | Implemented (g); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
-| V1-INT-08 | Ambiguous service effects | Unknown outcome is visible; no unsafe automatic replay | Partial (owner approve pending); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
+| V1-INT-08 | Ambiguous service effects | Unknown outcome is visible; no unsafe automatic replay | Needs user (owner approve pending); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
 | V1-INT-09 | Equivalent human and agent operation | Attributed action evidence; no tool/view privilege split | Partial; interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
 | V1-INT-10 | Human validation lifecycle | One durable RuntimeInteraction and operation state; execution waits for human decision | Needs user; interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
 | V1-INT-11 | Approval parameter and effect binding | Only the exact approved effect can execute; stale/changed/reused authority is denied | Implemented (see verification) |
@@ -109,7 +109,7 @@ Each row's status follows the audit in `CHARIOX_APPS_PHASE1_VERIFICATION.md` (ma
 | V1-INT-15 | Concurrent viewer semantics | Same Tab/document/viewport revisions; accessible names, focus and live updates reach terminal | Partial; interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
 | V1-INT-16 | Transport conformance and SSRF | Measured source adaptations; bounded trusted-side memory and actual connected-address checks | Implemented (f Mac / earlier Linux); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
 | V1-INT-17 | Slack contract cutover | Live third-party-style App parity before old code removal; final artifact has no privileged Slack fallback | Needs user; interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
-| V1-INT-18 | Schedule correctness | Persisted occurrence revision controls enqueue; overdue work recovers within declared budget | Partial [user step: sleep/wake] (see verification) |
+| V1-INT-18 | Schedule correctness | Persisted occurrence revision controls enqueue; overdue work recovers within declared budget | Needs user (sleep/wake) (see verification) |
 | V1-INT-19 | Rooms and kernels | Update/uninstall/backup isolation matches documented ownership; no credential or handle inheritance | Partial (g kernel subset PASS); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
 | V1-INT-20 | Package and review independence | Code remains contained regardless of review; exact signed bytes and extraction rules are verified | Partial (see verification) |
 | V1-INT-21 | Fresh installation and upgrade | No hidden manual sandbox setup, no Cloud requirement for local Apps, actionable version failures | Partial [user step: signed macOS installer; reboot] (see verification) |
@@ -134,7 +134,7 @@ Each row's status follows the audit in `CHARIOX_APPS_PHASE1_VERIFICATION.md` (ma
 | V-PKG-03 | Manifest and protocol mismatch | Parser snapshots and client rendering tests. | Implemented (#509, chariox-cloud#246; see verification) |
 | V-PKG-04 | Interrupted installation | Checkpoint fault-injection suite. | Partial (g scoped PASS); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
 | V-PKG-05 | Update success | End-to-end update across local TUI, remote TUI and web. | Partial; interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
-| V-PKG-06 | Update failure | Fault injection at every update checkpoint. | Partial [user step: real power loss] (see verification) |
+| V-PKG-06 | Update failure | Fault injection at every update checkpoint. | Needs user (real power loss) (see verification) |
 | V-PKG-07 | Concurrent operations | Four-client concurrency test. | Implemented (g); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
 | V-PKG-08 | Uninstall and reinstall | Lifecycle drill with all three reference Apps. | Implemented on macOS: live drill with all three Apps, reinstall into kept data (#494) and delete-data (#495, #496) (`v-pkg-08/`); Linux delete-data through the storage helper (#497), passed in the Linux storage fixture |
 
@@ -174,7 +174,7 @@ Each row's status follows the audit in `CHARIOX_APPS_PHASE1_VERIFICATION.md` (ma
 | V-UX-02 | Responsive App view | Screenshot set for Slack, Todo and Documents with no clipped primary action. | Implemented (g); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
 | V-UX-03 | Accessibility | Automated audit; keyboard, focus, contrast, screen reader and touch target size. | Needs user; interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
 | V-UX-04 | Local TUI commands | Command parity snapshot and interactive drill. | Implemented (see verification) |
-| V-UX-05 | Remote TUI | Fresh remote connection, not a reused client session. | Partial; interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
+| V-UX-05 | Remote TUI | Fresh remote connection, not a reused client session. | Needs user; interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
 | V-UX-06 | Agent App selector | Freeform and workflow agent screenshots plus runtime catalog assertion. | Partial; interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
 | V-UX-07 | Freeform trigger | Web right-click and TUI slash-command drill. | Implemented (see verification) |
 | V-UX-08 | Freeform deploy | Hosted and connected-ingress drill. | Partial (g public invocation PASS); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
