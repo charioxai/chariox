@@ -16,11 +16,11 @@ function fixture() {
 const verify = ({ inspect, receipt }, trusted = new Set([digest])) => verifyProtectedCaptureLayout(inspect, receipt, trusted)
 test("Room audio uses only the fixed non-home PulseAudio runtime path", () => {
   const supported = fixture()
-  supported.Config.Env.push("PULSE_RUNTIME_PATH=/tmp/chariox-pulse-runtime")
+  supported.inspect.Config.Env.push("PULSE_RUNTIME_PATH=/tmp/chariox-pulse-runtime")
   assert.doesNotThrow(() => verify(supported))
   for (const value of ["/home/slice/.config/pulse/runtime", "/var/lib/chariox/slice-private/pulse", "/tmp/other-pulse-runtime"]) {
     const unsupported = fixture()
-    unsupported.Config.Env.push(`PULSE_RUNTIME_PATH=${value}`)
+    unsupported.inspect.Config.Env.push(`PULSE_RUNTIME_PATH=${value}`)
     assert.throws(() => verify(unsupported))
   }
 })
