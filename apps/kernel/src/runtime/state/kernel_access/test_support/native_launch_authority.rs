@@ -101,6 +101,7 @@ async fn revoked_native_launch(connected: bool) {
     config.relay_token = Some("native-discovery-fixture".into());
     let home_public_key = config.relay_public_key.clone();
     let worker = crate::config::DaemonConfig::for_tests();
+    let worker_id = format!("native-authority-worker-{:016x}", rand::random::<u64>());
     let mut daemon = crate::test_support::bootstrap_authenticated_app(config).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut daemon)
         .create_session(worktree.session_request())
@@ -110,7 +111,7 @@ async fn revoked_native_launch(connected: bool) {
         .bind_remote_execution(
             agent.id(),
             crate::agent::RemoteAgentBinding {
-                worker_kernel_id: "worker".into(),
+                worker_kernel_id: worker_id.clone(),
                 worker_machine_id: "fixture-machine".into(),
                 execution_lease_id: "lease".into(),
                 leased_agent_id: "leased-agent".into(),
@@ -132,6 +133,7 @@ async fn revoked_native_launch(connected: bool) {
     let release_discovery = Arc::new(Notify::new());
     let metadata_server = tokio::spawn({
         let worker = worker.clone();
+        let worker_id = worker_id.clone();
         let home_public_key = home_public_key.clone();
         let launches = launches.clone();
         let discovery_started = discovery_started.clone();
@@ -150,7 +152,7 @@ async fn revoked_native_launch(connected: bool) {
                             release_discovery.notified().await;
                         }
                         let presence = serde_json::from_value(serde_json::json!({
-                            "kernel_id":"worker", "machine_id":"fixture-machine", "public_key":worker.relay_public_key
+                            "kernel_id":worker_id, "machine_id":"fixture-machine", "public_key":worker.relay_public_key
                         })).unwrap();
                         send(
                             &mut socket,
@@ -179,7 +181,7 @@ async fn revoked_native_launch(connected: bool) {
                             &mut socket,
                             RelayEnvelope::DaemonPeerResponse {
                                 request_id,
-                                from_daemon_id: "worker".into(),
+                                from_daemon_id: worker_id.clone(),
                                 encrypted_response: Some(response),
                                 error: None,
                             },
@@ -204,6 +206,7 @@ async fn revoked_native_launch(connected: bool) {
         // Deliberately leave the worker key uncached so this path must discover it.
         Some(tokio::spawn({
             let launches = launches.clone();
+            let worker_id = worker_id.clone();
             async move {
                 while let Some(envelope) = priority_rx.recv().await {
                     let RelayEnvelope::DaemonPeerRequest {
@@ -219,7 +222,7 @@ async fn revoked_native_launch(connected: bool) {
                     crate::transport::relay_client::resolve_pending_peer_response_for_test(
                         &relay_state,
                         request_id,
-                        "worker".into(),
+                        worker_id.clone(),
                         response,
                     )
                     .await;

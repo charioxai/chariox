@@ -27,6 +27,13 @@ pub(crate) struct SessionRuntimeStore {
 }
 
 impl SessionRuntimeStore {
+    pub(super) fn with_external_command_authority(
+        &self,
+        authority: Option<(&str, &LocalDaemonRequest)>,
+    ) -> Self {
+        Self::new(self.state.with_external_command_authority(authority))
+    }
+
     pub(super) fn authorize_external_access(
         &self,
         id: &str,

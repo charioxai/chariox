@@ -25,6 +25,15 @@ pub(super) struct SessionRuntimeCommandExecutor {
 }
 
 impl SessionRuntimeCommandExecutor {
+    pub(super) fn with_external_command_authority(
+        &self,
+        authority: Option<(&str, &LocalDaemonRequest)>,
+    ) -> Self {
+        let mut executor = self.clone();
+        executor.store = self.store.with_external_command_authority(authority);
+        executor
+    }
+
     pub(super) fn new(
         store: SessionRuntimeStore,
         focus_projection: FocusedAgentProjection,

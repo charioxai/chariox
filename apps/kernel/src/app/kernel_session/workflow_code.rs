@@ -655,8 +655,18 @@ impl<'a> KernelSessionService<'a> {
         &mut self,
         agent: &AgentInstance,
     ) -> Result<(), DaemonError> {
+        self.destroy_agent_worker_execution_authorized(agent, &|| Ok(()))
+    }
+
+    pub(crate) fn destroy_agent_worker_execution_authorized(
+        &mut self,
+        agent: &AgentInstance,
+        authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
+    ) -> Result<(), DaemonError> {
+        authorize()?;
         if let Some(remote) = agent.remote_execution().cloned() {
-            self.app.destroy_remote_execution_binding(&remote)?;
+            self.app
+                .destroy_remote_execution_binding(&remote, authorize)?;
         }
         Ok(())
     }
