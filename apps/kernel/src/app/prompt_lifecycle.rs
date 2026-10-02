@@ -680,27 +680,6 @@ impl DaemonApp {
         )
     }
 
-    #[cfg(test)]
-    pub(crate) fn advance_next_queued_prompt_remote(
-        &mut self,
-        session_id: &str,
-        agent_id: &str,
-        worker_kernel_id: &str,
-        leased_agent_id: &str,
-        relay_url: Option<&str>,
-        relay_token: Option<&str>,
-    ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
-        crate::app::KernelAgentService::new(self).advance_next_queued_prompt_remote(
-            session_id,
-            agent_id,
-            worker_kernel_id,
-            leased_agent_id,
-            relay_url,
-            relay_token,
-            None,
-        )
-    }
-
     #[expect(
         clippy::too_many_arguments,
         reason = "Keeps the existing session, worker and lease binding fields explicit without a second protocol representation."

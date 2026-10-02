@@ -9,12 +9,12 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use wait_timeout::ChildExt;
 
+#[cfg(test)]
+use super::browser_controller_action::BrowserDialogAction;
 use super::browser_controller_action::{
     validate_browser_action_timeout, BrowserControllerActionResult, BrowserControllerDialogResult,
     BrowserLocatorAction,
 };
-#[cfg(test)]
-use super::browser_controller_action::BrowserDialogAction;
 use super::browser_controller_compatibility::{
     normalize_browser_navigation_url, BrowserCompatibilityWait,
     BrowserControllerCompatibilityWaitResult, BrowserControllerNavigationResult,
@@ -1291,6 +1291,7 @@ pub(crate) struct BrowserControllerProcessStore {
 }
 
 impl BrowserControllerProcessStore {
+    #[cfg(test)]
     pub(crate) fn new(command: impl Into<PathBuf>, args: Vec<String>, timeout: Duration) -> Self {
         Self {
             ownership: Some(Arc::new(Mutex::new(
@@ -1509,42 +1510,6 @@ impl BrowserControllerProcessStore {
             .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
         ownership
             .poll_browser_events(session_id, browser_generation, cursor, limit)
-            .map(Some)
-    }
-
-    pub(crate) fn import_browser_cookies(
-        &self,
-        session_id: &str,
-        binding: &crate::transport::room_browser_controller::RoomBrowserImportBinding,
-        browser_generation: u64,
-        target_id: &str,
-        document_id: &str,
-        source_store_id: &str,
-        domains: &[String],
-        partition_sites: &[String],
-        overwrite: bool,
-        payload: &crate::runtime::browser_import_payload::BrowserImportPayload,
-    ) -> Result<Option<BrowserCookieImportOutcome>, String> {
-        let _barrier = self.lock_global_tab_mutation_barrier()?;
-        let Some(ownership) = &self.ownership else {
-            return Ok(None);
-        };
-        let mut ownership = ownership
-            .lock()
-            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
-        ownership
-            .import_browser_cookies(
-                session_id,
-                binding,
-                browser_generation,
-                target_id,
-                document_id,
-                source_store_id,
-                domains,
-                partition_sites,
-                overwrite,
-                payload,
-            )
             .map(Some)
     }
 
