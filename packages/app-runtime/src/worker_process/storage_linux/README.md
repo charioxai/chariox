@@ -55,7 +55,9 @@ posix_fallocate reservation. The helper admits at most64 installation roots,
 promised byte not yet backed by actual allocation, including failed creations
 and temporary images that need recreation. These are private initial policies.
 
-A kernel acquire also names the installation's committed generation. A staged
+A kernel acquire also names the installation's committed data generation when
+one exists; a fresh first install sends `None`, takes no snapshot, and a retry
+of the same staged generation keeps its own writes. A staged
 (uncommitted) generation must start on committed data. When the committed
 generation ran last, the data image is copied to `data-snapshot.ext4`, which
 counts as a second promised data reservation. On the managed ext4 root this is
