@@ -76,7 +76,7 @@ async function observeWorker(){
  for(const listener of (await cmd('ss',['-ltnp'])).split('\n')){
   const port=Number(listener.trim().split(/\s+/)[3]?.match(/:(\d+)$/)?.[1])
   if(!publishedPorts.has(port)||!listener.includes('docker-proxy'))continue
-  for(const match of listener.matchAll(/pid=(\d+),/g)){const pid=Number(match[1]),metric=await proc(pid);if(metric)observedPids.set(pid,metric.startTicks)}
+  for(const match of listener.matchAll(/pid=(\d+),/g)){const pid=Number(match[1]),metric=await proc(pid);if(metric?.name==='docker-proxy')observedPids.set(pid,metric.startTicks)}
  }
  const top=(await docker(['top',cname(slice),'-eo','pid,comm'])).split('\n').slice(1).map(l=>Number(l.trim().split(/\s+/)[0])).filter(Number.isInteger)
  const metrics=[];for(const pid of top){const metric=await proc(pid);if(metric){metrics.push(metric);observedPids.set(pid,metric.startTicks)}}
