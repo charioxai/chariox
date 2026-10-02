@@ -36,6 +36,24 @@ impl CommandRouter {
         command: KernelCommand,
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        if let LocalDaemonRequest::RequestKernelSudo(sudo_request) = &request {
+            crate::runtime::kernel_runtime_role_policy::ensure_public_request_allowed(
+                &self.config_projection.snapshot(),
+                &request,
+            )?;
+            if command.caller.connection_class
+                != Some(crate::local::KernelConnectionClass::ExternalAgent)
+            {
+                return Err(crate::runtime::kernel_access::error(format!(
+                    "only a grant holder over ws+unix://{} can request sudo",
+                    self.kernel_local_socket_path().display()
+                )));
+            }
+            return self
+                .runtime_state
+                .request_kernel_sudo(&command.caller.caller_id, sudo_request.clone())
+                .await;
+        }
         if let Some(response) = self.dispatch_kernel_access(&command, &request)? {
             return Ok(response);
         }
@@ -68,6 +86,23 @@ impl CommandRouter {
                 return result;
             }
         };
+        if command.caller.connection_class == Some(crate::local::KernelConnectionClass::Terminal) {
+            if let LocalDaemonRequest::RespondToInteraction(answer) = &request {
+                if self
+                    .runtime_state
+                    .sudo_entry_pending(&answer.session_id, &answer.interaction_id)
+                {
+                    return self
+                        .runtime_state
+                        .answer_sudo_entry_from_terminal(
+                            &crate::runtime::command::command_caller_user_id(&command),
+                            &command.caller.caller_id,
+                            answer,
+                        )
+                        .await;
+                }
+            }
+        }
         if command.caller.connection_class == Some(crate::local::KernelConnectionClass::KernelAgent)
             && command.caller.caller_id.starts_with("sudo:")
         {

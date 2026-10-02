@@ -7,6 +7,7 @@ test("only access and exact sudo commands disable response timers and replay", (
     assert.equal(waitsForKernelAuthorization({ SubmitPrompt: { prompt } }), true)
   }
   assert.equal(waitsForKernelAuthorization({ RequestKernelAccess: {} }), true)
+  assert.equal(waitsForKernelAuthorization({ RequestKernelSudo: { agent_id: "a", prompt: "task" } }), true)
   for (const request of [null, undefined, "x", {}, { ListSessions: null },
     { SubmitPrompt: null }, { SubmitPrompt: { prompt: 1 } },
     ...["ordinary prompt", "/sudoku", "/sudo-task", "/SUDO task"].map(prompt => ({ SubmitPrompt: { prompt } }))]) {

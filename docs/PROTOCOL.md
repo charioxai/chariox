@@ -2315,8 +2315,19 @@ Workflow trigger and deployment direction:
   running sudo turns. The existing runtime MCP exposes `chariox_kernel_request`
   to a live sudo turn. Critical replies use the shared interaction authority and
   append `kernel_access.sudo_approval` receipts naming the turn and human entry.
-  No spawned/forked agent inherits elevation. External requests and `/meta`
-  migration are the following PR 8b; see `KERNEL_SUDO.md` for PR 8a's scope.
+  No spawned/forked agent inherits elevation.
+- protocol 406: a live external grant holder may send
+  `RequestKernelSudo { agent_id, prompt }` over the Unix socket. The kernel
+  resolves the exact target to the granted session and raises the same `sudo`
+  popup, naming the OS-established executable/PID, target/session and full
+  requester-supplied prompt. Only host terminals answer it. The outcome is
+  `KernelSudoRequested { agent_id }`; no passkey is accepted from the requester.
+  `KernelSudoTurn.requester` optionally carries public grant metadata; its
+  `terminal_id` names the winning host terminal once authorized. Pending external
+  entries require a live grant through final dispatch and expire if unanswered.
+  Rotation, revoke all and session end revoke these entries as well. `/meta`
+  retains delegation-only behavior for one release and emits a notice pointing
+  to `/sudo`. See `KERNEL_SUDO.md` and `scripts/kernel-access-sudo-drill.sh`.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

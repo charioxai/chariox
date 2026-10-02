@@ -1,4 +1,4 @@
-# One sudo turn (protocol 404, PR 8a)
+# One sudo turn (protocol 406)
 
 In a Chariox terminal, focus a local regular agent and enter `/sudo <prompt>`.
 The session host authorizes that entry in the kernel's passkey popup. Every
@@ -48,14 +48,35 @@ flows remain available through the ordinary runtime tools.
 provider run, exact prompt, target interaction and choice. Command correlation
 and causation also point to that turn and entry. Receipts contain no passkey.
 
-This is the bounded PR 8a split of the kernel access plan. External Unix socket
-sudo requests, the `/meta` migration notice and leased execution are follow-up
-work. Existing Meta tasks keep their delegation-only behavior and must finish
-before sudo entry. Shell CLI calls do not gain sudo; process-tree sudo is PR 10.
+External agents holding a process-bound session grant can request a turn over
+that kernel's Unix socket:
+
+```sh
+chariox sudo request --agent <agent-id> --prompt "<full prompt>" [--socket /absolute/kernel.sock]
+```
+
+The host's popup names the grant holder's OS executable and PID, the target
+agent and session, and the full requester-supplied prompt. Only the host's
+terminals can answer it. The external client receives the submission outcome;
+it never receives or sends the passkey. TCP, relay, ungranted peers and targets
+outside the granted session are refused. One requester can have one pending
+sudo request, which expires with a clear error if no terminal answers.
+Grant expiry, process exit or revocation cancels a pending or queued external
+request. The final dispatch boundary checks that the grant is still live.
+Once the host-authorized turn starts, it follows the same one-turn lifetime as
+terminal sudo. Rotation, revoke all and session end remove authorizations;
+rotation and revoke all interrupt running turns. External request attribution
+and the winning host terminal appear in sudo audit entries and receipts.
+
+For one release `/meta` continues to run delegation-only tasks without a
+passkey and displays a notice pointing to `/sudo`. Existing Meta tasks finish
+in Meta mode; they must finish before sudo entry. Shell CLI calls do not gain
+sudo; process-tree sudo is PR 10. Leased sudo execution remains a separate leg.
 Cloud/native consumers must support the protocol-404 `sudo` popup kind before
 advertising sudo entry. Owner passkey and real-client acceptance remain later
 validation legs; the builder drill uses private test vaults and synthetic runs.
 
 Run `scripts/kernel-access-sudo-drill.sh` on the Linux builder. It uses Rust
 1.88.0 and the existing slot-run admission helper, covering queued revocation,
-rotation, yield, interrupt, restart, critical receipts and protocol snapshots.
+rotation, session end, yield, interrupt, restart, critical receipts, external
+Unix requests, the Meta notice and protocol snapshots.

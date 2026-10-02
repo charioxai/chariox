@@ -119,6 +119,8 @@ impl AgentRuntimeCommandExecutor {
         )?;
         let meta_slash = crate::runtime::state::parse_meta_slash_command(&request.prompt);
         if let Some(meta_slash) = meta_slash.as_ref() {
+            self.prompt_commands
+                .record_meta_migration_notice(&request.session_id, &target_agent_id);
             if self
                 .prompt_commands
                 .session_task_lane_busy(&request.session_id)?

@@ -50,6 +50,11 @@ impl AgentPromptDispatchContext {
 }
 
 impl AgentPromptCommandService {
+    pub(crate) fn record_meta_migration_notice(&self, session_id: &str, agent_id: &str) {
+        self.state
+            .record_meta_migration_notice(session_id, agent_id);
+    }
+
     pub(crate) fn new(
         state: KernelRuntimeState,
         provider_runtime_lanes: ProviderRunOperationLanes,
