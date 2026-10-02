@@ -12,6 +12,7 @@ import { createConnection } from "node:net"
 import { test } from "node:test"
 import { runInNewContext } from "node:vm"
 import { dockerObjectNotFound } from "../apps/kernel/slice-linux-docker/slice-disk-quota-admission.mjs"
+import { missingBrokerDockerFixture } from "./lib/broker-docker-fixture.mjs"
 import * as archivePolicy from "../apps/kernel/slice-linux-docker/managed-home-archive-stream.mjs"
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url))
@@ -989,23 +990,27 @@ if [ -e "\${0}.once" ]; then printf valid; else touch "\${0}.once"; head -c 5242
     },
     files: [],
   }
+  const dockerHost = await missingBrokerDockerFixture(context, root, "chariox-slice-dev")
   const result = spawnSync(process.execPath, [broker, "--stdio"], {
     input: `${JSON.stringify({ ...base, action: "stop" })}\n${JSON.stringify({ ...base, action: "stop" })}\n`,
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
     env: {
       ...process.env,
+      DOCKER_HOST: dockerHost,
       CHARIOX_SLICE_DOCKER_SHARE_ROOT: share,
       CHARIOX_SLICE_DOCKER_PROVISIONER: provisioner,
+      CHARIOX_SLICE_DOCKER_HANDLE_ROOT: join(root, "handles"),
+      CHARIOX_SLICE_DOCKER_HANDLE_STATE: join(root, "handles.json"),
     },
   })
   assert.equal(result.status, 0, result.stderr)
   const responses = result.stdout.trim().split("\n").map(JSON.parse)
   assert.equal(responses.length, 2)
-  assert.equal(responses[0].status, 0)
+  assert.equal(responses[0].status, 0, Buffer.from(responses[0].stderrBase64, "base64").toString())
   assert(Buffer.from(responses[0].stdoutBase64,"base64").length <= 65536)
   assert.match(Buffer.from(responses[0].stderrBase64,"base64").toString(),/complete diagnostics/)
-  assert.equal(responses[1].status, 0)
+  assert.equal(responses[1].status, 0, Buffer.from(responses[1].stderrBase64, "base64").toString())
   assert.equal(Buffer.from(responses[1].stdoutBase64, "base64").toString(), "valid")
 })
 
