@@ -134,13 +134,13 @@ impl KernelRuntimeState {
         {
             // The prompt is already active; settle it as a failed dispatch so
             // the agent is not left holding a prompt the worker never got.
-            return match submission.remote_dispatch.take() {
-                Some(dispatch) => self
-                    .finish_remote_prompt_dispatch(dispatch, Err(error))
-                    .await
-                    .map(|()| None),
-                None => Err(error),
+            let Some(dispatch) = submission.remote_dispatch.take() else {
+                return Err(error);
             };
+            // Given an error, this settles the prompt and returns that error.
+            self.finish_remote_prompt_dispatch(dispatch, Err(error))
+                .await?;
+            return Ok(None);
         }
         self.spawn_remote_prompt_projection_drain_if_needed(&submission);
         if let Some(dispatch) = submission.remote_dispatch.take() {
@@ -437,6 +437,58 @@ mod tests {
                 crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
             ),
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn queued_remote_prompt_settles_when_its_workflow_start_fails() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-1",
+                "worktree-1",
+            ))
+            .expect("session should be created");
+        app.agents
+            .bind_remote_execution(agent.id(), binding("leased-agent-1", None))
+            .expect("agent should bind to the worker");
+        let workflow_prompt = crate::session::PromptQueueItem::new(
+            "pending:workflow",
+            crate::scheduler::runtime::workflow_prompt_source_attachment_id("missing-run"),
+            agent.id(),
+            "workflow turn",
+            crate::session::PromptStatus::Queued,
+        )
+        .with_workflow_context("missing-run", "missing-node");
+        app.prompt_owner_submit_prepared_prompt(session.id(), workflow_prompt, true)
+            .expect("workflow prompt should queue");
+        let (session_id, agent_id) = (session.id().to_string(), agent.id().to_string());
+        let app = std::sync::Arc::new(tokio::sync::Mutex::new(app));
+        let state = crate::runtime::router::CommandRouter::with_interactive_capacity(
+            std::sync::Arc::clone(&app),
+            1,
+        )
+        .runtime_state();
+
+        assert!(state
+            .spawn_next_queued_remote_prompt(&session_id, &agent_id)
+            .await
+            .is_err());
+
+        let mut app = app.lock().await;
+        assert!(
+            app.prompt_owner_active_prompt_for_agent(&session_id, &agent_id)
+                .expect("prompt state should load")
+                .is_none(),
+            "a prompt that never reached the worker must not stay active"
+        );
+        assert_eq!(
+            app.agents()
+                .get_agent(&agent_id)
+                .expect("agent should load")
+                .state(),
+            crate::agent::AgentState::Error
+        );
     }
 
     #[test]
