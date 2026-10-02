@@ -16,6 +16,62 @@ pub(super) async fn admit_frame(
     frame: &KernelIncomingFrame,
 ) -> Result<KernelCaller, ()> {
     let runtime_state = router.runtime_state();
+    let sudo = runtime_state.sudo_for_peer(peer).ok().filter(|turn| {
+        bound_grant
+            .lock()
+            .expect("bound grant poisoned")
+            .as_ref()
+            .is_none_or(|id| id == &turn.entry_id)
+    });
+    if let Some(turn) = sudo {
+        let allowed = match frame {
+            KernelIncomingFrame::Request { request, .. } => runtime_state
+                .authorize_sudo_request(&turn.entry_id, request)
+                .is_ok(),
+            KernelIncomingFrame::Subscribe {
+                session_id,
+                attachment_id,
+                subscription_scope,
+                ..
+            } => {
+                kernel_subscription_scope(subscription_scope.as_deref())
+                    != KernelSubscriptionScope::WaitingRoomInventory
+                    && router
+                        .session_id_for_attachment_access(attachment_id)
+                        .as_deref()
+                        == Some(session_id.as_str())
+            }
+            KernelIncomingFrame::Unsubscribe { .. } => true,
+        };
+        if allowed {
+            bound_grant
+                .lock()
+                .expect("bound grant poisoned")
+                .get_or_insert_with(|| turn.entry_id.clone());
+            let mut caller = router
+                .local_command_caller(
+                    KernelCommandSource::LocalIpc,
+                    KernelConnectionClass::KernelAgent,
+                )
+                .await;
+            caller.caller_id = turn.entry_id;
+            caller.user_id = Some(turn.owner_user_id);
+            return Ok(caller);
+        }
+        // Refused sudo operations must not fall back to an external grant or
+        // raise an access popup through the unauthenticated admission path.
+        deny_frame(runtime, outgoing_tx, close_tx, close_requested, frame);
+        return Err(());
+    }
+    if bound_grant
+        .lock()
+        .expect("bound grant poisoned")
+        .as_ref()
+        .is_some_and(|id| id.starts_with("sudo:"))
+    {
+        deny_frame(runtime, outgoing_tx, close_tx, close_requested, frame);
+        return Err(());
+    }
     if let KernelIncomingFrame::Request {
         request_id,
         request: crate::local::LocalDaemonRequest::RequestKernelAccess(request),
@@ -152,15 +208,7 @@ pub(super) async fn admit_frame(
         (grant, allowed)
     };
     if !allowed {
-        let request_id = match frame {
-            KernelIncomingFrame::Request { request_id, .. }
-            | KernelIncomingFrame::Subscribe { request_id, .. }
-            | KernelIncomingFrame::Unsubscribe { request_id } => request_id.clone(),
-        };
-        let _ = try_send_outgoing_frame(outgoing_tx, close_tx, close_requested, &runtime.transport_health,
-                KernelOutgoingFrame::Response { request_id, response: Box::new(None), error: Some(KernelTransportError {
-                    code: "kernel_access_denied".into(), message: "Unix peers may only request access until approved; requests must stay within the granted session".into(), retryable: false,
-                }) }, None, None);
+        deny_frame(runtime, outgoing_tx, close_tx, close_requested, frame);
         return Err(());
     }
     let grant = grant.expect("allowed grant");
@@ -175,6 +223,37 @@ pub(super) async fn admit_frame(
     Ok(caller)
 }
 
+fn deny_frame(
+    runtime: &KernelTransportRuntime,
+    outgoing_tx: &KernelOutgoingSender,
+    close_tx: &mpsc::UnboundedSender<ConnectionCloseCommand>,
+    close_requested: &Arc<AtomicBool>,
+    frame: &KernelIncomingFrame,
+) {
+    let request_id = match frame {
+        KernelIncomingFrame::Request { request_id, .. }
+        | KernelIncomingFrame::Subscribe { request_id, .. }
+        | KernelIncomingFrame::Unsubscribe { request_id } => request_id.clone(),
+    };
+    let _ = try_send_outgoing_frame(
+        outgoing_tx,
+        close_tx,
+        close_requested,
+        &runtime.transport_health,
+        KernelOutgoingFrame::Response {
+            request_id,
+            response: Box::new(None),
+            error: Some(KernelTransportError {
+                code: "kernel_access_denied".into(),
+                message: "Unix peer has no live authority for this request".into(),
+                retryable: false,
+            }),
+        },
+        None,
+        None,
+    );
+}
+
 pub(super) fn delivery_live(
     runtime: &crate::runtime::state::KernelRuntimeState,
     peer: Option<&crate::runtime::kernel_access::process::ProcessIdentity>,
@@ -186,7 +265,13 @@ pub(super) fn delivery_live(
                 .lock()
                 .expect("bound grant poisoned")
                 .as_deref()
-                .is_none_or(|id| runtime.access_grant_live(id, peer))
+                .is_none_or(|id| {
+                    if id.starts_with("sudo:") {
+                        runtime.sudo_peer_live(id, peer)
+                    } else {
+                        runtime.access_grant_live(id, peer)
+                    }
+                })
     })
 }
 

@@ -471,6 +471,7 @@ fn partial_provider_cleanup_retries_ended_runs_before_releasing_capacity() {
                 crate::app::TrackedProviderProcess {
                     process_id: "tracked-process".to_string(),
                     pid: None,
+                    identity: None,
                     endpoint_mode: crate::provider::AgentEndpointMode::Managed,
                     process_label: "provider-cleanup-test".to_string(),
                     started_at_ms: crate::session::unix_epoch_ms(),
