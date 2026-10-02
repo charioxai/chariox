@@ -5,10 +5,11 @@ use std::time::Duration;
 
 use chariox_kernel::attachment::{AttachRequest, ClientCapabilityLevel};
 use chariox_kernel::provider::{LaunchProviderRequest, ProviderRunState};
-use chariox_kernel::session::{CreateSessionRequest, PromptStatus, PromptSubmissionOutcome};
+use chariox_kernel::session::{PromptStatus, PromptSubmissionOutcome};
 use chariox_kernel::{DaemonApp, DaemonConfig};
 
 mod support;
+use support::kernel_websocket::ExecutionWorkspace;
 use support::runtime_integration::{
     collect_provider_records_until, collect_terminal_output_until, create_opencode_fixture_script,
     opencode_env_guard, render_terminal_output, MockOpenCodeServer,
@@ -17,15 +18,14 @@ use support::runtime_integration::{
 #[test]
 fn mock_opencode_without_fixture_credentials_cannot_launch() {
     let _guard = opencode_env_guard();
+    let workspace = ExecutionWorkspace::new();
     let fixture_path = create_opencode_fixture_script();
     env::set_var("CHARIOX_OPENCODE_BIN", &fixture_path);
     let fixture_data = std::path::PathBuf::from(env::var_os("XDG_DATA_HOME").unwrap());
     fs::remove_file(fixture_data.join("opencode/auth.json"))
         .expect("remove only the isolated fake credential");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
-    let (session, agent) = app
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
-        .unwrap();
+    let (session, agent) = app.create_session(workspace.session_request()).unwrap();
     let result = app.launch_provider(
         LaunchProviderRequest::new(session.id(), "opencode", "opencode", "default", "default")
             .with_agent_id(agent.id()),
@@ -43,6 +43,7 @@ fn mock_opencode_without_fixture_credentials_cannot_launch() {
 #[test]
 fn focused_agent_prompts_route_to_distinct_opencode_runs_and_history() {
     let _guard = opencode_env_guard();
+    let workspace = ExecutionWorkspace::new();
     let fixture_path = create_opencode_fixture_script();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
     let previous_bin = env::var_os("CHARIOX_OPENCODE_BIN");
@@ -53,7 +54,7 @@ fn focused_agent_prompts_route_to_distinct_opencode_runs_and_history() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let (session, default_agent) = app
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
         .attach(AttachRequest::new(
@@ -209,6 +210,7 @@ fn focused_agent_prompts_route_to_distinct_opencode_runs_and_history() {
 #[test]
 fn focusing_another_agent_during_an_opencode_prompt_keeps_the_working_run_active() {
     let _guard = opencode_env_guard();
+    let workspace = ExecutionWorkspace::new();
     let fixture_path = create_opencode_fixture_script();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(150));
     let previous_bin = env::var_os("CHARIOX_OPENCODE_BIN");
@@ -219,7 +221,7 @@ fn focusing_another_agent_during_an_opencode_prompt_keeps_the_working_run_active
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let (session, default_agent) = app
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
         .attach(AttachRequest::new(
@@ -333,6 +335,7 @@ fn focusing_another_agent_during_an_opencode_prompt_keeps_the_working_run_active
 #[test]
 fn prompt_for_another_agent_starts_on_its_own_run_without_switching_focus_selection() {
     let _guard = opencode_env_guard();
+    let workspace = ExecutionWorkspace::new();
     let fixture_path = create_opencode_fixture_script();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(150));
     let previous_bin = env::var_os("CHARIOX_OPENCODE_BIN");
@@ -343,7 +346,7 @@ fn prompt_for_another_agent_starts_on_its_own_run_without_switching_focus_select
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let (session, default_agent) = app
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
         .attach(AttachRequest::new(
@@ -507,6 +510,7 @@ fn prompt_for_another_agent_starts_on_its_own_run_without_switching_focus_select
 #[test]
 fn detaching_the_last_attachment_keeps_an_active_turn_available_on_rejoin() {
     let _guard = opencode_env_guard();
+    let workspace = ExecutionWorkspace::new();
     let fixture_path = create_opencode_fixture_script();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(150));
     let previous_bin = env::var_os("CHARIOX_OPENCODE_BIN");
@@ -518,7 +522,7 @@ fn detaching_the_last_attachment_keeps_an_active_turn_available_on_rejoin() {
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let session = app
         .sessions_mut()
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(workspace.session_request())
         .expect("session should be created");
     let first = app
         .attach(AttachRequest::new(
