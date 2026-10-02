@@ -29,7 +29,7 @@ function create(role, home, extra = []) {
 function startBrowser(id, name) {
   docker(["start", id]);
   execute(id, ["bash", "/opt/chariox-slice/slice-screen.sh", "start"], 90);
-  const sandbox = JSON.parse(execute(id, ["node", "/opt/chariox-slice/chromium-sandbox-probe.mjs"], 30));
+  const sandbox = JSON.parse(execute(id, ["node", "/opt/chariox-drill/chromium-sandbox-probe.mjs"], 30));
   assert.equal(sandbox.chromiumSandboxVerified, true);
   const config = JSON.parse(docker(["inspect", "--format", "{{json .HostConfig}}", id]));
   assert.equal(config.Memory, 2 * 1024 ** 3);
@@ -41,13 +41,28 @@ function startBrowser(id, name) {
   assert.deepEqual(JSON.parse(config.SecurityOpt.find(option => option.startsWith("seccomp=")).slice(8)), JSON.parse(readFileSync(policy)));
   record(name, { ...sandbox, resourcesVerified: true });
 }
-function profile(id, action, name) {
-  const result = JSON.parse(execute(id, ["node", "/opt/chariox-drill/profile.mjs", action], 30));
+function profile(id, action, name, target = "") {
+  const result = JSON.parse(execute(id, ["node", "/opt/chariox-drill/profile.mjs", action, target], 30));
   record(name, result);
   return result;
 }
 
+function fallback(id, name) {
+  // Disable only this owned fixture's CDP URL helper to exercise the actual
+  // production same-profile launch fallback; always restore the packaged bytes.
+  execute(id, ["mv", "/opt/chariox-slice/browser-cdp.mjs", "/opt/chariox-slice/browser-cdp.mjs.disabled"], 5, "root");
+  try {
+    execute(id, ["bash", "/opt/chariox-slice/slice-screen.sh", "open-url", "http://127.0.0.1:8765/app.html#fallback"], 30);
+    profile(id, "verify", name, "fallback");
+  } finally {
+    execute(id, ["mv", "/opt/chariox-slice/browser-cdp.mjs.disabled", "/opt/chariox-slice/browser-cdp.mjs"], 5, "root");
+  }
+}
+
 try {
+  record("environment", { executionEnvironment: owner.executionEnvironment, coordinatorUid: process.getuid(),
+    dockerSecurityOptions: JSON.parse(docker(["info", "--format", "{{json .SecurityOptions}}"])),
+    ownedLinuxRoomValidated: false, protectedRootlessTopologyValidated: false });
   const firstVolume = volume("source");
   const first = create("source", firstVolume);
   startBrowser(first, "initial-sandbox");
@@ -55,6 +70,7 @@ try {
   writeFileSync(join(evidence, "versions.txt"), execute(first, ["bash", "-lc", "node --version; chromium --version; dpkg-query -W chromium chromium-sandbox; uname -r"]));
   profile(first, "seed", "seed");
   profile(first, "verify", "initial-storage");
+  fallback(first, "initial-fallback-storage");
   execute(first, ["bash", "/opt/chariox-slice/slice-screen.sh", "stop"], 90);
   assert.equal(execute(first, ["bash", "-lc", "pgrep -af '/usr/lib/chromium/chromium' | grep -v pgrep | grep -v defunct || true"]), "");
   // The archive contains the whole stopped home, including Local State,
@@ -81,6 +97,7 @@ try {
   startBrowser(restored, "restored-sandbox");
   const restoredState = profile(restored, "verify", "restored-storage");
   assert.equal(restoredState.sessionTabRestored, true, "the production launcher did not restore the saved fixture tab");
+  fallback(restored, "restored-fallback-storage");
   profile(restored, "revoked", "server-revocation-negative");
   execute(restored, ["bash", "/opt/chariox-slice/slice-screen.sh", "stop"], 90);
   docker(["stop", "--time", "10", restored]);

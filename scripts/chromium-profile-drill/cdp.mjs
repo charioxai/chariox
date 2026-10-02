@@ -1,4 +1,4 @@
-import { boundedResponseJson } from "/opt/chariox-slice/chromium-sandbox-probe.mjs";
+import { boundedResponseJson } from "/opt/chariox-drill/chromium-sandbox-probe.mjs";
 
 export async function connect() {
   const response = await fetch("http://127.0.0.1:9222/json/version", { signal: AbortSignal.timeout(3000) });

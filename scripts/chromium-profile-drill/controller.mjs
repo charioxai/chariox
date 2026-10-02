@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { checked, docker, loadOwner } from "./resources.mjs";
 import { repository } from "./prepare.mjs";
+import { drillEnvironment } from "./environment.mjs";
 
 const sourceFiles = ["browser_controller.rs", ...[
   "actor.rs", "protocol.rs", "types.rs", "tests.rs", "tests/fixture.rs", "tests/hosted.rs",
@@ -34,10 +35,9 @@ export function manifestFromLock(lock) {
 }
 
 function identity() {
-  assert.equal(process.platform, "linux");
-  assert.equal(process.env.RUNNER_ENVIRONMENT, "github-hosted");
-  assert.equal(process.env.GITHUB_REPOSITORY, "charioxai/chariox");
-  assert.ok(process.getuid() > 0 && process.getgid() > 0, "fixture coordinator must run as the runner user");
+  if (drillEnvironment() === "github-hosted") {
+    assert.ok(process.getuid() > 0 && process.getgid() > 0, "fixture coordinator must run as the runner user");
+  }
   return { uid: process.getuid(), gid: process.getgid() };
 }
 function unit(name, properties, command, args, timeout) {
@@ -77,7 +77,7 @@ export function build(scratch) {
   // adds this isolated package and removes unrelated entries; record that exact
   // resulting lock separately rather than claiming byte identity with workspace.
   const output = unit(`chariox-browser-build-${owner.id}`, [`User=${uid}`, `Group=${gid}`, "MemoryMax=1536M", "CPUQuota=100%", "TasksMax=128", "RuntimeMaxSec=180"],
-    "/usr/bin/env", [...env, cargo, "test", "--manifest-path", join(harness, "Cargo.toml"), "--no-run", "--message-format=json"], 190000);
+    "/usr/bin/env", [...env, ...(owner.executionEnvironment === "builder" ? [checked("which", ["slot-run"])] : []), cargo, "test", "--manifest-path", join(harness, "Cargo.toml"), "--no-run", "--message-format=json"], 190000);
   const artifacts = output.split("\n").filter(Boolean).map(line => JSON.parse(line))
     .filter(value => value.reason === "compiler-artifact" && value.target?.name === "chariox_browser_controller_validation" && value.executable);
   assert.equal(artifacts.length, 1);
@@ -91,7 +91,7 @@ export function build(scratch) {
   const record = { revision: owner.revision, inputs, workspaceLockDigest: digest(lock),
     harnessLockDigest: digest(readFileSync(join(harness, "Cargo.lock"))),
     binaryDigest: binaryDigest(executable), executable,
-    toolchain: checked("rustc", ["--version"]), unitTests: 11, hostedTestExecuted: false };
+    toolchain: checked("rustc", ["--version"]), executionEnvironment: owner.executionEnvironment, coordinatorUid: uid, unitTests: 11, hostedTestExecuted: false };
   writeFileSync(join(harness, "build.json"), JSON.stringify(record));
   writeFileSync(join(scratch, "evidence/controller-inputs.json"), JSON.stringify(record, null, 2));
 }

@@ -39,7 +39,7 @@ const mode = process.argv[2];
 if (!["seed", "verify", "revoked", "empty"].includes(mode)) throw new Error("invalid profile drill mode");
 const socket = await connect();
 try {
-  const url = "http://127.0.0.1:8765/app.html";
+  const url = "http://127.0.0.1:8765/app.html" + (process.argv[3] === "fallback" ? "#fallback" : "");
   const findTarget = async () => (await socket.send("Target.getTargets")).targetInfos.find(target => target.type === "page" && target.url === url);
   let target = await findTarget();
   // Session restoration is asynchronous after the production launcher starts.

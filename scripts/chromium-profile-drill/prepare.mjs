@@ -1,15 +1,19 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { drillEnvironment } from "./environment.mjs";
 
 export const repository = fileURLToPath(new URL("../../", import.meta.url));
 export const source = join(repository, "apps/kernel/slice-linux-docker");
-export function verifyInputs() {
-  const production = readFileSync(join(source, "docker/Dockerfile"), "utf8");
-  const fixture = readFileSync(new URL("./Dockerfile", import.meta.url), "utf8");
+export const fixtureSource = dirname(fileURLToPath(import.meta.url));
+const productionFiles = ["docker/slice-screen.sh", "docker/browser-cdp.mjs", "docker/tint2rc", "chromium-seccomp.json"];
+const digest = bytes => createHash("sha256").update(bytes).digest("hex");
+export function verifyInputs({ sourceRoot = source, fixtureRoot = fixtureSource } = {}) {
+  const production = readFileSync(join(sourceRoot, "docker/Dockerfile"), "utf8");
+  const fixture = readFileSync(join(fixtureRoot, "Dockerfile"), "utf8");
   for (const pattern of [/^FROM node:22\.17\.1-bookworm@sha256:[a-f0-9]{64} AS ca-bundle$/m,
     /^RUN echo '[a-f0-9]{64}  \/etc\/ssl\/certs\/ca-certificates\.crt'.*$/m,
     /^FROM node:22-bookworm-slim@sha256:[a-f0-9]{64}$/m,
@@ -17,14 +21,31 @@ export function verifyInputs() {
     assert.ok(production.match(pattern), "production immutable browser input is missing");
     assert.equal(fixture.match(pattern)?.[0], production.match(pattern)[0], "fixture browser inputs drifted from production");
   }
-  for (const name of ["slice-screen.sh", "browser-cdp.mjs", "chromium-sandbox-probe.mjs"]) {
-    assert.ok(production.includes(`apps/kernel/slice-linux-docker/docker/${name} /opt/chariox-slice/${name}`), `production image omits ${name}`);
+  for (const text of [production, fixture]) {
+    assert.match(text, /^COPY --from=ca-bundle \/etc\/ssl\/certs\/ca-certificates\.crt \/etc\/ssl\/certs\/ca-certificates\.crt$/m, "CA bundle copy is missing");
   }
+  const browserStage = production.slice(production.lastIndexOf("FROM node:22-bookworm-slim@"));
+  const aptSetup = /RUN printf[^]*?&& apt-get install -y --no-install-recommends --allow-downgrades/;
+  assert.ok(browserStage.match(aptSetup), "production browser apt setup is missing");
+  assert.equal(fixture.match(aptSetup)?.[0], browserStage.match(aptSetup)[0], "fixture apt setup drifted from production");
+  const packages = text => text.match(/apt-get install -y --no-install-recommends --allow-downgrades([^]*?)&& rm -rf \/var\/lib\/apt\/lists/)[1]
+    .replace(/\\/g, "").trim().split(/\s+/);
+  for (const name of packages(fixture)) assert.ok(packages(browserStage).includes(name), `fixture apt package drifted: ${name}`);
+  for (const name of ["slice-screen.sh", "browser-cdp.mjs", "tint2rc"]) {
+    assert.ok(browserStage.includes(`apps/kernel/slice-linux-docker/docker/${name} /opt/chariox-slice/${name}`), `production image omits ${name}`);
+  }
+  const pins = JSON.parse(readFileSync(join(fixtureRoot, "inputs.lock.json")));
+  assert.deepEqual(Object.keys(pins).sort(), [...productionFiles].sort());
+  for (const name of productionFiles) {
+    assert.match(pins[name], /^[a-f0-9]{64}$/);
+    assert.equal(digest(readFileSync(join(sourceRoot, name))), pins[name], `production input hash drifted: ${name}`);
+  }
+  return pins;
 }
 
 export function prepare() {
-  assert.equal(process.env.GITHUB_ACTIONS, "true", "the real browser drill runs on its hosted runner");
-  verifyInputs();
+  const executionEnvironment = drillEnvironment();
+  const pins = verifyInputs();
   const revision = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repository, encoding: "utf8", timeout: 3000 }).stdout.trim();
   assert.match(revision, /^[a-f0-9]{40}$/);
   assert.equal(revision, process.env.EXPECTED_REVISION);
@@ -33,15 +54,20 @@ export function prepare() {
   const evidence = join(scratch, "evidence");
   for (const path of [context, evidence, join(scratch, "home"), join(scratch, "tmp"), join(scratch, "bin")]) mkdirSync(path, { mode: 0o700 });
   const id = randomBytes(12).toString("hex");
-  const manifest = { id, revision, image: `chariox-chromium-drill:${id}`, inputs: {} };
-  for (const name of ["slice-screen.sh", "browser-cdp.mjs", "chromium-sandbox-probe.mjs"]) {
-    const path = join(source, "docker", name);
-    copyFileSync(path, join(context, name));
-    manifest.inputs[name] = createHash("sha256").update(readFileSync(path)).digest("hex");
+  const manifest = { id, revision, image: `chariox-chromium-drill:${id}`, executionEnvironment, inputs: { ...pins }, testOnlyInputs: {} };
+  for (const name of productionFiles.filter(name => name.startsWith("docker/"))) {
+    const path = join(source, name);
+    assert.equal(digest(readFileSync(path)), pins[name]);
+    copyFileSync(path, join(context, name.slice("docker/".length)));
+    assert.equal(digest(readFileSync(join(context, name.slice("docker/".length)))), pins[name]);
   }
-  for (const name of ["Dockerfile", "fixture-server.mjs", "cdp.mjs", "profile.mjs"]) copyFileSync(new URL(`./${name}`, import.meta.url), join(context, name));
+  // This retained source probe is a test fixture; production no longer ships it.
+  const probe = join(source, "docker/chromium-sandbox-probe.mjs");
+  copyFileSync(probe, join(context, "chromium-sandbox-probe.mjs"));
+  manifest.testOnlyInputs["chromium-sandbox-probe.mjs"] = digest(readFileSync(probe));
+  for (const name of ["Dockerfile", "fixture-server.mjs", "cdp.mjs", "profile.mjs"]) copyFileSync(join(fixtureSource, name), join(context, name));
   copyFileSync(join(source, "chromium-seccomp.json"), join(scratch, "chromium-seccomp.json"));
-  manifest.inputs.seccomp = createHash("sha256").update(readFileSync(join(scratch, "chromium-seccomp.json"))).digest("hex");
+  assert.equal(digest(readFileSync(join(scratch, "chromium-seccomp.json"))), pins["chromium-seccomp.json"]);
   writeFileSync(join(scratch, "owner.json"), JSON.stringify(manifest), { mode: 0o600 });
   writeFileSync(join(evidence, "inputs.json"), JSON.stringify(manifest, null, 2));
   appendFileSync(process.env.GITHUB_OUTPUT, `scratch=${scratch}\ncontext=${context}\nevidence=${evidence}\nimage=${manifest.image}\nid=${id}\n`);
