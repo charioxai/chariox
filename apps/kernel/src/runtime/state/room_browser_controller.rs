@@ -28,7 +28,7 @@ impl KernelRuntimeState {
         session_id: &str,
         command: Command,
     ) -> Result<Response, DaemonError> {
-        self.room_browser_controller_command_inner(session_id, command, false, None)
+        self.room_browser_controller_command_inner(session_id, command, false, false, None)
             .await
     }
 
@@ -38,7 +38,7 @@ impl KernelRuntimeState {
         command: Command,
         deadline: tokio::time::Instant,
     ) -> Result<Response, DaemonError> {
-        self.room_browser_controller_command_inner(session_id, command, false, Some(deadline))
+        self.room_browser_controller_command_inner(session_id, command, false, false, Some(deadline))
             .await
     }
 
@@ -47,8 +47,22 @@ impl KernelRuntimeState {
         session_id: &str,
         command: Command,
     ) -> Result<Response, DaemonError> {
-        self.room_browser_controller_command_inner(session_id, command, true, None)
+        self.room_browser_controller_command_inner(session_id, command, true, false, None)
             .await
+    }
+
+    pub(super) async fn room_browser_controller_health_probe(
+        &self,
+        session_id: &str,
+        viewport: crate::session::CanonicalViewport,
+    ) -> Result<Response, DaemonError> {
+        self.room_browser_controller_command_inner(
+            session_id,
+            Command::Reconcile { viewport },
+            false,
+            true,
+            None,
+        ).await
     }
 
     async fn room_browser_controller_command_inner(
@@ -56,6 +70,7 @@ impl KernelRuntimeState {
         session_id: &str,
         command: Command,
         recovery_authority: bool,
+        background_probe: bool,
         admission_deadline: Option<tokio::time::Instant>,
     ) -> Result<Response, DaemonError> {
         // Cleanup must remain available while the Room is quarantined, including
@@ -100,6 +115,7 @@ impl KernelRuntimeState {
                 session_id,
                 slice,
                 command,
+                background_probe,
                 admission_deadline,
             ))
             .await?
@@ -151,6 +167,7 @@ impl KernelRuntimeState {
         session_id: &str,
         slice: crate::slice::SliceRecord,
         command: Command,
+        background_probe: bool,
         admission_deadline: Option<tokio::time::Instant>,
     ) -> Result<Response, DaemonError> {
         let (slice, _guard) = self
@@ -158,6 +175,7 @@ impl KernelRuntimeState {
                 session_id,
                 &slice.id,
                 &command,
+                background_probe,
                 admission_deadline,
             )
             .await?;

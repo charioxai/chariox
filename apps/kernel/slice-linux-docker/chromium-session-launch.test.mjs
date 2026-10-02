@@ -53,6 +53,15 @@ require('node:fs').writeFileSync(process.env.CHARIOX_TEST_ARGS, JSON.stringify(p
       assert.equal(args.some(arg => arg.startsWith("--unsafely-treat-insecure-origin-as-secure")), false)
       if (session) assert.equal(await readFile(join(profile, "Default", session), "utf8"), "saved-session-fixture")
     } finally {
+      try {
+        const pid = Number(await readFile(join(root, "logs/chromium-supervisor.pid"), "utf8"));
+        process.kill(pid, "SIGTERM");
+        for (let n=0;n<40;n++) {
+          try { await readFile(join(root, "logs/chromium-supervisor.pid")); }
+          catch { break; }
+          await new Promise(resolve=>setTimeout(resolve,50));
+        }
+      } catch {}
       await rm(root, { recursive: true, force: true })
     }
   })

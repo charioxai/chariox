@@ -8,13 +8,15 @@ impl KernelRuntimeState {
         session_id: &str,
         slice_id: &str,
         command: &Command,
+        background_probe: bool,
         deadline: Option<tokio::time::Instant>,
     ) -> Result<(SliceRecord, Option<SliceEnvironmentUseGuard>), DaemonError> {
+        debug_assert!(!background_probe || matches!(command, Command::Reconcile { .. }));
         // Cancellation bypasses the slot held by its original action. App
         // bridge polls/answers only drain a queue and may share a route slot.
         let guard = if matches!(command, Command::CancelAction { .. }) {
             None
-        } else if matches!(
+        } else if background_probe || matches!(
             command,
             Command::AppView {
                 request: crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Calls

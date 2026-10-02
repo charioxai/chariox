@@ -4,7 +4,12 @@ use crate::session::{
     EnvironmentLifecycle as Lifecycle,
 };
 
-async fn fixture() -> (KernelRuntimeState, String, TestBrowserControllerTool) {
+async fn fixture() -> (
+    KernelRuntimeState,
+    String,
+    TestBrowserControllerTool,
+    crate::slice::SliceStore,
+) {
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap(),
     ));
@@ -55,12 +60,13 @@ async fn fixture() -> (KernelRuntimeState, String, TestBrowserControllerTool) {
     state
         .transition_room_environment(&session_id, Lifecycle::Ready)
         .unwrap();
-    (state, session_id, tool)
+    let slices = app.lock().await.slices();
+    (state, session_id, tool, slices)
 }
 
 #[tokio::test]
 async fn room_browser_health_detects_loss_and_recovers_without_controller_restart() {
-    let (state, room, tool) = fixture().await;
+    let (state, room, tool, _) = fixture().await;
     let before = state.room_environment_snapshot(&room).unwrap();
     std::fs::write(tool.root.join("browser-exited"), "").unwrap();
     state
@@ -98,7 +104,7 @@ async fn room_browser_health_detects_loss_and_recovers_without_controller_restar
 
 #[tokio::test]
 async fn room_browser_health_ignores_stopped_and_new_generation_receipts() {
-    let (state, room, _tool) = fixture().await;
+    let (state, room, _tool, _) = fixture().await;
     let before = state.room_environment_snapshot(&room).unwrap();
     state.stop_room_environment(&room).unwrap();
     state.observe_room_browser_health(&room, before.runtime_generation, None);
@@ -120,4 +126,65 @@ async fn room_browser_health_ignores_stopped_and_new_generation_receipts() {
         Some("browser_debugger_unavailable"),
     );
     assert_eq!(state.room_environment_snapshot(&room).unwrap(), restarted);
+}
+
+#[tokio::test]
+async fn room_browser_health_probe_shares_controller_routes_and_yields_to_slice_lifecycle() {
+    let (state, room, _tool, slices) = fixture().await;
+    let slice = slices
+        .create(
+            "health-home",
+            "health-machine",
+            crate::slice::CreateSliceInput {
+                name: "health-admission".into(),
+                backend: crate::slice::SliceBackendKind::LocalDocker,
+                os: "linux".into(),
+                display_mode: crate::slice::SliceDisplayMode::Headed,
+                display_backend: crate::slice::SliceDisplayBackend::Novnc,
+                workspace_id: None,
+                worktree_id: None,
+                workspace_mount: None,
+                development: None,
+                worker_kernel_ref: Some("health-worker".into()),
+                display_url: None,
+                provider_auth: vec![],
+                from_saved_state: None,
+                now_ms: 1,
+            },
+        )
+        .unwrap();
+    let slice = slices
+        .bind_environment(&room, &slice.id, 2, |_| Ok(()))
+        .unwrap();
+    let command =
+        crate::transport::room_browser_controller::RoomBrowserControllerCommand::Reconcile {
+            viewport: state.room_environment_snapshot(&room).unwrap().viewport,
+        };
+    let probe = state
+        .room_browser_controller_route_guard(&room, &slice, &command, true)
+        .unwrap();
+    assert!(
+        probe.is_none(),
+        "background health must never own the exclusive operation slot"
+    );
+    let foreground = state
+        .room_browser_controller_route_guard(&room, &slice, &command, false)
+        .unwrap();
+    assert!(
+        foreground.is_some(),
+        "a foreground command must remain admissible during a probe"
+    );
+    assert!(state
+        .room_browser_controller_route_guard(&room, &slice, &command, true)
+        .unwrap()
+        .is_none());
+    drop(foreground);
+    let lifecycle = slices.try_begin_operation(&slice.id, "slice.stop").unwrap();
+    assert!(
+        state
+            .room_browser_controller_route_guard(&room, &slice, &command, true)
+            .is_err(),
+        "health must yield to actual slice lifecycle authority"
+    );
+    drop(lifecycle);
 }

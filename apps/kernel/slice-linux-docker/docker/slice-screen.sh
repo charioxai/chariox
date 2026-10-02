@@ -253,10 +253,10 @@ run_chromium() {
 # renderer/crashpad children; this supervisor reaps the browser itself.
 supervise_chromium() {
   exec 3>"$LOGS/chromium-supervisor.lock"
-  flock -n 3 || return 0
+  flock -w 10 3 || { log "browser supervisor lock timed out"; return 1; }
   printf '%s\n' "$$" >"$LOGS/chromium-supervisor.pid"
-  local browser_pid=""
-  trap 'trap - TERM INT; [[ -z "$browser_pid" ]] || kill -TERM "$browser_pid" 2>/dev/null || true; [[ -z "$browser_pid" ]] || wait "$browser_pid" || true; rm -f "$LOGS/chromium-supervisor.pid"; exit 0' TERM INT
+  local browser_pid="" backoff_pid=""
+  trap 'trap - TERM INT; [[ -z "$browser_pid" ]] || kill -TERM "$browser_pid" 2>/dev/null || true; [[ -z "$browser_pid" ]] || wait "$browser_pid" || true; [[ -z "$backoff_pid" ]] || kill -TERM "$backoff_pid" 2>/dev/null || true; [[ -z "$backoff_pid" ]] || wait "$backoff_pid" || true; rm -f "$LOGS/chromium-supervisor.pid"; exit 0' TERM INT
   while true; do
     run_chromium "$@" 3>&- &
     browser_pid=$!
@@ -264,21 +264,40 @@ supervise_chromium() {
     browser_pid=""
     # Avoid a restart storm, and leave a bounded loss window for Room health.
     log "Chromium exited; relaunching in 6 seconds"
-    sleep 6
+    sleep 6 3>&- &
+    backoff_pid=$!
+    wait "$backoff_pid" || true
+    backoff_pid=""
     set --
   done
 }
 
-launch_chromium() {
+# Serialize launchers, including an open-url during supervisor backoff. Child
+# processes close this lock FD; it belongs only to this bounded launch request.
+launch_chromium() (
+  exec 4>"$LOGS/chromium-launch.lock"
+  flock -w 10 4 || { log "browser launch lock timed out"; return 1; }
   if process_running "chromium.*$CHROME_PROFILE"; then
-    run_chromium "$@" &
-  else
-    nohup bash "$ROOT/slice-screen.sh" supervise-browser "$@" >>"$LOGS/chromium-supervisor.log" 2>&1 &
+    run_chromium "$@" 4>&- &
+    return
   fi
-}
+  stop_chromium_supervisor
+  nohup bash "${BASH_SOURCE[0]}" supervise-browser "$@" 4>&- >>"$LOGS/chromium-supervisor.log" 2>&1 &
+  for _ in $(seq 1 50); do
+    process_running "chromium.*$CHROME_PROFILE" && return
+    sleep 0.1
+  done
+  log "Chromium supervisor did not launch a browser"
+  stop_chromium_supervisor
+  return 1
+)
 
 stop_chromium_supervisor() {
   local supervisor_pid
+  # Preserve the existing graceful session flush before stopping ownership.
+  if process_running "chromium.*$CHROME_PROFILE"; then
+    timeout --foreground 3s node "$ROOT/browser-cdp.mjs" close-browser >/dev/null 2>&1 || true
+  fi
   if [[ -f "$LOGS/chromium-supervisor.pid" ]]; then
     supervisor_pid="$(cat "$LOGS/chromium-supervisor.pid")"
     if [[ "$supervisor_pid" =~ ^[0-9]+$ ]]; then
@@ -287,6 +306,10 @@ stop_chromium_supervisor() {
         [[ -f "$LOGS/chromium-supervisor.pid" ]] || break
         sleep 0.1
       done
+      if [[ -f "$LOGS/chromium-supervisor.pid" ]]; then
+        log "Chromium supervisor did not stop"
+        return 1
+      fi
     fi
   fi
 }
