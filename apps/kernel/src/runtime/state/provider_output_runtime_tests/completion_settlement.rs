@@ -2163,20 +2163,6 @@ async fn failed_workflow_turn_retries_queued_work_after_provider_replacement_in_
             crate::attachment::ClientCapabilityLevel::FullTerminal,
         ))
         .expect("attachment should attach");
-    let failed_provider_run = app
-        .launch_provider(
-            crate::provider::LaunchProviderRequest::new(
-                session.id(),
-                "dev-stub",
-                "dev-stub",
-                "default",
-                "sonnet",
-            )
-            .with_agent_id(&worker),
-        )
-        .expect("provider run should launch");
-    app.update_provider_run_projection(failed_provider_run.clone());
-
     let (failed_workflow_run, failed_node) =
         invoke_single_node_workflow(&mut app, session.id(), "wf-failed", &worker);
     let failed_prompt = app
@@ -2187,6 +2173,12 @@ async fn failed_workflow_turn_retries_queued_work_after_provider_replacement_in_
         failed_prompt.workflow_run_id(),
         Some(failed_workflow_run.id())
     );
+    // MP-08/MP-10: the workflow prepares its own provider configuration.
+    // Inject failure into its actual run, rather than an earlier launch.
+    let failed_provider_run = app
+        .providers()
+        .get_run_for_agent(session.id(), &worker)
+        .expect("workflow provider run should exist");
 
     let crate::session::PromptSubmissionOutcome::Queued {
         prompt: first_queued_user_prompt,
