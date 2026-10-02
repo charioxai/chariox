@@ -220,6 +220,24 @@ impl KernelRuntimeState {
         )
     }
 
+    pub(super) fn create_terminal_credential_interaction(
+        &self,
+        session_id: &str,
+        interaction: crate::session::RuntimeInteraction,
+    ) -> Result<oneshot::Receiver<PendingInteractionResolution>, DaemonError> {
+        let session = self.owned.session_store.get_session(session_id)?;
+        let (tx, rx) = oneshot::channel();
+        self.owned.register_runtime_interaction(
+            session_id,
+            interaction,
+            tx,
+            None,
+            Some(session.owner_user_id()),
+        )?;
+        // Secret-entry and vault-management prompts go only to terminals.
+        Ok(rx)
+    }
+
     pub(in crate::runtime) async fn create_kernel_operation_interaction(
         &self,
         session_id: &str,
@@ -283,6 +301,20 @@ impl KernelRuntimeState {
         passkey_remember_minutes: Option<u32>,
         connection_class: Option<crate::local::KernelConnectionClass>,
     ) -> Result<(), DaemonError> {
+        if connection_class
+            .is_some_and(|class| class != crate::local::KernelConnectionClass::Terminal)
+            && self
+                .owned
+                .pending_interactions
+                .write()
+                .get(interaction_id)
+                .is_some_and(|pending| pending.terminal_credential_owner.is_some())
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "credential interaction",
+                message: "Only a Chariox terminal can answer a credential prompt".into(),
+            });
+        }
         let authorization = self
             .authorize_critical_approval(
                 session_id,

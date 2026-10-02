@@ -9,6 +9,8 @@ const PASSKEY: &str = "Access TEST Passkey";
 const AUTH: &str = "test-terminal";
 const SESSION: &str = "access-session";
 
+mod credential_authority;
+
 #[test]
 #[ignore = "subprocess entry point"]
 fn kernel_access_child_server() {
@@ -22,6 +24,8 @@ fn kernel_access_child_server() {
         .unwrap()
         .block_on(async {
             let root = PathBuf::from(root);
+            let worktree = root.join("worktree");
+            std::fs::create_dir(&worktree).unwrap();
             let tcp = StdTcpListener::bind("127.0.0.1:0").unwrap();
             let addr = tcp.local_addr().unwrap();
             let mcp = StdTcpListener::bind("127.0.0.1:0").unwrap();
@@ -33,8 +37,10 @@ fn kernel_access_child_server() {
                 crate::config::CredentialVaultBackend::CharioxEncrypted;
             let vault = root.join("vault.json");
             config.user_config.credential_vault.path = vault.to_string_lossy().into_owned();
+            config.user_config.credential_vault.unlock_policy =
+                crate::config::CredentialVaultUnlockPolicy::KernelInit;
             crate::secret::create_chariox_encrypted_vault_for_test(&vault, PASSKEY).unwrap();
-            let app = DaemonApp::bootstrap(config).unwrap();
+            let app = crate::test_support::bootstrap_authenticated_app(config).unwrap();
             for id in [SESSION, "other-session"] {
                 let mut session = crate::session::RuntimeSession::new(
                     id,
@@ -49,7 +55,7 @@ fn kernel_access_child_server() {
                         .into(),
                     ),
                     "workspace",
-                    "worktree",
+                    worktree.to_str().unwrap(),
                     "machine",
                     "kernel",
                 );
@@ -59,6 +65,20 @@ fn kernel_access_child_server() {
                     crate::session::CollaborationLevel::Full,
                 );
                 app.sessions_mut().restore_session(session);
+            }
+            for id in ["access-vault-agent", "access-second-agent"] {
+                app.agents_mut()
+                    .restore_agent(crate::agent::AgentInstance::new(
+                        id,
+                        id,
+                        SESSION,
+                        None,
+                        "claude",
+                        None,
+                        None,
+                        None,
+                        crate::agent::GridPosition::new(0, 0, 1, 1),
+                    ));
             }
             let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
                 Arc::new(Mutex::new(app)),
@@ -403,7 +423,10 @@ impl Kernel {
             .args(["kernel_access_child_server", "--ignored", "--nocapture"])
             .env("CHARIOX_ACCESS_TEST_ROOT", &root)
             .env("CHARIOX_ACCESS_TEST_GRANT_ORDER", order)
-            .env("CHARIOX_HOME", &root)
+            .env("CHARIOX_HOME", root.join("state"))
+            .env("HOME", root.join("home"))
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .env_remove("CODEX_HOME")
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
             .spawn()

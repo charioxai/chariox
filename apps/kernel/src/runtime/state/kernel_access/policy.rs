@@ -112,7 +112,10 @@ impl KernelRuntimeState {
                     .pending_interactions
                     .write()
                     .get(&response.interaction_id)
-                    .is_none_or(|pending| pending.kernel_operation_owner.is_some())
+                    .is_none_or(|pending| {
+                        pending.kernel_operation_owner.is_some()
+                            || pending.terminal_credential_owner.is_some()
+                    })
         } else {
             forbidden
         };

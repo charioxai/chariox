@@ -177,6 +177,7 @@ impl KernelRuntimeOwnedState {
         if pending
             .kernel_operation_owner
             .as_deref()
+            .or(pending.terminal_credential_owner.as_deref())
             .is_some_and(|owner| Some(owner) != caller_user_id)
         {
             return Err(interaction_error(

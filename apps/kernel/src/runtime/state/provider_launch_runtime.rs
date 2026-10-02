@@ -150,6 +150,17 @@ impl KernelRuntimeState {
         request: &crate::local::LaunchProviderRunRequest,
         caller_user_id: &str,
     ) -> Result<Option<crate::local::LocalDaemonResponse>, DaemonError> {
+        self.launch_remote_native_provider_run_with_grant(request, caller_user_id, None)
+            .await
+    }
+
+    pub(crate) async fn launch_remote_native_provider_run_with_grant(
+        &self,
+        request: &crate::local::LaunchProviderRunRequest,
+        caller_user_id: &str,
+        external_grant_id: Option<&str>,
+    ) -> Result<Option<crate::local::LocalDaemonResponse>, DaemonError> {
+        self.authorize_provider_launch_grant(external_grant_id, request)?;
         if !request.native_tui {
             return Ok(None);
         }
@@ -224,6 +235,7 @@ impl KernelRuntimeState {
                                 &agent_id,
                                 &binding,
                                 credential,
+                                grant_id.as_deref(),
                             )
                             .await
                     }
@@ -312,7 +324,10 @@ impl KernelRuntimeState {
         provider_launch_credential: Option<
             crate::transport::relay_peer::RemoteProviderLaunchCredential,
         >,
+        external_grant_id: Option<&str>,
     ) -> Result<RelayPeerResponse, DaemonError> {
+        self.authorize_provider_launch_grant(external_grant_id, request)?;
+        let grant_id = external_grant_id.map(str::to_owned);
         let state = self.clone();
         let request = request.clone();
         let expected_leased_agent_id = remote_execution.leased_agent_id.clone();
@@ -320,6 +335,7 @@ impl KernelRuntimeState {
             agent_id,
             &expected_leased_agent_id,
             move |agent, remote_execution, manifest| async move {
+                state.authorize_provider_launch_grant(grant_id.as_deref(), &request)?;
                 super::remote_native_provider_launch::ensure_compatible_binding(
                     &remote_execution,
                 )?;
@@ -366,7 +382,9 @@ impl KernelRuntimeState {
                     remote_extension_manifest: manifest.without_mcp_tools(),
                     provider_launch_credential,
                 };
-                match state.connected_relay_state_for_config(&relay_config).await {
+                let relay_state = state.connected_relay_state_for_config(&relay_config).await;
+                state.authorize_provider_launch_grant(grant_id.as_deref(), &request)?;
+                match relay_state {
                     Some(relay_state) => {
                         crate::transport::relay_client::enqueue_peer_request_via_connected_relay_with_timeout(
                             &relay_config,
@@ -407,9 +425,34 @@ impl KernelRuntimeState {
         request: crate::local::LaunchProviderRunRequest,
         caller_user_id: String,
     ) -> Result<ProviderLaunchStartOutcome, DaemonError> {
+        self.start_provider_launch_with_grant(request, caller_user_id, None)
+            .await
+    }
+
+    pub(crate) fn authorize_provider_launch_grant(
+        &self,
+        external_grant_id: Option<&str>,
+        request: &crate::local::LaunchProviderRunRequest,
+    ) -> Result<(), DaemonError> {
+        if let Some(grant_id) = external_grant_id {
+            self.authorize_external_request(
+                grant_id,
+                &crate::local::LocalDaemonRequest::LaunchProviderRun(request.clone()),
+            )?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn start_provider_launch_with_grant(
+        &self,
+        request: crate::local::LaunchProviderRunRequest,
+        caller_user_id: String,
+        external_grant_id: Option<&str>,
+    ) -> Result<ProviderLaunchStartOutcome, DaemonError> {
+        self.authorize_provider_launch_grant(external_grant_id, &request)?;
         let launch_request = self
             .owned
-            .launch_provider_request_from_local_request(request);
+            .launch_provider_request_from_local_request(request.clone());
         {
             let owned = &self.owned;
             if launch_request.owner_user_id != caller_user_id {
@@ -427,6 +470,7 @@ impl KernelRuntimeState {
             let launch_request = self
                 .prepare_provider_launch_request_with_vault(launch_request, "launch provider run")
                 .await?;
+            self.authorize_provider_launch_grant(external_grant_id, &request)?;
             if let Some(run) = owned.reusable_native_tui_run_for_launch(&launch_request)? {
                 return Ok(ProviderLaunchStartOutcome::Reused(run));
             }
@@ -459,6 +503,7 @@ impl KernelRuntimeState {
             );
             if let Err(error) = self
                 .with_app_side_effect(|app| {
+                    self.authorize_provider_launch_grant(external_grant_id, &request)?;
                     crate::app::ProviderLaunchProcessRuntime::new(app)
                         .spawn_for_launch_with_credentials(&run, &started.provider_credential_env)
                 })
