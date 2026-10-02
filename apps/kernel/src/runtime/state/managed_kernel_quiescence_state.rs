@@ -1535,20 +1535,16 @@ mod tests {
         for error in [
             providers
                 .start_run_provider_only(request())
-                .err()
-                .expect("provider start must be fenced"),
+                .expect_err("provider start must be fenced"),
             providers
                 .launch_run_detached(request())
-                .err()
-                .expect("detached provider launch must be fenced"),
+                .expect_err("detached provider launch must be fenced"),
             providers
                 .resume_run_provider_only("session-1", "run-1")
-                .err()
-                .expect("provider resume must be fenced"),
+                .expect_err("provider resume must be fenced"),
             providers
                 .resume_run_detached("run-1")
-                .err()
-                .expect("detached provider resume must be fenced"),
+                .expect_err("detached provider resume must be fenced"),
         ] {
             assert!(
                 error.to_string().contains("fenced"),
