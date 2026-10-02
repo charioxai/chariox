@@ -9,7 +9,7 @@ function route(url) {
   return {socket,received,client:value=>fromClient(value),server:value=>fromServer(value),closed:()=>closed}
 }
 test('MP-08/MP-10 slow viewer does not delay terminal packets or close terminal recovery',async()=>{
- const transport=createWebFaultTransport({delayMs:10}),terminal=route('ws://127.0.0.1:1/relay'),viewer=route('ws://127.0.0.1:1/display/owned/stream')
+ const transport=createWebFaultTransport({delayMs:10}),terminal=route('ws://127.0.0.1:1/relay'),viewer=route('ws://127.0.0.1:1/kernel/display/owned/stream')
  transport.route(terminal.socket);transport.route(viewer.socket);transport.setMode('slow-viewer')
  terminal.client('terminal-control');viewer.server('opaque-encrypted-frame')
  assert.deepEqual(terminal.received,[['server','terminal-control']])

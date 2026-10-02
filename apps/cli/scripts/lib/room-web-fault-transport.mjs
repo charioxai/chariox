@@ -19,7 +19,7 @@ export function createWebFaultTransport({ transformClient = value => value, dela
     route(socket) {
       if (mode === 'web-disconnect') { counts.closed++; counts.affected++; socket.close(); return }
       const server = socket.connectToServer(); const pair = [socket, server]
-      pair.display = /^\/display\//.test(new URL(socket.url()).pathname)
+      pair.display = new URL(socket.url()).pathname.includes('/display/')
       connections.add(pair)
       socket.onMessage(value => forward(server, transformClient(value), pair))
       server.onMessage(value => forward(socket, value, pair))
