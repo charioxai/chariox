@@ -472,38 +472,9 @@ impl KernelRuntimeState {
     }
 
     fn room_browser_slice_for_tool(&self, session_id: &str, tool_name: &str) -> Option<String> {
-        use crate::transport::runtime_tools::*;
-        // Advertise only operations whose physical worker path is implemented.
-        // Never run the legacy screen helper on a home machine as a fallback.
-        if !matches!(
-            canonical_slice_tool_name(tool_name),
-            Some(
-                SLICE_SCREEN_STATUS_TOOL
-                    | SLICE_OCR_TOOL
-                    | SLICE_FIND_TEXT_TOOL
-                    | SLICE_BROWSER_STATUS_TOOL
-                    | SLICE_BROWSER_TAB_TOOL
-                    | SLICE_BROWSER_HISTORY_TOOL
-                    | SLICE_SCREENSHOT_TOOL
-                    | SLICE_MOUSE_TOOL
-                    | SLICE_KEYBOARD_TOOL
-                    | SLICE_CLIPBOARD_WRITE_TOOL
-                    | SLICE_OPEN_URL_TOOL
-                    | SLICE_BROWSER_CLICK_TOOL
-                    | SLICE_BROWSER_FILL_TOOL
-                    | SLICE_BROWSER_SUBMIT_TOOL
-                    | SLICE_BROWSER_DIALOG_TOOL
-                    | SLICE_BROWSER_EVENTS_TOOL
-                    | SLICE_BROWSER_DOWNLOADS_TOOL
-                    | SLICE_BROWSER_UPLOAD_TOOL
-                    | SLICE_BROWSER_PERMISSION_TOOL
-                    | SLICE_BROWSER_FIND_TOOL
-                    | SLICE_BROWSER_TEXT_TOOL
-                    | SLICE_BROWSER_WAIT_FOR_TEXT_TOOL
-                    | SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL
-                    | SLICE_BROWSER_WAIT_FOR_IDLE_TOOL
-            )
-        ) {
+        // Home and leased callers use the same Room controller operations,
+        // including the home-owned Vault insertion path and its aliases.
+        if !is_room_browser_controller_runtime_tool(tool_name) {
             return None;
         }
         self.owned

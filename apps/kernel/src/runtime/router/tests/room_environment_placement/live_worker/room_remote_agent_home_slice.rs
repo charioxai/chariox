@@ -14,7 +14,13 @@ fn remote_room_agent_uses_home_local_environment_browser_computer_and_web_view()
 }
 
 async fn check_remote_room_agent_uses_home_local_environment_browser_computer_and_web_view() {
-    let mut fixture = LiveWorker::start_configured(false, true).await;
+    let mut fixture = LiveWorker::start_configured_with_home_vault(
+        false,
+        true,
+        Some(crate::config::CredentialVaultBackend::ProcessMemory),
+        false,
+    )
+    .await;
     let (_screen_environment, screen_log) =
         install_room_pointer_screen_tool(&fixture._worker_state.root);
     let (agent_worker_state, agent_worker) = start_remote_agent_worker(&mut fixture).await;
@@ -118,6 +124,9 @@ async fn check_remote_room_agent_uses_home_local_environment_browser_computer_an
                 "leased Room agent is missing {tool}"
             );
         }
+
+        // MP-08/MP-10/MP-11: same home-owned Vault and Environment route.
+        super::room_secret::check(&fixture, &agent_worker.runtime_state, &token).await;
 
         let url = "https://remote-agent.home-local-slice.test/";
         let browser = agent_worker

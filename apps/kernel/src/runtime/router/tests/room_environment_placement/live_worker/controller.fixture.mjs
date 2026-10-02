@@ -145,7 +145,7 @@ const chromium = {
         properties: [{ name: "focused", value: { value: state.focused === "worker-note" } }],
       }] };
       case "DOMSnapshot.captureSnapshot": return {
-        strings: ["#document", "BUTTON", "", "Save on worker", "https://worker.test/", "INPUT", "type", "file", "IFRAME", "DIV", "#document-fragment", "open", "https://frame.worker.test/"],
+        strings: ["#document", "BUTTON", "", "Save on worker", "https://worker.test/", "INPUT", "type", existsSync(join(dirname(pidFile), "secret-input-mode")) ? "password" : "file", "IFRAME", "DIV", "#document-fragment", "open", "https://frame.worker.test/"],
         documents: [{ documentURL: 4, nodes: {
           parentIndex: [-1, 0, 0, 0, 0, 4, 5], nodeType: [9, 1, 1, 1, 1, 11, 1], nodeName: [0, 1, 5, 8, 9, 10, 1],
           nodeValue: [2, 3, 2, 2, 2, 2, 2], backendNodeId: [100, 103, 104, 105, 106, 107, 108], attributes: [[], [], [6, 7], [], [], [], []],
@@ -188,6 +188,18 @@ const chromium = {
             state: "disabled",
           })}\n`);
           return { result: { value: { state: "disabled" } } };
+        }
+        if (params.functionDeclaration.includes("function(text, append, expectedDocumentUrl, submit)")) {
+          const [text, , expectedDocumentUrl] = params.arguments.map(argument => argument.value);
+          if (state.url !== expectedDocumentUrl) return { result: { value: { ok: false, reason: "target_url_changed" } } };
+          if (params.objectId !== "worker-note" || !existsSync(join(dirname(pidFile), "secret-input-mode"))) {
+            return { result: { value: { ok: false, reason: "target_not_masked" } } };
+          }
+          // Acknowledge the external DOM value setter without retaining input.
+          state.secretInputMatches = text === "home-room-vault-regression-value";
+          state.secretInputCount = (state.secretInputCount ?? 0) + 1;
+          persist();
+          return { result: { value: { ok: true } } };
         }
         if (params.functionDeclaration.includes("requestSubmit")) {
           state.submitted = state.note;

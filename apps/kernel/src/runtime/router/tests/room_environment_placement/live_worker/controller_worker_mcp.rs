@@ -2484,10 +2484,10 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
     .expect("stop the home Room environment after the computer tools test");
 }
 
-struct ScopedEnvironment(Vec<(&'static str, Option<std::ffi::OsString>)>);
+pub(super) struct ScopedEnvironment(Vec<(&'static str, Option<std::ffi::OsString>)>);
 
 impl ScopedEnvironment {
-    fn set<const N: usize>(values: [(&'static str, std::ffi::OsString); N]) -> Self {
+    pub(super) fn set<const N: usize>(values: [(&'static str, std::ffi::OsString); N]) -> Self {
         let mut previous = Vec::with_capacity(N);
         for (name, value) in values {
             previous.push((name, std::env::var_os(name)));
