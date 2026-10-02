@@ -11,7 +11,14 @@ export function parseUnitSections(source) {
       if (!sections.has(section)) sections.set(section, [])
       continue
     }
-    if (section) sections.get(section).push(line)
+    // systemd ignores whitespace around the first assignment '='. Normalize
+    // before exact-count/prefix checks, including repeated section overrides.
+    // Continuations and unparsed directives must never bypass the policy.
+    const assignment = /^([A-Za-z][A-Za-z0-9]*)\s*=\s*(.*)$/.exec(line)
+    if (!section || !assignment || line.endsWith("\\")) {
+      throw new Error("service unit contains unsupported assignment syntax")
+    }
+    sections.get(section).push(`${assignment[1]}=${assignment[2]}`)
   }
   return sections
 }
