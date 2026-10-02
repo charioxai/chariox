@@ -229,6 +229,21 @@ pub(super) async fn handle_daemon_peer_request(
             slice_id,
             command,
         } => {
+            #[cfg(test)]
+            let mutation_response = {
+                use crate::transport::room_browser_controller::RoomBrowserControllerCommand as Command;
+                matches!(
+                    &command,
+                    Command::Action { .. }
+                        | Command::Tab { .. }
+                        | Command::History { .. }
+                        | Command::Navigate { .. }
+                        | Command::Dialog { .. }
+                        | Command::ConfigureDownloads { .. }
+                        | Command::Upload { .. }
+                        | Command::Permission { .. }
+                )
+            };
             match router
                 .relay_room_browser_controller(
                     stable_peer_daemon_id(from_daemon_id),
@@ -239,11 +254,31 @@ pub(super) async fn handle_daemon_peer_request(
                 )
                 .await
             {
-                Ok(result) => RelayPeerResponse::RoomBrowserController {
-                    session_id,
-                    slice_id,
-                    result,
-                },
+                Ok(result) => {
+                    // Inject response loss at the intended physical mutation,
+                    // never at a concurrent read-only controller observation.
+                    #[cfg(test)]
+                    if mutation_response {
+                        if let Some(forget_receipts) =
+                            state.write().await.test_take_lost_peer_response_payload()
+                        {
+                            if forget_receipts {
+                                router
+                                    .runtime_state()
+                                    .test_forget_completed_browser_action_receipts();
+                            }
+                            return RelayRequestOutcome {
+                                encrypted_response: None,
+                                error: None,
+                            };
+                        }
+                    }
+                    RelayPeerResponse::RoomBrowserController {
+                        session_id,
+                        slice_id,
+                        result,
+                    }
+                }
                 Err(error) => {
                     return RelayRequestOutcome {
                         encrypted_response: None,
