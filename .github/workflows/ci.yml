@@ -57,6 +57,10 @@ jobs:
   rust:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
+    # MP-08/MP-10: CI does not consume DWARF; retain normal test assertions.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
 
     steps:
       - name: Check out repository
