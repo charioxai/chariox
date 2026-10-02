@@ -466,7 +466,7 @@ fn restart_claude_runtime(
     *state
         .process_identity
         .lock()
-        .expect("Claude process identity poisoned") = None;
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     stop_child(&mut state.child);
     let resume_session_id = state
         .session_id
@@ -498,7 +498,7 @@ fn restart_claude_runtime(
     *state
         .process_identity
         .lock()
-        .expect("Claude process identity poisoned") =
+        .unwrap_or_else(std::sync::PoisonError::into_inner) =
         crate::runtime::kernel_access::process::inspect(child.id())
             .ok()
             .map(|(identity, _)| identity);
