@@ -733,3 +733,41 @@ fn a_short_clock_correction_recovers_retries_in_due_order_after_reopen() {
         "later"
     );
 }
+
+#[test]
+fn postponed_pages_step_aside_for_later_deliverable_wakes() {
+    let fixture = Database::new();
+    let mut db = fixture.open();
+    install(&mut db, "todo");
+    let mut changes = (0..8)
+        .map(|i| wake(&format!("waiting-{i}"), 100 + i, "r1"))
+        .collect::<Vec<_>>();
+    changes.push(wake("deliverable", 900, "r1"));
+    apply_wakes(&mut db, "todo", &changes).unwrap();
+    for waiting in due_wakes(&db, 2_000, 8).unwrap() {
+        postpone_wake(&db, &waiting, 4_000).unwrap();
+    }
+    // The idle cadence is longer than the postponed start delay. A full page
+    // of eligible waiting wakes must still yield to later work on this pass.
+    assert_eq!(due_wakes(&db, 7_000, 8).unwrap()[0].wake.id, "deliverable");
+}
+
+#[test]
+fn empty_and_future_only_wake_polls_do_not_write_durable_state() {
+    let fixture = Database::new();
+    let mut db = fixture.open();
+    let observer = fixture.open();
+    let version = || {
+        observer
+            .query_row("PRAGMA data_version", [], |row| row.get::<_, i64>(0))
+            .unwrap()
+    };
+    let before = version();
+    assert!(due_wakes(&db, 1_000, 8).unwrap().is_empty());
+    assert_eq!(version(), before);
+    install(&mut db, "todo");
+    apply_wakes(&mut db, "todo", &[wake("future", 10_000, "r1")]).unwrap();
+    let before = version();
+    assert!(due_wakes(&db, 2_000, 8).unwrap().is_empty());
+    assert_eq!(version(), before);
+}
