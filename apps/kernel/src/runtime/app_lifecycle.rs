@@ -4,6 +4,7 @@ mod authority_check;
 mod disk_space;
 mod first_install;
 mod manual_stop;
+mod notifications;
 mod operations;
 mod owner;
 mod ownership;
@@ -66,6 +67,10 @@ pub(crate) enum LifecycleError {
     CommitUnknown,
     #[error("app_lifecycle_startup")]
     Startup,
+    #[error("app_lifecycle_notification")]
+    Notification,
+    #[error("app_lifecycle_notification_not_dispatched")]
+    NotificationNotDispatched,
     #[error("app_lifecycle_worker_exit")]
     WorkerExit,
     #[error("app_lifecycle_supervisor")]
@@ -164,6 +169,11 @@ struct Control {
     done: Mutex<bool>,
     wake: Condvar,
     drain: Mutex<Option<crate::runtime::app_worker::AppWorkerDrain>>,
+    notification: Mutex<Option<notifications::Request>>,
+    idle: AtomicBool,
+    idle_requested: AtomicBool,
+    #[cfg(test)]
+    completion_checkpoint: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 struct Operation<'a> {
     inner: &'a Inner,

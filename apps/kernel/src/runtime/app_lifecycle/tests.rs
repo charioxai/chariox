@@ -95,6 +95,7 @@ fn make_control(
     *control.lifecycle().0.fixture.lock().unwrap() = Some(start::FixturePlatform {
         native,
         fail_health: false,
+        lifecycle: None,
         fail_migration: false,
         stop_after_commit: false,
         observations: observations.clone(),
@@ -512,6 +513,7 @@ fn shutdown_reports_failed_stop_persistence_and_retains_it_for_retry() {
 #[path = "tests/first_install.rs"]
 mod first_install;
 mod local_update;
+mod notifications;
 
 #[test]
 fn stale_manual_stop_selection_cannot_stop_a_foreground_replacement() {

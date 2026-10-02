@@ -27,6 +27,8 @@ pub(crate) mod app_install_control;
 pub(crate) mod app_call_errors;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_lifecycle;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_on_demand;
 pub(crate) mod app_views;
 pub(crate) mod app_lock;
 pub(crate) mod app_operation_budget;

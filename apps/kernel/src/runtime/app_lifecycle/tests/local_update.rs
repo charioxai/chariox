@@ -10,7 +10,7 @@ use crate::durable_state::{
 use chariox_app_runtime::installation::VerifiedInstallCandidate;
 
 /// Stages release `version` of the fixture App as an update of `installation`.
-fn stage_update(
+pub(super) fn stage_update(
     store: &DurableKernelStateStore,
     installation: &str,
     request: &str,
@@ -187,7 +187,7 @@ fn an_update_drains_the_old_worker_and_commits_only_a_healthy_new_generation() {
 }
 
 /// The installation's structured state as the kernel stored it.
-fn state_value(store: &DurableKernelStateStore, key: &str) -> Option<String> {
+pub(super) fn state_value(store: &DurableKernelStateStore, key: &str) -> Option<String> {
     use rusqlite::OptionalExtension;
     rusqlite::Connection::open(store.path())
         .unwrap()
@@ -200,7 +200,7 @@ fn state_value(store: &DurableKernelStateStore, key: &str) -> Option<String> {
         .unwrap()
 }
 
-fn installed(
+pub(super) fn installed(
     store: &DurableKernelStateStore,
     runtime: &tokio::runtime::Runtime,
 ) -> (AppControlService, Arc<Mutex<Vec<Observation>>>, String) {

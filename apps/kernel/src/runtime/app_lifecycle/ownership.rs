@@ -20,9 +20,32 @@ impl Control {
             done: Mutex::new(false),
             wake: Condvar::new(),
             drain: Mutex::new(None),
+            notification: Mutex::new(None),
+            idle: AtomicBool::new(false),
+            idle_requested: AtomicBool::new(false),
+            #[cfg(test)]
+            completion_checkpoint: Mutex::new(None),
         }
     }
+    pub(super) fn cancel_idle(&self) -> Result<()> {
+        let _pending = self
+            .notification
+            .lock()
+            .map_err(|_| LifecycleError::Supervisor)?;
+        if self.stopped() {
+            return Err(LifecycleError::Stopped);
+        }
+        self.idle.store(true, Ordering::Release);
+        self.stop.store(true, Ordering::Release);
+        self.wake.notify_all();
+        Ok(())
+    }
     pub(super) fn cancel(&self, manual: bool) {
+        let _pending = self
+            .notification
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.idle.store(false, Ordering::Release);
         if manual {
             self.manual.store(true, Ordering::Release);
         }
@@ -90,10 +113,21 @@ impl Control {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
     pub(super) fn complete(&self) {
+        // Match enqueue's lock order and publish done before releasing a
+        // never-dispatched request. No notification can enter the cleanup gap.
+        let mut pending = self
+            .notification
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *self
             .done
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+        if let Some(request) = pending.take() {
+            let _ = request
+                .reply
+                .send(Err(LifecycleError::NotificationNotDispatched));
+        }
         self.wake.notify_all();
     }
     pub(super) fn wait(&self, duration: Duration) {

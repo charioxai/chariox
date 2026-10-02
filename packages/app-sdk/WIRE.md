@@ -355,3 +355,52 @@ The shared JSON vectors in `test/wire-vectors.json` contain `generation` and
 corpus, while their stream tests separately exercise binary framing and bounds.
 `rawCases` use a `json` string instead of `message` to retain duplicates, number
 spellings and invalid surrogate escapes that object parsing would erase.
+
+## Local kernel lifecycle notifications
+
+The retained kernel worker owner serializes lifecycle dispatch. Startup has a
+10-second deadline, shutdown 3 seconds, and suspend, resume, prepare_update and
+configuration_change use the existing 30-second worker-call cap. Missing optional
+handlers succeed without executing App code. A failed or timed-out notification
+ends that worker generation: cancellation can settle its wire reply while an SDK
+handler still holds lifecycle exclusion. The kernel never sends another callback
+to such a worker. Shutdown preempts outstanding notifications; forced native
+termination and reap do not wait for a cooperative lifecycle reply.
+
+Suspend uses the kernel's existing idle path (currently ten minutes without
+human, agent, event or wake work). Admission drains, then `suspend` receives
+`{reason:"idle"}` before the worker is reaped and its catalog becomes dormant.
+This is not a real shutdown notification. Wake scans and eviction queue at most
+one suspend per worker and return without waiting on App code. Dormant capacity
+is reserved before admission drains; a full set keeps the worker live. The reserved
+catalog stays discoverable during suspension, and a tool call waits for its outcome
+before restarting. Only completed suspension exposes configuration snapshots and
+wake-pump dormant keys. On-demand
+reactivation starts a new
+contained process, runs startup, then `resume` with
+`{reason:"idle",configuration:{connections:[{generatorId,connectionId}]}}`
+before publishing callable handles. The shared caller waits up to 180 seconds
+for queued victim suspension/drain, preparation and the full callback sequence;
+each callback retains its own shorter deadline. If the live limit is full and no
+victim suspension can be queued, the call fails promptly. Tool execution starts its separate
+30-second admission budget after readiness. Real stops retain the shutdown notification.
+Host sleep/wake does not create a second trigger or authority path.
+
+The mutable installation configuration currently exposed by the backend is its
+connection grant set. The owner samples the committed set during its existing
+bounded authority check (normally every two seconds), emitting
+`configuration_change` with `{previous:{connections:[...]},current:{connections:[...]}}`
+when the effective set differs. Multiple changes between checks coalesce to the
+current set; idempotent grants emit nothing. A dormant App is not started merely
+to notify it: changes since suspend are sent after startup and before resume.
+Snapshots carry only generator/connection identifiers, never credentials. New
+processes after kernel restart read current grants through the normal broker.
+
+For a local replacement, `prepare_update` receives `{request_id}` on the old
+worker before admission drain, the durable update fence and data snapshot. A
+successful callback may flush approved state before shutdown/drain/reap and the
+existing migration/health/commit path. Failure or timeout refuses and cancels the
+precommit update without fencing or snapshotting the old data; the old generation
+remains installed and can restart. If no old worker exists, there is no callback
+to deliver; an undispatched request cleared during old-owner completion is not
+an App refusal and does not cancel the approved update. The existing precommit rollback and postcommit recovery rules apply.

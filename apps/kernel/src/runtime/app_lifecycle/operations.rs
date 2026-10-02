@@ -77,10 +77,10 @@ impl AppLifecycleService {
             return Err(LifecycleError::Stopped);
         }
         if let Some(entry) = entries.get(&key).cloned() {
-            // A stop that is not recorded yet (still draining, or deferred to
-            // maintenance) is a concurrent operation: this start would be
-            // reported as running and then undone. Retry after it.
-            if entry.control.pending_manual_stop() {
+            // Pending manual stop and queued suspension both exclude starts.
+            if entry.control.pending_manual_stop()
+                || entry.control.idle_requested.load(Ordering::Acquire)
+            {
                 return Err(LifecycleError::Busy);
             }
             let replacing = match &kind {
@@ -100,6 +100,15 @@ impl AppLifecycleService {
             // It is not a user stop: a failed update restarts the old
             // generation on demand.
             drop(entries);
+            if !entry.control.finished() {
+                // Preparation precedes the worker drain and update fence.
+                match entry.control.notify("prepare_update", serde_json::json!({
+                    "request_id": match &kind { StartKind::First { request_id, .. } => request_id, _ => unreachable!() },
+                })) {
+                    Ok(()) | Err(LifecycleError::NotificationNotDispatched) => {},
+                    Err(error) => return Err(error),
+                }
+            }
             entry.control.cancel_for_update();
             entry.join();
             entries = self
@@ -302,12 +311,38 @@ impl AppLifecycleService {
     /// An event emitted between that check and the join waits for the App's
     /// next tool call or wake (bounded by receipt expiry). Receipts held by a
     /// paused automation also keep the App live, as before idle stop existed.
+    /// Queue at most one suspend on the retained owner and return immediately.
+    /// Wake/inbox scans and eviction never wait on App-controlled latency.
+    pub(crate) fn request_idle_stop_blocking(
+        &self,
+        owner: &str,
+        catalog: Arc<chariox_app_runtime::app_outbox::EventCatalog>,
+        still_idle: impl Fn() -> bool,
+    ) -> Result<bool> {
+        self.queue_idle_stop(owner, catalog, still_idle)
+            .map(|request| request.is_some())
+    }
+    #[cfg(test)]
     pub(crate) fn idle_stop_blocking(
         &self,
         owner: &str,
         catalog: Arc<chariox_app_runtime::app_outbox::EventCatalog>,
         still_idle: impl Fn() -> bool,
     ) -> Result<()> {
+        let Some((entry, receipt)) = self.queue_idle_stop(owner, catalog, still_idle)? else {
+            return Ok(());
+        };
+        entry.control.wait_notification(receipt)?;
+        entry.join();
+        self.reap_finished();
+        Ok(())
+    }
+    fn queue_idle_stop(
+        &self,
+        owner: &str,
+        catalog: Arc<chariox_app_runtime::app_outbox::EventCatalog>,
+        still_idle: impl Fn() -> bool,
+    ) -> Result<Option<(Arc<Entry>, notifications::Receipt)>> {
         if self.0.stopped.load(Ordering::Acquire) {
             return Err(LifecycleError::Stopped);
         }
@@ -321,35 +356,15 @@ impl AppLifecycleService {
             .get(&key)
             .cloned()
         else {
-            return Ok(());
+            return Ok(None);
         };
-        // A concurrent manual stop, a finished owner or new use wins.
-        if entry.control.stopped()
-            || entry.control.pending_manual_stop()
-            || !still_idle()
-            || !self.0.publisher.retain_dormant(owner, catalog)
-        {
-            return Ok(());
+        if entry.control.stopped() || entry.control.pending_manual_stop() || !still_idle() {
+            return Ok(None);
         }
-        // A wake admitted since `still_idle` keeps the worker; one arriving
-        // after this point is refused and waits for the on-demand start.
-        if !entry.control.begin_idle_drain() {
-            self.0.publisher.forget_dormant(&key.0, &key.1);
-            return Ok(());
-        }
-        entry.control.cancel(false);
-        entry.join();
-        let mut entries = self
-            .0
-            .entries
-            .lock()
-            .map_err(|_| LifecycleError::Supervisor)?;
-        if entries.get(&key).is_some_and(|current| {
-            Arc::ptr_eq(current, &entry) && !entry.control.pending_manual_stop()
-        }) {
-            entries.remove(&key);
-        }
-        Ok(())
+        let receipt = entry
+            .control
+            .enqueue("suspend", serde_json::json!({"reason":"idle"}))?;
+        Ok(Some((entry, receipt)))
     }
     /// Must be called from bounded blocking shutdown ownership before runtime
     /// teardown. A Drop fallback retains the same no-orphan guarantee.

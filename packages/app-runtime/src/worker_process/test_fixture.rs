@@ -48,6 +48,14 @@ pub enum Mode {
     Migrate,
     /// Writes during its migration, then fails before reporting the step.
     BadMigration,
+    Lifecycle,
+    LifecycleFailPrepare,
+    LifecycleHangPrepare,
+    LifecycleHangSuspend,
+    LifecycleHangResume,
+    LifecycleHangConfiguration,
+    LifecycleSlowResume,
+    LifecycleFailConfiguration,
 }
 impl Mode {
     fn argument(self) -> &'static str {
@@ -67,6 +75,14 @@ impl Mode {
             Self::OtherInstallation => "sdk_other_installation",
             Self::Migrate => "sdk_migrate",
             Self::BadMigration => "sdk_bad_migration",
+            Self::Lifecycle => "sdk_lifecycle",
+            Self::LifecycleFailPrepare => "sdk_lifecycle_fail_prepare",
+            Self::LifecycleHangPrepare => "sdk_lifecycle_hang_prepare_update",
+            Self::LifecycleHangSuspend => "sdk_lifecycle_hang_suspend",
+            Self::LifecycleHangResume => "sdk_lifecycle_hang_resume",
+            Self::LifecycleHangConfiguration => "sdk_lifecycle_hang_configuration_change",
+            Self::LifecycleSlowResume => "sdk_lifecycle_slow_resume",
+            Self::LifecycleFailConfiguration => "sdk_lifecycle_fail_configuration_change",
         }
     }
 }
@@ -91,6 +107,22 @@ impl Observation {
     }
     pub fn ready_was_acknowledged(&self) -> bool {
         self.marker.is_file()
+    }
+    /// Frames received by the fixed lifecycle fixture over the real IPC FD.
+    pub fn lifecycle_frames(&self) -> io::Result<Vec<serde_json::Value>> {
+        let bytes = match fs::read(self.marker.with_file_name("lifecycle-frames")) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        };
+        if bytes.len() > 1024 * 1024 {
+            return Err(io::Error::other("fixture log limit"));
+        }
+        bytes
+            .split(|b| *b == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).map_err(io::Error::other))
+            .collect()
     }
     pub fn tool_invocations(&self) -> u64 {
         self.marker

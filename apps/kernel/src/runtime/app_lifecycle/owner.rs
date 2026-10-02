@@ -41,6 +41,10 @@ impl Admitted {
 struct Completion(Arc<Control>);
 impl Drop for Completion {
     fn drop(&mut self) {
+        #[cfg(test)]
+        if let Some(checkpoint) = self.0.completion_checkpoint.lock().unwrap().clone() {
+            checkpoint();
+        }
         self.0.complete();
     }
 }
@@ -229,69 +233,21 @@ fn serve(context: &Context, admission: &mut Admitted) -> Result<WorkerExit> {
     let owner = started.owner;
     context.control.retain_drain(owner.drain_handle());
     let handle = started.handle;
+    let catalog = handle
+        .lease(&context.owner)
+        .map_err(|_| LifecycleError::Authority)?
+        .catalog()
+        .clone();
     let mut events = started.events;
     #[cfg(test)]
     let _fixture_release = started.fixture_release;
-    let work = (|| {
-        if context.control.stopped() {
-            return Err(LifecycleError::Stopped);
-        }
-        owner
-            .startup_blocking()
-            .map_err(|_| LifecycleError::Startup)?;
-        context.store.record_app_worker(
-            admission,
-            WorkerPhase::Running,
-            true,
-            None,
-            context.control.budget(),
-        )?;
-        if context.control.stopped() {
-            return Err(LifecycleError::Stopped);
-        }
-        #[cfg(test)]
-        if let Some(checkpoint) = &context.start_checkpoint {
-            checkpoint(StartCheckpoint::BeforePublication);
-        }
-        context
-            .publisher
-            .publish(admission.owner(), handle)
-            .map_err(|_| LifecycleError::Startup)?;
-        let mut authority_check = Instant::now();
-        let mut pending_check = None;
-        loop {
-            if context.control.stopped() {
-                break;
-            }
-            if owner.is_closed() {
-                break;
-            }
-            // Control frames are bounded by the existing peer. They are not a
-            // second log sink, user transcript or an App-provided health proof.
-            for _ in 0..16 {
-                if events.try_recv().is_err() {
-                    break;
-                }
-            }
-            if Instant::now() >= authority_check {
-                // Contention cannot renew a check's deadline or immediately
-                // kill a healthy worker. Keep one budget until admission wins.
-                let check = pending_check.get_or_insert_with(|| {
-                    super::authority_check::AuthorityCheck::new(
-                        context.control.budget(),
-                        context.admission.clone(),
-                    )
-                });
-                if check.verify(&context.store, admission)? {
-                    pending_check = None;
-                    authority_check = Instant::now() + Duration::from_secs(2);
-                }
-            }
-            context.control.wait(Duration::from_millis(100));
-        }
-        Ok(())
-    })();
-    if context.control.stopped() && !owner.is_closed() {
+    let (work, callback_settled) =
+        notifications::serve(context, admission, &owner, handle, &mut events, catalog);
+    if context.control.stopped()
+        && !context.control.idle.load(Ordering::Acquire)
+        && callback_settled
+        && !owner.is_closed()
+    {
         let _ = owner.drain_blocking();
     }
     let exit = owner

@@ -17,6 +17,7 @@ use chariox_app_runtime::{
 pub(super) struct FixturePlatform {
     pub(super) native: Arc<chariox_app_runtime::worker_process::test_fixture::Fixture>,
     pub(super) fail_health: bool,
+    pub(super) lifecycle: Option<chariox_app_runtime::worker_process::test_fixture::Mode>,
     pub(super) fail_migration: bool,
     /// The kernel stops right after an update commits, before activation.
     pub(super) stop_after_commit: bool,
@@ -227,7 +228,7 @@ fn spawn(
     #[cfg(test)]
     if let Some(fixture) = &context.fixture {
         use chariox_app_runtime::worker_process::test_fixture::Mode;
-        let mode = match context.kind {
+        let mode = fixture.lifecycle.unwrap_or_else(|| match context.kind {
             StartKind::First { .. } if migrate_from.is_some() && fixture.fail_migration => {
                 Mode::BadMigration
             }
@@ -235,7 +236,7 @@ fn spawn(
             StartKind::First { .. } if fixture.fail_health => Mode::BadHealth,
             StartKind::First { .. } => Mode::Health,
             StartKind::Active { .. } => Mode::Ready,
-        };
+        });
         let (process, observation) = fixture
             .native
             .spawn_for_generation_blocking(

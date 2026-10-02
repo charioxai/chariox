@@ -239,7 +239,7 @@ impl KernelRuntimeState {
             let store = self.owned.durable_state_store.clone();
             let _ = tokio::task::spawn_blocking(move || {
                 let installation = catalog.installation_id().to_owned();
-                lifecycle.idle_stop_blocking(&owner, catalog, || {
+                lifecycle.request_idle_stop_blocking(&owner, catalog, || {
                     // Undelivered events need the live lease: not idle yet.
                     current
                         .active_app_lease(&owner, &installation)

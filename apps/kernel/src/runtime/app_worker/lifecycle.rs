@@ -50,13 +50,21 @@ impl AppWorkerOwner {
                 .lock()
                 .map_or(true, |phase| *phase == Phase::Stopped)
     }
-    pub(crate) fn startup_blocking(&self) -> Result<(), AppWorkerError> {
+    pub(crate) fn startup_blocking(
+        &self,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<(), AppWorkerError> {
         if self
             .registration
             .as_ref()
             .is_some_and(|r| r.supports_lifecycle("startup"))
         {
-            self.lifecycle_blocking("startup", Duration::from_secs(10))
+            self.dispatch_blocking(
+                "startup",
+                serde_json::Value::Null,
+                Duration::from_secs(10),
+                cancelled,
+            )
         } else {
             Ok(())
         }
@@ -67,10 +75,42 @@ impl AppWorkerOwner {
         // this response and exits only after its channel write has drained.
         self.lifecycle_blocking("shutdown", Duration::from_secs(3))
     }
+    /// Only the retained owner thread dispatches callbacks. An interrupted or
+    /// failed callback is terminal: the SDK can retain exclusion after timeout.
+    pub(crate) fn notify_blocking(
+        &self,
+        event: &'static str,
+        data: serde_json::Value,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<(), AppWorkerError> {
+        if cancelled() {
+            return Err(AppWorkerError::Unavailable);
+        }
+        if !self
+            .registration
+            .as_ref()
+            .is_some_and(|r| r.supports_lifecycle(event))
+        {
+            return Ok(());
+        }
+        self.dispatch_blocking(event, data, Duration::from_secs(30), cancelled)
+    }
+    pub(crate) fn begin_draining(&self) -> Result<(), AppWorkerError> {
+        self.admission.begin_draining()
+    }
     pub(super) fn lifecycle_blocking(
         &self,
         event: &'static str,
         timeout: Duration,
+    ) -> Result<(), AppWorkerError> {
+        self.dispatch_blocking(event, serde_json::Value::Null, timeout, || false)
+    }
+    fn dispatch_blocking(
+        &self,
+        event: &'static str,
+        data: serde_json::Value,
+        timeout: Duration,
+        cancelled: impl Fn() -> bool,
     ) -> Result<(), AppWorkerError> {
         if self.peer.is_closed() {
             return Err(AppWorkerError::Unavailable);
@@ -79,14 +119,20 @@ impl AppWorkerOwner {
             .peer
             .reserve(timeout)
             .map_err(|_| AppWorkerError::Busy)?;
-        let response = self
-            .runtime
-            .block_on(slot.request(
-                "lifecycle.dispatch",
-                serde_json::json!({"event":event,"data":null}),
-                None,
-            ))
-            .map_err(|_| AppWorkerError::Deadline)?;
+        let response = self.runtime.block_on(async {
+            let request = slot.request(
+                "lifecycle.dispatch", serde_json::json!({"event":event,"data":data}), None,
+            );
+            tokio::pin!(request);
+            loop {
+                if cancelled() { return Err(AppWorkerError::Unavailable); }
+                tokio::select! {
+                    biased;
+                    response = &mut request => return response.map_err(|_| AppWorkerError::Deadline),
+                    _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+                }
+            }
+        })?;
         match response {
             Message::Response {
                 outcome: Outcome::Success(_),

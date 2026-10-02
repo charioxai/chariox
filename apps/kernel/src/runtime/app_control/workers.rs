@@ -12,6 +12,11 @@ const MAX_PROJECTIONS: usize = 64;
 /// Bound on remembered (agent, App) listing omissions.
 const MAX_UNLISTED: usize = 4096;
 type Key = (String, String);
+struct Dormant {
+    catalog: Arc<EventCatalog>,
+    configuration: serde_json::Value,
+    suspended: bool,
+}
 /// Live worker projections, plus the verified catalogs of Apps stopped while
 /// idle. A dormant catalog keeps tools discoverable; invoking one starts the
 /// App on demand. Current generation and signer are rechecked before use.
@@ -20,7 +25,7 @@ type Key = (String, String);
 #[derive(Clone, Default)]
 pub(super) struct ActiveWorkers(
     Arc<Mutex<BTreeMap<Key, ActivatedApp>>>,
-    Arc<Mutex<BTreeMap<Key, Arc<EventCatalog>>>>,
+    Arc<Mutex<BTreeMap<Key, Dormant>>>,
     Arc<Mutex<Unlisted>>,
     Arc<tokio::sync::Notify>,
 );
@@ -165,21 +170,79 @@ impl AppWorkerPublisher {
     pub(crate) fn is_dormant(&self, owner: &str, installation: &str) -> bool {
         self.workers.is_dormant(owner, installation)
     }
-    /// Recorded before an idle stop so tools stay discoverable while stopped.
-    /// False when the bounded set is full; the caller then keeps the worker.
-    pub(crate) fn retain_dormant(&self, owner: &str, catalog: Arc<EventCatalog>) -> bool {
-        let Ok(mut dormant) = self.workers.1.lock() else {
-            return false;
-        };
+    /// Last notified configuration, retained with the dormant catalog.
+    pub(crate) fn dormant_configuration(
+        &self,
+        owner: &str,
+        installation: &str,
+    ) -> Option<serde_json::Value> {
+        self.workers
+            .1
+            .lock()
+            .ok()?
+            .get(&(owner.into(), installation.into()))
+            .filter(|d| d.suspended)
+            .map(|d| d.configuration.clone())
+    }
+    /// Reserve bounded capacity before draining or invoking App code. Reserved
+    /// catalogs remain discoverable while suspension is pending. Configuration
+    /// and wake-pump keys remain commit-only until suspension succeeds.
+    pub(crate) fn reserve_dormant(
+        &self,
+        owner: &str,
+        catalog: Arc<EventCatalog>,
+        configuration: serde_json::Value,
+    ) -> Option<DormantReservation> {
+        let mut dormant = self.workers.1.lock().ok()?;
         let key = (owner.to_owned(), catalog.installation_id().to_owned());
-        if !dormant.contains_key(&key) && dormant.len() >= MAX_PROJECTIONS {
-            return false;
+        if dormant.contains_key(&key) || dormant.len() >= MAX_PROJECTIONS {
+            return None;
         }
-        dormant.insert(key, catalog);
-        true
+        dormant.insert(
+            key.clone(),
+            Dormant {
+                catalog,
+                configuration,
+                suspended: false,
+            },
+        );
+        Some(DormantReservation {
+            workers: self.workers.clone(),
+            key,
+            committed: false,
+        })
     }
     pub(crate) fn forget_dormant(&self, owner: &str, installation: &str) {
         self.workers.forget_dormant(owner, installation);
+    }
+}
+
+/// The owner retains only a capacity reservation, never a registry lock.
+pub(crate) struct DormantReservation {
+    workers: ActiveWorkers,
+    key: Key,
+    committed: bool,
+}
+impl DormantReservation {
+    pub(crate) fn commit(mut self) -> bool {
+        let mut dormant = self
+            .workers
+            .1
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(entry) = dormant.get_mut(&self.key) else {
+            return false;
+        };
+        entry.suspended = true;
+        self.committed = true;
+        true
+    }
+}
+impl Drop for DormantReservation {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.workers.forget_dormant(&self.key.0, &self.key.1);
+        }
     }
 }
 
@@ -222,10 +285,16 @@ impl AppControlService {
     }
 
     pub(crate) fn dormant_app_keys(&self) -> Vec<(String, String)> {
-        self.workers
-            .1
-            .lock()
-            .map_or_else(|_| Vec::new(), |dormant| dormant.keys().cloned().collect())
+        self.workers.1.lock().map_or_else(
+            |_| Vec::new(),
+            |dormant| {
+                dormant
+                    .iter()
+                    .filter(|(_, d)| d.suspended)
+                    .map(|(key, _)| key.clone())
+                    .collect()
+            },
+        )
     }
 
     /// Dormant (idle-stopped) catalogs for this owner, at most 64.
@@ -236,7 +305,7 @@ impl AppControlService {
                 dormant
                     .iter()
                     .filter(|((key_owner, _), _)| key_owner == owner)
-                    .map(|(_, catalog)| catalog.clone())
+                    .map(|(_, dormant)| dormant.catalog.clone())
                     .collect()
             },
         )
