@@ -29,6 +29,15 @@ async fn fixture() -> (
     let script = std::fs::read_to_string(&tool.path).unwrap();
     let script = script.replace("printf 'reconcile\\n'", &format!("if [ -f '{}' ]; then printf '{{\"id\":%s,\"ok\":false,\"error\":{{\"code\":\"browser_debugger_unavailable\",\"message\":\"browser exited\"}}}}\\n' \"$id\"; continue; fi\nprintf 'reconcile\\n'", tool.root.join("browser-exited").display()));
     std::fs::write(&tool.path, script).unwrap();
+    let script = std::fs::read_to_string(&tool.path).unwrap().replace(
+        "printf 'reconcile\\n'",
+        &format!(
+            "if [ -f '{}' ]; then printf '{{\"id\":%s,\"ok\":false,\"error\":{{\"code\":\"controller_busy\",\"message\":\"foreground command pending\"}}}}\\n' \"$id\"; continue; fi\nif [ -f '{}' ]; then sleep 4.5; fi\nprintf 'reconcile\\n'",
+            tool.root.join("browser-busy").display(),
+            tool.root.join("browser-slow").display(),
+        ),
+    );
+    std::fs::write(&tool.path, script).unwrap();
     let mut state = owned_runtime_state(&app).await;
     state.set_browser_controller_process_store_for_test(
         crate::runtime::browser_controller_process::BrowserControllerProcessStore::new(
@@ -126,6 +135,29 @@ async fn room_browser_health_ignores_stopped_and_new_generation_receipts() {
         Some("browser_debugger_unavailable"),
     );
     assert_eq!(state.room_environment_snapshot(&room).unwrap(), restarted);
+}
+
+#[tokio::test]
+async fn room_browser_health_timeout_and_route_errors_are_inconclusive() {
+    let (state, room, tool, _) = fixture().await;
+    let before = state.room_environment_snapshot(&room).unwrap();
+    std::fs::write(tool.root.join("browser-busy"), "").unwrap();
+    state
+        .refresh_room_browser_health(&room, before.runtime_generation)
+        .await;
+    assert_eq!(state.room_environment_snapshot(&room).unwrap(), before);
+    std::fs::remove_file(tool.root.join("browser-busy")).unwrap();
+    std::fs::write(tool.root.join("browser-slow"), "").unwrap();
+    let started = std::time::Instant::now();
+    state
+        .refresh_room_browser_health(&room, before.runtime_generation)
+        .await;
+    assert!(started.elapsed() >= Duration::from_secs(4));
+    assert_eq!(
+        state.room_environment_snapshot(&room).unwrap(),
+        before,
+        "a healthy browser waiting on the serial controller queue must stay ready"
+    );
 }
 
 #[tokio::test]

@@ -418,10 +418,10 @@ status() {
 }
 
 stop_desktop() {
-  stop_chromium_supervisor
-  local streamer_exit=0
+  local teardown_exit=0
+  stop_chromium_supervisor || teardown_exit=$?
   if [[ -x /opt/chariox-selkies/bin/python ]]; then
-    slice_selkies stop >/dev/null || streamer_exit=$?
+    slice_selkies stop >/dev/null || teardown_exit=$?
   fi
   if process_running "chromium.*$CHROME_PROFILE"; then
     node "$ROOT/browser-cdp.mjs" close-browser >/dev/null 2>&1 || true
@@ -451,7 +451,7 @@ stop_desktop() {
   stop_process_pattern '(^|/)tint2([[:space:]]|$)'
   stop_process_pattern "$DISPLAY_SERVER $DISPLAY_ID"
   clear_chromium_profile_locks
-  return "$streamer_exit"
+  return "$teardown_exit"
 }
 
 screenshot() {

@@ -89,3 +89,32 @@ exec /usr/bin/pgrep "$@"
     await rm(root,{recursive:true,force:true});
   }
 });
+
+test("desktop stop completes teardown after supervisor shutdown fails", {timeout:10000}, async () => {
+  const root=await mkdtemp(path.join(os.tmpdir(),"slice-browser-stop-"));
+  await mkdir(path.join(root,"bin"));
+  await mkdir(path.join(root,"logs"));
+  await mkdir(path.join(root,"profile"));
+  await copyFile(new URL("./slice-screen.sh",import.meta.url),path.join(root,"slice-screen.sh"));
+  await writeFile(path.join(root,"bin/pgrep"),"#!/bin/sh\nexit 1\n",{mode:0o755});
+  await writeFile(path.join(root,"bin/pkill"),`#!/bin/sh
+printf '%s\\n' "$*" >> "$CHARIOX_SLICE_ROOT/stopped-patterns"
+`,{mode:0o755});
+  await writeFile(path.join(root,"profile/SingletonLock"),"fixture");
+  const stubborn=spawn(process.execPath,["-e","process.on('SIGTERM',()=>{}); console.log('ready'); setInterval(()=>{},1000)"],{stdio:["ignore","pipe","ignore"]});
+  const exited=once(stubborn,"exit");
+  try{
+    await once(stubborn.stdout,"data");
+    await writeFile(path.join(root,"logs/chromium-supervisor.pid"),String(stubborn.pid));
+    const env={...process.env,PATH:`${root}/bin:${process.env.PATH}`,CHARIOX_SLICE_ROOT:root,CHARIOX_SLICE_CHROME_PROFILE:`${root}/profile`,HOME:root};
+    const result=spawnSync("bash",[path.join(root,"slice-screen.sh"),"stop"],{env,encoding:"utf8",timeout:8000});
+    assert.equal(result.status,1,result.stderr);
+    assert.match(result.stderr,/supervisor did not stop/);
+    const patterns=await readFile(path.join(root,"stopped-patterns"),"utf8");
+    for(const name of ["chromium","websockify","x11vnc","openbox","tint2","Xvfb"])assert.ok(patterns.includes(name),`teardown must reach ${name}`);
+    await assert.rejects(readFile(path.join(root,"profile/SingletonLock")),{code:"ENOENT"});
+  }finally{
+    stubborn.kill("SIGKILL");await exited;
+    await rm(root,{recursive:true,force:true});
+  }
+});
