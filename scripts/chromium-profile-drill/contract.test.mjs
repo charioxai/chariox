@@ -35,6 +35,8 @@ for (const [label, area, file, mutate, expected] of [
   ["input hash", "fixture", "inputs.lock.json", s => s.replace(/[a-f0-9]{64}/, "0".repeat(64)), /hash drifted/],
   ["image digest", "source", "docker/Dockerfile", s => s.replace(/d649[a-f0-9]{60}/, "0".repeat(64)), /inputs drifted/],
   ["CA checksum", "source", "docker/Dockerfile", s => s.replace(/a341[a-f0-9]{60}/, "0".repeat(64)), /inputs drifted/],
+  ["runtime CA copy", "source", "docker/Dockerfile", s => { const i = s.lastIndexOf("COPY --from=ca-bundle"); return s.slice(0, i) + "# " + s.slice(i); }, /CA bundle copy/],
+  ["production apt package", "source", "docker/Dockerfile", s => s.replace("    chromium-sandbox ", "    chromium-sandbox=0 "), /apt package drifted/],
   ["CA copy", "fixture", "Dockerfile", s => s.replace("COPY --from=ca-bundle", "# COPY --from=ca-bundle"), /CA bundle copy/],
   ["apt snapshot", "source", "docker/Dockerfile", s => s.replaceAll("20260701T000000Z", "20260702T000000Z"), /inputs drifted/],
   ["apt validity", "fixture", "Dockerfile", s => s.replace("Acquire::Check-Valid-Until=false", "Acquire::Check-Valid-Until=true"), /apt setup drifted/],

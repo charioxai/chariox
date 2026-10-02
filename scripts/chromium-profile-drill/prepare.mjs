@@ -21,14 +21,14 @@ export function verifyInputs({ sourceRoot = source, fixtureRoot = fixtureSource 
     assert.ok(production.match(pattern), "production immutable browser input is missing");
     assert.equal(fixture.match(pattern)?.[0], production.match(pattern)[0], "fixture browser inputs drifted from production");
   }
-  for (const text of [production, fixture]) {
+  const browserStage = production.slice(production.lastIndexOf("FROM node:22-bookworm-slim@"));
+  for (const text of [browserStage, fixture]) {
     assert.match(text, /^COPY --from=ca-bundle \/etc\/ssl\/certs\/ca-certificates\.crt \/etc\/ssl\/certs\/ca-certificates\.crt$/m, "CA bundle copy is missing");
   }
-  const browserStage = production.slice(production.lastIndexOf("FROM node:22-bookworm-slim@"));
   const aptSetup = /RUN printf[^]*?&& apt-get install -y --no-install-recommends --allow-downgrades/;
   assert.ok(browserStage.match(aptSetup), "production browser apt setup is missing");
   assert.equal(fixture.match(aptSetup)?.[0], browserStage.match(aptSetup)[0], "fixture apt setup drifted from production");
-  const packages = text => text.match(/apt-get install -y --no-install-recommends --allow-downgrades([^]*?)&& rm -rf \/var\/lib\/apt\/lists/)[1]
+  const packages = text => text.match(/apt-get install -y --no-install-recommends --allow-downgrades([^]*?)&&/)[1]
     .replace(/\\/g, "").trim().split(/\s+/);
   const browserPackages = "bash chromium chromium-sandbox curl dbus fonts-dejavu fonts-liberation novnc openbox procps python3 tint2 websockify x11-utils x11vnc xdotool xvfb zstd".split(" ");
   assert.deepEqual(packages(fixture).sort(), browserPackages.sort(), "fixture apt package selection drifted");
