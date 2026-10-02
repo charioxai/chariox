@@ -32,6 +32,9 @@ pub(crate) async fn dispatch_interactive_command(
     command: KernelCommand,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    let grant_id = command.external_grant_id();
+    let runtime_state =
+        runtime_state.with_external_command_authority(grant_id.as_deref().map(|id| (id, &request)));
     if let LocalDaemonRequest::CreateSession(mut inner) = request {
         inner.agent_defaults = runtime_state
             .resolve_session_agent_defaults(inner.agent_defaults)
@@ -55,7 +58,7 @@ pub(crate) async fn dispatch_interactive_command(
         | LocalDaemonRequest::ListHomeExtensionAudit(_)
         | LocalDaemonRequest::RevokeAgentExtension(_)) => {
             let caller_user_id = command_caller_user_id(&command);
-            execute_agent_control_request(runtime_state, &caller_user_id, request).await
+            execute_agent_control_request(&runtime_state, &caller_user_id, request).await
         }
         LocalDaemonRequest::SubmitPrompt(request) => {
             agent_runtime

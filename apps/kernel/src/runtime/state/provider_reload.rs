@@ -243,6 +243,7 @@ impl KernelRuntimeState {
         agent_id: &str,
         cause: &ProviderReloadReason,
     ) -> Result<ProviderReloadOutcome, DaemonError> {
+        self.authorize_current_external_command()?;
         // A leased provider is owned by the worker. Its run identity must be
         // replaced through the authenticated lease launch/prompt handshake;
         // a local reload would neither refresh that process nor rebind home.
@@ -299,6 +300,7 @@ impl KernelRuntimeState {
             let launch_request = self
                 .prepare_provider_launch_request_with_vault(launch_request, "reload provider run")
                 .await?;
+            self.authorize_current_external_command()?;
             let has_active_prompt = owned
                 .prompt_state_owner
                 .active_prompt_for_agent(&owned.session_store.get_session(session_id)?, agent_id)
@@ -344,6 +346,7 @@ impl KernelRuntimeState {
                 return Ok(ProviderReloadOutcome::Unaffected);
             }
 
+            self.authorize_current_external_command()?;
             let mut terminated_run_id = None;
             if run.state() != crate::provider::ProviderRunState::Ended {
                 terminated_run_id = Some(run.id().to_string());

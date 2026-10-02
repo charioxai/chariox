@@ -16,8 +16,30 @@ impl CommandRouter {
     pub(crate) async fn dispatch(
         &self,
         command: KernelCommand,
+        mut request: LocalDaemonRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.authorize_external_request(&command, &mut request)?;
+        let grant_id = command.external_grant_id();
+        let mut router = self.clone();
+        router.runtime_state = self
+            .runtime_state
+            .with_external_command_authority(grant_id.as_deref().map(|id| (id, &request)));
+        router.capability_runtime =
+            crate::runtime::capability_executor::CapabilityRuntimeStore::new(
+                router.runtime_state.clone(),
+            );
+        router.dispatch_authorized(command, request).await
+    }
+
+    async fn dispatch_authorized(
+        &self,
+        command: KernelCommand,
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        if let Some(response) = self.dispatch_kernel_access(&command, &request)? {
+            return Ok(response);
+        }
+        self.audit_access_terminal_attempt(&command, &request)?;
         let command_trace = CommandTrace::from_command(&command);
         log_command_received(&command_trace);
         if let Err(error) =
@@ -67,7 +89,7 @@ impl CommandRouter {
                         return result;
                     }
                 }
-                let result = Ok(response);
+                let result = self.filter_external_response(&command, Ok(response));
                 log_command_completed(&command_trace, &result);
                 return result;
             }
@@ -79,6 +101,7 @@ impl CommandRouter {
             }
         }
 
+        let response_caller = command.clone();
         let session_refresh = session_projection_refresh(&request);
         let result = self.dispatch_refresh_tracked(command, request).await;
         refresh_command_response_state(
@@ -99,6 +122,7 @@ impl CommandRouter {
         )
         .await;
         let result = self.redact_result_for_user(result, &caller_user_id);
+        let result = self.filter_external_response(&response_caller, result);
         log_command_completed(&command_trace, &result);
         result
     }

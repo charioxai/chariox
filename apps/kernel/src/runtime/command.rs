@@ -44,6 +44,11 @@ pub struct KernelCommand {
 }
 
 impl KernelCommand {
+    pub(crate) fn external_grant_id(&self) -> Option<String> {
+        (self.caller.connection_class == Some(crate::local::KernelConnectionClass::ExternalAgent))
+            .then(|| self.caller.caller_id.clone())
+    }
+
     pub(crate) fn durable_operation_id(&self, suffix: Option<&str>) -> String {
         match suffix {
             Some(suffix) => format!("{}:{suffix}", self.command_id),

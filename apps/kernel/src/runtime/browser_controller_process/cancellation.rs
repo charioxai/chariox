@@ -523,6 +523,7 @@ impl BrowserControllerProcessStore {
         let mut ownership = ownership
             .lock()
             .map_err(|_| "browser controller supervisor lock poisoned")?;
+        self.authorize()?;
         ownership.supervisor.backend.action_cancellation = Some(Arc::clone(&active.signal));
         let result = operation(&mut ownership);
         ownership.supervisor.backend.action_cancellation = None;

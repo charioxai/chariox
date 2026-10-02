@@ -2156,8 +2156,9 @@ Workflow trigger and deployment direction:
   against a pinned commitment to the vault key (the KDF parameters and a hash
   of the derived key, kept durably and taken from the vault the boot
   configuration names when the kernel first unlocks it or first sees a
-  passkey that opens it; a later vault path or file change never moves it;
-  the vault's unlock state is unchanged), or an open remember window: a verified passkey with `passkey_remember_minutes` accepts
+  passkey that opens it; a later vault path or file change never moves it,
+  only a passphrase change does, see below; the vault's unlock state is
+  unchanged), or an open remember window: a verified passkey with `passkey_remember_minutes` accepts
   the owner's critical approvals without it for that long, in kernel memory
   only, independent of the vault's own unlock window. Otherwise the answer is
   refused with `PASSKEY_REQUIRED`; a wrong passkey with `PASSKEY_REJECTED`;
@@ -2166,7 +2167,16 @@ Workflow trigger and deployment direction:
   15 minutes. Without the encrypted Chariox vault the approval fails closed
   (`PASSKEY_UNAVAILABLE`). Denying needs no passkey, and a passkey sent for any
   other choice is ignored. Each check appends a durable
-  `critical_approval.passkey` event (outcome only). Clients prompt for the
+  `critical_approval.passkey` event (outcome only). `/credential vault
+  manage` offers Change passphrase (`ManageCredentialVault` answers with
+  action `passphrase_changed`; no request or response shape changes): three
+  secret prompts take the current passphrase and the new one twice. For the
+  boot vault this rotates the passkey: the current passphrase must verify
+  against the pin, under the same limit; the pin moves with the re-keyed
+  vault file through a durable `critical_approval.passkey_verifier_move`
+  record that a restart settles from the file, so the two never disagree;
+  every remember window ends; and a `critical_approval.passkey_rotation`
+  event records the outcome only. Clients prompt for the
   passkey with hidden input only for a `requires_passkey` choice; to a remote
   kernel it travels inside the end-to-end encrypted relay request.
 - protocol 393: every connection has a class from a fixed vocabulary:
@@ -2213,6 +2223,88 @@ Workflow trigger and deployment direction:
   leaves the set, a passkey sent for it is no longer checked, and the
   decision times out to whoever raised it. Clients no longer ask for the
   passkey inside their approval panels; it is typed only into the popup.
+- protocol 395: process-bound external agent access over the existing
+  `local_socket_path`. The kernel serves the same websocket envelopes on a
+  Unix socket with mode 0600 in an owned 0700 directory. It rejects other
+  UIDs, `Origin`, and bearer authorization headers. macOS identifies the
+  peer with `getpeereid` and `LOCAL_PEERTOKEN`, including the audit token's
+  process version. Linux uses `SO_PEERCRED` and the process start time.
+  Every use checks the process identity again to prevent PID reuse.
+
+  An unapproved Unix peer can only send `RequestKernelAccess` with
+  `session_id`, `holder_pid`, and optional `lifetime_minutes`. The holder
+  must be the peer or an OS-verified ancestor. The kernel raises an owner-only
+  passkey popup naming its verified executable, pid, session, and lifetime.
+  Grant and extension prompts have kind `access_grant` or `access_extension`,
+  `lifetime_minutes`, and `max_lifetime_minutes`. Approve needs a fresh
+  terminal passkey; the critical-approval remember window never applies.
+  The owner may choose a lifetime through the approve answer's numeric
+  `custom_reply`. Refuse needs no passkey.
+
+  `KernelAccessGranted` returns public `KernelAccessGrant` metadata, never
+  a credential. A grant authorizes the live holder and its OS descendants
+  for one session. Kernel-launched processes receive no external authority,
+  even if the holder is an ancestor of the kernel. Session IDs, references,
+  attachments, and every session in a batch are checked. `ListSessions`
+  returns only the granted session. Global requests fail closed. Saved workflow
+  artifacts live in kernel/user registries, so direct artifact creation, lookup,
+  enumeration, mutation, import, and artifact-target export are outside external
+  session grants even when their envelopes include a session ID. Session-local source
+  Apply/Run and exports targeting a workflow remain available. The scope
+  match covers every request variant without a fallback, so an undecided new
+  request fails compilation. A grant cannot answer kernel-owned decisions
+  or critical approvals, or submit a passkey.
+
+  `ListKernelAccessGrants` and `RevokeKernelAccessGrant { grant_id }` are
+  terminal-only and scoped to the caller's owned grants; a null grant id
+  revokes all of them. Expiry, explicit revoke, holder exit, session end,
+  passkey rotation, and kernel shutdown revoke authority. Idle subscriptions,
+  queued commands, cached replies, and event replay check live authority.
+  Workflow controls also recheck after provider-lane and cancellation-settlement
+  waits; remote workflow cancellation carries the same command authority.
+  Direct router paths retain the canonical grant/request too. Setup cancellation
+  rechecks after ordering gates, Meta cancellation retains authority, and local
+  PTY input and remote terminal sends recheck before enqueue.
+  Capability closures recheck before blocking shell/file/artifact effects. Room
+  controller commands recheck after relay discovery/enqueue and local blocking
+  waits; browser mutations recheck execution-gate and action-admission waits
+  before execution and home-state completion. Invalidated queued actions are
+  retired without execution. Stale remote binding recovery retains authority
+  through the app lock and worker discovery, before lease/account/agent creation
+  or home binding persistence. Local controller jobs recheck under the supervisor
+  ownership lock; computer helpers recheck inside their blocking process queue.
+  A Unix connection binds to its first approved or admitted grant and never
+  switches authority. Session references resolve once to an authorized session
+  ID before dispatch. A later approval on that socket creates a grant for
+  use on a fresh connection; existing subscriptions and queued frames keep
+  their original grant. Fresh connections select an eligible grant matching
+  the requested session. For unscoped requests, a holder's own grant takes
+  precedence over inherited grants.
+  Grants stay in memory and do not survive a restart. Durable grant events
+  record metadata and outcomes; terminal-answer and passkey verification
+  events correlate by interaction id. They contain no passkey or bearer.
+
+  TCP and relay access requests return a pointer to the Unix socket; neither
+  transport can use a grant. Existing TCP token and tokenless log-mode
+  behavior remains until enforcement. `LocalIpcClient` supports
+  `ws+unix:///absolute/socket`. `chariox access request --session <id>
+  [--holder-pid <pid>] [--minutes <minutes>] [--socket <path>]` waits for
+  the popup and prints public grant metadata. The default holder is the
+  CLI launcher's grandparent. Terminal controls are `chariox access list`,
+  `chariox access revoke <id|--all>`, `/kernel access list`, and
+  `/kernel access revoke <id|all>`.
+
+  Kernel user config settings are live runtime policy. Set/unset is supported;
+  unset restores the default. An extension popup is raised at the notice
+  time and a verified answer starts a new term.
+
+  ```toml
+  [kernel_access]
+  grant_default_minutes = 30
+  grant_max_minutes = 240
+  grant_extend_notice_minutes = 5
+  request_timeout_minutes = 10
+  ```
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

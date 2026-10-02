@@ -1279,11 +1279,12 @@ mod tests {
         passphrase_interaction: &crate::session::RuntimeInteraction,
     ) {
         runtime
-            .resolve_runtime_interaction(
+            .resolve_terminal_runtime_interaction(
                 session_id,
                 passphrase_interaction.id(),
                 "passphrase",
                 Some("correct horse battery staple"),
+                Some(crate::session::DEFAULT_LOCAL_USER_ID),
             )
             .await
             .expect("vault passphrase interaction should resolve");

@@ -150,7 +150,9 @@ export type RuntimeInteractionChoice = {
  * `RespondToInteraction`: the approve choice with the passkey, or the refuse
  * choice without it. */
 export type PasskeyPrompt = {
-  kind: "critical_approval"
+  kind: "critical_approval" | "access_grant" | "access_extension"
+  lifetime_minutes?: number | null
+  max_lifetime_minutes?: number | null
   session_id: string
   session_alias?: string | null
   interaction_id: string
@@ -271,6 +273,12 @@ export type CharioxUserConfig = {
   ui?: Record<string, unknown>
   relay?: Record<string, unknown>
   kernel?: Record<string, unknown>
+  kernel_access?: {
+    grant_default_minutes: number
+    grant_max_minutes: number
+    grant_extend_notice_minutes: number
+    request_timeout_minutes: number
+  }
   workflow?: {
     max_queues_per_workflow?: number
     session_default_max_agents?: number
@@ -423,3 +431,16 @@ export type RuntimeAttachment = {
   id: string
   session_id: string
 }
+
+export type KernelAccessGrant = {
+  grant_id: string
+  session_id: string
+  owner_user_id: string
+  holder_pid: number
+  holder_executable: string
+  lifetime_minutes: number
+  expires_at_ms: number
+}
+export type KernelAccessGrantedResponse = { KernelAccessGranted: { grant: KernelAccessGrant } }
+export type KernelAccessGrantsListedResponse = { KernelAccessGrantsListed: { grants: KernelAccessGrant[] } }
+export type KernelAccessRevokedResponse = { KernelAccessRevoked: { revoked: number } }

@@ -30,7 +30,7 @@ mod skill_package_response;
 mod slice;
 pub(super) use slice::{
     capture_room_environment_screenshot, execute_room_computer_observation,
-    reset_room_computer_input, run_room_clipboard_read, run_room_clipboard_write,
+    reset_room_computer_input, run_room_clipboard_read_authorized, run_room_clipboard_write,
     run_room_keyboard_key, run_room_keyboard_text, run_room_pointer_click, run_room_pointer_drag,
     run_room_pointer_move, run_room_pointer_scroll, run_room_secret_text_input,
 };

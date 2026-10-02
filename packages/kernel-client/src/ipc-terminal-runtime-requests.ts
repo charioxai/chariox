@@ -299,6 +299,7 @@ export function getTerminalCommandCatalogRequest() {
 export type InteractionPasskeyProof = {
   passkey: string
   rememberMinutes?: number | null
+  accessLifetimeMinutes?: number | null
 }
 
 export function respondToInteractionRequest(
@@ -313,7 +314,7 @@ export function respondToInteractionRequest(
       session_id: sessionId,
       interaction_id: interactionId,
       choice_id: choiceId,
-      custom_reply: customReply ?? null,
+      custom_reply: proof?.accessLifetimeMinutes ? String(proof.accessLifetimeMinutes) : customReply ?? null,
       ...(proof ? {
         passkey: proof.passkey,
         ...(proof.rememberMinutes ? { passkey_remember_minutes: proof.rememberMinutes } : {}),

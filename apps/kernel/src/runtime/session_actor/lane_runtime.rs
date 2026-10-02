@@ -33,6 +33,7 @@ struct SessionCommandEnvelope {
     caller_metaagent_id: Option<String>,
     terminal_caller: bool,
     connection_class: Option<KernelConnectionClass>,
+    external_grant_id: Option<String>,
     request: LocalDaemonRequest,
     result_tx: oneshot::Sender<Result<LocalDaemonResponse, DaemonError>>,
 }
@@ -106,6 +107,7 @@ impl SessionRuntime {
             .await?;
         let terminal_caller = command.is_terminal_caller() && caller_metaagent_id.is_none();
         let connection_class = command.caller.connection_class;
+        let external_grant_id = command.external_grant_id();
         let command_id = command.command_id;
         let command_type = command.command_type;
         match lane.try_send(SessionCommandEnvelope {
@@ -116,6 +118,7 @@ impl SessionRuntime {
             caller_metaagent_id,
             terminal_caller,
             connection_class,
+            external_grant_id,
             request,
             result_tx,
         }) {
@@ -254,6 +257,7 @@ impl SessionRuntime {
             caller_metaagent_id: None,
             terminal_caller: false,
             connection_class: None,
+            external_grant_id: None,
             request,
             result_tx,
         })
@@ -276,7 +280,7 @@ async fn run_session_command_lane(
     mut rx: mpsc::Receiver<SessionCommandEnvelope>,
 ) {
     let executor = SessionRuntimeCommandExecutor::new(
-        store,
+        store.clone(),
         focus_projection,
         session_projection,
         agent_runtime_projection,
@@ -301,15 +305,31 @@ async fn run_session_command_lane(
                 "command_type": envelope.command_type,
             }),
         );
-        let result = executor
-            .execute(
-                envelope.request,
-                envelope.caller_user_id,
-                envelope.caller_metaagent_id,
-                envelope.terminal_caller,
-                envelope.connection_class,
-            )
-            .await;
+        let authorization = envelope
+            .external_grant_id
+            .as_deref()
+            .map(|id| store.authorize_external_access(id, &envelope.request))
+            .transpose();
+        let result = match authorization {
+            Err(error) => Err(error),
+            Ok(_) => {
+                executor
+                    .with_external_command_authority(
+                        envelope
+                            .external_grant_id
+                            .as_deref()
+                            .map(|id| (id, &envelope.request)),
+                    )
+                    .execute(
+                        envelope.request,
+                        envelope.caller_user_id,
+                        envelope.caller_metaagent_id,
+                        envelope.terminal_caller,
+                        envelope.connection_class,
+                    )
+                    .await
+            }
+        };
         log_lane_completed(
             &envelope.telemetry,
             "session",

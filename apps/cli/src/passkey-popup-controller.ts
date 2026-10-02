@@ -14,7 +14,7 @@ const PASSKEY_REFUSALS: Record<string, string> = {
   PASSKEY_ALREADY_ANSWERED: "This passkey request was already answered.",
   PASSKEY_REJECTED: "That passkey is not correct.",
   PASSKEY_RATE_LIMITED: "Too many wrong passkeys. Wait before trying again.",
-  PASSKEY_UNAVAILABLE: "Critical approvals need the Chariox vault and its passphrase.",
+  PASSKEY_UNAVAILABLE: "This approval needs the encrypted Chariox vault and its passphrase.",
   PASSKEY_REQUIRED: "Enter your Chariox passkey to approve.",
   PASSKEY_NOT_ACCEPTED: "Only a Chariox terminal can submit the passkey.",
 }
@@ -52,7 +52,7 @@ export type PasskeyPopupView = {
   index: number
   prompt: PasskeyPrompt | null
   /** Hidden entry: only the passkey's length ever leaves the controller. */
-  passkey: { length: number; rememberMinutes: number }
+  passkey: { length: number; rememberMinutes: number; accessLifetimeMinutes?: number | null }
   pending: boolean
   connected: boolean
   error: string | null
@@ -65,7 +65,7 @@ export function passkeyPromptsFromEvent(prompts: unknown): PasskeyPrompt[] {
   if (!Array.isArray(prompts)) return []
   return prompts.filter((item): item is PasskeyPrompt => {
     const prompt = item as Partial<PasskeyPrompt> | null
-    return !!prompt && prompt.kind === "critical_approval"
+    return !!prompt && ["critical_approval", "access_grant", "access_extension"].includes(prompt.kind ?? "")
       && isText(prompt.session_id) && isText(prompt.interaction_id)
       && typeof prompt.title === "string" && typeof prompt.message === "string"
       && isText(prompt.approve_choice_id) && isText(prompt.refuse_choice_id)
@@ -105,6 +105,7 @@ export function createPasskeyPopupController(deps: {
   // The passkey lives only here until it is sent, then it is dropped.
   let value = ""
   let remember = 0
+  let accessLifetime: number | null = null
   // This terminal's own remember window; the kernel remains the authority.
   let rememberedUntil = 0
   let pending: object | null = null
@@ -119,11 +120,11 @@ export function createPasskeyPopupController(deps: {
   const current = () => prompts[index] ?? null
   const view = (): PasskeyPopupView => ({
     open, count: prompts.length, index, prompt: current(),
-    passkey: { length: Array.from(value).length, rememberMinutes: remember },
+    passkey: { length: Array.from(value).length, rememberMinutes: remember, ...(current()?.kind !== "critical_approval" && current()?.lifetime_minutes ? { accessLifetimeMinutes: accessLifetime ?? current()?.lifetime_minutes ?? null } : {}) },
     pending: pending !== null, connected: deps.connected(), error,
   })
   const render = () => { if (!disposed) deps.onView(view()) }
-  const clearEntry = () => { value = ""; remember = 0; error = null }
+  const clearEntry = () => { value = ""; remember = 0; accessLifetime = null; error = null }
   const syncOpen = () => {
     const next = prompts.length > 0 && !hidden && !disposed
     if (next === open) return
@@ -180,15 +181,15 @@ export function createPasskeyPopupController(deps: {
     const prompt = current()
     if (!open || !prompt || pending || !deps.connected()) return
     const typed = value
-    if (!typed && Date.now() >= rememberedUntil) {
+    if (!typed && (prompt.kind !== "critical_approval" || Date.now() >= rememberedUntil)) {
       error = PASSKEY_REFUSALS.PASSKEY_REQUIRED!
       render()
       return
     }
-    const minutes = remember
+    const minutes = prompt.kind === "critical_approval" ? remember : 0
     value = ""
     await send(prompt, prompt.approve_choice_id,
-      typed ? { passkey: typed, rememberMinutes: minutes || null } : undefined)
+      typed ? { passkey: typed, rememberMinutes: minutes || null, ...(prompt.kind !== "critical_approval" ? { accessLifetimeMinutes: accessLifetime ?? prompt.lifetime_minutes } : {}) } : undefined)
   }
   const refuse = async () => {
     const prompt = current()
@@ -198,6 +199,15 @@ export function createPasskeyPopupController(deps: {
   }
   const cycleRemember = () => {
     if (!open) return
+    const prompt = current()
+    if (prompt && prompt.kind !== "critical_approval") {
+      const max = prompt.max_lifetime_minutes
+      if (!max || !prompt.lifetime_minutes) return
+      const options = [...new Set([prompt.lifetime_minutes, 5, 15, 30, 60, 120, max])].filter(m => m <= max).sort((a,b) => a-b)
+      accessLifetime = options[(options.indexOf(accessLifetime ?? prompt.lifetime_minutes) + 1) % options.length]!
+      render()
+      return
+    }
     const options: readonly number[] = PASSKEY_REMEMBER_MINUTES
     remember = options[(options.indexOf(remember) + 1) % options.length]!
     render()

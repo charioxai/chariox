@@ -36,6 +36,7 @@ use crate::transport::kernel_protocol::{
 
 mod local_auth;
 mod local_presence;
+mod unix_access;
 
 pub(crate) mod command_cache;
 mod outgoing;
@@ -614,6 +615,10 @@ async fn run_kernel_websocket_server_with_bound_listeners<F>(
 where
     F: Future<Output = ()>,
 {
+    let unix_listener = crate::local::ipc::LocalIpcListener::bind(
+        router.kernel_local_socket_path(),
+    )
+    .map_err(|e| crate::runtime::kernel_access::error(format!("bind Unix websocket: {e}")))?;
     let transport_health = router.transport_health_store();
     let durable_snapshot_scheduler = router.durable_snapshot_scheduler();
     let event_counter_path = router.kernel_event_counter_path();
@@ -644,6 +649,7 @@ where
     let pump_router = Arc::clone(&router);
     let pump_task = tokio::spawn(async move {
         loop {
+            pump_router.runtime_state().pump_kernel_access();
             pump_router.pump_transport_runtime().await;
             let change_sequence = pump_router.transport_runtime_pump_change_sequence();
             let pty_output_sequence = pump_router.pty_output_change_sequence();
@@ -688,8 +694,16 @@ where
                     task.abort();
                 }
                 mcp_task.abort();
+                let _ = router.runtime_state().revoke_kernel_access(None, None, "kernel_shutdown");
                 let _ = router.shutdown_cleanup().await;
                 return Ok(());
+            },
+            accept_result = unix_listener.listener.accept() => {
+                let (stream, _) = accept_result.map_err(|e| crate::runtime::kernel_access::error(e.to_string()))?;
+                let runtime = Arc::clone(&runtime);
+                let router = Arc::clone(&router);
+                let admission = inbound_request_admission.clone();
+                tokio::spawn(unix_access::serve_connection(runtime, router, admission, stream));
             },
             accept_result = listener.accept() => {
                 let (stream, _) = accept_result.map_err(|error| DaemonError::LocalTransport {
@@ -788,6 +802,29 @@ async fn handle_kernel_connection(
         KernelConnectionClass::Unauthenticated,
         local_auth::KernelLocalCredential::connection_class,
     );
+    serve_kernel_socket(
+        runtime,
+        router,
+        inbound_request_admission,
+        socket,
+        connection_class,
+        None,
+    )
+    .await
+}
+
+async fn serve_kernel_socket<S>(
+    runtime: Arc<KernelTransportRuntime>,
+    router: Arc<CommandRouter>,
+    inbound_request_admission: InboundRequestAdmission,
+    socket: tokio_tungstenite::WebSocketStream<S>,
+    connection_class: KernelConnectionClass,
+    peer: Option<crate::runtime::kernel_access::process::ProcessIdentity>,
+) -> Result<(), DaemonError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let bound_grant: Arc<std::sync::Mutex<Option<String>>> = Arc::default();
     runtime.transport_health.record_connection_opened();
     let _connection_guard = TransportConnectionGuard {
         transport_health: runtime.transport_health.clone(),
@@ -808,6 +845,9 @@ async fn handle_kernel_connection(
         watch_task: None,
     }));
 
+    let delivery_peer = peer.clone();
+    let delivery_grant = bound_grant.clone();
+    let delivery_runtime = router.runtime_state();
     let writer_task = tokio::spawn(async move {
         let mut transport_ping =
             tokio::time::interval(Duration::from_millis(WEBSOCKET_PING_INTERVAL_MS));
@@ -835,20 +875,23 @@ async fn handle_kernel_connection(
                         }
                     }
                     Some(frame) = priority_rx.recv() => {
-                        if !send_kernel_frame(&mut writer, frame).await {
+                        if !unix_access::delivery_live(&delivery_runtime, delivery_peer.as_ref(), &delivery_grant)
+                            || !send_kernel_frame(&mut writer, frame).await {
                             break;
                         }
                     }
                     Some(frame) = event_rx.recv() => {
                         if let Some(frame) = event_write_coalescer.push_event(frame, tokio::time::Instant::now()) {
-                            if !send_kernel_frame(&mut writer, frame).await {
+                            if !unix_access::delivery_live(&delivery_runtime, delivery_peer.as_ref(), &delivery_grant)
+                            || !send_kernel_frame(&mut writer, frame).await {
                                 break;
                             }
                         }
                     }
                     _ = tokio::time::sleep_until(ready_at) => {
                         for frame in event_write_coalescer.drain_ready() {
-                            if !send_kernel_frame(&mut writer, frame).await {
+                            if !unix_access::delivery_live(&delivery_runtime, delivery_peer.as_ref(), &delivery_grant)
+                            || !send_kernel_frame(&mut writer, frame).await {
                                 break 'writer_loop;
                             }
                         }
@@ -878,7 +921,8 @@ async fn handle_kernel_connection(
                     }
                 }
                 Some(frame) = priority_rx.recv() => {
-                    if !send_kernel_frame(&mut writer, frame).await {
+                    if !unix_access::delivery_live(&delivery_runtime, delivery_peer.as_ref(), &delivery_grant)
+                        || !send_kernel_frame(&mut writer, frame).await {
                         break;
                     }
                 }
@@ -886,7 +930,8 @@ async fn handle_kernel_connection(
                     let Some(frame) = event_write_coalescer.push_event(frame, tokio::time::Instant::now()) else {
                         continue;
                     };
-                    if !send_kernel_frame(&mut writer, frame).await {
+                    if !unix_access::delivery_live(&delivery_runtime, delivery_peer.as_ref(), &delivery_grant)
+                        || !send_kernel_frame(&mut writer, frame).await {
                         break;
                     }
                 }
@@ -896,7 +941,16 @@ async fn handle_kernel_connection(
     });
 
     let mut read_error = None;
-    while let Some(message_result) = reader.next().await {
+    let mut access_tick = tokio::time::interval(Duration::from_millis(100));
+    loop {
+        let message_result = tokio::select! {
+            message = reader.next() => match message { Some(message) => message, None => break },
+            _ = access_tick.tick(), if peer.is_some() => {
+                router.runtime_state().pump_kernel_access();
+                if !unix_access::delivery_live(&router.runtime_state(), peer.as_ref(), &bound_grant) { break; }
+                continue;
+            }
+        };
         let message = match message_result {
             Ok(message) => message,
             Err(error) => {
@@ -920,6 +974,8 @@ async fn handle_kernel_connection(
                     &close_tx,
                     &close_requested,
                     connection_class,
+                    peer.as_ref(),
+                    &bound_grant,
                     payload.as_bytes(),
                 )
                 .await;
@@ -935,6 +991,8 @@ async fn handle_kernel_connection(
                     &close_tx,
                     &close_requested,
                     connection_class,
+                    peer.as_ref(),
+                    &bound_grant,
                     &payload,
                 )
                 .await;
@@ -1061,6 +1119,8 @@ async fn handle_incoming_payload(
     close_tx: &mpsc::UnboundedSender<ConnectionCloseCommand>,
     close_requested: &Arc<AtomicBool>,
     connection_class: KernelConnectionClass,
+    peer: Option<&crate::runtime::kernel_access::process::ProcessIdentity>,
+    bound_grant: &Arc<std::sync::Mutex<Option<String>>>,
     payload: &[u8],
 ) {
     let frame = match serde_json::from_slice::<KernelIncomingFrame>(payload) {
@@ -1087,6 +1147,32 @@ async fn handle_incoming_payload(
         }
     };
 
+    let external_caller = if let Some(peer) = peer {
+        match unix_access::admit_frame(
+            runtime,
+            router,
+            inbound_request_admission,
+            connection_inbound_request_permits,
+            outgoing_tx,
+            close_tx,
+            close_requested,
+            peer,
+            bound_grant,
+            &frame,
+        )
+        .await
+        {
+            Ok(caller) => Some(caller),
+            Err(()) => return,
+        }
+    } else {
+        None
+    };
+    let connection_class = if external_caller.is_some() {
+        KernelConnectionClass::ExternalAgent
+    } else {
+        connection_class
+    };
     match frame {
         KernelIncomingFrame::Request {
             request_id,
@@ -1096,19 +1182,29 @@ async fn handle_incoming_payload(
             request,
         } => {
             runtime.transport_health.record_incoming_request();
-            let caller = router
-                .local_command_caller(KernelCommandSource::LocalCli, connection_class)
-                .await;
+            let caller = match external_caller {
+                Some(caller) => caller,
+                None => {
+                    router
+                        .local_command_caller(KernelCommandSource::LocalCli, connection_class)
+                        .await
+                }
+            };
             let command = KernelCommand::from_local_request_with_caller(
                 command_id.unwrap_or_else(|| request_id.clone()),
-                KernelCommandSource::LocalCli,
+                if peer.is_some() {
+                    KernelCommandSource::LocalIpc
+                } else {
+                    KernelCommandSource::LocalCli
+                },
                 caller,
                 correlation_id.clone(),
                 causation_id.clone(),
                 &request,
             );
-            let fingerprint = request_is_cacheable(&request)
-                .then(|| CommandFingerprint::from_command_and_request(&command, &request));
+            let fingerprint = (connection_class != KernelConnectionClass::ExternalAgent
+                && request_is_cacheable(&request))
+            .then(|| CommandFingerprint::from_command_and_request(&command, &request));
             if let Some(fingerprint) = fingerprint.as_ref() {
                 match runtime
                     .command_result_cache

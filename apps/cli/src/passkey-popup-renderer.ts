@@ -108,19 +108,22 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
         height: Math.max(2, Math.min(wanted, dimensions.height - top - 1 - fixedRows)),
         flexShrink: 0, scrollY: true, scrollX: false,
       })
-      body.add(text(`Critical approval${view.count > 1 ? ` · ${view.index + 1} of ${view.count}` : ""}`, { muted: true }))
+      body.add(text(`${prompt.kind === "critical_approval" ? "Critical approval" : "External agent access"}${view.count > 1 ? ` · ${view.index + 1} of ${view.count}` : ""}`, { muted: true }))
       body.add(text(prompt.title || "Critical approval", { accent: true, bold: true }))
       body.add(text(prompt.message))
       panel.add(body)
       const session = prompt.session_alias ? `${prompt.session_alias} (${prompt.session_id})` : prompt.session_id
       section(text(`Session: ${session} · expires ${expiry(prompt.expires_at_ms)}`, { muted: true }))
       // Hidden input: only the length is ever rendered.
-      const remember = text(`Remember for: ${view.passkey.rememberMinutes ? `${view.passkey.rememberMinutes} minutes` : "off"}`)
+      const remember = text(prompt.kind === "critical_approval"
+        ? `Remember for: ${view.passkey.rememberMinutes ? `${view.passkey.rememberMinutes} minutes` : "off"}`
+        : `Access for: ${view.passkey.accessLifetimeMinutes} minutes · maximum ${prompt.max_lifetime_minutes}`)
       remember.onMouseUp = (event) => {
         event.stopPropagation()
         if (event.button === MouseButton.LEFT) actions.cycleRemember()
       }
-      section(text(`Passkey: ${"•".repeat(Math.min(view.passkey.length, 40))}▏`, { accent: true }), remember)
+      const input = text(`Passkey: ${"•".repeat(Math.min(view.passkey.length, 40))}▏`, { accent: true })
+      section(input, remember)
       if (view.error) section(text(view.error))
       const enabled = view.connected && !view.pending
       const buttons = new BoxRenderable(renderer, { flexDirection: "row", gap: 2, flexShrink: 0 })
@@ -129,7 +132,7 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
       panel.add(buttons)
       section(text(view.pending ? "Waiting for the kernel…"
         : !view.connected ? "Disconnected · reconnect to answer"
-        : `Enter approves · Ctrl+R refuses · Tab remember${view.count > 1 ? " · ←/→ requests" : ""}`, { muted: true }))
+        : `Enter approves · Ctrl+R refuses${view.prompt?.kind === "critical_approval" ? " · Tab remember" : " · Tab lifetime"}${view.count > 1 ? " · ←/→ requests" : ""}`, { muted: true }))
       scrim.add(panel)
       box.add(scrim)
       box.requestRender()

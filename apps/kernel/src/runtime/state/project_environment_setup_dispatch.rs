@@ -212,7 +212,7 @@ pub(super) async fn refresh_remote_setup_binding(
     }
     let agent_id = execution.agent_id.clone();
     let rebound_agent = state
-        .with_app_side_effect_blocking(move |app| app.refresh_remote_agent_binding(&agent_id))
+        .refresh_remote_agent_binding_authorized(&agent_id)
         .await?;
     let rebound_execution = rebound_agent
         .remote_execution()
@@ -268,8 +268,10 @@ async fn remote_relay_context(
         ));
     }
     let relay_config = state
-        .with_app_side_effect(|app| app.relay_config_for_remote_execution(remote_execution))
-        .await;
+        .with_authorized_app_side_effect(|app| {
+            Ok(app.relay_config_for_remote_execution(remote_execution))
+        })
+        .await?;
     Ok((
         relay_config,
         ClientTarget {
@@ -328,25 +330,28 @@ async fn send_setup_request_with_timeout(
 ) -> Result<RelayProjectEnvironmentSetupStatus, DaemonError> {
     let response = match state.connected_relay_state_for_config(&relay_config).await {
         Some(relay_state) => {
-            crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
+            crate::transport::relay_client::send_peer_request_via_connected_relay_authorized(
                 &relay_config,
                 &relay_state,
                 target,
                 request,
                 response_timeout,
+                || state.authorize_current_external_command(),
             )
             .await
         }
         None => {
-            crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+            crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized(
                 &relay_config,
                 target,
                 request,
                 response_timeout,
+                || state.authorize_current_external_command(),
             )
             .await
         }
     }?;
+    state.authorize_current_external_command()?;
     let expected = match response_kind {
         RelaySetupResponseKind::Started => "LeasedProjectEnvironmentSetupStarted",
         RelaySetupResponseKind::Status => "LeasedProjectEnvironmentSetupStatus",

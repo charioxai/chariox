@@ -241,3 +241,28 @@ test("an answered earlier request leaves the shown one in view", async () => {
   assert.equal(h.popup.view().prompt?.interaction_id, "p3")
   assert.equal(h.popup.view().count, 2)
 })
+
+test("access grants and extensions require a fresh passkey and let the owner choose a bounded term", async () => {
+  const h = harness()
+  h.popup.apply([prompt("critical")])
+  type(h, "correct")
+  h.popup.handleKey(key("tab"))
+  h.popup.handleKey(key("return"))
+  h.resolve(); await settle()
+  for (const kind of ["access_grant", "access_extension"] as const) {
+    const access = { ...prompt(kind), kind, lifetime_minutes: 30, max_lifetime_minutes: 45 }
+    h.popup.apply([access])
+    const count = h.requests.length
+    h.popup.handleKey(key("return"))
+    await settle()
+    assert.equal(h.requests.length, count, "remembered critical presence cannot grant access")
+    assert.match(h.popup.view().error!, /Enter your Chariox passkey/)
+    h.popup.handleKey(key("tab"))
+    assert.equal(h.popup.view().passkey.rememberMinutes, 0)
+    assert.equal(h.popup.view().passkey.accessLifetimeMinutes, 45)
+    type(h, "fresh")
+    h.popup.handleKey(key("return"))
+    assert.deepEqual(h.requests.at(-1), [kind, "approve", { passkey: "fresh", rememberMinutes: null, accessLifetimeMinutes: 45 }])
+    h.resolve(); await settle()
+  }
+})

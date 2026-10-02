@@ -21,6 +21,7 @@ use crate::workflow_code::{
 
 pub(crate) struct KernelSessionService<'a> {
     app: &'a mut DaemonApp,
+    authorizer: Option<&'a (dyn Fn() -> Result<(), DaemonError> + Send + Sync)>,
 }
 
 mod workflow_code;
@@ -82,7 +83,27 @@ impl<'a> KernelSessionReadService<'a> {
 
 impl<'a> KernelSessionService<'a> {
     pub(crate) fn new(app: &'a mut DaemonApp) -> Self {
-        Self { app }
+        Self {
+            app,
+            authorizer: None,
+        }
+    }
+
+    pub(crate) fn with_authorization(
+        app: &'a mut DaemonApp,
+        authorizer: &'a (dyn Fn() -> Result<(), DaemonError> + Send + Sync),
+    ) -> Self {
+        Self {
+            app,
+            authorizer: Some(authorizer),
+        }
+    }
+
+    fn authorize(&self) -> Result<(), DaemonError> {
+        match self.authorizer {
+            Some(authorize) => authorize(),
+            None => Ok(()),
+        }
     }
 
     pub(crate) fn create_session(
@@ -223,13 +244,27 @@ impl<'a> KernelSessionService<'a> {
 
     pub(crate) fn spawn_agent(
         &mut self,
-        mut request: CreateAgentRequest,
+        request: CreateAgentRequest,
     ) -> Result<AgentInstance, DaemonError> {
+        match self.authorizer {
+            Some(authorize) => self.spawn_agent_authorized(request, authorize),
+            None => self.spawn_agent_authorized(request, &|| Ok(())),
+        }
+    }
+
+    pub(crate) fn spawn_agent_authorized(
+        &mut self,
+        mut request: CreateAgentRequest,
+        authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
+    ) -> Result<AgentInstance, DaemonError> {
+        authorize()?;
         if let Some(kernel_ref) = request.kernel_ref.clone() {
             if self.app.kernel_ref_is_local(&kernel_ref) {
                 request.kernel_ref = None;
             } else {
-                let agent = self.app.spawn_worker_agent(request, &kernel_ref)?;
+                let agent = self
+                    .app
+                    .spawn_worker_agent(request, &kernel_ref, authorize)?;
                 self.app.durable_state_store().append_event(
                     "agent.created",
                     Some(agent.id().to_string()),

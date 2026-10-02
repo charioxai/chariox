@@ -3,6 +3,31 @@ use crate::local::{KernelConnectionClass, PasskeyPrompt, PasskeyPromptKind};
 use crate::runtime::state::{critical_approval_audit_payload, PASSKEY_ALREADY_ANSWERED};
 use crate::transport::kernel_protocol::KernelEvent;
 
+#[test]
+fn kernel_access_lifetime_config_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 395);
+    let response = LocalDaemonResponse::UserConfig {
+        path: "/state/config.toml".into(),
+        config: crate::config::CharioxUserConfig::default(),
+    };
+    let wire = serde_json::to_value(&response).unwrap();
+    let lifetimes = &wire["UserConfig"]["config"]["kernel_access"];
+    assert_eq!(
+        lifetimes,
+        &serde_json::json!({
+            "grant_default_minutes": 30,
+            "grant_max_minutes": 240,
+            "grant_extend_notice_minutes": 5,
+            "request_timeout_minutes": 10,
+        })
+    );
+    let digest = Sha256::digest(serde_json::to_vec(lifetimes).unwrap());
+    assert_eq!(
+        format!("{digest:x}"),
+        "d1286fb0a2b6dd753fa9691cdc9c1338b823fd1d0c8c8df115108edf30fbd012"
+    );
+}
+
 /// Exhaustive, so a new class fails to compile here until it is versioned.
 fn wire_name(class: KernelConnectionClass) -> &'static str {
     match class {
@@ -17,7 +42,7 @@ fn wire_name(class: KernelConnectionClass) -> &'static str {
 
 #[test]
 fn kernel_connection_classes_and_their_audit_attribution_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 394);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 395);
     let classes = [
         KernelConnectionClass::Terminal,
         KernelConnectionClass::ExternalAgent,
@@ -74,7 +99,7 @@ fn kernel_connection_classes_and_their_audit_attribution_are_versioned() {
 
 #[test]
 fn passkey_prompts_and_their_popup_event_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 394);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 395);
     let prompt = |session_alias: Option<&str>, interaction_id: &str| PasskeyPrompt {
         kind: PasskeyPromptKind::CriticalApproval,
         session_id: "session-1".into(),
@@ -86,6 +111,8 @@ fn passkey_prompts_and_their_popup_event_are_versioned() {
         refuse_choice_id: "deny".into(),
         requested_at_ms: 1_000,
         expires_at_ms: 301_000,
+        lifetime_minutes: None,
+        max_lifetime_minutes: None,
     };
     let event = KernelEvent::PasskeyPromptsChanged {
         prompts: vec![
@@ -145,4 +172,72 @@ fn passkey_prompts_and_their_popup_event_are_versioned() {
         format!("{digest:x}"),
         "eb4f707985865d80b8ddc73fcf3f95534c4b6a99c30de7fbe666da5830159350"
     );
+}
+
+#[test]
+fn process_bound_access_protocol_395_has_metadata_but_no_bearer() {
+    use crate::local::{
+        KernelAccessGrant, ListKernelAccessGrantsRequest, RequestKernelAccessRequest,
+        RevokeKernelAccessGrantRequest,
+    };
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 395);
+    let grant = KernelAccessGrant {
+        grant_id: "g".into(),
+        session_id: "s".into(),
+        owner_user_id: "local".into(),
+        holder_pid: 42,
+        holder_executable: "/usr/bin/agent".into(),
+        lifetime_minutes: 30,
+        expires_at_ms: 1_801_000,
+    };
+    let requests = [
+        LocalDaemonRequest::RequestKernelAccess(RequestKernelAccessRequest {
+            session_id: "s".into(),
+            holder_pid: 42,
+            lifetime_minutes: Some(30),
+        }),
+        LocalDaemonRequest::ListKernelAccessGrants(ListKernelAccessGrantsRequest {}),
+        LocalDaemonRequest::RevokeKernelAccessGrant(RevokeKernelAccessGrantRequest {
+            grant_id: Some("g".into()),
+        }),
+        LocalDaemonRequest::RevokeKernelAccessGrant(RevokeKernelAccessGrantRequest {
+            grant_id: None,
+        }),
+    ];
+    let responses = [
+        LocalDaemonResponse::KernelAccessGranted {
+            grant: grant.clone(),
+        },
+        LocalDaemonResponse::KernelAccessGrantsListed {
+            grants: vec![grant],
+        },
+        LocalDaemonResponse::KernelAccessRevoked { revoked: 1 },
+    ];
+    for request in &requests {
+        assert_eq!(
+            serde_json::from_value::<LocalDaemonRequest>(serde_json::to_value(request).unwrap())
+                .unwrap(),
+            *request
+        );
+    }
+    for response in &responses {
+        assert_eq!(
+            serde_json::from_value::<LocalDaemonResponse>(serde_json::to_value(response).unwrap())
+                .unwrap(),
+            *response
+        );
+    }
+    let snapshot = serde_json::json!({ "requests": requests, "responses": responses,
+        "kinds": [PasskeyPromptKind::AccessGrant, PasskeyPromptKind::AccessExtension] });
+    let digest = Sha256::digest(serde_json::to_vec(&snapshot).unwrap());
+    assert_eq!(
+        format!("{digest:x}"),
+        "213ce7f6fd543c34994cea385340eea264ecfc87276e6af71e135bbd08f58b21"
+    );
+    assert!(serde_json::from_value::<LocalDaemonRequest>(
+        serde_json::json!({"RequestKernelAccess": {
+            "session_id": "s", "holder_pid": 42, "bearer_token": "forbidden"
+        }})
+    )
+    .is_err());
 }

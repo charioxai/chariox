@@ -10,6 +10,9 @@ impl KernelRuntimeState {
         Result<LocalDaemonResponse, DaemonError>,
         Option<crate::session::RuntimeSession>,
     ) {
+        if let Err(error) = self.authorize_current_external_command() {
+            return (Err(error), None);
+        }
         let owned = &self.owned;
 
         if let Some(metaagent_id) = caller_metaagent_id.as_deref() {

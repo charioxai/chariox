@@ -252,6 +252,9 @@ export class LocalIpcClient {
   private readonly kernelMaxMissedPongs: number
 
   constructor(endpoint: string, options: LocalIpcClientOptions = {}) {
+    if (endpoint.startsWith("ws+unix://") && (options.localAuthToken !== undefined || options.relayAuthToken !== undefined)) {
+      throw new Error("Unix kernel access uses OS process identity, without bearer credentials")
+    }
     this.socketPath = endpoint
     const staleMs = options.kernelEventStaleMs ?? DEFAULT_KERNEL_EVENT_STALE_MS
     this.kernelEventStaleMs = staleMs > 0 ? Math.max(staleMs, 250) : 0
@@ -288,7 +291,7 @@ export class LocalIpcClient {
     if (explicitLocalAuthToken && isHostedPublicationGateway()) {
       throw new Error("hosted publication gateways require a one-shot kernel local auth token file")
     }
-    this.localAuthToken = this.relayAuthToken
+    this.localAuthToken = this.relayAuthToken || endpoint.startsWith("ws+unix://")
       ? null
       : explicitLocalAuthToken ?? consumeKernelLocalAuthTokenFromEnv(endpoint) ?? null
     this.localAuthEndpoint = this.localAuthToken
@@ -514,7 +517,8 @@ export class LocalIpcClient {
       const pending = this.pendingRequests.register<TResponse>(
         requestId,
         lane,
-        this.requestAttemptTimeoutMs(lane, retryUntilMs),
+        this.socketPath.startsWith("ws+unix://") && typeof request === "object" && request !== null && "RequestKernelAccess" in request
+          ? 24 * 60 * 60 * 1000 : this.requestAttemptTimeoutMs(lane, retryUntilMs),
       )
 
       try {
@@ -635,6 +639,13 @@ export class LocalIpcClient {
   }
 
   private openKernelWebSocket(): WebSocket {
+    if (this.socketPath.startsWith("ws+unix://")) {
+      const socket = this.socketPath.slice("ws+unix://".length)
+      if (!socket.startsWith("/") || socket.includes(":") || socket.includes("?")) {
+        throw new Error("ws+unix endpoint must name an absolute Unix socket path")
+      }
+      return new WebSocket(`ws+unix:${socket}:/kernel`)
+    }
     if (this.isRelayMode()) {
       return new WebSocket(this.socketPath)
     }

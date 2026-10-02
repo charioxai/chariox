@@ -675,6 +675,17 @@
     "surfaces": ["session", "waiting_room"],
     "children": [
       {
+        "id": "kernel-access",
+        "label": "access",
+        "description": "List and revoke external agent access grants",
+        "value": "/kernel access ",
+        "surfaces": ["session", "waiting_room"],
+        "children": [
+          { "id": "kernel-access-list", "label": "list", "description": "List live grants", "value": "/kernel access list", "surfaces": ["session", "waiting_room"] },
+          { "id": "kernel-access-revoke", "label": "revoke", "description": "Revoke a grant or all grants", "value": "/kernel access revoke ", "surfaces": ["session", "waiting_room"] }
+        ]
+      },
+      {
         "id": "kernel-health",
         "label": "health",
         "description": "Open runtime health, remote readiness, and invariants",
