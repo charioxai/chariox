@@ -135,6 +135,7 @@ impl KernelRuntimeOwnedState {
         )?;
         self.persist_prompt_session_state(&session, agent_id)?;
         activity_mutation.record();
+        self.withdraw_stale_agent_interactions();
         self.provider_process_projection.invalidate();
         let _ = self.session_snapshot(session_id)?;
         Ok(())

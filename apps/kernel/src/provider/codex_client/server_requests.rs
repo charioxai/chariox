@@ -435,6 +435,19 @@ fn codex_permission_interaction(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn approval_lifetime_withdrawn_codex_permission_is_declined() {
+        let resolution = crate::provider::ProviderNativeInteractionResolution {
+            status: "timed_out".into(),
+            choice_id: None,
+            reply: None,
+        };
+        assert_eq!(
+            CodexClient::codex_v2_approval_decision(&resolution),
+            json!({"decision": "decline"})
+        );
+    }
+
     use serde_json::json;
 
     use super::{CodexClient, JsonRpcMessage};

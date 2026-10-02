@@ -82,8 +82,34 @@ impl KernelRuntimeOwnedState {
         {
             return Err(interaction_error(super::INTERACTION_ALREADY_PENDING));
         }
+        let agent_lifetime = interaction.agent_id().map(|agent_id| {
+            let prompt_id = self
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, agent_id)
+                .map(|prompt| prompt.id().to_owned());
+            let provider_run_id = self
+                .provider_store
+                .get_run_for_agent(session_id, agent_id)
+                .filter(|run| run.state() == crate::provider::ProviderRunState::Running)
+                .map(|run| run.id().to_owned());
+            let native_turn_id = if prompt_id.is_none() {
+                provider_run_id
+                    .as_deref()
+                    .and_then(|id| self.active_turns.get(id))
+                    .map(|turn| turn.prompt_id)
+            } else {
+                None
+            };
+            super::super::PendingAgentInteractionLifetime {
+                agent_id: agent_id.into(),
+                prompt_id,
+                native_turn_id,
+                provider_run_id,
+            }
+        });
         session.add_active_interaction(interaction.clone());
         let pending = super::super::PendingInteraction {
+            agent_lifetime,
             session_id: session_id.into(),
             session_store_identity: self.session_store.weak_identity(),
             kernel_operation_owner: kernel_operation_owner.map(str::to_owned),

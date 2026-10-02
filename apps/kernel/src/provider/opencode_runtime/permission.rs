@@ -396,6 +396,19 @@ fn humanize_permission_name(permission: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn approval_lifetime_withdrawn_opencode_permission_is_rejected() {
+        let resolution = crate::provider::ProviderNativeInteractionResolution {
+            status: "timed_out".into(),
+            choice_id: None,
+            reply: None,
+        };
+        assert_eq!(
+            super::map_permission_resolution_to_opencode_response(&resolution),
+            "reject"
+        );
+    }
+
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
