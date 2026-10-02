@@ -162,6 +162,8 @@ impl KernelRuntimeState {
                     .end_validation_prompt(&export.operation_id);
                 continue;
             };
+            self.app_control()
+                .show_validation_prompt(&export.operation_id, &session);
             let remaining_sec = export.expires_ms.saturating_sub(now_ms) / 1000;
             let interaction =
                 export_interaction(&export).with_timeout_sec(remaining_sec.clamp(1, 300));
@@ -227,11 +229,14 @@ impl KernelRuntimeState {
             Ok(Err("CONFLICT")) => return failed(AppRequestErrorCode::Conflict),
             _ => return failed(AppRequestErrorCode::StorageUnavailable),
         };
+        // An owner may save from a different terminal than the one showing
+        // the offer. Close the prompt where it was presented, as for grants.
+        let session = self
+            .app_control()
+            .validation_prompt_session(&request.operation_id)
+            .unwrap_or(request.session_id);
         let _ = self
-            .timeout_runtime_interaction(
-                &request.session_id,
-                &export_interaction_id(&request.operation_id),
-            )
+            .timeout_runtime_interaction(&session, &export_interaction_id(&request.operation_id))
             .await;
         LocalDaemonResponse::AppFileExport {
             operation_id: request.operation_id,

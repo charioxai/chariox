@@ -424,3 +424,79 @@ async fn a_persisted_decision_without_a_responder_is_dropped_after_restart() {
         vec![fixture.id("live"), "provider-notice-1".to_string()]
     );
 }
+
+// Exercise the real export pump and durable save across two sessions, rather
+// than just the prompt-session lookup: an owner may save from another terminal.
+#[tokio::test]
+async fn app_file_export_saved_from_another_session_closes_only_its_presented_prompt() {
+    use crate::durable_state::{
+        app_file_exports::{FileExport, FileExportCommand},
+        app_state::fixture_inbox_installation,
+    };
+    use crate::local::{LocalDaemonResponse, SaveAppFileExportRequest};
+
+    let fixture = Fixture::new();
+    let store = fixture.state.owned.durable_state_store.clone();
+    fixture_inbox_installation(&store, DEFAULT_LOCAL_USER_ID);
+    let installation = store
+        .get_app_installation(DEFAULT_LOCAL_USER_ID, "installed")
+        .unwrap();
+    let operation = fixture.id("export");
+    let prompt = format!("app_file_export_{operation}");
+    store
+        .app_file_export(FileExportCommand::Create {
+            export: FileExport {
+                operation_id: operation.clone(),
+                owner: DEFAULT_LOCAL_USER_ID.into(),
+                installation: "installed".into(),
+                generation: installation.generation,
+                name: "imported.txt".into(),
+                size: 7,
+                state: "pending".into(),
+                expires_ms: crate::session::unix_epoch_ms() + 60_000,
+            },
+            contents: b"fixture".to_vec(),
+        })
+        .unwrap();
+    let mut unrelated = fixture.register("unrelated").unwrap();
+    fixture
+        .state
+        .app_file_export_pass(crate::session::unix_epoch_ms())
+        .await;
+    assert!(fixture.active_ids().contains(&prompt));
+
+    let answering_session = fixture.id("answering-session");
+    fixture
+        .state
+        .owned
+        .session_store
+        .write()
+        .restore_session(RuntimeSession::new(
+            answering_session.clone(),
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "kernel",
+        ));
+    let result = fixture
+        .state
+        .save_app_file_export(
+            DEFAULT_LOCAL_USER_ID.into(),
+            SaveAppFileExportRequest {
+                session_id: answering_session,
+                operation_id: operation.clone(),
+            },
+        )
+        .await;
+    assert!(matches!(
+        result,
+        LocalDaemonResponse::AppFileExport { operation_id, name, contents_base64 }
+            if operation_id == operation && name == "imported.txt" && contents_base64 == "Zml4dHVyZQ=="
+    ));
+    assert_eq!(fixture.active_ids(), vec![fixture.id("unrelated")]);
+    assert!(matches!(
+        unrelated.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    ));
+}
