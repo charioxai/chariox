@@ -324,6 +324,8 @@ pub struct SetProviderAccountCredentialRequest {
     pub account_profile: String,
     pub value: String,
     #[serde(default)]
+    pub run: bool,
+    #[serde(default)]
     pub overwrite: bool,
 }
 
@@ -336,6 +338,7 @@ impl std::fmt::Debug for SetProviderAccountCredentialRequest {
             .field("provider", &self.provider)
             .field("account_profile", &self.account_profile)
             .field("value", &"[REDACTED]")
+            .field("run", &self.run)
             .field("overwrite", &self.overwrite)
             .finish()
     }

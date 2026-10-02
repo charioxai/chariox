@@ -12,8 +12,15 @@ fn local_daemon_protocol_provider_account_credential_shape_is_versioned() {
             provider: "claude".to_string(),
             account_profile: "work".to_string(),
             value: "setup-token-secret".to_string(),
+            run: true,
             overwrite: true,
         },
+    );
+    let legacy: LocalDaemonRequest = serde_json::from_value(serde_json::json!({
+        "SetProviderAccountCredential": {"provider":"claude", "account_profile":"work", "value":"synthetic", "overwrite":false}
+    })).unwrap();
+    assert!(
+        matches!(legacy, LocalDaemonRequest::SetProviderAccountCredential(ref request) if !request.run)
     );
     let response = LocalDaemonResponse::ProviderAccountCredentialStored {
         provider: "claude".to_string(),
@@ -35,10 +42,14 @@ fn local_daemon_protocol_provider_account_credential_shape_is_versioned() {
         Some(&serde_json::json!("provider-account-claude-handle"))
     );
 
+    assert_eq!(
+        snapshot.pointer("/0/SetProviderAccountCredential/run"),
+        Some(&serde_json::json!(true))
+    );
     let encoded = serde_json::to_string(&snapshot).expect("snapshot should encode");
     let hash = Sha256::digest(encoded.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "d018a75374d241bfe0555258b4c90fdc5b85e04c6c859181b6f7c807eacd9d81"
+        "e525fa0b75a08d3ce4267c0fe016d37a5ae1fea0d8734368bb3887bc833cf8bc"
     );
 }

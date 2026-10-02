@@ -314,3 +314,16 @@ test("executeShellCommand cancels active prompt through shell context attachment
     { CancelActivePrompt: { session_id: "session-1", attachment_id: "attachment-shell" } },
   ])
 })
+
+test("MP-08/MP-11 setup-token run starts kernel capture without asking for the token", async () => {
+  const requests: Record<string, unknown>[] = []
+  const context = createDefaultShellContext({ sessionId: "session-1", agentId: "agent-1" })
+  const result = await executeShellCommand(parseShellCommand("provider setup-token claude work --run --replace"), context, {
+    client: { send: async (request) => { requests.push(request); return { ProviderLoginStarted: { login: { provider: "claude", account_profile: "work", login_kind: "terminal", login_id: "capture-1" } } } } },
+    readSecret: async () => { throw new Error("setup token must never enter client input") },
+  })
+  assert.equal(result.ok, true)
+  assert.equal(requests.length, 1)
+  assert.deepEqual(requests[0], { SetProviderAccountCredential: { provider: "claude", account_profile: "work", value: "", run: true, overwrite: true, session_id: "session-1", agent_id: "agent-1" } })
+  assert.match(result.message ?? "", /login-status capture-1/)
+})

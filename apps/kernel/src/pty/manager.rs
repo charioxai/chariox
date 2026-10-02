@@ -379,6 +379,16 @@ impl PtyManager {
         credentials: &crate::provider::ProviderCredentialEnvironment,
         scrub_ambient_credentials: bool,
     ) -> Result<(), DaemonError> {
+        self.spawn_with_output_filter(request, credentials, scrub_ambient_credentials, None)
+    }
+
+    pub(crate) fn spawn_with_output_filter(
+        &mut self,
+        request: PtySpawnRequest,
+        credentials: &crate::provider::ProviderCredentialEnvironment,
+        scrub_ambient_credentials: bool,
+        mut output_filter: Option<Box<dyn FnMut(&[u8]) -> Vec<u8> + Send>>,
+    ) -> Result<(), DaemonError> {
         if let Some(process_key) = self.process_aliases.get(&request.provider_run_id) {
             self.output_signal
                 .prefer_alias(process_key, &request.provider_run_id);
@@ -499,11 +509,26 @@ impl PtyManager {
                         break;
                     }
 
-                    append_pty_diagnostic_tail(&reader_diagnostic_tail, &buffer[..size]);
-                    if output_tx.send(buffer[..size].to_vec()).is_err() {
+                    // Sensitive utilities filter before queues, diagnostics or projections.
+                    let bytes = if let Some(filter) = output_filter.as_mut() {
+                        let bytes = filter(&buffer[..size]);
+                        zeroize::Zeroize::zeroize(&mut buffer[..size]);
+                        bytes
+                    } else {
+                        buffer[..size].to_vec()
+                    };
+                    append_pty_diagnostic_tail(&reader_diagnostic_tail, &bytes);
+                    if !bytes.is_empty() && output_tx.send(bytes).is_err() {
                         break;
                     }
                     output_signal.record_output(&output_process_key);
+                }
+                if let Some(filter) = output_filter.as_mut() {
+                    let bytes = filter(&[]);
+                    append_pty_diagnostic_tail(&reader_diagnostic_tail, &bytes);
+                    if !bytes.is_empty() {
+                        let _ = output_tx.send(bytes);
+                    }
                 }
                 output_signal.record_output(&output_process_key);
             });

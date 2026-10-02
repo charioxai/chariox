@@ -171,6 +171,9 @@ async fn start_terminal_provider_auth(
         crate::runtime::state::ProviderAuthProcessOperation::Login => {
             format!("{provider}:auth-login")
         }
+        crate::runtime::state::ProviderAuthProcessOperation::SetupToken => {
+            "claude:setup-token".to_string()
+        }
         crate::runtime::state::ProviderAuthProcessOperation::Logout => {
             format!("{provider}:auth-logout")
         }
@@ -286,6 +289,9 @@ fn terminal_provider_auth_args(
         ],
         (_, crate::runtime::state::ProviderAuthProcessOperation::Login, _) => {
             vec!["auth".to_string(), "login".to_string()]
+        }
+        (_, crate::runtime::state::ProviderAuthProcessOperation::SetupToken, _) => {
+            vec!["setup-token".to_string()]
         }
         (_, crate::runtime::state::ProviderAuthProcessOperation::Logout, _) => {
             vec!["auth".to_string(), "logout".to_string()]

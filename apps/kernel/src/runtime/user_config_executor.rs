@@ -84,6 +84,15 @@ pub(crate) async fn execute_set_provider_account_credential_request(
     command: &KernelCommand,
     request: SetProviderAccountCredentialRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    if request.run {
+        return super::provider_setup_token::start(
+            config_projection,
+            runtime_state,
+            command,
+            request,
+        )
+        .await;
+    }
     let owner_user_id =
         runtime_state.provider_account_authority_owner_user_id(&command_caller_user_id(command));
     let provider = crate::provider::validate_provider_account_credential_input(

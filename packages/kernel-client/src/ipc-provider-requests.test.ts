@@ -50,3 +50,9 @@ test("provider setup token request carries account scope and explicit replacemen
     },
   )
 })
+
+test("MP-08/MP-11 setup-token run carries only scope and replacement policy", () => {
+  assert.deepEqual(setProviderAccountCredentialRequest("claude", "work", "", true, { sessionId: "session-1" }, true), {
+    SetProviderAccountCredential: { provider: "claude", account_profile: "work", value: "", run: true, overwrite: true, session_id: "session-1" },
+  })
+})

@@ -23,6 +23,7 @@ pub(in crate::runtime) enum ProviderLoginProcessBackend {
 pub(in crate::runtime) enum ProviderAuthProcessOperation {
     Login,
     Logout,
+    SetupToken,
 }
 
 /// Where the Chariox Vault prompt of a `claude setup-token` login points.
@@ -196,6 +197,7 @@ impl ProviderLoginProcessRecord {
         let title = match self.operation {
             ProviderAuthProcessOperation::Login => "Authenticate provider account",
             ProviderAuthProcessOperation::Logout => "Log out provider account",
+            ProviderAuthProcessOperation::SetupToken => "Authorize Claude setup token",
         };
         let message = if self.backend == ProviderLoginProcessBackend::Terminal {
             "Complete the provider-native terminal workflow. Its output is projected separately and responses are treated as secrets."
@@ -437,6 +439,33 @@ impl ProviderLoginProcessStore {
         Ok(record.status())
     }
 
+    // Serialize cancellation with the atomic Vault commit. Never commit a cancelled workflow.
+    pub fn finish_setup_token(
+        &self,
+        owner: &str,
+        login_id: &str,
+        store: impl FnOnce() -> Result<(), DaemonError>,
+    ) -> Result<ProviderLoginStatus, DaemonError> {
+        let mut records = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let record = owned_record_mut(&mut records, owner, login_id)?;
+        if record.state != ProviderLoginProcessState::Running {
+            return Ok(record.status());
+        }
+        let success = store().is_ok();
+        record.output.extend_from_slice(if success {
+            b"Claude setup token stored in Chariox Vault.\n"
+        } else {
+            b"Claude setup token capture or Vault storage failed; no token was stored.\n"
+        });
+        record.state = if success {
+            ProviderLoginProcessState::Succeeded
+        } else {
+            ProviderLoginProcessState::Failed
+        };
+        record.updated_at_ms = crate::session::unix_epoch_ms();
+        Ok(record.status())
+    }
+
     /// Adds a kernel message below the rendered `claude setup-token` screen.
     pub fn append_setup_token_note(
         &self,
@@ -542,6 +571,9 @@ impl ProviderLoginProcessStore {
     ) -> Result<ProviderLoginStatus, DaemonError> {
         let mut records = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         let record = owned_record_mut(&mut records, owner_user_id, login_id)?;
+        if record.state != ProviderLoginProcessState::Running && record.state != state {
+            return Ok(record.status());
+        }
         record.set_state(state, now_ms);
         Ok(record.status())
     }

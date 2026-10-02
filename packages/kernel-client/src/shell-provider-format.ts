@@ -12,9 +12,10 @@ export function formatProviderAuthStatus(status: ProviderAuthStatus): string {
   ].filter(Boolean).join(" • ")
 }
 
-export function formatProviderLoginStart(login: ProviderLoginStart, verb: "login" | "logout" | "reauth"): string {
+export function formatProviderLoginStart(login: ProviderLoginStart, verb: "login" | "logout" | "reauth" | "setup-token"): string {
   return [
     `${login.provider} ${verb} started`,
+    verb === "setup-token" && login.login_id ? `run provider login-status ${login.login_id}; use provider login-input ${login.login_id} for a hidden response` : null,
     login.user_code ? `code ${login.user_code}` : null,
     login.verification_url ?? login.auth_url ?? null,
   ].filter(Boolean).join(" • ")

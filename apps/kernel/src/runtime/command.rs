@@ -152,6 +152,7 @@ fn local_request_payload(request: &LocalDaemonRequest) -> Value {
                 "provider": request.provider,
                 "account_profile": request.account_profile,
                 "value": "[redacted]",
+                "run": request.run,
                 "overwrite": request.overwrite
             }
         }),
@@ -461,6 +462,7 @@ mod tests {
                 provider: "claude".to_string(),
                 account_profile: "work".to_string(),
                 value: "super-secret-setup-token".to_string(),
+                run: false,
                 overwrite: true,
             });
         let command = KernelCommand::from_local_request(
