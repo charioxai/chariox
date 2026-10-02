@@ -990,10 +990,7 @@ export class LocalIpcClient {
             message: "kernel websocket heartbeat missed; reconnecting",
           })
         }
-        this.setSuppressNextCloseEvent(lane, true)
-        socket.terminate()
-        this.setWebSocket(lane, null)
-        this.setRelayDaemonPublicKey(lane, null)
+        this.destroyWebSocket(lane, "kernel websocket heartbeat missed")
         if (lane === "event") {
           this.scheduleReconnect()
         }
@@ -1009,10 +1006,7 @@ export class LocalIpcClient {
             message: "kernel websocket heartbeat failed; reconnecting",
           })
         }
-        this.setSuppressNextCloseEvent(lane, true)
-        socket.terminate()
-        this.setWebSocket(lane, null)
-        this.setRelayDaemonPublicKey(lane, null)
+        this.destroyWebSocket(lane, "kernel websocket heartbeat failed")
         if (lane === "event") {
           this.scheduleReconnect()
         }
@@ -1207,7 +1201,10 @@ export class LocalIpcClient {
     })
   }
 
-  private destroyWebSocket(lane: KernelSocketLane): void {
+  private destroyWebSocket(lane: KernelSocketLane, message = "kernel websocket reset"): void {
+    // Retiring the lane makes its asynchronous close/error callbacks stale.
+    // Settle requests here, including untimed human authorization waits.
+    this.rejectPending(message, lane)
     const socket = this.getWebSocket(lane) ?? this.getConnectingWebSocket(lane)
     this.setWebSocket(lane, null)
     this.setConnectingWebSocket(lane, null)
