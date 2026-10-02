@@ -193,7 +193,7 @@ function remote() {
   }
 }
 
-for (const observedState of ["stopped", "starting"] as const) {
+for (const observedState of ["stopped", "starting", "ready"] as const) {
   test(`MP-02/MP-08/MP-11 enrolled ${observedState} placement retains its selected owner without online inventory`, () => {
     const environment = { environmentId: "environment-1", name: "Enrolled",
       desiredState: "stopped" as const, observedState, desiredRevision: 2, observedRevision: 2,

@@ -134,8 +134,8 @@ export function waitingRoomSelectedLaunchKernelRef(
   const selected = state.selectedKernelRef?.trim() || (machineRef === "local" ? "local" : "")
   const environmentId = managedEnvironmentIdFromMachineRef(machineRef)
   const environment = remote.managedEnvironments?.find((candidate) => candidate.environmentId === environmentId)
-  // MP-02/MP-08/MP-11: enrollment survives offline inventory during STOP/START.
-  if (environment?.contextManifestDigest && !managedEnvironmentIsReady(environment) && selected) return selected
+  // MP-02/MP-08/MP-11: retain the owner while lifecycle and online inventory converge.
+  if (environment?.contextManifestDigest && selected) return selected
   return options.some((option) => option.id === selected) ? selected : options[0]?.id ?? ""
 }
 
