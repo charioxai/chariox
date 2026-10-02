@@ -30,9 +30,12 @@ export function verifyInputs({ sourceRoot = source, fixtureRoot = fixtureSource 
   assert.equal(fixture.match(aptSetup)?.[0], browserStage.match(aptSetup)[0], "fixture apt setup drifted from production");
   const packages = text => text.match(/apt-get install -y --no-install-recommends --allow-downgrades([^]*?)&& rm -rf \/var\/lib\/apt\/lists/)[1]
     .replace(/\\/g, "").trim().split(/\s+/);
+  const browserPackages = "bash chromium chromium-sandbox curl dbus fonts-dejavu fonts-liberation novnc openbox procps python3 tint2 websockify x11-utils x11vnc xdotool xvfb zstd".split(" ");
+  assert.deepEqual(packages(fixture).sort(), browserPackages.sort(), "fixture apt package selection drifted");
   for (const name of packages(fixture)) assert.ok(packages(browserStage).includes(name), `fixture apt package drifted: ${name}`);
   for (const name of ["slice-screen.sh", "browser-cdp.mjs", "tint2rc"]) {
-    assert.ok(browserStage.includes(`apps/kernel/slice-linux-docker/docker/${name} /opt/chariox-slice/${name}`), `production image omits ${name}`);
+    assert.ok(browserStage.split("\n").some(line => /^(COPY|COPY --chown=slice:slice) /.test(line)
+      && line.endsWith(`apps/kernel/slice-linux-docker/docker/${name} /opt/chariox-slice/${name}`)), `production image omits ${name}`);
   }
   const pins = JSON.parse(readFileSync(join(fixtureRoot, "inputs.lock.json")));
   assert.deepEqual(Object.keys(pins).sort(), [...productionFiles].sort());
@@ -54,7 +57,10 @@ export function prepare() {
   const evidence = join(scratch, "evidence");
   for (const path of [context, evidence, join(scratch, "home"), join(scratch, "tmp"), join(scratch, "bin")]) mkdirSync(path, { mode: 0o700 });
   const id = randomBytes(12).toString("hex");
-  const manifest = { id, revision, image: `chariox-chromium-drill:${id}`, executionEnvironment, inputs: { ...pins }, testOnlyInputs: {} };
+  const manifest = { id, revision, image: `chariox-chromium-drill:${id}`, executionEnvironment, inputs: { ...pins,
+    productionDockerfile: digest(readFileSync(join(source, "docker/Dockerfile"))),
+    fixtureDockerfile: digest(readFileSync(join(fixtureSource, "Dockerfile"))),
+  }, testOnlyInputs: {} };
   for (const name of productionFiles.filter(name => name.startsWith("docker/"))) {
     const path = join(source, name);
     assert.equal(digest(readFileSync(path)), pins[name]);

@@ -28,6 +28,8 @@ function mutatedInput(area, file, mutate, expected) {
 
 for (const [label, area, file, mutate, expected] of [
   ["launcher bytes", "source", "docker/slice-screen.sh", s => s + "\n# changed launcher\n", /hash drifted/],
+  ["commented launcher COPY", "source", "docker/Dockerfile", s => s.replace("COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-screen.sh", "# COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-screen.sh"), /omits slice-screen/],
+  ["missing apt package", "fixture", "Dockerfile", s => s.replace("chromium-sandbox ", ""), /apt package selection/],
   ["launcher COPY", "source", "docker/Dockerfile", s => s.replace("docker/slice-screen.sh /opt/chariox-slice/slice-screen.sh", "docker/missing.sh /opt/chariox-slice/slice-screen.sh"), /omits slice-screen/],
   ["input hash", "fixture", "inputs.lock.json", s => s.replace(/[a-f0-9]{64}/, "0".repeat(64)), /hash drifted/],
   ["image digest", "source", "docker/Dockerfile", s => s.replace(/d649[a-f0-9]{60}/, "0".repeat(64)), /inputs drifted/],
@@ -35,7 +37,7 @@ for (const [label, area, file, mutate, expected] of [
   ["CA copy", "fixture", "Dockerfile", s => s.replace("COPY --from=ca-bundle", "# COPY --from=ca-bundle"), /CA bundle copy/],
   ["apt snapshot", "source", "docker/Dockerfile", s => s.replaceAll("20260701T000000Z", "20260702T000000Z"), /inputs drifted/],
   ["apt validity", "fixture", "Dockerfile", s => s.replace("Acquire::Check-Valid-Until=false", "Acquire::Check-Valid-Until=true"), /apt setup drifted/],
-  ["apt package", "fixture", "Dockerfile", s => s.replace("chromium-sandbox curl", "chromium-sandbox=0 curl"), /apt package drifted/],
+  ["apt package", "fixture", "Dockerfile", s => s.replace("chromium-sandbox curl", "chromium-sandbox=0 curl"), /apt package/],
   ["seccomp bytes", "source", "chromium-seccomp.json", s => s.replace("SCMP_ACT_ERRNO", "SCMP_ACT_ALLOW"), /hash drifted/],
 ]) test(`input contract rejects mutated ${label}`, () => mutatedInput(area, file, mutate, expected));
 

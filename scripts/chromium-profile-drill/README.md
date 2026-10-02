@@ -63,8 +63,8 @@ Outside GitHub set `CHARIOX_CHROMIUM_DRILL_ENVIRONMENT=builder`, with
 `GITHUB_ACTIONS`, `RUNNER_ENVIRONMENT` and `GITHUB_REPOSITORY` unset. Never
 set those variables to impersonate hosted CI. Preparation and resource ownership
 checks persist and require the same environment label throughout the run.
-The builder controller build uses the installed `slot-run` admission helper;
-it retains the hosted systemd resource limits and Rust 1.88.0 baseline.
+Invoke the builder controller build through the installed `slot-run` admission
+helper before its systemd deadline starts. The build retains the hosted systemd resource limits and Rust 1.88.0 baseline.
 The coordinator may be root on the builder; the browser and sandbox probe always
 run as `slice`. This fixture is not an owned kernel Room or protected rootless
 topology-7 qualification. The result explicitly records both exclusions.

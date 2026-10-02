@@ -77,7 +77,7 @@ export function build(scratch) {
   // adds this isolated package and removes unrelated entries; record that exact
   // resulting lock separately rather than claiming byte identity with workspace.
   const output = unit(`chariox-browser-build-${owner.id}`, [`User=${uid}`, `Group=${gid}`, "MemoryMax=1536M", "CPUQuota=100%", "TasksMax=128", "RuntimeMaxSec=180"],
-    "/usr/bin/env", [...env, ...(owner.executionEnvironment === "builder" ? [checked("which", ["slot-run"])] : []), cargo, "test", "--manifest-path", join(harness, "Cargo.toml"), "--no-run", "--message-format=json"], 190000);
+    "/usr/bin/env", [...env, cargo, "test", "--manifest-path", join(harness, "Cargo.toml"), "--no-run", "--message-format=json"], 190000);
   const artifacts = output.split("\n").filter(Boolean).map(line => JSON.parse(line))
     .filter(value => value.reason === "compiler-artifact" && value.target?.name === "chariox_browser_controller_validation" && value.executable);
   assert.equal(artifacts.length, 1);

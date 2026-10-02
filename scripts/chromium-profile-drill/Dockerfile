@@ -4,8 +4,6 @@ RUN echo 'a3413a37a8e09cc21b2c11c9ffb23d92d2fc9d1933c9e7617f5c4fba4f72d37d  /etc
 # Intentionally omits the kernel and provider toolchains. prepare.mjs verifies
 # these immutable browser inputs against the production slice Dockerfile.
 FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436
-ARG CHARIOX_DRILL_ID
-LABEL io.chariox.chromium-drill="${CHARIOX_DRILL_ID}"
 ENV DEBIAN_FRONTEND=noninteractive CHARIOX_SLICE_ROOT=/opt/chariox-slice HOME=/home/slice CHARIOX_SLICE_VIEWER_BACKEND=novnc CHARIOX_SLICE_CHROME_PROFILE=/home/slice/.chariox/browser/chromium
 COPY --from=ca-bundle /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20260701T000000Z bookworm main' > /etc/apt/sources.list \
@@ -23,6 +21,8 @@ COPY chromium-sandbox-probe.mjs /opt/chariox-drill/
 COPY fixture-server.mjs cdp.mjs profile.mjs /opt/chariox-drill/
 RUN chmod 0755 /opt/chariox-slice/*.sh /opt/chariox-slice/*.mjs \
   && chmod -R a+rX /opt/chariox-drill
+ARG CHARIOX_DRILL_ID
+LABEL io.chariox.chromium-drill="${CHARIOX_DRILL_ID}"
 USER slice
 WORKDIR /home/slice
 CMD ["node", "/opt/chariox-drill/fixture-server.mjs"]
