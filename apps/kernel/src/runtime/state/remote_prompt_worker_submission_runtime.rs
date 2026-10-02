@@ -1778,7 +1778,7 @@ mod tests {
     impl Drop for WorkflowSubmissionFixture {
         fn drop(&mut self) {
             let _ =
-                crate::secret::lock_chariox_encrypted_vault(&self.root.join("credentials.vault"));
+                crate::secret::lock_chariox_encrypted_vault(self.root.join("credentials.vault"));
             let _ = crate::secret::clear_vault_secret_process_cache();
             match self.previous_home.take() {
                 Some(value) => std::env::set_var("CHARIOX_HOME", value),

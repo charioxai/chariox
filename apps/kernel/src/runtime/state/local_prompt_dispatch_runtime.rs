@@ -1889,7 +1889,7 @@ mod tests {
             .expect("test Claude profile should resolve");
         std::fs::create_dir_all(provider_home.path().join(".claude")).unwrap();
         std::fs::write(
-            &environment
+            environment
                 .get("CLAUDE_CONFIG_DIR")
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|| provider_home.path().join(".claude"))

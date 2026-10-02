@@ -311,7 +311,7 @@ async fn remote_dispatch_callers_surface_locked_vault_before_transport() {
     for caller in [Caller::Compatibility, Caller::Queued] {
         let mut fixture = Fixture::new();
         fixture.store_token();
-        crate::secret::lock_chariox_encrypted_vault(&fixture.root.join("credentials.vault"))
+        crate::secret::lock_chariox_encrypted_vault(fixture.root.join("credentials.vault"))
             .unwrap();
         crate::secret::clear_vault_secret_process_cache().unwrap();
 
