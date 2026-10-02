@@ -1426,12 +1426,6 @@ mod tests {
             .remove_process(provider_run_id)
             .expect("PTY process tree cleanup should succeed");
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while crate::runtime::process_health::process_running(child_pid)
-            && std::time::Instant::now() < deadline
-        {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
         assert!(
             !crate::runtime::process_health::process_running(child_pid),
             "removing the provider PTY left descendant PID {child_pid} running"
@@ -1492,6 +1486,12 @@ mod tests {
             .remove_process(provider_run_id)
             .expect("PTY process tree cleanup should succeed");
 
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while crate::runtime::process_health::process_running(child_pid)
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         assert!(
             !crate::runtime::process_health::process_running(child_pid),
             "removing the provider PTY left descendant PID {child_pid} running"
