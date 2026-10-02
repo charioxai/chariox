@@ -33,8 +33,8 @@ curl --fail --location --proto '=https' --tlsv1.2 --max-time 30 --max-filesize 1
   --output "$fixture_scratch/bubblewrap.tar.xz" "${fixture_pin[0]}"
 [[ "$(stat -c %s "$fixture_scratch/bubblewrap.tar.xz")" == "${fixture_pin[2]}" ]]
 printf '%s  %s\n' "${fixture_pin[1]}" "$fixture_scratch/bubblewrap.tar.xz" | sha256sum --check --status
-bash "$fixture_repo/scripts/build-app-bwrap.sh" "$fixture_scratch/bubblewrap" "$fixture_scratch/bubblewrap.tar.xz"
-bash "$fixture_repo/scripts/test-app-bwrap-fallback.sh" "$fixture_scratch/bubblewrap"
+bash "$fixture_repo/apps/app-worker/src/build-bwrap.sh" "$fixture_scratch/bubblewrap" "$fixture_scratch/bubblewrap.tar.xz"
+bash "$fixture_repo/apps/app-worker/src/test-bwrap-fallback.sh" "$fixture_scratch/bubblewrap"
 cp "$fixture_scratch/bubblewrap/build/bwrap" "$fixture_scratch/bin/chariox-bwrap"
 chmod 755 "$fixture_scratch/bin/chariox-bwrap"
 [[ "$("$fixture_scratch/bin/chariox-bwrap" --version)" == 'bubblewrap 0.12.0' ]]

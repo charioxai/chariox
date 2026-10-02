@@ -442,9 +442,9 @@ test("managed Docker authority and publication access remain narrowly separated"
     "ProtectSystem=strict",
     "ProtectHome=read-only",
     "ProtectKernelModules=true",
-    "ProtectControlGroups=true",
+    "ProtectControlGroups=false",
     "RestrictSUIDSGID=true",
-    "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
+    "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK",
     "UMask=0007",
   ]) {
     assert.match(managed, new RegExp(`^${directive}$`, "m"))

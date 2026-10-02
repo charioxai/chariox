@@ -201,7 +201,7 @@ Policy references: [Chromium Seatbelt entry points](https://github.com/chromium/
 [Linux seccomp documentation](https://www.kernel.org/doc/html/latest/userspace-api/seccomp_filter.html),
 [upstream bubblewrap](https://github.com/containers/bubblewrap).
 
-The bundled Linux bubblewrap build uses `scripts/build-app-bwrap.sh`, which
+The bundled Linux bubblewrap build uses `apps/app-worker/src/build-bwrap.sh`, which
 verifies the pinned upstream archive and applies `bubblewrap-openat.patch`.
 The Linux managed service retains `RestrictSUIDSGID=true`; systemd can therefore
 return ENOSYS for `openat2` even on a supported kernel. The pinned 5.9 build
@@ -212,7 +212,7 @@ Creation and truncation flags fail closed. It deliberately supports only the
 canonical, symlink-free bind paths supplied by the App domain, rather than
 bubblewrap's general symlink-resolving fallback. The patch, fallback source and
 build helper belong to the final launcher attestation inputs; the expensive
-native Node libraries can be reused. Run `scripts/test-app-bwrap-fallback.sh`
+native Node libraries can be reused. Run `apps/app-worker/src/test-bwrap-fallback.sh`
 against the build scratch to inject ENOSYS into the actual patched upstream
 `safe_openat()` and verify normal opens, denied escapes and ancestor replacement.
 
