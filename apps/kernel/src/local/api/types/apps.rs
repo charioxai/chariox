@@ -584,3 +584,19 @@ pub struct AppAutomationSummary {
     pub scheduled: bool,
     pub status: AppAutomationStatus,
 }
+
+/// Protocol 400: a human accepts one pending clipboard/link request. The
+/// payload comes from the kernel, never from the accepting terminal.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcceptAppHostActionRequest {
+    pub session_id: String,
+    pub operation_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AppHostAction {
+    ClipboardWrite { text: String },
+    OpenLink { url: String },
+}

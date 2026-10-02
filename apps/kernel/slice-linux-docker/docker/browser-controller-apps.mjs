@@ -16,7 +16,8 @@ const APP_HOST = /^app\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.invalid$/;
 const MAX_ASSETS = 256;
 const MAX_ASSET_BYTES = 8 * 1024 * 1024;
 const MAX_PENDING_CALLS = 64;
-const MAX_CALL_BYTES = 256 * 1024;
+// The bounded host text plus its JSON envelope must fit a view call.
+const MAX_CALL_BYTES = 512 * 1024;
 const MAX_ANSWERABLE_CALLS = 1024;
 const BINDING = "__charioxAppCall";
 export const APP_CSP = [
@@ -71,6 +72,10 @@ const BRIDGE_SOURCE = `(() => {
   } });
   Object.defineProperty(globalThis, "chariox", { value: Object.freeze({
     call(method, params = {}) { return request(method, params); },
+    host: Object.freeze({
+      openLink(url) { return request("host.open_link", { url }); },
+      writeClipboard(text) { return request("host.clipboard_write", { text }); },
+    }),
     // Where Chariox draws the private agent panel beside this page: set
     // {placement: "right" | "bottom" | "none", size?} or get the current
     // layout. The user's own choice wins; the page never sees the panel.

@@ -71,6 +71,8 @@ mod app_view_runtime;
 mod app_validation_pump_runtime;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_file_pick_runtime;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_host_runtime;
 mod computer_secret_input_runtime_state;
 mod config_runtime_state;
 mod critical_approval_passkey;

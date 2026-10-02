@@ -3,6 +3,7 @@ use crate::local::RequestNativeProviderTurnInteractionRequest;
 
 mod critical_approval_passkey;
 mod kernel_operation_interactions;
+mod app_host_actions;
 mod output_seen;
 mod prompt_lifecycle;
 mod prompt_routing;

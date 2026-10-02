@@ -15,6 +15,7 @@ test("workflow capabilities survive app and command action composition", async (
   const requests: Record<string, any>[] = []
   const footers: string[] = []
   const notices: string[] = []
+  const clipboard: string[] = []
   let selectedWorkflowId: string | null = "workflow-1"
   let workspaceScreenMode = "workflow"
   let state = session({ workflows: [workflow()] })
@@ -25,6 +26,9 @@ test("workflow capabilities survive app and command action composition", async (
   const client = {
     send: async (request: Record<string, any>): Promise<Record<string, unknown>> => {
       requests.push(request)
+      if (request.AcceptAppHostAction) {
+        return { AppHostActionAccepted: { operation_id: request.AcceptAppHostAction.operation_id, action: { kind: "clipboard_write", text: "accepted copy" } } }
+      }
       if (request.PauseWorkflowRun) {
         return { WorkflowRunPaused: { workflow_run: { ...run, status: "Paused" }, session: state } }
       }
@@ -123,6 +127,8 @@ test("workflow capabilities survive app and command action composition", async (
 
   const handlers = createCliCommandActionComposition({
     ...workflowActions,
+    lastViewedAppHostOperationId: () => "0123456789abcdef0123456789abcdef",
+    appHostTerminal: { copy: async (text: string) => { clipboard.push(text) }, openLink: async () => false },
     client,
     options: { clientId: "cli-1", accountProfile: "default", model: "default", effort: "", provider: "opencode" },
     preferencesState: () => ({}),
@@ -177,6 +183,12 @@ test("workflow capabilities survive app and command action composition", async (
     selectedWorkflowId: () => selectedWorkflowId,
     refreshSplitPaneFocusRepaint: () => {},
   } as any)
+
+  state = { ...state, active_interactions: [{ id: "app_host_0123456789abcdef0123456789abcdef", kernel_operation_id: "host_action:0123456789abcdef0123456789abcdef", kind: "permission", level: "warning", requested_at_ms: 1, title: "Copy", message: "copy", choices: [{ id: "decline", label: "Decline", reply: "deny" }] }] }
+  await handlers.handleAppCommand({ kind: "app", raw: "/app host accept", args: ["host", "accept"] })
+  assert.deepEqual(clipboard, ["accepted copy"])
+  assert.deepEqual(requests.pop(), { AcceptAppHostAction: { session_id: state.id, operation_id: "0123456789abcdef0123456789abcdef" } })
+  notices.length = 0
 
   const execute = (args: string[]) => handlers.handleWorkflowCommand({
     kind: "workflow",

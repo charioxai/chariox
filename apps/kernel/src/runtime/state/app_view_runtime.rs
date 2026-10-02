@@ -614,6 +614,20 @@ impl KernelRuntimeState {
             }
             Err(_) => return Err(unavailable()),
         };
+        if lease.catalog().generation() != binding.generation {
+            return Err(view_error("APP_VIEW_STALE", "The App was updated; reopen its view"));
+        }
+        if matches!(tool, "host.clipboard_write" | "host.open_link") {
+            return crate::runtime::app_host_broker::AppHostBroker::new(
+                self.owned.durable_state_store.clone(),
+                binding.owner.clone(),
+                lease.catalog().clone(),
+                self.app_control().admission(),
+            )
+            .request(tool, input)
+            .await
+            .map_err(|error| view_error(&error.code, &error.message));
+        }
         let tool = view_call_tool(lease.catalog(), binding.generation, tool)?;
         let slot = lease
             .reserve_call(Duration::from_secs(30))

@@ -185,8 +185,8 @@ export interface AppSdk {
   };
   readonly host: {
     notify(request: { title: string; body?: string }, options?: CallOptions): Promise<{ notificationId: string }>;
-    openLink(url: string, options?: CallOptions): Promise<null>;
-    writeClipboard(text: string, options?: CallOptions): Promise<null>;
+    openLink(url: string, options?: CallOptions): Promise<HostActionOffer>;
+    writeClipboard(text: string, options?: CallOptions): Promise<HostActionOffer>;
     /**
      * Asks the owner to share files (requires `externalFiles: ["user_selected"]`).
      * Resolves once they choose, with grants to pass to `files.import`; rejects
@@ -237,3 +237,10 @@ export interface AppSdkOptions {
   limits?: { maxPending?: number; maxHandlers?: number; maxDeadlineMs?: number };
 }
 export function createAppSdk(options: AppSdkOptions): AppSdk;
+
+/** A pending human copy/link request. The App cannot accept it. */
+export interface HostActionOffer {
+  operationId: string;
+  state: 'pending';
+  expiresAtMs: number;
+}

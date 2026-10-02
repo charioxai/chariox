@@ -32,6 +32,7 @@ pub enum LocalDaemonResponse {
     /// Protocol 385: file requests ended (`requests`) and granted files the
     /// App had not imported (`files`).
     AppFileGrantsRevoked { installation_id: String, requests: u32, files: u32, },
+    AppHostActionAccepted { operation_id: String, action: AppHostAction, },
     AppInboxOccurrenceAccepted { installation_id: String, route_id: String, occurrence_id: String, duplicate: bool, },
     SessionCreated { session: RuntimeSession, agent: AgentInstance, },
     SessionAttached { attachment: RuntimeAttachment, },

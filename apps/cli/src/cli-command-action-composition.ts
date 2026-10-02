@@ -1,3 +1,4 @@
+import { appHostOperationIds, type AppHostTerminal } from "./app-host-action.js"
 import type { AppDevLoop } from "./app-dev-loop.js"
 import type { AppFileInstaller } from "./app-install-file.js"
 import type { AppPublisherEnrollment } from "./app-publisher-file.js"
@@ -190,6 +191,8 @@ import {
 type AnyFn = (...args: any[]) => any
 
 export type CliCommandActionCompositionDeps = {
+  appHostTerminal?: AppHostTerminal
+  lastViewedAppHostOperationId?: () => string | undefined
   appFileInstaller?: AppFileInstaller
   appDevLoop?: AppDevLoop
   appPublisherEnrollment?: AppPublisherEnrollment
@@ -484,6 +487,9 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     ...(deps.appFileInstaller ? { appFileInstaller: deps.appFileInstaller } : {}),
     ...(deps.appDevLoop ? { appDevLoop: deps.appDevLoop } : {}),
     ...(deps.appPublisherEnrollment ? { appPublisherEnrollment: deps.appPublisherEnrollment } : {}),
+    ...(deps.appHostTerminal ? { appHostTerminal: deps.appHostTerminal } : {}),
+    ...(deps.lastViewedAppHostOperationId ? { lastViewedAppHostOperationId: deps.lastViewedAppHostOperationId } : {}),
+    currentAppHostOperationIds: () => isAttached() ? appHostOperationIds(sessionState()) : [],
     currentAppSessionId: () => isAttached() ? sessionState().id : undefined,
     appendCloudNotice,
     formatError,

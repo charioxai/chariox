@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    durable_state::app_state::{fixture_event_catalog, fixture_event_package},
+    durable_state::app_state::fixture_event_package,
     runtime::{app_backend_broker, app_worker::AppWorkerOwner},
 };
 use chariox_app_package::{verify, VerificationPolicy};
@@ -30,6 +30,7 @@ pub(super) struct Fixture {
     pub(super) store: DurableKernelStateStore,
     pub(super) catalog: Arc<EventCatalog>,
     pub(super) admission: Arc<Semaphore>,
+    broker: Option<Arc<dyn Broker>>,
     pub(super) runtime: Runtime,
     _scratch: Scratch,
 }
@@ -41,19 +42,29 @@ impl Drop for Scratch {
 }
 impl Fixture {
     pub(super) fn new(mode: Mode) -> Self {
+        Self::with_clipboard(mode, false)
+    }
+    pub(super) fn with_clipboard(mode: Mode, clipboard_write: bool) -> Self {
         let scratch = Scratch(
             std::env::temp_dir().join(format!("chariox-app-files-{:016x}", rand::random::<u64>())),
         );
         std::fs::create_dir(&scratch.0).unwrap();
         let store = DurableKernelStateStore::open_owned(scratch.0.join("kernel.sqlite")).unwrap();
-        let catalog = fixture_event_catalog(&store);
+        let (bytes, publisher) = if clipboard_write {
+            crate::durable_state::app_state::fixture_host_package()
+        } else {
+            fixture_event_package()
+        };
+        let catalog = crate::durable_state::app_state::fixture_event_catalog_from_package(
+            &store,
+            (bytes.clone(), publisher.clone()),
+        );
         let runtime = Builder::new_multi_thread()
             .worker_threads(1)
             .enable_all()
             .build()
             .unwrap();
         let native = NativeFixture::compile().unwrap();
-        let (bytes, publisher) = fixture_event_package();
         let package = verify(
             &bytes,
             &VerificationPolicy::new(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, vec![publisher]),
@@ -80,7 +91,7 @@ impl Fixture {
             process,
             &package,
             catalog.clone(),
-            delegate,
+            delegate.clone(),
             PeerLimits::default(),
             runtime.handle().clone(),
         )
@@ -104,11 +115,15 @@ impl Fixture {
             store,
             catalog,
             admission,
+            broker: Some(delegate),
             runtime,
             _scratch: scratch,
         };
         result.wait_event("worker.fixture.ready_ack");
         result
+    }
+    pub(super) fn broker(&self) -> Arc<dyn Broker> {
+        self.broker.as_ref().unwrap().clone()
     }
     pub(super) fn data(&self) -> PrivateData {
         self.data.as_ref().unwrap().clone()
@@ -139,6 +154,7 @@ impl Fixture {
         if let Some(owner) = self.owner.take() {
             owner.shutdown_blocking();
         }
+        self.broker.take();
         self.data.take();
     }
 }

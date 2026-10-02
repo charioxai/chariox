@@ -459,3 +459,21 @@ test('connections list and act through the kernel with the exact wire fields', a
   assert.equal((await acted).accepted, true);
   sdk.close();
 });
+
+test('copy and link helpers return pending human offers on the existing SDK channel', async () => {
+  const { transport, sdk } = setup();
+  for (const [call, method, params] of [
+    [() => sdk.host.writeClipboard('copy\ntext'), 'host.clipboard_write', { text: 'copy\ntext' }],
+    [() => sdk.host.openLink('https://example.org/a?x=%20'), 'host.open_link', { url: 'https://example.org/a?x=%20' }],
+  ]) {
+    const result = call();
+    const sent = transport.sent.at(-1);
+    assert.equal(sent.method, method);
+    assert.deepEqual(sent.params, params);
+    const pending = { operationId: 'host-offer', state: 'pending', expiresAtMs: 2000000000000 };
+    transport.receive(response(sent.id, pending));
+    assert.deepEqual(await result, pending);
+  }
+  assert.equal('readClipboard' in sdk.host, false);
+  sdk.close();
+});

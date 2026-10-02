@@ -4,6 +4,7 @@ import { grantAppFileRequest, saveAppFileExportRequest } from "@chariox/kernel-c
 import { executeAppCommand } from "@chariox/kernel-client/shell-app-command"
 import { tokenizeShellLine } from "@chariox/kernel-client/shell-core"
 import { cliOnlyAppVerbs } from "./app-command-catalog.js"
+import { acceptAppHostOffer, type AppHostTerminal } from "./app-host-action.js"
 import type { AppDevLoop } from "./app-dev-loop.js"
 import { AppFileInstaller, FollowLostContact, formatInstallOperation } from "./app-install-file.js"
 import { AppPublisherEnrollment, formatPublisherReview } from "./app-publisher-file.js"
@@ -11,6 +12,9 @@ import type { ParsedSlashCommand } from "./commands.js"
 import type { AppInstallOperationSummary } from "@chariox/kernel-client/kernel-types"
 
 export type AppCommandHandlerDeps = {
+  appHostTerminal?: AppHostTerminal
+  currentAppHostOperationIds?: () => string[]
+  lastViewedAppHostOperationId?: () => string | undefined
   appFileInstaller?: AppFileInstaller
   appDevLoop?: AppDevLoop
   appPublisherEnrollment?: AppPublisherEnrollment
@@ -71,6 +75,17 @@ export async function handleAppSlashCommand(
   }
   if (!deps.sendAppRequest) {
     deps.flashFooter("Apps are unavailable in this kernel", "error")
+    return
+  }
+  if (command.args[0] === "host") {
+    const [, action, explicitOperation, ...extra] = tokenizeShellLine(command.raw.replace(/^\/app(?:\s|$)/, ""))
+    if (action !== "accept" || extra.length) throw new Error("usage: /app host accept [OPERATION]")
+    const session = deps.currentAppSessionId?.()
+    if (!session) throw new Error("Attach to the session showing the App host request")
+    const candidates = explicitOperation ? [explicitOperation] : deps.currentAppHostOperationIds?.() ?? []
+    if (candidates.length !== 1) throw new Error(candidates.length ? "Several App host requests are pending; use /app host accept OPERATION" : "No App host request is pending in this session")
+    if (!explicitOperation && candidates[0] !== deps.lastViewedAppHostOperationId?.()) throw new Error("Open kernel approvals (F8), review the App host offer, close the panel (Esc), then use /app host accept")
+    await acceptAppHostOffer(session, candidates[0]!, deps.sendAppRequest, deps.appendNotice, deps.appHostTerminal)
     return
   }
   if (command.args[0] === "publisher") {

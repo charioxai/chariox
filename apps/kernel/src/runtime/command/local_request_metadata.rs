@@ -309,6 +309,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
                 .attachment(&request.attachment_id)
         }
+        LocalDaemonRequest::AcceptAppHostAction(request) => {
+            LocalRequestMetadata::new("app.host.accept", Interactive).session(&request.session_id)
+        }
         LocalDaemonRequest::RespondToInteraction(request) => {
             LocalRequestMetadata::new("interaction.respond", Interactive)
                 .session(&request.session_id)
@@ -557,6 +560,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::GrantAppFile(_) => "app.file.grant",
         LocalDaemonRequest::SaveAppFileExport(_) => "app.file.save",
         LocalDaemonRequest::RevokeAppFileGrants(_) => "app.file.revoke",
+        LocalDaemonRequest::AcceptAppHostAction(_) => "app.host.accept",
         LocalDaemonRequest::CreateSession(_) => "session.create",
         LocalDaemonRequest::ListProjects(_) => "project.list",
         LocalDaemonRequest::RenameProject(_) => "project.rename",

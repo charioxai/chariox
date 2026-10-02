@@ -1,3 +1,4 @@
+import { createAppHostTerminal } from "./app-host-action.js"
 import process from "node:process"
 import { AppDevLoop } from "./app-dev-loop.js"
 import { AppFileInstaller, formatInstallProgress } from "./app-install-file.js"
@@ -872,6 +873,8 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     handleSigint, handleStdinData, requestPromptStop, submitFocusedInteractionChoice,
     submitPrompt, submitWorkspaceShellCommand,
   } = createCliAppCommandRoutingComposition({
+    appHostTerminal: createAppHostTerminal(renderer),
+    lastViewedAppHostOperationId: kernelApprovals.lastViewedAppHostOperationId,
     client, options, appLogger, formatError, appFileInstaller, appDevLoop, appPublisherEnrollment,
     preferencesState, setPreferencesState, initialWorkspaceTarget, initialWorktreeTarget,
     pendingWorkspaceTarget, pendingWorktreeTarget, setPendingWorkspaceTarget, setPendingWorktreeTarget,

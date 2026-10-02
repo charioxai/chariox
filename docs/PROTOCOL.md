@@ -2566,3 +2566,57 @@ than borrowing the currently running turn (including legacy Codex approvals with
 `RequestNativeProviderTurnInteraction` and relay `forward_native_turn_interaction`
 replace the previous unbound request variants. Older kernels reject these unknown variants
 instead of silently ignoring origin fields; the native client reports a protocol-396 minimum.
+### Protocol 400: App clipboard copy-out and link opening
+
+`host.clipboard_write {text}` and `host.open_link {url}` on the App worker SDK
+channel create a pending, owner/installation/generation-bound offer:
+`{operationId, state:"pending", expiresAtMs}`. Room App views expose
+`window.chariox.host.writeClipboard(text)` and `openLink(url)` through the same
+host methods, after the kernel validates the view binding and generation.
+Neither backend nor view code performs the host action itself. There is no
+clipboard-read method. Clipboard offers require the signed `capabilities.clipboard: ["write"]` declaration;
+link offers need no separate capability. Neither requires external-file access.
+
+Clipboard text and each of its JSON/visible escaped representations are limited
+to 256 KiB, so the complete trusted prompt fits one terminal projection. URLs are limited to 8 KiB, must
+be absolute HTTP(S) URLs with a host, and cannot contain whitespace, control
+characters, backslashes, invisible Unicode formatting or nonempty userinfo
+(username/password). The exact submitted URL is shown and returned without
+normalization; the prompt also shows its parsed ASCII destination host (punycode
+for IDNs). Each installation may have
+four unanswered host offers; they expire after five minutes, or when its
+active generation changes or it is uninstalled. Settled payloads are dropped.
+
+The file-export prompt pump projects one `RuntimeInteraction` to the owner's
+terminals (local TUI, remote TUI and web), with id `app_host_<operationId>` and
+kernel subject `host_action:<operationId>`. It shows the exact URL or an escaped,
+complete representation of the offered text, plus a Decline choice and no
+approval on timeout. App views and agents cannot settle this prompt.
+
+An explicit human gesture in a trusted terminal sends
+`AcceptAppHostAction {session_id, operation_id}`. The kernel validates a human
+client, owner, showing session, pending interaction, generation and deadline,
+and arbitrates this take against decline/expiry under the existing interaction
+lock. It returns `AppHostActionAccepted {operation_id, action}` once:
+`action` is either `{kind:"clipboard_write", text}` or `{kind:"open_link", url}`.
+A generic `RespondToInteraction` can decline but cannot take the offer; clients
+must use this dedicated acceptance path. Stale, declined, expired, foreign or
+already accepted offers fail without returning a payload. No owner, URL or
+text can be supplied by the accepting client. Acceptance consumes the offer;
+a failed host action or lost reply requires a new App request.
+
+The accepting terminal performs the action on its own machine. TUI users type
+`/app host accept` after closing the approval panel selects the sole pending
+host offer in the attached session only when it matches the last offer displayed
+in that terminal's approval panel. Unviewed/replaced offers require re-opening
+the panel or an explicit ID. Multiple offers require
+`/app host accept OPERATION`. Copying uses the renderer-backed OSC 52/native
+clipboard helper and always shows the escaped text as a visible fallback
+because OSC 52 has no acknowledgement; link opening
+uses the existing default-browser shim and always prints the exact URL. Web
+clients must copy with `navigator.clipboard.writeText` from a trusted click,
+open a new tab with `noopener`, and show a visible fallback on failure. They
+must preserve browser user activation across kernel settlement (for example,
+show a fresh Copy/Open button after successful settlement). App iframe/Room gestures only create offers and never
+count as the human's acceptance. Clients exposing acceptance require protocol
+400; unrelated clients keep their existing minimum version.

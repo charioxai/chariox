@@ -140,3 +140,10 @@ export type DeploymentAppsPreview = {
   plan: DeploymentAppsPlan | null
   release_plan?: DeploymentAppsPlan | null
 }
+
+/** Protocol 400: the exact payload released only to the accepting terminal. */
+export type AppHostAction =
+  | { kind: "clipboard_write"; text: string }
+  | { kind: "open_link"; url: string }
+
+export type AppHostActionAccepted = { operation_id: string; action: AppHostAction }

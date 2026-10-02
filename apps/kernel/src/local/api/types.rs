@@ -210,4 +210,5 @@ pub use workspace::*;
 /// Version 396 binds native approvals to the originating turn and provider run.
 /// Version 398 exposes `AppWorkerPhase::Quarantined` after the supervisor's
 /// restart limit is exhausted. Recovery uses the existing explicit start action.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 398;
+/// Version 400 adds owner-mediated App clipboard and link acceptance.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 400;

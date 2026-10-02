@@ -38,6 +38,7 @@ pub enum LocalDaemonRequest {
     GrantAppFile(GrantAppFileRequest),
     SaveAppFileExport(SaveAppFileExportRequest),
     RevokeAppFileGrants(RevokeAppFileGrantsRequest),
+    AcceptAppHostAction(AcceptAppHostActionRequest),
     CreateSession(CreateSessionRequest),
     AttachToSession(AttachToSessionRequest),
     DetachFromSession(DetachFromSessionRequest),

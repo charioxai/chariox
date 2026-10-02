@@ -89,6 +89,7 @@ pub struct AppCatalog {
     trust: TrustedPublisherSnapshot,
     release: ReleaseMetadata,
     tools: BTreeMap<String, CompiledTool>,
+    clipboard_write: bool,
 }
 
 impl AppCatalog {
@@ -173,6 +174,11 @@ impl AppCatalog {
             trust: trust.clone(),
             release: candidate.release_metadata().clone(),
             tools,
+            clipboard_write: package
+                .manifest()
+                .capabilities
+                .clipboard
+                .contains(&chariox_app_package::ClipboardAccess::Write),
         })
     }
 
@@ -213,6 +219,11 @@ impl AppCatalog {
 
     pub fn package_digest(&self) -> &str {
         &self.release.package_digest
+    }
+
+    /// Signed declaration only; the kernel still requires human acceptance.
+    pub fn allows_clipboard_write(&self) -> bool {
+        self.clipboard_write
     }
 
     /// Discovery data only. Call require_current before publication and then
