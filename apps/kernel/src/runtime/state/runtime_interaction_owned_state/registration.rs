@@ -7,6 +7,7 @@ impl KernelRuntimeOwnedState {
         interaction: crate::session::RuntimeInteraction,
         responder: tokio::sync::oneshot::Sender<super::super::PendingInteractionResolution>,
         kernel_operation_owner: Option<&str>,
+        terminal_credential_owner: Option<&str>,
     ) -> Result<(), DaemonError> {
         let _mutation = self
             .pending_interactions
@@ -47,6 +48,16 @@ impl KernelRuntimeOwnedState {
         let activity_mutation = self.begin_managed_activity_mutation();
         let mut sessions = self.session_store.write();
         let mut session = sessions.get_session(session_id)?.clone();
+        if terminal_credential_owner.is_some_and(|owner| {
+            owner != session.owner_user_id()
+                || kernel_operation_owner.is_some()
+                || interaction.agent_id().is_none()
+                || !interaction
+                    .timeout_sec()
+                    .is_some_and(|seconds| (1..=3600).contains(&seconds))
+        }) {
+            return Err(interaction_error("Invalid terminal credential prompt"));
+        }
         match (interaction.agent_id(), kernel_operation_owner) {
             (Some(_), None) => {}
             (None, Some(owner)) if interaction.kernel_operation_id().is_some() => {
@@ -110,6 +121,7 @@ impl KernelRuntimeOwnedState {
             session_id: session_id.into(),
             session_store_identity: self.session_store.weak_identity(),
             kernel_operation_owner: kernel_operation_owner.map(str::to_owned),
+            terminal_credential_owner: terminal_credential_owner.map(str::to_owned),
             kernel_operation_deadline: kernel_operation_owner.map(|_| {
                 std::time::Instant::now()
                     + std::time::Duration::from_secs(

@@ -1,5 +1,7 @@
 use super::*;
 
+mod credential_authority;
+
 impl KernelRuntimeState {
     pub(crate) fn insert_access_grant_for_test(&self, session_id: &str) -> String {
         let session = self.access_session(session_id).unwrap();
@@ -68,6 +70,9 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn control_access_for_test(&self, action: &str, vault: &std::path::Path) {
+        if self.control_credential_access_for_test(action, vault).await {
+            return;
+        }
         if action == "guest" {
             assert!(self.passkey_prompts_for("guest").is_empty());
             let prompt = self

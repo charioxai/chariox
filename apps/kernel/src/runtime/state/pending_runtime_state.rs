@@ -62,6 +62,9 @@ pub(super) struct PendingInteraction {
     pub(super) session_id: String,
     pub(super) session_store_identity: Weak<()>,
     pub(super) kernel_operation_owner: Option<String>,
+    /// Credential prompts retain their agent subject for terminal rendering,
+    /// but their answers belong exclusively to the human owner.
+    pub(super) terminal_credential_owner: Option<String>,
     pub(super) kernel_operation_deadline: Option<std::time::Instant>,
     /// Protocol 394: the popup projected to the owner's terminals, for a
     /// decision that needs the passkey.
@@ -119,7 +122,8 @@ impl PendingInteractionStore {
         let abandoned = pending
             .iter()
             .filter(|(_, entry)| {
-                entry.kernel_operation_owner.is_some()
+                (entry.kernel_operation_owner.is_some()
+                    || entry.terminal_credential_owner.is_some())
                     && entry.session_store_identity.strong_count() == 0
             })
             .take(32)

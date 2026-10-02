@@ -99,6 +99,7 @@ impl Fixture {
             interaction,
             send,
             Some(DEFAULT_LOCAL_USER_ID),
+            None,
         )?;
         Ok(receive)
     }
@@ -234,6 +235,7 @@ async fn pruning_dead_store_tokens_closes_only_kernel_operation_responders() {
                 session_id: "same-session".into(),
                 session_store_identity: sessions.weak_identity(),
                 kernel_operation_owner: owner,
+                terminal_credential_owner: None,
                 kernel_operation_deadline: None,
                 passkey_prompt: None,
                 responder: Arc::new(std::sync::Mutex::new(Some(sender))),
