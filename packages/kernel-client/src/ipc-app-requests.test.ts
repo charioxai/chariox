@@ -177,6 +177,6 @@ test("deployment App preview names the publication and optionally a release", ()
 
 test("App host acceptance names only the session and operation, never a client payload or owner", async () => {
   const { acceptAppHostActionRequest } = await import("./ipc-app-requests.js")
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 400)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 404)
   assert.deepEqual(acceptAppHostActionRequest("s", "offer"), { AcceptAppHostAction: { session_id: "s", operation_id: "offer" } })
 })

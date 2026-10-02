@@ -858,7 +858,7 @@ fn local_daemon_protocol_move_agent_to_local_shape_is_versioned() {
 /// the turn that carried the one-time note about them.
 #[test]
 fn local_daemon_protocol_agent_failed_requests_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 400);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 404);
 
     let mut agent = crate::agent::AgentInstance::new(
         "agent-failed-request",

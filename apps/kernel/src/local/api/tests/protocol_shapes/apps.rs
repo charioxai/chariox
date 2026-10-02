@@ -331,7 +331,7 @@ fn app_view_shapes_are_versioned_and_name_no_owner_or_asset() {
 
 #[test]
 fn app_view_panel_choice_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 400);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 404);
     let request = LocalDaemonRequest::SetAppViewPanel(crate::local::SetAppViewPanelRequest {
         session_id: "session-1".into(),
         installation_id: "todo".into(),
@@ -809,7 +809,7 @@ fn app_file_grant_shapes_are_versioned_and_carry_no_host_path() {
 
 #[test]
 fn app_file_grant_revoke_shapes_are_versioned_and_name_no_owner() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 400);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 404);
     let all = LocalDaemonRequest::RevokeAppFileGrants(RevokeAppFileGrantsRequest {
         installation_id: "docs".into(),
         operation_id: None,
@@ -918,7 +918,7 @@ fn app_view_reload_shape_is_versioned_and_names_only_the_tab_and_assets() {
 #[test]
 fn app_host_copy_link_shapes_are_versioned_and_acceptance_cannot_supply_an_owner_or_payload() {
     use crate::local::{AcceptAppHostActionRequest, AppHostAction};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 400);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 404);
     let request = LocalDaemonRequest::AcceptAppHostAction(AcceptAppHostActionRequest {
         session_id: "s".into(),
         operation_id: "o".into(),

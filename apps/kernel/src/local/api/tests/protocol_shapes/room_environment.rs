@@ -769,7 +769,7 @@ fn room_environment_viewport_update_shape_is_versioned() {
 
 #[test]
 fn room_browser_bar_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 400);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 404);
 
     let request = LocalDaemonRequest::SetRoomBrowserBar(crate::local::SetRoomBrowserBarRequest {
         session_id: "session-1".to_string(),

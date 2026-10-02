@@ -287,7 +287,7 @@ async fn kernel_websocket_refuses_browser_origins_with_or_without_local_auth() {
                 app,
                 listener,
                 mcp_listener,
-                token.map(Arc::<str>::from),
+                KernelLocalAuth::host_token_or_unconfigured(token.map(Arc::<str>::from)),
                 async {
                     let _ = shutdown_rx.await;
                 },
@@ -2093,3 +2093,6 @@ fn undecodable_frame_without_request_id_replies_as_invalid_frame() {
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod kernel_access_grants;
+
+#[cfg(target_os = "linux")]
+mod ka_validation;

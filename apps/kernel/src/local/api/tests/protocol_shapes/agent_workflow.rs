@@ -61,7 +61,7 @@ fn agent_workflow_shapes_are_versioned_and_record_their_origin() {
 /// select one and no active-substitute state on the agent.
 #[test]
 fn agent_substitute_shape_is_per_turn_only() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 400);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 404);
 
     for retired in [
         serde_json::json!({"Activate": {"index": 0, "reason": "manual"}}),

@@ -101,7 +101,7 @@ impl KernelRuntimeState {
         let forbidden = matches!(
             request,
             LocalDaemonRequest::RespondToInteraction(_)
-                | LocalDaemonRequest::RequestNativeProviderInteraction(_)
+                | LocalDaemonRequest::RequestNativeProviderTurnInteraction(_)
                 | LocalDaemonRequest::ArmDeploymentCredentialEnrollment(_)
                 | LocalDaemonRequest::ExportDebugBundle(_)
                 | LocalDaemonRequest::ImportExternalProviderAgent(_)

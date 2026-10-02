@@ -570,6 +570,8 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::RevokeAppConnection(_)
         | LocalDaemonRequest::ListAppConnections(_)
         | LocalDaemonRequest::GrantAppFile(_)
+        | LocalDaemonRequest::RevokeAppFileGrants(_)
+        | LocalDaemonRequest::AcceptAppHostAction(_)
         | LocalDaemonRequest::SaveAppFileExport(_)
         | LocalDaemonRequest::CreateSession(_)
         | LocalDaemonRequest::JoinSessionInvite(_)
