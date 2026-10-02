@@ -750,7 +750,7 @@ impl SessionRuntimeStore {
     pub(super) async fn respond_to_interaction(
         &self,
         request: RespondToInteractionRequest,
-        terminal_user_id: Option<String>,
+        owner_user_id: Option<String>,
         connection_class: Option<crate::local::KernelConnectionClass>,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
@@ -772,7 +772,7 @@ impl SessionRuntimeStore {
                 &interaction_id,
                 &choice_id,
                 custom_reply.as_deref().map(String::as_str),
-                terminal_user_id.as_deref(),
+                owner_user_id.as_deref(),
                 passkey.as_ref(),
                 passkey_remember_minutes,
                 connection_class,

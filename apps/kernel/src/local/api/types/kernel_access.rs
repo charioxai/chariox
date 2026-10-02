@@ -25,10 +25,9 @@ pub enum KernelConnectionClass {
 
 impl KernelConnectionClass {
     /// Whether a `passkey` from this class may reach verification. Only
-    /// terminals may submit one; unauthenticated connections keep their
-    /// current treatment until enforcement.
+    /// terminals may submit one.
     pub fn may_submit_passkey(self) -> bool {
-        matches!(self, Self::Terminal | Self::Unauthenticated)
+        matches!(self, Self::Terminal)
     }
 }
 
