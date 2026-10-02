@@ -2105,8 +2105,9 @@ Workflow trigger and deployment direction:
   `enabled` still means the user has not stopped the worker. Recovery requires
   the existing `ControlAppWorker` action `start`, which clears the failure count.
   Clients display "quarantined · explicit start required" and offer this action.
-  The focused quarantine relay test covers the status boundary, explicit-start
-  reset, and an unaffected neighbouring App. Clients requiring this distinction
+  The focused quarantine relay test covers the status boundary, durable
+  explicit-start admission reset, and an unaffected neighbouring App; it does
+  not dispatch the client-facing start request. Clients requiring this distinction
   depend on protocol 398; other web/native minimums need not change.
 - App-bound local deployments (P1.20, no request or response shape change): a
   bound `local_runtime` deployment of a publication with a pinned App plan
