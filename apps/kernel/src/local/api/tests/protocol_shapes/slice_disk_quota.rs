@@ -1,4 +1,3 @@
-use super::*;
 use crate::config::CharioxUserConfig;
 use crate::local::{LocalDaemonResponse, LOCAL_DAEMON_PROTOCOL_VERSION};
 

@@ -13,12 +13,12 @@ use crate::config::{DaemonConfig, KernelRuntimeRole};
 use crate::durable_state::DurableKernelStateStore;
 use crate::error::DaemonError;
 use crate::local::{
-    AgentUtilityInput, AgentUtilityKind, AgentUtilityOutput, CancelProjectEnvironmentSetupRequest,
+    AgentUtilityInput, AgentUtilityKind, AgentUtilityOutput,
     GetProjectEnvironmentSetupStatusRequest, LocalDaemonRequest, LocalDaemonResponse,
     ProjectEnvironmentCommandResult, ProjectEnvironmentDefinition,
     ProjectEnvironmentDefinitionOrigin, ProjectEnvironmentSetupPhase,
     ProjectEnvironmentSetupStatus, ProjectEnvironmentSetupUtilityInput,
-    ProjectEnvironmentValidation, RetryProjectEnvironmentSetupRequest, RunAgentUtilityRequest,
+    ProjectEnvironmentValidation, RunAgentUtilityRequest,
     StartProjectEnvironmentSetupRequest,
 };
 use crate::provider::{ProviderProcessService, RuntimeProviderRun};

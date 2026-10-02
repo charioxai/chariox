@@ -254,7 +254,6 @@ pub use import::import_development_context;
 pub(crate) use import::{
     cleanup_development_context_publication, cleanup_development_context_publication_staging,
     import_development_context_with_environment, import_development_context_with_publication,
-    recover_development_context_publication,
     recover_development_context_publication_with_environment,
     recover_pruned_development_context_publication,
     recover_pruned_development_context_publication_for_cleanup,

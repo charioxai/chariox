@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::process::{Child, ChildStdin};
-use std::sync::{mpsc, Arc, Mutex, RwLock, TryLockError, Weak};
+use std::sync::{mpsc, Arc, Mutex, TryLockError, Weak};
 use std::time::{Duration, Instant};
 
 use super::{

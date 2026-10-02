@@ -8,7 +8,7 @@ use crate::managed_bootstrap::ConfirmedManagedKernelRegistration;
 use crate::provider::LaunchProviderRequest;
 use crate::runtime::router::CommandRouter;
 use crate::session::{
-    CreateSessionRequest, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
+    PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
 };
 
 use super::KernelRuntimeState;

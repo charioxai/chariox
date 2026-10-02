@@ -1,4 +1,3 @@
-use super::*;
 use crate::slice::hosted_worker_test_support::*;
 
 async fn assert_browser_dispatch(
