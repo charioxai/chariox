@@ -2507,6 +2507,20 @@ async fn remote_machine_agents_cancel_prompts_through_the_home_session_async() {
         wait_for_home_remote_prompt_receipt(&app_home, &session_id, &remote_agent_id, prompt.id())
             .await;
 
+    let binding = app_home
+        .lock()
+        .await
+        .agents()
+        .get_agent(&remote_agent_id)
+        .unwrap()
+        .remote_execution()
+        .unwrap()
+        .clone();
+    // MP-08/MP-10: observe duplicate cancellation while its exact worker turn
+    // remains pending, then release the normal projection/completion path.
+    let projection_pause = RemoteLeaseRuntime::new(&mut *app_worker.lock().await)
+        .hold_leased_runtime_projection_for_test(&binding.leased_agent_id);
+
     let cancel_request = || {
         LocalDaemonRequest::CancelActivePrompt(crate::local::CancelActivePromptRequest {
             session_id: session_id.clone(),
@@ -2560,15 +2574,6 @@ async fn remote_machine_agents_cancel_prompts_through_the_home_session_async() {
         forced_cancellation.prompt.status(),
         crate::session::PromptStatus::Cancelling
     );
-    let binding = app_home
-        .lock()
-        .await
-        .agents()
-        .get_agent(&remote_agent_id)
-        .unwrap()
-        .remote_execution()
-        .unwrap()
-        .clone();
     {
         let mut worker = app_worker.lock().await;
         let leased = crate::app::RemoteLeaseRuntime::new(&mut worker)
@@ -2591,6 +2596,7 @@ async fn remote_machine_agents_cancel_prompts_through_the_home_session_async() {
                 .expect("authoritative worker completion should settle cancellation");
         }
     }
+    drop(projection_pause);
     let receipt_deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let receipt = {
