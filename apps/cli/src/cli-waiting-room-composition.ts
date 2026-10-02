@@ -56,6 +56,7 @@ import {
 } from "./managed-environment-api.js"
 import {
   WaitingRoomManagedEnvironmentLaunchController,
+  managedEnvironmentLaunchKernelId,
 } from "./waiting-room-managed-environment-launch-controller.js"
 import { getWaitingRoomInventory } from "./waiting-room-inventory-api.js"
 import type { WaitingRoomInventory } from "./waiting-room-inventory-api.js"
@@ -586,12 +587,14 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
           ],
         }
       }
+      const kernelId = managedEnvironmentLaunchKernelId(environment, launch.ownerKernelRef,
+        selection.kind === "existing" && Boolean(environment.contextManifestDigest))
       expectedMachineRef = managedEnvironmentMachineRef(environment.environmentId)
       deps.setWaitingRoomState({
         ...deps.waitingRoomState(),
         selectedMachineRef: expectedMachineRef,
         managedRepositoryRoot: environment.managedRepositoryRoot,
-        ...(environment.runtimeKernelId ? { selectedKernelRef: environment.runtimeKernelId } : {}),
+        ...(kernelId ? { selectedKernelRef: kernelId } : {}),
       })
       expectedOwnershipRevision = deps.waitingRoomLaunchOwnershipRevision()
       deps.rebuildTranscript()
@@ -600,7 +603,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       assertActive,
       environmentChanged,
       progress: (message) => deps.flashFooter(message, "info"),
-    })
+    }, launch.ownerKernelRef)
     try {
       assertActive()
       if (prepared.kind === "enrolled") {

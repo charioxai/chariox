@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
+import { prepareWaitingRoomEnrolledLaunch } from "./waiting-room-enrolled-launch.js"
 import { LocalIpcError } from "./ipc.js"
 import type {
   ManagedContextLaunchTarget,
@@ -153,6 +154,38 @@ test("MP-02/MP-08/MP-11 enrolled CLI launch does not reload transfer defaults", 
     assert.equal(harness.connectionCommits, 1)
   }
 })
+
+
+for (const observedState of ["ready", "stopped"] as const) {
+  test(`MP-02/MP-08/MP-11 enrolled ${observedState} launch connects and creates on the selected owner kernel`, async () => {
+    const harness = createHarness({
+      existing: environment(observedState, {
+        desiredState: observedState === "stopped" ? "stopped" : "running",
+        observedRevision: 1, runtimeMachineId: "machine-managed", runtimeKernelId: "kernel-managed",
+        contextManifestDigest: "sha256:manifest",
+      }),
+      lifecycleResults: [result(environment("starting", { desiredRevision: 2 }))],
+      getResults: [environment("ready", { desiredRevision: 2, observedRevision: 2 })],
+    })
+    const prepared = await harness.controller.prepare({ kind: "existing", environmentId: "environment-1" },
+      harness.attempt, "selected-second-kernel")
+    assert.equal(prepared.kind, "enrolled")
+    if (prepared.kind !== "enrolled") throw new Error("expected enrolled launch")
+    const launch = { provider: "codex" as const, model: "user-model", effort: "high",
+      ownerKernelRef: "selected-second-kernel", workerKernelRef: "user-worker", sliceRef: "user-slice",
+      managedEnvironment: { kind: "existing" as const, environmentId: "environment-1" } }
+    const adapted = prepareWaitingRoomEnrolledLaunch({ launch, prepared,
+      assertActive: harness.attempt.assertActive, prepareProjectEnvironment: async () => {} })
+    assert.deepEqual(harness.connectedKernels, [{ machineId: "machine-managed", kernelId: "selected-second-kernel" }])
+    assert.equal(adapted.launch.ownerKernelRef, "selected-second-kernel")
+    assert.equal(adapted.launch.workerKernelRef, "user-worker")
+    assert.equal(adapted.launch.sliceRef, "user-slice")
+    assert.deepEqual(harness.launchTargetRequests, [])
+    assert.equal(harness.lifecycleRequests.length, observedState === "stopped" ? 1 : 0)
+    await adapted.commit()
+    assert.equal(harness.connectionCommits, 1)
+  })
+}
 
 test("managed TUI launch starts a converged stopped environment", async () => {
   const stopped = environment("stopped", {

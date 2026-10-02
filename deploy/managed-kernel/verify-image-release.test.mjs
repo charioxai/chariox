@@ -438,6 +438,7 @@ test("shared-host rollback retains direct ExecStart and release-signature verifi
 // MP-01/MP-04/MP-07/MP-11: independently signed worker policy mutations.
 for (const directive of [
   "PrivateTmp=true", "ProtectHome=true", "NoNewPrivileges=true", "UMask=0077",
+  "TemporaryFileSystem=/home:ro", "IPAddressDeny=any", "PrivateMounts=yes",
   "Environment=CHARIOX_MANAGED_PROVIDER_ISOLATION=1",
   "Environment=HOME=/tmp/wrong-home",
   "Environment=CHARIOX_HOME=/tmp/wrong-state",
@@ -464,3 +465,15 @@ test("MP-11 worker HOME in another unit section cannot satisfy service policy", 
   assert.notEqual(result.status, 0, result.stderr)
   assert.match(result.stderr, /Path-1 disposable-worker service/)
 })
+
+// MP-01/MP-07/MP-11: equivalent filesystem/network restrictions in the home role.
+for (const directive of ["TemporaryFileSystem=/home:ro", "IPAddressDeny=any", "PrivateMounts=yes"]) {
+  test(`MP-11 signed home rejects ${directive}`, async (context) => {
+    const fixture = await createReleaseFixture(context, {
+      path1Service: PATH1_SERVICE.replace("[Service]", `[Service]\n${directive}`),
+    })
+    const result = runVerifier(fixture, "path1", fixture.trustedBuilderKey)
+    assert.notEqual(result.status, 0, result.stderr)
+    assert.match(result.stderr, /Path-1 managed bootstrap service/)
+  })
+}
