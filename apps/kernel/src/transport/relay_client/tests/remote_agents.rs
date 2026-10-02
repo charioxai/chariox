@@ -2513,13 +2513,6 @@ async fn remote_machine_agents_cancel_prompts_through_the_home_session_async() {
         None,
         &cancellation_request,
     );
-    let LocalDaemonResponse::PromptCancelled { cancellation } = router
-        .dispatch(cancellation_command, cancellation_request)
-        .await
-        .expect("remote prompt should cancel through the public kernel runtime")
-    else {
-        panic!("public remote cancellation should return prompt state");
-    };
     let forced_cancellation_request = cancel_request();
     let forced_cancellation_command = KernelCommand::from_local_request(
         "remote-machine-agent-cancel-repeat",
@@ -2527,12 +2520,20 @@ async fn remote_machine_agents_cancel_prompts_through_the_home_session_async() {
         None,
         &forced_cancellation_request,
     );
+    // MP-08/MP-10: enqueue the duplicate while the first intent is pending,
+    // before the worker's completion can turn a later request into a settled reply.
+    let (first, repeated) = tokio::join!(
+        router.dispatch(cancellation_command, cancellation_request),
+        router.dispatch(forced_cancellation_command, forced_cancellation_request),
+    );
+    let LocalDaemonResponse::PromptCancelled { cancellation } =
+        first.expect("remote prompt should cancel through the public kernel runtime")
+    else {
+        panic!("public remote cancellation should return prompt state");
+    };
     let LocalDaemonResponse::PromptCancelled {
         cancellation: forced_cancellation,
-    } = router
-        .dispatch(forced_cancellation_command, forced_cancellation_request)
-        .await
-        .expect("a repeated remote cancellation should preserve the existing intent")
+    } = repeated.expect("a repeated remote cancellation should preserve the existing intent")
     else {
         panic!("repeated remote cancellation should return prompt state");
     };
