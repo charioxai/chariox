@@ -213,22 +213,6 @@ impl KernelRuntimeOwnedState {
         )
     }
 
-    pub(super) fn fail_local_prompt_without_advance_with_termination(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-        provider_run_id: Option<&str>,
-        provider_termination: Option<crate::provider::ProviderRunTermination>,
-    ) -> Result<Option<OwnedPromptCompletion>, DaemonError> {
-        self.fail_local_prompt_without_advance_with_termination_if_matches(
-            session_id,
-            agent_id,
-            provider_run_id,
-            None,
-            provider_termination,
-        )
-    }
-
     pub(super) fn fail_local_prompt_without_advance_with_termination_if_matches(
         &self,
         session_id: &str,
