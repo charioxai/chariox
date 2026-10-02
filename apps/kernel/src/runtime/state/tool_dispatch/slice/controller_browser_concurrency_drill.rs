@@ -46,12 +46,13 @@ async fn control(query: &str) -> u64 {
     let epoch = fixture(&format!("/control?{query}")).await["epoch"]
         .as_u64()
         .unwrap();
+    let epoch_text = epoch.to_string();
     until(
         async || {
             let state = fixture("/state").await;
             ["same", "other"].into_iter().all(|tab| {
                 state["probes"].as_array().unwrap().iter().any(|p| {
-                    p["epoch"] == epoch.to_string() && p["kind"] == "ready" && p["tab"] == tab
+                    p["epoch"].as_str() == Some(epoch_text.as_str()) && p["kind"] == "ready" && p["tab"] == tab
                 })
             })
         },
@@ -268,6 +269,7 @@ async fn run(runtime: &KernelRuntimeState, room: &str, agents: [&str; 3]) {
     // Real selector waits stay pending at a page gate; query probes acknowledge
     // all three CDP reads before release. No sleeps manufacture an overlap.
     let epoch = control("").await;
+    let epoch_text = epoch.to_string();
     let reads = async {
         tokio::join!(
             read(runtime, room, agents[0], &same, "#read-a"),
@@ -281,7 +283,7 @@ async fn run(runtime: &KernelRuntimeState, room: &str, agents: [&str; 3]) {
                 let state = fixture("/state").await;
                 ["#read-a", "#read-b", "#read-c"].into_iter().all(|id| {
                     state["probes"].as_array().unwrap().iter().any(|p| {
-                        p["epoch"] == epoch.to_string() && p["kind"] == "read" && p["id"] == id
+                        p["epoch"].as_str() == Some(epoch_text.as_str()) && p["kind"] == "read" && p["id"] == id
                     })
                 })
             },
@@ -305,6 +307,7 @@ async fn run(runtime: &KernelRuntimeState, room: &str, agents: [&str; 3]) {
     // Held independent input must not drain read/status preflight on the other
     // tab. The status read must physically complete before the input is released.
     let epoch = control("other=hold").await;
+    let epoch_text = epoch.to_string();
     let input = mutation(
         runtime,
         room,
@@ -320,7 +323,7 @@ async fn run(runtime: &KernelRuntimeState, room: &str, agents: [&str; 3]) {
                     .unwrap()
                     .iter()
                     .any(|p| {
-                        p["epoch"] == epoch.to_string()
+                        p["epoch"].as_str() == Some(epoch_text.as_str())
                             && p["tab"] == "other"
                             && p["kind"] == "action"
                     })
@@ -349,6 +352,7 @@ async fn run(runtime: &KernelRuntimeState, room: &str, agents: [&str; 3]) {
 
     // Two same-tab fills serialize; independent-tab fill overlaps the first.
     let epoch = control("same=hold&other=hold").await;
+    let epoch_text = epoch.to_string();
     let fill = |text: &str| BrowserLocatorAction::Fill {
         text: text.into(),
         append: false,
@@ -388,7 +392,7 @@ async fn run(runtime: &KernelRuntimeState, room: &str, agents: [&str; 3]) {
                         == 1
                     && ["same", "other"].into_iter().all(|tab| {
                         state["probes"].as_array().unwrap().iter().any(|p| {
-                            p["epoch"] == epoch.to_string()
+                            p["epoch"].as_str() == Some(epoch_text.as_str())
                                 && p["tab"] == tab
                                 && p["kind"] == "action"
                                 && p["id"] == "note"
@@ -420,6 +424,7 @@ async fn run(runtime: &KernelRuntimeState, room: &str, agents: [&str; 3]) {
     // Human takeover cancels exactly the held and queued same-tab operations.
     // Independent input remains live and completes exactly once after release.
     let epoch = control("same=hold&other=hold").await;
+    let epoch_text = epoch.to_string();
     let first = mutation(
         runtime,
         room,
@@ -467,7 +472,7 @@ async fn run(runtime: &KernelRuntimeState, room: &str, agents: [&str; 3]) {
                         .unwrap()
                         .iter()
                         .filter(|p| {
-                            p["epoch"] == epoch.to_string()
+                            p["epoch"].as_str() == Some(epoch_text.as_str())
                                 && p["kind"] == "action"
                                 && p["id"] == "button"
                         })
