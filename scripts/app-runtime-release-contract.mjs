@@ -9,6 +9,9 @@ export const MANIFEST_LIMIT = 262144;
 // Security launcher changes must not invalidate the expensive Node build cache.
 // They have their own exact attested input set at final release assembly.
 export const LAUNCHER_INPUTS = [
+  'apps/app-worker/bubblewrap-openat.patch',
+  'apps/app-worker/src/bwrap_openat_fallback.h',
+  'scripts/build-app-bwrap.sh',
   'apps/app-worker/sandbox.lock.json', 'apps/app-worker/src/launcher.c',
   'apps/app-worker/src/launcher.h', 'apps/app-worker/src/runtime.h',
   'apps/app-worker/src/launch_record.c', 'apps/app-worker/src/launch_process.c',

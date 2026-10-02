@@ -200,3 +200,24 @@ Policy references: [Chromium Seatbelt entry points](https://github.com/chromium/
 [Apple XNU mmap and mprotect checks](https://github.com/apple-oss-distributions/xnu/blob/xnu-10002.81.5/bsd/kern/kern_mman.c),
 [Linux seccomp documentation](https://www.kernel.org/doc/html/latest/userspace-api/seccomp_filter.html),
 [upstream bubblewrap](https://github.com/containers/bubblewrap).
+
+The bundled Linux bubblewrap build uses `scripts/build-app-bwrap.sh`, which
+verifies the pinned upstream archive and applies `bubblewrap-openat.patch`.
+The Linux managed service retains `RestrictSUIDSGID=true`; systemd can therefore
+return ENOSYS for `openat2` even on a supported kernel. The pinned 5.9 build
+normally compiles out bubblewrap's fallback. Our fallback walks held directory
+descriptors with `openat(O_NOFOLLOW|O_CLOEXEC)`, rejects symlinks and `..`, and
+checks the complete device/inode and parent chain before returning a handle.
+Creation and truncation flags fail closed. It deliberately supports only the
+canonical, symlink-free bind paths supplied by the App domain, rather than
+bubblewrap's general symlink-resolving fallback. The patch, fallback source and
+build helper belong to the final launcher attestation inputs; the expensive
+native Node libraries can be reused. Run `scripts/test-app-bwrap-fallback.sh`
+against the build scratch to inject ENOSYS into the actual patched upstream
+`safe_openat()` and verify normal opens, denied escapes and ancestor replacement.
+
+Only the shared-host bootstrap service needs AF_NETLINK added to its address
+family allowlist for bubblewrap's private loopback setup. systemd's
+`RestrictAddressFamilies` cannot distinguish NETLINK_ROUTE from other netlink
+protocols. App main still cannot create sockets under the native launcher policy.
+The storage helper and Docker broker units retain their existing restrictions.

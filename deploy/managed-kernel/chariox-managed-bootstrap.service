@@ -54,7 +54,9 @@ ProtectControlGroups=false
 Delegate=cpu memory pids
 DelegateSubgroup=supervisor
 RestrictSUIDSGID=true
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# Bubblewrap configures private loopback through NETLINK_ROUTE. This directive
+# filters address families, not individual netlink protocols.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 StateDirectory=chariox
 StateDirectoryMode=0700
 ReadWritePaths=/home/chariox /var/lib/chariox /var/lib/chariox-slice-share /var/lib/chariox-app-storage

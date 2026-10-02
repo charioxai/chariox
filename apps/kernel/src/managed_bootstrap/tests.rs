@@ -813,6 +813,7 @@ fn managed_systemd_unit_keeps_bootstrap_and_kernel_in_one_hardened_cgroup() {
         "RestartSteps=8",
         "RestartMaxDelaySec=5min",
         "NoNewPrivileges=true",
+        "RestrictSUIDSGID=true",
         "ProtectSystem=strict",
         "ProtectKernelTunables=false",
         "StateDirectory=chariox",
@@ -825,6 +826,10 @@ fn managed_systemd_unit_keeps_bootstrap_and_kernel_in_one_hardened_cgroup() {
             "missing systemd contract: {required}"
         );
     }
+    assert_eq!(
+        unit.lines().find(|line| line.starts_with("RestrictAddressFamilies=")),
+        Some("RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK")
+    );
     assert!(!unit.contains("cloud-final.service"));
     assert!(!unit.contains("ssh"));
     assert!(!unit.contains("Requires=chariox-rootless-docker.service"));
