@@ -758,7 +758,7 @@ fn mp08_mp10_terminal_workflow_updates_have_one_authoritative_stream() {
     for status in [
         WorkflowRunStatus::Completed,
         WorkflowRunStatus::Failed,
-        WorkflowRunStatus::Cancelled,
+        WorkflowRunStatus::Stopped,
     ] {
         let mut current = previous.clone();
         current
