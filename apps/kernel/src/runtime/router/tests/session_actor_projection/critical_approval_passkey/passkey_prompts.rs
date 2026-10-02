@@ -61,7 +61,10 @@ async fn a_critical_approval_is_a_passkey_prompt_for_its_owner_alone() {
     let before = f.changes();
     let raised_ms = crate::session::unix_epoch_ms();
     let _decision = f.critical("popup").await;
-    assert!(f.changes() > before, "raising a prompt wakes every terminal");
+    assert!(
+        f.changes() > before,
+        "raising a prompt wakes every terminal"
+    );
     let prompts = f.prompts(DEFAULT_LOCAL_USER_ID);
     let [prompt] = prompts.as_slice() else {
         panic!("one prompt expected: {prompts:?}");
@@ -257,7 +260,14 @@ async fn wrong_passkeys_keep_the_prompt_open_and_count_toward_the_lockout() {
     assert_eq!(f.prompt_ids(), ids(&["guessed"]));
     assert_eq!(
         f.outcomes("guessed"),
-        ["rejected", "rejected", "rejected", "rejected", "rejected", "rate_limited"]
+        [
+            "rejected",
+            "rejected",
+            "rejected",
+            "rejected",
+            "rejected",
+            "rate_limited"
+        ]
     );
 }
 

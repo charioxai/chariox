@@ -198,7 +198,10 @@ async fn one_passkey_prompt_reaches_every_terminal_and_the_first_answer_closes_i
     assert!(rejected.contains("PASSKEY_REJECTED"), "{rejected}");
     // The waiting-room terminal answers first, and both popups close: the
     // next set either terminal gets is empty.
-    assert_eq!(waiting.answer(&kernel, "approve", Some(PASSKEY)).await, None);
+    assert_eq!(
+        waiting.answer(&kernel, "approve", Some(PASSKEY)).await,
+        None
+    );
     assert!(waiting.prompts().await.is_empty());
     assert!(attached.prompts().await.is_empty());
     // The attached terminal's later answer was already answered.

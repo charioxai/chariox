@@ -27,8 +27,14 @@ impl KernelRuntimeState {
             .to_owned();
         let (tx, rx) = oneshot::channel();
         let event_interaction = interaction.clone();
-        self.owned
-            .register_runtime_interaction(session_id, interaction, tx, None, None, forwarding)?;
+        self.owned.register_runtime_interaction(
+            session_id,
+            interaction,
+            tx,
+            None,
+            None,
+            forwarding,
+        )?;
         let source_attachment_id =
             crate::scheduler::runtime::workflow_prompt_source_attachment_id(event_interaction.id());
         let dispatches = self.owned.metaagent_owned_agent_event_prompt_dispatches(

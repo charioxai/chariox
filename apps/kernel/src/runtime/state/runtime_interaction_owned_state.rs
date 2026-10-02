@@ -117,8 +117,16 @@ impl KernelRuntimeOwnedState {
         passkey_verified: bool,
         sudo: Option<&crate::local::KernelSudoTurn>,
     ) -> Result<(), DaemonError> {
-        self.resolve_runtime_interaction_inner(session_id, interaction_id, choice_id,
-            custom_reply, caller_user_id, passkey_verified, false, sudo)
+        self.resolve_runtime_interaction_inner(
+            session_id,
+            interaction_id,
+            choice_id,
+            custom_reply,
+            caller_user_id,
+            passkey_verified,
+            false,
+            sudo,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]

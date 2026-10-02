@@ -102,12 +102,10 @@ async fn revoked_input_helper(kind: &str) {
         !marker.exists(),
         "revoked actual input helper created its effect marker"
     );
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("grant revoked or expired")
-    );
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("grant revoked or expired"));
     state
         .room_browser_controller_command(&room.session_id, command)
         .await
@@ -334,12 +332,10 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line',line
         after, before,
         "revoked queued stop terminated the controller"
     );
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("grant revoked or expired")
-    );
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("grant revoked or expired"));
     assert_eq!(
         processes.snapshot().unwrap().unwrap().state,
         crate::runtime::browser_controller_process::BrowserControllerProcessState::Stopped,

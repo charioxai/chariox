@@ -4,7 +4,9 @@ use super::*;
 #[test]
 #[ignore = "candidate live subprocess entry point"]
 fn ka_validation_live_server() {
-    let Ok(root) = std::env::var("CHARIOX_KA_LIVE_ROOT") else { return; };
+    let Ok(root) = std::env::var("CHARIOX_KA_LIVE_ROOT") else {
+        return;
+    };
     tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all()
         .thread_stack_size(32 * 1024 * 1024).build().unwrap().block_on(async {
         let root = PathBuf::from(root);

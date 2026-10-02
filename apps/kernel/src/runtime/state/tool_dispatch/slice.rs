@@ -1652,16 +1652,12 @@ mod tests {
             read_bounded_png(std::io::Cursor::new(&png), png.len()).expect("bounded PNG"),
             png
         );
-        assert!(
-            read_bounded_png(std::io::Cursor::new(&png), png.len() - 1)
-                .expect_err("oversized PNG should fail")
-                .contains("runtime MCP limit")
-        );
-        assert!(
-            read_bounded_png(std::io::Cursor::new(b"not-a-png"), 32)
-                .expect_err("non-PNG should fail")
-                .contains("not a PNG")
-        );
+        assert!(read_bounded_png(std::io::Cursor::new(&png), png.len() - 1)
+            .expect_err("oversized PNG should fail")
+            .contains("runtime MCP limit"));
+        assert!(read_bounded_png(std::io::Cursor::new(b"not-a-png"), 32)
+            .expect_err("non-PNG should fail")
+            .contains("not a PNG"));
     }
 
     #[test]
