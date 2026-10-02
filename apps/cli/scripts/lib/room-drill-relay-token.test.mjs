@@ -19,6 +19,16 @@ test("ordinary Room drill credentials keep their fifteen-minute lifetime", () =>
   assert.equal(issue("kernel").expires_at_ms, 1_000 + setupAllowanceMs)
 })
 
+test("MP-08/MP-10 display observers preserve the product-generated viewer key binding", () => {
+  const token = roomDrillRelayToken({ issuer: "fixture", secret: "test-only-secret",
+    machineId: "machine", subject: "viewer", subjectKind: "client",
+    actions: ["client_connect", "packet_route"], userId: "local",
+    publicKeyThumbprint: "fixture-public-thumbprint", nowMs: 1_000 })
+  const claims = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString())
+  assert.equal(claims.public_key_thumbprint, "fixture-public-thumbprint")
+  assert.equal(issue("client").public_key_thumbprint, null)
+})
+
 test("kernel and remote TUI remain authenticated through the complete companion budget", () => {
   for (const hours of [8, 24]) {
     const timeoutMs = hours * 3_600_000 + 600_000

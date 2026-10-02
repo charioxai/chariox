@@ -85,7 +85,7 @@ pub(crate) fn summarize_provider_startup_output(output: &[u8]) -> String {
 }
 
 fn format_summary(diagnostic: &Diagnostic) -> String {
-    format!(
+    let mut summary = format!(
         "stderr_bytes={} diagnostic_classes={}",
         diagnostic.bytes,
         if diagnostic.classes.is_empty() {
@@ -98,7 +98,14 @@ fn format_summary(diagnostic: &Diagnostic) -> String {
                 .collect::<Vec<_>>()
                 .join(",")
         },
-    )
+    );
+    if diagnostic.classes.contains("namespace") && diagnostic.classes.contains("permission_denied")
+    {
+        // MP-08/MP-10: describe the known boundary failure without provider
+        // output or silently changing the user's container security choice.
+        summary.push_str("; provider namespace setup was denied by the execution environment. For a local Docker execution slice, enable slices.linux.allow_provider_sandbox_compatibility and recreate the slice before retrying");
+    }
+    summary
 }
 
 fn classify(output: &[u8], classes: &mut BTreeSet<&'static str>) {
@@ -183,6 +190,8 @@ mod tests {
         assert!(summary.contains("diagnostic_classes=namespace,permission_denied"));
         assert!(!summary.contains("private-fixture-marker"));
         assert!(!summary.contains("bwrap:"));
+        assert!(summary.contains("slices.linux.allow_provider_sandbox_compatibility"));
+        assert!(summary.contains("recreate the slice"));
     }
 
     #[test]
