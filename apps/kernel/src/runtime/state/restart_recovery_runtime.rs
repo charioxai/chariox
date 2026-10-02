@@ -1785,12 +1785,12 @@ mod tests {
         let session_after = runtime
             .owned
             .session_store
-            .get_session(&session.id().to_string())
+            .get_session(session.id())
             .expect("session should remain available");
         let (active, queued) = runtime
             .owned
             .prompt_state_owner
-            .state_parts(&session_after, &agent.id().to_string());
+            .state_parts(&session_after, agent.id());
         let active = active.expect("the uncertain prompt should stay active");
         assert_eq!(active.id(), dispatch.prompt_id);
         assert_eq!(
