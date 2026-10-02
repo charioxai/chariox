@@ -9,6 +9,7 @@ use crate::session::{
 };
 
 mod entry;
+mod external;
 mod lifecycle;
 mod policy;
 mod receipts;

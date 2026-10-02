@@ -9,7 +9,7 @@ impl KernelRuntimeState {
             return false;
         }
         let Some(prompt_id) = turn.prompt_id.as_deref() else {
-            return true;
+            return self.external_sudo_grant_live(turn);
         };
         self.owned.prompt_state_owner.sudo_turn_live(
             &session,
@@ -22,6 +22,18 @@ impl KernelRuntimeState {
                     && run.state() == crate::provider::ProviderRunState::Running
             })
         })
+    }
+
+    // No session or prompt locks: safe at the final sudo-store admission boundary.
+    pub(super) fn external_sudo_grant_live(&self, turn: &KernelSudoTurn) -> bool {
+        requester_grant_live(
+            turn,
+            &self
+                .owned
+                .kernel_access
+                .lock()
+                .expect("access state poisoned"),
+        )
     }
 
     pub(crate) fn sudo_for_auth_token(&self, token: &str) -> Result<KernelSudoTurn, DaemonError> {
@@ -88,7 +100,8 @@ impl KernelRuntimeState {
 fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
     matches!(
         request,
-        LocalDaemonRequest::RequestKernelAccess(_)
+        LocalDaemonRequest::RequestKernelSudo(_)
+        | LocalDaemonRequest::RequestKernelAccess(_)
             | LocalDaemonRequest::ListKernelAccessGrants(_)
             | LocalDaemonRequest::RevokeKernelAccessGrant(_)
             | LocalDaemonRequest::ManageCredentialVault(_)
@@ -138,4 +151,18 @@ fn sudo_config_forbidden(path: &str) -> bool {
     ["kernel_access", "credential_vault", "relay"]
         .iter()
         .any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}.")))
+}
+
+pub(super) fn requester_grant_live(
+    turn: &KernelSudoTurn,
+    access: &crate::runtime::kernel_access::AccessState,
+) -> bool {
+    turn.requester.as_ref().is_none_or(|requester| {
+        access.grants.get(&requester.grant_id).is_some_and(|grant| {
+            grant.summary.session_id == turn.session_id
+                && grant.summary.owner_user_id == turn.owner_user_id
+                && std::time::Instant::now() < grant.deadline
+                && grant.holder.alive()
+        })
+    })
 }

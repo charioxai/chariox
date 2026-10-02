@@ -934,6 +934,7 @@ impl KernelRuntimeState {
         self.stop_managed_environment_for_session_lifecycle(session_id)
             .await;
         let (session, terminated_run_ids) = owned.end_session(session_id)?;
+        self.sweep_kernel_access();
         owned.clear_session_prompt_runtime_state(session_id);
         let session = owned.publish_session_after_durable_mutation(session);
         for provider_run_id in terminated_run_ids {
@@ -983,6 +984,7 @@ impl KernelRuntimeState {
             .await;
         let (session, terminated_run_ids, removed_project) =
             owned.delete_session(owned.session_store.get_session(&session_id)?)?;
+        self.sweep_kernel_access();
         debug_assert_eq!(
             removed_project.as_ref().map(|project| project.id()),
             durable_project_delete.as_ref().map(|project| project.id()),

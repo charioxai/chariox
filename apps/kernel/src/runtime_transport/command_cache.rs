@@ -136,7 +136,8 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
     // which never resends it once written; the tests hold the two lists equal.
     !matches!(
         request,
-        LocalDaemonRequest::RequestKernelAccess(_)
+        LocalDaemonRequest::RequestKernelSudo(_)
+            | LocalDaemonRequest::RequestKernelAccess(_)
             | LocalDaemonRequest::ListKernelAccessGrants(_)
             | LocalDaemonRequest::RevokeKernelAccessGrant(_)
             | LocalDaemonRequest::ListAppInstallations(_)

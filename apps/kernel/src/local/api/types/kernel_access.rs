@@ -103,6 +103,15 @@ pub struct KernelAccessGrant {
     pub expires_at_ms: u64,
 }
 
+/// Protocol 406: a grant holder requests a human-authorized turn. Identity and
+/// session are resolved by the kernel; credentials are never accepted here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestKernelSudoRequest {
+    pub agent_id: String,
+    pub prompt: String,
+}
+
 /// Protocol 404: public attribution for an ephemeral, one-turn authorization.
 /// `entry_id` is a revoke handle, never a credential. No time expiry applies.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,6 +121,9 @@ pub struct KernelSudoTurn {
     pub agent_id: String,
     pub owner_user_id: String,
     pub terminal_id: String,
+    /// Protocol 406: OS-established requester attribution for external entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<KernelAccessGrant>,
     pub prompt_id: Option<String>,
     pub provider_run_id: Option<String>,
 }

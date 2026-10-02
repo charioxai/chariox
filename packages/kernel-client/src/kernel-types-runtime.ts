@@ -450,4 +450,7 @@ export type KernelAccessGrantedResponse = { KernelAccessGranted: { grant: Kernel
 export type KernelAccessGrantsListedResponse = { KernelAccessGrantsListed: { grants: KernelAccessGrant[]; sudo_turns: KernelSudoTurn[] } }
 export type KernelAccessRevokedResponse = { KernelAccessRevoked: { revoked: number } }
 
-export type KernelSudoTurn = { entry_id: string; session_id: string; agent_id: string; owner_user_id: string; terminal_id: string; prompt_id: string | null; provider_run_id: string | null }
+export type KernelSudoTurn = { entry_id: string; session_id: string; agent_id: string; owner_user_id: string; terminal_id: string; requester?: KernelAccessGrant; prompt_id: string | null; provider_run_id: string | null }
+
+export type RequestKernelSudoRequest = { agent_id: string; prompt: string }
+export type KernelSudoRequestedResponse = { KernelSudoRequested: { agent_id: string } }

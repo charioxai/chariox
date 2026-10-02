@@ -31,7 +31,11 @@ fn kernel_access_child_server() {
             let mcp = StdTcpListener::bind("127.0.0.1:0").unwrap();
             let mut config = daemon_config_for_runtime_mcp_listener(&mcp);
             config.local_socket_path = root.join("run/k.sock");
-            config.publication_control_state_root = Some(root.join("control"));
+            // Sudo exercises an ordinary home kernel. A retained publication
+            // kernel has a separate preparation barrier before prompt admission.
+            config.publication_control_state_root =
+                (std::env::var("CHARIOX_ACCESS_TEST_SUDO").as_deref() != Ok("1"))
+                    .then(|| root.join("control"));
             config.user_config_path = root.join("private/config.toml");
             config.user_config.credential_vault.backend =
                 crate::config::CredentialVaultBackend::CharioxEncrypted;
@@ -362,7 +366,7 @@ impl Client {
         loop {
             let mut line = String::new();
             assert_ne!(result.output.read_line(&mut line).unwrap(), 0);
-            if line.trim() == "ACCESS_READY" {
+            if line.trim_end().ends_with("ACCESS_READY") {
                 break;
             }
         }
@@ -421,6 +425,9 @@ impl Kernel {
         Self::start_with_order("").await
     }
     async fn start_with_order(order: &str) -> Self {
+        Self::start_with_options(order, false).await
+    }
+    async fn start_with_options(order: &str, sudo: bool) -> Self {
         // Keep macOS's 104-byte sockaddr_un limit, including the temporary prefix.
         let root = std::env::temp_dir().join(format!("a{:08x}", rand::random::<u32>()));
         std::fs::create_dir(&root).unwrap();
@@ -428,6 +435,7 @@ impl Kernel {
             .args(["kernel_access_child_server", "--ignored", "--nocapture"])
             .env("CHARIOX_ACCESS_TEST_ROOT", &root)
             .env("CHARIOX_ACCESS_TEST_GRANT_ORDER", order)
+            .env("CHARIOX_ACCESS_TEST_SUDO", if sudo { "1" } else { "0" })
             .env("CHARIOX_HOME", root.join("state"))
             .env("HOME", root.join("home"))
             .env_remove("CLAUDE_CONFIG_DIR")
@@ -893,4 +901,56 @@ async fn kernel_access_overlapping_grants_keep_subscriptions_bound_and_select_by
         descendant.command("second-session");
         assert_eq!(descendant.result()["second_session"], true);
     }
+}
+
+#[tokio::test]
+async fn external_sudo_unix_socket_requires_grant_projects_identity_and_expires_without_terminal() {
+    let mut kernel = Kernel::start_with_options("", true).await;
+    let mut holder = Client::start(&kernel.root);
+    let request = serde_json::json!({"RequestKernelSudo":{"agent_id":"access-vault-agent","prompt":"full external\nprompt"}});
+    assert!(!holder.request(request.clone())["error"].is_null());
+    grant(&mut kernel, &mut holder).await;
+    let tcp = kernel.request(request.clone()).await;
+    assert!(tcp["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("ws+unix://"));
+    holder.send(request.clone());
+    let popup = timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(p) = kernel
+                .prompts()
+                .await
+                .into_iter()
+                .find(|p| p["id"].as_str().is_some_and(|id| id.starts_with("sudo:")))
+            {
+                break p;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let id = popup["id"].as_str().unwrap();
+    let message = popup["message"].as_str().unwrap();
+    assert!(message.contains(&format!("OS pid {}", holder.child.id())));
+    assert!(message.contains("access-vault-agent") && message.contains(SESSION));
+    assert!(message.contains("Requester-supplied prompt:\nfull external\nprompt"));
+    let refused = kernel.request(serde_json::json!({"RespondToInteraction":{"session_id":SESSION,"interaction_id":id,"choice_id":"refuse"}})).await;
+    assert!(refused["error"].is_null(), "{refused}");
+    assert!(holder.result()["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("refused"));
+    kernel.tcp.close(None).await.unwrap();
+    holder.send(request);
+    kernel.control("sudo-timeout").await;
+    let expired = holder.result();
+    assert!(
+        expired["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("sudo request expired"),
+        "{expired}"
+    );
 }

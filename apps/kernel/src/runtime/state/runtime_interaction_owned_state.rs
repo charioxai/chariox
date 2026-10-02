@@ -144,6 +144,7 @@ impl KernelRuntimeOwnedState {
             caller_user_id,
             passkey_verified,
             None,
+            None,
         )
     }
 
@@ -157,6 +158,7 @@ impl KernelRuntimeOwnedState {
         caller_user_id: Option<&str>,
         passkey_verified: bool,
         sudo: Option<&crate::local::KernelSudoTurn>,
+        authorizing_terminal: Option<&str>,
     ) -> Result<(), DaemonError> {
         let _mutation = self
             .pending_interactions
@@ -340,7 +342,15 @@ impl KernelRuntimeOwnedState {
             return Err(interaction_error("Kernel operation decision expired"));
         }
         let consume = || {
-            let access = sudo.map(|_| self.sudo_turns.lock().expect("access state poisoned"));
+            let mut access = (sudo.is_some() || authorizing_terminal.is_some())
+                .then(|| self.sudo_turns.lock().expect("access state poisoned"));
+            if let Some(terminal) = authorizing_terminal {
+                let turn = access
+                    .as_mut()
+                    .and_then(|state| state.get_mut(interaction_id))
+                    .ok_or_else(|| interaction_error("sudo request revoked before the decision"))?;
+                turn.terminal_id = terminal.into();
+            }
             if let Some(turn) = sudo {
                 if access.as_ref().and_then(|state| state.get(&turn.entry_id)) != Some(turn) {
                     return Err(interaction_error(
