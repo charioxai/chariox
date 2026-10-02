@@ -674,7 +674,7 @@ impl WorkerConfig {
         let configured_envelope_path = env::var_os("CHARIOX_DISPOSABLE_WORKER_BOOTSTRAP_PATH")
             .filter(|value| !value.is_empty());
         if configured_envelope_path.as_ref().is_some_and(|value| {
-            PathBuf::from(value) != Path::new(PROTECTED_DISPOSABLE_WORKER_BOOTSTRAP_PATH)
+            Path::new(value) != Path::new(PROTECTED_DISPOSABLE_WORKER_BOOTSTRAP_PATH)
         }) {
             return Err(worker_error(
                 "Path-1 worker bootstrap must use the protected bootstrap path",

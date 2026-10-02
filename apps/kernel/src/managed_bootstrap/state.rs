@@ -192,7 +192,7 @@ impl BootstrapConfig {
         let envelope_path = match super::managed_provider_topology()? {
             super::ManagedProviderTopology::Path1 => {
                 if configured_envelope_path.as_ref().is_some_and(|value| {
-                    PathBuf::from(value) != Path::new(PROTECTED_MANAGED_BOOTSTRAP_PATH)
+                    Path::new(value) != Path::new(PROTECTED_MANAGED_BOOTSTRAP_PATH)
                 }) {
                     return Err(state_error(
                         "Path-1 managed bootstrap must use the protected bootstrap path",
