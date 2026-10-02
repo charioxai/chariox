@@ -92,64 +92,64 @@ Each row's status follows the audit in `CHARIOX_APPS_PHASE1_VERIFICATION.md` (ma
 
 | ID | Required case | Required outcome/evidence | Status |
 |---|---|---|---|
-| V1-INT-01 | Chromium sandbox and login persistence | Production launch evidence, deterministic state assertions, redacted live service drill | Needs user (see verification) |
+| V1-INT-01 | Chromium sandbox and login persistence | Production launch evidence, deterministic state assertions, redacted live service drill | Partial (f5 Google PASS); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
 | V1-INT-02 | Independent OS boundary | macOS/Linux artifact and policy digests; stable supervisor termination classification | Partial (see verification) |
-| V1-INT-03 | Total and aggregate resources | Measured CPU, total memory, disk, queue and latency budgets on named hardware | Partial (see verification) |
-| V1-INT-04 | Raw files and state transactions | Fault-injection checkpoints and old/new generation data validation | Partial (see verification) |
-| V1-INT-05 | Storage exhaustion | No cross-installation exhaustion or loss of accepted state | Partial (see verification) |
-| V1-INT-06 | Event crash windows | One durable enqueue per scoped occurrence; visible terminal outcomes and bounded queues | Partial (see verification) |
-| V1-INT-07 | Rollback dedupe and generations | Dedupe receipts survive rollback; incompatible generations cannot operate | Partial (see verification) |
-| V1-INT-08 | Ambiguous service effects | Unknown outcome is visible; no unsafe automatic replay | Partial (see verification) |
-| V1-INT-09 | Equivalent human and agent operation | Attributed action evidence; no tool/view privilege split | Partial (see verification) |
-| V1-INT-10 | Human validation lifecycle | One durable RuntimeInteraction and operation state; execution waits for human decision | Implemented (step-up = Phase 2) (see verification) |
+| V1-INT-03 | Total and aggregate resources | Measured CPU, total memory, disk, queue and latency budgets on named hardware | Partial (g requested legs PASS); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
+| V1-INT-04 | Raw files and state transactions | Fault-injection checkpoints and old/new generation data validation | Partial (g requested drill PASS); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
+| V1-INT-05 | Storage exhaustion | No cross-installation exhaustion or loss of accepted state | Partial; interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
+| V1-INT-06 | Event crash windows | One durable enqueue per scoped occurrence; visible terminal outcomes and bounded queues | Partial; interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
+| V1-INT-07 | Rollback dedupe and generations | Dedupe receipts survive rollback; incompatible generations cannot operate | Implemented (g); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
+| V1-INT-08 | Ambiguous service effects | Unknown outcome is visible; no unsafe automatic replay | Partial (owner approve pending); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
+| V1-INT-09 | Equivalent human and agent operation | Attributed action evidence; no tool/view privilege split | Partial; interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
+| V1-INT-10 | Human validation lifecycle | One durable RuntimeInteraction and operation state; execution waits for human decision | Needs user; interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
 | V1-INT-11 | Approval parameter and effect binding | Only the exact approved effect can execute; stale/changed/reused authority is denied | Implemented (see verification) |
 | V1-INT-12 | Step-up authentication | Authenticator integration tests plus real human verification drill; test mocks never count as production authentication | Phase 2 (see verification) |
 | V1-INT-13 | Capability-expanding update | Decline keeps old release; recovery preserves accepted work; no early capability use | Verified (macOS kernel) (see verification) |
 | V1-INT-14 | App-origin escape | Browser-controlled origin and network policy holds; host loopback and metadata are not ambient authority | Partial (see verification) |
-| V1-INT-15 | Concurrent viewer semantics | Same Tab/document/viewport revisions; accessible names, focus and live updates reach terminal | Partial: slice-restart recheck; App-view screen reader to Phase 1.1 (#709 at `1ccd0d353`; see verification) |
-| V1-INT-16 | Transport conformance and SSRF | Measured source adaptations; bounded trusted-side memory and actual connected-address checks | Partial (see verification) |
-| V1-INT-17 | Slack contract cutover | Live third-party-style App parity before old code removal; final artifact has no privileged Slack fallback | Partial (see verification) |
+| V1-INT-15 | Concurrent viewer semantics | Same Tab/document/viewport revisions; accessible names, focus and live updates reach terminal | Partial; interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
+| V1-INT-16 | Transport conformance and SSRF | Measured source adaptations; bounded trusted-side memory and actual connected-address checks | Implemented (f Mac / earlier Linux); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
+| V1-INT-17 | Slack contract cutover | Live third-party-style App parity before old code removal; final artifact has no privileged Slack fallback | Needs user; interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
 | V1-INT-18 | Schedule correctness | Persisted occurrence revision controls enqueue; overdue work recovers within declared budget | Partial [user step: sleep/wake] (see verification) |
-| V1-INT-19 | Rooms and kernels | Update/uninstall/backup isolation matches documented ownership; no credential or handle inheritance | Partial (see verification) |
+| V1-INT-19 | Rooms and kernels | Update/uninstall/backup isolation matches documented ownership; no credential or handle inheritance | Partial (g kernel subset PASS); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
 | V1-INT-20 | Package and review independence | Code remains contained regardless of review; exact signed bytes and extraction rules are verified | Partial (see verification) |
 | V1-INT-21 | Fresh installation and upgrade | No hidden manual sandbox setup, no Cloud requirement for local Apps, actionable version failures | Partial [user step: signed macOS installer; reboot] (see verification) |
-| V1-INT-22 | Runtime lifecycle and throughput | Declared startup/idle/event/input budgets; relay and kernel authority remain responsive | Partial (see verification) |
-| V1-INT-23 | One binding and existing permissions | One effective binding path; no redundant prompts, auto-regrant loop or invented authority | Partial (see verification) |
-| V1-INT-24 | Focus and single prompt area | No retargeted accepted work; one terminal prompt area; no App-owned provider conversation | Partial (see verification) |
+| V1-INT-22 | Runtime lifecycle and throughput | Declared startup/idle/event/input budgets; relay and kernel authority remain responsive | Partial (FAIL against proposed budgets); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
+| V1-INT-23 | One binding and existing permissions | One effective binding path; no redundant prompts, auto-regrant loop or invented authority | Partial (FAIL on g); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
+| V1-INT-24 | Focus and single prompt area | No retargeted accepted work; one terminal prompt area; no App-owned provider conversation | Partial (g scoped PASS); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
 | V1-INT-25 | Private panel isolation | Only trusted terminal renders/reads panel content; App gets layout data without transcript-dependent callbacks | Partial (see verification) |
-| V1-INT-26 | Panel accessibility and recovery | Human conversation remains usable from kernel history and is absent from App accessibility tree and stream | Partial [user step: screen reader] (see verification) |
+| V1-INT-26 | Panel accessibility and recovery | Human conversation remains usable from kernel history and is absent from App accessibility tree and stream | Needs user; interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
 | V1-INT-27 | Information-set consent | No data request/delivery before explicit consent; no repeated consent for an unchanged accepted set; no agent self-approval | Phase 2 (see verification) |
 | V1-INT-28 | Correlated intermediate/final outputs | Authorized fields only; bounded repair, ordered idempotent delivery and explicit incomplete state; no transcript scraping | Phase 2 (see verification) |
 | V1-INT-29 | App-owned semantics | Kernel enforces generic envelopes and policy; domain checks execute only in sandboxed App code | Verified (macOS kernel) (see verification) |
 | V1-INT-30 | Resume with a second agent | Same opaque App task relation with distinct attributed turns; no raw conversation exported or automatic focus retargeting | Phase 2 (see verification) |
 | V1-INT-31 | Create user workflows and agents | Normal user-owned assets and one execution path; dependencies become visible/broken without silently deleting assets | Phase 2 (see verification) |
-| V1-INT-32 | Complete App work acceptance | All required Phase 1 terminal/kernel combinations pass the same task; cross-App coordination remains Phase 2 | Partial (see verification) |
+| V1-INT-32 | Complete App work acceptance | All required Phase 1 terminal/kernel combinations pass the same task; cross-App coordination remains Phase 2 | Partial (g PASS_SCOPED); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
 
 ### Package lifecycle matrix
 
 | ID | Required case | Required outcome/evidence | Status |
 |---|---|---|---|
-| V-PKG-01 | Valid built-in and local developer packages | Contract tests plus local and managed-kernel drill. | Partial (see verification) |
+| V-PKG-01 | Valid built-in and local developer packages | Contract tests plus local and managed-kernel drill. | Partial (FAIL on g); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
 | V-PKG-02 | Archive attacks | Adversarial package corpus on macOS and Linux. | Verified (component) (see verification) |
 | V-PKG-03 | Manifest and protocol mismatch | Parser snapshots and client rendering tests. | Implemented (#509, chariox-cloud#246; see verification) |
-| V-PKG-04 | Interrupted installation | Checkpoint fault-injection suite. | Implemented on macOS (`v-pkg-04/`) |
-| V-PKG-05 | Update success | End-to-end update across local TUI, remote TUI and web. | Partial (see verification) |
+| V-PKG-04 | Interrupted installation | Checkpoint fault-injection suite. | Partial (g scoped PASS); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
+| V-PKG-05 | Update success | End-to-end update across local TUI, remote TUI and web. | Partial; interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
 | V-PKG-06 | Update failure | Fault injection at every update checkpoint. | Partial [user step: real power loss] (see verification) |
-| V-PKG-07 | Concurrent operations | Four-client concurrency test. | Implemented (`v-pkg-07/`) |
+| V-PKG-07 | Concurrent operations | Four-client concurrency test. | Implemented (g); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
 | V-PKG-08 | Uninstall and reinstall | Lifecycle drill with all three reference Apps. | Implemented on macOS: live drill with all three Apps, reinstall into kept data (#494) and delete-data (#495, #496) (`v-pkg-08/`); Linux delete-data through the storage helper (#497), passed in the Linux storage fixture |
 
 ### Worker containment/lifecycle matrix
 
 | ID | Required case | Required outcome/evidence | Status |
 |---|---|---|---|
-| V-RUN-01 | Infinite loop and CPU saturation | Kernel health, local TUI, remote TUI, web terminal. | Partial: live on macOS (#498) |
-| V-RUN-02 | Memory growth | macOS and Linux App worker tests in Phase 1; Windows repeats them in Phase 2. | Partial: live on macOS |
-| V-RUN-03 | Crash loop | CLI, slash command and web status. | Implemented on macOS (#499) |
+| V-RUN-01 | Infinite loop and CPU saturation | Kernel health, local TUI, remote TUI, web terminal. | Partial (g scoped PASS); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
+| V-RUN-02 | Memory growth | macOS and Linux App worker tests in Phase 1; Windows repeats them in Phase 2. | Partial (signed Linux g scoped PASS); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
+| V-RUN-03 | Crash loop | CLI, slash command and web status. | Partial (g visibility FAIL); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
 | V-RUN-04 | Malformed or oversized IPC | IPC contract and fuzz tests. | Implemented: coverage-guided cargo-fuzz run (#511; see verification) |
-| V-RUN-05 | Ignored cancellation or acknowledgement | Tool call, external event, local event and lifecycle callback. | Partial: live event path |
-| V-RUN-06 | Kernel restart and machine reboot | Local and managed machine drills. | Partial [user step: machine reboot] (see verification) |
+| V-RUN-05 | Ignored cancellation or acknowledgement | Tool call, external event, local event and lifecycle callback. | Implemented (g Mac / earlier Linux); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
+| V-RUN-06 | Kernel restart and machine reboot | Local and managed machine drills. | Partial; interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
 | V-RUN-07 | Sandbox escape attempts | One malicious package on macOS and Linux Phase 1 release builds. Windows reuses the corpus in Phase 2. | Partial (see verification) |
-| V-RUN-08 | Log flooding | CLI, TUI and web logs. | Implemented on Linux: dropped count (#498), redaction (#629); see verification |
+| V-RUN-08 | Log flooding | CLI, TUI and web logs. | Implemented (g Mac / earlier Linux); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
 | V-RUN-09 | Sandbox active before App code | Every attempt observes the final default-deny OS policy. No unconfined startup window exists. | Partial (see verification) |
 | V-RUN-10 | Cross-installation isolation | Neither installation reads, writes, signals, impersonates, or exhausts the other's worker, supervisor, or HTTP budget. | Partial (see verification) |
 
@@ -157,28 +157,28 @@ Each row's status follows the audit in `CHARIOX_APPS_PHASE1_VERIFICATION.md` (ma
 
 | ID | Required case | Required outcome/evidence | Status |
 |---|---|---|---|
-| V-SDK-01 | Files | Documents App passes on case-sensitive and case-insensitive filesystems without a Chariox-specific wrapper for ordinary private I/O. | Partial (see verification) |
-| V-SDK-02 | Path safety | Zero escape from installation root across macOS and Linux in Phase 1, then Windows in Phase 2. | Partial (see verification) |
-| V-SDK-03 | Tool catalog | Catalog matches the active generation and configured bindings; execution checks the same operation policy as App view calls. | Partial (see verification) |
-| V-SDK-04 | Tool authorization | Authenticated human, agent and background identities cannot be forged. Agents may use UI or tools. Critical-action validation is identical across routes, and binding changes affect discovery rather than creating an App view prohibition. | Partial (see verification) |
-| V-SDK-05 | External event delivery | One workflow enqueue per accepted occurrence, no loss after accepted receipt. | Partial (see verification) |
-| V-SDK-06 | Local event delivery | Todo occurrence reaches exactly one configured endpoint or a visible terminal state. | Partial (see verification) |
-| V-SDK-07 | HTTP | Pinned representative API clients pass their declared transport contract. Streaming, abort, multipart, SSE, decompression, redirects, DNS and credential scope tests bound trusted-side resources. WebSocket is explicitly supported or documented as excluded in Phase 1; it is never silently bypassed. | Partial (see verification) |
-| V-SDK-08 | Lifecycle | Deadlines and ordering match on local and managed kernels. | Partial (see verification) |
+| V-SDK-01 | Files | Documents App passes on case-sensitive and case-insensitive filesystems without a Chariox-specific wrapper for ordinary private I/O. | Partial (g requested legs PASS); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
+| V-SDK-02 | Path safety | Zero escape from installation root across macOS and Linux in Phase 1, then Windows in Phase 2. | Implemented (g APFS / earlier ext4); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
+| V-SDK-03 | Tool catalog | Catalog matches the active generation and configured bindings; execution checks the same operation policy as App view calls. | Partial (#713 replay PASS on g); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
+| V-SDK-04 | Tool authorization | Authenticated human, agent and background identities cannot be forged. Agents may use UI or tools. Critical-action validation is identical across routes, and binding changes affect discovery rather than creating an App view prohibition. | Partial; interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
+| V-SDK-05 | External event delivery | One workflow enqueue per accepted occurrence, no loss after accepted receipt. | Partial; interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
+| V-SDK-06 | Local event delivery | Todo occurrence reaches exactly one configured endpoint or a visible terminal state. | Partial (prior Mac event PASS); h overdue kit and owner reboot pending, interim ledger |
+| V-SDK-07 | HTTP | Pinned representative API clients pass their declared transport contract. Streaming, abort, multipart, SSE, decompression, redirects, DNS and credential scope tests bound trusted-side resources. WebSocket is explicitly supported or documented as excluded in Phase 1; it is never silently bypassed. | Implemented (f Mac / earlier Linux); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
+| V-SDK-08 | Lifecycle | Deadlines and ordering match on local and managed kernels. | Partial (local emitters fixed, not live); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
 
 ### UX matrix
 
 | ID | Required case | Required outcome/evidence | Status |
 |---|---|---|---|
-| V-UX-01 | App Tab and viewer isolation | Managed Chromium security tests, viewer protocol tests, and DevTools capture from the Environment. | Partial (see verification) |
-| V-UX-02 | Responsive App view | Screenshot set for Slack, Todo and Documents with no clipped primary action. | Partial: three widths (`screens/responsive-*`) |
-| V-UX-03 | Accessibility | Automated audit; keyboard, focus, contrast, screen reader and touch target size. | Partial: owner S1-5 failed; cloud#269 at `8beda5a1d` and #716 at `d5fda47bd` need rerun. Room App-view screen reader to Phase 1.1 (#709 at `1ccd0d353`; see verification) |
+| V-UX-01 | App Tab and viewer isolation | Managed Chromium security tests, viewer protocol tests, and DevTools capture from the Environment. | Implemented (g); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
+| V-UX-02 | Responsive App view | Screenshot set for Slack, Todo and Documents with no clipped primary action. | Implemented (g); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
+| V-UX-03 | Accessibility | Automated audit; keyboard, focus, contrast, screen reader and touch target size. | Needs user; interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
 | V-UX-04 | Local TUI commands | Command parity snapshot and interactive drill. | Implemented (see verification) |
-| V-UX-05 | Remote TUI | Fresh remote connection, not a reused client session. | Partial: live remote TUI (`remote-tui/`) |
-| V-UX-06 | Agent App selector | Freeform and workflow agent screenshots plus runtime catalog assertion. | Partial (see verification) |
+| V-UX-05 | Remote TUI | Fresh remote connection, not a reused client session. | Partial; interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
+| V-UX-06 | Agent App selector | Freeform and workflow agent screenshots plus runtime catalog assertion. | Partial; interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
 | V-UX-07 | Freeform trigger | Web right-click and TUI slash-command drill. | Implemented (see verification) |
-| V-UX-08 | Freeform deploy | Hosted and connected-ingress drill. | Partial (see verification) |
-| V-UX-09 | Broken automation | App view, workflow and TUI all show the same state and recovery action. | Partial (see verification) |
+| V-UX-08 | Freeform deploy | Hosted and connected-ingress drill. | Partial (g public invocation PASS); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
+| V-UX-09 | Broken automation | App view, workflow and TUI all show the same state and recovery action. | Implemented (g); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
 | V-UX-10 | One App Tab, many terminals | Every client reports the same Environment and tab_id. Closing or refreshing a viewer neither duplicates nor closes the managed App Tab. | Implemented (see verification) |
 | V-UX-11 | Deploy with Apps | Deployed copy installs the same Apps; App event runs the deployed workflow once; rollback restores the App set. | Implemented: kernel path live end to end (`v-ux-11/`, drill 9), the Cloud-side deploy, Update Apps and rollback through the web (`v-ux-08-stub/`), and one run per mention on Slack 1.1.6 (`slack-one-run/`) |
 
