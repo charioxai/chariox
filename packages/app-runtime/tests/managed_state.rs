@@ -4,9 +4,9 @@ use chariox_app_runtime::{
         ReleaseMetadata,
     },
     managed_state::{
-        complete_wake, defer_wake, due_wakes, ManagedStateStore, StateChanges, StateCheck,
-        StateError, StateScope, StateWrite, Wake, WakeChange, MAX_CHANGES, MAX_KEYS, MAX_REVISION,
-        MAX_STATE_BYTES, MAX_VALUE_BYTES, MAX_WAKES,
+        complete_wake, defer_wake, due_wakes, postpone_wake, ManagedStateStore, StateChanges,
+        StateCheck, StateError, StateScope, StateWrite, Wake, WakeChange, MAX_CHANGES, MAX_KEYS,
+        MAX_REVISION, MAX_STATE_BYTES, MAX_VALUE_BYTES, MAX_WAKES,
     },
 };
 use rusqlite::{Connection, TransactionBehavior};
@@ -546,4 +546,42 @@ fn a_short_clock_correction_recovers_retries_in_due_order_after_reopen() {
         due_wakes(&db, now + 3_600_000, 8).unwrap()[0].wake.id,
         "later"
     );
+}
+
+#[test]
+fn postponed_pages_step_aside_for_later_deliverable_wakes() {
+    let fixture = Database::new();
+    let mut db = fixture.open();
+    install(&mut db, "todo");
+    let mut changes = (0..8)
+        .map(|i| wake(&format!("waiting-{i}"), 100 + i, "r1"))
+        .collect::<Vec<_>>();
+    changes.push(wake("deliverable", 900, "r1"));
+    apply_wakes(&mut db, "todo", &changes).unwrap();
+    for waiting in due_wakes(&db, 2_000, 8).unwrap() {
+        postpone_wake(&db, &waiting, 4_000).unwrap();
+    }
+    // The idle cadence is longer than the postponed start delay. A full page
+    // of eligible waiting wakes must still yield to later work on this pass.
+    assert_eq!(due_wakes(&db, 7_000, 8).unwrap()[0].wake.id, "deliverable");
+}
+
+#[test]
+fn empty_and_future_only_wake_polls_do_not_write_durable_state() {
+    let fixture = Database::new();
+    let mut db = fixture.open();
+    let observer = fixture.open();
+    let version = || {
+        observer
+            .query_row("PRAGMA data_version", [], |row| row.get::<_, i64>(0))
+            .unwrap()
+    };
+    let before = version();
+    assert!(due_wakes(&db, 1_000, 8).unwrap().is_empty());
+    assert_eq!(version(), before);
+    install(&mut db, "todo");
+    apply_wakes(&mut db, "todo", &[wake("future", 10_000, "r1")]).unwrap();
+    let before = version();
+    assert!(due_wakes(&db, 2_000, 8).unwrap().is_empty());
+    assert_eq!(version(), before);
 }

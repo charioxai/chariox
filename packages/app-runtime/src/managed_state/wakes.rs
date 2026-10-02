@@ -143,30 +143,35 @@ fn row_wake(row: &rusqlite::Row<'_>) -> rusqlite::Result<Wake> {
     })
 }
 
-/// Due wakes across installations, oldest first. Reading claims nothing: the
-/// kernel's single wake pump delivers them and then completes or defers each.
+/// Due wakes across installations, ordered by retry deadline then original due
+/// time. Correct a recorded clock rollback before selecting; no delivery is
+/// claimed. Empty and future-only schedules remain read-only.
 pub fn due_wakes(connection: &Connection, now_ms: u64, limit: usize) -> Result<Vec<DueWake>> {
-    // Persist the observed clock so even a small correction across a restart
-    // releases old retry deadlines. Future wakes keep their original due time.
-    // Use the caller's transaction when present (for durable checkpoint tests).
-    let transaction = connection
-        .is_autocommit()
-        .then(|| connection.unchecked_transaction())
-        .transpose()?;
-    let reader = transaction.as_deref().unwrap_or(connection);
-    reader.execute(
-        "UPDATE app_wakes SET next_attempt_at_ms=MAX(due_at_ms, ?1)
-         WHERE next_attempt_at_ms>MAX(due_at_ms, ?1)
+    let recoverable: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM app_wakes
+         WHERE next_attempt_at_ms>due_at_ms OR next_attempt_at_ms<=?1)",
+        [now_ms as i64],
+        |row| row.get(0),
+    )?;
+    if !recoverable {
+        return Ok(Vec::new());
+    }
+    // Reset deadlines before recording the correction. If an autocommit
+    // caller crashes between the writes, recovery safely repeats the reset.
+    // Both writes join an enclosing transaction when the caller has one.
+    connection.execute(
+        "UPDATE app_wakes SET next_attempt_at_ms=due_at_ms
+         WHERE next_attempt_at_ms>due_at_ms
            AND EXISTS(SELECT 1 FROM app_wake_clock WHERE last_poll_at_ms>?1)",
         [now_ms as i64],
     )?;
-    reader.execute(
+    connection.execute(
         "UPDATE app_wake_clock SET last_poll_at_ms=?1 WHERE singleton=1",
         [now_ms as i64],
     )?;
-    let mut statement = reader.prepare(
+    let mut statement = connection.prepare(
         "SELECT owner_id,installation_id,wake_id,due_at_ms,revision,attempts FROM app_wakes
-         WHERE next_attempt_at_ms<=?1 ORDER BY due_at_ms, installation_id, wake_id LIMIT ?2",
+         WHERE next_attempt_at_ms<=?1 ORDER BY next_attempt_at_ms, due_at_ms, installation_id, wake_id LIMIT ?2",
     )?;
     let rows = statement.query_map(params![now_ms as i64, limit as i64], |row| {
         Ok(DueWake {
@@ -180,12 +185,8 @@ pub fn due_wakes(connection: &Connection, now_ms: u64, limit: usize) -> Result<V
             attempts: row.get::<_, i64>(5)?.max(0) as u32,
         })
     })?;
-    let due = rows.collect::<std::result::Result<_, _>>()?;
-    drop(statement);
-    if let Some(transaction) = transaction {
-        transaction.commit()?;
-    }
-    Ok(due)
+    rows.collect::<std::result::Result<_, _>>()
+        .map_err(Into::into)
 }
 
 /// Remove a delivered wake. A wake replaced since delivery began keeps its

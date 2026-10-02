@@ -24,7 +24,8 @@ impl Drop for WakePass {
 
 impl AppWakePump {
     pub(crate) fn try_begin(&self, now_ms: u64) -> Option<WakePass> {
-        if now_ms.saturating_sub(self.last_ms.load(Ordering::Acquire)) < MIN_INTERVAL_MS
+        let last_ms = self.last_ms.load(Ordering::Acquire);
+        if (now_ms >= last_ms && now_ms - last_ms < MIN_INTERVAL_MS)
             || self.busy.swap(true, Ordering::AcqRel)
         {
             return None;
@@ -35,10 +36,33 @@ impl AppWakePump {
 
     /// Whether this pass should also prune stale dormant catalogs (once a minute).
     pub(crate) fn prune_due(&self, now_ms: u64) -> bool {
-        if now_ms.saturating_sub(self.last_prune_ms.load(Ordering::Acquire)) < PRUNE_INTERVAL_MS {
+        let last_ms = self.last_prune_ms.load(Ordering::Acquire);
+        if now_ms >= last_ms && now_ms - last_ms < PRUNE_INTERVAL_MS {
             return false;
         }
         self.last_prune_ms.store(now_ms, Ordering::Release);
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backward_clock_corrections_do_not_stall_or_overlap_periodic_passes() {
+        let pump = AppWakePump::default();
+        let held = pump.try_begin(10_000).unwrap();
+        assert!(pump.try_begin(100).is_none());
+        drop(held);
+        drop(
+            pump.try_begin(100)
+                .expect("backward correction resets the throttle"),
+        );
+        assert!(pump.try_begin(500).is_none());
+        assert!(pump.try_begin(1_100).is_some());
+        assert!(pump.prune_due(100_000));
+        assert!(pump.prune_due(100));
+        assert!(!pump.prune_due(101));
     }
 }
