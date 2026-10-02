@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import { handleAppSlashCommand } from "./app-command-handler.js"
+import { parseSlashCommand } from "./commands.js"
 
 test("App slash handler displays kernel installation state without session authority", async () => {
   const notices: string[] = []
@@ -103,7 +104,12 @@ test("App slash quarantine names the existing explicit start action and shows re
     flashFooter: (message: string) => assert.fail(message),
   }
   await handleAppSlashCommand(deps, { kind: "app", raw: "/app worker install-1", args: ["worker", "install-1"] })
-  await handleAppSlashCommand(deps, { kind: "app", raw: "/app start install-1", args: ["start", "install-1"] })
+  const recovery = notices[0]!.split("explicit start required: ")[1]!.split(" · ")[0]!
+  const command = parseSlashCommand(recovery)
+  assert.equal(command?.kind, "app")
+  if (command?.kind !== "app") assert.fail("recovery hint must parse as an App command")
+  assert.deepEqual(command.args, ["start", "install-1"])
+  await handleAppSlashCommand(deps, command)
   assert.deepEqual(requests, [
     { GetAppWorker: { installation_id: "install-1" } },
     { ControlAppWorker: { installation_id: "install-1", action: "start" } },
@@ -112,4 +118,16 @@ test("App slash quarantine names the existing explicit start action and shows re
     'install-1 · quarantined · explicit start required: /app start "install-1" · app_worker_exited',
     "install-1 · running",
   ])
+})
+
+
+test("App slash rejects incomplete quoted recovery before sending a request", async () => {
+  const command = parseSlashCommand('/app start "install-1')
+  assert.equal(command?.kind, "app")
+  if (command?.kind !== "app") assert.fail("incomplete App input remains recognizable")
+  await assert.rejects(handleAppSlashCommand({
+    sendAppRequest: async () => assert.fail("malformed recovery must not be sent"),
+    appendNotice: message => assert.fail(message),
+    flashFooter: message => assert.fail(message),
+  }, command), /unterminated quote/)
 })

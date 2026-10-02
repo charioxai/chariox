@@ -1,3 +1,5 @@
+import { tokenizeShellLine } from "@chariox/kernel-client/shell-core"
+
 export type SessionCommandAction = "create" | "new" | "attach" | "list" | "ls" | "status" | "info" | "inspect" | "delete"
 
 export type ParsedSlashCommand =
@@ -264,7 +266,12 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
     }
   }
   if (/^\/app(?:\s|$)/.test(trimmed)) {
-    return { kind: "app", raw: trimmed, args: trimmed.slice(4).trim().split(/\s+/).filter(Boolean) }
+    try {
+      return { kind: "app", raw: trimmed, args: tokenizeShellLine(trimmed.slice(4)) }
+    } catch {
+      // Keep incomplete input recognizable during editing; dispatch validates it.
+      return { kind: "app", raw: trimmed, args: trimmed.slice(4).trim().split(/\s+/).filter(Boolean) }
+    }
   }
   if (trimmed === "/notifications" || trimmed.startsWith("/notifications ")) {
     return {

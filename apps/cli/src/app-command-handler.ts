@@ -132,7 +132,7 @@ export async function handleAppSlashCommand(
     }
     return
   }
-  const result = await executeAppCommand(command.args, { send: deps.sendAppRequest }, {
+  const result = await executeAppCommand(tokenizeShellLine(command.raw.slice(4)), { send: deps.sendAppRequest }, {
     sessionId: deps.currentAppSessionId?.(), appCommandPrefix: "/app",
   })
   if (!result.ok) {

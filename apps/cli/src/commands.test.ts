@@ -396,3 +396,15 @@ test("parseSlashCommand parses extension commands", () => {
     args: ["grants", "script", "agent-1"],
   })
 })
+
+
+test("App slash tokenizes quoted recovery IDs while preserving input previews", () => {
+  for (const [input, id] of [
+    ['/app start "install-1"', "install-1"],
+    ['/app start "my app"', "my app"],
+    ["/app start 'install-1'", "install-1"],
+  ]) {
+    assert.deepEqual(parseSlashCommand(input!), { kind: "app", raw: input, args: ["start", id] })
+  }
+  assert.equal(parseSlashCommand('/app start "install-1')?.kind, "app")
+})
