@@ -61,9 +61,28 @@ impl PendingProviderReloadStore {
 pub(super) struct PendingInteraction {
     pub(super) session_id: String,
     pub(super) session_store_identity: Weak<()>,
+    pub(super) agent_lifetime: Option<PendingAgentInteractionLifetime>,
     pub(super) kernel_operation_owner: Option<String>,
     pub(super) kernel_operation_deadline: Option<std::time::Instant>,
     pub(super) responder: Arc<StdMutex<Option<oneshot::Sender<PendingInteractionResolution>>>>,
+}
+
+/// Internal ownership of the originating prompt/run, including forwarded worker runs.
+#[derive(Debug, Clone)]
+pub(super) struct PendingAgentInteractionLifetime {
+    pub(super) agent_id: String,
+    pub(super) prompt_id: Option<String>,
+    pub(super) native_turn_id: Option<String>,
+    pub(super) worker: Option<PendingWorkerInteractionLifetime>,
+    pub(super) provider_run_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct PendingWorkerInteractionLifetime {
+    pub(super) leased_agent_id: String,
+    pub(super) execution_lease_id: String,
+    pub(super) provider_run_id: String,
+    pub(super) binding_observed: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl PendingInteraction {

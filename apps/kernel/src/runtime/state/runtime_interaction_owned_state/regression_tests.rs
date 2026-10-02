@@ -99,6 +99,7 @@ impl Fixture {
             interaction,
             send,
             Some(DEFAULT_LOCAL_USER_ID),
+            None,
         )?;
         Ok(receive)
     }
@@ -231,6 +232,7 @@ async fn pruning_dead_store_tokens_closes_only_kernel_operation_responders() {
         pending.write().insert(
             id.into(),
             super::super::PendingInteraction {
+                agent_lifetime: None,
                 session_id: "same-session".into(),
                 session_store_identity: sessions.weak_identity(),
                 kernel_operation_owner: owner,

@@ -6,7 +6,7 @@ use tokio::runtime::Handle;
 use crate::error::DaemonError;
 use crate::local::{
     LocalDaemonResponse, NativeProviderInteractionResolution,
-    RequestNativeProviderInteractionRequest,
+    RequestNativeProviderTurnInteractionRequest,
 };
 use crate::provider::{
     ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
@@ -33,11 +33,28 @@ struct RuntimeStateNativeInteractionBridge {
 }
 
 impl ProviderNativeInteractionBridge for RuntimeStateNativeInteractionBridge {
+    fn capture_turn_origin(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: &str,
+    ) -> Option<crate::session::NativeInteractionOrigin> {
+        self.state
+            .capture_native_interaction_origin(session_id, agent_id, provider_run_id)
+    }
+
     fn request_blocking(
         &self,
         session_id: &str,
         interaction: RuntimeInteraction,
     ) -> Result<ProviderNativeInteractionResolution, DaemonError> {
+        let Some(origin) = interaction.native_origin().cloned() else {
+            return Ok(ProviderNativeInteractionResolution {
+                status: "timed_out".into(),
+                choice_id: None,
+                reply: None,
+            });
+        };
         let session_id = session_id.to_string();
         let interaction_agent_id = interaction
             .agent_id()
@@ -49,7 +66,7 @@ impl ProviderNativeInteractionBridge for RuntimeStateNativeInteractionBridge {
         let state = self.state.clone();
         let remote_target = self.handle.block_on(async {
             state
-                .remote_native_interaction_context(&session_id, &interaction_agent_id)
+                .remote_native_interaction_context(&session_id, &interaction_agent_id, &origin)
                 .await
         })?;
         if let Some((config, target_daemon_id, context)) = remote_target {
@@ -93,7 +110,7 @@ async fn forward_native_interaction_to_home(
                 daemon_id: Some(target_daemon_id),
                 daemon_alias: None,
             },
-            crate::transport::relay_peer::RelayPeerRequest::ForwardNativeInteraction {
+            crate::transport::relay_peer::RelayPeerRequest::ForwardNativeTurnInteraction {
                 context,
                 interaction,
             },
@@ -128,8 +145,15 @@ pub(crate) async fn request_provider_native_interaction(
             message: "Provider interactions require an agent subject".into(),
         })?
         .to_string();
+    let Some(origin) = interaction.native_origin().cloned() else {
+        return Ok(ProviderNativeInteractionResolution {
+            status: "timed_out".into(),
+            choice_id: None,
+            reply: None,
+        });
+    };
     if let Some((config, target_daemon_id, context)) = state
-        .remote_native_interaction_context(session_id, &agent_id)
+        .remote_native_interaction_context(session_id, &agent_id, &origin)
         .await?
     {
         return forward_native_interaction_to_home(config, target_daemon_id, context, interaction)
@@ -141,7 +165,8 @@ pub(crate) async fn request_provider_native_interaction(
         interaction.id().to_string(),
     )));
     let resolution =
-        request_runtime_interaction_with_timeout(state, session_id, interaction, operation).await;
+        request_runtime_interaction_with_timeout(state, session_id, interaction, operation, None)
+            .await;
     abandoned.0 = None;
     resolution
 }
@@ -189,7 +214,7 @@ pub(crate) fn install_provider_native_interaction_bridge(
 
 pub(crate) async fn execute_native_provider_interaction_request(
     state: &KernelRuntimeState,
-    request: RequestNativeProviderInteractionRequest,
+    request: RequestNativeProviderTurnInteractionRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let session_id = request.session_id.clone();
     let interaction = RuntimeInteraction::new(
@@ -203,12 +228,14 @@ pub(crate) async fn execute_native_provider_interaction_request(
         request.custom_choice,
         request.timeout_sec,
         request.default_on_timeout,
-    );
+    )
+    .with_native_origin(Some(request.origin));
     let resolution = request_runtime_interaction_with_timeout(
         state,
         &session_id,
         interaction,
         "native_provider_interaction_request",
+        None,
     )
     .await?;
     Ok(LocalDaemonResponse::NativeProviderInteractionResolved {
@@ -225,12 +252,44 @@ pub(crate) async fn forward_relay_native_interaction(
     context: RemoteNativeInteractionContext,
     interaction: RuntimeInteraction,
 ) -> Result<ProviderNativeInteractionResolution, DaemonError> {
-    let interaction = interaction.with_agent_id(context.home_agent_id.clone());
+    use crate::session::NativeInteractionOrigin;
+    if interaction
+        .native_origin()
+        .is_none_or(|origin| origin.provider_run_id() != context.worker_provider_run_id)
+    {
+        return Ok(ProviderNativeInteractionResolution {
+            status: "timed_out".into(),
+            choice_id: None,
+            reply: None,
+        });
+    }
+    let origin = match interaction.native_origin() {
+        Some(NativeInteractionOrigin::ProviderStartup { .. }) => {
+            NativeInteractionOrigin::ProviderStartup {
+                provider_run_id: context.worker_provider_run_id.clone(),
+            }
+        }
+        Some(_) => NativeInteractionOrigin::Prompt {
+            provider_run_id: context.worker_provider_run_id.clone(),
+            prompt_id: context.home_prompt_id.clone().unwrap_or_default(),
+        },
+        None => {
+            return Ok(ProviderNativeInteractionResolution {
+                status: "timed_out".into(),
+                choice_id: None,
+                reply: None,
+            })
+        }
+    };
+    let interaction = interaction
+        .with_agent_id(context.home_agent_id.clone())
+        .with_native_origin(Some(origin));
     request_runtime_interaction_with_timeout(
         state,
         &context.home_session_id,
         interaction,
         "relay_forward_native_interaction",
+        Some(&context),
     )
     .await
 }
@@ -240,12 +299,13 @@ async fn request_runtime_interaction_with_timeout(
     session_id: &str,
     interaction: RuntimeInteraction,
     operation: &'static str,
+    forwarding: Option<&RemoteNativeInteractionContext>,
 ) -> Result<ProviderNativeInteractionResolution, DaemonError> {
     let timeout = interaction.timeout_sec().map(Duration::from_secs);
     let timeout_session_id = session_id.to_string();
     let timeout_interaction_id = interaction.id().to_string();
     let receiver = state
-        .create_runtime_interaction(session_id, interaction)
+        .create_runtime_interaction_with_forwarding(session_id, interaction, forwarding)
         .await?;
     if let Some(timeout) = timeout {
         let state = state.clone();

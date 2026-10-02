@@ -122,6 +122,11 @@ export type RuntimeInteractionSubject =
   | { agent_id: string; kernel_operation_id?: never }
   | { kernel_operation_id: string; agent_id?: never }
 
+export type NativeInteractionOrigin =
+  | { scope: "prompt"; provider_run_id: string; prompt_id: string }
+  | { scope: "native_turn"; provider_run_id: string; native_turn_id: string }
+  | { scope: "provider_startup"; provider_run_id: string }
+
 export type RuntimeInteraction = RuntimeInteractionSubject & {
   id: string
   kind: "choice" | "permission"
@@ -132,6 +137,7 @@ export type RuntimeInteraction = RuntimeInteractionSubject & {
   custom_choice?: RuntimeInteractionCustomChoice | null
   timeout_sec?: number | null
   default_on_timeout?: string | null
+  native_origin?: NativeInteractionOrigin | null
   requested_at_ms: number
 }
 
@@ -153,7 +159,8 @@ export type RuntimeInteractionCustomChoice = {
   input_kind?: "text" | "secret" | null
 }
 
-export type RequestNativeProviderInteractionRequest = {
+export type RequestNativeProviderTurnInteractionRequest = {
+  origin: NativeInteractionOrigin
   session_id: string
   agent_id: string
   interaction_id: string

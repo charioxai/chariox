@@ -7,6 +7,7 @@ impl KernelRuntimeOwnedState {
         interaction: crate::session::RuntimeInteraction,
         responder: tokio::sync::oneshot::Sender<super::super::PendingInteractionResolution>,
         kernel_operation_owner: Option<&str>,
+        forwarding: Option<&crate::transport::relay_peer::RemoteNativeInteractionContext>,
     ) -> Result<(), DaemonError> {
         let _mutation = self
             .pending_interactions
@@ -35,8 +36,10 @@ impl KernelRuntimeOwnedState {
         }
         // Resolve agent identity before taking the session write guard; session
         // updates must not acquire the agent store in the opposite lock order.
+        let mut remote_binding = None;
         if let Some(agent_id) = interaction.agent_id() {
             let agent = self.agent_store.get_agent(agent_id)?;
+            remote_binding = agent.remote_execution().cloned();
             if agent.session_id() != session_id {
                 return Err(DaemonError::AgentNotInSession {
                     session_id: session_id.into(),
@@ -119,8 +122,80 @@ impl KernelRuntimeOwnedState {
         {
             return Err(interaction_error(super::INTERACTION_ALREADY_PENDING));
         }
-        session.add_active_interaction(interaction.clone());
+        let agent_lifetime = interaction.agent_id().map(|agent_id| {
+            if let Some(origin) = interaction.native_origin() {
+                use crate::session::NativeInteractionOrigin;
+                let (mut prompt_id, native_turn_id) = match origin {
+                    NativeInteractionOrigin::Prompt { prompt_id, .. } => {
+                        (Some(prompt_id.clone()), None)
+                    }
+                    NativeInteractionOrigin::NativeTurn { native_turn_id, .. } => {
+                        (None, Some(native_turn_id.clone()))
+                    }
+                    NativeInteractionOrigin::ProviderStartup { .. } => (None, None),
+                };
+                let worker = forwarding.map(|context| {
+                    super::super::pending_runtime_state::PendingWorkerInteractionLifetime {
+                        leased_agent_id: context.leased_agent_id.clone(),
+                        execution_lease_id: remote_binding
+                            .as_ref()
+                            .map(|remote| remote.execution_lease_id.clone())
+                            .unwrap_or_default(),
+                        provider_run_id: context.worker_provider_run_id.clone(),
+                        binding_observed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                            false,
+                        )),
+                    }
+                });
+                // Startup dialogs can precede the dispatch ACK and even the worker
+                // prompt registration. Fence that launch to its pending home dispatch.
+                if worker.is_some()
+                    && matches!(origin, NativeInteractionOrigin::ProviderStartup { .. })
+                {
+                    prompt_id = forwarding
+                        .and_then(|context| context.home_prompt_id.clone())
+                        .or_else(|| {
+                            self.prompt_state_owner
+                                .active_prompt_for_agent(&session, agent_id)
+                                .filter(|prompt| prompt.delivery_pending())
+                                .map(|prompt| prompt.id().to_owned())
+                        });
+                }
+                return super::super::PendingAgentInteractionLifetime {
+                    agent_id: agent_id.into(),
+                    prompt_id,
+                    native_turn_id,
+                    provider_run_id: worker.is_none().then(|| origin.provider_run_id().into()),
+                    worker,
+                };
+            }
+            let prompt_id = self
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, agent_id)
+                .map(|prompt| prompt.id().to_owned());
+            let provider_run_id = self
+                .provider_store
+                .get_run_for_agent(session_id, agent_id)
+                .filter(|run| run.state() == crate::provider::ProviderRunState::Running)
+                .map(|run| run.id().to_owned());
+            let native_turn_id = if prompt_id.is_none() {
+                provider_run_id
+                    .as_deref()
+                    .and_then(|id| self.active_turns.get(id))
+                    .map(|turn| turn.prompt_id)
+            } else {
+                None
+            };
+            super::super::PendingAgentInteractionLifetime {
+                agent_id: agent_id.into(),
+                prompt_id,
+                native_turn_id,
+                provider_run_id,
+                worker: None,
+            }
+        });
         let pending = super::super::PendingInteraction {
+            agent_lifetime,
             session_id: session_id.into(),
             session_store_identity: self.session_store.weak_identity(),
             kernel_operation_owner: kernel_operation_owner.map(str::to_owned),
@@ -134,6 +209,25 @@ impl KernelRuntimeOwnedState {
             }),
             responder: std::sync::Arc::new(std::sync::Mutex::new(Some(responder))),
         };
+        let worker_live = pending.agent_lifetime.as_ref().is_none_or(|lifetime| {
+            self.worker_interaction_binding_is_live(lifetime, remote_binding.as_ref(), &session)
+        });
+        if !worker_live || !self.agent_interaction_turn_is_live(&pending, &session) {
+            if let Some(sender) = pending
+                .responder
+                .lock()
+                .expect("interaction responder")
+                .take()
+            {
+                let _ = sender.send(super::super::PendingInteractionResolution {
+                    status: "timed_out",
+                    choice_id: None,
+                    reply: None,
+                });
+            }
+            return Ok(());
+        }
+        session.add_active_interaction(interaction.clone());
         let identity = pending.responder.clone();
         self.pending_interactions
             .write()

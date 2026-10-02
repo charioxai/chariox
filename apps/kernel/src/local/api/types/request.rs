@@ -275,7 +275,7 @@ pub enum LocalDaemonRequest {
     RespondToInteraction(RespondToInteractionRequest),
     ArmDeploymentCredentialEnrollment(ArmDeploymentCredentialEnrollmentRequest),
     RequestCredentialEnrollmentInteraction(RequestCredentialEnrollmentInteractionRequest),
-    RequestNativeProviderInteraction(RequestNativeProviderInteractionRequest),
+    RequestNativeProviderTurnInteraction(RequestNativeProviderTurnInteractionRequest),
     SubmitPrompt(SubmitPromptRequest),
     SubmitPrompts(SubmitPromptsRequest),
     CreateAgentPromptSchedule(CreateAgentPromptScheduleRequest),

@@ -1,5 +1,5 @@
 use super::*;
-use crate::local::RequestNativeProviderInteractionRequest;
+use crate::local::RequestNativeProviderTurnInteractionRequest;
 
 mod critical_approval_passkey;
 mod kernel_operation_interactions;

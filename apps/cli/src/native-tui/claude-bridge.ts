@@ -48,6 +48,7 @@ type ClaudeBridgeOptions = {
   providerRunId: string
   eventsFile: string
   contextFile: string
+  originFile: string
   attachmentContextDir: string
   hookContextResponseDir: string
   workspace: string
@@ -85,18 +86,14 @@ export function startClaudeBridge(options: ClaudeBridgeOptions): { stop: () => v
                   attachmentCount: attachments.length,
                 })
               }
+              let hookContext: string | null = null
               if (event.hook_context_request_id) {
-                const context = await buildClaudeNativeSkillContext(
+                hookContext = await buildClaudeNativeSkillContext(
                   options.client,
                   options.sessionId,
                   options.workspace,
                   options.agentId,
                   prompt,
-                )
-                await writeClaudeHookContextResponse(
-                  options.hookContextResponseDir,
-                  event.hook_context_request_id,
-                  context,
                 )
               }
               const response = await options.client.send<Record<string, unknown>>(
@@ -114,6 +111,12 @@ export function startClaudeBridge(options: ClaudeBridgeOptions): { stop: () => v
                   nativeSubmittedPromptIds.add(activePromptId)
                   options.promptOrigin.current = "native"
                 }
+              }
+              await writeFile(options.originFile, JSON.stringify(activePromptId ? {
+                scope: "prompt", prompt_id: activePromptId, provider_run_id: options.providerRunId,
+              } : null), "utf8")
+              if (event.hook_context_request_id && hookContext !== null) {
+                await writeClaudeHookContextResponse(options.hookContextResponseDir, event.hook_context_request_id, hookContext)
               }
             }
           } else if (event.hook_event_name === "Stop") {
@@ -136,6 +139,7 @@ export function startClaudeBridge(options: ClaudeBridgeOptions): { stop: () => v
               .catch(() => ({}))
             activePromptId = null
             options.promptOrigin.current = null
+            await writeFile(options.originFile, "null", "utf8")
             await writeFile(options.contextFile, "", "utf8").catch(() => {})
           }
         }
@@ -146,6 +150,9 @@ export function startClaudeBridge(options: ClaudeBridgeOptions): { stop: () => v
           activePromptId = activePrompt.id
           injectedPromptIds.add(activePrompt.id)
           options.promptOrigin.current = "external"
+          await writeFile(options.originFile, JSON.stringify({
+            scope: "prompt", prompt_id: activePrompt.id, provider_run_id: options.providerRunId,
+          }), "utf8")
           const hidden = extractHiddenInstructions(activePrompt.prompt)
           const attachmentContext = await formatClaudeAttachmentContext(
             activePrompt.attachments ?? [],

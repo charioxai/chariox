@@ -8,6 +8,7 @@ mod prompt_runtime;
 mod queued_metaagent_task;
 mod room_environment;
 mod runtime_interactions;
+pub use runtime_interactions::NativeInteractionOrigin;
 mod runtime_project;
 mod runtime_session;
 mod runtime_worktrees;

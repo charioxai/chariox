@@ -2856,3 +2856,108 @@ fn queued_claude_failed_request_note_reaches_hook_context_and_waits_for_acceptan
     );
     let _ = fs::remove_dir_all(root);
 }
+
+#[derive(Clone)]
+struct RefusedPermissionBridge;
+impl ProviderNativeInteractionBridge for RefusedPermissionBridge {
+    fn request_blocking(
+        &self,
+        _session_id: &str,
+        _interaction: RuntimeInteraction,
+    ) -> Result<crate::provider::ProviderNativeInteractionResolution, DaemonError> {
+        Ok(crate::provider::ProviderNativeInteractionResolution {
+            status: "timed_out".into(),
+            choice_id: None,
+            reply: None,
+        })
+    }
+}
+
+#[test]
+fn approval_lifetime_refused_claude_dialog_receives_deny_while_displayed() {
+    for startup in [false, true] {
+        let worktree = crate::test_support::TestWorktree::new("refused-claude-dialog");
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(worktree.session_request())
+            .unwrap();
+        let context = worktree.path().join("hidden-context.txt");
+        let events = worktree.path().join("events.jsonl");
+        fs::write(&context, "").unwrap();
+        fs::write(&events, "").unwrap();
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "claude",
+            "claude-headless",
+            "default",
+            "claude-sonnet",
+        )
+        .with_agent_id(agent.id())
+        .with_client_interface(crate::provider::ProviderClientInterface::NativeTui)
+        .with_permission_level(crate::provider::AgentPermissionLevel::Required);
+        let run = RuntimeProviderRun::new(
+            "refused-run",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "recorded-claude-dialog".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::from([
+                    (
+                        "CHARIOX_CLAUDE_NATIVE_CONTEXT".into(),
+                        context.display().to_string(),
+                    ),
+                    (
+                        "CHARIOX_CLAUDE_NATIVE_EVENTS".into(),
+                        events.display().to_string(),
+                    ),
+                ]),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        let context = context.display().to_string();
+        let mut native = ProviderOutputClaudeNativeBridge::new(&mut app);
+        if startup {
+            native
+                .request_claude_workspace_trust(
+                    session.id(),
+                    run.id(),
+                    &run,
+                    &context,
+                    std::sync::Arc::new(RefusedPermissionBridge),
+                )
+                .unwrap();
+        } else {
+            native
+                .process_terminal_output(
+                    session.id(),
+                    run.id(),
+                    &run,
+                    Some(std::sync::Arc::new(RefusedPermissionBridge)),
+                    "Bash command\necho test\nDo you want to proceed?\n1. Yes\n3. No",
+                )
+                .unwrap();
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let inputs = take_claude_permission_inputs(&context);
+            if !inputs.is_empty() {
+                assert_eq!(
+                    inputs,
+                    vec![vec![0x03]],
+                    "a refused displayed dialog must receive Deny"
+                );
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "refused dialog was left unanswered"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+}

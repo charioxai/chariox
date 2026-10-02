@@ -183,6 +183,36 @@ fn runtime_interaction_input_kind_is_text(kind: &RuntimeInteractionInputKind) ->
     *kind == RuntimeInteractionInputKind::Text
 }
 
+/// Captured by the producer before handing an approval to an asynchronous bridge.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "scope", rename_all = "snake_case")]
+pub enum NativeInteractionOrigin {
+    Prompt {
+        provider_run_id: String,
+        prompt_id: String,
+    },
+    NativeTurn {
+        provider_run_id: String,
+        native_turn_id: String,
+    },
+    /// Workspace trust is requested before a task is dispatched.
+    ProviderStartup { provider_run_id: String },
+}
+
+impl NativeInteractionOrigin {
+    pub fn provider_run_id(&self) -> &str {
+        match self {
+            Self::Prompt {
+                provider_run_id, ..
+            }
+            | Self::NativeTurn {
+                provider_run_id, ..
+            }
+            | Self::ProviderStartup { provider_run_id } => provider_run_id,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeInteraction {
     id: String,
@@ -200,6 +230,8 @@ pub struct RuntimeInteraction {
     timeout_sec: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     default_on_timeout: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    native_origin: Option<NativeInteractionOrigin>,
     requested_at_ms: u64,
 }
 
@@ -230,8 +262,18 @@ impl RuntimeInteraction {
             custom_choice,
             timeout_sec,
             default_on_timeout,
+            native_origin: None,
             requested_at_ms: unix_epoch_ms(),
         }
+    }
+
+    pub fn native_origin(&self) -> Option<&NativeInteractionOrigin> {
+        self.native_origin.as_ref()
+    }
+
+    pub fn with_native_origin(mut self, origin: Option<NativeInteractionOrigin>) -> Self {
+        self.native_origin = origin;
+        self
     }
 
     pub fn id(&self) -> &str {
@@ -276,6 +318,7 @@ impl RuntimeInteraction {
             custom_choice: None,
             timeout_sec: Some(300),
             default_on_timeout: None,
+            native_origin: None,
             requested_at_ms: unix_epoch_ms(),
         }
     }

@@ -379,6 +379,7 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
     ) -> Result<(crate::session::RuntimeSession, Vec<String>), DaemonError> {
         let session = self.session_store.get_session(session_id)?;
+        self.withdraw_agent_interactions(session_id, None)?;
 
         if session.status() == crate::session::SessionStatus::Ended {
             self.remove_session_workflow_dispatch_claims(session_id);
@@ -485,6 +486,7 @@ impl KernelRuntimeOwnedState {
         DaemonError,
     > {
         let session_id = session.id().to_string();
+        self.withdraw_agent_interactions(&session_id, None)?;
         let (ended, terminated_run_ids) =
             if session.status() == crate::session::SessionStatus::Ended {
                 self.external_provider_sessions.detach_session(&session_id);

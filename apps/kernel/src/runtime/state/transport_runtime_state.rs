@@ -55,6 +55,7 @@ impl KernelRuntimeState {
             return;
         }
         self.owned.sweep_kernel_operation_interactions(false);
+        self.owned.withdraw_stale_agent_interactions();
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         self.resume_app_view_pumps();
         self.app_control().publishers().pump(self).await;
@@ -428,6 +429,10 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn shutdown_cleanup(&self) -> Result<(), DaemonError> {
+        let sessions = self.owned.session_store.read().list_sessions();
+        for session in sessions {
+            self.owned.withdraw_agent_interactions(session.id(), None)?;
+        }
         {
             let publishers = self.app_control().publishers().clone();
             let runtime = tokio::runtime::Handle::current();

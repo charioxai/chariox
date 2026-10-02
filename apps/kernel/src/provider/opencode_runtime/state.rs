@@ -49,6 +49,7 @@ pub(crate) struct OpenCodeRuntimeState {
     pub(super) completed_assistant_message_ids: BTreeSet<String>,
     pub(super) active_terminal_assistant_message_id: Option<String>,
     pub(super) active_user_message_id: Option<String>,
+    pub(in crate::provider) native_approval_origin: Option<crate::session::NativeInteractionOrigin>,
     active_prompt_submitted_at: Option<Instant>,
     pub(super) session_errors_require_prompt_match: bool,
     unmatched_session_error: Option<String>,
@@ -81,6 +82,7 @@ impl OpenCodeRuntimeState {
             session_errors_require_prompt_match: false,
             unmatched_session_error: None,
             unmatched_session_error_idle_since: None,
+            native_approval_origin: None,
         }
     }
 

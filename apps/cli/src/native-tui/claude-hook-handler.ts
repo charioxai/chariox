@@ -9,6 +9,8 @@ import { appendFileSync, existsSync, readFileSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 
+let nativeOrigin = null
+try { nativeOrigin = JSON.parse(readFileSync(process.env.CHARIOX_CLAUDE_NATIVE_ORIGIN, "utf8")) } catch {}
 const chunks = []
 for await (const chunk of process.stdin) chunks.push(chunk)
 const raw = Buffer.concat(chunks).toString("utf8")
@@ -77,7 +79,7 @@ if (eventName === "UserPromptSubmit") {
         const response = await fetch(new URL("/permission", bridgeUrl), {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify(input)
+          body: JSON.stringify({ ...input, native_origin: nativeOrigin })
         })
         if (response.ok) {
           const decision = await response.json()

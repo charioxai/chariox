@@ -48,6 +48,8 @@ pub struct CodexClient {
     endpoint: String,
     runtime_mcp_server_url: Option<String>,
     runtime_mcp_auth_token: Option<String>,
+    native_approval_origin: Option<crate::session::NativeInteractionOrigin>,
+    native_approval_turn_id: Option<String>,
     native_interaction_bridge: Option<std::sync::Arc<dyn ProviderNativeInteractionBridge>>,
     mcp_servers: Vec<CharioxMcpServerConfig>,
     provider_config_overrides: BTreeMap<String, Value>,
@@ -79,6 +81,8 @@ impl CodexClient {
             runtime_mcp_server_url: None,
             runtime_mcp_auth_token: None,
             native_interaction_bridge: None,
+            native_approval_origin: None,
+            native_approval_turn_id: None,
             mcp_servers: Vec::new(),
             provider_config_overrides: BTreeMap::new(),
             write_access_mode: ProviderWriteAccessMode::Unrestricted,
@@ -115,6 +119,16 @@ impl CodexClient {
 
     pub fn with_provider_config_overrides(mut self, overrides: &BTreeMap<String, Value>) -> Self {
         self.provider_config_overrides = overrides.clone();
+        self
+    }
+
+    pub(crate) fn with_native_approval_context(
+        mut self,
+        origin: Option<crate::session::NativeInteractionOrigin>,
+        turn_id: Option<String>,
+    ) -> Self {
+        self.native_approval_origin = origin;
+        self.native_approval_turn_id = turn_id;
         self
     }
 

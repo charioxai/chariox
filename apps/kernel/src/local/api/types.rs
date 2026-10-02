@@ -207,4 +207,5 @@ pub use workspace::*;
 /// `primary_model`, `primary_effort`, `primary_account_profile`,
 /// `active_substitute_index` and `last_substitution`. An agent persisted on a
 /// substitute loads on its primary profile.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 388;
+/// Version 396 binds native approvals to the originating turn and provider run.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 396;

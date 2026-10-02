@@ -179,6 +179,8 @@ fn spawn_inert_pty_for_run(app: &mut DaemonApp, provider_run_id: &str) {
         .expect("inert provider fixture PTY should stay live");
 }
 
+mod app_quiet_tool_guard;
+mod approval_lifetime;
 mod browser_import_execution_gate;
 mod cleanup_liveness;
 mod completion_settlement;
@@ -193,7 +195,6 @@ mod prompt_cancellation;
 mod publication_settlement;
 mod pump_selection;
 mod quiet_drain_workflow;
-mod app_quiet_tool_guard;
 mod structured_exit_diagnostic;
 mod structured_output;
 

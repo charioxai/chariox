@@ -1,5 +1,6 @@
 use super::*;
 
+mod agent_lifetime;
 mod maintenance;
 mod registration;
 #[cfg(test)]
@@ -99,6 +100,12 @@ impl KernelRuntimeOwnedState {
                 message: "interaction does not belong to the requested session".to_string(),
             });
         }
+        if !self.agent_interaction_is_live(&pending) {
+            self.withdraw_agent_interaction_locked(interaction_id, &pending)?;
+            return Err(interaction_error(
+                "Agent interaction was withdrawn because its turn or agent ended",
+            ));
+        }
         if pending
             .kernel_operation_owner
             .as_deref()
@@ -117,6 +124,14 @@ impl KernelRuntimeOwnedState {
         let activity_mutation = self.begin_managed_activity_mutation();
         let mut sessions = self.session_store.write();
         let mut session = sessions.get_session(session_id)?.clone();
+        if !self.agent_interaction_turn_is_live(&pending, &session) {
+            drop(sessions);
+            drop(activity_mutation);
+            self.withdraw_agent_interaction_locked(interaction_id, &pending)?;
+            return Err(interaction_error(
+                "Agent interaction was withdrawn because its turn ended",
+            ));
+        }
         let interaction = session
             .active_interactions()
             .iter()
@@ -256,7 +271,7 @@ impl KernelRuntimeOwnedState {
             }),
         );
         let pending = {
-            let mut pending = self.pending_interactions.write();
+            let pending = self.pending_interactions.write();
             if !pending.get(interaction_id).is_some_and(|value| {
                 value.session_id == session_id
                     && value.belongs_to(&self.session_store)
@@ -267,12 +282,22 @@ impl KernelRuntimeOwnedState {
                 return Ok(());
             }
             pending
-                .remove(interaction_id)
+                .get(interaction_id)
                 .expect("checked pending interaction")
+                .clone()
         };
+        if !self.agent_interaction_is_live(&pending) {
+            return self.withdraw_agent_interaction_locked(interaction_id, &pending);
+        }
+        self.pending_interactions.write().remove(interaction_id);
         let activity_mutation = self.begin_managed_activity_mutation();
         let mut sessions = self.session_store.write();
         let mut session = sessions.get_session(session_id)?.clone();
+        if !self.agent_interaction_turn_is_live(&pending, &session) {
+            drop(sessions);
+            drop(activity_mutation);
+            return self.withdraw_agent_interaction_locked(interaction_id, &pending);
+        }
         let Some(interaction) = session.remove_active_interaction(interaction_id) else {
             return Ok(());
         };

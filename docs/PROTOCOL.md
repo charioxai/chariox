@@ -2531,3 +2531,27 @@ Queue and turn direction:
 ## 5.0 Capability, Session, Workflow, Security, and Versioning Details
 
 Detailed capability API baseline, Workspace Live Sync coordination, provider control operations, session/attachment semantics, workflow contracts, security semantics, compatibility rules, versioning strategy, and cross-platform terminal conformance now live in [PROTOCOL_CAPABILITY_SESSION_WORKFLOW.md](PROTOCOL_CAPABILITY_SESSION_WORKFLOW.md). Keep this main protocol document focused on scope, lanes, native provider behavior, envelope shape, current transport baseline, and command/workflow message direction.
+
+### Protocol 396: native approval origin
+
+Native approval producers capture `NativeInteractionOrigin` before an asynchronous handoff.
+`RequestNativeProviderTurnInteraction.origin` is required; runtime interactions forwarded over
+relay carry the same `native_origin`. The origin identifies a kernel prompt or native turn
+and its provider run. Workspace trust uses the explicit `provider_startup` scope.
+`RemoteNativeInteractionContext.home_prompt_id` freezes the matching home prompt while the
+worker prompt still matches. The home kernel never substitutes its current prompt.
+Stale requests resolve as `timed_out` with no choice or reply, without applying timeout
+defaults or publishing an answerable approval. Pending approvals are withdrawn on turn,
+provider, agent, or session termination; all terminal projections receive the removal and
+withdrawal notice. The Claude native approval client requires protocol 396; display-only
+clients require no new minimum.
+
+Managed Codex/OpenCode approvals retain the actor's original kernel prompt identity.
+Codex approval `turnId` must match its active provider turn; OpenCode permission
+`tool.messageID` must belong to its active user message. Native turns use the recorded
+provider turn identity. Events without a usable turn/message identity are denied rather
+than borrowing the currently running turn (including legacy Codex approvals without a turn ID).
+
+`RequestNativeProviderTurnInteraction` and relay `forward_native_turn_interaction`
+replace the previous unbound request variants. Older kernels reject these unknown variants
+instead of silently ignoring origin fields; the native client reports a protocol-396 minimum.

@@ -1,7 +1,7 @@
 use super::*;
 use crate::local::{
     AppWorkerAction, ControlAppWorkerRequest, ListSessionsRequest,
-    RequestCredentialEnrollmentInteractionRequest, RequestNativeProviderInteractionRequest,
+    RequestCredentialEnrollmentInteractionRequest, RequestNativeProviderTurnInteractionRequest,
     RespondToInteractionRequest, UninstallAppRequest,
 };
 
@@ -62,14 +62,17 @@ fn interaction_requests_use_volatile_command_deduplication() {
             timeout_sec: Some(30),
         },
     );
-    let native_request = LocalDaemonRequest::RequestNativeProviderInteraction(
-        RequestNativeProviderInteractionRequest::allow_deny(
+    let native_request = LocalDaemonRequest::RequestNativeProviderTurnInteraction(
+        RequestNativeProviderTurnInteractionRequest::allow_deny(
             "session-1",
             "agent-1",
             "interaction-1",
             Some("Approve?".to_string()),
             "Approve?".to_string(),
             Some(30),
+            crate::session::NativeInteractionOrigin::ProviderStartup {
+                provider_run_id: "provider-run-native-test".into(),
+            },
         ),
     );
     let response_request = LocalDaemonRequest::RespondToInteraction(RespondToInteractionRequest {
@@ -97,14 +100,17 @@ async fn pending_interaction_replay_waits_for_one_volatile_result() {
     let path = temp_cache_path("pending-interaction-replay");
     let cache = CommandResultCache::new_with_persistent_path(path.clone())
         .expect("persistent cache should initialize");
-    let request = LocalDaemonRequest::RequestNativeProviderInteraction(
-        RequestNativeProviderInteractionRequest::allow_deny(
+    let request = LocalDaemonRequest::RequestNativeProviderTurnInteraction(
+        RequestNativeProviderTurnInteractionRequest::allow_deny(
             "session-1",
             "agent-1",
             "interaction-1",
             Some("Approve?".to_string()),
             "Approve?".to_string(),
             Some(30),
+            crate::session::NativeInteractionOrigin::ProviderStartup {
+                provider_run_id: "provider-run-native-test".into(),
+            },
         ),
     );
     let fingerprint = CommandResultCache::fingerprint_for_test(&request);
