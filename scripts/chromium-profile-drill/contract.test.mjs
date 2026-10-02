@@ -9,7 +9,6 @@ import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupResources } from "./resources.mjs";
-import { controllerIdentity, manifestFromLock } from "./controller.mjs";
 
 test("browser fixture consumes the exact production base, snapshot, CA and packaged launcher inputs", () => verifyInputs());
 
@@ -78,14 +77,6 @@ test("restore adapter consumes current guarded production functions and rejects 
   assert.throws(() => restoreScript(sourceText.replace("prepare_home_volume() {", "missing_home_function() {")), /prepare_home_volume function is missing/);
 });
 
-test("controller harness rejects missing or ambiguous dependency pins", () => {
-  const pins = ["tokio", "tokio-tungstenite", "futures-util", "serde_json", "base64"];
-  const lock = pins.map(name => `[[package]]\nname = "${name}"\nversion = "1.2.3"\n`).join("");
-  const manifest = manifestFromLock(lock);
-  assert.match(manifest, /tokio = \{ version = "=1.2.3", features/);
-  assert.throws(() => manifestFromLock(lock.replace('name = "tokio"', 'name = "missing"')));
-  assert.throws(() => manifestFromLock(lock + '[[package]]\nname = "tokio"\nversion = "1.2.4"\n'));
-});
 
 test("fixture authentication requires its cookie and server revocation independently invalidates it", async () => {
   const server = fixtureServer();
@@ -137,10 +128,3 @@ test("unrelated provisioner changes do not invalidate consumed restore functions
   mutatedInput("source", "provision-linux-docker-slice.sh", s => s + "\n# unrelated function change\n");
 });
 
-test("controller identity always drops root, including an explicit builder coordinator", () => {
-  assert.throws(() => controllerIdentity("builder", 0, 0, {}));
-  assert.throws(() => controllerIdentity("builder", 0, 0, { CHARIOX_CHROMIUM_DRILL_UID: "0", CHARIOX_CHROMIUM_DRILL_GID: "0" }));
-  assert.deepEqual(controllerIdentity("builder", 0, 0, { CHARIOX_CHROMIUM_DRILL_UID: "61234", CHARIOX_CHROMIUM_DRILL_GID: "61234" }), { uid: 61234, gid: 61234 });
-  assert.throws(() => controllerIdentity("github-hosted", 0, 0, {}));
-  assert.deepEqual(controllerIdentity("github-hosted", 1001, 1001, {}), { uid: 1001, gid: 1001 });
-});

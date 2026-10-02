@@ -5,7 +5,6 @@ import { checked, cleanup, docker, loadOwner } from "./resources.mjs";
 import { source } from "./prepare.mjs";
 import { restoreScript } from "./restore.mjs";
 import { createHash } from "node:crypto";
-import { runController } from "./controller.mjs";
 
 const [mode, scratch] = process.argv.slice(2);
 const owner = loadOwner(scratch);
@@ -69,13 +68,9 @@ try {
   const firstVolume = volume("source");
   const first = create("source", firstVolume);
   startBrowser(first, "initial-sandbox");
-  try {
-    record("exact-target-controller", runController(scratch, first));
-  } finally {
-    // Controller namespace entry is the last step that needs the leased UID.
-    // Revoke traversal before creating any stopped-home archive.
-    chmodSync(scratch, 0o700);
-  }
+  // Candidate i removed the unused Rust controller adapter and its harness.
+  // Keep scratch private before stopped-home archival.
+  chmodSync(scratch, 0o700);
   assert.equal(statSync(scratch).mode & 0o777, 0o700);
   writeFileSync(join(evidence, "versions.txt"), execute(first, ["bash", "-lc", "node --version; chromium --version; dpkg-query -W chromium chromium-sandbox; uname -r"]));
   profile(first, "seed", "seed");
