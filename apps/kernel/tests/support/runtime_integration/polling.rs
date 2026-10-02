@@ -279,22 +279,7 @@ where
         assert!(
             Instant::now() < deadline,
             "timed out waiting for provider records after {timeout_ms}ms: {}",
-            format!(
-                "{}; notice categories: {:?}",
-                render_terminal_output(&records),
-                app.terminal()
-                    .notice_records()
-                    .iter()
-                    .map(|notice| notice
-                        .message
-                        .split_whitespace()
-                        .filter(|word| word.len() <= 20
-                            && word
-                                .chars()
-                                .all(|character| character.is_ascii_alphabetic()))
-                        .collect::<Vec<_>>())
-                    .collect::<Vec<_>>()
-            )
+            render_terminal_output(&records)
         );
         thread::sleep(Duration::from_millis(25));
     }
