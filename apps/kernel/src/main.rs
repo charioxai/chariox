@@ -1,6 +1,13 @@
 use chariox_kernel::{DaemonApp, DaemonConfig};
 use std::time::Instant;
 
+// The kernel clones sessions, snapshots and history pages on every pump and
+// request. The system allocators keep that freed memory in per-thread arenas or
+// zones, so a home kernel serving leased agents grew far past its live heap.
+// mimalloc returns freed pages to the OS and keeps RSS near the live heap.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 // Tokio is the M1 async runtime baseline for the daemon because upcoming PTY,
 // process, and signal-handling work all need a shared async execution model.
 fn main() -> Result<(), chariox_kernel::DaemonError> {
