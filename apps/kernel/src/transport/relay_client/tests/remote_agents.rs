@@ -470,6 +470,7 @@ fn agents_can_be_spawned_on_a_remote_machine_and_cleaned_up() {
 
 async fn agents_can_be_spawned_on_a_remote_machine_and_cleaned_up_async() {
     let _relay_test_guard = relay_client_test_guard().await;
+    let _test_home = RelayTestHome::new();
     let server = RelayServer::new(RelayConfig {
         host: "127.0.0.1".to_string(),
         port: 0,
