@@ -170,15 +170,22 @@ fn write_private_workspace_file(
     path: &str,
     value: &[u8],
 ) -> Result<(), DaemonError> {
-    write_private_workspace_file_owned(root, path, value, false)?.commit();
+    write_private_workspace_file_owned(root, path, value, WorkspaceFilePublication::Replace)?
+        .commit();
     Ok(())
+}
+
+pub(super) enum WorkspaceFilePublication {
+    Create,
+    Replace,
+    ReuseMatching,
 }
 
 pub(super) fn write_private_workspace_file_owned(
     root: &std::path::Path,
     path: &str,
     value: &[u8],
-    fresh: bool,
+    publication: WorkspaceFilePublication,
 ) -> Result<super::materialization_transaction::MaterializedFile, DaemonError> {
     relative_environment_path(path).map_err(environment_error)?;
     #[cfg(unix)]
@@ -217,6 +224,11 @@ pub(super) fn write_private_workspace_file_owned(
         }
         let name = std::ffi::CString::new(*parts.last().unwrap())
             .map_err(|_| environment_error("invalid environment path"))?;
+        if matches!(publication, WorkspaceFilePublication::ReuseMatching) {
+            if let Some(file) = reuse_matching_config(&parent, &name, value)? {
+                return Ok(file);
+            }
+        }
         let temporary =
             std::ffi::CString::new(format!(".chariox-env-{}", rand::random::<u64>())).unwrap();
         let fd = unsafe {
@@ -239,7 +251,7 @@ pub(super) fn write_private_workspace_file_owned(
                 .and_then(|_| file.sync_all())
                 .map_err(|_| environment_error("write target config file failed"))?;
             let published = unsafe {
-                if fresh {
+                if !matches!(publication, WorkspaceFilePublication::Replace) {
                     libc::linkat(
                         parent.as_raw_fd(),
                         temporary.as_ptr(),
@@ -271,9 +283,85 @@ pub(super) fn write_private_workspace_file_owned(
     }
     #[cfg(not(unix))]
     {
-        let _ = (root, value);
+        let _ = (root, value, publication);
         Err(environment_error(
             "private Project environment materialization unsupported on this platform",
         ))
     }
+}
+
+/// MP-08 / MP-10 / MP-11: Reuse an identical mounted config without replacing its inode.
+/// Keep its old permissions until commit, so failed leased installs restore source state.
+#[cfg(unix)]
+fn reuse_matching_config(
+    parent: &std::fs::File,
+    name: &std::ffi::CString,
+    value: &[u8],
+) -> Result<Option<super::materialization_transaction::MaterializedFile>, DaemonError> {
+    use std::io::Read;
+    use std::os::{
+        fd::{AsRawFd, FromRawFd},
+        unix::fs::{MetadataExt, PermissionsExt},
+    };
+    let fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        if std::io::Error::last_os_error().kind() == std::io::ErrorKind::NotFound {
+            return Ok(None);
+        }
+        return Err(environment_error("mounted configuration is not safe"));
+    }
+    let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+    let metadata = file
+        .metadata()
+        .map_err(|_| environment_error("mounted configuration unavailable"))?;
+    // chmod must not affect a second path through a hard link.
+    if !metadata.is_file() || metadata.nlink() != 1 || metadata.len() != value.len() as u64 {
+        return Err(environment_error(
+            "mounted configuration differs from selected input",
+        ));
+    }
+    let mut current = Zeroizing::new(Vec::new());
+    (&mut file)
+        .take(value.len() as u64 + 1)
+        .read_to_end(&mut current)
+        .map_err(|_| environment_error("mounted configuration unavailable"))?;
+    if current.as_slice() != value {
+        return Err(environment_error(
+            "mounted configuration differs from selected input",
+        ));
+    }
+    let after_read = file
+        .metadata()
+        .map_err(|_| environment_error("mounted configuration unavailable"))?;
+    if after_read.len() != metadata.len()
+        || after_read.mtime() != metadata.mtime()
+        || after_read.mtime_nsec() != metadata.mtime_nsec()
+    {
+        return Err(environment_error(
+            "mounted configuration changed during reconciliation",
+        ));
+    }
+    let rollback_file = file
+        .try_clone()
+        .map_err(|_| environment_error("mounted configuration unavailable"))?;
+    let mut owned = super::materialization_transaction::MaterializedFile::new(
+        parent
+            .try_clone()
+            .map_err(|_| environment_error("target config directory unavailable"))?,
+        name.clone(),
+        &file,
+    )?;
+    // Retain the descriptor before changing permissions; Drop never reopens a replacement.
+    owned.preserve_permissions(rollback_file);
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))
+        .and_then(|_| file.sync_all())
+        .map_err(|_| environment_error("private mounted configuration permissions failed"))?;
+    owned.sync()?;
+    Ok(Some(owned))
 }

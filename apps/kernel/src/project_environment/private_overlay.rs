@@ -124,7 +124,10 @@ impl ProjectPrivateFileAdditions {
         }
         self.files
             .push(super::materialize::write_private_workspace_file_owned(
-                root, path, bytes, true,
+                root,
+                path,
+                bytes,
+                super::materialize::WorkspaceFilePublication::Create,
             )?);
         Ok(())
     }

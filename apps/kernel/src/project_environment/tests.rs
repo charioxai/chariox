@@ -729,6 +729,18 @@ fn mp08_index_discovers_new_deleted_references_without_values() {
 
 #[test]
 fn mp08_m28_stages_selected_environment_and_rejects_an_unauthenticated_import() {
+    m28_environment_transfer(None);
+}
+
+// MP-08 / MP-10 / MP-11: Checkout and dirty overlay files precede the sealed layer.
+#[test]
+fn mp08_mp10_mp11_m28_transfers_git_tracked_config_and_rolls_back_safely() {
+    for changed in [false, true] {
+        m28_environment_transfer(Some(changed));
+    }
+}
+
+fn m28_environment_transfer(tracked_config: Option<bool>) {
     use crate::config::{CredentialVaultBackend, DaemonConfig};
     use crate::managed_context::development::*;
     let fixture = Fixture::new();
@@ -740,11 +752,54 @@ fn mp08_m28_stages_selected_environment_and_rejects_an_unauthenticated_import() 
         "TOKEN=synthetic-selected-input\nUNRELATED=leave\n",
     )
     .unwrap();
+    let selected_config = "{\"endpoint\":\"selected-fixture\"}\n";
+    if let Some(changed) = tracked_config {
+        std::fs::write(
+            source.join("app.js"),
+            "console.log(process.env.TOKEN); readFileSync(\"config.json\");\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("config.json"),
+            if changed { "{}\n" } else { selected_config },
+        )
+        .unwrap();
+        for args in [
+            vec!["init", "--quiet"],
+            vec!["add", "app.js", "config.json"],
+            vec![
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.test",
+                "commit",
+                "--quiet",
+                "-m",
+                "config fixture",
+            ],
+        ] {
+            assert!(std::process::Command::new("git")
+                .arg("-C")
+                .arg(&source)
+                .args(args)
+                .status()
+                .unwrap()
+                .success());
+        }
+        std::fs::write(source.join("config.json"), selected_config).unwrap();
+    }
     let source_id = source.to_string_lossy().to_string();
     let project_id = format!("m28-fixture-{}", rand::random::<u64>());
     let source_config = DaemonConfig::for_tests();
     let mut target_config = DaemonConfig::for_tests()
         .with_session_history_root(fixture.0.join("target-state/sessions"));
+    target_config.user_config.state.path = Some(
+        fixture
+            .0
+            .join("target-state/state.db")
+            .to_string_lossy()
+            .into_owned(),
+    );
     target_config.user_config.credential_vault.backend = CredentialVaultBackend::CharioxEncrypted;
     target_config.user_config.credential_vault.path = fixture
         .0
@@ -844,6 +899,24 @@ fn mp08_m28_stages_selected_environment_and_rejects_an_unauthenticated_import() 
             0o600
         );
     }
+    #[cfg(unix)]
+    if tracked_config.is_some() {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("config.json")).unwrap(),
+            selected_config
+        );
+        assert_eq!(
+            std::fs::metadata(workspace.join("config.json"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert!(receipt.repositories[0].workspace_kind.is_git());
+        assert!(receipt.repositories[0].head_sha.len() == 40);
+    }
     let state = ProjectEnvironmentStore::new(&target_config.private_runtime_state_root())
         .load(&project_id)
         .unwrap()
@@ -852,6 +925,44 @@ fn mp08_m28_stages_selected_environment_and_rejects_an_unauthenticated_import() 
         state.manifest.entries[0].workspace_id,
         workspace.to_string_lossy()
     );
+    if tracked_config.is_some() {
+        // Commit fails after staged files were published; preserve the first import.
+        let mut retry = request.clone();
+        retry.destination_root = fixture.0.join("rollback-target");
+        let error = import_development_context_with_environment(
+            retry.clone(),
+            "m28-rollback-fixture".into(),
+            Some(&authority),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("independent Project environment"),
+            "{error}"
+        );
+        assert!(!retry.destination_root.exists());
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("config.json")).unwrap(),
+            selected_config
+        );
+        assert_eq!(
+            std::fs::read_to_string(source.join("config.json")).unwrap(),
+            selected_config
+        );
+        assert_eq!(
+            ProjectEnvironmentStore::new(&target_config.private_runtime_state_root())
+                .load(&project_id)
+                .unwrap()
+                .unwrap(),
+            state
+        );
+        assert!(!std::fs::read_dir(&fixture.0).unwrap().any(|entry| entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains("import-")));
+    }
     assert_eq!(receipt.schema_version, 4);
     assert!(recover_development_context_publication_with_environment(
         &request,
@@ -1158,7 +1269,10 @@ fn mp08_mp10_failed_fresh_materialization_rolls_back_and_preserves_existing_file
         kind: ProjectEnvironmentEntryKind::ConfigFile,
         classification: ProjectEnvironmentClassification::Secret,
         excluded: false,
-        uses: vec![],
+        uses: vec![ProjectEnvironmentUse {
+            path: "app.js".into(),
+            line: 1,
+        }],
         locator: ProjectEnvironmentLocator::ConfigFile {
             path: "z/config.json".into(),
         },
@@ -1181,7 +1295,8 @@ fn mp08_mp10_failed_fresh_materialization_rolls_back_and_preserves_existing_file
         super::materialization_transaction::ProjectEnvironmentMaterialization::prepare(
             &manifest,
             &resolved,
-            &fixture.workspaces()
+            &fixture.workspaces(),
+            super::materialization_transaction::MaterializationTarget::MountedSource,
         )
         .is_err()
     );
@@ -1193,7 +1308,8 @@ fn mp08_mp10_failed_fresh_materialization_rolls_back_and_preserves_existing_file
         super::materialization_transaction::ProjectEnvironmentMaterialization::prepare(
             &manifest,
             &resolved,
-            &fixture.workspaces()
+            &fixture.workspaces(),
+            super::materialization_transaction::MaterializationTarget::MountedSource,
         )
         .is_err()
     );
@@ -1366,4 +1482,122 @@ fn mp08_mp10_mp11_incremental_utility_cannot_reclassify_unchanged_selections() {
         &input
     )
     .is_err());
+}
+
+// MP-08 / MP-10 / MP-11: Mounted source reuse never overwrites differing target data.
+#[cfg(unix)]
+#[test]
+fn mp08_mp10_mp11_mounted_config_reconciliation_preserves_rollback_and_target_state() {
+    use super::materialization_transaction::{
+        MaterializationTarget, ProjectEnvironmentMaterialization,
+    };
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let fixture = Fixture::new();
+    let path = fixture.0.join("config.json");
+    let config_entry = |name: &str| ProjectEnvironmentEntry {
+        name: name.into(),
+        workspace_id: "web".into(),
+        kind: ProjectEnvironmentEntryKind::ConfigFile,
+        classification: ProjectEnvironmentClassification::Secret,
+        excluded: false,
+        uses: vec![ProjectEnvironmentUse {
+            path: "app.js".into(),
+            line: 1,
+        }],
+        locator: ProjectEnvironmentLocator::ConfigFile { path: name.into() },
+        status: ProjectEnvironmentEntryStatus::Found,
+    };
+    let mut manifest = fixture_manifest(vec![config_entry("config.json")]);
+    let mut resolved = ResolvedProjectEnvironment {
+        values: BTreeMap::from([(
+            ("web".into(), "config.json".into()),
+            zeroize::Zeroizing::new("selected-fixture".into()),
+        )]),
+        unresolved: vec![],
+    };
+    std::fs::write(&path, "selected-fixture").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let original = std::fs::metadata(&path).unwrap();
+    let prepare = |manifest: &ProjectEnvironmentManifest, resolved: &ResolvedProjectEnvironment| {
+        ProjectEnvironmentMaterialization::prepare(
+            manifest,
+            resolved,
+            &fixture.workspaces(),
+            MaterializationTarget::MountedSource,
+        )
+    };
+    let transaction = prepare(&manifest, &resolved).unwrap();
+    let private = std::fs::metadata(&path).unwrap();
+    assert_eq!(private.ino(), original.ino());
+    assert_eq!(private.permissions().mode() & 0o777, 0o600);
+    drop(transaction);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "selected-fixture");
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o644
+    );
+
+    // A later file failure rolls back a reused file and a newly created file.
+    manifest.entries.push(config_entry("a-new.json"));
+    manifest.entries.push(config_entry("z/config.json"));
+    for name in ["a-new.json", "z/config.json"] {
+        resolved.values.insert(
+            ("web".into(), name.into()),
+            zeroize::Zeroizing::new("selected-fixture".into()),
+        );
+    }
+    std::os::unix::fs::symlink(&fixture.0, fixture.0.join("z")).unwrap();
+    assert!(prepare(&manifest, &resolved).is_err());
+    assert!(!fixture.0.join("a-new.json").exists());
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o644
+    );
+    manifest.entries.truncate(1);
+
+    std::fs::write(&path, "target-owned-content").unwrap();
+    assert!(prepare(&manifest, &resolved).is_err());
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "target-owned-content"
+    );
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o644
+    );
+    std::fs::remove_file(&path).unwrap();
+    std::fs::write(fixture.0.join("other.json"), "selected-fixture").unwrap();
+    std::os::unix::fs::symlink(fixture.0.join("other.json"), &path).unwrap();
+    assert!(prepare(&manifest, &resolved).is_err());
+    assert!(std::fs::symlink_metadata(&path)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    std::fs::remove_file(&path).unwrap();
+    std::fs::hard_link(fixture.0.join("other.json"), &path).unwrap();
+    assert!(prepare(&manifest, &resolved).is_err());
+    std::fs::remove_file(&path).unwrap();
+    std::fs::write(&path, "selected-fixture").unwrap();
+
+    // Drop must preserve a target replacement made after prepare.
+    let transaction = prepare(&manifest, &resolved).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    std::fs::write(&path, "later-target-replacement").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+    drop(transaction);
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "later-target-replacement"
+    );
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o640
+    );
+    std::fs::write(&path, "selected-fixture").unwrap();
+    prepare(&manifest, &resolved).unwrap().commit();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "selected-fixture");
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
 }

@@ -59,12 +59,13 @@ impl PreparedProjectEnvironmentImport {
         staged_workspaces: &BTreeMap<String, PathBuf>,
         workspace_mapping: &BTreeMap<String, String>,
     ) -> Result<Self, DaemonError> {
-        Self::prepare_for_project(
+        Self::prepare_with_target(
             authority,
             layer,
             staged_workspaces,
             workspace_mapping,
             &layer.sealed.manifest.project_id,
+            super::materialization_transaction::MaterializationTarget::StagedDevelopment,
         )
     }
     pub(crate) fn prepare_for_project(
@@ -73,6 +74,23 @@ impl PreparedProjectEnvironmentImport {
         staged_workspaces: &BTreeMap<String, PathBuf>,
         workspace_mapping: &BTreeMap<String, String>,
         target_project_id: &str,
+    ) -> Result<Self, DaemonError> {
+        Self::prepare_with_target(
+            authority,
+            layer,
+            staged_workspaces,
+            workspace_mapping,
+            target_project_id,
+            super::materialization_transaction::MaterializationTarget::MountedSource,
+        )
+    }
+    fn prepare_with_target(
+        authority: &ProjectEnvironmentImportAuthority,
+        layer: &crate::managed_context::development::DevelopmentProjectEnvironment,
+        staged_workspaces: &BTreeMap<String, PathBuf>,
+        workspace_mapping: &BTreeMap<String, String>,
+        target_project_id: &str,
+        target: super::materialization_transaction::MaterializationTarget,
     ) -> Result<Self, DaemonError> {
         let fail = super::resolver::environment_error;
         if authority.config.daemon_id != authority.target_kernel_id
@@ -162,6 +180,7 @@ impl PreparedProjectEnvironmentImport {
                 &layer.sealed.manifest,
                 &resolved,
                 staged_workspaces,
+                target,
             )?;
         Ok(Self {
             authority: authority.clone(),

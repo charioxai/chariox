@@ -1,8 +1,16 @@
-//! MP-08 / MP-10 / MP-11: A failed fresh import removes only the private files it created.
+//! MP-08 / MP-10 / MP-11: Import rollback respects code-layer and target ownership.
 use super::resolver::environment_error;
 use super::*;
 use crate::error::DaemonError;
 use std::{collections::BTreeMap, path::PathBuf};
+
+#[derive(Clone, Copy)]
+pub(super) enum MaterializationTarget {
+    /// M28 owns the entire disposable checkout and its publication rollback.
+    StagedDevelopment,
+    /// A lease mounts existing source files; their contents must not be replaced.
+    MountedSource,
+}
 
 pub(super) struct ProjectEnvironmentMaterialization {
     files: Vec<MaterializedFile>,
@@ -12,6 +20,7 @@ impl ProjectEnvironmentMaterialization {
         manifest: &ProjectEnvironmentManifest,
         resolved: &ResolvedProjectEnvironment,
         roots: &BTreeMap<String, PathBuf>,
+        target: MaterializationTarget,
     ) -> Result<Self, DaemonError> {
         let mut transaction = Self { files: Vec::new() };
         for ((workspace, path), value) in
@@ -20,13 +29,27 @@ impl ProjectEnvironmentMaterialization {
             let root = roots
                 .get(&workspace)
                 .ok_or_else(|| environment_error("materialization workspace not selected"))?;
+            use super::materialize::WorkspaceFilePublication;
+            let publication = match target {
+                MaterializationTarget::StagedDevelopment => WorkspaceFilePublication::Replace,
+                MaterializationTarget::MountedSource
+                    if manifest.entries.iter().any(|entry| {
+                        entry.workspace_id == workspace
+                            && entry.name == path
+                            && entry.kind == ProjectEnvironmentEntryKind::ConfigFile
+                    }) =>
+                {
+                    WorkspaceFilePublication::ReuseMatching
+                }
+                MaterializationTarget::MountedSource => WorkspaceFilePublication::Create,
+            };
             transaction
                 .files
                 .push(super::materialize::write_private_workspace_file_owned(
                     root,
                     &path,
                     value.as_bytes(),
-                    true,
+                    publication,
                 )?);
         }
         Ok(transaction)
@@ -45,6 +68,8 @@ pub(super) struct MaterializedFile {
     name: std::ffi::CString,
     #[cfg(unix)]
     identity: std::fs::Metadata,
+    #[cfg(unix)]
+    original_permissions: Option<(std::fs::File, std::fs::Permissions)>,
     committed: bool,
 }
 impl MaterializedFile {
@@ -61,7 +86,12 @@ impl MaterializedFile {
                 .metadata()
                 .map_err(|_| environment_error("materialized file identity unavailable"))?,
             committed: false,
+            original_permissions: None,
         })
+    }
+    #[cfg(unix)]
+    pub(super) fn preserve_permissions(&mut self, file: std::fs::File) {
+        self.original_permissions = Some((file, self.identity.permissions()));
     }
     #[cfg(unix)]
     pub(super) fn sync(&self) -> Result<(), DaemonError> {
@@ -105,7 +135,16 @@ impl Drop for MaterializedFile {
                 && identity.mtime() == self.identity.mtime()
                 && identity.mtime_nsec() == self.identity.mtime_nsec()
             {
-                unsafe { libc::unlinkat(self.parent.as_raw_fd(), self.name.as_ptr(), 0) };
+                if let Some((file, permissions)) = &self.original_permissions {
+                    use std::os::unix::fs::PermissionsExt;
+                    // A subsequent target permission change belongs to the target.
+                    if identity.permissions().mode() & 0o7777 == 0o600 {
+                        let _ = file.set_permissions(permissions.clone());
+                        let _ = file.sync_all();
+                    }
+                } else {
+                    unsafe { libc::unlinkat(self.parent.as_raw_fd(), self.name.as_ptr(), 0) };
+                }
                 let _ = self.parent.sync_all();
             }
         }
