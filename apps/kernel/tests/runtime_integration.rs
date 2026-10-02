@@ -598,14 +598,14 @@ fn local_request_surface_supports_prompt_queue_and_config_updates_inner() {
             outcome: PromptSubmissionOutcome::Started { .. },
             ..
         } => {}
-        _ => panic!("unexpected first prompt response"),
+        response => panic!("unexpected first prompt response: {response:?}"),
     }
     match second_prompt {
         LocalDaemonResponse::PromptSubmitted {
             outcome: PromptSubmissionOutcome::Queued { .. },
             ..
         } => {}
-        _ => panic!("unexpected second prompt response"),
+        response => panic!("unexpected second prompt response: {response:?}"),
     }
     match config {
         LocalDaemonResponse::SessionConfigUpdated { config, .. } => {
