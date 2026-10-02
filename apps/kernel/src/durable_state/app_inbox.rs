@@ -251,3 +251,6 @@ impl DurableKernelStateStore {
         app_inbox::route_by_binding(&connection, binding_id)
     }
 }
+
+#[cfg(test)]
+mod tests;

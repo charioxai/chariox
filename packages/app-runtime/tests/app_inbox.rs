@@ -249,7 +249,7 @@ fn postponing_spends_no_attempt_and_old_occurrences_expire() {
 }
 
 #[test]
-fn routes_are_scoped_per_owner_and_installation_and_removal_forgets_occurrences() {
+fn routes_are_scoped_per_owner_and_installation() {
     let db = db();
     app_inbox::create_route_in(&db, &route("mail"), 1).unwrap();
     let other = InboxRoute {
@@ -264,16 +264,6 @@ fn routes_are_scoped_per_owner_and_installation_and_removal_forgets_occurrences(
         Accepted::New(_)
     ));
     assert_eq!(app_inbox::counts(&db, &other).unwrap().pending, 1);
-    app_inbox::remove_route_in(&db, "owner", "installed", "mail").unwrap();
-    app_inbox::create_route_in(&db, &route("mail"), 2).unwrap();
-    assert_eq!(
-        app_inbox::counts(&db, &route("mail")).unwrap(),
-        app_inbox::InboxCounts::default()
-    );
-    assert!(matches!(
-        app_inbox::accept_in(&db, &route("mail"), "occ-1", &json!({"text":"c"}), 1, 3).unwrap(),
-        Accepted::New(_)
-    ));
     let due = app_inbox::due(&db, 10, 10).unwrap();
     assert_eq!(due.len(), 2);
     assert!(due.iter().all(|item| item.accepted_generation == 1));
@@ -354,3 +344,6 @@ fn generator_fed_routes_are_capped_across_the_kernel_at_create() {
         app_inbox::MAX_GENERATOR_ROUTES
     );
 }
+
+#[path = "app_inbox/route_removal.rs"]
+mod route_removal;

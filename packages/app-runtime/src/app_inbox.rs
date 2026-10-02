@@ -296,8 +296,9 @@ pub fn create_route_in(tx: &Connection, route: &InboxRoute, now_ms: u64) -> Resu
     Ok(())
 }
 
-/// Removing a route also drops its occurrences, delivered or not: a route
-/// created again under the same name starts empty.
+/// Removing a route stops new acceptance without discarding acknowledged
+/// occurrences. Pending delivery and settled dedupe receipts retain their
+/// original identities, including when the route name is reused.
 pub fn remove_route_in(
     tx: &Connection,
     owner_id: &str,
@@ -311,10 +312,6 @@ pub fn remove_route_in(
     if removed == 0 {
         return Err(InboxError::NotFound);
     }
-    tx.execute(
-        "DELETE FROM app_inbox WHERE owner_id=?1 AND installation_id=?2 AND route_id=?3",
-        params![owner_id, installation_id, route_id],
-    )?;
     Ok(())
 }
 

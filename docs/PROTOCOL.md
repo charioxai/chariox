@@ -1866,7 +1866,11 @@ Workflow trigger and deployment direction:
   `RemoveAppInboxRoute {installation_id, route_id}` and `ListAppInboxRoutes
   {installation_id}` answer `AppInboxRoutes {installation_id, routes}`, each
   with `pending`, `delivered`, `failed` and `expired` occurrence counts. A
-  route grants the App nothing else. An occurrence is validated against the
+  route grants the App nothing else. Removing a route stops new acceptance;
+  already accepted occurrences retain their original event and installation
+  for delivery, and their receipts retain the normal dedupe window even if
+  the route name is reused. Uninstall still clears the installation inbox.
+  An occurrence is validated against the
   active release's signed schema and recorded (deduplicated by route and
   source occurrence) before the source is acknowledged; the kernel then sends
   `events.deliver {name, occurrence_id, payload}` at least once, starting a
