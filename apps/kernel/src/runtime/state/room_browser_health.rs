@@ -2,25 +2,42 @@
 use super::KernelRuntimeState;
 use crate::session::{EnvironmentComponent, EnvironmentComponentHealthState, EnvironmentLifecycle};
 use crate::transport::room_browser_controller::RoomBrowserControllerResult as Response;
-use std::{sync::atomic::Ordering, time::Duration};
+use std::{
+    collections::BTreeSet,
+    sync::{atomic::Ordering, Arc, Mutex},
+    time::Duration,
+};
+
+struct InflightProbe {
+    rooms: Arc<Mutex<BTreeSet<String>>>,
+    session_id: String,
+}
+
+impl Drop for InflightProbe {
+    fn drop(&mut self) {
+        self.rooms
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&self.session_id);
+    }
+}
 
 impl KernelRuntimeState {
     pub(super) fn schedule_room_browser_health(&self) {
         let now = crate::session::unix_epoch_ms();
-        if now
-            < self
+        let next = self
+            .owned
+            .next_room_browser_health_at_ms
+            .load(Ordering::Relaxed);
+        if now < next
+            || self
                 .owned
                 .next_room_browser_health_at_ms
-                .load(Ordering::Relaxed)
+                .compare_exchange(next, now + 5_000, Ordering::Relaxed, Ordering::Relaxed)
+                .is_err()
         {
             return;
         }
-        let Ok(guard) = self.owned.room_browser_health_pass.clone().try_lock_owned() else {
-            return;
-        };
-        self.owned
-            .next_room_browser_health_at_ms
-            .store(now + 5_000, Ordering::Relaxed);
         let rooms: Vec<_> = self
             .owned
             .session_store
@@ -37,7 +54,6 @@ impl KernelRuntimeState {
             .collect();
         let runtime = self.clone();
         tokio::spawn(async move {
-            let _guard = guard;
             let mut checks = tokio::task::JoinSet::new();
             for (session_id, generation) in rooms {
                 let runtime = runtime.clone();
@@ -52,6 +68,18 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn refresh_room_browser_health(&self, session_id: &str, generation: u64) {
+        let rooms = self.owned.room_browser_health_inflight.clone();
+        if !rooms
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(session_id.to_owned())
+        {
+            return;
+        }
+        let guard = InflightProbe {
+            rooms,
+            session_id: session_id.to_owned(),
+        };
         let Ok(snapshot) = self.room_environment_snapshot(session_id) else {
             return;
         };
@@ -65,25 +93,35 @@ impl KernelRuntimeState {
         }
         // Reconcile proves debugger and page availability, but a health probe
         // does not project tab identities or change the viewport owner.
-        let result = tokio::time::timeout(
-            Duration::from_secs(4),
-            self.room_browser_controller_health_probe(session_id, snapshot.viewport),
-        )
-        .await;
+        // A timed-out caller cannot cancel a sent relay request or spawn_blocking
+        // work. Keep ownership in that task until the underlying request ends;
+        // later passes skip this Room while other Rooms still get their probes.
+        let runtime = self.clone();
+        let room = session_id.to_owned();
+        let query = tokio::spawn(async move {
+            let result = runtime
+                .room_browser_controller_health_probe(&room, snapshot.viewport)
+                .await;
+            (guard, result)
+        });
+        let Ok(Ok((_guard, result))) = tokio::time::timeout(Duration::from_secs(4), query).await
+        else {
+            return;
+        };
         let diagnostic = match result {
-            Ok(Ok(Response::Reconciled {
+            Ok(Response::Reconciled {
                 reconciliation: Some(_),
-            })) => None,
-            Ok(Err(error)) if error.to_string().contains("browser_debugger_unavailable") => {
+            }) => None,
+            Err(error) if error.to_string().contains("browser_debugger_unavailable") => {
                 Some("browser_debugger_unavailable")
             }
-            Ok(Err(error)) if error.to_string().contains("browser_cdp_disconnected") => {
+            Err(error) if error.to_string().contains("browser_cdp_disconnected") => {
                 Some("browser_cdp_disconnected")
             }
             // Reconcile shares a serial controller queue with foreground
             // commands and can wait on page dialogs. A timeout or route error
             // is inconclusive; only positive debugger loss changes health.
-            Ok(Ok(_)) | Ok(Err(_)) | Err(_) => return,
+            Ok(_) | Err(_) => return,
         };
         self.observe_room_browser_health(session_id, generation, diagnostic);
     }

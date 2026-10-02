@@ -32,7 +32,7 @@ async fn fixture() -> (
     let script = std::fs::read_to_string(&tool.path).unwrap().replace(
         "printf 'reconcile\\n'",
         &format!(
-            "if [ -f '{}' ]; then printf '{{\"id\":%s,\"ok\":false,\"error\":{{\"code\":\"controller_busy\",\"message\":\"foreground command pending\"}}}}\\n' \"$id\"; continue; fi\nif [ -f '{}' ]; then sleep 4.5; fi\nprintf 'reconcile\\n'",
+            "if [ -f '{}' ]; then printf '{{\"id\":%s,\"ok\":false,\"error\":{{\"code\":\"controller_busy\",\"message\":\"foreground command pending\"}}}}\\n' \"$id\"; continue; fi\nif [ -f '{}' ]; then sleep 6; fi\nprintf 'reconcile\\n'",
             tool.root.join("browser-busy").display(),
             tool.root.join("browser-slow").display(),
         ),
@@ -43,7 +43,7 @@ async fn fixture() -> (
         crate::runtime::browser_controller_process::BrowserControllerProcessStore::new(
             &tool.path,
             Vec::new(),
-            Duration::from_secs(5),
+            Duration::from_secs(10),
         ),
     );
     state
@@ -147,6 +147,14 @@ async fn room_browser_health_timeout_and_route_errors_are_inconclusive() {
         .await;
     assert_eq!(state.room_environment_snapshot(&room).unwrap(), before);
     std::fs::remove_file(tool.root.join("browser-busy")).unwrap();
+    let reconciles = || {
+        std::fs::read_to_string(&tool.log)
+            .unwrap()
+            .lines()
+            .filter(|line| *line == "reconcile")
+            .count()
+    };
+    let count = reconciles();
     std::fs::write(tool.root.join("browser-slow"), "").unwrap();
     let started = std::time::Instant::now();
     state
@@ -158,6 +166,25 @@ async fn room_browser_health_timeout_and_route_errors_are_inconclusive() {
         before,
         "a healthy browser waiting on the serial controller queue must stay ready"
     );
+    let next = std::time::Instant::now();
+    state
+        .refresh_room_browser_health(&room, before.runtime_generation)
+        .await;
+    assert!(
+        next.elapsed() < Duration::from_secs(1),
+        "skip a Room while its timed-out underlying query still runs"
+    );
+    std::fs::remove_file(tool.root.join("browser-slow")).unwrap();
+    tokio::time::sleep(Duration::from_millis(2200)).await;
+    state
+        .refresh_room_browser_health(&room, before.runtime_generation)
+        .await;
+    assert_eq!(
+        reconciles(),
+        count + 2,
+        "only the original slow query and one subsequent query run"
+    );
+    assert_eq!(state.room_environment_snapshot(&room).unwrap(), before);
 }
 
 #[tokio::test]
