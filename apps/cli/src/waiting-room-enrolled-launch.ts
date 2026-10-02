@@ -1,7 +1,17 @@
 import type { RuntimeSession } from "@chariox/kernel-client/kernel-types"
+import type { ManagedEnvironmentSummary } from "@chariox/kernel-client/ipc-managed-environment-requests"
 import type { WaitingRoomPreparedManagedLaunch } from "./waiting-room-activation-controller.js"
 import type { WaitingRoomLaunchConfig } from "./waiting-room-controller.js"
 import type { PreparedManagedEnvironmentLaunch } from "./waiting-room-managed-environment-launch-controller.js"
+
+export function waitingRoomManagedEnvironmentKernelRef(
+  launch: WaitingRoomLaunchConfig,
+  environment: ManagedEnvironmentSummary,
+): string | null {
+  return launch.managedEnvironment?.kind === "existing" && environment.contextManifestDigest && launch.ownerKernelRef
+    ? launch.ownerKernelRef
+    : environment.runtimeKernelId
+}
 
 export function prepareWaitingRoomEnrolledLaunch(options: {
   launch: WaitingRoomLaunchConfig

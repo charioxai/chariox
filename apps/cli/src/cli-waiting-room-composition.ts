@@ -5,7 +5,7 @@ import { createDetachedKernelConnectController } from "./detached-kernel-connect
 import { importExternalProviderSession, listExternalProviderSessions } from "./external-provider-session-api.js"
 import type { SliceRecord } from "./cli-types.js"
 import type { RuntimeSession } from "@chariox/kernel-client/kernel-types"
-import { prepareWaitingRoomEnrolledLaunch } from "./waiting-room-enrolled-launch.js"
+import { prepareWaitingRoomEnrolledLaunch, waitingRoomManagedEnvironmentKernelRef } from "./waiting-room-enrolled-launch.js"
 import {
   saveProviderPreferences,
   saveUiPreferences,
@@ -56,7 +56,6 @@ import {
 } from "./managed-environment-api.js"
 import {
   WaitingRoomManagedEnvironmentLaunchController,
-  managedEnvironmentLaunchKernelId,
 } from "./waiting-room-managed-environment-launch-controller.js"
 import { getWaitingRoomInventory } from "./waiting-room-inventory-api.js"
 import type { WaitingRoomInventory } from "./waiting-room-inventory-api.js"
@@ -587,23 +586,23 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
           ],
         }
       }
-      const kernelId = managedEnvironmentLaunchKernelId(environment, launch.ownerKernelRef,
-        selection.kind === "existing" && Boolean(environment.contextManifestDigest))
       expectedMachineRef = managedEnvironmentMachineRef(environment.environmentId)
+      const kernelRef = waitingRoomManagedEnvironmentKernelRef(launch, environment)
       deps.setWaitingRoomState({
         ...deps.waitingRoomState(),
         selectedMachineRef: expectedMachineRef,
         managedRepositoryRoot: environment.managedRepositoryRoot,
-        ...(kernelId ? { selectedKernelRef: kernelId } : {}),
+        ...(kernelRef ? { selectedKernelRef: kernelRef } : {}),
       })
       expectedOwnershipRevision = deps.waitingRoomLaunchOwnershipRevision()
       deps.rebuildTranscript()
     }
     const prepared = await managedEnvironmentLaunchController.prepare(selection, {
+      selectedKernelRef: launch.ownerKernelRef,
       assertActive,
       environmentChanged,
       progress: (message) => deps.flashFooter(message, "info"),
-    }, launch.ownerKernelRef)
+    })
     try {
       assertActive()
       if (prepared.kind === "enrolled") {

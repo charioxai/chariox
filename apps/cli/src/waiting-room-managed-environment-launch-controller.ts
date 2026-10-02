@@ -39,6 +39,7 @@ export type ManagedEnvironmentKernelConnection = {
 }
 
 export type ManagedEnvironmentLaunchAttempt = {
+  selectedKernelRef?: WaitingRoomLaunchConfig["ownerKernelRef"]
   assertActive(): void
   environmentChanged(environment: ManagedEnvironmentSummary): void
   progress(message: string): void
@@ -89,7 +90,6 @@ export class WaitingRoomManagedEnvironmentLaunchController {
   async prepare(
     selection: ManagedEnvironmentLaunchSelection,
     attempt: ManagedEnvironmentLaunchAttempt,
-    ownerKernelRef?: string | null,
   ): Promise<PreparedManagedEnvironmentLaunch> {
     attempt.assertActive()
     const initial = selection.kind === "new"
@@ -97,7 +97,7 @@ export class WaitingRoomManagedEnvironmentLaunchController {
       : await this.deps.getEnvironment(selection.environmentId)
     attempt.assertActive()
     const enrolled = selection.kind === "existing" && Boolean(initial.contextManifestDigest)
-    return await this.waitUntilReady(initial, attempt, enrolled, ownerKernelRef)
+    return await this.waitUntilReady(initial, attempt, enrolled)
   }
 
   private async create(
@@ -131,7 +131,6 @@ export class WaitingRoomManagedEnvironmentLaunchController {
     initial: ManagedEnvironmentSummary,
     attempt: ManagedEnvironmentLaunchAttempt,
     enrolled: boolean,
-    ownerKernelRef?: string | null,
   ): Promise<PreparedManagedEnvironmentLaunch> {
     const deadline = this.deps.nowMs() + (this.deps.timeoutMs ?? 15 * 60 * 1_000)
     let current = initial
@@ -142,7 +141,7 @@ export class WaitingRoomManagedEnvironmentLaunchController {
       attempt.assertActive()
       attempt.environmentChanged(current)
       if (environmentReadyForSession(current)) {
-        return await this.prepareReadyEnvironment(current, deadline, attempt, enrolled, ownerKernelRef)
+        return await this.prepareReadyEnvironment(current, deadline, attempt, enrolled)
       }
       if (current.desiredState === "deleted"
         || current.observedState === "deleted"
@@ -215,10 +214,11 @@ export class WaitingRoomManagedEnvironmentLaunchController {
     deadline: number,
     attempt: ManagedEnvironmentLaunchAttempt,
     enrolled: boolean,
-    ownerKernelRef?: string | null,
   ): Promise<PreparedManagedEnvironmentLaunch> {
     const machineId = environment.runtimeMachineId as string
-    const kernelId = managedEnvironmentLaunchKernelId(environment, ownerKernelRef, enrolled)
+    const kernelId = enrolled && attempt.selectedKernelRef
+      ? attempt.selectedKernelRef
+      : environment.runtimeKernelId as string
     let connection: ManagedEnvironmentKernelConnection
     while (true) {
       attempt.progress(`Connecting to ${environment.name}.`)
@@ -437,13 +437,4 @@ function environmentProgress(
     case "stopping": return `Waiting for ${environment.name} to stop before restart.`
     default: return `Waiting for ${environment.name}: ${environment.observedState}.`
   }
-}
-
-// MP-02/MP-08/MP-11: enrolled machines keep the ordinary owner selection.
-export function managedEnvironmentLaunchKernelId(
-  environment: ManagedEnvironmentSummary,
-  ownerKernelRef: string | null | undefined,
-  enrolled: boolean,
-): string {
-  return (enrolled && ownerKernelRef) || environment.runtimeKernelId || ""
 }

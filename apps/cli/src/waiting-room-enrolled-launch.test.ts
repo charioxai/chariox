@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import type { RuntimeSession } from "@chariox/kernel-client/kernel-types"
 import type { ManagedEnvironmentSummary } from "@chariox/kernel-client/ipc-managed-environment-requests"
-import { prepareWaitingRoomEnrolledLaunch } from "./waiting-room-enrolled-launch.js"
+import { prepareWaitingRoomEnrolledLaunch, waitingRoomManagedEnvironmentKernelRef } from "./waiting-room-enrolled-launch.js"
 import type { WaitingRoomLaunchConfig } from "./waiting-room-controller.js"
 
 function harness(projectSelection?: WaitingRoomLaunchConfig["projectSelection"]) {
@@ -56,6 +56,17 @@ test("MP-08/MP-11 enrolled CLI launch without Project selection avoids transfer 
   const h = harness()
   await h.prepared.prepareProject({} as RuntimeSession)
   assert.deepEqual(h.calls, [])
+})
+
+test("MP-02/MP-08/MP-11 lifecycle projection keeps the enrolled explicit kernel and initial deployment defaults", () => {
+  const { launch } = harness()
+  const environment = { runtimeKernelId: "bootstrap-home", contextManifestDigest: "sha256:manifest" } as ManagedEnvironmentSummary
+  launch.ownerKernelRef = "selected-second-kernel"
+  assert.equal(waitingRoomManagedEnvironmentKernelRef(launch, environment), "selected-second-kernel")
+  assert.equal(waitingRoomManagedEnvironmentKernelRef({ ...launch, ownerKernelRef: "" }, environment), "bootstrap-home")
+  assert.equal(waitingRoomManagedEnvironmentKernelRef(launch, { ...environment, contextManifestDigest: null }), "bootstrap-home")
+  const { managedEnvironment: _managed, ...ordinary } = launch
+  assert.equal(waitingRoomManagedEnvironmentKernelRef(ordinary, environment), "bootstrap-home")
 })
 
 test("MP-02/MP-08/MP-11 enrolled adapter rejects a connection that replaced the selected owner", () => {
