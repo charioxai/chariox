@@ -418,10 +418,10 @@ status() {
 }
 
 stop_desktop() {
-  local teardown_exit=0
-  stop_chromium_supervisor || teardown_exit=$?
+  local supervisor_exit=0 streamer_exit=0
+  stop_chromium_supervisor || supervisor_exit=$?
   if [[ -x /opt/chariox-selkies/bin/python ]]; then
-    slice_selkies stop >/dev/null || teardown_exit=$?
+    slice_selkies stop >/dev/null || streamer_exit=$?
   fi
   if process_running "chromium.*$CHROME_PROFILE"; then
     node "$ROOT/browser-cdp.mjs" close-browser >/dev/null 2>&1 || true
@@ -451,7 +451,22 @@ stop_desktop() {
   stop_process_pattern '(^|/)tint2([[:space:]]|$)'
   stop_process_pattern "$DISPLAY_SERVER $DISPLAY_ID"
   clear_chromium_profile_locks
-  return "$teardown_exit"
+  if [[ "$supervisor_exit" -ne 0 ]]; then
+    # Killing a slow browser above can finish the supervisor's TERM trap.
+    # Wait for that terminal proof before retaining the earlier stop failure.
+    local supervisor_pid=""
+    for attempt in $(seq 1 50); do
+      [[ -f "$LOGS/chromium-supervisor.pid" ]] || break
+      supervisor_pid="$(cat "$LOGS/chromium-supervisor.pid" 2>/dev/null || true)"
+      [[ "$supervisor_pid" =~ ^[0-9]+$ ]] && kill -0 "$supervisor_pid" 2>/dev/null || break
+      sleep 0.1
+    done
+    if [[ -f "$LOGS/chromium-supervisor.pid" && "$supervisor_pid" =~ ^[0-9]+$ ]] && kill -0 "$supervisor_pid" 2>/dev/null; then
+      return "$supervisor_exit"
+    fi
+    rm -f "$LOGS/chromium-supervisor.pid"
+  fi
+  return "$streamer_exit"
 }
 
 screenshot() {

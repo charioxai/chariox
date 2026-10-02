@@ -144,7 +144,7 @@ struct KernelRuntimeOwnedState {
     environment_execution_gates: environment_execution_gate::EnvironmentExecutionGates,
     computer_input_executions:
         crate::runtime::computer_input_execution::ComputerInputExecutionStore,
-    room_browser_health_pass: Arc<Mutex<()>>,
+    room_browser_health_inflight: Arc<std::sync::Mutex<BTreeSet<String>>>,
     next_room_browser_health_at_ms: Arc<AtomicU64>,
     browser_controller_generations:
         Arc<std::sync::Mutex<BTreeMap<String, (u64, bool)>>>,
@@ -642,7 +642,7 @@ impl KernelRuntimeState {
                 environment_execution_gates: Default::default(),
                 computer_input_executions:
                     crate::runtime::computer_input_execution::ComputerInputExecutionStore::default(),
-                room_browser_health_pass: Arc::new(Mutex::new(())),
+                room_browser_health_inflight: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
                 next_room_browser_health_at_ms: Arc::new(AtomicU64::new(0)),
                 browser_controller_generations: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
                 session_projection,
