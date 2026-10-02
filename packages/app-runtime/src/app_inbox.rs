@@ -678,7 +678,9 @@ pub fn state(connection: &Connection, sequence: i64) -> Result<InboxState> {
     InboxState::parse(&value)
 }
 
-/// Occurrence outcomes of one route, so poison and expiry stay visible.
+/// Retained occurrence outcomes for one owner's installation and route name.
+/// Route lists expose these only while the route exists; a replacement route
+/// with the same name includes retained outcomes from its predecessor.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct InboxCounts {
     pub pending: u64,

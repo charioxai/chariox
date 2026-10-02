@@ -1869,8 +1869,16 @@ Workflow trigger and deployment direction:
   route grants the App nothing else. Removing a route stops new acceptance;
   already accepted occurrences retain their original event and installation
   for delivery, and their receipts retain the normal dedupe window even if
-  the route name is reused. Uninstall still clears the installation inbox.
-  An occurrence is validated against the
+  the route name is reused. The dedupe scope is `(owner_id, installation_id,
+  route_id, occurrence_id)`, regardless of changes to the generator,
+  connection or source event type/version. Within the retention window,
+  reusing that scope with the same payload is a duplicate; a different
+  payload is a conflict, refused and acknowledged by generator delivery.
+  Use a new `route_id` for a different source whose occurrence ids may overlap.
+  `ListAppInboxRoutes` lists only existing routes, so removal hides the retained
+  occurrences' counts. Reusing the name includes that name's retained pending,
+  delivered, failed and expired counts, even if its source changed. Uninstall
+  still clears the installation inbox. An occurrence is validated against the
   active release's signed schema and recorded (deduplicated by route and
   source occurrence) before the source is acknowledged; the kernel then sends
   `events.deliver {name, occurrence_id, payload}` at least once, starting a
