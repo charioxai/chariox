@@ -73,6 +73,28 @@ impl KernelRuntimeOwnedState {
         caller_user_id: Option<&str>,
         passkey_verified: bool,
     ) -> Result<(), DaemonError> {
+        self.resolve_runtime_interaction_authorized(
+            session_id,
+            interaction_id,
+            choice_id,
+            custom_reply,
+            caller_user_id,
+            passkey_verified,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn resolve_runtime_interaction_authorized(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        choice_id: &str,
+        custom_reply: Option<&str>,
+        caller_user_id: Option<&str>,
+        passkey_verified: bool,
+        sudo: Option<&crate::local::KernelSudoTurn>,
+    ) -> Result<(), DaemonError> {
         let _mutation = self
             .pending_interactions
             .mutation
@@ -99,6 +121,16 @@ impl KernelRuntimeOwnedState {
                     message: format!("interaction {interaction_id} was not pending"),
                 })?
         };
+        if sudo.is_some()
+            && (pending.terminal_credential_owner.is_some()
+                || pending.passkey_prompt.as_ref().is_some_and(|prompt| {
+                    prompt.kind != crate::local::PasskeyPromptKind::CriticalApproval
+                }))
+        {
+            return Err(interaction_error(
+                "sudo cannot answer authority or credential prompts",
+            ));
+        }
         if pending.session_id != session_id || !pending.belongs_to(&self.session_store) {
             return Err(DaemonError::LocalTransport {
                 operation: "resolve runtime interaction",
@@ -218,14 +250,42 @@ impl KernelRuntimeOwnedState {
         {
             return Err(interaction_error("Kernel operation decision expired"));
         }
-        let pending = self
-            .pending_interactions
-            .write()
-            .remove(interaction_id)
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation: "resolve runtime interaction",
-                message: format!("interaction {interaction_id} was not pending"),
-            })?;
+        let consume = || {
+            let access = sudo.map(|_| self.sudo_turns.lock().expect("access state poisoned"));
+            if let Some(turn) = sudo {
+                if access.as_ref().and_then(|state| state.get(&turn.entry_id)) != Some(turn) {
+                    return Err(interaction_error(
+                        "sudo turn was revoked before the decision",
+                    ));
+                }
+                self.durable_state_store.append_event(
+                    "kernel_access.sudo_approval",
+                    Some(interaction_id.into()),
+                    super::sudo_approval_receipt(turn, session_id, interaction_id, choice_id),
+                )?;
+            }
+            self.pending_interactions
+                .write()
+                .remove(interaction_id)
+                .ok_or_else(|| interaction_error("interaction is no longer pending"))
+        };
+        let pending = if let Some(turn) = sudo {
+            let source = sessions.get_session(&turn.session_id)?;
+            if source.status() == crate::session::SessionStatus::Ended {
+                return Err(interaction_error("sudo session ended"));
+            }
+            self.prompt_state_owner.with_running_prompt(
+                &source,
+                &turn.agent_id,
+                turn.prompt_id
+                    .as_deref()
+                    .ok_or_else(|| interaction_error("sudo turn not started"))?,
+                &turn.entry_id,
+                consume,
+            )?
+        } else {
+            consume()?
+        };
         if pending.passkey_prompt.is_some() {
             // Every terminal closes the popup; a later answer is told why.
             self.passkey_prompts

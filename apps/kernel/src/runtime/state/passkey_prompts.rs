@@ -93,6 +93,7 @@ pub(super) fn passkey_prompt(
         kind: match interaction.kernel_operation_id().unwrap_or_default() {
             id if id.starts_with("access-grant:") => PasskeyPromptKind::AccessGrant,
             id if id.starts_with("access-extension:") => PasskeyPromptKind::AccessExtension,
+            id if id.starts_with("sudo:") => PasskeyPromptKind::Sudo,
             _ => PasskeyPromptKind::CriticalApproval,
         },
         session_id: session.id().to_owned(),

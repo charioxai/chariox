@@ -64,7 +64,7 @@ export async function runAccessCommand(argv: string[]): Promise<boolean> {
   try {
     if (argv[1] === "list" && argv.length === 2) {
       const result = await client.send<KernelAccessGrantsListedResponse>({ ListKernelAccessGrants: {} })
-      console.log(JSON.stringify(result.KernelAccessGrantsListed.grants, null, 2))
+      console.log(JSON.stringify(result.KernelAccessGrantsListed, null, 2))
     } else if (argv[1] === "revoke" && argv.length === 3) {
       const result = await client.send<KernelAccessRevokedResponse>({ RevokeKernelAccessGrant: { grant_id: argv[2] === "--all" ? null : argv[2] } })
       console.log(`Revoked ${result.KernelAccessRevoked.revoked} grants`)

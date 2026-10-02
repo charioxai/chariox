@@ -513,7 +513,8 @@ impl KernelRuntimeState {
             )
         };
         let fresh = operation_id.starts_with("access-grant:")
-            || operation_id.starts_with("access-extension:");
+            || operation_id.starts_with("access-extension:")
+            || operation_id.starts_with("sudo:");
         if fresh
             && (connection_class != Some(KernelConnectionClass::Terminal)
                 || remember_minutes.is_some())

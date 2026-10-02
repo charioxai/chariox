@@ -68,6 +68,41 @@ impl CommandRouter {
                 return result;
             }
         };
+        if command.caller.connection_class == Some(crate::local::KernelConnectionClass::KernelAgent)
+            && command.caller.caller_id.starts_with("sudo:")
+        {
+            if let LocalDaemonRequest::RespondToInteraction(answer) = &request {
+                return self
+                    .runtime_state
+                    .answer_sudo_interaction(&command.caller.caller_id, answer.clone())
+                    .await;
+            }
+        }
+        if let LocalDaemonRequest::SubmitPrompt(prompt) = &request {
+            if crate::runtime::state::is_sudo_prompt(&prompt.prompt) {
+                if command.caller.connection_class
+                    != Some(crate::local::KernelConnectionClass::Terminal)
+                {
+                    return Err(crate::runtime::kernel_access::error(
+                        "only a Chariox terminal can authorize sudo",
+                    ));
+                }
+                return self
+                    .runtime_state
+                    .submit_sudo_prompt(
+                        prompt.clone(),
+                        &crate::runtime::command::command_caller_user_id(&command),
+                        &command.caller.caller_id,
+                    )
+                    .await;
+            }
+        }
+        if matches!(&request, LocalDaemonRequest::SubmitPrompts(batch) if batch.prompts.iter().any(|prompt| crate::runtime::state::is_sudo_prompt(&prompt.prompt)))
+        {
+            return Err(crate::runtime::kernel_access::error(
+                "submit /sudo individually so each entry has its own popup",
+            ));
+        }
         match self
             .dispatch_pre_lane(&command, &request, &caller_user_id)
             .await

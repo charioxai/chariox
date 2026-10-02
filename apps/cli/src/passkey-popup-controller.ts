@@ -65,7 +65,7 @@ export function passkeyPromptsFromEvent(prompts: unknown): PasskeyPrompt[] {
   if (!Array.isArray(prompts)) return []
   return prompts.filter((item): item is PasskeyPrompt => {
     const prompt = item as Partial<PasskeyPrompt> | null
-    return !!prompt && ["critical_approval", "access_grant", "access_extension"].includes(prompt.kind ?? "")
+    return !!prompt && ["critical_approval", "access_grant", "access_extension", "sudo"].includes(prompt.kind ?? "")
       && isText(prompt.session_id) && isText(prompt.interaction_id)
       && typeof prompt.title === "string" && typeof prompt.message === "string"
       && isText(prompt.approve_choice_id) && isText(prompt.refuse_choice_id)
@@ -189,7 +189,7 @@ export function createPasskeyPopupController(deps: {
     const minutes = prompt.kind === "critical_approval" ? remember : 0
     value = ""
     await send(prompt, prompt.approve_choice_id,
-      typed ? { passkey: typed, rememberMinutes: minutes || null, ...(prompt.kind !== "critical_approval" ? { accessLifetimeMinutes: accessLifetime ?? prompt.lifetime_minutes } : {}) } : undefined)
+      typed ? { passkey: typed, rememberMinutes: minutes || null, ...(["access_grant", "access_extension"].includes(prompt.kind) ? { accessLifetimeMinutes: accessLifetime ?? prompt.lifetime_minutes } : {}) } : undefined)
   }
   const refuse = async () => {
     const prompt = current()
