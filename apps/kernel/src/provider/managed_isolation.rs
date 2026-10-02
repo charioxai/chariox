@@ -3002,14 +3002,11 @@ mod tests {
         std::fs::create_dir_all(&provider_home).expect("provider home should exist");
         std::fs::create_dir_all(&chariox_home).expect("CHARIOX_HOME should exist");
         std::fs::create_dir_all(&runtime_home).expect("runtime user home should exist");
-        let bwrap_copy = scratch.join("bwrap");
-        if let Err(error) = std::fs::copy(BWRAP_PATH, &bwrap_copy) {
+        if let Err(error) = std::fs::metadata(BWRAP_PATH) {
             let _ = std::fs::remove_dir_all(&scratch);
             eprintln!("skipped managed home workspace launch assembly: cannot copy bwrap: {error}");
             return;
         }
-        std::fs::set_permissions(&bwrap_copy, std::fs::Permissions::from_mode(0o755))
-            .expect("private bwrap copy should be executable");
 
         let home_root = PathBuf::from(SANDBOX_HOME).join(format!(
             "chariox-managed-home-workspace-collector-{}-{}",
@@ -3080,7 +3077,7 @@ mod tests {
         std::env::set_var(MANAGED_PROVIDER_HOME_ENV, &provider_home);
         std::env::set_var("CHARIOX_HOME", &chariox_home);
         std::env::set_var("HOME", &runtime_home);
-        std::env::set_var(MANAGED_PROVIDER_BWRAP_ENV, &bwrap_copy);
+        std::env::set_var(MANAGED_PROVIDER_BWRAP_ENV, BWRAP_PATH);
 
         let selected = selected
             .canonicalize()
@@ -3317,7 +3314,6 @@ mod tests {
         let scratch =
             std::env::temp_dir().join(format!("chariox-managed-runtime-home-ancestor-{nonce}"));
         let provider_home = scratch.join("provider-home");
-        let bwrap_copy = scratch.join("bwrap");
         let home = home_root.join("runtime-home");
         let protected_state = home.join(".chariox");
         let config = home.join(".config");
@@ -3346,6 +3342,25 @@ mod tests {
             .collect::<Vec<_>>();
 
         std::fs::create_dir_all(&provider_home).expect("provider home should exist");
+        let uid = unsafe { libc::getuid() }.to_string();
+        let gid = unsafe { libc::getgid() }.to_string();
+        let mut install = if uid == "0" {
+            Command::new("install")
+        } else {
+            let mut command = Command::new("sudo");
+            command.args(["-n", "--", "install"]);
+            command
+        };
+        let created = install
+            .args(["-d", "-m", "0755", "-o", &uid, "-g", &gid])
+            .arg(&home_root)
+            .output()
+            .expect("owned runtime-home fixture root should install");
+        assert!(
+            created.status.success(),
+            "runtime-home fixture root setup failed: {}",
+            String::from_utf8_lossy(&created.stderr)
+        );
         std::fs::create_dir_all(&home).expect("runtime user home should exist");
         std::fs::create_dir_all(&protected_state).expect("protected runtime state should exist");
         std::fs::create_dir_all(&openbox).expect("runtime Openbox directory should exist");
@@ -3383,10 +3398,6 @@ mod tests {
             std::fs::write(path, "safe command payload\n").expect("command payload should exist");
         }
 
-        std::fs::copy(BWRAP_PATH, &bwrap_copy).expect("private Bubblewrap copy should exist");
-        std::fs::set_permissions(&bwrap_copy, std::fs::Permissions::from_mode(0o755))
-            .expect("private Bubblewrap copy should be executable");
-
         let mut environment_names = vec![
             MANAGED_PROVIDER_ISOLATION_ENV,
             MANAGED_PROVIDER_HOME_ENV,
@@ -3417,7 +3428,7 @@ mod tests {
         std::env::set_var(MANAGED_PROVIDER_HOME_ENV, &provider_home);
         std::env::set_var("CHARIOX_HOME", &protected_state);
         std::env::set_var("HOME", &home);
-        std::env::set_var(MANAGED_PROVIDER_BWRAP_ENV, &bwrap_copy);
+        std::env::set_var(MANAGED_PROVIDER_BWRAP_ENV, BWRAP_PATH);
 
         let home = home
             .canonicalize()
@@ -4545,12 +4556,10 @@ mod tests {
         let outer_home = scratch.join("outer-home");
         let workspace = scratch.join("workspace");
         let account_root = scratch.join("accounts");
-        let bwrap_copy = scratch.join("bwrap");
         std::fs::create_dir_all(&provider_home).expect("provider home should exist");
         std::fs::create_dir_all(&outer_home).expect("outer home should exist");
         std::fs::create_dir_all(&workspace).expect("workspace should exist");
         std::fs::create_dir_all(&account_root).expect("account root should exist");
-        std::fs::copy(BWRAP_PATH, &bwrap_copy).expect("private Bubblewrap copy should exist");
 
         let account_names = [
             "CODEX_HOME",
@@ -4632,7 +4641,7 @@ mod tests {
         std::env::set_var(MANAGED_PROVIDER_ISOLATION_ENV, "1");
         std::env::set_var(MANAGED_PROVIDER_HOME_ENV, &provider_home);
         std::env::set_var("HOME", &outer_home);
-        std::env::set_var(MANAGED_PROVIDER_BWRAP_ENV, &bwrap_copy);
+        std::env::set_var(MANAGED_PROVIDER_BWRAP_ENV, BWRAP_PATH);
 
         let child_script = r#"
 set -eu
