@@ -328,7 +328,7 @@ mod tests {
     use tokio::sync::Mutex;
 
     #[tokio::test]
-    async fn owned_launch_preparation_preserves_provider_account_and_project_repositories() {
+    async fn owned_launch_preparation_preserves_account_without_injecting_project_repositories() {
         crate::test_support::isolated_env_test!();
         let root = std::env::temp_dir().join(format!(
             "chariox-owned-provider-launch-{}-{}",

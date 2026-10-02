@@ -1378,6 +1378,10 @@ mod tests {
         crate::provider::RuntimeProviderRun,
         crate::app::KernelPromptDispatch,
     ) {
+        assert!(
+            crate::test_support::environment_test_isolated(),
+            "Claude lifecycle fixtures require a private test environment"
+        );
         let worktree = crate::test_support::TestWorktree::new("local-prompt-claude-headless");
         #[cfg(unix)]
         {
