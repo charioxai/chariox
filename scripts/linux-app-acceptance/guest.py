@@ -3,6 +3,7 @@
 import argparse
 import base64
 import json
+import secrets
 import socket
 import sys
 import time
@@ -34,7 +35,31 @@ def main():
                 raise RuntimeError(response["error"])
             return response["return"]
 
-        request("guest-ping")
+        # QGA is a stream across clients. Flush partial requests and stale replies.
+        sync_id = secrets.randbits(63)
+        connection.sendall(b"\xff" + json.dumps({
+            "execute": "guest-sync-delimited", "arguments": {"id": sync_id},
+        }).encode() + b"\n")
+        sync_deadline = time.monotonic() + 15
+        sync_response = None
+        while True:
+            remaining = sync_deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("guest-agent synchronization timed out")
+            connection.settimeout(remaining)
+            byte = reader.read(1)
+            if not byte:
+                raise RuntimeError("guest-agent disconnected during synchronization")
+            if byte == b"\xff":
+                sync_response = bytearray()
+            elif sync_response is not None:
+                sync_response.extend(byte)
+                if byte == b"\n":
+                    response = json.loads(sync_response)
+                    if response.get("return") == sync_id:
+                        break
+                    sync_response = None
+        connection.settimeout(15)
         result = request("guest-exec", {
             "path": command[0], "arg": command[1:], "capture-output": True,
             "input-data": base64.b64encode(sys.stdin.buffer.read()).decode(),
@@ -57,6 +82,6 @@ def main():
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except (OSError, ValueError, RuntimeError, TimeoutError) as error:
+    except (OSError, ValueError, KeyError, RuntimeError, TimeoutError) as error:
         print(f"guest_command_failed: {error}", file=sys.stderr)
         sys.exit(1)

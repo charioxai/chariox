@@ -23,6 +23,7 @@ const paths = releasePaths({ target: 'linux-x64', files: [
 ] });
 await mkdir(output, { mode: 0o700 });
 const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+const wrongPublicKey = generateKeyPairSync('ed25519').publicKey;
 const records = [];
 for (const version of [1, 2]) {
   const directory = join(output, `v${version}`);
@@ -46,5 +47,6 @@ for (const version of [1, 2]) {
 // The signing key exists only in memory. Persist public trust separately.
 await writeFile(join(evidence, 'installer-fixture.json'), JSON.stringify({
   qualification: 'non-executable signed text graph; installer mechanics only', sourceCommit,
-  publicKeyHex: publicKey.export({ type: 'spki', format: 'der' }).subarray(12).toString('hex'), records,
+  publicKeyHex: publicKey.export({ type: 'spki', format: 'der' }).subarray(12).toString('hex'),
+  wrongPublicKeyHex: wrongPublicKey.export({ type: 'spki', format: 'der' }).subarray(12).toString('hex'), records,
 }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });

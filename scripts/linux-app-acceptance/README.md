@@ -17,7 +17,11 @@ of receipts and their scopes.
 Record the PR base, OSS candidate, Cloud candidate, protocol, runtime inventory,
 image SHA-256 and test results in external evidence. This drill can live on an
 older PR base while testing a private candidate assembled from g plus reviewed
-#727/Cloud #273 patches. Call it a branch candidate, never live h. Keep candidates
+#727/Cloud #273 patches. The normal installer scripts are an additional required
+input: Linux installer #599 (`apps/p1-linux-installer`), already included in the
+validated g commit `065c99b7f4f9e63ecf42040ceb8c193e33267068`. They are absent
+from this PR base and #727; use that g commit or explicitly include #599.
+Call the result a branch candidate, never live h. Keep candidates
 inside the assigned checkout, excluded from Git, and all generated state and
 build output in owned external scratch.
 
@@ -34,7 +38,10 @@ Install `qemu-guest-agent` in the guest and expose it on an owned host Unix
 socket through `org.qemu.guest_agent.0`. `guest.py` submits guest-exec commands
 without SSH credentials or copied provider auth. It reports timeouts with the
 guest PID; a timeout does not cancel that command. Clean up that owned process
-before retrying a mutation. Truncated output fails the drill.
+before retrying a mutation. The client synchronizes every new connection using
+[QGA's delimited handshake](https://www.qemu.org/docs/master/interop/qemu-ga-ref.html#command-guest-sync-delimited)
+so a stale reply from a timed-out client cannot become the next command result.
+Truncated output fails the drill.
 
 Mount the task's own `share/` read-only at `/mnt/b6share`, using QEMU's `b6share`
 9p tag. Cloud-init may provision packages and mount this share. Supply all of:

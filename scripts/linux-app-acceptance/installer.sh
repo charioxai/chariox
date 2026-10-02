@@ -16,18 +16,19 @@ chmod 0755 /opt/b6-linux-acceptance /opt/b6-linux-acceptance/bin
 find /opt/b6-linux-acceptance/deploy -type d -exec chmod 0755 {} +
 find /opt/b6-linux-acceptance/deploy -type f -exec chmod 0644 {} +
 cd /opt/b6-linux-acceptance
-read -r key v1 v2 < <(python3 - <<'PY'
+read -r key wrong_key v1 v2 < <(python3 - <<'PY'
 import json
 x=json.load(open('installer-fixture.json'))
 assert x['qualification']=='non-executable signed text graph; installer mechanics only'
-print(x['publicKeyHex'],x['records'][0]['inventorySha256'],x['records'][1]['inventorySha256'])
+print(x['publicKeyHex'],x['wrongPublicKeyHex'],x['records'][0]['inventorySha256'],x['records'][1]['inventorySha256'])
 PY
 )
 installer=$PWD/bin/chariox-app-runtime-install
-install_graph() { "$installer" install --source "$PWD/installer-fixture/$1" --trusted-public-key-hex "$key" --inventory-sha256 "$2"; }
 refused() {
+  local expected=$1; shift
   if "$@" > /tmp/b6-refusal.out 2>&1; then echo 'unexpected success' >&2; exit 1; fi
   cat /tmp/b6-refusal.out
+  grep -qx "$expected" /tmp/b6-refusal.out
 }
 check_revision() {
   python3 - "$1" "$2" <<'PY'
@@ -39,14 +40,13 @@ print('PASS enrollment revision', x['revision'], x['inventorySha256'])
 PY
 }
 echo 'SCOPE: signed text graph; no executable runtime or App acceptance'
-refused runuser -u b6 -- "$installer" install --source "$PWD/installer-fixture/v1" --trusted-public-key-hex "$key" --inventory-sha256 "$v1"
-grep -qx app_runtime_installer_requires_root /tmp/b6-refusal.out
+refused app_runtime_installer_requires_root runuser -u b6 -- "$installer" install --source "$PWD/installer-fixture/v1" --trusted-public-key-hex "$key" --inventory-sha256 "$v1"
 test ! -e /etc/chariox/apps/runtime-enrollment.json
 echo 'PASS nonroot refusal'
-refused "$installer" install --source "$PWD/installer-fixture/v1" --trusted-public-key-hex "$(printf '%064d' 0)" --inventory-sha256 "$v1"
+refused app_runtime_enrollment_signature "$installer" install --source "$PWD/installer-fixture/v1" --trusted-public-key-hex "$wrong_key" --inventory-sha256 "$v1"
 test ! -e /etc/chariox/apps/runtime-enrollment.json
 echo 'PASS wrong key refusal before publication'
-refused "$installer" install --source "$PWD/installer-fixture/v1" --trusted-public-key-hex "$key" --inventory-sha256 "$(printf '%064d' 0)"
+refused app_runtime_enrollment_identity "$installer" install --source "$PWD/installer-fixture/v1" --trusted-public-key-hex "$key" --inventory-sha256 "$(printf '%064d' 0)"
 test ! -e /etc/chariox/apps/runtime-enrollment.json
 echo 'PASS wrong inventory refusal before publication'
 # The normal local installer is the only setup path, inside this VM.
@@ -62,7 +62,7 @@ bash deploy/local-linux/install-root.sh install --user b6 --bin "$PWD/bin" --run
 check_revision 2 "$v2"
 test -d "/usr/lib/chariox/app-runtimes/$v1"
 echo 'PASS upgrade retains old generation'
-refused "$installer" cleanup --inventory-sha256 "$v2"
+refused app_runtime_enrollment_busy "$installer" cleanup --inventory-sha256 "$v2"
 test -d "/usr/lib/chariox/app-runtimes/$v2"
 check_revision 2 "$v2"
 echo 'PASS active generation cleanup refused'
