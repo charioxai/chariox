@@ -386,7 +386,7 @@ impl KernelRuntimeState {
                 state.authorize_provider_launch_grant(grant_id.as_deref(), &request)?;
                 match relay_state {
                     Some(relay_state) => {
-                        crate::transport::relay_client::enqueue_peer_request_via_connected_relay_with_timeout(
+                        crate::transport::relay_client::enqueue_peer_request_via_connected_relay_authorized(
                             &relay_config,
                             &relay_state,
                             target,
@@ -394,18 +394,20 @@ impl KernelRuntimeState {
                             std::time::Duration::from_millis(
                                 relay_config.relay_request_timeout_ms,
                             ),
+                            || state.authorize_provider_launch_grant(grant_id.as_deref(), &request),
                         )
                         .await
                     }
                     None => {
                         // Preserve serialized ordering when there is no shared relay sender.
-                        let response = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+                        let response = crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized(
                             &relay_config,
                             target,
                             peer_request,
                             std::time::Duration::from_millis(
                                 relay_config.relay_request_timeout_ms,
                             ),
+                            || state.authorize_provider_launch_grant(grant_id.as_deref(), &request),
                         )
                         .await?;
                         Ok(crate::transport::relay_client::RelayPeerResponseWaiter::ready(
