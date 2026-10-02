@@ -5,8 +5,8 @@ use crate::runtime::browser_controller_process::{
     BrowserControllerProcessSnapshot, BrowserControllerProcessState,
 };
 use crate::session::{
-    EnvironmentComponent, EnvironmentComponentHealthState, EnvironmentError, EnvironmentLifecycle,
-    RoomEnvironmentSnapshot,
+    agent_environment_actor_id, EnvironmentActionRequest, EnvironmentComponent,
+    EnvironmentComponentHealthState, EnvironmentError, EnvironmentLifecycle, RoomEnvironmentSnapshot,
 };
 
 use super::room_browser_controller::controller_route_error;
@@ -493,11 +493,12 @@ impl KernelRuntimeState {
         let binding = self
             .room_environment_controller_tab_binding(session_id, tab_id)
             .map_err(|error| environment_runtime_error("browser_controller.history", error))?;
-        self.execute_browser_mutation_as_agent(
-            session_id,
-            agent_id,
-            tab_id,
-            binding.document_revision,
+        let environment = self
+            .reconcile_room_environment_actors(session_id, None)
+            .map_err(|error| environment_runtime_error("browser_controller.history", error))?;
+        let mut request = EnvironmentActionRequest::browser_mutation(
+            agent_environment_actor_id(agent_id),
+            environment.runtime_generation,
             match action {
                 crate::runtime::browser_controller_history::BrowserHistoryAction::Back => {
                     "browser_history_back"
@@ -509,6 +510,16 @@ impl KernelRuntimeState {
                     "browser_history_reload"
                 }
             },
+            tab_id,
+            binding.document_revision,
+        );
+        // History addresses a tab, not an observed document. An earlier queued
+        // navigation may replace that document before this action is admitted.
+        // The runtime generation and tab reservation still fence execution.
+        request.tab_preconditions.clear();
+        self.execute_browser_mutation(
+            session_id,
+            request,
             Some(&execution_id),
             self.navigate_browser_environment_history(session_id, &execution_id, tab_id, action),
         )

@@ -20,6 +20,7 @@ mod controller_configuration_queue;
 mod controller_configuration_recovery;
 mod controller_events;
 mod controller_integrations;
+mod controller_history_queue;
 mod controller_lifecycle_cancellation;
 mod controller_mutations;
 mod controller_navigation_queue;
