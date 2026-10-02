@@ -179,7 +179,12 @@ pub(super) fn execute(
     if uncertain {
         fatal.store(true, std::sync::atomic::Ordering::Release);
     }
-    let _ = request.response.send(result);
+    // A stopped-worker preparation must regain sole storage ownership when
+    // its callback returns. Release every writer-held descriptor before waking
+    // that caller, rather than racing its PreparedWorker::visit_private_data.
+    let response = request.response.clone();
+    drop(request);
+    let _ = response.send(result);
     uncertain
 }
 fn apply(connection: &mut Connection, request: &RestoreRequest) -> (Result<()>, bool) {
