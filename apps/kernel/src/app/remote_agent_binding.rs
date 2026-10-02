@@ -661,7 +661,6 @@ impl DaemonApp {
             uses_remote_execution_relay.then_some(relay_config),
             authorize,
         )?;
-        authorize()?;
         self.durable_state_store().append_event(
             "agent.updated",
             Some(rebound.id().to_string()),
