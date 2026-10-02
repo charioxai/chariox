@@ -53,9 +53,9 @@ impl Environment {
             std::env::set_var("CHARIOX_SLICE_ID", slice);
         }
         let root = std::env::temp_dir().join(format!(
-            "chariox-hosted-worker-context-{}-{}",
+            "chariox-hosted-worker-context-{}-{:032x}",
             std::process::id(),
-            format!("{:032x}", rand::random::<u128>())
+            rand::random::<u128>()
         ));
         std::fs::create_dir(&root).unwrap();
         Self {
