@@ -6,6 +6,7 @@ import path from "node:path"
 import test from "node:test"
 import { once } from "node:events"
 
+import { LocalIpcClient } from "./ipc.js"
 import { LocalIpcError } from "./local-ipc-error.js"
 import { sendLocalSocketRequest } from "./local-socket-transport.js"
 
@@ -48,8 +49,22 @@ test("sendLocalSocketRequest converts error envelopes to LocalIpcError", async (
   )
 })
 
+test("LocalIpcClient keeps a raw Unix sudo request untimed and sends it once", async (t) => {
+  const setTimeout = t.mock.method(net.Socket.prototype, "setTimeout")
+  const { server, socketPath, received } = await startLocalSocketServer(() => ({
+    response: { approved: true }, error: null,
+  }), 50)
+  t.after(() => closeLocalSocketServer(server, socketPath))
+  const request = { SubmitPrompt: { session_id: "fixture", prompt: "/sudo protected task" } }
+  const client = new LocalIpcClient(socketPath)
+  assert.deepEqual(await client.send(request), { approved: true })
+  assert.deepEqual(received, [request])
+  assert.ok(setTimeout.mock.calls.some(call => call.arguments[0] === 0))
+})
+
 async function startLocalSocketServer(
   respond: (request: unknown) => { response: unknown; error: string | null },
+  responseDelayMs = 0,
 ) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "chariox-kernel-client-"))
   const socketPath = path.join(dir, "kernel.sock")
@@ -67,7 +82,7 @@ async function startLocalSocketServer(
       const frame = Buffer.allocUnsafe(4 + response.length)
       frame.writeUInt32BE(response.length, 0)
       response.copy(frame, 4)
-      socket.end(frame)
+      setTimeout(() => socket.end(frame), responseDelayMs)
     })
   })
   server.listen(socketPath)

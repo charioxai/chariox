@@ -12,6 +12,13 @@ turn. It never joins the durable prompt queue or steers the running turn.
 `/kernel access revoke <entry-id>` or `/kernel access revoke all` to revoke them.
 Rotation revokes queued entries and interrupts running sudo turns. Restart
 drops the authorization and records a notice; enter `/sudo` again to retry.
+The submitting client waits for the popup and for an idle agent without a
+response timeout or automatic replay. A lost connection fails the submission;
+check the access list and revoke any remaining entry before retrying.
+
+`chariox access list` now prints a JSON object with `grants` and `sudo_turns`
+arrays. Scripts that previously consumed the grants array should select
+`.grants`. The terminal `/kernel access list` includes both kinds of entry.
 
 A sudo turn keeps ordinary provider tools and gains `chariox_kernel_request`
 through the existing runtime MCP. Its `request` argument is one serialized
@@ -32,7 +39,8 @@ binding on each call. Authority covers the host's kernel, including other
 sessions and any number of critical approvals. It ends at yield or interruption;
 there is no time or payment cap. Spawned and forked agents receive no sudo.
 Sudo cannot mint access or sudo, answer credential-entry prompts, export secret
-values, change the passkey or configure kernel access. Existing vault-entry
+values, change the passkey or configure kernel access. Pairing, session invites,
+relay configuration and Cloud identity operations remain host-terminal-only. Existing vault-entry
 flows remain available through the ordinary runtime tools.
 
 `kernel_access.sudo` records transitions. Each resolved sudo decision appends

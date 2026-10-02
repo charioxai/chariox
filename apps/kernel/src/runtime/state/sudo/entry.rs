@@ -184,14 +184,15 @@ impl KernelRuntimeState {
         text: &str,
         attachments: &[crate::session::PromptAttachment],
     ) -> Result<Option<crate::app::KernelPromptSubmission>, DaemonError> {
-        if !self
+        // Release sudo_turns before reading session/prompt state: interaction
+        // resolution holds session_store, then prompt state, then sudo_turns.
+        let present = self
             .owned
             .sudo_turns
             .lock()
             .expect("access state poisoned")
-            .contains_key(&entry.entry_id)
-            || !self.sudo_live(entry)
-        {
+            .contains_key(&entry.entry_id);
+        if !present || !self.sudo_live(entry) {
             return Err(error("queued sudo was revoked"));
         }
         let session = self.owned.session_store.get_session(&entry.session_id)?;

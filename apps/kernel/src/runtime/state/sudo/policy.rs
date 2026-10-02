@@ -93,6 +93,26 @@ fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::RevokeKernelAccessGrant(_)
             | LocalDaemonRequest::ManageCredentialVault(_)
             | LocalDaemonRequest::GetCredential(_)
+            // Pairing and Cloud identity can outlive the authorizing turn or
+            // return relay credentials. They remain host-terminal operations.
+            | LocalDaemonRequest::CreatePairingInvite(_)
+            | LocalDaemonRequest::JoinPairingInvite(_)
+            | LocalDaemonRequest::CreateTerminalPairingLink(_)
+            | LocalDaemonRequest::JoinTerminalPairingLink(_)
+            | LocalDaemonRequest::RecordPairedClient(_)
+            | LocalDaemonRequest::ApproveRemoteMachine(_)
+            | LocalDaemonRequest::CreateSessionInvite(_)
+            | LocalDaemonRequest::JoinSessionInvite(_)
+            | LocalDaemonRequest::CreateCloudSessionInvite(_)
+            | LocalDaemonRequest::AcceptCloudSessionInvite(_)
+            | LocalDaemonRequest::ConfigureRelay(_)
+            | LocalDaemonRequest::CloudRelayStatus(_)
+            | LocalDaemonRequest::StartCloudRelayLogin(_)
+            | LocalDaemonRequest::PollCloudRelayLogin(_)
+            | LocalDaemonRequest::LogoutCloudRelay(_)
+            | LocalDaemonRequest::PairCloudRelayClient(_)
+            | LocalDaemonRequest::PairCloudRelayMachine(_)
+            | LocalDaemonRequest::ConnectCloudRelay(_)
             | LocalDaemonRequest::IssueCloudRelayClientToken(_)
             | LocalDaemonRequest::ResolveKernelClientConnection(_)
             | LocalDaemonRequest::ExportDebugBundle(_)
@@ -115,7 +135,7 @@ pub(crate) fn is_sudo_prompt(prompt: &str) -> bool {
 
 fn sudo_config_forbidden(path: &str) -> bool {
     let path = path.trim().to_ascii_lowercase();
-    ["kernel_access", "credential_vault"]
+    ["kernel_access", "credential_vault", "relay"]
         .iter()
         .any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}.")))
 }
