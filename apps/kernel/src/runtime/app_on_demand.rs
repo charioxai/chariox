@@ -71,6 +71,7 @@ impl OnDemandApps<'_> {
         }
         let mut started = false;
         let mut next_eviction = tokio::time::Instant::now();
+        let mut eviction_queued = false;
         loop {
             if let Some(lease) = control.active_app_lease(owner, installation) {
                 return Ok(lease);
@@ -96,7 +97,11 @@ impl OnDemandApps<'_> {
                     Err(crate::runtime::app_lifecycle::LifecycleError::LiveLimit) => {
                         if tokio::time::Instant::now() >= next_eviction {
                             next_eviction = tokio::time::Instant::now() + EVICTION_RETRY;
-                            self.evict_idle_app(owner, installation).await;
+                            let queued = self.evict_idle_app(owner, installation).await;
+                            if !queued && !eviction_queued {
+                                return Err(unavailable());
+                            }
+                            eviction_queued |= queued;
                         }
                     }
                     Err(_) => {

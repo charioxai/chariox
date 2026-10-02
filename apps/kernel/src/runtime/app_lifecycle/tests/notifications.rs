@@ -70,6 +70,39 @@ fn grant(store: &DurableKernelStateStore, connection: &str) {
 }
 
 #[test]
+fn seeded_catalog_first_start_does_not_emit_idle_resume() {
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let store = scratch.store();
+    fixture_event_catalog(&store);
+    stage(&store);
+    let (control, observations) = make_control(&store, Arc::new(NativeFixture::compile().unwrap()));
+    control
+        .lifecycle()
+        .0
+        .fixture
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .lifecycle = Some(Mode::Lifecycle);
+    control.seed_dormant("alice", "installed");
+    assert!(control.is_app_dormant("alice", "installed"));
+    control
+        .lifecycle()
+        .start_on_demand_blocking("alice", "installed", runtime.handle().clone())
+        .unwrap();
+    wait(|| control.active_app_lease("alice", "installed").is_some());
+    assert_eq!(names(&frames(&observations, 0)), ["startup"]);
+    control
+        .lifecycle()
+        .stop_blocking("alice", "installed")
+        .unwrap();
+    assert_eq!(names(&frames(&observations, 0)), ["startup", "shutdown"]);
+    assert!(all_reaped(&observations));
+}
+
+#[test]
 fn idle_suspends_before_dormancy_and_reactivation_resumes_before_publication() {
     let (_scratch, runtime, _store, control, observations) = setup(Mode::Lifecycle);
     let catalog = control
