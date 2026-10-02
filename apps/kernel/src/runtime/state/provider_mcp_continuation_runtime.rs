@@ -121,7 +121,6 @@ impl KernelRuntimeState {
         self.remember_pending_mcp_continuation(
             session.id(),
             agent.id(),
-            prompt.source_attachment_id(),
             name,
             prompt.prompt(),
         );
@@ -153,7 +152,6 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         agent_id: &str,
-        source_attachment_id: &str,
         mcp_name: &str,
         previous_prompt: &str,
     ) {
@@ -166,7 +164,7 @@ impl KernelRuntimeState {
             PendingMcpContinuation {
                 session_id: session_id.to_string(),
                 agent_id: agent_id.to_string(),
-                source_attachment_id: source_attachment_id.to_string(),
+                
                 mcp_name: mcp_name.to_string(),
                 previous_prompt: previous_prompt.to_string(),
             },

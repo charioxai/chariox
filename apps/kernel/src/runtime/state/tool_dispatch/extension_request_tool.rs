@@ -87,7 +87,6 @@ impl KernelRuntimeState {
                 self.remember_pending_mcp_continuation(
                     session_id,
                     granted_agent.id(),
-                    &source_attachment_id,
                     &args.name,
                     &previous_prompt,
                 );

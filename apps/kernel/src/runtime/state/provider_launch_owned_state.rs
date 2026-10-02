@@ -1216,7 +1216,6 @@ mod tests {
         runtime.remember_pending_mcp_continuation(
             session.id(),
             agent.id(),
-            attachment.id(),
             "playwright",
             "continue after granting playwright",
         );
