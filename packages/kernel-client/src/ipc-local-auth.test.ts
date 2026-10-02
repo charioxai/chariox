@@ -308,6 +308,65 @@ test("LocalIpcClient still connects without a header when the laptop token is mi
   assert.deepEqual(authorizations, [undefined, undefined, undefined])
 })
 
+test("private kernels discover their own tokens without changing the client process environment", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-private-kernel-clients-"))
+  const first = await startKernelServer()
+  const second = await startKernelServer()
+  const firstHome = join(root, "first")
+  const secondState = join(root, "second")
+  await writeLaptopKernelToken(firstHome, new URL(first.endpoint).port, "first-kernel-token")
+  const directory = join(secondState, "chariox", "kernel-local-auth")
+  await mkdir(directory, { recursive: true })
+  await writeFile(join(directory, `${new URL(second.endpoint).port}.token`), "second-kernel-token", { mode: 0o600 })
+  t.after(async () => {
+    await closeKernelServer(first.server)
+    await closeKernelServer(second.server)
+    await rm(root, { recursive: true, force: true })
+  })
+  const result = await runClientScript(`
+    const first = new LocalIpcClient(${JSON.stringify(first.endpoint)}, {
+      localAuthEnvironment: { CHARIOX_HOME: ${JSON.stringify(firstHome)} },
+    })
+    const second = new LocalIpcClient(${JSON.stringify(second.endpoint)}, {
+      localAuthEnvironment: { XDG_STATE_HOME: ${JSON.stringify(secondState)} },
+    })
+    try {
+      await Promise.all([first.send({ ListSessions: null }), second.send({ ListSessions: null })])
+    } finally {
+      first.destroy()
+      second.destroy()
+    }
+  `, { CHARIOX_HOME: join(root, "unrelated-client-home") })
+  assert.equal(result.code, 0, result.stderr)
+  assert.deepEqual(first.authorizations, ["Bearer first-kernel-token"])
+  assert.deepEqual(second.authorizations, ["Bearer second-kernel-token"])
+})
+
+test("relay connections never discover a private local kernel token, even on loopback", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-private-relay-token-"))
+  const { server, endpoint, authorizations } = await startKernelServer({ rejectRelayHandshake: true })
+  await writeLaptopKernelToken(root, new URL(endpoint).port, "must-stay-local")
+  t.after(async () => {
+    await closeKernelServer(server)
+    await rm(root, { recursive: true, force: true })
+  })
+  const result = await runClientScript(`
+    const client = new LocalIpcClient(${JSON.stringify(endpoint)}, {
+      localAuthEnvironment: { CHARIOX_HOME: ${JSON.stringify(root)} },
+      relayAuthToken: "test-relay-token",
+      targetDaemonAlias: "test-kernel",
+      controlRequestRetryDeadlineMs: 0,
+    })
+    try {
+      await client.send({ ListSessions: null }).catch(() => {})
+    } finally {
+      client.destroy()
+    }
+  `, {})
+  assert.equal(result.code, 0, result.stderr)
+  assert.deepEqual(authorizations, [undefined])
+})
+
 async function writeLaptopKernelToken(charioxHome: string, port: string, token: string) {
   const directory = join(charioxHome, "state", "kernel-local-auth")
   await mkdir(directory, { recursive: true, mode: 0o700 })
@@ -316,7 +375,7 @@ async function writeLaptopKernelToken(charioxHome: string, port: string, token: 
   return tokenFile
 }
 
-async function startKernelServer(options: { closeAfterResponse?: boolean } = {}) {
+async function startKernelServer(options: { closeAfterResponse?: boolean; rejectRelayHandshake?: boolean } = {}) {
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })
   await new Promise<void>((resolve) => server.once("listening", resolve))
   const address = server.address()
@@ -325,6 +384,11 @@ async function startKernelServer(options: { closeAfterResponse?: boolean } = {})
   server.on("connection", (socket, request) => {
     authorizations.push(request.headers.authorization)
     socket.once("message", (payload) => {
+      if (options.rejectRelayHandshake) {
+        socket.send(JSON.stringify({ kind: "close", reason: "test relay rejection" }))
+        socket.close()
+        return
+      }
       const frame = JSON.parse(String(payload)) as { request_id: string }
       socket.send(JSON.stringify({
         type: "response",

@@ -26,8 +26,8 @@ export function localKernelAuthTokenPath(
  * when there is none or the file is not a private regular file of this user;
  * the kernel still accepts such connections in log mode. Never throws.
  */
-export function readLocalKernelAuthToken(endpoint: string): string | null {
-  const path = localKernelAuthTokenPath(endpoint)
+export function readLocalKernelAuthToken(endpoint: string, environment: NodeJS.ProcessEnv = process.env): string | null {
+  const path = localKernelAuthTokenPath(endpoint, environment)
   if (!path) return null
   let descriptor: number
   try {

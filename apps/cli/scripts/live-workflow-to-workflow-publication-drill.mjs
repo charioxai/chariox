@@ -107,11 +107,11 @@ async function stopProcess(child) {
   })
 }
 
-async function waitForKernel(kernelUrl) {
+async function waitForKernel(kernelUrl, localAuthEnvironment) {
   const deadline = Date.now() + 20_000
   let lastError = null
   while (Date.now() < deadline) {
-    const client = new LocalIpcClient(kernelUrl)
+    const client = new LocalIpcClient(kernelUrl, { localAuthEnvironment })
     try {
       await client.send(listSessionsRequest())
       await client.close().catch(() => {})
@@ -183,8 +183,9 @@ async function startKernelEnvironment(root, kernelBinary, name) {
     CHARIOX_SESSION_HISTORY_DIR: path.join(root, `${name}-history`),
   }
   const kernel = startProcess(kernelBinary, [], env, `kernel-${name}`)
-  await waitForKernel(kernelUrl)
+  await waitForKernel(kernelUrl, env)
   const client = new LocalIpcClient(kernelUrl, {
+      localAuthEnvironment: env,
     kernelPingIntervalMs: 60_000,
     kernelMaxMissedPongs: 10,
   })

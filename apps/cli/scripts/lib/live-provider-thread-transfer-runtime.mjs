@@ -450,8 +450,9 @@ export async function withTimeout(promise, label, timeoutMs) {
   }
 }
 
-export async function sendControlRequest(kernelUrl, request, label, timeoutMs) {
+export async function sendControlRequest(kernelUrl, request, label, timeoutMs, localAuthEnvironment) {
   const controlClient = new LocalIpcClient(kernelUrl, {
+    localAuthEnvironment,
     kernelPingIntervalMs: 60_000,
     kernelMaxMissedPongs: 10,
   })
@@ -466,10 +467,11 @@ export async function sendControlRequest(kernelUrl, request, label, timeoutMs) {
   }
 }
 
-export async function waitForLocalDaemon(kernelUrl, workspace, worktree) {
+export async function waitForLocalDaemon(kernelUrl, workspace, worktree, localAuthEnvironment) {
   let lastError = null
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const client = new LocalIpcClient(kernelUrl, {
+      localAuthEnvironment,
       kernelPingIntervalMs: 60_000,
       kernelMaxMissedPongs: 10,
     })

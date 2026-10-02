@@ -136,11 +136,11 @@ async function stopDaemon(child) {
   }
 }
 
-async function waitForDaemon(kernelUrl, workspace) {
+async function waitForDaemon(kernelUrl, workspace, localAuthEnvironment) {
   const deadline = Date.now() + 30_000
   let lastError = null
   while (Date.now() < deadline) {
-    const client = new LocalIpcClient(kernelUrl)
+    const client = new LocalIpcClient(kernelUrl, { localAuthEnvironment })
     try {
       const created = await client.send(requests.createSessionRequest(workspace, workspace, `script-agent-smoke-${Date.now()}`))
       const session = unwrap(created, 'SessionCreated').session
@@ -406,8 +406,8 @@ async function main() {
       CHARIOX_DAEMON_SOCKET: path.join(root, 'daemon.sock'),
       CHARIOX_SESSION_HISTORY_DIR: historyDir,
     })
-    await waitForDaemon(kernelUrl, workspace)
-    client = new LocalIpcClient(kernelUrl)
+    await waitForDaemon(kernelUrl, workspace, { CHARIOX_HOME: process.env.CHARIOX_HOME, XDG_STATE_HOME: stateHome, HOME: process.env.HOME })
+    client = new LocalIpcClient(kernelUrl, { localAuthEnvironment: { CHARIOX_HOME: process.env.CHARIOX_HOME, XDG_STATE_HOME: stateHome, HOME: process.env.HOME } })
     const { pyEnv, nodeEnv } = await registerScripts(client, workspace, root, tokens, scriptNames)
     const session = unwrap(
       await client.send(requests.createSessionRequest(workspace, workspace, 'script-extension-agent-drill')),

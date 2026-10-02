@@ -149,11 +149,11 @@ async function crashDaemon(child) {
   })
 }
 
-async function waitForDaemon(kernelUrl) {
+async function waitForDaemon(kernelUrl, localAuthEnvironment) {
   const deadline = Date.now() + 20_000
   let lastError = null
   while (Date.now() < deadline) {
-    const client = new LocalIpcClient(kernelUrl)
+    const client = new LocalIpcClient(kernelUrl, { localAuthEnvironment })
     try {
       await client.send(listSessionsRequest())
       await client.close().catch(() => {})
@@ -261,10 +261,10 @@ async function main() {
 
     const kernelBinary = await buildKernel()
     daemon = startDaemon(kernelBinary, env)
-    await waitForDaemon(kernelUrl)
+    await waitForDaemon(kernelUrl, env)
     log('daemon-ready', { kernelUrl })
 
-    client = new LocalIpcClient(kernelUrl)
+    client = new LocalIpcClient(kernelUrl, { localAuthEnvironment: env })
     const created = variant(await client.send(createSessionRequest(workspace, workspace, 'm8-restart-session')), 'SessionCreated')
     const session = created.session
     sessionId = session.id
@@ -368,8 +368,8 @@ async function main() {
     log('daemon-crashed')
 
     daemon = startDaemon(kernelBinary, env)
-    await waitForDaemon(kernelUrl)
-    client = new LocalIpcClient(kernelUrl)
+    await waitForDaemon(kernelUrl, env)
+    client = new LocalIpcClient(kernelUrl, { localAuthEnvironment: env })
     log('daemon-restarted')
 
     log('restore-session-list-requested')

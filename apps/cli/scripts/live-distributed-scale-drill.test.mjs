@@ -28,5 +28,5 @@ test("distributed scale drill activates every lease and samples every worker", a
   assert.match(source, /runningProviderAgents: totalAgents/)
   assert.match(source, /syntheticProviderProcesses: workerCount/)
   assert.match(source, /homeRelayRouteProbed: true/)
-  assert.match(source, /new LocalIpcClient\(`ws:\/\/127\.0\.0\.1:\$\{ports\.homeKernel\}`\)/)
+  assert.match(source, /new LocalIpcClient\(`ws:\/\/127\.0\.0\.1:\$\{ports\.homeKernel\}`,/)
 })

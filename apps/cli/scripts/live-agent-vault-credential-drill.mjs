@@ -123,10 +123,10 @@ function makePorts() {
   }
 }
 
-async function waitForLocalDaemon(LocalIpcClient, kernelUrl, createSessionRequest, endSessionRequest, workspace) {
+async function waitForLocalDaemon(LocalIpcClient, kernelUrl, createSessionRequest, endSessionRequest, workspace, localAuthEnvironment) {
   let lastError = null
   for (let attempt = 0; attempt < 120; attempt += 1) {
-    const probe = new LocalIpcClient(kernelUrl)
+    const probe = new LocalIpcClient(kernelUrl, { localAuthEnvironment })
     try {
       const created = unwrapVariant(
         await probe.send(createSessionRequest(workspace, workspace, `m17-vault-probe-${attempt}`)),
@@ -481,8 +481,8 @@ async function main() {
       stdio: ['ignore', 'ignore', 'inherit'],
     })
 
-    await waitForLocalDaemon(LocalIpcClient, kernelUrl, createSessionRequest, endSessionRequest, workspace)
-    client = new LocalIpcClient(kernelUrl)
+    await waitForLocalDaemon(LocalIpcClient, kernelUrl, createSessionRequest, endSessionRequest, workspace, daemonEnv)
+    client = new LocalIpcClient(kernelUrl, { localAuthEnvironment: daemonEnv })
     const created = unwrapVariant(
       await client.send(createSessionRequest(
         workspace,

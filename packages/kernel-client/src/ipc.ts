@@ -218,6 +218,8 @@ function isHostedPublicationGateway() {
 }
 
 type LocalIpcClientOptions = {
+  /** State directory of a private local kernel; never used for relay connections. */
+  localAuthEnvironment?: NodeJS.ProcessEnv | undefined
   localAuthToken?: string | undefined
   relayAuthToken?: string | undefined
   targetDaemonId?: string | undefined
@@ -234,6 +236,7 @@ type LocalIpcClientOptions = {
 
 export class LocalIpcClient {
   readonly socketPath: string
+  private readonly localAuthEnvironment: NodeJS.ProcessEnv
   private readonly localAuthEndpoint: string | null
   private readonly localAuthToken: string | null
   private readonly relayAuthToken: string | null
@@ -275,6 +278,12 @@ export class LocalIpcClient {
       throw new Error("Unix kernel access uses OS process identity, without bearer credentials")
     }
     this.socketPath = endpoint
+    const localAuthEnvironment = options.localAuthEnvironment ?? process.env
+    this.localAuthEnvironment = {
+      CHARIOX_HOME: localAuthEnvironment.CHARIOX_HOME,
+      XDG_STATE_HOME: localAuthEnvironment.XDG_STATE_HOME,
+      HOME: localAuthEnvironment.HOME,
+    }
     const staleMs = options.kernelEventStaleMs ?? DEFAULT_KERNEL_EVENT_STALE_MS
     this.kernelEventStaleMs = staleMs > 0 ? Math.max(staleMs, 250) : 0
     this.kernelPingIntervalMs = Math.max(options.kernelPingIntervalMs ?? DEFAULT_KERNEL_PING_INTERVAL_MS, 250)
@@ -748,7 +757,7 @@ export class LocalIpcClient {
     // A laptop kernel writes a new token at each start, so read it for every
     // connection: a reconnect after a kernel restart presents the new one.
     // Without a readable token the kernel still accepts the connection (log mode).
-    const laptopKernelToken = readLocalKernelAuthToken(this.socketPath)
+    const laptopKernelToken = readLocalKernelAuthToken(this.socketPath, this.localAuthEnvironment)
     return laptopKernelToken
       ? new WebSocket(this.socketPath, { headers: { authorization: `Bearer ${laptopKernelToken}` } })
       : new WebSocket(this.socketPath)
