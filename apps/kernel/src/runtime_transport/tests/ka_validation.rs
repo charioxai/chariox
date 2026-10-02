@@ -13,7 +13,7 @@ fn ka_validation_live_server() {
         let mcp = StdTcpListener::bind("127.0.0.1:0").unwrap();
         let mut config = daemon_config_for_runtime_mcp_listener(&mcp);
         config.local_socket_path = root.join("run/kernel.sock");
-        config.publication_control_state_root = Some(root.join("control"));
+        config.user_config.state.path = Some(root.join("control/state.db").display().to_string());
         config.user_config_path = root.join("config/config.toml");
         config.user_config.credential_vault.path = root.join("vault.json").display().to_string();
         config.user_config.credential_vault.backend = crate::config::CredentialVaultBackend::CharioxEncrypted;
@@ -26,8 +26,8 @@ fn ka_validation_live_server() {
         std::fs::create_dir_all(&worktree).unwrap();
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(crate::session::CreateSessionRequest::new(worktree.display().to_string(), worktree.display().to_string()).with_alias("ka-live")).unwrap();
-        app.agents_mut().set_agent_runtime_profile_with_account_profile(agent.id(), "dev-stub", Some("default".into()), Some("default".into()), Some("default".into()), Default::default()).unwrap();
-        let run = app.launch_provider(crate::provider::LaunchProviderRequest::new(session.id(), "dev-stub", "dev-stub", "default", "default").with_agent_id(agent.id())).unwrap();
+        app.agents_mut().set_agent_runtime_profile_with_account_profile(agent.id(), "dev-stub", Some("native-tui-idle".into()), Some("default".into()), Some("default".into()), Default::default()).unwrap();
+        let run = app.launch_provider(crate::provider::LaunchProviderRequest::new(session.id(), "dev-stub", "dev-stub", "default", "native-tui-idle").with_agent_id(agent.id())).unwrap();
         let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(Arc::new(Mutex::new(app)), 32));
         let runtime = router.runtime_state();
         let (auth, _token_guard) = KernelLocalAuth::for_local_kernel(None, Ok(addr)).unwrap();
