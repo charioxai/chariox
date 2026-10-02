@@ -38,6 +38,191 @@ fn daemon_config_for_runtime_mcp_listener(listener: &StdTcpListener) -> DaemonCo
     config
 }
 
+// MP-08/MP-10: exhaust only an isolated child's descriptor table, never the
+// shared test runner or host. Exercise actual accept errors and existing traffic.
+#[cfg(target_os = "linux")]
+#[test]
+fn fd_exhaustion_preserves_transport_and_recovers_admission() {
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "runtime_transport::tests::fd_exhaustion_transport_child",
+            "--ignored",
+            "--nocapture",
+        ])
+        .output()
+        .expect("isolated FD probe should start");
+    assert!(
+        output.status.success(),
+        "FD probe failed: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+#[ignore = "process-wide RLIMIT_NOFILE; explicitly executed by parent"]
+async fn fd_exhaustion_transport_child() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let mcp_listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+    let mcp_addr = mcp_listener.local_addr().unwrap();
+    let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
+        Arc::new(Mutex::new(
+            DaemonApp::bootstrap(daemon_config_for_runtime_mcp_listener(&mcp_listener)).unwrap(),
+        )),
+        crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+    ));
+    let health = router.transport_health_store();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let server = tokio::spawn(run_kernel_websocket_server_with_bound_listeners(
+        router,
+        listener,
+        adopt_std_listener(mcp_listener, "test MCP").unwrap(),
+        None,
+        async {
+            let _ = shutdown_rx.await;
+        },
+    ));
+    let (mut socket, _) = connect_async(format!("ws://{addr}")).await.unwrap();
+
+    struct RestoreLimit(libc::rlimit);
+    impl Drop for RestoreLimit {
+        fn drop(&mut self) {
+            assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &self.0) }, 0);
+        }
+    }
+    let mut original = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    assert_eq!(
+        unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut original) },
+        0
+    );
+    let restore = RestoreLimit(original);
+    let limited = libc::rlimit {
+        rlim_cur: original.rlim_cur.min(256),
+        ..original
+    };
+    assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limited) }, 0);
+
+    // Queue admissions without yielding to either server until the table is full.
+    let pending = std::net::TcpStream::connect(addr).unwrap();
+    let pending_mcp = std::net::TcpStream::connect(mcp_addr).unwrap();
+    let mut files = Vec::new();
+    loop {
+        match std::fs::File::open("/dev/null") {
+            Ok(file) => files.push(file),
+            Err(error) => {
+                assert_eq!(error.raw_os_error(), Some(libc::EMFILE));
+                break;
+            }
+        }
+    }
+    sleep(Duration::from_millis(750)).await;
+    assert!(
+        !server.is_finished(),
+        "admission exhaustion must not exit kernel authority"
+    );
+    let rejected = health.snapshot(0, 0, 0).inbound_overload_rejections;
+    assert!(
+        rejected > 0 && rejected <= 10,
+        "admission must report bounded backoff: {rejected}"
+    );
+    socket
+        .send(Message::Ping(b"under-pressure".to_vec().into()))
+        .await
+        .unwrap();
+    timeout(Duration::from_secs(2), async {
+        loop {
+            match socket.next().await {
+                Some(Ok(Message::Pong(payload))) => {
+                    assert_eq!(payload.as_ref(), b"under-pressure");
+                    break;
+                }
+                Some(Ok(_)) => {}
+                other => panic!("existing transport lost under pressure: {other:?}"),
+            }
+        }
+    })
+    .await
+    .expect("existing terminal transport must stay responsive");
+    let request = KernelIncomingFrame::Request {
+        request_id: "fd-pressure-list".into(),
+        command_id: None,
+        causation_id: None,
+        correlation_id: None,
+        request: LocalDaemonRequest::ListSessions(crate::local::ListSessionsRequest),
+    };
+    socket
+        .send(Message::Text(
+            serde_json::to_string(&request).unwrap().into(),
+        ))
+        .await
+        .unwrap();
+    timeout(Duration::from_secs(2), async {
+        loop {
+            match socket.next().await {
+                Some(Ok(Message::Text(text))) => {
+                    let frame: KernelOutgoingFrame = serde_json::from_str(&text).unwrap();
+                    if let KernelOutgoingFrame::Response {
+                        request_id,
+                        response,
+                        error,
+                    } = frame
+                    {
+                        assert_eq!(request_id, "fd-pressure-list");
+                        assert!(
+                            error.is_none(),
+                            "existing kernel command must succeed: {error:?}"
+                        );
+                        assert!(response.is_some());
+                        break;
+                    }
+                }
+                Some(Ok(_)) => {}
+                other => panic!("existing command traffic lost: {other:?}"),
+            }
+        }
+    })
+    .await
+    .expect("existing kernel requests must remain responsive");
+
+    drop(files);
+    drop(restore);
+    drop(pending);
+    drop(pending_mcp);
+    let (mut recovered, _) = timeout(
+        Duration::from_secs(3),
+        connect_async(format!("ws://{addr}")),
+    )
+    .await
+    .unwrap()
+    .expect("new admission must recover without restart");
+    // MCP must recover too; it must not silently lose its accept task to EMFILE.
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut mcp = tokio::net::TcpStream::connect(mcp_addr).await.unwrap();
+    mcp.write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let mut response = [0; 16];
+    let count = timeout(Duration::from_secs(3), mcp.read(&mut response))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(response[..count].starts_with(b"HTTP/1.1"));
+    let _ = recovered.close(None).await;
+    let _ = socket.close(None).await;
+    let _ = shutdown_tx.send(());
+    timeout(Duration::from_secs(3), server)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+}
+
 #[test]
 fn process_admission_scales_with_cpu_inside_bounded_limits() {
     let limit = process_inbound_request_limit();

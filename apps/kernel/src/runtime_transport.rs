@@ -706,11 +706,9 @@ where
                 let _ = router.shutdown_cleanup().await;
                 return Ok(());
             },
-            accept_result = listener.accept() => {
-                let (stream, _) = accept_result.map_err(|error| DaemonError::LocalTransport {
-                    operation: "accept kernel websocket",
-                    message: error.to_string(),
-                })?;
+            (stream, _) = crate::transport::listener_admission::accept_with_backoff(
+                &listener, &transport_health, "kernel websocket",
+            ) => {
                 let runtime = Arc::clone(&runtime);
                 let router = Arc::clone(&router);
                 let inbound_request_admission = inbound_request_admission.clone();

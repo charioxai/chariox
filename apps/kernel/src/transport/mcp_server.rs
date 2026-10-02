@@ -43,12 +43,18 @@ pub(crate) async fn run_mcp_http_server_on_listener(
     listener: TcpListener,
 ) -> Result<(), DaemonError> {
     let mut catalogs = catalog::CatalogMonitor::new(&router);
+    let health = router.transport_health_store();
     loop {
-        let (stream, _) = tokio::select! {
-            accepted = listener.accept() => accepted.map_err(|error| DaemonError::LocalTransport {
-                operation: "accept runtime mcp", message: error.to_string(),
-            })?,
-            _ = catalogs.changed() => { catalogs.refresh(&router); continue; }
+        let admission = super::listener_admission::accept_with_backoff(
+            &listener, &health, "runtime mcp",
+        );
+        tokio::pin!(admission);
+        // Catalog refreshes must not reset an in-progress admission backoff.
+        let (stream, _) = loop {
+            tokio::select! {
+                accepted = &mut admission => break accepted,
+                _ = catalogs.changed() => { catalogs.refresh(&router); },
+            }
         };
         catalogs.observe_running(&router);
         let router = Arc::clone(&router);
