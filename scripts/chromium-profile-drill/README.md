@@ -21,7 +21,7 @@ seccomp policy, verifies the actual sandbox page and renderer process metadata,
 and uses a loopback HTTP fixture to write a persistent HttpOnly authentication
 cookie, a visible cookie, localStorage and IndexedDB. It stops the browser cleanly,
 archives the whole home as tar.zst, removes the original container, invokes the
-production `restore-migration-home` action into a fresh volume, then starts a
+production initial-home restore functions used by `restore-state` into a fresh volume, then starts a
 fresh browser and verifies the exact data and restored fixture tab. It also
 disables only the fixture CDP URL helper to verify the production URL fallback
 keeps the same authenticated profile, before and after restoration. Independent
@@ -37,8 +37,10 @@ renderer and restricted-link counts, so evidence distinguishes these paths.
 Browser containers have no external network or published ports, two CPUs,
 2 GiB memory without extra swap, and 512 PIDs. The BuildKit container also has
 two CPUs and 2 GiB memory, with one build step at a time. The production restore
-action receives a Docker shim that adds stricter hosted helper resource limits
-and the drill's cleanup label; its restore commands remain unchanged.
+functions receive a Docker shim that adds stricter hosted helper resource limits
+and the drill's cleanup label; their restore commands and archive/token guards remain unchanged. The
+test-only adapter extracts these exact functions and bypasses only full worker
+image/runtime provisioning, which this minimal browser image cannot exercise.
 [Docker documents the build container resource options](https://docs.docker.com/build/builders/drivers/docker-container/).
 The job and individual stages have deadlines. Cleanup inspects ownership labels
 and removes only this drill's containers, volumes and image, using immutable IDs

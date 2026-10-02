@@ -3,6 +3,8 @@ import { appendFileSync, chmodSync, readFileSync, statSync, writeFileSync } from
 import { join } from "node:path";
 import { checked, cleanup, docker, loadOwner } from "./resources.mjs";
 import { source } from "./prepare.mjs";
+import { restoreScript } from "./restore.mjs";
+import { createHash } from "node:crypto";
 import { runController } from "./controller.mjs";
 
 const [mode, scratch] = process.argv.slice(2);
@@ -82,17 +84,24 @@ try {
   docker(["stop", "--time", "10", first]);
   docker(["rm", first]);
 
-  const restoredVolume = volume("restored");
-  // Exercise the actual production restore action. Its Docker create calls get
-  // additional hosted resource limits and our cleanup label through this shim.
-  writeFileSync(join(scratch, "bin/docker"), `#!/usr/bin/env bash\nset -euo pipefail\nif [[ "$1" == create ]]; then shift; exec /usr/bin/docker create --network none --memory 512m --memory-swap 512m --cpus 1 --pids-limit 128 --label '${label}' "$@"; fi\nexec /usr/bin/docker "$@"\n`);
+  const restoredVolume = `chariox-chromium-${owner.id}-restored`;
+  // Invoke the production initial-home functions through a test-only adapter.
+  // Production creates the fresh volume and verifies its archive/token labels.
+  // The shim only adds helper resource limits and our cleanup ownership label.
+  writeFileSync(join(scratch, "bin/docker"), `#!/usr/bin/env bash\nset -euo pipefail\nif [[ "$1" == create ]]; then shift; exec /usr/bin/docker create --network none --memory 512m --memory-swap 512m --cpus 1 --pids-limit 128 --label '${label}' "$@"; fi\nif [[ "$1" == volume && "$2" == create ]]; then shift 2; exec /usr/bin/docker volume create --label '${label}' "$@"; fi\nexec /usr/bin/docker "$@"\n`);
   chmodSync(join(scratch, "bin/docker"), 0o700);
-  checked("bash", [join(source, "provision-linux-docker-slice.sh"), "restore-migration-home"], { timeout: 360000, env: {
+  const provisioner = readFileSync(join(source, "provision-linux-docker-slice.sh"));
+  assert.equal(createHash("sha256").update(provisioner).digest("hex"), owner.inputs["provision-linux-docker-slice.sh"]);
+  checked("bash", ["-c", restoreScript(provisioner.toString("utf8"))], { timeout: 360000, env: {
     PATH: `${join(scratch, "bin")}:${process.env.PATH}`, HOME: join(scratch, "home"), TMPDIR: join(scratch, "tmp"),
     CHARIOX_SLICE_NAME: `chariox-chromium-${owner.id}`, CHARIOX_SLICE_HOME_VOLUME: restoredVolume,
     CHARIOX_SLICE_DOCKER_IMAGE: owner.image, CHARIOX_SLICE_SAVED_HOME_ARCHIVE: archive,
-    CHARIOX_SLICE_CHROMIUM_MIGRATION_ID: owner.id,
   } });
+  const restoredLabels = JSON.parse(docker(["volume", "inspect", "--format", "{{json .Labels}}", restoredVolume]));
+  assert.equal(restoredLabels["io.chariox.chromium-drill"], owner.id);
+  assert.equal(restoredLabels["io.chariox.saved-home.archive-sha256"], createHash("sha256").update(readFileSync(archive)).digest("hex"));
+  assert.match(restoredLabels["io.chariox.saved-home.initialization-token"], /^[a-f0-9]{64}$/);
+  record("production-initial-home-restore", { archiveIdentityVerified: true, initializationTokenVerified: true, fullRestoreStateActionValidated: false });
   const restored = create("restored", restoredVolume);
   startBrowser(restored, "restored-sandbox");
   const restoredState = profile(restored, "verify", "restored-storage");

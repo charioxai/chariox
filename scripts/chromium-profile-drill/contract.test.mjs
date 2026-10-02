@@ -3,6 +3,7 @@ import { once } from "node:events";
 import test from "node:test";
 import { fixtureServer } from "./fixture-server.mjs";
 import { verifyInputs, source, fixtureSource } from "./prepare.mjs";
+import { restoreScript } from "./restore.mjs";
 import { drillEnvironment } from "./environment.mjs";
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -38,6 +39,7 @@ for (const [label, area, file, mutate, expected] of [
   ["apt snapshot", "source", "docker/Dockerfile", s => s.replaceAll("20260701T000000Z", "20260702T000000Z"), /inputs drifted/],
   ["apt validity", "fixture", "Dockerfile", s => s.replace("Acquire::Check-Valid-Until=false", "Acquire::Check-Valid-Until=true"), /apt setup drifted/],
   ["apt package", "fixture", "Dockerfile", s => s.replace("chromium-sandbox curl", "chromium-sandbox=0 curl"), /apt package/],
+  ["restore provisioner bytes", "source", "provision-linux-docker-slice.sh", s => s + "\n# changed restore\n", /hash drifted/],
   ["seccomp bytes", "source", "chromium-seccomp.json", s => s.replace("SCMP_ACT_ERRNO", "SCMP_ACT_ALLOW"), /hash drifted/],
 ]) test(`input contract rejects mutated ${label}`, () => mutatedInput(area, file, mutate, expected));
 
@@ -56,6 +58,17 @@ test("builder invocation is explicit and cannot claim hosted evidence", () => {
   assert.throws(() => drillEnvironment({}));
   assert.throws(() => drillEnvironment({ ...hosted, CHARIOX_CHROMIUM_DRILL_ENVIRONMENT: "builder" }));
   assert.throws(() => drillEnvironment({ CHARIOX_CHROMIUM_DRILL_ENVIRONMENT: "unknown" }));
+});
+
+test("restore adapter consumes current guarded production functions and rejects a missing section", () => {
+  const sourceText = readFileSync(join(source, "provision-linux-docker-slice.sh"), "utf8");
+  const script = restoreScript(sourceText);
+  assert.match(script, /created_archive_label.*!=.*archive_identity/);
+  assert.match(script, /created_token_label.*!=.*initialization_token/);
+  assert.match(script, /if restore_saved_home_volume; then/);
+  assert.ok(script.endsWith("prepare_home_volume"));
+  assert.doesNotMatch(script, /restore-migration-home|build_image|import_provider_auth/);
+  assert.throws(() => restoreScript(sourceText.replace("prepare_home_volume() {", "missing_home_function() {")), /prepare_home_volume function is missing/);
 });
 
 test("controller harness rejects missing or ambiguous dependency pins", () => {

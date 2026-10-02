@@ -9,7 +9,7 @@ import { drillEnvironment } from "./environment.mjs";
 export const repository = fileURLToPath(new URL("../../", import.meta.url));
 export const source = join(repository, "apps/kernel/slice-linux-docker");
 export const fixtureSource = dirname(fileURLToPath(import.meta.url));
-const productionFiles = ["docker/slice-screen.sh", "docker/browser-cdp.mjs", "docker/tint2rc", "chromium-seccomp.json"];
+const productionFiles = ["docker/slice-screen.sh", "docker/browser-cdp.mjs", "docker/tint2rc", "chromium-seccomp.json", "provision-linux-docker-slice.sh"];
 const digest = bytes => createHash("sha256").update(bytes).digest("hex");
 export function verifyInputs({ sourceRoot = source, fixtureRoot = fixtureSource } = {}) {
   const production = readFileSync(join(sourceRoot, "docker/Dockerfile"), "utf8");
