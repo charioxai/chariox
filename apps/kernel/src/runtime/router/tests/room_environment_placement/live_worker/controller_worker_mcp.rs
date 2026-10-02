@@ -877,7 +877,7 @@ async fn check_room_browser_on_environment_worker_serves_remote_agent_and_web_vi
                 )
                 .expect("leased worker prompt state");
             let diagnostics = provider_lifecycle_diagnostics(
-                &mut *app,
+                &mut app,
                 &worker_provider_run_id,
                 &worker_session_id,
                 &worker_agent_id,
@@ -1098,7 +1098,7 @@ async fn check_room_browser_on_environment_worker_serves_remote_agent_and_web_vi
                                 .map_err(|lookup_error| lookup_error.to_string())
                             });
                             let (_, diagnostics) = provider_lifecycle_diagnostics(
-                                &mut *app,
+                                &mut app,
                                 &worker_provider_run_id,
                                 run.session_id(),
                                 run.agent_instance_id().unwrap_or_default(),
