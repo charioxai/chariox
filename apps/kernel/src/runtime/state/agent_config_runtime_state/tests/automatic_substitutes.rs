@@ -97,6 +97,41 @@ impl FailingTurn {
             "the run is on substitute {substitute_index}"
         );
         assert_eq!(prompt.durable_delivery_provider_run_id(), Some(run.id()));
+        // A fast provider can already have acknowledged delivery. Assert the
+        // exact durable admission transition for this prompt, independently of
+        // how quickly its live phase advances after the dispatch is scheduled.
+        let dispatching = self
+            .runtime
+            .owned
+            .durable_state_store
+            .load_events_after(0)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.kind == crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND)
+            .filter_map(|event| {
+                let mut payload: crate::durable_prompt_state::DurablePromptStateEventPayload =
+                    serde_json::from_value(event.payload).unwrap();
+                payload.restore_private_states();
+                (payload.session_id == self.session_id && payload.agent_id == self.agent_id)
+                    .then_some(payload.active_prompt)
+                    .flatten()
+            })
+            .find(|admission| {
+                admission.id() == prompt.id()
+                    && admission.durable_delivery_phase()
+                        == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+                    && admission.durable_delivery_provider_run_id() == Some(run.id())
+            })
+            .expect("the substitute must have a durable normal-dispatch admission");
+        assert_eq!(
+            dispatching.durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+        );
+        assert_eq!(
+            dispatching.durable_delivery_provider_run_id(),
+            prompt.durable_delivery_provider_run_id(),
+            "durable dispatch admission must bind the substitute provider run"
+        );
         assert_eq!(agent.provider(), "dev-stub");
         assert_eq!(
             agent.model(),
