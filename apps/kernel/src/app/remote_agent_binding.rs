@@ -1747,14 +1747,12 @@ impl DaemonApp {
             let mut state = relay_state.write().await;
             if state.connected()
                 && state.connected_relay_url().as_deref() == Some(relay_url.as_str())
-            {
-                if !state.claim_peer_public_key(&kernel_id, &public_key) {
+                && !state.claim_peer_public_key(&kernel_id, &public_key) {
                     return Err(DaemonError::LocalTransport {
                         operation: "bind remote worker identity",
                         message: format!("remote worker `{kernel_id}` changed its public key"),
                     });
                 }
-            }
             Ok(())
         })
     }
@@ -1827,8 +1825,8 @@ async fn remember_remote_worker_public_key_off_lock(
         return Ok(());
     };
     let mut state = relay_state.write().await;
-    if state.connected() && state.connected_relay_url().as_deref() == Some(relay_url) {
-        if !state.claim_peer_public_key(&worker_kernel.kernel_id, &worker_kernel.public_key) {
+    if state.connected() && state.connected_relay_url().as_deref() == Some(relay_url)
+        && !state.claim_peer_public_key(&worker_kernel.kernel_id, &worker_kernel.public_key) {
             return Err(DaemonError::LocalTransport {
                 operation: "bind remote worker identity",
                 message: format!(
@@ -1837,7 +1835,6 @@ async fn remember_remote_worker_public_key_off_lock(
                 ),
             });
         }
-    }
     Ok(())
 }
 
