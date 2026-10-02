@@ -204,7 +204,8 @@ try {
         const driver = await new Kernel(base + 20).open()
         try {
           const attachment = first(await driver.send({ AttachToSession: { session_id: session, client_id: "cx-driver", capability_level: "FullTerminal" } }), "id")
-          await driver.send({ SubmitPrompt: { session_id: session, attachment_id: attachment, target_agent_id: agent, prompt: `continue ${prompts++}`, attachments: [] } })
+          await driver.send({ SubmitPrompt: { session_id: session, attachment_id: attachment, target_agent_id: agent, prompt: `continue ${prompts}`, attachments: [] } })
+          prompts++
         } catch {}
         driver.close()
       }
@@ -216,8 +217,10 @@ try {
     }
     await sleep(1_000)
   }
-  const maxObservedMb = Math.max(...samples.map((sample) => sample.rss_mb).filter(Number.isFinite))
-  report = { agents, idle_sessions: idleSessions, minutes, prompts, max_rss_mb: maxObservedMb, limit_mb: maxRssMb, samples, ok: maxObservedMb <= maxRssMb }
+  const measured = samples.map((sample) => sample.rss_mb).filter(Number.isFinite)
+  const maxObservedMb = measured.length ? Math.max(...measured) : null
+  // A run without RSS samples or accepted prompts measured nothing.
+  report = { agents, idle_sessions: idleSessions, minutes, accepted_prompts: prompts, max_rss_mb: maxObservedMb, limit_mb: maxRssMb, samples, ok: measured.length > 0 && prompts > 0 && maxObservedMb <= maxRssMb }
 } finally {
   for (const child of children.reverse()) { try { child.kill("SIGTERM") } catch {} }
   await sleep(3_000)
