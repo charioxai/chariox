@@ -83,13 +83,8 @@ impl KernelRuntimeState {
                 .room_environment_snapshot(session_id)
                 .map_err(|error| environment_runtime_error(operation, error));
         }
-        self.update_room_environment_component_health(
-            session_id,
-            EnvironmentComponent::BrowserController,
-            EnvironmentComponentHealthState::Starting,
-            None,
-        )
-        .map_err(|error| environment_runtime_error(operation, error))?;
+        // Starting belongs to the actual runtime/generation transition. A delayed
+        // completion or health refresh must not regress an already recovered Room.
         if let Err(error) = self
             .ensure_browser_controller_process_started(session_id)
             .await
@@ -107,13 +102,6 @@ impl KernelRuntimeState {
             session_id,
             EnvironmentComponent::BrowserController,
             EnvironmentComponentHealthState::Ready,
-            None,
-        )
-        .map_err(|error| environment_runtime_error(operation, error))?;
-        self.update_room_environment_component_health(
-            session_id,
-            EnvironmentComponent::Browser,
-            EnvironmentComponentHealthState::Starting,
             None,
         )
         .map_err(|error| environment_runtime_error(operation, error))?;
@@ -1164,7 +1152,6 @@ impl KernelRuntimeState {
                 false
             }
         };
-        drop(generations);
         if began_recovery {
             self.begin_room_environment_browser_controller_recovery(session_id)
                 .map_err(|error| environment_runtime_error("browser_controller.recover", error))?;
@@ -1183,6 +1170,9 @@ impl KernelRuntimeState {
             )
             .map_err(|error| environment_runtime_error("browser_controller.recover", error))?;
         }
+        // Publish both Starting components before another observer can see the
+        // pending generation and complete its recovery. These mutations do not await.
+        drop(generations);
         Ok(recovery_pending)
     }
 

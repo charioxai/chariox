@@ -610,6 +610,54 @@ mod observation_tests {
     }
 
     #[tokio::test]
+    async fn pending_start_completion_preserves_recovered_browser_health() {
+        let (_test_root, mut runtime, session_id, _agent_id) = runtime_with_room();
+        for component in [
+            crate::session::EnvironmentComponent::BrowserController,
+            crate::session::EnvironmentComponent::Browser,
+        ] {
+            runtime
+                .update_room_environment_component_health(
+                    &session_id,
+                    component,
+                    crate::session::EnvironmentComponentHealthState::Ready,
+                    None,
+                )
+                .unwrap();
+        }
+        let recovered_health = runtime
+            .room_environment_snapshot(&session_id)
+            .unwrap()
+            .health;
+        runtime.set_browser_controller_process_store_for_test(
+            crate::runtime::browser_controller_process::BrowserControllerProcessStore::new(
+                "node",
+                vec!["-e".into(), "process.stdin.resume()".into()],
+                std::time::Duration::from_millis(100),
+            ),
+        );
+        // A health refresh can have selected start completion before another
+        // request recovered the Room. Hold its controller response pending.
+        let mut start = Box::pin(
+            runtime.finish_room_environment_controller_start(&session_id, "environment.health"),
+        );
+        std::future::poll_fn(|context| {
+            assert!(start.as_mut().poll(context).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        let pending_health = runtime
+            .room_environment_snapshot(&session_id)
+            .unwrap()
+            .health;
+        drop(start);
+        // Dropping the future does not cancel its blocking controller startup.
+        // Shut down this fixture's store before evaluating the assertion.
+        runtime.shutdown_browser_controller_process().await.unwrap();
+        assert_eq!(pending_health, recovered_health);
+    }
+
+    #[tokio::test]
     async fn dropping_pending_browser_snapshot_cancels_observation_action() {
         let (_test_root, runtime, session_id, agent_id) = runtime_with_room();
         let environment = runtime

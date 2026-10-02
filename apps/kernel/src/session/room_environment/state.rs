@@ -164,6 +164,7 @@ impl RoomEnvironment {
         } else {
             self.has_started = true;
             self.lifecycle = EnvironmentLifecycle::Starting;
+            self.mark_browser_components_starting();
             self.emit(EnvironmentEventKind::LifecycleChanged {
                 lifecycle: EnvironmentLifecycle::Starting,
             });
@@ -890,10 +891,24 @@ impl RoomEnvironment {
             self.emit_action_changed(&action_id, EnvironmentActionState::Failed);
         }
         self.action_ledger.compact_terminal_actions();
+        self.mark_browser_components_starting();
         self.emit(EnvironmentEventKind::RuntimeInvalidated);
         self.emit(EnvironmentEventKind::LifecycleChanged {
             lifecycle: EnvironmentLifecycle::Starting,
         });
+    }
+
+    fn mark_browser_components_starting(&mut self) {
+        for component in [
+            EnvironmentComponent::BrowserController,
+            EnvironmentComponent::Browser,
+        ] {
+            self.update_component_health(
+                component,
+                EnvironmentComponentHealthState::Starting,
+                None,
+            );
+        }
     }
 
     fn emit_action_recovery_effect(&mut self, effect: ActionRecoveryEffect) {

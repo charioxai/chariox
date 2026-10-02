@@ -172,7 +172,8 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str) {
                 .unwrap()
                 .iter()
                 .any(|health| health["component"] == component && health["state"] == "ready"),
-            "{component} must be ready after controller crash recovery"
+            "{component} must be ready after controller crash recovery; health: {}",
+            recovered_environment["health"]
         );
     }
     let ownership = recovered_environment["input_ownership"].as_array().unwrap();
