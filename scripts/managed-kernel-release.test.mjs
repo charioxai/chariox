@@ -689,6 +689,19 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
 })
 
 test("Path-1 bootstrap and data-volume artifacts are signed and selected by image install", async (context) => {
+  if (process.platform === "linux" && process.getuid() !== 0) {
+    const result = spawnSync("sudo", ["--", process.execPath, "--test",
+      "--test-name-pattern=^Path-1 bootstrap and data-volume artifacts are signed and selected by image install$",
+      fileURLToPath(import.meta.url)], {
+      encoding: "utf8", maxBuffer: 4 * 1024 * 1024,
+      env: { ...process.env, NODE_TEST_CONTEXT: undefined },
+    })
+    process.stdout.write(result.stdout ?? "")
+    assert.equal(result.error, undefined)
+    assert.equal(result.signal, null)
+    assert.equal(result.status, 0, result.stderr)
+    return
+  }
   const root = await mkdtemp(join(tmpdir(), "chariox-path1-managed-home-install-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const fixture = await makeFixture(root)
