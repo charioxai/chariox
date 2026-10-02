@@ -250,6 +250,54 @@ test("reconcileMountedTranscriptPane rebuilds when scrollbox is absent or next e
   assert.equal(rebuilds, 2)
 })
 
+
+test("reconcileMountedTranscriptPane reuses surviving rows after front eviction during streaming", () => {
+  const current = [1, 2, 3, 4].map((id) => entry(id, "assistant", `output-${id}`))
+  const next = [current[1]!, current[2]!, { ...current[3]!, text: "continued output" }]
+  const harness = createHarness(current.map((value) => [value.id, value]))
+  const survivors = [harness.renderables.get(2), harness.renderables.get(3)]
+
+  reconcileMountedTranscriptPane({
+    scrollbox: harness.scrollbox,
+    currentEntries: current,
+    nextEntries: next,
+    renderables: harness.renderables,
+    clampScrollTop,
+    rebuild: harness.rebuild,
+    mountEntry: harness.mountEntry,
+  })
+
+  assert.deepEqual(harness.removed, ["w1", "w4"])
+  assert.deepEqual(harness.destroyed, ["w1", "w4"])
+  assert.deepEqual(harness.mounted, [4])
+  assert.equal(harness.renderables.get(2), survivors[0])
+  assert.equal(harness.renderables.get(3), survivors[1])
+  assert.equal(harness.renderables.get(4)?.entry.text, "continued output")
+})
+
+test("reconcileMountedTranscriptPane reuses renumbered turn toggles after front eviction", () => {
+  const current = [entry(1, "user", "prompt"), entry(2, "turn_toggle", "collapse"), entry(3, "assistant", "output")]
+  const harness = createHarness(current.map((value) => [value.id, value]))
+  const toggle = harness.renderables.get(2)
+  const output = harness.renderables.get(3)
+
+  reconcileMountedTranscriptPane({
+    scrollbox: harness.scrollbox,
+    currentEntries: current,
+    nextEntries: [{ ...current[1]!, id: 4 }, current[2]!],
+    renderables: harness.renderables,
+    clampScrollTop,
+    rebuild: harness.rebuild,
+    mountEntry: harness.mountEntry,
+  })
+
+  assert.deepEqual(harness.destroyed, ["w1"])
+  assert.deepEqual(harness.mounted, [])
+  assert.equal(harness.renderables.has(2), false)
+  assert.equal(harness.renderables.get(4), toggle)
+  assert.equal(harness.renderables.get(3), output)
+})
+
 function clampScrollTop(scrollTop: number, scrollHeight: number, viewportHeight: number): number {
   return Math.max(0, Math.min(scrollTop, scrollHeight - viewportHeight))
 }
