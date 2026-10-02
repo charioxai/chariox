@@ -66,6 +66,11 @@ const char* chariox_app_runtime_node_version(void) { return "24.20.0"; }
 int chariox_app_runtime_run(const struct chariox_runtime_config* config) {
   check("trusted_bootstrap", config->trusted_bootstrap_length == 8 &&
       !memcmp(config->trusted_bootstrap, "probe-v1", 8));
+#if defined(__linux__)
+  check("supplementary_groups_empty", getgroups(0, NULL) == 0);
+  check("unprivileged_identity", getuid() != 0 && getgid() != 0 &&
+      getuid() == geteuid() && getgid() == getegid());
+#endif
   char request[4];
   struct pollfd sdk = {3, POLLIN, 0};
   check("inherited_sdk_bidirectional", poll(&sdk, 1, 1000) > 0 && read(3, request, 4) == 4 &&
