@@ -106,7 +106,7 @@ impl KernelRuntimeState {
                 super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_refresh_binding,
             ) {
                 remote_execution = app
-                    .refresh_remote_agent_binding(agent_id)?
+                    .refresh_remote_agent_binding_authorized(agent_id, &|| self.authorize_current_external_command())?
                     .remote_execution()
                     .cloned()
                     .ok_or_else(|| DaemonError::LocalTransport {
@@ -491,7 +491,7 @@ impl KernelRuntimeState {
                 .is_err_and(super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_refresh_binding)
             {
                 self.authorize_prompt_command(authority)?;
-                let refreshed = app.refresh_remote_agent_binding(&target_agent_id)?;
+                let refreshed = app.refresh_remote_agent_binding_authorized(&target_agent_id, &|| self.authorize_prompt_command(authority))?;
                 remote_execution = refreshed
                     .remote_execution()
                     .cloned()

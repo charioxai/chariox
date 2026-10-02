@@ -715,16 +715,15 @@ async fn run_slice_screen_command_inner(
     stdin: Option<zeroize::Zeroizing<String>>,
     timeout_override_ms: Option<u64>,
 ) -> Result<SliceScreenCommandOutput, DaemonError> {
-    run_slice_screen_command_inner_with_output_policy(args, stdin, timeout_override_ms, None, false)
-        .await
-}
-
-async fn run_slice_screen_command_inner_exact_stdout(
-    args: Vec<String>,
-    timeout_override_ms: Option<u64>,
-) -> Result<SliceScreenCommandOutput, DaemonError> {
-    run_slice_screen_command_inner_with_output_policy(args, None, timeout_override_ms, None, true)
-        .await
+    run_slice_screen_command_inner_with_output_policy(
+        args,
+        stdin,
+        timeout_override_ms,
+        None,
+        false,
+        None,
+    )
+    .await
 }
 
 async fn run_slice_screen_command_inner_with_cancellation(
@@ -739,6 +738,7 @@ async fn run_slice_screen_command_inner_with_cancellation(
         timeout_override_ms,
         cancellation,
         false,
+        None,
     )
     .await
 }
@@ -749,11 +749,18 @@ async fn run_slice_screen_command_inner_with_output_policy(
     timeout_override_ms: Option<u64>,
     cancellation: Option<crate::runtime::computer_input_execution::ComputerInputCancellation>,
     preserve_stdout: bool,
+    authorize: Option<std::sync::Arc<dyn Fn() -> Result<(), DaemonError> + Send + Sync>>,
 ) -> Result<SliceScreenCommandOutput, DaemonError> {
     let tool_path = std::env::var("CHARIOX_SLICE_SCREEN_TOOL")
         .unwrap_or_else(|_| "/opt/chariox-slice/slice-screen.sh".to_string());
     let sensitive_output = preserve_stdout || stdin.is_some();
     tokio::task::spawn_blocking(move || {
+        if let Some(cancellation) = cancellation.as_ref() {
+            cancellation.authorize()?;
+        }
+        if let Some(authorize) = authorize.as_ref() {
+            authorize()?;
+        }
         let mut command = std::process::Command::new(&tool_path);
         command
             .args(&args)
@@ -1220,11 +1227,16 @@ async fn run_room_clipboard_write_inner(
     }
 }
 
-pub(crate) async fn run_room_clipboard_read(
+pub(crate) async fn run_room_clipboard_read_authorized(
+    authorize: Option<std::sync::Arc<dyn Fn() -> Result<(), DaemonError> + Send + Sync>>,
 ) -> Result<crate::transport::room_browser_controller::RoomComputerClipboardText, DaemonError> {
-    let mut output = run_slice_screen_command_inner_exact_stdout(
+    let mut output = run_slice_screen_command_inner_with_output_policy(
         vec!["computer-clipboard-read".to_string()],
+        None,
         Some(ROOM_COMPUTER_INPUT_TIMEOUT_MS),
+        None,
+        true,
+        authorize,
     )
     .await?;
     if !output.success {
@@ -1640,12 +1652,16 @@ mod tests {
             read_bounded_png(std::io::Cursor::new(&png), png.len()).expect("bounded PNG"),
             png
         );
-        assert!(read_bounded_png(std::io::Cursor::new(&png), png.len() - 1)
-            .expect_err("oversized PNG should fail")
-            .contains("runtime MCP limit"));
-        assert!(read_bounded_png(std::io::Cursor::new(b"not-a-png"), 32)
-            .expect_err("non-PNG should fail")
-            .contains("not a PNG"));
+        assert!(
+            read_bounded_png(std::io::Cursor::new(&png), png.len() - 1)
+                .expect_err("oversized PNG should fail")
+                .contains("runtime MCP limit")
+        );
+        assert!(
+            read_bounded_png(std::io::Cursor::new(b"not-a-png"), 32)
+                .expect_err("non-PNG should fail")
+                .contains("not a PNG")
+        );
     }
 
     #[test]

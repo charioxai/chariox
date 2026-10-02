@@ -212,7 +212,7 @@ pub(super) async fn refresh_remote_setup_binding(
     }
     let agent_id = execution.agent_id.clone();
     let rebound_agent = state
-        .with_app_side_effect_blocking(move |app| app.refresh_remote_agent_binding(&agent_id))
+        .refresh_remote_agent_binding_authorized(&agent_id)
         .await?;
     let rebound_execution = rebound_agent
         .remote_execution()

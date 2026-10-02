@@ -746,7 +746,13 @@ impl KernelRuntimeState {
         R: Send + 'static,
     {
         let app = Arc::clone(&self.app);
+        #[cfg(test)]
+        let probe = self.app_lock_wait_probe.clone();
         tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            if let Some(probe) = probe {
+                probe.notify_one();
+            }
             let mut app = app.blocking_lock();
             operation(&mut app)
         })

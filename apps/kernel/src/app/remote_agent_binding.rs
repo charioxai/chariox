@@ -623,10 +623,12 @@ impl DaemonApp {
         Ok(bound)
     }
 
-    pub(crate) fn refresh_remote_agent_binding(
+    pub(crate) fn refresh_remote_agent_binding_authorized(
         &mut self,
         agent_id: &str,
+        authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
     ) -> Result<AgentInstance, DaemonError> {
+        authorize()?;
         let agent = self.agents.get_agent(agent_id)?;
         let Some(remote_execution) = agent.remote_execution().cloned() else {
             return Err(DaemonError::LocalTransport {
@@ -650,13 +652,16 @@ impl DaemonApp {
             &worker_kernel.kernel_id,
             &worker_kernel.machine_id,
         );
-        let rebound = self.bind_remote_agent_to_worker(
+        authorize()?;
+        let rebound = self.bind_remote_agent_to_worker_authorized(
             &agent,
             &worker_kernel,
             worker_worktree_id,
             None,
             uses_remote_execution_relay.then_some(relay_config),
+            authorize,
         )?;
+        authorize()?;
         self.durable_state_store().append_event(
             "agent.updated",
             Some(rebound.id().to_string()),
