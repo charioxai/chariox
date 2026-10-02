@@ -1,6 +1,6 @@
 //! Worker-local projection bookkeeping. No fields here are part of the relay protocol.
 mod tools;
-pub(crate) use tools::ProjectedToolState;
+pub(crate) use tools::{tool_identity, ProjectedToolState};
 
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -57,8 +57,12 @@ pub(super) fn migrate(connection: &mut rusqlite::Connection) -> Result<(), Daemo
         .map_err(|e| operational_history_error("decode projection schema", e))?;
     drop(statement);
     let backfill = !columns.iter().any(|column| column == "committed_sequence");
+    let backfill_tools = !columns
+        .iter()
+        .any(|column| column == "leased_projection_tool_identity");
     for (column, sql_type) in [
         ("committed_sequence", "INTEGER"),
+        ("leased_projection_tool_identity", "TEXT"),
         ("leased_projection_stream_key", "TEXT"),
         ("leased_projection_snapshot_key", "TEXT"),
     ] {
@@ -72,19 +76,22 @@ pub(super) fn migrate(connection: &mut rusqlite::Connection) -> Result<(), Daemo
         }
     }
     connection.execute_batch(
-        "CREATE TABLE IF NOT EXISTS history_commit_counter (id INTEGER PRIMARY KEY, value INTEGER NOT NULL);
+        &"CREATE TABLE IF NOT EXISTS history_commit_counter (id INTEGER PRIMARY KEY, value INTEGER NOT NULL);
          INSERT OR IGNORE INTO history_commit_counter VALUES (1, 0);
 
-         CREATE TRIGGER IF NOT EXISTS history_commit_insert AFTER INSERT ON history_events BEGIN
+         DROP TRIGGER IF EXISTS history_commit_insert;
+         CREATE TRIGGER history_commit_insert AFTER INSERT ON history_events BEGIN
              UPDATE history_commit_counter SET value = value + 1 WHERE id = 1;
-             UPDATE history_events SET committed_sequence = (SELECT value FROM history_commit_counter WHERE id = 1) WHERE event_id = NEW.event_id;
+             UPDATE history_events SET committed_sequence = (SELECT value FROM history_commit_counter WHERE id = 1), leased_projection_tool_identity = __TOOL_IDENTITY__ WHERE event_id = NEW.event_id;
          END;
-         CREATE TRIGGER IF NOT EXISTS history_commit_update AFTER UPDATE OF event_json ON history_events BEGIN
+         DROP TRIGGER IF EXISTS history_commit_update;
+         CREATE TRIGGER history_commit_update AFTER UPDATE OF event_json ON history_events BEGIN
              UPDATE history_commit_counter SET value = value + 1 WHERE id = 1;
-             UPDATE history_events SET committed_sequence = (SELECT value FROM history_commit_counter WHERE id = 1) WHERE event_id = NEW.event_id;
+             UPDATE history_events SET committed_sequence = (SELECT value FROM history_commit_counter WHERE id = 1), leased_projection_tool_identity = __TOOL_IDENTITY__ WHERE event_id = NEW.event_id;
          END;
          CREATE INDEX IF NOT EXISTS idx_history_projection_commit ON history_events(session_id, agent_id, provider_run_id, committed_sequence);
          CREATE INDEX IF NOT EXISTS idx_history_projection_prompt_commit ON history_events(session_id, agent_id, kind, committed_sequence);
+         CREATE INDEX IF NOT EXISTS idx_history_projection_tool_identity ON history_events(session_id, agent_id, provider_run_id, leased_projection_tool_identity, committed_sequence) WHERE kind = 'provider_tool';
          CREATE INDEX IF NOT EXISTS idx_history_projection_stream ON history_events(leased_projection_stream_key);
          CREATE INDEX IF NOT EXISTS idx_history_projection_snapshot ON history_events(leased_projection_snapshot_key);
          CREATE TABLE IF NOT EXISTS leased_projection_cursors (projection_id TEXT PRIMARY KEY, cursor_json TEXT NOT NULL);
@@ -111,13 +118,17 @@ pub(super) fn migrate(connection: &mut rusqlite::Connection) -> Result<(), Daemo
          CREATE TRIGGER history_projection_replace BEFORE UPDATE OF leased_projection_stream_key, leased_projection_snapshot_key ON history_events BEGIN
              INSERT OR IGNORE INTO leased_projection_pending_keys SELECT OLD.leased_projection_stream_key, OLD.session_id || ':' || OLD.agent_id || ':' || OLD.provider_run_id WHERE OLD.kind != 'provider_tool' AND OLD.leased_projection_stream_key IS NOT NULL AND OLD.leased_projection_stream_key IS NOT NEW.leased_projection_stream_key;
              INSERT OR IGNORE INTO leased_projection_pending_keys SELECT OLD.leased_projection_snapshot_key, OLD.session_id || ':' || OLD.agent_id || ':' || OLD.provider_run_id WHERE OLD.kind != 'provider_tool' AND OLD.leased_projection_snapshot_key IS NOT NULL AND OLD.leased_projection_snapshot_key IS NOT NEW.leased_projection_snapshot_key;
-         END;")
+         END;".replace("__TOOL_IDENTITY__", &tools::tool_identity_sql("NEW.")))
         .map_err(|e| operational_history_error("migrate leased projection", e))?;
     if backfill {
         connection.execute_batch(
             "UPDATE history_events SET committed_sequence = sequence WHERE committed_sequence IS NULL;
              UPDATE history_commit_counter SET value = (SELECT COALESCE(MAX(committed_sequence), 0) FROM history_events) WHERE id = 1;"
         ).map_err(|e| operational_history_error("backfill projection commit order", e))?;
+    }
+    if backfill_tools {
+        connection.execute(&format!("UPDATE history_events SET leased_projection_tool_identity = {} WHERE kind = 'provider_tool'", tools::tool_identity_sql("")), [])
+            .map_err(|e| operational_history_error("backfill tool projection identity", e))?;
     }
     transaction
         .commit()
@@ -358,7 +369,7 @@ mod tests {
             session_id: "session".into(),
             agent_id: "agent".into(),
             provider_run_id: "run".into(),
-            merge_key: Some("tool".into()),
+            identity: Some("tool".into()),
             state: store.load_leased_tool_state(stream_key).unwrap(),
         };
         for index in 0..1000 {
@@ -366,7 +377,7 @@ mod tests {
                 &serde_json::json!({"output": "same delta", "chariox_delta_offset_bytes": index}),
             )
             .unwrap();
-            assert!(tool.state.record(format!("snapshot-{index}"), &bytes));
+            assert!(tool.state.record(format!("snapshot-{index}"), &bytes, true));
             store
                 .commit_leased_projection_cursor(
                     "session:agent:run",
@@ -398,12 +409,14 @@ mod tests {
         let mut state = store.load_leased_tool_state(stream_key).unwrap();
         assert!(!state.record(
             "old snapshot".into(),
-            br#"{"chariox_delta_offset_bytes":0}"#
+            br#"{"output":"same delta","chariox_delta_offset_bytes":0}"#,
+            true
         ));
-        assert!(!state.record("snapshot-999".into(), b"last snapshot"));
+        assert!(!state.record("snapshot-999".into(), b"last snapshot", true));
         assert!(state.record(
             "next snapshot".into(),
-            br#"{"chariox_delta_offset_bytes":1000}"#
+            br#"{"output":"same delta","chariox_delta_offset_bytes":1000}"#,
+            true
         ));
         store
             .delete_leased_projection_state("session", "agent")
