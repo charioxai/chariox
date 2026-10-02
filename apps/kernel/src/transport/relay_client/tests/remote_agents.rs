@@ -2519,8 +2519,38 @@ async fn remote_machine_agents_cancel_prompts_through_the_home_session_async() {
         .clone();
     // MP-08/MP-10: observe duplicate cancellation while its exact worker turn
     // remains pending, then release the normal projection/completion path.
-    let projection_pause = RemoteLeaseRuntime::new(&mut *app_worker.lock().await)
-        .hold_leased_runtime_projection_for_test(&binding.leased_agent_id);
+    // MP-08/MP-10: admission ACK precedes detached launch and provider input delivery.
+    // fixture cancels a running turn; cancellation during launch is covered separately.
+    let worker_ready_deadline = Instant::now() + Duration::from_secs(5);
+    let projection_pause = loop {
+        let mut worker = app_worker.lock().await;
+        let leased = RemoteLeaseRuntime::new(&mut worker)
+            .leased_agent_snapshot_for_test(&binding.leased_agent_id)
+            .expect("worker must retain the execution lease before cancellation");
+        let active = worker
+            .prompt_owner_active_prompt_for_agent(
+                &leased.backing_session_id,
+                &leased.backing_agent_id,
+            )
+            .expect("worker prompt snapshot should read");
+        if active.as_ref().is_some_and(|active| {
+            active.status() == crate::session::PromptStatus::Running
+                && active.durable_delivery_phase()
+                    == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+                && active.durable_delivery_provider_run_id()
+                    == binding.active_worker_provider_run_id.as_deref()
+                && leased.active_home_prompt_id.as_deref() == Some(prompt.id())
+        }) {
+            break RemoteLeaseRuntime::new(&mut worker)
+                .hold_leased_runtime_projection_for_test(&binding.leased_agent_id);
+        }
+        assert!(
+            Instant::now() < worker_ready_deadline,
+            "worker must launch and deliver this exact turn before running-turn cancellation"
+        );
+        drop(worker);
+        sleep(Duration::from_millis(25)).await;
+    };
 
     let cancel_request = || {
         LocalDaemonRequest::CancelActivePrompt(crate::local::CancelActivePromptRequest {
