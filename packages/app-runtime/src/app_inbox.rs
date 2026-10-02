@@ -299,13 +299,9 @@ pub fn create_route_in(tx: &Connection, route: &InboxRoute, now_ms: u64) -> Resu
     Ok(())
 }
 
-/// Removing a route stops it accepting occurrences. Those it already accepted
-/// and has not settled are still delivered (with the same retries and expiry),
-/// so disabling an integration never silently drops accepted work. Its settled
-/// history goes with it. The pending rows stay keyed by the route id: a route
-/// created again under that id, even for another event or source, counts them
-/// until they settle and answers a reused occurrence id as a duplicate or a
-/// conflict. That is intended; do not delete pending rows here.
+/// Removing a route stops new acceptance without discarding acknowledged
+/// occurrences. Pending delivery and settled dedupe receipts retain their
+/// original identities, including when the route name is reused.
 pub fn remove_route_in(
     tx: &Connection,
     owner_id: &str,
@@ -319,11 +315,6 @@ pub fn remove_route_in(
     if removed == 0 {
         return Err(InboxError::NotFound);
     }
-    tx.execute(
-        "DELETE FROM app_inbox WHERE owner_id=?1 AND installation_id=?2 AND route_id=?3
-         AND state IN ('delivered','failed','expired')",
-        params![owner_id, installation_id, route_id],
-    )?;
     Ok(())
 }
 
@@ -722,7 +713,9 @@ pub fn occurrence(connection: &Connection, sequence: i64) -> Result<OccurrenceSu
         .ok_or(InboxError::NotFound)
 }
 
-/// Occurrence outcomes of one route, so poison and expiry stay visible.
+/// Retained occurrence outcomes for one owner's installation and route name.
+/// Route lists expose these only while the route exists; a replacement route
+/// with the same name includes retained outcomes from its predecessor.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct InboxCounts {
     pub pending: u64,

@@ -466,3 +466,6 @@ fn generator_fed_routes_are_capped_across_the_kernel_at_create() {
         app_inbox::MAX_GENERATOR_ROUTES
     );
 }
+
+#[path = "app_inbox/route_removal.rs"]
+mod route_removal;
