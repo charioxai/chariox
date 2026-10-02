@@ -1045,6 +1045,7 @@ ensure_container() {
   if [[ "$created_container" == "1" ]]; then
     run_with_timeout 30 docker exec -u root "$SLICE_NAME" bash -lc "mkdir -p /home/slice/.local/share /home/slice/.config /home/slice/.cache && chown -R slice:slice /home/slice" \
       || log "home directory ownership refresh unavailable; continuing"
+    prepare_development_workspace_access
   fi
   configure_stable_machine_identity
   configure_chromium_browser_policy
@@ -1052,6 +1053,22 @@ ensure_container() {
   refresh_slice_support_files
   refresh_saved_state_runtime
   probe_provider_sandbox_compatibility
+}
+
+prepare_development_workspace_access() {
+  # Managed publication ACLs are prepared by the broker. Ordinary Docker
+  # publications need access for the image's non-root worker as well.
+  if [[ -n "${CHARIOX_SLICE_MANAGED_DOCKER_HOST:-}" || "$SLICE_DEVELOPMENT_MOUNT_COUNT" -eq 0 ]]; then
+    return
+  fi
+  local mounts=() index variable
+  for ((index = 0; index < SLICE_DEVELOPMENT_MOUNT_COUNT; index++)); do
+    variable="CHARIOX_SLICE_DEVELOPMENT_MOUNT_${index}"
+    mounts+=("${!variable:?missing development workspace mount}")
+  done
+  run_with_timeout 120 docker exec -i -u root "$SLICE_NAME" python3 - "${mounts[@]}" \
+    < "$SCRIPT_DIR/prepare-development-workspace-access.py" \
+    || fail "failed to prepare development workspace access"
 }
 
 reconcile_stopped_browser_lifetimes() {
