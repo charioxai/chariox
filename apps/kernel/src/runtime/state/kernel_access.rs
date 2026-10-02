@@ -38,6 +38,7 @@ impl KernelRuntimeState {
         id: Option<&str>,
         reason: &str,
     ) -> Result<usize, DaemonError> {
+        let sudo_count = self.revoke_sudo(owner, id, reason);
         let mut state = self
             .owned
             .kernel_access
@@ -103,7 +104,7 @@ impl KernelRuntimeState {
         if let Some(error) = audit_error {
             return Err(error);
         }
-        Ok(count)
+        Ok(count + sudo_count)
     }
 
     fn cancel_access_prompt(&self, grant: &KernelAccessGrant, action: &str) {
@@ -115,6 +116,7 @@ impl KernelRuntimeState {
 
     /// Called by both the pump and each request/delivery. Revocations do not wait for inbound traffic.
     pub(crate) fn sweep_kernel_access(&self) {
+        self.sweep_sudo();
         let mut state = self
             .owned
             .kernel_access

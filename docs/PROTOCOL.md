@@ -2711,6 +2711,18 @@ Workflow trigger and deployment direction:
   drill checks both state-root conventions, control/event lanes and token rotation
   without provisioning any provider account. Grant/passkey drills use temporary
   test vaults. The owner's real passkey sitting remains separate.
+- protocol 404: terminal `/sudo <prompt>` raises a fresh-passkey popup of kind
+  `sudo`. The resulting authorization is kernel-memory state, attached to one
+  exact provider turn; yield and interruption consume its ephemeral binding.
+  Queued sudo never enters the durable prompt queue. `KernelAccessGrantsListed`
+  gains `sudo_turns`, public entry/terminal/agent/run/prompt attribution without a
+  credential or time expiry. `RevokeKernelAccessGrant` also revokes sudo entry
+  handles; a null id and passkey rotation revoke queued entries and interrupt
+  running sudo turns. The existing runtime MCP exposes `chariox_kernel_request`
+  to a live sudo turn. Critical replies use the shared interaction authority and
+  append `kernel_access.sudo_approval` receipts naming the turn and human entry.
+  No spawned/forked agent inherits elevation. External requests and `/meta`
+  migration are the following PR 8b; see `KERNEL_SUDO.md` for PR 8a's scope.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic
@@ -2897,6 +2909,7 @@ Queue and turn direction:
 - output validation should use a kernel-owned `validate_output_messages` tool
 - workflow turn delivery acknowledgment should use a runtime-owned `ack_workflow_turn` operation
 - a running turn should not re-open its input set mid-turn; newly arrived messages remain queued for a later turn
+
 
 ## 5.0 Capability, Session, Workflow, Security, and Versioning Details
 

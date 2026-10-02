@@ -10,16 +10,18 @@ impl CommandRouter {
         command: &KernelCommand,
         request: &mut LocalDaemonRequest,
     ) -> Result<(), DaemonError> {
-        if command.caller.connection_class == Some(KernelConnectionClass::ExternalAgent) {
+        if let Some(authority) = command.external_grant_id() {
             let session = self
                 .runtime_state
-                .authorize_external_request(&command.caller.caller_id, request)?;
+                .authorize_external_request(&authority, request)?;
             // Resolve once against authority, then dispatch the exact ID. An
             // alias collision or concurrent rename cannot switch the target.
-            match request {
-                LocalDaemonRequest::ResolveSession(request) => request.session_ref = session,
-                LocalDaemonRequest::DeleteSession(request) => request.session_ref = session,
-                _ => {}
+            if command.caller.connection_class == Some(KernelConnectionClass::ExternalAgent) {
+                match request {
+                    LocalDaemonRequest::ResolveSession(request) => request.session_ref = session,
+                    LocalDaemonRequest::DeleteSession(request) => request.session_ref = session,
+                    _ => {}
+                }
             }
         }
         Ok(())
@@ -106,6 +108,7 @@ impl CommandRouter {
             LocalDaemonRequest::ListKernelAccessGrants(_) => {
                 LocalDaemonResponse::KernelAccessGrantsListed {
                     grants: self.runtime_state.list_kernel_access(&owner),
+                    sudo_turns: self.runtime_state.list_sudo_turns(&owner),
                 }
             }
             LocalDaemonRequest::RevokeKernelAccessGrant(request) => {

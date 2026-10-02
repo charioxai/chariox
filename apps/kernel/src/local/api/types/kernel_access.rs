@@ -40,6 +40,7 @@ pub enum PasskeyPromptKind {
     CriticalApproval,
     AccessGrant,
     AccessExtension,
+    Sudo,
 }
 
 /// Protocol 394: a kernel-owned pending interaction that needs the Chariox
@@ -100,4 +101,17 @@ pub struct KernelAccessGrant {
     pub holder_executable: String,
     pub lifetime_minutes: u32,
     pub expires_at_ms: u64,
+}
+
+/// Protocol 404: public attribution for an ephemeral, one-turn authorization.
+/// `entry_id` is a revoke handle, never a credential. No time expiry applies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KernelSudoTurn {
+    pub entry_id: String,
+    pub session_id: String,
+    pub agent_id: String,
+    pub owner_user_id: String,
+    pub terminal_id: String,
+    pub prompt_id: Option<String>,
+    pub provider_run_id: Option<String>,
 }

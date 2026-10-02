@@ -4,6 +4,29 @@ use crate::runtime::state::{critical_approval_audit_payload, PASSKEY_ALREADY_ANS
 use crate::transport::kernel_protocol::KernelEvent;
 
 #[test]
+fn sudo_protocol_404_attributes_one_turn_to_its_human_entry() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 404);
+    let turn = crate::local::KernelSudoTurn {
+        entry_id: "sudo:one".into(),
+        session_id: "s".into(),
+        agent_id: "a".into(),
+        owner_user_id: "local".into(),
+        terminal_id: "terminal".into(),
+        prompt_id: Some("turn-one".into()),
+        provider_run_id: Some("run-one".into()),
+    };
+    let snapshot = serde_json::json!({"kind": PasskeyPromptKind::Sudo, "turn":turn,
+        "receipt":crate::runtime::state::sudo_approval_receipt(&turn, "other", "critical", "approve")});
+    let digest = Sha256::digest(serde_json::to_vec(&snapshot).unwrap());
+    assert_eq!(
+        format!("{digest:x}"),
+        "8f52a7b4c7bdf054826de5653268cf097b60b1ce0ed8aee9da0ee4aec664d83d"
+    );
+    assert!(snapshot["turn"].get("expires_at_ms").is_none());
+    assert!(snapshot["turn"].get("token").is_none());
+}
+
+#[test]
 fn kernel_access_lifetime_config_is_versioned() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 403);
     let response = LocalDaemonResponse::UserConfig {
@@ -209,6 +232,7 @@ fn process_bound_access_protocol_395_has_metadata_but_no_bearer() {
         },
         LocalDaemonResponse::KernelAccessGrantsListed {
             grants: vec![grant],
+            sudo_turns: vec![],
         },
         LocalDaemonResponse::KernelAccessRevoked { revoked: 1 },
     ];
@@ -231,7 +255,7 @@ fn process_bound_access_protocol_395_has_metadata_but_no_bearer() {
     let digest = Sha256::digest(serde_json::to_vec(&snapshot).unwrap());
     assert_eq!(
         format!("{digest:x}"),
-        "213ce7f6fd543c34994cea385340eea264ecfc87276e6af71e135bbd08f58b21"
+        "328c2b79aca163f32a42062d5fa47cd81221f9134052e286c96e051b6a7b09f0"
     );
     assert!(serde_json::from_value::<LocalDaemonRequest>(
         serde_json::json!({"RequestKernelAccess": {

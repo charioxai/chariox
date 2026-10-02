@@ -75,6 +75,9 @@ impl KernelRuntimeState {
         grant_id: &str,
         request: &LocalDaemonRequest,
     ) -> Result<String, DaemonError> {
+        if grant_id.starts_with("sudo:") {
+            return self.authorize_sudo_request(grant_id, request);
+        }
         if matches!(request, LocalDaemonRequest::RespondToInteraction(answer) if answer.passkey.is_some())
         {
             return Err(DaemonError::LocalTransport {

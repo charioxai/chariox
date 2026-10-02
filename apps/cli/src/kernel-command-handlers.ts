@@ -25,7 +25,7 @@ export type KernelCommandHandlerDeps = {
   flashFooter: (message: string, tone: FooterTone) => void
   deleteKernel?: () => Promise<{ kernelId: string; deletedSessions: RuntimeSession[] }>
   getDaemonHealth?: () => Promise<DaemonHealthProjection>
-  listKernelAccessGrants?: () => Promise<import("@chariox/kernel-client/kernel-types").KernelAccessGrant[]>
+  listKernelAccessGrants?: () => Promise<{ grants: import("@chariox/kernel-client/kernel-types").KernelAccessGrant[]; sudo_turns?: import("@chariox/kernel-client/kernel-types").KernelSudoTurn[] }>
   revokeKernelAccessGrant?: (grantId: string | null) => Promise<number>
   exportDebugBundle?: (sessionId: string, label: string | null) => Promise<{
     bundleDir: string
@@ -43,12 +43,14 @@ export async function handleKernelSlashCommand(
   const [subcommand, ...args] = command.args
   if (subcommand === "access") {
     if (args[0] === "list" && args.length === 1 && deps.listKernelAccessGrants) {
-      const grants = await deps.listKernelAccessGrants()
-      deps.appendNotice(grants.length ? grants.map((g) => `${g.grant_id}: ${JSON.stringify(g.holder_executable)} (pid ${g.holder_pid}), session ${g.session_id}, expires ${new Date(g.expires_at_ms).toISOString()}`).join("\n") : "No external agent access grants.")
-      deps.flashFooter(`${grants.length} external agent access grants`, "info")
+      const { grants, sudo_turns = [] } = await deps.listKernelAccessGrants()
+      const lines = grants.map((g) => `${g.grant_id}: ${JSON.stringify(g.holder_executable)} (pid ${g.holder_pid}), session ${g.session_id}, expires ${new Date(g.expires_at_ms).toISOString()}`)
+      lines.push(...sudo_turns.map((t) => `${t.entry_id}: sudo ${t.prompt_id ? `turn ${t.prompt_id}` : "pending or queued"}, agent ${t.agent_id}, session ${t.session_id}. Revoke: /kernel access revoke ${t.entry_id}`))
+      deps.appendNotice(lines.join("\n") || "No external grants or sudo turns.")
+      deps.flashFooter(`${grants.length} external grants, ${sudo_turns.length} sudo turns`, "info")
     } else if (args[0] === "revoke" && args.length === 2 && deps.revokeKernelAccessGrant) {
       const count = await deps.revokeKernelAccessGrant(args[1] === "all" ? null : args[1]!)
-      deps.flashFooter(`Revoked ${count} external agent access grants`, "info")
+      deps.flashFooter(`Revoked ${count} access authorizations`, "info")
     } else {
       deps.flashFooter("usage: /kernel access list | /kernel access revoke <id|all>", "error")
     }

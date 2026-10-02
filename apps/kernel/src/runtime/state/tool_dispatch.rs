@@ -153,6 +153,13 @@ impl KernelRuntimeState {
         {
             specs.push(crate::transport::runtime_tools::permission_prompt_runtime_tool_spec());
         }
+        if self.sudo_for_auth_token(auth_token).is_ok() {
+            specs.push(crate::transport::runtime_tools::RuntimeToolSpec {
+                name: "chariox_kernel_request".into(),
+                description: "Act as the host on this kernel for this sudo turn. Submit a LocalDaemonRequest in request. Can answer critical approvals across sessions. Cannot grant sudo/access, read secrets or change the passkey/access configuration. Authority ends at yield or revocation.".into(),
+                input_schema: serde_json::json!({"type":"object","required":["request"],"properties":{"request":{"type":"object"}},"additionalProperties":false}),
+            });
+        }
         if self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token) {
             specs.extend(crate::transport::runtime_tools::meta_runtime_tool_specs());
             specs.extend(crate::transport::runtime_tools::agent_messaging_runtime_tool_specs());

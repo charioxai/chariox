@@ -1,4 +1,5 @@
 [
+  {"id":"sudo","label":"/sudo","description":"Authorize one sudo turn with the Chariox passkey","value":"/sudo ","searchAliases":["sudo","elevate","critical approval"]},
   {
     "id": "meta",
     "label": "/meta",
