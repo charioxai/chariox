@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
 
+pub(crate) mod leased_projection;
 mod operational_archive;
 mod operational_legacy_import;
 mod operational_query;
@@ -598,6 +599,7 @@ impl OperationalHistoryStore {
             .execute_batch(OPERATIONAL_HISTORY_SCHEMA)
             .map_err(|error| operational_history_error("migrate schema", error))?;
         ensure_operational_history_merge_key_index(&mut connection)?;
+        leased_projection::migrate(&mut connection)?;
         let max_sequence: u64 = connection
             .query_row(
                 "SELECT COALESCE(MAX(sequence), 0) FROM history_events",

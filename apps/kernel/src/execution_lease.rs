@@ -68,6 +68,8 @@ pub struct LeasedAgent {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub projected_completion_keys: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    // Legacy relay field. Worker-local durable cursors replace this cache;
+    // any old keys are migrated on the first projection drain.
     pub projected_output_history_keys: Vec<String>,
     #[serde(skip)]
     pub projected_provider_run: Option<(String, crate::provider::ProviderRunState)>,

@@ -1,0 +1,90 @@
+use super::*;
+use crate::{app::DaemonApp, config::DaemonConfig};
+
+#[test]
+fn leased_projection_compacts_finalized_output_keys_and_survives_store_restart() {
+    let mut config = DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let lease = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease("home", "session", "agent", false, "user")
+        .unwrap();
+    let leased = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease.id,
+            "managed-dev-stub",
+            "default",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    for index in 0..200 {
+        let merge_key = format!("message-{index}");
+        app.terminal_mut().fan_out_output(
+            &leased.backing_session_id,
+            "run",
+            Some(&leased.backing_agent_id),
+            TerminalOutputKind::ProviderOutput,
+            Some(merge_key.clone()),
+            vec![leased.backing_attachment_id.clone()],
+            b"streamed output",
+        );
+        let first = RemoteLeaseRuntime::new(&mut app)
+            .drain_leased_runtime_projection(&leased.id, "run", false)
+            .unwrap()
+            .unwrap();
+        let RelayPeerEvent::LeasedRuntimeProjection { output_chunks, .. } = first.1;
+        assert_eq!(output_chunks.len(), 1);
+        app.append_history_entry(
+            &leased.backing_session_id,
+            crate::history::SessionHistoryEntry::provider_output(
+                &leased.backing_session_id,
+                "run",
+                Some(&leased.backing_agent_id),
+                TerminalOutputKind::ProviderOutput,
+                Some(merge_key),
+                "streamed output".to_string(),
+            ),
+        );
+        assert!(RemoteLeaseRuntime::new(&mut app)
+            .drain_leased_runtime_projection(&leased.id, "run", false)
+            .unwrap()
+            .is_none());
+        assert!(RemoteLeaseRuntime::new(&mut app)
+            .leased_agent_snapshot_for_test(&leased.id)
+            .unwrap()
+            .projected_output_history_keys
+            .is_empty());
+    }
+    // Reopen the worker's durable store, retaining only normal lease identity.
+    let path = app.operational_history_store().path().to_path_buf();
+    app.operational_history = crate::history::OperationalHistoryStore::open(path).unwrap();
+    assert!(RemoteLeaseRuntime::new(&mut app)
+        .drain_leased_runtime_projection(&leased.id, "run", false)
+        .unwrap()
+        .is_none());
+    // A duplicated finalized transcript must also remain suppressed after reopen.
+    app.append_history_entry(
+        &leased.backing_session_id,
+        crate::history::SessionHistoryEntry::provider_output(
+            &leased.backing_session_id,
+            "run",
+            Some(&leased.backing_agent_id),
+            TerminalOutputKind::ProviderOutput,
+            Some("message-0".into()),
+            "streamed output".to_string(),
+        ),
+    );
+    assert!(RemoteLeaseRuntime::new(&mut app)
+        .drain_leased_runtime_projection(&leased.id, "run", false)
+        .unwrap()
+        .is_none());
+    RemoteLeaseRuntime::new(&mut app)
+        .destroy_leased_agent(&leased.id)
+        .unwrap();
+}

@@ -760,7 +760,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
                             .map(|_| ())
                     }
                 }
-                LeasedAgentCleanupPhase::BackingSessionDelete => {
+                LeasedAgentCleanupPhase::BackingSessionDelete => (|| {
+                    self.app
+                        .operational_history_store()
+                        .delete_leased_projection_state(
+                            &agent.backing_session_id,
+                            &agent.backing_agent_id,
+                        )?;
                     if backing_session_still_used {
                         Ok(())
                     } else {
@@ -769,7 +775,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                             .delete_session(&agent.backing_session_id)
                             .map(|_| ())
                     }
-                }
+                })(),
             };
             result.map_err(|error| leased_agent_cleanup_error(leased_agent_id, error))?;
             let Some(next) = phase.next() else {

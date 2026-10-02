@@ -13,6 +13,9 @@ use chariox_relay::protocol::ClientTarget;
 
 use super::RemoteLeaseRuntime;
 
+#[cfg(test)]
+mod history_tests;
+
 const REMOTE_COMPLETION_HARVEST_RESPONSE_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(60);
 
@@ -110,67 +113,122 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 bytes: record.bytes,
             })
             .collect::<Vec<_>>();
-        let mut projected_output_history_keys = Vec::new();
-        output_chunks.retain(|chunk| {
-            if chunk.kind != TerminalOutputKind::ProviderTool {
-                return true;
-            }
-            let snapshot_key =
-                leased_provider_run_history_chunk_key(&leased_agent, provider_run_id, chunk);
-            if leased_agent
-                .projected_output_history_keys
-                .iter()
-                .any(|key| key == &snapshot_key)
-            {
-                return false;
-            }
-            projected_output_history_keys.push(snapshot_key);
-            true
-        });
-        let mut projected_output_stream_keys = output_chunks
+        let projection_id = format!(
+            "{}:{}:{provider_run_id}",
+            leased_agent.backing_session_id, leased_agent.backing_agent_id,
+        );
+        let history_store = self.app.operational_history_store();
+        let mut history_cursor = history_store.load_leased_projection_cursor(&projection_id)?;
+        let initial_history_cursor = history_cursor.clone();
+        let session = self
+            .app
+            .sessions
+            .get_session(&leased_agent.backing_session_id)?;
+        self.app.ensure_session_history_imported(&session)?;
+        let history_events = history_store.load_leased_projection_history(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+            provider_run_id,
+            history_cursor.committed_sequence,
+        )?;
+        let mut pending_keys = leased_agent
+            .projected_output_history_keys
             .iter()
-            .map(|chunk| leased_provider_run_stream_key(&leased_agent, provider_run_id, chunk))
+            .cloned()
             .collect::<std::collections::BTreeSet<_>>();
-        projected_output_history_keys.extend(projected_output_stream_keys.iter().cloned());
-        let mut history_chunks =
-            self.leased_provider_run_output_history_chunks(&leased_agent, provider_run_id)?;
-        history_chunks.retain(|history_chunk| {
-            let history_key = leased_provider_run_history_chunk_key(
-                &leased_agent,
-                provider_run_id,
-                history_chunk,
-            );
-            let stream_key =
-                leased_provider_run_stream_key(&leased_agent, provider_run_id, history_chunk);
-            let already_projected = leased_agent
-                .projected_output_history_keys
-                .iter()
-                .any(|key| key == &history_key || key == &stream_key)
-                || projected_output_stream_keys.contains(&stream_key);
-            if already_projected {
-                projected_output_history_keys.push(history_key);
-                return false;
+        let mut history_keys = Vec::new();
+        let mut projected_output_stream_keys = std::collections::BTreeSet::new();
+        let mut deduplicated_chunks = Vec::with_capacity(output_chunks.len());
+        for chunk in output_chunks.drain(..) {
+            let snapshot_key =
+                leased_provider_run_history_chunk_key(&leased_agent, provider_run_id, &chunk);
+            if chunk.kind == TerminalOutputKind::ProviderTool {
+                if pending_keys.contains(&snapshot_key)
+                    || history_store.leased_projection_key_exists(&snapshot_key)?
+                {
+                    continue;
+                }
+                pending_keys.insert(snapshot_key);
             }
-            projected_output_stream_keys.insert(stream_key.clone());
-            projected_output_history_keys.push(stream_key);
-            true
-        });
-        let latest_output_history_completion_key = history_chunks
-            .iter()
-            .rev()
-            .find(|chunk| chunk.kind == TerminalOutputKind::ProviderOutput)
-            .map(|chunk| {
-                leased_provider_run_history_chunk_key(&leased_agent, provider_run_id, chunk)
-            });
-        for history_chunk in &history_chunks {
-            projected_output_history_keys.push(leased_provider_run_history_chunk_key(
-                &leased_agent,
-                provider_run_id,
-                history_chunk,
-            ));
+            if chunk.kind == TerminalOutputKind::ProviderOutput {
+                let stream_key =
+                    leased_provider_run_stream_key(&leased_agent, provider_run_id, &chunk);
+                if projected_output_stream_keys.insert(stream_key.clone())
+                    && !history_store.leased_projection_key_exists(&stream_key)?
+                {
+                    pending_keys.insert(stream_key);
+                }
+            }
+            deduplicated_chunks.push(chunk);
         }
-        if !history_chunks.is_empty() {
-            output_chunks.extend(history_chunks);
+        output_chunks = deduplicated_chunks;
+        let mut latest_output_history_completion_key = None;
+        let mut history_entries = Vec::new();
+        for (committed_sequence, event) in history_events {
+            history_cursor.committed_sequence = committed_sequence;
+            let Some(entry) = event.to_session_history_entry() else {
+                continue;
+            };
+            if entry.is_external_provider_observed() {
+                continue;
+            }
+            if entry.provider_run_id.as_deref() == Some(provider_run_id)
+                && entry.kind != SessionHistoryEntryKind::UserPrompt
+            {
+                let kind = match entry.kind {
+                    SessionHistoryEntryKind::ProviderOutput => {
+                        Some(TerminalOutputKind::ProviderOutput)
+                    }
+                    SessionHistoryEntryKind::ProviderTool => Some(TerminalOutputKind::ProviderTool),
+                    _ => None,
+                };
+                if let Some(kind) = kind {
+                    let chunk = RelayProjectedOutputChunk {
+                        kind,
+                        merge_key: entry.merge_key.clone(),
+                        bytes: entry.text.as_bytes().to_vec(),
+                    };
+                    let snapshot_key = leased_provider_run_history_chunk_key(
+                        &leased_agent,
+                        provider_run_id,
+                        &chunk,
+                    );
+                    let stream_key =
+                        leased_provider_run_stream_key(&leased_agent, provider_run_id, &chunk);
+                    let stream_projected = pending_keys.contains(&stream_key)
+                        || projected_output_stream_keys.contains(&stream_key)
+                        || history_store.leased_projection_key_exists(&stream_key)?;
+                    let already_projected = pending_keys.contains(&snapshot_key)
+                        || stream_projected
+                        || history_store.leased_projection_key_exists(&snapshot_key)?;
+                    // Tool history is not a fallback output source. Compact only
+                    // snapshots actually emitted from terminal records.
+                    if chunk.kind == TerminalOutputKind::ProviderTool
+                        && !pending_keys.contains(&snapshot_key)
+                        && !history_store.leased_projection_key_exists(&snapshot_key)?
+                    {
+                        continue;
+                    }
+                    if chunk.kind == TerminalOutputKind::ProviderOutput && !already_projected {
+                        projected_output_stream_keys.insert(stream_key.clone());
+                        latest_output_history_completion_key = Some(snapshot_key.clone());
+                        output_chunks.push(chunk);
+                    }
+                    history_keys.push(crate::history::leased_projection::ProjectedHistoryKeys {
+                        event_id: event.event_id,
+                        stream_key: (!already_projected || stream_projected).then_some(stream_key),
+                        snapshot_key,
+                    });
+                }
+            }
+            history_entries.push((event.sequence, entry));
+        }
+        if output_chunks
+            .iter()
+            .any(|chunk| chunk.kind == TerminalOutputKind::ProviderOutput)
+        {
+            history_cursor.output_prompt_key =
+                Some(leased_home_prompt_projection_key(&leased_agent));
         }
         let notices = self
             .app
@@ -249,17 +307,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
             &leased_agent.backing_agent_id,
         )?;
         let mut prompts = Vec::new();
-        let mut latest_home_origin_prompt_key = None;
-        if let Ok(backing_session) = self
-            .app
-            .sessions
-            .get_session(&leased_agent.backing_session_id)
+        let mut latest_home_origin_prompt_key = history_cursor.latest_home_prompt_key.clone();
         {
-            let history_entries = self.app.load_session_history_entries(
-                &backing_session,
-                Some(&leased_agent.backing_agent_id),
-            )?;
-            for entry in history_entries.into_iter().filter(|entry| {
+            for (sequence, entry) in history_entries.into_iter().filter(|(_, entry)| {
                 entry.kind == SessionHistoryEntryKind::UserPrompt
                     && !entry.is_external_provider_observed()
             }) {
@@ -283,7 +333,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
                             source_attachment_id == leased_agent.backing_attachment_id
                         })
                 {
-                    latest_home_origin_prompt_key = Some(prompt_history_key);
+                    if sequence > history_cursor.latest_home_prompt_sequence {
+                        latest_home_origin_prompt_key = Some(prompt_history_key);
+                        history_cursor.latest_home_prompt_sequence = sequence;
+                    }
                     continue;
                 }
                 if !leased_agent
@@ -381,7 +434,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .is_some_and(|diagnostic| !diagnostic.trim().is_empty());
         let provider_run_has_projected_output = current_batch_has_provider_output
             || latest_output_history_completion_key.is_some()
-            || leased_provider_run_has_projected_transcript_output(&leased_agent, provider_run_id);
+            || history_cursor.output_prompt_key.as_deref()
+                == Some(leased_home_prompt_projection_key(&leased_agent).as_str());
         let native_prompt_has_settled =
             completion_waits_for_native_prompt_settlement && !backing_prompt_active;
         let mut deferred_explicit_completion = false;
@@ -629,18 +683,20 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 });
             }
         }
-        if !projected_output_history_keys.is_empty() {
-            if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
-                for key in projected_output_history_keys {
-                    if !agent
-                        .projected_output_history_keys
-                        .iter()
-                        .any(|id| id == &key)
-                    {
-                        agent.projected_output_history_keys.push(key);
-                    }
-                }
-            }
+        history_cursor.latest_home_prompt_key = latest_home_origin_prompt_key;
+        if history_cursor != initial_history_cursor
+            || !pending_keys.is_empty()
+            || !history_keys.is_empty()
+        {
+            history_store.commit_leased_projection_cursor(
+                &projection_id,
+                &history_cursor,
+                &pending_keys.into_iter().collect::<Vec<_>>(),
+                &history_keys,
+            )?;
+        }
+        if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
+            agent.projected_output_history_keys = Vec::new();
         }
         if output_chunks.is_empty()
             && notices.is_empty()
@@ -719,33 +775,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
             Some(provider_run_id),
         )?;
         Ok(true)
-    }
-
-    fn leased_provider_run_output_history_chunks(
-        &mut self,
-        leased_agent: &LeasedAgent,
-        provider_run_id: &str,
-    ) -> Result<Vec<RelayProjectedOutputChunk>, DaemonError> {
-        let session = self
-            .app
-            .sessions
-            .get_session(&leased_agent.backing_session_id)?;
-        let entries = self
-            .app
-            .load_session_history_entries(&session, Some(&leased_agent.backing_agent_id))?;
-        Ok(entries
-            .into_iter()
-            .filter(|entry| {
-                entry.provider_run_id.as_deref() == Some(provider_run_id)
-                    && entry.kind == SessionHistoryEntryKind::ProviderOutput
-                    && !entry.is_external_provider_observed()
-            })
-            .map(|entry| RelayProjectedOutputChunk {
-                kind: TerminalOutputKind::ProviderOutput,
-                merge_key: entry.merge_key,
-                bytes: entry.text.into_bytes(),
-            })
-            .collect())
     }
 
     pub(crate) fn pump_leased_runtime_projections(
@@ -1430,22 +1459,6 @@ fn leased_provider_run_stream_key(
         chunk.kind,
         chunk.merge_key.as_deref().unwrap_or("")
     )
-}
-
-fn leased_provider_run_has_projected_transcript_output(
-    leased_agent: &LeasedAgent,
-    provider_run_id: &str,
-) -> bool {
-    let prompt_output_prefix = format!(
-        "{}:{provider_run_id}:{}:{:?}:",
-        leased_agent.backing_session_id,
-        leased_home_prompt_projection_key(leased_agent),
-        TerminalOutputKind::ProviderOutput,
-    );
-    leased_agent
-        .projected_output_history_keys
-        .iter()
-        .any(|key| key.starts_with(&prompt_output_prefix))
 }
 
 fn leased_home_prompt_projection_key(leased_agent: &LeasedAgent) -> String {
