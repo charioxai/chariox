@@ -28,7 +28,7 @@ impl KernelRuntimeState {
         session_id: &str,
         command: Command,
     ) -> Result<Response, DaemonError> {
-        self.room_browser_controller_command_inner(session_id, command, false)
+        self.room_browser_controller_command_inner(session_id, command, false, false)
             .await
     }
 
@@ -37,8 +37,22 @@ impl KernelRuntimeState {
         session_id: &str,
         command: Command,
     ) -> Result<Response, DaemonError> {
-        self.room_browser_controller_command_inner(session_id, command, true)
+        self.room_browser_controller_command_inner(session_id, command, true, false)
             .await
+    }
+
+    pub(super) async fn room_browser_controller_health_probe(
+        &self,
+        session_id: &str,
+        viewport: crate::session::CanonicalViewport,
+    ) -> Result<Response, DaemonError> {
+        self.room_browser_controller_command_inner(
+            session_id,
+            Command::Reconcile { viewport },
+            false,
+            true,
+        )
+        .await
     }
 
     async fn room_browser_controller_command_inner(
@@ -46,6 +60,7 @@ impl KernelRuntimeState {
         session_id: &str,
         command: Command,
         recovery_authority: bool,
+        background_probe: bool,
     ) -> Result<Response, DaemonError> {
         // Cleanup must remain available while the Room is quarantined, including
         // when the durable store cannot establish that execution is safe.
@@ -74,18 +89,22 @@ impl KernelRuntimeState {
                 | Command::Navigate { .. }
                 | Command::ComputerInput { .. }
                 | Command::CancelDownload { .. }
-                | Command::ImportCookies { .. }
-                | Command::AppView {
-                    request:
-                        crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Open { .. }
-                            | crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Reload { .. }
-                }
+                | Command::ImportCookies { .. } | Command::AppView {
+                request: crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Open { .. }
+                    | crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Reload { .. }
+            }
         );
         let response = if let Some(slice) = self.owned.slice_store.environment_slice(session_id) {
             // Keep the relay client's large future off callers' async stacks. Local
             // controller operations stay allocation-free; only the remote boundary
             // owns this boxed transport future.
-            Box::pin(self.route_room_browser_controller_command(session_id, slice, command)).await?
+            Box::pin(self.route_room_browser_controller_command(
+                session_id,
+                slice,
+                command,
+                background_probe,
+            ))
+            .await?
         } else {
             if self
                 .owned
@@ -129,22 +148,24 @@ impl KernelRuntimeState {
         }
     }
 
-    async fn route_room_browser_controller_command(
+    pub(crate) fn room_browser_controller_route_guard(
         &self,
         session_id: &str,
-        slice: crate::slice::SliceRecord,
-        command: Command,
-    ) -> Result<Response, DaemonError> {
+        slice: &crate::slice::SliceRecord,
+        command: &Command,
+        background_probe: bool,
+    ) -> Result<Option<crate::slice::SliceOperationGuard>, DaemonError> {
+        debug_assert!(!background_probe || matches!(command, Command::Reconcile { .. }));
         // The original action retains its operation guard until terminal proof.
         // Cancellation must not wait for that very action to release the guard.
         // App view polls and answers only drain and resolve the page bridge's
         // queue, so they share the slot with controller routes (the local
         // controller runs these concurrently too); holding it would starve
         // or fail agent and Room commands 4 times a second.
-        let _guard = if matches!(&command, Command::CancelAction { .. }) {
+        let guard = if matches!(command, Command::CancelAction { .. }) {
             None
-        } else if matches!(
-            &command,
+        } else if background_probe || matches!(
+            command,
             Command::AppView {
                 request: crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Calls
                     | crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Respond { .. }
@@ -164,6 +185,22 @@ impl KernelRuntimeState {
                 "browser_controller.route",
             )?)
         };
+        Ok(guard)
+    }
+
+    async fn route_room_browser_controller_command(
+        &self,
+        session_id: &str,
+        slice: crate::slice::SliceRecord,
+        command: Command,
+        background_probe: bool,
+    ) -> Result<Response, DaemonError> {
+        let _guard = self.room_browser_controller_route_guard(
+            session_id,
+            &slice,
+            &command,
+            background_probe,
+        )?;
         let config = self.owned.config_projection.snapshot();
         let config = config.slice_relay_override(&slice).unwrap_or(config);
         let target = ClientTarget {

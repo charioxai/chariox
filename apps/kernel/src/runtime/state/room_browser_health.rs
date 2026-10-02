@@ -1,9 +1,7 @@
 //! Browser health belongs to the kernel, including Rooms with no attached UI.
 use super::KernelRuntimeState;
 use crate::session::{EnvironmentComponent, EnvironmentComponentHealthState, EnvironmentLifecycle};
-use crate::transport::room_browser_controller::{
-    RoomBrowserControllerCommand as Command, RoomBrowserControllerResult as Response,
-};
+use crate::transport::room_browser_controller::RoomBrowserControllerResult as Response;
 use std::{sync::atomic::Ordering, time::Duration};
 
 impl KernelRuntimeState {
@@ -69,12 +67,7 @@ impl KernelRuntimeState {
         // does not project tab identities or change the viewport owner.
         let result = tokio::time::timeout(
             Duration::from_secs(4),
-            self.room_browser_controller_command(
-                session_id,
-                Command::Reconcile {
-                    viewport: snapshot.viewport,
-                },
-            ),
+            self.room_browser_controller_health_probe(session_id, snapshot.viewport),
         )
         .await;
         let diagnostic = match result {
