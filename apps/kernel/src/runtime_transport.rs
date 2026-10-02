@@ -441,7 +441,7 @@ where
     let (local_auth, _local_auth_token_file) = KernelLocalAuth::for_local_kernel(
         configured_kernel_local_auth_token(),
         listener.local_addr(),
-    );
+    )?;
     let _local_presence = local_presence::LocalKernelPresenceLease::start(&router, &listener).await;
     run_kernel_websocket_server_with_bound_listener(router, listener, local_auth, shutdown).await
 }
@@ -474,7 +474,7 @@ where
     let (local_auth, _local_auth_token_file) = KernelLocalAuth::for_local_kernel(
         configured_kernel_local_auth_token(),
         listener.local_addr(),
-    );
+    )?;
     let _local_presence = local_presence::LocalKernelPresenceLease::start(&router, &listener).await;
     run_kernel_websocket_server_with_bound_listener(router, listener, local_auth, shutdown).await
 }
@@ -520,7 +520,7 @@ where
     let (local_auth, _local_auth_token_file) = KernelLocalAuth::for_local_kernel(
         configured_kernel_local_auth_token(),
         listener.local_addr(),
-    );
+    )?;
     let _local_presence = local_presence::LocalKernelPresenceLease::start(&router, &listener).await;
     run_kernel_websocket_server_with_bound_listener(router, listener, local_auth, shutdown).await
 }

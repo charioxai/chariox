@@ -443,7 +443,7 @@ async fn laptop_kernel_websocket_enforces_local_tokens() {
 
 /// Protocol 393: each websocket credential admits its connection class, and
 /// that class is the one a critical approval answer is audited with. A
-/// host's passkey is refused before verification; nothing else changes.
+/// host cannot submit a passkey or use the owner's terminal remember window.
 #[cfg(unix)]
 #[tokio::test]
 async fn kernel_websocket_credentials_attribute_critical_approval_audits_to_their_class() {
@@ -485,21 +485,49 @@ async fn kernel_websocket_credentials_attribute_critical_approval_audits_to_thei
         .await
         .expect("a host passkey should be refused");
     assert!(refused.contains("PASSKEY_NOT_ACCEPTED"), "{refused}");
-    // Without a passkey the host answers exactly as before.
+    // Open the owner's remember window through the terminal command path on
+    // this same runtime, then answer the other pending decision over the host
+    // websocket. Owner routing must not turn the host into a terminal.
+    let seed_id = format!("remember-seed-{:016x}", rand::random::<u64>());
+    let _seed = host
+        .router
+        .runtime_state()
+        .raise_critical_approval_for_test(&host.session_id, &seed_id)
+        .await;
+    let seed =
+        LocalDaemonRequest::RespondToInteraction(crate::local::RespondToInteractionRequest {
+            session_id: host.session_id.clone(),
+            interaction_id: seed_id,
+            choice_id: "approve".into(),
+            custom_reply: None,
+            passkey: Some(crate::local::ApprovalPasskey::new(PASSKEY)),
+            passkey_remember_minutes: Some(5),
+        });
+    let command = KernelCommand::from_local_request_with_caller(
+        "remember-seed",
+        KernelCommandSource::LocalCli,
+        crate::runtime::command::KernelCaller::for_source(&KernelCommandSource::LocalCli)
+            .with_connection_class(KernelConnectionClass::Terminal),
+        None,
+        None,
+        &seed,
+    );
+    host.router.dispatch(command, seed).await.unwrap();
     let missing = host
         .answer(host_token.clone(), "approve", None)
         .await
         .expect("approving still needs the passkey");
     assert!(missing.contains("PASSKEY_REQUIRED"), "{missing}");
     assert_eq!(host.answer(host_token, "deny", None).await, None);
-    assert_eq!(
-        host.audits(),
-        [("missing".to_string(), serde_json::json!("host"))]
+    assert!(
+        host.audits().is_empty(),
+        "hosts stay outside the passkey gate"
     );
     host.stop().await;
 }
 
 struct ClassAuditKernel {
+    router: Arc<CommandRouter>,
     addr: std::net::SocketAddr,
     durable: crate::durable_state::DurableKernelStateStore,
     session_id: String,
@@ -547,7 +575,7 @@ impl ClassAuditKernel {
         let mcp_listener = adopt_std_listener(mcp_listener, "runtime mcp").expect("mcp listener");
         let (shutdown, shutdown_rx) = oneshot::channel::<()>();
         let server = tokio::spawn(run_kernel_websocket_server_with_bound_listeners(
-            router,
+            Arc::clone(&router),
             listener,
             mcp_listener,
             auth,
@@ -556,6 +584,7 @@ impl ClassAuditKernel {
             },
         ));
         Self {
+            router,
             addr,
             durable,
             session_id,

@@ -2305,6 +2305,41 @@ Workflow trigger and deployment direction:
   grant_extend_notice_minutes = 5
   request_timeout_minutes = 10
   ```
+- protocol 403: local access enforcement.
+
+  TCP websocket admission now requires the generated local token. Missing, wrong,
+  malformed and stale credentials receive HTTP 401 before command dispatch. Its
+  body names `<state>/kernel-local-auth/<port>.token` and the configured
+  `ws+unix:///absolute/socket` endpoint. `LocalIpcClient` reports that diagnostic
+  as a non-retryable `authentication_failed` error. It continues reading the
+  private token file for each reconnect; managed host-token kernels retain their
+  existing admission behavior and owner-decision reply routing. Hosts remain
+  unable to submit passkeys or answer credential prompts. Remember-window
+  approvals are restricted to the terminal class; host controllers cannot use them.
+  If the generated token file cannot be written or the listener address is
+  unavailable, startup fails before publishing local presence. First-party
+  clients send the local token only to loopback endpoints; direct LAN access,
+  including a non-loopback `CHARIOX_KERNEL_HOST`, is unsupported. Physical
+  devices use the Cloud/relay path.
+
+  Terminal authority follows the admitted `terminal` connection class, rather
+  than the command transport source. Only that class may submit a passkey or
+  receive owner passkey popups. Unauthenticated Unix peers can only request
+  access; approved external peers keep the process-bound, session-scoped grant
+  path from protocol 395 and cannot answer critical approvals. Relay identities,
+  per-run runtime MCP admission and the publication gateway keep their existing
+  credential paths. No first-party minimum version rises: token-aware clients
+  also work with older log-mode kernels, and this change adds no request or event
+  shape that a client requires.
+
+  Focused validation: `runtime_transport::tests::laptop_kernel_websocket_enforces_local_tokens`,
+  `runtime::command::tests::terminal_status_requires_the_admitted_terminal_class`,
+  `runtime_transport::tests::kernel_access_grants`, and
+  `apps/cli/scripts/lib/private-kernel-local-auth.kernel-test.mjs` (set
+  `CHARIOX_LOCAL_AUTH_KERNEL_BINARY` to the candidate binary). The private-kernel
+  drill checks both state-root conventions, control/event lanes and token rotation
+  without provisioning any provider account. Grant/passkey drills use temporary
+  test vaults. The owner's real passkey sitting remains separate.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic
@@ -2495,33 +2530,3 @@ Queue and turn direction:
 ## 5.0 Capability, Session, Workflow, Security, and Versioning Details
 
 Detailed capability API baseline, Workspace Live Sync coordination, provider control operations, session/attachment semantics, workflow contracts, security semantics, compatibility rules, versioning strategy, and cross-platform terminal conformance now live in [PROTOCOL_CAPABILITY_SESSION_WORKFLOW.md](PROTOCOL_CAPABILITY_SESSION_WORKFLOW.md). Keep this main protocol document focused on scope, lanes, native provider behavior, envelope shape, current transport baseline, and command/workflow message direction.
-
-### Protocol 403: local access enforcement
-
-TCP websocket admission now requires the generated local token. Missing, wrong,
-malformed and stale credentials receive HTTP 401 before command dispatch. Its
-body names `<state>/kernel-local-auth/<port>.token` and the configured
-`ws+unix:///absolute/socket` endpoint. `LocalIpcClient` reports that diagnostic
-as a non-retryable `authentication_failed` error. It continues reading the
-private token file for each reconnect; managed host-token kernels retain their
-existing admission behavior and owner-decision reply routing. Hosts remain
-unable to submit passkeys or answer credential prompts.
-
-Terminal authority follows the admitted `terminal` connection class, rather
-than the command transport source. Only that class may submit a passkey or
-receive owner passkey popups. Unauthenticated Unix peers can only request
-access; approved external peers keep the process-bound, session-scoped grant
-path from protocol 395 and cannot answer critical approvals. Relay identities,
-per-run runtime MCP admission and the publication gateway keep their existing
-credential paths. No first-party minimum version rises: token-aware clients
-also work with older log-mode kernels, and this change adds no request or event
-shape that a client requires.
-
-Focused validation: `runtime_transport::tests::laptop_kernel_websocket_enforces_local_tokens`,
-`runtime::command::tests::terminal_status_requires_the_admitted_terminal_class`,
-`runtime_transport::tests::kernel_access_grants`, and
-`apps/cli/scripts/lib/private-kernel-local-auth.kernel-test.mjs` (set
-`CHARIOX_LOCAL_AUTH_KERNEL_BINARY` to the candidate binary). The private-kernel
-drill checks both state-root conventions, control/event lanes and token rotation
-without provisioning any provider account. Grant/passkey drills use temporary
-test vaults. The owner's real passkey sitting remains separate.

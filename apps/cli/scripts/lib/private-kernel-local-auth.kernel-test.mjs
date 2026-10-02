@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
 import { once } from "node:events"
-import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
@@ -97,6 +97,43 @@ for (const isolation of ["CHARIOX_HOME", "XDG_STATE_HOME"]) {
     }
   })
 }
+
+test("kernel startup fails when its required local token cannot be written", {
+  skip: !process.env.CHARIOX_LOCAL_AUTH_KERNEL_BINARY,
+  timeout: 30_000,
+}, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-auth-startup-failure-"))
+  const children = new Set()
+  try {
+    const home = path.join(root, "private")
+    await mkdir(path.join(home, "state"), { recursive: true })
+    await writeFile(path.join(home, "state", "kernel-local-auth"), "directory blocked by owned fixture")
+    const ports = await reservePorts()
+    const kernel = { directory: root, output: "", env: {
+      PATH: process.env.PATH,
+      HOME: path.join(root, "home"),
+      CHARIOX_HOME: home,
+      XDG_CONFIG_HOME: path.join(root, "config"),
+      CHARIOX_LOG_DIR: path.join(root, "logs"),
+      TOKIO_WORKER_THREADS: "1",
+      CHARIOX_KERNEL_PORT: String(ports[0]),
+      CHARIOX_MCP_PORT: String(ports[1]),
+      CHARIOX_CODEX_PORT: String(ports[2]),
+      CHARIOX_OPENCODE_PORT: String(ports[3]),
+      CHARIOX_DAEMON_SOCKET: path.join(root, "daemon.sock"),
+      CHARIOX_DAEMON_ID: "auth-startup-failure",
+      CHARIOX_MACHINE_ID: "auth-startup-failure",
+    } }
+    kernel.child = startKernel(kernel, children)
+    const [code] = await once(kernel.child, "close", { signal: AbortSignal.timeout(10_000) })
+    assert.notEqual(code, 0, kernel.output)
+    assert.match(kernel.output, /prepare kernel local auth/)
+    assert.match(kernel.output, /cannot write required token file/)
+  } finally {
+    await Promise.all([...children].map(stopKernel))
+    await rm(root, { recursive: true, force: true })
+  }
+})
 
 function startKernel(kernel, children) {
   const child = spawn(process.env.CHARIOX_LOCAL_AUTH_KERNEL_BINARY, [], {

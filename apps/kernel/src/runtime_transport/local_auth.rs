@@ -19,6 +19,7 @@ use serde_json::Value;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 
 use crate::config::DaemonConfig;
+use crate::error::DaemonError;
 use crate::local::KernelConnectionClass;
 use crate::runtime::command::KernelCommandSource;
 
@@ -90,43 +91,31 @@ impl KernelLocalAuth {
     pub(crate) fn for_local_kernel(
         host_token: Option<Arc<str>>,
         local_addr: std::io::Result<SocketAddr>,
-    ) -> (Self, Option<LocalAuthTokenFile>) {
+    ) -> Result<(Self, Option<LocalAuthTokenFile>), DaemonError> {
         if let Some(token) = host_token {
-            return (Self::HostToken(token), None);
+            return Ok((Self::HostToken(token), None));
         }
+        let local_addr = local_addr.map_err(|error| DaemonError::LocalTransport {
+            operation: "prepare kernel local auth",
+            message: format!("kernel websocket address unavailable: {error}"),
+        })?;
+        let path = DaemonConfig::default_kernel_local_auth_token_path(local_addr.port());
         let auth = Arc::new(LocalTokenAuth::new(generate_kernel_local_auth_token()));
-        let token_file = match local_addr {
-            Ok(local_addr) => {
-                let path = DaemonConfig::default_kernel_local_auth_token_path(local_addr.port());
-                match LocalAuthTokenFile::write(path.clone(), &auth.token) {
-                    Ok(file) => {
-                        crate::logging::info_with_fields(
-                            LOCAL_AUTH_LOG_COMPONENT,
-                            "kernel local auth token written",
-                            serde_json::json!({ "path": path, "enforcement": "required" }),
-                        );
-                        Some(file)
-                    }
-                    Err(error) => {
-                        crate::logging::warn_with_fields(
-                            LOCAL_AUTH_LOG_COMPONENT,
-                            "failed to write the kernel local auth token; local clients cannot present it",
-                            serde_json::json!({ "path": path, "error": error.to_string() }),
-                        );
-                        None
-                    }
-                }
+        let token_file = LocalAuthTokenFile::write(path.clone(), &auth.token).map_err(|error| {
+            DaemonError::LocalTransport {
+                operation: "prepare kernel local auth",
+                message: format!(
+                    "cannot write required token file {}: {error}",
+                    path.display()
+                ),
             }
-            Err(error) => {
-                crate::logging::warn_with_fields(
-                    LOCAL_AUTH_LOG_COMPONENT,
-                    "kernel websocket address unavailable; local auth token not written",
-                    serde_json::json!({ "error": error.to_string() }),
-                );
-                None
-            }
-        };
-        (Self::LocalToken(auth), token_file)
+        })?;
+        crate::logging::info_with_fields(
+            LOCAL_AUTH_LOG_COMPONENT,
+            "kernel local auth token written",
+            serde_json::json!({ "path": path, "enforcement": "required" }),
+        );
+        Ok((Self::LocalToken(auth), Some(token_file)))
     }
 
     pub(crate) fn required(&self) -> bool {

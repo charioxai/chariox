@@ -487,6 +487,12 @@ impl KernelRuntimeState {
                 "only a Chariox terminal can submit the passkey",
             ));
         }
+        // Hosts retain owner decision routing, but never enter the passkey
+        // gate. The resolution path refuses passkey-required choices without
+        // verified presence, while still allowing refusals and routine choices.
+        if connection_class == Some(KernelConnectionClass::Host) {
+            return Ok(CriticalApprovalAuthorization::without_passkey(false));
+        }
         let Some((owner, operation_id)) =
             self.owned
                 .passkey_gate(session_id, interaction_id, choice_id, caller_user_id)
@@ -524,7 +530,10 @@ impl KernelRuntimeState {
             ));
         }
         let Some(passkey) = passkey else {
-            if !fresh && presence.remembered(&owner, Instant::now()) {
+            if !fresh
+                && connection_class == Some(KernelConnectionClass::Terminal)
+                && presence.remembered(&owner, Instant::now())
+            {
                 audit("remembered")?;
                 return Ok(CriticalApprovalAuthorization::without_passkey(true));
             }
