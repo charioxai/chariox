@@ -21,7 +21,9 @@ impl KernelRuntimeState {
                 && p.passkey_prompt.as_ref().is_some_and(|p| {
                     matches!(
                         p.kind,
-                        PasskeyPromptKind::AccessGrant | PasskeyPromptKind::AccessExtension
+                        PasskeyPromptKind::AccessGrant
+                            | PasskeyPromptKind::AccessExtension
+                            | PasskeyPromptKind::Sudo
                     )
                 })
         }) else {
@@ -40,6 +42,15 @@ impl KernelRuntimeState {
         session_id: &str,
         request: &LocalDaemonRequest,
     ) -> bool {
+        // This request has no caller-supplied session or attachment. Resolve the
+        // exact target ID against the granted session before transport admission.
+        if let LocalDaemonRequest::RequestKernelSudo(request) = request {
+            return self
+                .owned
+                .agent_store
+                .get_agent(&request.agent_id)
+                .is_ok_and(|agent| agent.session_id() == session_id);
+        }
         match request_session_scope(request) {
             Some(SessionMembershipScope::SessionId(id)) => id == session_id,
             Some(SessionMembershipScope::SessionIds(ids)) => {

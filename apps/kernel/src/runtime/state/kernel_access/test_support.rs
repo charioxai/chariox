@@ -115,6 +115,26 @@ impl KernelRuntimeState {
             .unwrap();
             return;
         }
+        if action == "sudo-timeout" {
+            let prompt = tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if let Some(prompt) = self
+                        .passkey_prompts_for("local")
+                        .into_iter()
+                        .find(|p| p.kind == PasskeyPromptKind::Sudo)
+                    {
+                        break prompt;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap();
+            self.owned
+                .timeout_runtime_interaction(&prompt.session_id, &prompt.interaction_id)
+                .unwrap();
+            return;
+        }
         if action == "timeout" {
             let prompts = self
                 .owned

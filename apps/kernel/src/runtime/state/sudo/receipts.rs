@@ -26,6 +26,7 @@ impl KernelRuntimeState {
             Some(&turn.owner_user_id),
             true,
             Some(&turn),
+            None,
         )?;
         Ok(LocalDaemonResponse::InteractionResponded {
             interaction_id: answer.interaction_id,

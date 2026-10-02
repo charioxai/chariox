@@ -109,6 +109,7 @@ fn running(f: &Fixture) -> KernelSudoTurn {
         agent_id: agent.into(),
         owner_user_id: session.owner_user_id().into(),
         terminal_id: "sudo-terminal".into(),
+        requester: None,
         prompt_id: Some("sudo-exact-turn".into()),
         provider_run_id: Some(f.run.id().into()),
     };
@@ -613,6 +614,7 @@ async fn sudo_restart_discards_queue_and_records_notice_without_prompt_content()
         agent_id: f.request.target_agent_id.clone().unwrap(),
         owner_user_id: "local".into(),
         terminal_id: "sudo-terminal".into(),
+        requester: None,
         prompt_id: None,
         provider_run_id: None,
     };
@@ -776,5 +778,392 @@ async fn sudo_fresh_popup_starts_one_separate_turn_through_normal_admission() {
         Some("local"),
         Some(&prompt.interaction_id),
         "fixture_cleanup",
+    );
+}
+
+fn external_request(f: &Fixture) -> RequestKernelSudoRequest {
+    RequestKernelSudoRequest {
+        agent_id: f.request.target_agent_id.clone().unwrap(),
+        prompt: "external first line\nfull second line".into(),
+    }
+}
+
+#[tokio::test]
+async fn external_sudo_popup_names_os_requester_target_session_and_full_prompt() {
+    let f = fixture();
+    let grant_id = f.state.insert_access_grant_for_test(&f.request.session_id);
+    let request = external_request(&f);
+    let state = f.state.clone();
+    let id = grant_id.clone();
+    let task = tokio::spawn(async move { state.request_kernel_sudo(&id, request).await });
+    let prompt = popup(&f.state).await;
+    assert!(prompt.message.contains("External agent"));
+    assert!(prompt
+        .message
+        .contains(&format!("OS pid {}", std::process::id())));
+    assert!(prompt.message.contains(
+        &crate::runtime::kernel_access::process::inspect(std::process::id())
+            .unwrap()
+            .0
+            .executable
+    ));
+    assert!(prompt
+        .message
+        .contains(f.request.target_agent_id.as_deref().unwrap()));
+    assert!(prompt.message.contains(&f.request.session_id));
+    assert!(prompt
+        .message
+        .contains("Requester-supplied prompt:\nexternal first line\nfull second line"));
+    assert!(f.state.passkey_prompts_for("guest").is_empty());
+    let mut answer = RespondToInteractionRequest {
+        session_id: prompt.session_id.clone(),
+        interaction_id: prompt.interaction_id.clone(),
+        choice_id: "approve".into(),
+        custom_reply: None,
+        passkey: Some(ApprovalPasskey::new(PASSKEY)),
+        passkey_remember_minutes: None,
+    };
+    assert!(f
+        .state
+        .authorize_external_request(
+            &grant_id,
+            &LocalDaemonRequest::RespondToInteraction(answer.clone())
+        )
+        .is_err());
+    assert!(f
+        .state
+        .answer_sudo_entry_from_terminal("guest", "guest-terminal", &answer)
+        .await
+        .is_err());
+    assert!(f
+        .state
+        .request_kernel_sudo(&grant_id, external_request(&f))
+        .await
+        .is_err());
+    f.state
+        .answer_sudo_entry_from_terminal("local", "approving-host-terminal", &answer)
+        .await
+        .unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        result,
+        LocalDaemonResponse::KernelSudoRequested { .. }
+    ));
+    let events = f
+        .state
+        .owned
+        .durable_state_store
+        .load_subject_events_by_kind(&prompt.interaction_id, "kernel_access.sudo", 10)
+        .unwrap();
+    let started = events
+        .iter()
+        .find(|event| event.payload["outcome"] == "started")
+        .unwrap();
+    assert_eq!(
+        started.payload["turn"]["terminal_id"],
+        "approving-host-terminal"
+    );
+    assert_eq!(started.payload["turn"]["requester"]["grant_id"], grant_id);
+    assert!(!serde_json::to_string(&events).unwrap().contains(PASSKEY));
+    answer.passkey = None;
+    assert!(f
+        .state
+        .answer_sudo_entry_from_terminal("local", "other-terminal", &answer)
+        .await
+        .is_err());
+    f.state.revoke_sudo(Some("local"), None, "fixture_cleanup");
+    assert_eq!(
+        f.state
+            .owned
+            .attachment_store
+            .list_session_attachment_ids(&f.request.session_id)
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn external_sudo_revoked_holder_cancels_popup_and_busy_queue() {
+    for authorized in [false, true] {
+        let f = fixture();
+        let busy = running(&f);
+        f.state.owned.sudo_turns.lock().unwrap().clear();
+        let grant_id = f.state.insert_access_grant_for_test(&f.request.session_id);
+        let request = external_request(&f);
+        let state = f.state.clone();
+        let id = grant_id.clone();
+        let task = tokio::spawn(async move { state.request_kernel_sudo(&id, request).await });
+        let prompt = popup(&f.state).await;
+        if authorized {
+            f.state
+                .answer_sudo_entry_from_terminal(
+                    "local",
+                    "host",
+                    &RespondToInteractionRequest {
+                        session_id: prompt.session_id.clone(),
+                        interaction_id: prompt.interaction_id.clone(),
+                        choice_id: "approve".into(),
+                        custom_reply: None,
+                        passkey: Some(ApprovalPasskey::new(PASSKEY)),
+                        passkey_remember_minutes: None,
+                    },
+                )
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        f.state
+            .revoke_kernel_access(Some("local"), Some(&grant_id), "explicit_revoke")
+            .unwrap();
+        f.state.sweep_kernel_access();
+        let session = f
+            .state
+            .owned
+            .session_store
+            .get_session(&busy.session_id)
+            .unwrap();
+        f.state
+            .owned
+            .prompt_state_owner
+            .cancel_active_prompt_only(&session, &busy.agent_id)
+            .unwrap();
+        assert!(tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_err());
+        assert!(f.state.list_sudo_turns("local").is_empty());
+        assert!(f.state.passkey_prompts_for("local").is_empty());
+        assert_eq!(
+            f.state
+                .owned
+                .attachment_store
+                .list_session_attachment_ids(&f.request.session_id)
+                .len(),
+            1
+        );
+    }
+}
+
+#[tokio::test]
+async fn external_sudo_only_granted_target_is_allowed_and_terminal_cannot_request() {
+    let f = fixture();
+    let request = external_request(&f);
+    assert!(f
+        .state
+        .request_kernel_sudo("missing", request.clone())
+        .await
+        .is_err());
+    let other = crate::session::RuntimeSession::new("ungranted", None, "w", "wt", "m", "k");
+    f.state.owned.session_store.write().restore_session(other);
+    let grant = f.state.insert_access_grant_for_test("ungranted");
+    assert!(!f.state.external_request_in_session(
+        "ungranted",
+        &LocalDaemonRequest::RequestKernelSudo(request.clone())
+    ));
+    assert!(f
+        .state
+        .request_kernel_sudo(&grant, request.clone())
+        .await
+        .is_err());
+    let request = LocalDaemonRequest::RequestKernelSudo(request);
+    let mut command = crate::runtime::command::KernelCommand::from_local_request(
+        "external-sudo-tcp",
+        None,
+        None,
+        &request,
+    );
+    command.caller.connection_class = Some(KernelConnectionClass::Terminal);
+    assert!(f
+        .router
+        .dispatch(command, request)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("ws+unix://"));
+}
+
+#[tokio::test]
+async fn sudo_rotation_interrupts_running_turn_and_revokes_grant() {
+    let f = fixture();
+    let turn = running(&f);
+    f.state.insert_access_grant_for_test(&f.request.session_id);
+    f.state
+        .change_vault_passphrase(
+            "local",
+            &f._worktree.path().join("test-vault.json"),
+            zeroize::Zeroizing::new(PASSKEY.into()),
+            zeroize::Zeroizing::new("rotated fixture".into()),
+        )
+        .await
+        .unwrap();
+    assert!(f.state.list_kernel_access("local").is_empty());
+    assert!(f.state.list_sudo_turns("local").is_empty());
+    assert!(f.state.sudo_for_auth_token("sudo-fixture-bearer").is_err());
+    let session = f
+        .state
+        .owned
+        .session_store
+        .get_session(&turn.session_id)
+        .unwrap();
+    assert_eq!(
+        f.state
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &turn.agent_id)
+            .unwrap()
+            .status(),
+        PromptStatus::Cancelling
+    );
+    let events = f
+        .state
+        .owned
+        .durable_state_store
+        .load_subject_events_by_kind(&turn.entry_id, "kernel_access.sudo", 10)
+        .unwrap();
+    assert!(events
+        .iter()
+        .any(|event| event.payload["outcome"] == "passkey_rotation"));
+}
+
+#[tokio::test]
+async fn sudo_session_end_removes_running_and_pending_authorizations() {
+    for pending in [false, true] {
+        let f = fixture();
+        let task = if pending {
+            let state = f.state.clone();
+            let request = f.request.clone();
+            let task =
+                tokio::spawn(
+                    async move { state.submit_sudo_prompt(request, "local", "host").await },
+                );
+            popup(&f.state).await;
+            Some(task)
+        } else {
+            running(&f);
+            None
+        };
+        f.state.end_session(&f.request.session_id).await.unwrap();
+        assert!(f.state.list_sudo_turns("local").is_empty());
+        assert!(f.state.passkey_prompts_for("local").is_empty());
+        if let Some(task) = task {
+            assert!(tokio::time::timeout(Duration::from_secs(5), task)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err());
+        }
+    }
+}
+
+#[tokio::test]
+async fn external_sudo_source_cannot_reopen_a_session_ended_before_attach() {
+    let f = fixture();
+    f.state.end_session(&f.request.session_id).await.unwrap();
+    // Model end_session winning between grant admission and source attachment.
+    assert!(f
+        .state
+        .attach_external_sudo_source(&f.request.session_id, "local")
+        .is_err());
+    let session = f
+        .state
+        .owned
+        .session_store
+        .get_session(&f.request.session_id)
+        .unwrap();
+    assert_eq!(session.status(), SessionStatus::Ended);
+    assert!(f
+        .state
+        .owned
+        .attachment_store
+        .list_session_attachment_ids(&f.request.session_id)
+        .is_empty());
+}
+
+#[tokio::test]
+async fn sudo_admission_waiting_for_grants_does_not_block_a_critical_receipt() {
+    let f = fixture();
+    let running_turn = running(&f);
+    let responder = f
+        .state
+        .create_kernel_operation_interaction(
+            &f.request.session_id,
+            "local",
+            RuntimeInteraction::for_kernel_operation(
+                "sudo-lock-order-approval",
+                "payment",
+                "Payment",
+                "Fixture only",
+                vec![
+                    RuntimeInteractionChoice::new("deny", "Deny", "deny", None),
+                    RuntimeInteractionChoice::new("approve", "Approve", "approve", None)
+                        .requiring_passkey(),
+                ],
+            ),
+        )
+        .await
+        .unwrap();
+    let grant_id = f.state.insert_access_grant_for_test(&f.request.session_id);
+    let mut pending = running_turn.clone();
+    pending.entry_id = "sudo:queued-lock-order".into();
+    pending.prompt_id = None;
+    pending.provider_run_id = None;
+    pending.requester = Some(
+        f.state.owned.kernel_access.lock().unwrap().grants[&grant_id]
+            .summary
+            .clone(),
+    );
+    f.state
+        .owned
+        .sudo_turns
+        .lock()
+        .unwrap()
+        .insert(pending.entry_id.clone(), pending.clone());
+    let mut admitted = pending.clone();
+    admitted.prompt_id = Some("next-fixture-prompt".into());
+    admitted.provider_run_id = Some(f.run.id().into());
+    // A busy grant writer stalls final admission, as the transport sweep can.
+    let grants = f.state.owned.kernel_access.lock().unwrap();
+    let (entered, enter) = std::sync::mpsc::channel();
+    let state = f.state.clone();
+    let admission = std::thread::spawn(move || {
+        entered.send(()).unwrap();
+        state.admit_sudo_turn(&pending, &admitted, true)
+    });
+    enter.recv_timeout(Duration::from_secs(5)).unwrap();
+    // Let the admission thread reach its blocked grant writer.
+    std::thread::sleep(Duration::from_millis(100));
+    let (completed, completion) = std::sync::mpsc::channel();
+    let state = f.state.clone();
+    let turn = running_turn.clone();
+    let approval = std::thread::spawn(move || {
+        let result = state.owned.resolve_runtime_interaction_authorized(
+            &turn.session_id,
+            "sudo-lock-order-approval",
+            "approve",
+            None,
+            Some("local"),
+            true,
+            Some(&turn),
+            None,
+        );
+        completed.send(result).unwrap();
+    });
+    let answered_while_grants_busy = completion.recv_timeout(Duration::from_secs(2));
+    // Release before asserting: the opposite lock order must fail this test
+    // without leaving its threads blocked in the rest of the test process.
+    drop(grants);
+    admission.join().unwrap().unwrap();
+    approval.join().unwrap();
+    answered_while_grants_busy
+        .expect("grant contention blocked a critical sudo receipt")
+        .unwrap();
+    assert_eq!(
+        responder.await.unwrap().choice_id.as_deref(),
+        Some("approve")
     );
 }

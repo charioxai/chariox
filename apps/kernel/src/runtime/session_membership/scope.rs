@@ -529,7 +529,8 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::ClearWorkflowPromptQueue(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
-        LocalDaemonRequest::RequestKernelAccess(_)
+        LocalDaemonRequest::RequestKernelSudo(_)
+        | LocalDaemonRequest::RequestKernelAccess(_)
         | LocalDaemonRequest::ListKernelAccessGrants(_)
         | LocalDaemonRequest::RevokeKernelAccessGrant(_)
         | LocalDaemonRequest::BeginAppPublisherEnrollment(_)

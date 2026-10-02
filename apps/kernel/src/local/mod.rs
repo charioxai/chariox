@@ -265,7 +265,7 @@ pub use api::{
 pub use api::{KernelConnectionClass, PasskeyPrompt, PasskeyPromptKind};
 pub use client::LocalDaemonClient;
 pub use harness::{run_local_harness, LocalHarnessReport};
-pub use api::{KernelSudoTurn, KernelAccessGrant, ListKernelAccessGrantsRequest, RequestKernelAccessRequest, RevokeKernelAccessGrantRequest};
+pub use api::{RequestKernelSudoRequest, KernelSudoTurn, KernelAccessGrant, ListKernelAccessGrantsRequest, RequestKernelAccessRequest, RevokeKernelAccessGrantRequest};
 
 /// Grandparent of the CLI launcher, verified from the OS process tree.
 #[cfg(unix)]
