@@ -31,6 +31,20 @@ const verifyRelease = join(repositoryRoot, "deploy/managed-kernel/verify-image-r
 const managedService = join(repositoryRoot, "deploy/managed-kernel/chariox-managed-bootstrap.service")
 const serviceName = "chariox-managed-bootstrap.service"
 
+// MP-07/MP-10: signed release ownership is a real root contract. Run the
+// unchanged fixture assertions as root rather than simulating root-owned files.
+if (process.platform === "linux" && process.getuid() !== 0) {
+  test("managed upgrade root-owned release fixtures", () => {
+    const result = spawnSync("sudo", ["--", process.execPath, "--test", fileURLToPath(import.meta.url)], {
+      encoding: "utf8", maxBuffer: 16 * 1024 * 1024,
+      env: { ...process.env, NODE_TEST_CONTEXT: undefined },
+    })
+    process.stdout.write(result.stdout ?? "")
+    assert.equal(result.error, undefined)
+    assert.equal(result.signal, null)
+    assert.equal(result.status, 0, result.stderr)
+  })
+} else {
 test("managed kernel upgrade requires an explicit valid provider topology before reading the image", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-upgrade-topology-"))
   context.after(() => rm(root, { recursive: true, force: true }))
@@ -2213,3 +2227,5 @@ test("managed kernel upgrade remains a dedicated offline release operation", asy
   assert.match(contents.slice(publishTransaction, stopService), /publish-transaction/)
   assert.match(stateContents, /await rename\(source, destination\)\n  await fsyncDirectory\(dirname\(destination\)\)/)
 })
+
+}
