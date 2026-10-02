@@ -141,3 +141,71 @@ async fn rejects_mismatched_identity(wrong_key: bool) {
         "{error}"
     );
 }
+
+#[tokio::test]
+async fn temporary_peer_request_rechecks_authority_after_discovery_before_send() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let mut home = crate::config::DaemonConfig::for_tests();
+    let worker = crate::config::DaemonConfig::for_tests();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    home.relay_url = Some(format!("ws://{}", listener.local_addr().unwrap()));
+    home.relay_token = Some("authorization-fixture".into());
+    let server = tokio::spawn(async move {
+        let mut metadata = accept_async(listener.accept().await.unwrap().0)
+            .await
+            .unwrap();
+        let RelayEnvelope::ClientMetadataRequest { request_id, .. } = receive(&mut metadata).await
+        else {
+            panic!("expected discovery")
+        };
+        let presence = serde_json::from_value(serde_json::json!({"kernel_id":"worker", "machine_id":"fixture-machine", "public_key":worker.relay_public_key})).unwrap();
+        send(
+            &mut metadata,
+            RelayEnvelope::ClientMetadataResponse {
+                request_id,
+                machines: None,
+                kernels: None,
+                kernel: Some(presence),
+                error: None,
+            },
+        )
+        .await;
+        assert!(matches!(metadata.next().await, Some(Ok(Message::Close(_)))));
+        let _ = metadata.close(None).await;
+        listener
+    });
+    let checks = AtomicUsize::new(0);
+    let result = send_peer_request_via_temporary_connection_authorized(
+        &home,
+        ClientTarget {
+            daemon_id: Some("worker".into()),
+            daemon_alias: None,
+        },
+        RelayPeerRequest::Ping {
+            value: "must-not-send".into(),
+        },
+        Duration::from_secs(3),
+        || {
+            if checks.fetch_add(1, Ordering::SeqCst) == 0 {
+                Ok(())
+            } else {
+                Err(DaemonError::LocalTransport {
+                    operation: "peer request authorization",
+                    message: "test grant revoked".into(),
+                })
+            }
+        },
+    )
+    .await;
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("test grant revoked"));
+    assert_eq!(checks.load(Ordering::SeqCst), 2);
+    let listener = server.await.unwrap().into_std().unwrap();
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock,
+        "invalid authority opened a peer socket"
+    );
+}

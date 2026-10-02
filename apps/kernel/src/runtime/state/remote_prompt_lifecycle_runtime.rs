@@ -34,7 +34,7 @@ impl KernelRuntimeState {
                 self.authorize_prompt_command(authority)?;
                 let relay_config = app.relay_config_for_remote_execution(&remote_execution);
                 app.block_on_relay_future(
-                    crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                    crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized(
                         &relay_config,
                         ClientTarget {
                             daemon_id: Some(remote_execution.worker_kernel_id.clone()),
@@ -43,6 +43,8 @@ impl KernelRuntimeState {
                         RelayPeerRequest::CancelLeasedPrompt {
                             leased_agent_id: remote_execution.leased_agent_id.clone(),
                         },
+                        std::time::Duration::from_millis(relay_config.relay_request_timeout_ms),
+                        || self.authorize_prompt_command(authority),
                     ),
                 )
             })
@@ -116,7 +118,7 @@ impl KernelRuntimeState {
                 self.authorize_prompt_command(authority)?;
                 let relay_config = app.relay_config_for_remote_execution(&remote_execution);
                 app.block_on_relay_future(
-                    crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                    crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized(
                         &relay_config,
                         ClientTarget {
                             daemon_id: Some(remote_execution.worker_kernel_id.clone()),
@@ -125,6 +127,8 @@ impl KernelRuntimeState {
                         RelayPeerRequest::CompleteLeasedPrompt {
                             leased_agent_id: remote_execution.leased_agent_id.clone(),
                         },
+                        std::time::Duration::from_millis(relay_config.relay_request_timeout_ms),
+                        || self.authorize_prompt_command(authority),
                     ),
                 )
             })

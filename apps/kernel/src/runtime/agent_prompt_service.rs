@@ -201,6 +201,7 @@ impl AgentPromptCommandService {
         task_prompt: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
         self.state
+            .with_prompt_command_authority(self.request_authority())
             .activate_meta_mode_for_prompt(session_id, agent_id, task_prompt)
             .await
     }

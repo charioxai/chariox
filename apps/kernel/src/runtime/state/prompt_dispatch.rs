@@ -101,7 +101,7 @@ impl KernelRuntimeState {
                     message: "active remote provider turn changed before delivery".to_string(),
                 });
             }
-            let mut response = send_remote_queued_prompt_steer(app, &remote_execution, &payload);
+            let mut response = send_remote_queued_prompt_steer(app, &remote_execution, &payload, self, None);
             if response.as_ref().is_err_and(
                 super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_refresh_binding,
             ) {
@@ -113,7 +113,7 @@ impl KernelRuntimeState {
                         operation: "refresh remote agent message binding",
                         message: format!("agent `{agent_id}` did not retain remote execution"),
                     })?;
-                response = send_remote_queued_prompt_steer(app, &remote_execution, &payload);
+                response = send_remote_queued_prompt_steer(app, &remote_execution, &payload, self, None);
             }
             let provider_run_id = match response? {
                 RelayPeerResponse::LeasedPromptSteered {
@@ -482,6 +482,8 @@ impl KernelRuntimeState {
                 app,
                 &remote_execution,
                 &payload,
+                self,
+                authority,
             );
             if response
                 .as_ref()
@@ -499,7 +501,7 @@ impl KernelRuntimeState {
                         ),
                     })?;
                 self.authorize_prompt_command(authority)?;
-                response = send_remote_queued_prompt_steer(app, &remote_execution, &payload);
+                response = send_remote_queued_prompt_steer(app, &remote_execution, &payload, self, authority);
             }
             match response? {
                 RelayPeerResponse::LeasedPromptSteered { steer_id, .. }
@@ -713,10 +715,12 @@ fn send_remote_queued_prompt_steer(
     app: &mut crate::app::DaemonApp,
     remote_execution: &crate::agent::RemoteAgentBinding,
     payload: &RemoteQueuedPromptSteerPayload,
+    state: &KernelRuntimeState,
+    authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
 ) -> Result<RelayPeerResponse, DaemonError> {
     let relay_config = app.relay_config_for_remote_execution(remote_execution);
     app.block_on_relay_future(
-        crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+        crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized(
             &relay_config,
             ClientTarget {
                 daemon_id: Some(remote_execution.worker_kernel_id.clone()),
@@ -732,6 +736,7 @@ fn send_remote_queued_prompt_steer(
                 required_skills: payload.required_skills.clone(),
             },
             crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
+            || state.authorize_prompt_command(authority),
         ),
     )
 }

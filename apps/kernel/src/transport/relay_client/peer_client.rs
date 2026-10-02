@@ -371,6 +371,24 @@ pub async fn send_peer_request_via_temporary_connection_with_timeout(
     request: RelayPeerRequest,
     response_timeout: Duration,
 ) -> Result<RelayPeerResponse, DaemonError> {
+    send_peer_request_via_temporary_connection_authorized(
+        config,
+        target,
+        request,
+        response_timeout,
+        || Ok(()),
+    )
+    .await
+}
+
+pub(crate) async fn send_peer_request_via_temporary_connection_authorized(
+    config: &crate::config::DaemonConfig,
+    target: ClientTarget,
+    request: RelayPeerRequest,
+    response_timeout: Duration,
+    authorize: impl Fn() -> Result<(), DaemonError> + Send + Sync,
+) -> Result<RelayPeerResponse, DaemonError> {
+    authorize()?;
     let target_ref = target
         .daemon_id
         .as_deref()
@@ -394,6 +412,7 @@ pub async fn send_peer_request_via_temporary_connection_with_timeout(
             message: "relay_token is not configured".to_string(),
         })?;
     let kernel = relay_discovery::get_live_kernel(config, target_ref).await?;
+    authorize()?;
     let plaintext = serde_json::to_vec(&request).map_err(|error| DaemonError::LocalTransport {
         operation: "serialize relay peer request",
         message: error.to_string(),
@@ -454,6 +473,10 @@ pub async fn send_peer_request_via_temporary_connection_with_timeout(
         })?;
     let response_timeout_ms = u64::try_from(response_timeout.as_millis()).unwrap_or(u64::MAX);
     let trace = RelayPeerRequestTrace::new(&request_id, &target, "temporary", response_timeout_ms);
+    if let Err(error) = authorize() {
+        let _ = socket.close(None).await;
+        return Err(error);
+    }
     socket
         .send(Message::Text(
             serde_json::to_string(&RelayEnvelope::DaemonPeerRequest {

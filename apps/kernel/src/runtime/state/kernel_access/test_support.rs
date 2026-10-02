@@ -1,6 +1,7 @@
 use super::*;
 
 mod credential_authority;
+mod meta_authority;
 
 impl KernelRuntimeState {
     pub(crate) fn insert_access_grant_for_test(&self, session_id: &str) -> String {
