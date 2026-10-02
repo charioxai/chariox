@@ -146,8 +146,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
             let snapshot_key =
                 leased_provider_run_history_chunk_key(&leased_agent, provider_run_id, &chunk);
             if chunk.kind == TerminalOutputKind::ProviderTool {
-                let stream_key =
-                    leased_tool_stream_key(&leased_agent, provider_run_id, &chunk.merge_key);
+                let identity = crate::history::leased_projection::tool_identity(
+                    &chunk.merge_key,
+                    &chunk.bytes,
+                );
+                let stream_key = leased_tool_stream_key(&leased_agent, provider_run_id, &identity);
                 let tool = match tool_states.entry(stream_key.clone()) {
                     std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
                     std::collections::btree_map::Entry::Vacant(entry) => {
@@ -157,13 +160,15 @@ impl<'a> RemoteLeaseRuntime<'a> {
                             session_id: leased_agent.backing_session_id.clone(),
                             agent_id: leased_agent.backing_agent_id.clone(),
                             provider_run_id: provider_run_id.to_string(),
-                            merge_key: chunk.merge_key.clone(),
+                            identity,
                         })
                     }
                 };
                 if pending_keys.contains(&snapshot_key)
                     || history_store.leased_projection_key_exists(&snapshot_key)?
-                    || !tool.state.record(snapshot_key, &chunk.bytes)
+                    || !tool
+                        .state
+                        .record(snapshot_key, &chunk.bytes, tool.identity.is_some())
                 {
                     continue;
                 }
@@ -209,11 +214,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     if chunk.kind == TerminalOutputKind::ProviderTool {
                         // Retire pending tool state by identity, even when the
                         // terminal carried a delta and history a full snapshot.
-                        let stream_key = leased_tool_stream_key(
-                            &leased_agent,
-                            provider_run_id,
+                        let identity = crate::history::leased_projection::tool_identity(
                             &chunk.merge_key,
+                            &chunk.bytes,
                         );
+                        let stream_key =
+                            leased_tool_stream_key(&leased_agent, provider_run_id, &identity);
                         if !tool_states.contains_key(&stream_key) {
                             tool_states.insert(
                                 stream_key.clone(),
@@ -223,7 +229,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                                     session_id: leased_agent.backing_session_id.clone(),
                                     agent_id: leased_agent.backing_agent_id.clone(),
                                     provider_run_id: provider_run_id.to_string(),
-                                    merge_key: chunk.merge_key,
+                                    identity,
                                 },
                             );
                         }
@@ -2566,11 +2572,11 @@ mod explicit_completion_tests {
     }
 }
 
-fn leased_tool_stream_key(leased: &LeasedAgent, run: &str, merge_key: &Option<String>) -> String {
+fn leased_tool_stream_key(leased: &LeasedAgent, run: &str, identity: &Option<String>) -> String {
     format!(
         "{}:{}:{run}:ProviderTool:{}",
         leased.backing_session_id,
         leased.backing_agent_id,
-        merge_key.as_deref().unwrap_or("none")
+        serde_json::to_string(identity).expect("tool identity serializes")
     )
 }

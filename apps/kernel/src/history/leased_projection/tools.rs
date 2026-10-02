@@ -9,13 +9,30 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub(crate) struct ToolProjectionState {
     snapshot_key: String,
-    delta_offset: Option<u64>,
+    #[serde(default)]
+    delta_offsets: std::collections::BTreeMap<String, u64>,
     revision: u64,
 }
 
 impl ToolProjectionState {
-    pub(crate) fn record(&mut self, snapshot_key: String, bytes: &[u8]) -> bool {
+    pub(crate) fn record(
+        &mut self,
+        snapshot_key: String,
+        bytes: &[u8],
+        stable_identity: bool,
+    ) -> bool {
         let payload = serde_json::from_slice::<serde_json::Value>(bytes).ok();
+        // The producer keeps a separate counter for each output field. A
+        // delta payload with multiple fields does not identify which counter
+        // it carries, so only use its offset when the field is unambiguous.
+        let mut fields = ["output", "stdout", "stderr", "result", "content"]
+            .into_iter()
+            .filter(|field| {
+                payload
+                    .as_ref()
+                    .is_some_and(|p| p.get(*field).is_some_and(|v| v.is_string()))
+            });
+        let field = fields.next().filter(|_| fields.next().is_none());
         let offset = payload
             .as_ref()
             .and_then(|p| p.get("chariox_delta_offset_bytes"))
@@ -27,17 +44,29 @@ impl ToolProjectionState {
             .unwrap_or(false);
         if self.snapshot_key == snapshot_key
             || (!replaced
-                && offset
-                    .zip(self.delta_offset)
-                    .is_some_and(|(new, old)| new <= old))
+                && stable_identity
+                && offset.zip(field).is_some_and(|(new, field)| {
+                    self.delta_offsets.get(field).is_some_and(|old| new <= *old)
+                }))
         {
             return false;
         }
         self.snapshot_key = snapshot_key;
-        if replaced {
-            self.delta_offset = None;
-        } else if offset.is_some() {
-            self.delta_offset = offset;
+        if replaced || offset.is_none() {
+            if let Some(field) = field {
+                self.delta_offsets.remove(field);
+            } else {
+                for field in ["output", "stdout", "stderr", "result", "content"] {
+                    if payload
+                        .as_ref()
+                        .is_some_and(|p| p.get(field).is_some_and(|v| v.is_string()))
+                    {
+                        self.delta_offsets.remove(field);
+                    }
+                }
+            }
+        } else if let Some((offset, field)) = offset.zip(field).filter(|_| stable_identity) {
+            self.delta_offsets.insert(field.into(), offset);
         }
         self.revision += 1;
         true
@@ -49,7 +78,7 @@ pub(crate) struct ProjectedToolState {
     pub(crate) session_id: String,
     pub(crate) agent_id: String,
     pub(crate) provider_run_id: String,
-    pub(crate) merge_key: Option<String>,
+    pub(crate) identity: Option<String>,
     pub(crate) state: ToolProjectionState,
 }
 
@@ -105,8 +134,8 @@ pub(super) fn compact_tool_state(
         .map_err(|e| operational_history_error("encode tool projection", e))?;
     let updated = connection.execute(
         "UPDATE history_events SET leased_projection_stream_key = ?1, leased_projection_snapshot_key = ?2
-         WHERE event_id = (SELECT event_id FROM history_events WHERE session_id = ?3 AND agent_id = ?4 AND provider_run_id = ?5 AND kind = 'provider_tool' AND merge_key IS ?6 ORDER BY committed_sequence DESC LIMIT 1)",
-        params![tool.stream_key, json, tool.session_id, tool.agent_id, tool.provider_run_id, tool.merge_key])
+         WHERE event_id = (SELECT event_id FROM history_events WHERE session_id = ?3 AND agent_id = ?4 AND provider_run_id = ?5 AND kind = 'provider_tool' AND leased_projection_tool_identity IS ?6 ORDER BY committed_sequence DESC LIMIT 1)",
+        params![tool.stream_key, json, tool.session_id, tool.agent_id, tool.provider_run_id, tool.identity])
         .map_err(|e| operational_history_error("compact tool projection", e))?;
     if updated == 0 {
         connection.execute("INSERT INTO leased_projection_tools VALUES (?1, ?2, ?3) ON CONFLICT(stream_key) DO UPDATE SET state_json = excluded.state_json", params![tool.stream_key, projection_id, json])
@@ -120,4 +149,97 @@ pub(super) fn compact_tool_state(
             .map_err(|e| operational_history_error("retire pending tool projection", e))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn full_snapshots_reset_offsets_after_provider_cache_restart_or_eviction() {
+        let mut state = ToolProjectionState::default();
+        assert!(state.record(
+            "old delta".into(),
+            br#"{"output":"old tail","chariox_delta_offset_bytes":4000}"#,
+            true
+        ));
+        let json = serde_json::to_string(&state).unwrap();
+        let mut state: ToolProjectionState = serde_json::from_str(&json).unwrap();
+        assert!(state.record("new base".into(), br#"{"output":"short"}"#, true));
+        assert!(state.record(
+            "new delta".into(),
+            br#"{"output":"tail","chariox_delta_offset_bytes":5}"#,
+            true
+        ));
+        assert!(!state.record(
+            "new delta".into(),
+            br#"{"output":"tail","chariox_delta_offset_bytes":5}"#,
+            true
+        ));
+        assert!(state.record(
+            "unknown old".into(),
+            br#"{"output":"tail","chariox_delta_offset_bytes":4000}"#,
+            false
+        ));
+        assert!(state.record(
+            "unknown new".into(),
+            br#"{"output":"new tail","chariox_delta_offset_bytes":5}"#,
+            false
+        ));
+    }
+
+    #[test]
+    fn different_tool_fields_do_not_share_delta_offsets() {
+        let mut state = ToolProjectionState::default();
+        assert!(state.record(
+            "stdout".into(),
+            br#"{"stdout":"line","chariox_delta_offset_bytes":1000}"#,
+            true
+        ));
+        let multi =
+            br#"{"stdout":"previous output","stderr":"new delta","chariox_delta_offset_bytes":10}"#;
+        assert!(state.record("stderr".into(), multi, true));
+        assert!(!state.record("stderr".into(), multi, true));
+        let next = br#"{"stdout":"previous output","stderr":"next delta","chariox_delta_offset_bytes":20}"#;
+        assert!(state.record("next stderr".into(), next, true));
+        assert!(state.record(
+            "single stderr".into(),
+            br#"{"stderr":"new delta","chariox_delta_offset_bytes":30}"#,
+            true
+        ));
+        // The fingerprints and offsets remain durable, even for ambiguous fields.
+        let json = serde_json::to_string(&state).unwrap();
+        let mut reopened: ToolProjectionState = serde_json::from_str(&json).unwrap();
+        assert!(!reopened.record(
+            "single stderr".into(),
+            br#"{"stderr":"new delta","chariox_delta_offset_bytes":30}"#,
+            true
+        ));
+        assert!(!reopened.record(
+            "old stdout".into(),
+            br#"{"stdout":"old delta","chariox_delta_offset_bytes":900}"#,
+            true
+        ));
+    }
+}
+
+pub(crate) fn tool_identity(merge_key: &Option<String>, bytes: &[u8]) -> Option<String> {
+    merge_key.clone().or_else(|| {
+        let payload: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+        ["id", "call_id"].into_iter().find_map(|field| {
+            payload
+                .get(field)?
+                .as_str()
+                .filter(|id| !id.trim().is_empty())
+                .map(str::to_string)
+        })
+    })
+}
+
+pub(super) fn tool_identity_sql(prefix: &str) -> String {
+    format!("CASE WHEN {prefix}kind = 'provider_tool' THEN COALESCE({prefix}merge_key,
+        CASE WHEN json_valid({prefix}content) THEN
+            CASE WHEN json_type({prefix}content, '$.id') = 'text' AND trim(json_extract({prefix}content, '$.id')) != '' THEN json_extract({prefix}content, '$.id')
+                 WHEN json_type({prefix}content, '$.call_id') = 'text' AND trim(json_extract({prefix}content, '$.call_id')) != '' THEN json_extract({prefix}content, '$.call_id') END
+        END) END")
 }
