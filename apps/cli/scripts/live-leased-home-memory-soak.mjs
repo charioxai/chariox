@@ -5,7 +5,7 @@
 // kernel's RSS exceeds --max-rss-mb.
 import { execFileSync, spawn, spawnSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, cpSync, mkdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
@@ -16,10 +16,12 @@ const args = process.argv.slice(2)
 const argValue = (name) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : undefined }
 const argNumber = (name, fallback) => Number(argValue(name) ?? fallback)
 if (args.includes("--help")) {
-  console.log("Usage: live-leased-home-memory-soak.mjs [--build-profile debug|release] [--agents 12] [--minutes 8] [--prompt-every-ms 3000] [--idle-sessions 35] [--max-rss-mb 1200]")
+  console.log("Usage: live-leased-home-memory-soak.mjs [--build-profile debug|release] [--agents 12] [--minutes 8] [--prompt-every-ms 3000] [--idle-sessions 35] [--max-rss-mb 1200] [--evidence-dir PATH] [--heaptrack-worker] [--kernel-bin PATH] [--worker-kernel-bin PATH]")
   process.exit(0)
 }
 const targetDir = path.join(process.env.CARGO_TARGET_DIR ?? path.join(repoRoot, "target"), argValue("--build-profile") ?? "debug")
+const evidenceDir = argValue("--evidence-dir")
+const heaptrackWorker = args.includes("--heaptrack-worker")
 const agents = argNumber("--agents", 12)
 const minutes = argNumber("--minutes", 8)
 const promptEveryMs = argNumber("--prompt-every-ms", 3_000)
@@ -95,8 +97,11 @@ function startKernel(name, port, base, relayToken, acceptLeases) {
   const home = path.join(root, name)
   mkdirSync(path.join(home, "home"), { recursive: true })
   if (name === "home") writeFileSync(path.join(home, "home", "config.toml"), "[credential_vault]\nbackend = \"process_memory\"\n")
-  const child = spawn(path.join(targetDir, "chariox-kernel"), [], {
+  const kernelBin = (name === "worker" ? argValue("--worker-kernel-bin") : undefined) ?? argValue("--kernel-bin") ?? path.join(targetDir, "chariox-kernel")
+  const profileWorker = heaptrackWorker && name === "worker"
+  const child = spawn(profileWorker ? "heaptrack" : kernelBin, profileWorker ? ["--record-only", "-o", path.join(evidenceDir, "worker-heaptrack"), kernelBin] : [], {
     cwd: path.join(root, "workspace"),
+    detached: process.platform !== "win32",
     stdio: "ignore",
     env: {
       ...process.env,
@@ -123,6 +128,7 @@ function startKernel(name, port, base, relayToken, acceptLeases) {
       XDG_CACHE_HOME: path.join(home, "xdg-cache"),
     },
   })
+  child.profileKernelBin = profileWorker ? realpathSync(kernelBin) : null
   children.push(child)
   return child
 }
@@ -153,13 +159,15 @@ const first = (value, key) => {
 
 let report
 try {
+  if (heaptrackWorker && !evidenceDir) throw new Error("--heaptrack-worker requires --evidence-dir")
+  if (evidenceDir) mkdirSync(evidenceDir, { recursive: true })
   mkdirSync(path.join(root, "workspace"), { recursive: true })
   spawnSync("git", ["init", "-q"], { cwd: path.join(root, "workspace") })
   writeFileSync(path.join(root, "claude"), fakeClaude)
   chmodSync(path.join(root, "claude"), 0o700)
   const base = await freePort()
   const relayToken = randomUUID()
-  children.push(spawn(path.join(targetDir, "chariox-relay"), [], { stdio: "ignore", env: { ...process.env, CHARIOX_RELAY_HOST: "127.0.0.1", CHARIOX_RELAY_PORT: String(base), CHARIOX_RELAY_TOKEN: relayToken } }))
+  children.push(spawn(path.join(targetDir, "chariox-relay"), [], { detached: process.platform !== "win32", stdio: "ignore", env: { ...process.env, CHARIOX_RELAY_HOST: "127.0.0.1", CHARIOX_RELAY_PORT: String(base), CHARIOX_RELAY_TOKEN: relayToken } }))
   await sleep(1_000)
   startKernel("worker", base + 10, base, relayToken, true)
   const home = startKernel("home", base + 20, base, relayToken, false)
@@ -188,12 +196,16 @@ try {
     await control.send({ CreateSession: { workspace_id: workspace, worktree_id: workspace, alias: `soak-idle-${index}`, slice_ref: null } })
   }
   const samples = []
+  const pumpDurations = []
+  let pumpErrors = 0
   const deadline = Date.now() + minutes * 60_000
   let lastPrompt = 0, nextSample = 0, prompts = 0, tick = 0
   while (Date.now() < deadline) {
     for (const { session, agent, viewer, attachment } of sessions) {
       // TUIs poll terminal output; `cx wait` polls the agent's latest turn outline.
-      viewer.send({ PumpTerminalOutput: { session_id: session, attachment_id: attachment } }).catch(() => {})
+      const pumpStarted = performance.now()
+      viewer.send({ PumpTerminalOutput: { session_id: session, attachment_id: attachment } })
+        .then(() => pumpDurations.push(performance.now() - pumpStarted)).catch(() => { pumpErrors++ })
       if (tick % 20 === 0) control.send({ GetSessionHistoryOutline: { session_id: session, agent_ids: [agent], latest_prompt_count: 1 } }).catch(() => {})
     }
     tick++
@@ -220,11 +232,32 @@ try {
   const measured = samples.map((sample) => sample.rss_mb).filter(Number.isFinite)
   const maxObservedMb = measured.length ? Math.max(...measured) : null
   // A run without RSS samples or accepted prompts measured nothing.
-  report = { agents, idle_sessions: idleSessions, minutes, accepted_prompts: prompts, max_rss_mb: maxObservedMb, limit_mb: maxRssMb, samples, ok: measured.length > 0 && prompts > 0 && maxObservedMb <= maxRssMb }
+  pumpDurations.sort((a, b) => a - b)
+  const percentile = (p) => Math.round(pumpDurations[Math.min(pumpDurations.length - 1, Math.floor(p * pumpDurations.length))] ?? 0)
+  report = { terminal_pump_errors: pumpErrors, terminal_pump_roundtrip_ms: { count: pumpDurations.length, p50: percentile(0.50), p95: percentile(0.95), max: Math.round(pumpDurations.at(-1) ?? 0) }, agents, idle_sessions: idleSessions, minutes, accepted_prompts: prompts, max_rss_mb: maxObservedMb, limit_mb: maxRssMb, samples, ok: measured.length > 0 && prompts > 0 && maxObservedMb <= maxRssMb }
 } finally {
-  for (const child of children.reverse()) { try { child.kill("SIGTERM") } catch {} }
+  for (const child of children.reverse()) {
+    try {
+      if (child.profileKernelBin) {
+        // Stop the debuggee first so heaptrack can finish its compressed stream.
+        const pids = readFileSync(`/proc/${child.pid}/task/${child.pid}/children`, "utf8").trim().split(/\s+/).filter(Boolean)
+        for (const pid of pids) {
+          if (readlinkSync(`/proc/${pid}/exe`) === child.profileKernelBin) process.kill(Number(pid), "SIGTERM")
+        }
+      } else child.kill("SIGTERM")
+    } catch {}
+  }
   await sleep(3_000)
-  for (const child of children) { try { child.kill("SIGKILL") } catch {} }
+  for (const child of children) {
+    try { process.platform === "win32" ? child.kill("SIGKILL") : process.kill(-child.pid, "SIGKILL") } catch {}
+  }
+  if (evidenceDir) {
+    for (const name of ["home", "worker"]) {
+      const logs = path.join(root, name, "logs")
+      try { cpSync(logs, path.join(evidenceDir, `${name}-logs`), { recursive: true }) } catch {}
+    }
+    if (report) writeFileSync(path.join(evidenceDir, "report.json"), JSON.stringify(report, null, 2) + "\n")
+  }
   rmSync(root, { recursive: true, force: true })
 }
 console.log(JSON.stringify(report, null, 2))
