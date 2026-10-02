@@ -82,6 +82,17 @@ impl<'a> ProviderOutputPump<'a> {
         &mut self,
         request: ProviderOutputPumpRequest<'_>,
     ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
+        #[cfg(test)]
+        if self
+            .context
+            .app
+            .leased_provider_run_projection_is_paused_for_test(
+                request.session_id,
+                request.provider_run_id,
+            )
+        {
+            return Ok(Vec::new());
+        }
         self.context.reap_structured_prompt_jobs();
         let mut provider_run = self
             .context
