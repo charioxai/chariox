@@ -86,18 +86,6 @@ fn remote_git_turn_context_for_prompt(
     }
 }
 
-fn remote_prompt_error_is_already_settled(error: &DaemonError) -> bool {
-    match error {
-        DaemonError::NoActivePrompt { .. } => true,
-        DaemonError::LocalTransport { message, .. } => {
-            message.contains("no active prompt")
-                || message.contains("NoActivePrompt")
-                || message.contains("no_active_prompt")
-        }
-        _ => false,
-    }
-}
-
 impl<'a> KernelAgentService<'a> {
     pub(super) fn cancel_remote_active_prompt(
         &mut self,
@@ -130,7 +118,7 @@ impl<'a> KernelAgentService<'a> {
                     message: format!("unexpected remote prompt cancellation response: {other:?}"),
                 });
             }
-            Err(error) if remote_prompt_error_is_already_settled(&error) => {
+            Err(error) if error.is_no_active_prompt() => {
                 crate::logging::warn_with_fields(
                     "daemon.remote_prompt_dispatch",
                     "remote prompt cancellation already settled on worker",
@@ -302,7 +290,7 @@ impl<'a> KernelAgentService<'a> {
                     });
                 }
             },
-            Err(error) if remote_prompt_error_is_already_settled(&error) => {
+            Err(error) if error.is_no_active_prompt() => {
                 crate::logging::warn_with_fields(
                     "daemon.remote_prompt_dispatch",
                     "remote prompt completion already settled on worker",
@@ -460,31 +448,11 @@ impl<'a> KernelAgentService<'a> {
             let Some(peeked) = next_candidate else {
                 return Ok(None);
             };
+            // Queued prompts outlive their source attachment, as in local queue
+            // promotion: a client may submit and disconnect before the turn runs.
             let is_workflow_prompt = crate::app::workflow_runtime::is_workflow_prompt_source(
                 peeked.source_attachment_id(),
             );
-            if let Err(error) = crate::app::KernelSessionReadService::new(self.app)
-                .ensure_attachment_in_session(session_id, peeked.source_attachment_id())
-            {
-                if !is_workflow_prompt {
-                    self.app.record_notice(
-                        session_id,
-                        None,
-                        self.app.attachments.list_session_attachment_ids(session_id),
-                        format!(
-                            "Skipped queued prompt `{}` because its source attachment is no longer active: {}",
-                            peeked.id(),
-                            error
-                        ),
-                    );
-                    let _ = self.activate_next_queued_prompt_for_mirror(
-                        session_id,
-                        agent_id,
-                        expected_next,
-                    )?;
-                    continue;
-                }
-            }
             let agent = self.app.agents().get_agent(agent_id)?;
             let remote_execution =
                 agent
@@ -568,6 +536,16 @@ impl<'a> KernelAgentService<'a> {
                     agent_id,
                     Some(remote_provider_run_id.clone()),
                 )?;
+            // The worker accepted the prompt; record it so the projection drain
+            // follows the new worker turn instead of waiting for a dispatch.
+            self.app.mark_active_prompt_delivery(
+                session_id,
+                agent_id,
+                active.id(),
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+                Some(remote_provider_run_id.clone()),
+                None,
+            )?;
             let active = self.finish_promoted_queued_prompt_start(
                 session_id,
                 &remote_provider_run_id,

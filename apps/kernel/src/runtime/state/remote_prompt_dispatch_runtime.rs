@@ -141,7 +141,11 @@ impl KernelRuntimeState {
         self.spawn_remote_prompt_projection_drain(session_id, agent_id);
     }
 
-    fn spawn_remote_prompt_projection_drain(&self, session_id: String, agent_id: String) {
+    pub(super) fn spawn_remote_prompt_projection_drain(
+        &self,
+        session_id: String,
+        agent_id: String,
+    ) {
         let Some(mut claim) = RemotePromptAgentClaim::try_acquire(
             Arc::clone(&self.owned.remote_prompt_projection_drains),
             &session_id,
