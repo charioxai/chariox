@@ -58,3 +58,9 @@ test("desktop stop shuts down audio after Chromium and before the display", () =
   assert.ok(body.indexOf('stop_process_pattern "/usr/lib/chromium/chromium"') < body.indexOf("  stop_desktop_audio\n"))
   assert.ok(body.indexOf("  stop_desktop_audio\n") < body.indexOf('stop_process_pattern "Xvfb'))
 })
+
+
+test("the image gives all audio clients a non-home runtime path", () => {
+  const dockerfile = readFileSync(new URL("./docker/Dockerfile", import.meta.url), "utf8")
+  assert.match(dockerfile, /^ENV PULSE_RUNTIME_PATH=\/tmp\/chariox-pulse-runtime$/m)
+})
