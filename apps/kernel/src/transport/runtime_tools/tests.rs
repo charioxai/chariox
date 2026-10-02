@@ -910,3 +910,20 @@ mod workspace_live_sync_tests {
         let _ = std::fs::remove_file(path);
     }
 }
+
+// MP-08/MP-10/MP-11: the provider contract must match the kernel approval boundary.
+#[test]
+fn computer_credential_description_matches_target_bound_approval() {
+    let specs = credential_runtime_tool_specs();
+    for name in [
+        PASTE_SECRET_TO_COMPUTER_TOOL,
+        PASTE_SECRET_TO_COMPUTER_TOOL_ALIAS,
+    ] {
+        let spec = specs.iter().find(|spec| spec.name == name).unwrap();
+        assert!(spec.description.contains("unmasked"));
+        assert!(spec
+            .description
+            .contains("exact focused window and control"));
+        assert!(!spec.description.contains("Use only when"));
+    }
+}
