@@ -223,6 +223,8 @@ impl<E: Clone + Serialize> EventLog<E> {
             return Err(error);
         }
         let compact_after_append = apply_retention(&mut streams, self.retention, unix_epoch_ms());
+        // Rate-limited compaction serializes under the guard to avoid cloning events.
+        // Release the guard before handing owned bytes to the asynchronous writer.
         let compact_snapshot = if compact_after_append && persistence.should_compact_now() {
             Some(retained_events_jsonl_payload(&streams))
         } else {
