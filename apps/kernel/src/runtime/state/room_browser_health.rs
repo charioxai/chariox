@@ -74,23 +74,16 @@ impl KernelRuntimeState {
             Ok(Ok(Response::Reconciled {
                 reconciliation: Some(_),
             })) => None,
-            Ok(Ok(_)) => Some("browser_health_check_failed"),
-            // A foreground action/lifecycle owns the existing slice slot.
-            // Contention is not evidence that the browser has failed.
-            Ok(Err(error))
-                if error.to_string().contains("already has an active")
-                    || error.to_string().contains("slice operation in progress") =>
-            {
-                return
-            }
             Ok(Err(error)) if error.to_string().contains("browser_debugger_unavailable") => {
                 Some("browser_debugger_unavailable")
             }
             Ok(Err(error)) if error.to_string().contains("browser_cdp_disconnected") => {
                 Some("browser_cdp_disconnected")
             }
-            Ok(Err(_)) => Some("browser_health_check_failed"),
-            Err(_) => Some("browser_health_check_timeout"),
+            // Reconcile shares a serial controller queue with foreground
+            // commands and can wait on page dialogs. A timeout or route error
+            // is inconclusive; only positive debugger loss changes health.
+            Ok(Ok(_)) | Ok(Err(_)) | Err(_) => return,
         };
         self.observe_room_browser_health(session_id, generation, diagnostic);
     }
