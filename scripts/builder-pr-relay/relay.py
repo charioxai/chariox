@@ -98,6 +98,9 @@ class Relay:
             raise ValueError("missing GitHub baseline")
         commits = self.git(repo, "rev-list", head, "--not", baseline, *origin.values()).splitlines()
         validate_commits([self.git(repo, "show", "-s", "--format=%B", commit) for commit in commits])
+        for commit in commits:
+            if self.git(repo, "diff-tree", "--root", "-m", "--no-commit-id", "--name-only", "-r", commit, "--", ".github"):
+                raise ValueError("builder publication cannot change .github")
         validate_commits([self.git(repo, "show", "-s", "--format=%B", head)])
         self.git(repo, "push", "--porcelain", f"--force-with-lease=refs/heads/{branch}:{existing or ''}",
                  "origin", f"{head}:refs/heads/{branch}")
@@ -106,17 +109,18 @@ class Relay:
     def reply(self, repo, pull, request, head):
         reply = request.get("reply")
         if not reply or pull["state"] != "OPEN":
-            return
+            return "none"
         if reply["commit"] != head:
-            raise ValueError("review reply is not for published head")
+            return "stale_skipped"
         marker = f"<!-- builder-pr-relay:{head} -->"
         receipt = self.args.state_dir / f"reply-{repo}-{pull['number']}-{head}"
         if receipt.exists():
-            return
+            return "posted"
         comments = [c for page in self.api(repo, f"issues/{pull['number']}/comments?per_page=100") for c in page]
         if not any(marker in c["body"] for c in comments):
             self.gh(repo, "pr", "comment", str(pull["number"]), "--body-file", "-", data=reply["body"] + "\n\n" + marker)
         receipt.write_text("posted\n")
+        return "posted"
 
     def acknowledge(self, repo, branch, value):
         self.records.append({"repo": repo, "key": f"branches/{branch}", "value": value})
@@ -152,8 +156,8 @@ class Relay:
                     pull = json.loads(self.gh(repo, "pr", "view", url, "--json", "number,url,state,headRefName,headRefOid"))
                     pulls.append(pull)
                     print(f"opened {repo} PR {pull['number']}", flush=True)
-                self.reply(repo, pull, request, head)
-                self.acknowledge(repo, branch, {**pull, "published_sha": head, "status": "published"})
+                reply_status = self.reply(repo, pull, request, head)
+                self.acknowledge(repo, branch, {**pull, "published_sha": head, "status": "published", "reply_status": reply_status})
             except (ValueError, RuntimeError, KeyError, TypeError, subprocess.TimeoutExpired):
                 self.failures.append(f"{repo} {branch}: publish/request rejected")
                 if branch in by_branch:
@@ -198,6 +202,36 @@ class Relay:
                                       "path": c.get("path"), "line": c.get("line")} for c in inline.get(pull["number"], []))
             self.records.append({"repo": repo, "key": str(pull["number"]), "value": value})
 
+    def send_batch(self, records):
+        try:
+            self.remote("write", json.dumps(records))
+        except (RuntimeError, ValueError, subprocess.TimeoutExpired):
+            if len(records) > 1:
+                for record in records:
+                    self.send_batch([record])
+            else:
+                record = records[0]
+                self.failures.append(f"{record['repo']} {record['key']}: mirror write failed")
+
+    def flush(self):
+        # Acks go first. Isolate failures; bound each transfer independently.
+        groups = ([r for r in self.records if r["key"].startswith("branches/")],
+                  [r for r in self.records if not r["key"].startswith("branches/")])
+        for group in groups:
+            batch, size = [], 2
+            for record in group:
+                length = len(json.dumps(record).encode("utf-8")) + 2
+                if length > 8 * 1024 * 1024:
+                    self.failures.append(f"{record['repo']} {record['key']}: oversized mirror skipped")
+                    continue
+                if batch and size + length > 4 * 1024 * 1024:
+                    self.send_batch(batch)
+                    batch, size = [], 2
+                batch.append(record)
+                size += length
+            if batch:
+                self.send_batch(batch)
+
     def tick(self):
         self.records, self.failures = [], []
         inbox = json.loads(self.remote("read"))
@@ -208,7 +242,7 @@ class Relay:
                 self.repository(repo, inbox["requests"][repo])
             except (RuntimeError, ValueError, subprocess.TimeoutExpired):
                 self.failures.append(f"{repo}: repository unavailable")
-        self.remote("write", json.dumps(self.records))
+        self.flush()
         report = {"at": int(time.time()), "mirrored_records": len(self.records), "failures": self.failures}
         temporary = self.args.state_dir / "status.tmp"
         temporary.write_text(json.dumps(report, indent=2) + "\n")

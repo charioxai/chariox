@@ -143,6 +143,30 @@ class GitPublicationTests(unittest.TestCase):
             self.relay.publish("chariox", "apps/p1-proof", head, None, {"main": self.base})
         self.assertNotIn("apps/p1-proof", self.command("git", "--git-dir", str(self.remote), "for-each-ref", "--format=%(refname)"))
 
+    def test_workflow_change_is_never_published(self):
+        workflow = self.source / ".github/workflows/unsafe.yml"
+        workflow.parent.mkdir(parents=True)
+        workflow.write_text("on: create\n")
+        self.command("git", "-C", str(self.source), "add", ".github")
+        head = self.commit("workflow [skip ci]")
+        self.fetch()
+        with self.assertRaises(ValueError):
+            self.relay.publish("chariox", "apps/p1-proof", head, None, {"main": self.base})
+        self.assertNotIn("apps/p1-proof", self.command("git", "--git-dir", str(self.remote), "for-each-ref", "--format=%(refname)"))
+
+    def test_reverted_workflow_in_new_range_is_rejected(self):
+        workflow = self.source / ".github/workflows/unsafe.yml"
+        workflow.parent.mkdir(parents=True)
+        workflow.write_text("on: create\n")
+        self.command("git", "-C", str(self.source), "add", ".github")
+        self.commit("workflow [skip ci]")
+        workflow.unlink()
+        self.command("git", "-C", str(self.source), "add", ".github")
+        head = self.commit("revert workflow [skip ci]")
+        self.fetch()
+        with self.assertRaises(ValueError):
+            self.relay.publish("chariox", "apps/p1-proof", head, None, {"main": self.base})
+
     def test_divergence_and_racing_remote_never_overwritten(self):
         head = self.commit("one [skip ci]")
         self.fetch()
@@ -211,11 +235,44 @@ class PublicationFlowTests(unittest.TestCase):
             (root / f"reply-chariox-10-{sha}").unlink()
             relay.repository("chariox", [request])
             self.assertEqual(relay.commented, 1)
+            request["reply"] = dict(commit="b" * 40, body=f"Addressed in {'b' * 40}. Previous fix.")
+            relay.records = []
+            relay.repository("chariox", [request])
+            self.assertEqual(relay.records[0]["value"]["status"], "published")
+            self.assertEqual(relay.records[0]["value"]["reply_status"], "stale_skipped")
+            self.assertEqual(relay.records[0]["value"]["published_sha"], sha)
+            self.assertEqual(relay.commented, 1)
             relay.closed = True
             relay.records = []
             relay.repository("chariox", [request])
             self.assertEqual(relay.created, 1)
             self.assertEqual(relay.records[0]["value"]["state"], "CLOSED")
+
+    def test_ack_first_chunked_mirrors_and_isolated_failures(self):
+        args = SimpleNamespace(ssh_config=Path("unused"), git_root=Path("unused"))
+        class FakeRelay(Relay):
+            def __init__(self, args):
+                super().__init__(args)
+                self.sent = []
+                self.success = []
+            def remote(self, action, data=None):
+                records = json.loads(data)
+                self.sent.append(records)
+                if any(r["key"] == "broken" for r in records):
+                    raise RuntimeError("bad record")
+                self.success.extend(r["key"] for r in records)
+        relay = FakeRelay(args)
+        relay.records = [dict(repo="chariox", key="oversized", value="x" * (9 * 1024 * 1024)),
+                         dict(repo="chariox", key="one", value="x" * (3 * 1024 * 1024)),
+                         dict(repo="chariox", key="two", value="x" * (3 * 1024 * 1024)),
+                         dict(repo="chariox", key="broken", value={}),
+                         dict(repo="chariox", key="good", value={}),
+                         dict(repo="chariox", key="branches/apps/p1-proof", value={})]
+        relay.flush()
+        self.assertEqual(relay.sent[0][0]["key"], "branches/apps/p1-proof")
+        self.assertEqual(set(relay.success), {"branches/apps/p1-proof", "one", "two", "good"})
+        self.assertEqual(len(relay.failures), 2)
+        self.assertTrue(all(len(json.dumps(batch).encode()) <= 8 * 1024 * 1024 for batch in relay.sent))
 
     def test_review_reply_must_match_full_sha(self):
         request = dict(branch="apps/p1-proof", base="main", title="proof", body=FOOTER,

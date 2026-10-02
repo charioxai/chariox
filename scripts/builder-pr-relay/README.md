@@ -55,6 +55,10 @@ Body files must be regular UTF-8 files inside that repository's request
 folder, at most 64 KiB; JSON requests are limited to 16 KiB. Directory and file
 symlinks are rejected at read/write time. No request text is executed.
 
+The Mac rejects any newly introduced commit touching `.github/`, including a
+workflow change later reverted within the range. This prevents publishing
+builder-authored Actions definitions with Mac credentials.
+
 The Mac fetches only builder `apps/p1-*` heads and publishes GitHub updates with
 an explicit ancestry check and compare-and-swap push. It rejects divergence,
 concurrent GitHub changes, a head without `[skip ci]`, and any commit newly
@@ -113,3 +117,9 @@ feed. Inline comments are reconciled fully once per day; deleted inline comments
 may remain in snapshots until then. Normal ticks do not call GitHub separately
 for every open PR. A newly created review/comment may appear on the next tick.
 Git/gh and network timeouts retry; check `mirrored_at` before trusting freshness.
+
+A stale reply is skipped and reported as `reply_status: stale_skipped`; branch
+publication and PR acknowledgement still succeed. Acknowledgements are sent
+first, separately from feedback. Feedback transfers are chunked (4 MiB target,
+8 MiB per-record ceiling); oversized records are reported and skipped. Failed
+batches retry individual records so other snapshots and acknowledgements arrive.
