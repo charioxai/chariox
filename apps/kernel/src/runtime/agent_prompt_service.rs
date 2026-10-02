@@ -11,6 +11,7 @@ use crate::session::{PromptCompletion, PromptQueueItem};
 #[derive(Clone)]
 pub(crate) struct AgentPromptCommandService {
     state: KernelRuntimeState,
+    external_authority: Option<(String, crate::local::LocalDaemonRequest)>,
     provider_runtime_lanes: ProviderRunOperationLanes,
 }
 
@@ -55,15 +56,33 @@ impl AgentPromptCommandService {
     ) -> Self {
         Self {
             state,
+            external_authority: None,
             provider_runtime_lanes,
         }
+    }
+
+    pub(crate) fn with_external_authority(
+        &self,
+        grant_id: String,
+        request: crate::local::LocalDaemonRequest,
+    ) -> Self {
+        let mut service = self.clone();
+        service.external_authority = Some((grant_id, request));
+        service
     }
 
     pub(crate) async fn submit_prepared_prompt(
         &self,
         prepared: KernelPreparedPromptSubmission,
     ) -> Result<KernelPromptSubmission, DaemonError> {
-        self.state.submit_prepared_prompt(prepared).await
+        self.state
+            .submit_prepared_prompt_with_external_authority(
+                prepared,
+                self.external_authority
+                    .as_ref()
+                    .map(|(id, request)| (id.as_str(), request)),
+            )
+            .await
     }
 
     pub(crate) async fn ensure_attachment_in_session(

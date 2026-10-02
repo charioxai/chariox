@@ -36,6 +36,18 @@ impl AgentRuntimeCommandExecutor {
         }
     }
 
+    pub(super) fn with_external_authority(
+        &self,
+        grant_id: String,
+        request: crate::local::LocalDaemonRequest,
+    ) -> Self {
+        let mut executor = self.clone();
+        executor.prompt_commands = self
+            .prompt_commands
+            .with_external_authority(grant_id, request);
+        executor
+    }
+
     pub(super) async fn execute(
         &self,
         command: AgentCommand,

@@ -590,11 +590,35 @@ impl KernelRuntimeState {
             .await
     }
 
+    pub(crate) async fn submit_prepared_prompt_with_external_authority(
+        &self,
+        prepared: crate::app::KernelPreparedPromptSubmission,
+        authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
+    ) -> Result<crate::app::KernelPromptSubmission, DaemonError> {
+        self.submit_prepared_prompt_authorized(prepared, true, authority)
+            .await
+    }
+
     pub(crate) async fn submit_prepared_prompt_with_queue_policy(
         &self,
         prepared: crate::app::KernelPreparedPromptSubmission,
         allow_queue: bool,
     ) -> Result<crate::app::KernelPromptSubmission, DaemonError> {
+        self.submit_prepared_prompt_authorized(prepared, allow_queue, None)
+            .await
+    }
+
+    async fn submit_prepared_prompt_authorized(
+        &self,
+        prepared: crate::app::KernelPreparedPromptSubmission,
+        allow_queue: bool,
+        authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
+    ) -> Result<crate::app::KernelPromptSubmission, DaemonError> {
+        let authorize = || match authority {
+            Some((id, request)) => self.authorize_external_request(id, request).map(|_| ()),
+            None => Ok(()),
+        };
+        authorize()?;
         self.owned.require_publication_activation()?;
         {
             let owned = &self.owned;
@@ -673,10 +697,14 @@ impl KernelRuntimeState {
                     }
                 } else {
                     self.with_app_side_effect(|app| {
+                        // The app mutex can outlive the grant. Reauthorize only
+                        // after acquiring it, before launching a cold provider.
+                        authorize()?;
                         app.ensure_prompt_provider_run_for_agent(&session_id, &target_agent_id)
                     })
                     .await?;
                 };
+                authorize()?;
                 if let Some(mut submission) =
                     owned.submit_local_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
                 {
