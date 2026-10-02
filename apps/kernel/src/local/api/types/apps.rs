@@ -248,6 +248,8 @@ pub enum AppWorkerPhase {
     Dormant,
     Stopped,
     Failed,
+    /// Automatic restarts are exhausted; an explicit start clears quarantine.
+    Quarantined,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

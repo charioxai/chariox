@@ -27,7 +27,7 @@ const usage = [
 export async function executeAppCommand(
   args: string[],
   client: Client,
-  defaults: { sessionId?: string | undefined } = {},
+  defaults: { sessionId?: string | undefined; appCommandPrefix?: string } = {},
 ): Promise<ShellCommandResult> {
   const [action = "list", ...rest] = args
   let request: Record<string, unknown>
@@ -134,7 +134,7 @@ export async function executeAppCommand(
   }
   if (response.AppWorker) {
     const data = expect<{ worker: AppWorkerSummary }>(response, "AppWorker")
-    return { ok: true, message: formatWorker(data.worker), data }
+    return { ok: true, message: formatWorker(data.worker, defaults.appCommandPrefix ?? "app"), data }
   }
   if (response.AppAutomations) {
     const data = expect<{ installation_id: string; automations: AppAutomationSummary[] }>(response, "AppAutomations")
@@ -228,10 +228,13 @@ function formatInboxRoute(route: AppInboxRouteSummary): string {
   return `${route.route_id} · ${route.source_event_type} v${route.source_event_version}${source} → ${route.event_name} · ${counts}`
 }
 
-function formatWorker(worker: AppWorkerSummary): string {
+function formatWorker(worker: AppWorkerSummary, commandPrefix: string): string {
   const enabled = worker.enabled ? "" : " (stopped by user)"
   const failure = worker.failure ? ` · ${worker.failure}` : ""
-  return `${worker.installation_id} · ${worker.phase.replace("_", " ")}${enabled}${failure}`
+  const recovery = worker.phase === "quarantined"
+    ? ` · explicit start required: ${commandPrefix} start ${JSON.stringify(worker.installation_id)}`
+    : ""
+  return `${worker.installation_id} · ${worker.phase.replace("_", " ")}${recovery}${enabled}${failure}`
 }
 
 function formatAutomation(automation: AppAutomationSummary): string {

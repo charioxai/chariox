@@ -168,3 +168,26 @@ test("app inbox configures routes and test occurrences through the shared reques
   const refused = await executeAppCommand(["inbox", "list", "todo"], { send: async () => ({ AppRequestFailed: { code: "invalid_request" } }) })
   assert.match(refused.message!, /declares as incoming/)
 })
+
+
+test("App quarantine shows explicit start recovery without relabelling ordinary failures", async () => {
+  for (const [phase, enabled, label] of [
+    ["quarantined", true, 'quarantined · explicit start required: app start "todo"'],
+    ["failed", true, "failed"],
+    ["stopped", false, "stopped (stopped by user)"],
+  ] as const) {
+    const result = await executeAppCommand(["worker", "todo"], { send: async request => {
+      assert.deepEqual(request, { GetAppWorker: { installation_id: "todo" } })
+      return { AppWorker: { worker: { installation_id: "todo", phase, enabled,
+        failure: "app_worker_exited", updated_at_ms: 1 } } }
+    } })
+    assert.equal(result.ok, true)
+    assert.equal(result.message, `todo · ${label} · app_worker_exited`)
+  }
+  const recovered = await executeAppCommand(["start", "todo"], { send: async request => {
+    assert.deepEqual(request, { ControlAppWorker: { installation_id: "todo", action: "start" } })
+    return { AppWorker: { worker: { installation_id: "todo", phase: "running", enabled: true,
+      failure: null, updated_at_ms: 2 } } }
+  } })
+  assert.equal(recovered.message, "todo · running")
+})

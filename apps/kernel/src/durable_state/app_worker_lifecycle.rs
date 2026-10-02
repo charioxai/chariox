@@ -59,6 +59,11 @@ pub(crate) struct WorkerStatus {
     /// or since a run that stayed healthy (see `restart_allowed`).
     pub(crate) failures: u32,
 }
+impl WorkerStatus {
+    pub(crate) fn is_quarantined(&self) -> bool {
+        self.phase == WorkerPhase::Failed && self.failures > store::RESTARTS
+    }
+}
 /// Only the current writer transaction can mint this retained start snapshot.
 pub(crate) struct ActiveStartAdmission {
     owner: String,

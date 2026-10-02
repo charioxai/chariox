@@ -87,3 +87,29 @@ test("/app file save writes an offered file to a new path and never replaces one
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+
+test("App slash quarantine names the existing explicit start action and shows recovery", async () => {
+  const notices: string[] = []
+  const requests: unknown[] = []
+  const deps = {
+    sendAppRequest: async (request: Record<string, unknown>) => {
+      requests.push(request)
+      return { AppWorker: { worker: { installation_id: "install-1",
+        phase: request.ControlAppWorker ? "running" : "quarantined", enabled: true,
+        failure: request.ControlAppWorker ? null : "app_worker_exited", updated_at_ms: 1 } } }
+    },
+    appendNotice: (message: string) => { notices.push(message) },
+    flashFooter: (message: string) => assert.fail(message),
+  }
+  await handleAppSlashCommand(deps, { kind: "app", raw: "/app worker install-1", args: ["worker", "install-1"] })
+  await handleAppSlashCommand(deps, { kind: "app", raw: "/app start install-1", args: ["start", "install-1"] })
+  assert.deepEqual(requests, [
+    { GetAppWorker: { installation_id: "install-1" } },
+    { ControlAppWorker: { installation_id: "install-1", action: "start" } },
+  ])
+  assert.deepEqual(notices, [
+    'install-1 · quarantined · explicit start required: /app start "install-1" · app_worker_exited',
+    "install-1 · running",
+  ])
+})

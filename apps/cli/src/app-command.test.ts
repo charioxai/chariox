@@ -105,3 +105,18 @@ test("other standalone commands are not intercepted", async () => {
   assert.equal(await runAppCommand(["apps", "list"], h.deps), false)
   assert.deepEqual(h.connections, [])
 })
+
+
+test("standalone App quarantine names the explicit start recovery command", async () => {
+  const h = harness({ AppWorker: { worker: { installation_id: "install-1", phase: "quarantined",
+    enabled: true, failure: "app_worker_exited", updated_at_ms: 1 } } })
+  await runAppCommand(["app", "worker", "install-1"], h.deps)
+  assert.deepEqual(h.requests, [{ GetAppWorker: { installation_id: "install-1" } }])
+  assert.deepEqual(h.output, ['install-1 · quarantined · explicit start required: chariox app start "install-1" · app_worker_exited\n'])
+  assert.equal(h.closed, 1)
+  const recovered = harness({ AppWorker: { worker: { installation_id: "install-1", phase: "running",
+    enabled: true, failure: null, updated_at_ms: 2 } } })
+  await runAppCommand(["app", "start", "install-1"], recovered.deps)
+  assert.deepEqual(recovered.requests, [{ ControlAppWorker: { installation_id: "install-1", action: "start" } }])
+  assert.deepEqual(recovered.output, ["install-1 · running\n"])
+})

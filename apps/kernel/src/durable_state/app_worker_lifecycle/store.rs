@@ -88,7 +88,7 @@ pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
 
 /// A failed worker restarts on demand after 1, 4 and 16 seconds; a fourth
 /// failure in a row quarantines it until an explicit start.
-const RESTARTS: u32 = 3;
+pub(super) const RESTARTS: u32 = 3;
 /// A run this long before failing starts a new failure count.
 const HEALTHY_RUN_MS: u64 = 5 * 60 * 1000;
 

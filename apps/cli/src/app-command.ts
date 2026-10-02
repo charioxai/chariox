@@ -81,7 +81,7 @@ export async function runAppCommand(
       await installFile(args, send, deps)
       return true
     }
-    const result = await executeAppCommand(args, { send })
+    const result = await executeAppCommand(args, { send }, { appCommandPrefix: "chariox app" })
     if (!result.ok) throw new Error(result.message ?? "App command failed")
     if (result.message) deps.write(`${result.message}\n`)
   } finally {

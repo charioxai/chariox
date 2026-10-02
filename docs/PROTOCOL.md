@@ -2098,6 +2098,16 @@ Workflow trigger and deployment direction:
   (the pinned releases' are re-read from the release store and re-verified);
   `plan` is `null` when the workflow uses no App. Only the publication's owner
   may preview.
+- protocol 398 adds `quarantined` to `AppWorker.phase` on the same local/relay
+  path. A failed worker exhausting the supervisor restart limit (four consecutive
+  failures) reports `quarantined`; failures one through three remain `failed`
+  during restart backoff. The original `failure` diagnostic is retained, and
+  `enabled` still means the user has not stopped the worker. Recovery requires
+  the existing `ControlAppWorker` action `start`, which clears the failure count.
+  Clients display "quarantined · explicit start required" and offer this action.
+  The focused quarantine relay test covers the status boundary, explicit-start
+  reset, and an unaffected neighbouring App. Clients requiring this distinction
+  depend on protocol 398; other web/native minimums need not change.
 - App-bound local deployments (P1.20, no request or response shape change): a
   bound `local_runtime` deployment of a publication with a pinned App plan
   runs as a pinned independent copy on the owner's kernel, not in the source
