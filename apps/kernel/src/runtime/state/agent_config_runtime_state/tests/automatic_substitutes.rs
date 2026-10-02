@@ -306,10 +306,12 @@ async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
     );
     let active = active.expect("queued prompt must be promoted exactly once");
     assert_eq!(active.status(), crate::session::PromptStatus::Running);
+    // The deterministic PTY adapter acknowledges the write before returning;
+    // structured native adapters can still be dispatching at this seam.
     assert_eq!(
         active.durable_delivery_phase(),
-        Some(crate::session::DurablePromptDeliveryPhase::Dispatching),
-        "the replacement must be admitted through the normal dispatch phase"
+        Some(crate::session::DurablePromptDeliveryPhase::Delivered),
+        "the replacement PTY prompt must be acknowledged through normal delivery"
     );
     assert_ne!(
         active.id(),
