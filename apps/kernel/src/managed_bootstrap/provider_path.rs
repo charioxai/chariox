@@ -302,7 +302,7 @@ mod tests {
     }
 
     #[test]
-    fn login_profile_is_reread_for_each_launch_and_only_contributes_validated_path() {
+    fn login_profile_is_reread_for_each_launch_and_preserves_provider_path() {
         let home = TestHome::new();
         let local_bin = home.0.join(".local/bin");
         fs::create_dir_all(&local_bin).expect("provider bin should be created");
