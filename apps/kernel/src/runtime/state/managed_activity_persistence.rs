@@ -176,6 +176,7 @@ impl ManagedActivityTransitionState {
         Ok(inner.latest_durable)
     }
 
+    #[cfg(test)]
     pub(super) fn current_observation(
         &self,
         running_agent_count: u8,

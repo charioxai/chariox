@@ -615,6 +615,7 @@ impl DaemonApp {
             .collect()
     }
 
+    #[cfg(test)]
     pub(crate) fn remote_prompt_capabilities_for_agent(
         &self,
         agent: &AgentInstance,
@@ -1156,6 +1157,7 @@ impl DaemonApp {
         Ok(rebound)
     }
 
+    #[cfg(test)]
     pub(crate) fn refresh_remote_agent_binding_to_worker_kernel(
         &mut self,
         agent_id: &str,

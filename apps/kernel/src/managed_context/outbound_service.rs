@@ -790,6 +790,7 @@ fn retire_matching_artifact_after_terminal_preflight(
     Ok(true)
 }
 
+#[cfg(test)]
 fn prepare_managed_context_package(
     config: &DaemonConfig,
     store: &ManagedContextOutboundOperationStore,

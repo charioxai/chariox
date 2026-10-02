@@ -755,6 +755,7 @@ fn remote_prompt_slice_status_allows_transport_retry(status: &crate::slice::Slic
 }
 
 impl KernelRuntimeState {
+    #[cfg(test)]
     pub(in crate::runtime::state) async fn submit_remote_prompt_attempt(
         &self,
         dispatch: &crate::app::KernelRemotePromptDispatch,

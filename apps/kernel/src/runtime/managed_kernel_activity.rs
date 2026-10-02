@@ -471,6 +471,7 @@ impl ActivityCursor {
         self.confirmed_local_transition_sequence.take()
     }
 
+    #[cfg(test)]
     fn next_report(
         &mut self,
         observation: crate::runtime::state::ManagedActivityObservation,

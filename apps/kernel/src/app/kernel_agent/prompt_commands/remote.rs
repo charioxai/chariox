@@ -25,6 +25,7 @@ fn remote_workspace_live_sync_mode_for_agent(
     )
 }
 
+#[cfg(test)]
 fn remote_git_turn_context_for_prompt(
     app: &DaemonApp,
     session_id: &str,

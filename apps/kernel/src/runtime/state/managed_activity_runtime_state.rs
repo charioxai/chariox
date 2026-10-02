@@ -24,6 +24,7 @@ impl KernelRuntimeState {
         self.owned.runtime_projection_changes.sequence()
     }
 
+    #[cfg(test)]
     pub(crate) fn managed_activity_snapshot(&self) -> (u64, u8) {
         let _mutation = self
             .owned
@@ -56,6 +57,7 @@ impl KernelRuntimeState {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn managed_activity_report_snapshot(
         &self,
     ) -> Result<(u64, super::ManagedActivityObservation), crate::error::DaemonError> {
@@ -113,6 +115,7 @@ impl KernelRuntimeState {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn managed_running_agent_count(&self) -> u8 {
         let _mutation = self
             .owned

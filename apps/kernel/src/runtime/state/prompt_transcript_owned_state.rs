@@ -284,6 +284,7 @@ impl KernelRuntimeOwnedState {
         records
     }
 
+    #[cfg(test)]
     pub(super) fn fan_out_terminal_output(
         &self,
         session_id: &str,
@@ -497,6 +498,7 @@ impl KernelRuntimeOwnedState {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn append_history_entry(&self, session_id: &str, entry: SessionHistoryEntry) {
         let Some(entry) = bounded_history_entry(entry) else {
             return;

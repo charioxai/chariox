@@ -137,6 +137,7 @@ pub(crate) trait BrowserControllerProcessBackend {
     ) -> Result<BrowserControllerBrowserSnapshot, String> {
         Err("browser controller backend does not support browser reconciliation".to_string())
     }
+    #[cfg(test)]
     fn capture_browser_snapshot(
         &mut self,
         _target_id: &str,
@@ -144,6 +145,7 @@ pub(crate) trait BrowserControllerProcessBackend {
     ) -> Result<BrowserControllerStructuredSnapshot, String> {
         Err("browser controller backend does not support structured snapshots".to_string())
     }
+    #[cfg(test)]
     fn perform_browser_action(
         &mut self,
         _target_id: &str,
@@ -154,6 +156,7 @@ pub(crate) trait BrowserControllerProcessBackend {
     ) -> Result<BrowserControllerActionResult, String> {
         Err("browser controller backend does not support locator actions".to_string())
     }
+    #[cfg(test)]
     fn wait_for_browser(
         &mut self,
         _target_id: &str,
@@ -163,6 +166,7 @@ pub(crate) trait BrowserControllerProcessBackend {
     ) -> Result<BrowserControllerCompatibilityWaitResult, String> {
         Err("browser controller backend does not support compatibility waits".to_string())
     }
+    #[cfg(test)]
     fn handle_browser_dialog(
         &mut self,
         _target_id: &str,
@@ -706,6 +710,7 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         Ok(snapshot)
     }
 
+    #[cfg(test)]
     fn capture_browser_snapshot(
         &mut self,
         target_id: &str,
@@ -724,6 +729,7 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         Ok(snapshot)
     }
 
+    #[cfg(test)]
     fn perform_browser_action(
         &mut self,
         target_id: &str,
@@ -749,6 +755,7 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         Ok(result)
     }
 
+    #[cfg(test)]
     fn wait_for_browser(
         &mut self,
         target_id: &str,
@@ -773,6 +780,7 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         Ok(result)
     }
 
+    #[cfg(test)]
     fn handle_browser_dialog(
         &mut self,
         target_id: &str,
@@ -1205,6 +1213,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
         self.supervisor.reconcile_browser(viewport)
     }
 
+    #[cfg(test)]
     pub(crate) fn capture_browser_snapshot(
         &mut self,
         session_id: &str,
@@ -1216,6 +1225,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
             .capture_browser_snapshot(target_id, document_id)
     }
 
+    #[cfg(test)]
     pub(crate) fn perform_browser_action(
         &mut self,
         session_id: &str,
@@ -1230,6 +1240,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
             .perform_browser_action(target_id, document_id, node_ref, action, timeout_ms)
     }
 
+    #[cfg(test)]
     pub(crate) fn wait_for_browser(
         &mut self,
         session_id: &str,
@@ -1243,6 +1254,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
             .wait_for_browser(target_id, document_id, wait, timeout_ms)
     }
 
+    #[cfg(test)]
     pub(crate) fn handle_browser_dialog(
         &mut self,
         session_id: &str,
@@ -1738,6 +1750,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         Ok(BrowserControllerReconciliation { process, browser })
     }
 
+    #[cfg(test)]
     fn capture_browser_snapshot(
         &mut self,
         target_id: &str,
@@ -1748,6 +1761,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
             .capture_browser_snapshot(target_id, document_id)
     }
 
+    #[cfg(test)]
     fn perform_browser_action(
         &mut self,
         target_id: &str,
@@ -1761,6 +1775,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
             .perform_browser_action(target_id, document_id, node_ref, action, timeout_ms)
     }
 
+    #[cfg(test)]
     fn wait_for_browser(
         &mut self,
         target_id: &str,
@@ -1773,6 +1788,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
             .wait_for_browser(target_id, document_id, wait, timeout_ms)
     }
 
+    #[cfg(test)]
     fn handle_browser_dialog(
         &mut self,
         target_id: &str,

@@ -730,6 +730,7 @@ impl DaemonApp {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn advance_next_queued_prompt_remote(
         &mut self,
         session_id: &str,

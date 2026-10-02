@@ -69,6 +69,7 @@ fn validation_passed_for_execution(
             .all(|(result, command)| result.command_digest == command_digest(command))
 }
 
+#[cfg(test)]
 fn validate_local_worker_target(
     config: &DaemonConfig,
     target_worker_id: &str,
