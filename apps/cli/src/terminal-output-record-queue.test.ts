@@ -30,12 +30,13 @@ function createHarness() {
   return { processed, queue, timers }
 }
 
-function createBudgetedHarness() {
+function createBudgetedHarness(maxPendingRecords = Number.POSITIVE_INFINITY) {
   const timers: FakeTimer[] = []
   const processed: number[][] = []
   const queue = createTerminalOutputRecordQueue<FakeTimer, number>({
     delayMs: 25,
     maxRecordsPerFlush: 2,
+    maxPendingRecords,
     scheduleTimer(callback, delayMs) {
       const timer = { callback, delayMs, cleared: false }
       timers.push(timer)
@@ -135,6 +136,34 @@ test("terminal output record queue drains every budgeted batch synchronously", (
 
   assert.equal(timers[0]?.cleared, true)
   assert.deepEqual(processed, [[1, 2], [3, 4], [5]])
+  assert.equal(queue.pendingCount(), 0)
+  assert.equal(queue.hasPendingFlush(), false)
+})
+
+test("terminal output record queue processes oversized batches without dropping or reordering records", () => {
+  const { processed, queue, timers } = createBudgetedHarness(4)
+
+  queue.queue([1, 2, 3, 4, 5, 6, 7])
+
+  assert.equal(queue.pendingCount(), 3)
+  assert.deepEqual(processed, [[1, 2], [3, 4]])
+  assert.equal(timers.filter((timer) => !timer.cleared).length, 1)
+  queue.drain()
+  assert.deepEqual(processed.flat(), [1, 2, 3, 4, 5, 6, 7])
+  assert.equal(queue.hasPendingFlush(), false)
+})
+
+test("terminal output record queue bounds retained records when producers outrun timers", () => {
+  const { processed, queue, timers } = createBudgetedHarness(4)
+  const expected = Array.from({ length: 1000 }, (_, index) => index)
+
+  for (const record of expected) {
+    queue.queue([record])
+    assert.ok(queue.pendingCount() <= 4)
+    assert.equal(timers.filter((timer) => !timer.cleared).length, 1)
+  }
+  queue.drain()
+  assert.deepEqual(processed.flat(), expected)
   assert.equal(queue.pendingCount(), 0)
   assert.equal(queue.hasPendingFlush(), false)
 })

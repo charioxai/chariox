@@ -1,6 +1,7 @@
 type TerminalOutputRecordQueueOptions<TimerHandle, RecordValue> = {
   delayMs: number
   maxRecordsPerFlush?: number
+  maxPendingRecords?: number
   scheduleTimer: (callback: () => void, delayMs: number) => TimerHandle
   clearTimer: (timer: TimerHandle) => void
   processRecords: (records: RecordValue[]) => void
@@ -21,6 +22,7 @@ export function createTerminalOutputRecordQueue<TimerHandle, RecordValue>(
   let pendingTimer: TimerHandle | undefined
   let pendingRecords: RecordValue[] = []
   const maxRecordsPerFlush = Math.max(1, options.maxRecordsPerFlush ?? Number.POSITIVE_INFINITY)
+  const maxPendingRecords = Math.max(1, options.maxPendingRecords ?? Number.POSITIVE_INFINITY)
 
   const clearPendingTimer = () => {
     if (pendingTimer === undefined) {
@@ -67,6 +69,11 @@ export function createTerminalOutputRecordQueue<TimerHandle, RecordValue>(
         return
       }
       pendingRecords.push(...records)
+      // A busy producer can outrun the delayed flush. Process overflow now so
+      // the queue stays bounded without dropping transcript records.
+      while (pendingRecords.length > maxPendingRecords) {
+        flush()
+      }
       scheduleFlush()
     },
     flush,
