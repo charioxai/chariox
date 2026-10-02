@@ -700,3 +700,26 @@ fn command_cache_replays_generated_responses_beyond_input_nesting_limit() {
     .result;
     assert_eq!(*result.response_value(), Some(response));
 }
+
+#[test]
+fn command_cache_replays_floats_without_precision_loss() {
+    for value in [
+        -0.0_f64,
+        51.248178375505404,
+        2.0030397744267762e-253,
+        3.9287532173373315e299,
+    ] {
+        let result = persistent_result_for_test(
+            "float",
+            CommandResultCache::fingerprint_from_bytes_for_test(b"float"),
+            1,
+            Some(serde_json::json!({ "value": value })),
+        )
+        .result;
+        let replayed = (*result.response_value()).unwrap();
+        assert_eq!(
+            replayed["value"].as_f64().unwrap().to_bits(),
+            value.to_bits()
+        );
+    }
+}
