@@ -2633,6 +2633,9 @@ Workflow trigger and deployment direction:
   queued commands, cached replies, and event replay check live authority.
   Workflow controls also recheck after provider-lane and cancellation-settlement
   waits; remote workflow cancellation carries the same command authority.
+  Direct router paths retain the canonical grant/request too. Setup cancellation
+  rechecks after ordering gates, Meta cancellation retains authority, and local
+  PTY input and remote terminal sends recheck before enqueue.
   A Unix connection binds to its first approved or admitted grant and never
   switches authority. Session references resolve once to an authorized session
   ID before dispatch. A later approval on that socket creates a grant for

@@ -19,6 +19,8 @@ pub(in crate::runtime::state) struct WorkerSpy {
     pub(in crate::runtime::state) requests: Arc<AtomicUsize>,
     pub(in crate::runtime::state) discovery_started: Arc<Notify>,
     pub(in crate::runtime::state) release_discovery: Arc<Notify>,
+    pub(in crate::runtime::state) setup_status:
+        Arc<std::sync::Mutex<Option<crate::local::ProjectEnvironmentSetupStatus>>>,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -30,6 +32,10 @@ impl WorkerSpy {
         let url = format!("ws://{}", listener.local_addr().unwrap());
         let id = format!("session-authority-worker-{:016x}", rand::random::<u64>());
         let worker_id = id.clone();
+        let setup_status = Arc::new(std::sync::Mutex::new(
+            None::<crate::local::ProjectEnvironmentSetupStatus>,
+        ));
+        let worker_setup_status = setup_status.clone();
         let requests = Arc::new(AtomicUsize::new(0));
         let counter = requests.clone();
         let discovery_started = Arc::new(Notify::new());
@@ -92,6 +98,16 @@ impl WorkerSpy {
                                     prompt: crate::session::PromptQueueItem::new("worker-prompt", "worker-attachment", "worker-agent", "fixture", crate::session::PromptStatus::Cancelled),
                                     started_next: None,
                                 } },
+                                RelayPeerRequest::SendLeasedNativeProviderInput { data_base64, .. } => {
+                                    use base64::Engine;
+                                    RelayPeerResponse::LeasedNativeProviderInputSent { byte_count: base64::engine::general_purpose::STANDARD.decode(data_base64).unwrap().len() }
+                                }
+                                RelayPeerRequest::CancelLeasedProjectEnvironmentSetup { .. } => {
+                                    let mut status = worker_setup_status.lock().unwrap().clone().unwrap();
+                                    status.phase = crate::local::ProjectEnvironmentSetupPhase::Cancelled;
+                                    status.retryable = true;
+                                    RelayPeerResponse::LeasedProjectEnvironmentSetupCancelled { setup: crate::transport::relay_peer::RelayProjectEnvironmentSetupStatus { status, definition: None } }
+                                }
                                 _ => panic!("unexpected worker request"),
                             };
                             send(&mut socket, RelayEnvelope::DaemonPeerResponse { request_id, from_daemon_id: worker_id.clone(), encrypted_response: Some(relay_crypto::encrypt_payload_for_peer(&worker.relay_private_key, &registration.public_key, &serde_json::to_vec(&response).unwrap()).unwrap()), error: None }).await;
@@ -108,6 +124,7 @@ impl WorkerSpy {
             requests,
             discovery_started,
             release_discovery,
+            setup_status,
             shutdown: Some(shutdown),
             thread: Some(thread),
         }
@@ -116,6 +133,7 @@ impl WorkerSpy {
 
 impl Drop for WorkerSpy {
     fn drop(&mut self) {
+        self.release_discovery.notify_one();
         let _ = self.shutdown.take().unwrap().send(());
         let _ = self.thread.take().unwrap().join();
     }
