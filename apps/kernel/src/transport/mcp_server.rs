@@ -45,9 +45,8 @@ pub(crate) async fn run_mcp_http_server_on_listener(
     let mut catalogs = catalog::CatalogMonitor::new(&router);
     let health = router.transport_health_store();
     loop {
-        let admission = super::listener_admission::accept_with_backoff(
-            &listener, &health, "runtime mcp",
-        );
+        let admission =
+            super::listener_admission::accept_with_backoff(&listener, &health, "runtime mcp");
         tokio::pin!(admission);
         // Catalog refreshes must not reset an in-progress admission backoff.
         let (stream, _) = loop {

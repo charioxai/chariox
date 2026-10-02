@@ -1106,7 +1106,7 @@ fn linux_docker_headed_browser_reopens_tabs_after_snapshot_quiescence() {
     )
     .expect("slice screen script should be readable");
 
-    assert!(script.contains("chromium_has_restorable_session"));
+    assert!(script.contains("[[ -d \"$CHROME_PROFILE/Default\" ]]"));
     assert!(script.contains("chrome_startup_target_args+=(--restore-last-session)"));
     assert!(script.contains("chrome_startup_target_args=(-- \"$CHROME_URL\")"));
     assert!(script.contains("\"${chrome_startup_target_args[@]}\""));
