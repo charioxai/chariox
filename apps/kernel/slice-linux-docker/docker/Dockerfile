@@ -68,6 +68,8 @@ FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0
 ENV DEBIAN_FRONTEND=noninteractive
 ENV CHARIOX_SLICE_ROOT=/opt/chariox-slice
 ENV CHARIOX_SLICE_DISPLAY_SERVER=Xorg
+# Keep every libpulse client away from legacy runtime symlinks in durable home.
+ENV PULSE_RUNTIME_PATH=/tmp/chariox-pulse-runtime
 COPY --from=ca-bundle /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20260701T000000Z bookworm main' > /etc/apt/sources.list \
   && rm -f /etc/apt/sources.list.d/debian.sources \
