@@ -36,9 +36,6 @@ pub struct CodexRuntimeState {
     endpoint: String,
     thread_id: String,
     thread_ready: bool,
-    developer_instructions_fingerprint: Option<String>,
-    context_hot_reload_enabled: bool,
-    inject_hidden_context_on_submit: bool,
     /// Read-only discovery must keep its permission and MCP policy when the
     /// event drain reconstructs a client for server requests.
     read_only_discovery_permissions: bool,
@@ -59,18 +56,6 @@ impl std::fmt::Debug for CodexRuntimeState {
             .field("endpoint", &self.endpoint)
             .field("thread_id", &self.thread_id)
             .field("thread_ready", &self.thread_ready)
-            .field(
-                "developer_instructions_fingerprint",
-                &self.developer_instructions_fingerprint,
-            )
-            .field(
-                "context_hot_reload_enabled",
-                &self.context_hot_reload_enabled,
-            )
-            .field(
-                "inject_hidden_context_on_submit",
-                &self.inject_hidden_context_on_submit,
-            )
             .field(
                 "read_only_discovery_permissions",
                 &self.read_only_discovery_permissions,
@@ -100,9 +85,6 @@ impl CodexRuntimeState {
             endpoint,
             thread_id,
             thread_ready: true,
-            developer_instructions_fingerprint: None,
-            context_hot_reload_enabled: false,
-            inject_hidden_context_on_submit: true,
             read_only_discovery_permissions: false,
             ephemeral: false,
             socket,
@@ -122,14 +104,10 @@ impl CodexRuntimeState {
         socket: CodexSocket,
         next_request_id: u64,
     ) -> Self {
-        let inject_hidden_context_on_submit = thread_id.is_some();
         Self {
             endpoint,
             thread_id: thread_id.unwrap_or_default(),
             thread_ready: false,
-            developer_instructions_fingerprint: None,
-            context_hot_reload_enabled: true,
-            inject_hidden_context_on_submit,
             read_only_discovery_permissions: false,
             ephemeral: false,
             socket,
@@ -159,18 +137,6 @@ impl CodexRuntimeState {
         self.thread_ready
     }
 
-    pub(super) fn developer_instructions_fingerprint(&self) -> Option<&str> {
-        self.developer_instructions_fingerprint.as_deref()
-    }
-
-    pub(super) fn context_hot_reload_enabled(&self) -> bool {
-        self.context_hot_reload_enabled
-    }
-
-    pub(super) fn inject_hidden_context_on_submit(&self) -> bool {
-        self.inject_hidden_context_on_submit
-    }
-
     pub(super) fn read_only_discovery_permissions(&self) -> bool {
         self.read_only_discovery_permissions
     }
@@ -179,31 +145,9 @@ impl CodexRuntimeState {
         self.read_only_discovery_permissions = enabled;
     }
 
-    pub(super) fn mark_thread_ready(
-        &mut self,
-        thread_id: impl Into<String>,
-        developer_instructions_fingerprint: Option<String>,
-    ) {
+    pub(super) fn mark_thread_ready(&mut self, thread_id: impl Into<String>) {
         self.thread_id = thread_id.into();
         self.thread_ready = true;
-        self.developer_instructions_fingerprint = developer_instructions_fingerprint;
-    }
-
-    pub(super) fn replace_thread(
-        &mut self,
-        thread_id: impl Into<String>,
-        developer_instructions_fingerprint: Option<String>,
-    ) {
-        self.thread_id = thread_id.into();
-        self.thread_ready = true;
-        self.developer_instructions_fingerprint = developer_instructions_fingerprint;
-        self.inject_hidden_context_on_submit = false;
-        self.buffered_notifications.clear();
-        self.active_turn_id = None;
-        self.turn_tracker = CodexTurnTracker::default();
-        self.authoritative_backfill_gate.reset();
-        self.text_items.clear();
-        self.tool_items.clear();
     }
 }
 

@@ -4,7 +4,6 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 
 use crate::error::DaemonError;
 use crate::prompt_assembly::PromptEnvelope;
@@ -46,6 +45,7 @@ pub fn submit_codex_prompt(
         .map(|path| path.to_string_lossy().to_string());
     let model = normalize_codex_model(run.model());
     let effort = normalize_variant(run.variant());
+    let existing_thread = state.thread_ready() || state.pending_thread_id().is_some();
     if let Err(error) = ensure_codex_thread_ready(
         &client,
         run,
@@ -53,18 +53,17 @@ pub fn submit_codex_prompt(
         cwd.as_deref(),
         model.as_deref(),
         hidden_context_for_provider(&envelope.hidden_system_context),
-        envelope.steering,
     ) {
         state.buffered_notifications.push(CodexNotification::Error {
             message: error.to_string(),
         });
         return Ok(());
     }
-    // Native and resumed threads keep their provider identity. Deliver context
-    // through Codex's developer-message seam instead of visible user input.
-    // Steering cannot reload a thread, so use the same seam at that boundary.
+    // Every existing thread keeps its conversation and provider identity.
+    // Fresh thread/start already carries this context; later refreshes use the
+    // same documented developer-item seam as native/resumed threads.
     let thread_id = state.thread_id().to_string();
-    if state.inject_hidden_context_on_submit() || envelope.steering {
+    if existing_thread {
         if let Some(context) = hidden_context_for_provider(&envelope.hidden_system_context) {
             if let Err(error) = client.thread_inject_hidden_context(
                 &mut state.socket,
@@ -165,56 +164,13 @@ fn ensure_codex_thread_ready(
     cwd: Option<&str>,
     model: Option<&str>,
     developer_instructions: Option<&str>,
-    steering: bool,
 ) -> Result<(), DaemonError> {
-    if codex_active_steering_preserves_thread(
-        state.thread_ready(),
-        state.active_turn_id.is_some(),
-        steering,
-    ) {
-        return Ok(());
-    }
-    let desired_fingerprint = developer_instructions_fingerprint(developer_instructions);
-    if state.thread_ready()
-        && state.developer_instructions_fingerprint() == Some(desired_fingerprint.as_str())
-    {
-        return Ok(());
-    }
-    if state.thread_ready() && !state.context_hot_reload_enabled() {
-        return Ok(());
-    }
     if state.thread_ready() {
-        if state.active_turn_id.is_some() {
-            return Err(DaemonError::ProviderProtocol {
-                provider_run_id: run.id().to_string(),
-                operation: "thread/hot-reload",
-                message: "cannot hot reload Codex hidden context while a turn is active"
-                    .to_string(),
-            });
-        }
-        crate::logging::info_with_fields(
-            "daemon.provider.codex",
-            "hot reloading codex thread for changed hidden context",
-            serde_json::json!({
-                "provider_run_id": run.id(),
-                "previous_thread_id": state.thread_id(),
-            }),
-        );
+        return Ok(());
     }
     let deadline = Instant::now() + CODEX_MCP_THREAD_INIT_RETRY_TIMEOUT;
     loop {
-        let result = if state.thread_ready() {
-            client.thread_start(
-                &mut state.socket,
-                &mut state.next_request_id,
-                cwd,
-                model,
-                run.write_access_mode(),
-                run.execution_mode(),
-                run.permission_level(),
-                developer_instructions,
-            )
-        } else if let Some(thread_id) = state.pending_thread_id().map(str::to_string) {
+        let result = if let Some(thread_id) = state.pending_thread_id().map(str::to_string) {
             // No new turn has been submitted yet. Resume may replay old item
             // deltas and uncorrelated legacy abort/error events; they must not
             // enter the buffer later drained for the newly admitted prompt.
@@ -245,11 +201,7 @@ fn ensure_codex_thread_ready(
         };
         match result {
             Ok(thread) => {
-                if state.thread_ready() {
-                    state.replace_thread(thread.thread.id, Some(desired_fingerprint));
-                } else {
-                    state.mark_thread_ready(thread.thread.id, Some(desired_fingerprint));
-                }
+                state.mark_thread_ready(thread.thread.id);
                 return Ok(());
             }
             Err(error) if is_codex_mcp_handshake_timeout(&error) && Instant::now() < deadline => {
@@ -268,20 +220,11 @@ fn ensure_codex_thread_ready(
     }
 }
 
-fn codex_active_steering_preserves_thread(
-    thread_ready: bool,
-    active_turn: bool,
-    steering: bool,
-) -> bool {
-    thread_ready && active_turn && steering
-}
-
 #[cfg(test)]
 mod prompt_tests {
     use super::{
-        codex_active_steering_preserves_thread, codex_turn_interrupt_is_waiting_for_task_start,
-        codex_turn_is_terminal, note_codex_turn_interrupt_accepted, CodexNotification,
-        CodexTurnTracker,
+        codex_turn_interrupt_is_waiting_for_task_start, codex_turn_is_terminal,
+        note_codex_turn_interrupt_accepted, CodexNotification, CodexTurnTracker,
     };
     use crate::error::DaemonError;
     use crate::prompt_assembly::{PromptEnvelope, PromptManifest};
@@ -298,21 +241,69 @@ mod prompt_tests {
     // MP-08/MP-10: native input and Chariox-origin input share this provider seam.
     #[test]
     fn native_codex_turns_keep_hidden_context_out_of_user_input() {
+        assert_codex_hidden_context_continuity(false, false);
+    }
+
+    // MP-08/MP-10: managed initialization and resume must keep the first
+    // conversation when a later prompt refreshes hidden runtime context.
+    #[test]
+    fn managed_codex_hidden_context_refresh_preserves_conversation() {
+        assert_codex_hidden_context_continuity(true, false);
+    }
+
+    #[test]
+    fn resumed_codex_hidden_context_refresh_preserves_conversation() {
+        assert_codex_hidden_context_continuity(true, true);
+    }
+
+    fn assert_codex_hidden_context_continuity(managed: bool, resumed: bool) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind fixture");
         let address = listener.local_addr().expect("fixture address");
         let server = thread::spawn(move || {
             let (stream, _) = listener.accept().expect("accept fixture");
             let mut socket = accept(stream).expect("upgrade fixture");
             let mut requests = Vec::new();
-            for index in 0..2 {
-                let context = read_json_request(&mut socket, "thread/inject_items");
+            if managed {
+                let init = read_json_request(
+                    &mut socket,
+                    if resumed {
+                        "thread/resume"
+                    } else {
+                        "thread/start"
+                    },
+                );
+                assert!(init["params"]["developerInstructions"]
+                    .as_str()
+                    .unwrap()
+                    .contains("FIRST"));
+                if resumed {
+                    assert_eq!(init["params"]["threadId"], "native-thread");
+                }
                 socket
                     .send(Message::Text(
-                        json!({"id": context["id"], "result": {}})
-                            .to_string()
-                            .into(),
+                        json!({"id": init["id"], "result": {
+                            "thread": {"id": "native-thread"}, "model": "gpt-6.1-sol"
+                        }})
+                        .to_string()
+                        .into(),
                     ))
-                    .expect("inject context");
+                    .expect("initialize thread");
+            }
+            for index in 0..2 {
+                let context = if managed && !resumed && index == 0 {
+                    // Fresh thread/start already supplied its developer context.
+                    serde_json::Value::Null
+                } else {
+                    let context = read_json_request(&mut socket, "thread/inject_items");
+                    socket
+                        .send(Message::Text(
+                            json!({"id": context["id"], "result": {}})
+                                .to_string()
+                                .into(),
+                        ))
+                        .expect("inject context");
+                    context
+                };
                 let request = read_json_request(&mut socket, "turn/start");
                 socket
                     .send(Message::Text(
@@ -360,12 +351,21 @@ mod prompt_tests {
                 structured_endpoint: None,
             },
         );
-        let mut state = super::super::state::CodexRuntimeState::new(
-            endpoint,
-            "native-thread".to_string(),
-            socket,
-            1,
-        );
+        let mut state = if managed {
+            super::super::state::CodexRuntimeState::pending(
+                endpoint,
+                resumed.then(|| "native-thread".to_string()),
+                socket,
+                1,
+            )
+        } else {
+            super::super::state::CodexRuntimeState::new(
+                endpoint,
+                "native-thread".to_string(),
+                socket,
+                1,
+            )
+        };
         for hidden in [
             "<runtime-instructions>FIRST</runtime-instructions>",
             "<native-permission-instructions>SECOND</native-permission-instructions>",
@@ -414,6 +414,9 @@ mod prompt_tests {
                     {"type": "localImage", "path": "/tmp/native image.png"}
                 ])
             );
+            if context.is_null() {
+                continue;
+            }
             assert_eq!(context["params"]["threadId"], "native-thread");
             assert_eq!(context["params"]["items"][0]["role"], "developer");
             assert!(context["params"]["items"][0]["content"][0]["text"]
@@ -421,14 +424,6 @@ mod prompt_tests {
                 .expect("hidden channel")
                 .contains(marker));
         }
-    }
-
-    #[test]
-    fn active_steering_preserves_the_existing_codex_thread() {
-        assert!(codex_active_steering_preserves_thread(true, true, true));
-        assert!(!codex_active_steering_preserves_thread(true, true, false));
-        assert!(!codex_active_steering_preserves_thread(true, false, true));
-        assert!(!codex_active_steering_preserves_thread(false, true, true));
     }
 
     #[test]
@@ -836,10 +831,6 @@ mod prompt_tests {
         assert_eq!(request["method"], expected_method);
         request
     }
-}
-
-fn developer_instructions_fingerprint(value: Option<&str>) -> String {
-    format!("{:x}", Sha256::digest(value.unwrap_or_default().as_bytes()))
 }
 
 fn hidden_context_for_provider(value: &str) -> Option<&str> {
