@@ -24,6 +24,47 @@ import { RelayClientIdentity } from "@chariox/kernel-client/ipc"
 
 import { createCliRelayIdentityStore } from "./cli-relay-identity-store.js"
 
+test("CLI relay identity persists a generated scalar with a leading zero as 32 bytes", (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "chariox-cli-relay-identity-leading-zero-"))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const keys = createECDH("prime256v1")
+  let shortPrivateKey: Buffer | undefined
+  for (let attempt = 0; attempt < 4096; attempt++) {
+    keys.generateKeys()
+    const candidate = keys.getPrivateKey()
+    if (candidate.length === 31) {
+      shortPrivateKey = candidate
+      break
+    }
+    candidate.fill(0)
+  }
+  assert.ok(shortPrivateKey, "normal P-256 generation must exercise a leading-zero scalar")
+  const generatedPrivateKey = shortPrivateKey
+  t.after(() => generatedPrivateKey.fill(0))
+  const expectedPublicKey = keys.getPublicKey().toString("base64")
+  const peer = createTestRelayIdentity()
+  // Replay this normally generated edge case through the product publication path.
+  t.mock.method(Object.getPrototypeOf(keys), "getPrivateKey", () => Buffer.from(generatedPrivateKey))
+  const identityPath = path.join(root, "relay", "cli-identity-v1.json")
+  const store = createCliRelayIdentityStore(identityPath)
+  const identity = store.getOrCreate()
+  assert.equal(identity.publicKeyBase64, expectedPublicKey)
+  assert.equal(store.load()?.publicKeyThumbprint, identity.publicKeyThumbprint)
+  const stored = JSON.parse(readFileSync(identityPath, "utf8")) as { private_key: string }
+  const persistedPrivateKey = Buffer.from(stored.private_key, "base64")
+  try {
+    assert.equal(persistedPrivateKey.length, 32)
+    assert.equal(persistedPrivateKey[0], 0)
+    assert.equal(Buffer.compare(persistedPrivateKey.subarray(1), generatedPrivateKey), 0)
+  } finally {
+    persistedPrivateKey.fill(0)
+  }
+  assert.equal(statSync(identityPath).mode & 0o777, 0o600)
+  assert.equal(statSync(identityPath).nlink, 1)
+  assert.deepEqual(Object.keys(identity).sort(), ["publicKeyBase64", "publicKeyThumbprint"])
+  assert.equal(peer.decrypt(identity.encrypt(peer.publicKeyBase64, "leading-zero round trip")), "leading-zero round trip")
+})
+
 test("CLI relay identity is protected and persists the same non-exporting identity", (t) => {
   const root = mkdtempSync(path.join(os.tmpdir(), "chariox-cli-relay-identity-"))
   t.after(() => rmSync(root, { recursive: true, force: true }))

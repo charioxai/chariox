@@ -70,7 +70,14 @@ function createIdentity(identityPath: string): RelayClientIdentity {
 
     const ecdh = createECDH("prime256v1")
     ecdh.generateKeys()
-    privateKey = Buffer.from(ecdh.getPrivateKey())
+    // OpenSSL omits leading zero bytes from the scalar; storage uses fixed-width P-256.
+    privateKey = Buffer.alloc(32)
+    const scalar = ecdh.getPrivateKey()
+    try {
+      scalar.copy(privateKey, privateKey.length - scalar.length)
+    } finally {
+      scalar.fill(0)
+    }
     serialized = Buffer.from(JSON.stringify({
       version: IDENTITY_VERSION,
       private_key: privateKey.toString("base64"),
