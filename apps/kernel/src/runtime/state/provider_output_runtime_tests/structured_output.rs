@@ -1044,8 +1044,8 @@ async fn idle_claude_native_tui_projects_startup_terminal_without_history() {
             pty_target: Some("claude:native-idle-runtime".to_string()),
             pty_program: Some("/bin/sh".to_string()),
             pty_args: vec![
-                "-lc".to_string(),
-                "printf '\\033[?2004hClaude Code\\n'; sleep 5".to_string(),
+                "-c".to_string(),
+                "printf '\\033[?2004hClaude Code\\n'; IFS= read -r ignored".to_string(),
             ],
             pty_env: std::collections::BTreeMap::new(),
             pty_env_remove: Vec::new(),
@@ -1064,19 +1064,35 @@ async fn idle_claude_native_tui_projects_startup_terminal_without_history() {
         .expect("history should load")
         .len();
 
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
-    let records = runtime
-        .pump_owned_provider_output(
-            session.id(),
-            run.id(),
-            vec![attachment.id().to_string()],
-            true,
-        )
-        .await
-        .expect("idle Claude native startup output should project");
+    let records = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let mut records = Vec::new();
+        loop {
+            records.extend(
+                runtime
+                    .pump_owned_provider_output(
+                        session.id(),
+                        run.id(),
+                        vec![attachment.id().to_string()],
+                        true,
+                    )
+                    .await
+                    .expect("idle Claude native startup output should project"),
+            );
+            let output = records
+                .iter()
+                .flat_map(|record| record.bytes.clone())
+                .collect::<Vec<_>>();
+            let frame = b"\x1b[?2004hClaude Code";
+            if output.windows(frame.len()).any(|bytes| bytes == frame) {
+                break records;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Claude startup frame should reach the client");
 
     assert!(
         !records.is_empty(),
