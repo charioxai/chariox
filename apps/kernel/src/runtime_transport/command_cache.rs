@@ -3,9 +3,10 @@ use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{value::RawValue, Value};
 use tokio::sync::{oneshot, Mutex};
 
 use crate::local::LocalDaemonRequest;
@@ -50,11 +51,29 @@ impl CommandResultRetentionPolicy {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct CachedCommandResult {
-    pub(crate) response: Box<Option<Value>>,
+    response: Option<Arc<RawValue>>,
     pub(crate) error: Option<KernelTransportError>,
     #[serde(default)]
     completed_at_ms: u64,
     fingerprint: CommandFingerprint,
+}
+
+impl CachedCommandResult {
+    pub(crate) fn response_value(&self) -> Box<Option<Value>> {
+        Box::new(self.response.as_ref().map(|response| {
+            let mut deserializer = serde_json::Deserializer::from_str(response.get());
+            // Responses are already validated Values; generated trees may exceed
+            // the parser's default input nesting limit.
+            deserializer.disable_recursion_limit();
+            Value::deserialize(&mut deserializer).expect("cached response is valid JSON")
+        }))
+    }
+}
+
+fn serialized_response(response: &Option<Value>) -> Option<Arc<RawValue>> {
+    response
+        .as_ref()
+        .map(|value| Arc::from(serde_json::value::to_raw_value(value).expect("response is JSON")))
 }
 
 #[derive(Debug)]
@@ -283,7 +302,7 @@ impl CommandResultCache {
         let cached = CachedCommandResult {
             fingerprint,
             completed_at_ms: crate::session::unix_epoch_ms(),
-            response: response.clone(),
+            response: serialized_response(response),
             error: error.clone(),
         };
         let waiters = {
@@ -303,9 +322,7 @@ impl CommandResultCache {
     }
 
     async fn record_completed_order(&self, command_id: String, cached: CachedCommandResult) {
-        // Account every completed result in memory, including responses that are too large or
-        // too noisy to persist. A Vec<u8> represented as serde_json::Value is especially costly,
-        // so entry-count retention alone is not a meaningful memory bound.
+        // Account serialized response bytes even when the result is excluded from disk.
         // Do not clone and serialize large read-only responses merely to decide that they should
         // not be written. History outlines are intentionally paged and may still be large enough
         // for this work to become visible on every browser refresh.
@@ -474,7 +491,7 @@ impl CommandResultCache {
         let cached = CachedCommandResult {
             fingerprint,
             completed_at_ms: crate::session::unix_epoch_ms(),
-            response: Box::new(response),
+            response: serialized_response(&response),
             error: None,
         };
         self.results.lock().await.insert(
@@ -598,36 +615,12 @@ fn cached_command_result_memory_bytes(command_id: &str, result: &CachedCommandRe
             .saturating_add(error.code.capacity() as u64)
             .saturating_add(error.message.capacity() as u64);
     }
-    if let Some(response) = result.response.as_ref().as_ref() {
+    if let Some(response) = &result.response {
         bytes = bytes
-            .saturating_add(std::mem::size_of::<Option<Value>>() as u64)
-            .saturating_add(value_heap_bytes(response));
+            .saturating_add((2 * std::mem::size_of::<usize>()) as u64)
+            .saturating_add(response.get().len() as u64);
     }
     bytes
-}
-
-fn value_heap_bytes(value: &Value) -> u64 {
-    match value {
-        Value::String(value) => value.capacity() as u64,
-        Value::Array(values) => (values.capacity() as u64)
-            .saturating_mul(std::mem::size_of::<Value>() as u64)
-            .saturating_add(values.iter().fold(0_u64, |total, value| {
-                total.saturating_add(value_heap_bytes(value))
-            })),
-        Value::Object(values) => values.iter().fold(
-            (values.len() as u64).saturating_mul(
-                (std::mem::size_of::<String>()
-                    + std::mem::size_of::<Value>()
-                    + 3 * std::mem::size_of::<usize>()) as u64,
-            ),
-            |total, (key, value)| {
-                total
-                    .saturating_add(key.capacity() as u64)
-                    .saturating_add(value_heap_bytes(value))
-            },
-        ),
-        Value::Null | Value::Bool(_) | Value::Number(_) => 0,
-    }
 }
 
 fn stable_hash64(bytes: &[u8]) -> u64 {

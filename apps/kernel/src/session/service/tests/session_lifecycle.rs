@@ -2018,3 +2018,37 @@ fn legacy_duplicate_project_names_keep_the_most_populated_project_canonical() {
         "mgutierrez09/chariox (2)"
     );
 }
+
+#[test]
+fn borrowed_session_scans_preserve_durable_and_retry_scope() {
+    let mut service = SessionService::new(&test_config());
+    let ended = service
+        .create_session(CreateSessionRequest::new("/repo", "worktree-1"))
+        .unwrap();
+    service.end_session(ended.id()).unwrap();
+    let hidden = service
+        .create_session(CreateSessionRequest::new("/repo", "worktree-1").with_hidden(true))
+        .unwrap();
+    let ephemeral = service
+        .create_ephemeral_session(
+            CreateSessionRequest::new("/repo", "worktree-1").with_hidden(true),
+        )
+        .unwrap();
+
+    let durable_ids = service
+        .durable_session_refs()
+        .map(|session| session.id().to_string())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        durable_ids,
+        BTreeSet::from([ended.id().to_string(), hidden.id().to_string()])
+    );
+    let retry_ids = service
+        .non_ended_session_refs()
+        .map(|session| session.id().to_string())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        retry_ids,
+        BTreeSet::from([hidden.id().to_string(), ephemeral.id().to_string()])
+    );
+}

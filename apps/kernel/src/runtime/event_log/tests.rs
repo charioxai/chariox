@@ -642,3 +642,39 @@ async fn persistent_event_store_compacts_by_event_age_on_load() {
     }
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn compaction_serializes_borrowed_events_in_global_order() {
+    #[derive(Serialize)]
+    struct BorrowOnlyEvent(&'static str);
+
+    let mut streams = std::collections::BTreeMap::new();
+    for (stream_id, event_ids) in [("a", vec![2, 4]), ("b", vec![1, 3])] {
+        let mut stream = super::EventStream::default();
+        for event_id in event_ids {
+            stream.retained.push_back(LoggedEvent {
+                event_id,
+                stream_id: stream_id.to_string(),
+                stream_seq: event_id,
+                recorded_at_ms: 1,
+                event: BorrowOnlyEvent("payload"),
+            });
+        }
+        streams.insert(stream_id.to_string(), stream);
+    }
+    // This payload has no Clone implementation: compaction must only borrow it.
+    let payload = super::retained_events_jsonl_payload(&streams).unwrap();
+    let events = String::from_utf8(payload)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<LoggedEvent<String>>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event.event_id)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3, 4]
+    );
+    assert!(events.iter().all(|event| event.event == "payload"));
+}

@@ -287,8 +287,7 @@ pub(crate) async fn reconcile_bound_workflow_publication_runtimes(
         .owned
         .session_store
         .read()
-        .durable_sessions()
-        .into_iter()
+        .durable_session_refs()
         .flat_map(|session| {
             session
                 .workflow_publications()
@@ -297,7 +296,6 @@ pub(crate) async fn reconcile_bound_workflow_publication_runtimes(
                     publication_runtime_recovery_binding(publication)
                         .map(|binding| (publication.clone(), binding))
                 })
-                .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
     let now_ms = crate::session::unix_epoch_ms();

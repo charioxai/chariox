@@ -1,10 +1,8 @@
 use chariox_kernel::{DaemonApp, DaemonConfig};
 use std::time::Instant;
 
-// The kernel clones sessions, snapshots and history pages on every pump and
-// request. The system allocators keep that freed memory in per-thread arenas or
-// zones, so a home kernel serving leased agents grew far past its live heap.
-// mimalloc returns freed pages to the OS and keeps RSS near the live heap.
+// Return freed provider-output and response buffers to the OS so a leased-agent
+// home kernel's RSS follows its live heap.
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 

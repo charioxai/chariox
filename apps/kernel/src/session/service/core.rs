@@ -111,12 +111,19 @@ impl SessionService {
     }
 
     pub(crate) fn durable_sessions(&self) -> Vec<RuntimeSession> {
-        self.store
-            .list()
-            .into_iter()
-            .filter(|session| !self.is_ephemeral_session(session.id()))
-            .map(|session| session.durable_runtime_snapshot())
+        self.durable_session_refs()
+            .map(RuntimeSession::durable_runtime_snapshot)
             .collect()
+    }
+
+    pub(crate) fn durable_session_refs(&self) -> impl Iterator<Item = &RuntimeSession> {
+        self.store
+            .iter()
+            .filter(|session| !self.is_ephemeral_session(session.id()))
+    }
+
+    pub(crate) fn non_ended_session_refs(&self) -> impl Iterator<Item = &RuntimeSession> {
+        self.store.non_ended_sessions()
     }
 
     pub(crate) fn all_session_ids(&self) -> Vec<String> {
