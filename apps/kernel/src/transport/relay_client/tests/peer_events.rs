@@ -31,6 +31,7 @@ fn drain_leased_runtime_projection_protocol_shape_is_stable() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn incoming_peer_events_project_runtime_to_the_home_session() {
+    crate::test_support::isolated_env_test!();
     let worktree = crate::test_support::TestWorktree::new("home");
     let _relay_test_guard = relay_client_test_guard().await;
     let _env_guard = crate::env_lock::lock();

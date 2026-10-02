@@ -33,10 +33,12 @@ struct HarnessWorktree(PathBuf);
 
 impl HarnessWorktree {
     fn create() -> Result<Self, DaemonError> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let path = env::temp_dir().join(format!(
-            "chariox-local-harness-{}-{}",
+            "chariox-local-harness-{}-{}-{}",
             std::process::id(),
-            crate::session::unix_epoch_ms()
+            crate::session::unix_epoch_ms(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         fs::create_dir_all(&path).map_err(|error| DaemonError::LocalTransport {
             operation: "prepare local harness worktree",

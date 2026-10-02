@@ -50,6 +50,7 @@ fn generated_runtime_identity_has_expected_prefixes() {
 
 #[test]
 fn runtime_identity_is_stable_per_host_port() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let temp_home = std::env::temp_dir().join(format!(
         "chariox-config-identity-test-{}",
@@ -153,6 +154,7 @@ fn protected_environment_load_and_restart_preserve_retained_ids_and_identity_doc
 
 #[test]
 fn chariox_home_owns_config_identity_state_and_runtime_paths() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let temp_home = std::env::temp_dir().join(format!(
         "chariox-explicit-home-test-{}",
@@ -191,6 +193,7 @@ fn chariox_home_owns_config_identity_state_and_runtime_paths() {
 
 #[test]
 fn relay_peer_public_key_claim_survives_restart_and_rejects_rebinding() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let temp_home = std::env::temp_dir().join(format!(
         "chariox-relay-peer-key-test-{}",
@@ -259,6 +262,7 @@ fn renamed_vault_backend_deserializes_to_the_only_supported_encrypted_backend() 
 
 #[test]
 fn env_relay_config_takes_precedence_over_persisted_cloud_relay_profile() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let temp_home = std::env::temp_dir().join(format!(
         "chariox-config-relay-env-test-{}",
@@ -358,6 +362,7 @@ fn relay_url_uses_cloud_profile_tolerates_spacing_and_trailing_slashes() {
 
 #[test]
 fn env_cloud_profile_can_accompany_env_relay_config_for_worker_refresh() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let temp_home = std::env::temp_dir().join(format!(
         "chariox-config-env-cloud-relay-test-{}",
@@ -422,6 +427,7 @@ fn env_cloud_profile_can_accompany_env_relay_config_for_worker_refresh() {
 
 #[test]
 fn managed_slice_owner_public_key_loads_from_runtime_environment() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let temp_home = std::env::temp_dir().join(format!(
         "chariox-config-slice-owner-key-test-{}",
@@ -462,6 +468,7 @@ fn managed_slice_owner_public_key_loads_from_runtime_environment() {
 
 #[test]
 fn load_from_env_imports_cli_cloud_profile_for_kernel_startup() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let temp_home = std::env::temp_dir().join(format!(
         "chariox-config-cli-cloud-import-test-{}",
@@ -475,6 +482,7 @@ fn load_from_env_imports_cli_cloud_profile_for_kernel_startup() {
     let old_cloud_relay_config = env::var_os("CHARIOX_CLOUD_RELAY_CONFIG_JSON");
     unsafe {
         env::set_var("HOME", &temp_home);
+        env::set_var("CHARIOX_HOME", temp_home.join(".chariox"));
         env::remove_var("XDG_CONFIG_HOME");
         env::remove_var("XDG_STATE_HOME");
         env::remove_var("CHARIOX_RELAY_URL");
@@ -535,6 +543,7 @@ fn load_from_env_imports_cli_cloud_profile_for_kernel_startup() {
 
 #[test]
 fn persisted_daemon_cloud_profile_takes_precedence_over_cli_profile() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let temp_home = std::env::temp_dir().join(format!(
         "chariox-config-daemon-cloud-precedence-test-{}",
@@ -548,6 +557,7 @@ fn persisted_daemon_cloud_profile_takes_precedence_over_cli_profile() {
     let old_cloud_relay_config = env::var_os("CHARIOX_CLOUD_RELAY_CONFIG_JSON");
     unsafe {
         env::set_var("HOME", &temp_home);
+        env::set_var("CHARIOX_HOME", temp_home.join(".chariox"));
         env::remove_var("XDG_CONFIG_HOME");
         env::remove_var("XDG_STATE_HOME");
         env::remove_var("CHARIOX_RELAY_URL");

@@ -133,6 +133,7 @@ async fn wait_for_durable_owner_release(path: &std::path::Path) {
 
 #[test]
 fn room_environment_placement_survives_restart_for_two_separate_rooms() {
+    crate::test_support::isolated_env_test!();
     run_test(survives_restart_for_two_separate_rooms);
 }
 
@@ -257,6 +258,7 @@ fn get(room: &str) -> Value {
 
 #[test]
 fn room_environment_placement_rejects_ambiguous_slice_names() {
+    crate::test_support::isolated_env_test!();
     run_test(rejects_ambiguous_slice_names);
 }
 
@@ -275,11 +277,13 @@ async fn rejects_ambiguous_slice_names() {
 
 #[test]
 fn room_environment_placement_rejects_shared_worker_references() {
+    crate::test_support::isolated_env_test!();
     run_test(rejects_shared_worker_references);
 }
 
 #[test]
 fn room_environment_placement_allows_colocated_containers_with_distinct_worker_identities() {
+    crate::test_support::isolated_env_test!();
     run_test(allows_colocated_containers_with_distinct_worker_identities);
 }
 
@@ -361,6 +365,7 @@ async fn rejects_shared_worker_references() {
 
 #[test]
 fn room_environment_placement_survives_stop_and_retains_deleted_room_reservation() {
+    crate::test_support::isolated_env_test!();
     run_test(survives_stop_and_retains_deleted_room_reservation);
 }
 
@@ -370,6 +375,7 @@ async fn survives_stop_and_retains_deleted_room_reservation() {
 
 #[test]
 fn room_environment_placement_rejects_active_operations_and_other_room_agents() {
+    crate::test_support::isolated_env_test!();
     run_test(rejects_active_operations_and_other_room_agents);
 }
 
@@ -400,6 +406,7 @@ async fn rejects_active_operations_and_other_room_agents() {
 
 #[test]
 fn room_environment_placement_rejects_competing_claims_and_reassignment() {
+    crate::test_support::isolated_env_test!();
     run_test(rejects_competing_claims_and_reassignment);
 }
 
@@ -436,6 +443,7 @@ async fn rejects_competing_claims_and_reassignment() {
 
 #[test]
 fn room_environment_placement_rejects_headless_and_missing_targets() {
+    crate::test_support::isolated_env_test!();
     run_test(rejects_headless_and_missing_targets);
 }
 
@@ -474,6 +482,7 @@ async fn dispatch_remote(
 
 #[test]
 fn room_environment_placement_requires_room_ownership_but_members_can_read() {
+    crate::test_support::isolated_env_test!();
     run_test(requires_room_ownership_but_members_can_read);
 }
 
@@ -522,6 +531,7 @@ async fn requires_room_ownership_but_members_can_read() {
 
 #[test]
 fn room_environment_placement_does_not_publish_a_failed_durable_write() {
+    crate::test_support::isolated_env_test!();
     run_test(does_not_publish_a_failed_durable_write);
 }
 
@@ -550,6 +560,7 @@ async fn does_not_publish_a_failed_durable_write() {
 
 #[test]
 fn authenticated_worker_repair_append_failure_remains_unhealthy_and_retryable() {
+    crate::test_support::isolated_env_test!();
     run_test(append_failure_remains_unhealthy_and_retryable);
 }
 

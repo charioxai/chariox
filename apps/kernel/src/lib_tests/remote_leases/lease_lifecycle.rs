@@ -478,7 +478,15 @@ fn partial_provider_cleanup_retries_ended_runs_before_releasing_capacity() {
             .expect_err("partial provider cleanup must stop lease destruction");
         assert!(matches!(error, DaemonError::AgentWorkerCleanup { .. }));
         assert_eq!(RemoteLeaseRuntime::new(&mut app).execution_lease_count(), 1);
-        assert_eq!(RemoteLeaseRuntime::new(&mut app).leased_agent_count(), 2);
+        // Leased-agent ids are random, so the sibling may be destroyed before
+        // the failing agent stops the loop; the failing agent always remains
+        // (the retry below destroys it).
+        let remaining = RemoteLeaseRuntime::new(&mut app).leased_agent_count();
+        assert!(
+            (1..=2).contains(&remaining),
+            "remaining leased agents: {remaining}"
+        );
+        assert!(!app.relay_registration().accepting_remote_leases);
 
         RemoteLeaseRuntime::new(&mut app)
             .destroy_leased_agent_for_caller(&leased_agent.id, &caller)
@@ -486,13 +494,22 @@ fn partial_provider_cleanup_retries_ended_runs_before_releasing_capacity() {
         let tracking = app.provider_process_tracking.snapshot();
         assert!(!tracking.run_processes.contains_key(&run_id));
         assert!(!tracking.processes.contains_key("process-key"));
-        assert_eq!(
-            app.sessions()
-                .get_session(&sibling.backing_session_id)
-                .expect("shared backing session remains")
-                .active_provider_run_id(),
-            None
-        );
+        let backing_session = app.sessions().get_session(&sibling.backing_session_id);
+        if remaining == 2 {
+            // The sibling still uses the shared backing session.
+            assert_eq!(
+                backing_session
+                    .expect("shared backing session remains")
+                    .active_provider_run_id(),
+                None
+            );
+        } else {
+            // The sibling went first; the retry removed the last user.
+            assert!(
+                backing_session.is_err(),
+                "unused backing session is deleted"
+            );
+        }
         RemoteLeaseRuntime::new(&mut app)
             .destroy_execution_lease_for_caller(&lease.id, &caller)
             .expect("remaining agent and lease cleanup succeeds");
@@ -670,6 +687,7 @@ fn leased_agents_reject_missing_working_directory() {
 
 #[test]
 fn leased_agents_materialize_remote_git_worktree_before_creation() {
+    crate::test_support::isolated_env_test!();
     let root = std::env::temp_dir().join(format!(
         "chariox-remote-git-worktree-base-{}",
         crate::session::unix_epoch_ms()

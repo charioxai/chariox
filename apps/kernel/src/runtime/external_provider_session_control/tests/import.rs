@@ -2,6 +2,7 @@ use super::*;
 
 #[test]
 fn import_external_provider_session_creates_session_agent_and_run() {
+    crate::test_support::isolated_env_test!();
     let _environment = crate::env_lock::lock();
     let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
     runtime.block_on(async {
@@ -83,6 +84,7 @@ fn import_external_provider_session_creates_session_agent_and_run() {
 
 #[test]
 fn persist_external_import_metadata_refreshes_runtime_session_projection() {
+    crate::test_support::isolated_env_test!();
     let _environment = crate::env_lock::lock();
     let worktree = TestWorktree::new("import-projection");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
@@ -141,6 +143,7 @@ fn persist_external_import_metadata_refreshes_runtime_session_projection() {
 
 #[test]
 fn import_codex_session_without_model_uses_persisted_thread_model() {
+    crate::test_support::isolated_env_test!();
     let _environment = crate::env_lock::lock();
     let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
     runtime.block_on(async {
@@ -199,6 +202,7 @@ fn import_codex_session_without_model_uses_persisted_thread_model() {
 
 #[test]
 fn import_external_provider_session_rejects_already_attached_thread() {
+    crate::test_support::isolated_env_test!();
     let _environment = crate::env_lock::lock();
     let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
     runtime.block_on(async {
@@ -250,6 +254,7 @@ fn import_external_provider_session_rejects_already_attached_thread() {
 
 #[test]
 fn import_external_provider_session_rejects_thread_owned_by_agent_resume_state() {
+    crate::test_support::isolated_env_test!();
     let _environment = crate::env_lock::lock();
     let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
     runtime.block_on(async {
@@ -326,6 +331,7 @@ fn import_external_provider_session_rejects_thread_owned_by_agent_resume_state()
 
 #[test]
 fn import_external_provider_session_rejects_discovered_thread_owned_by_agent_resume_state() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let codex_home = temp_root("codex-owned-discovery");
     let previous_codex_home = env::var_os("CODEX_HOME");
@@ -411,6 +417,7 @@ fn import_external_provider_session_rejects_discovered_thread_owned_by_agent_res
 
 #[test]
 fn import_external_provider_agent_adds_agent_to_existing_session() {
+    crate::test_support::isolated_env_test!();
     let _environment = crate::env_lock::lock();
     let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
     runtime.block_on(async {
@@ -486,6 +493,7 @@ fn import_external_provider_agent_adds_agent_to_existing_session() {
 
 #[test]
 fn import_external_provider_agent_rejects_thread_owned_by_provider_run() {
+    crate::test_support::isolated_env_test!();
     let _environment = crate::env_lock::lock();
     let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
     runtime.block_on(async {
@@ -564,6 +572,7 @@ fn import_external_provider_agent_rejects_thread_owned_by_provider_run() {
 
 #[test]
 fn attached_chariox_agent_resume_state_removes_external_session_from_attachable_list() {
+    crate::test_support::isolated_env_test!();
     let _environment = crate::env_lock::lock();
     let worktree = TestWorktree::new("owned-by-chariox");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
@@ -605,6 +614,7 @@ fn attached_chariox_agent_resume_state_removes_external_session_from_attachable_
 
 #[test]
 fn changed_attached_resume_state_returns_previous_provider_session_to_attachable_list() {
+    crate::test_support::isolated_env_test!();
     let _environment = crate::env_lock::lock();
     let worktree = TestWorktree::new("changed-attached-resume");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
@@ -695,6 +705,7 @@ fn live_provider_run_provider_session_id_counts_as_attached_to_chariox() {
 
 #[test]
 fn chariox_owned_provider_run_provider_session_id_becomes_observer_target() {
+    crate::test_support::isolated_env_test!();
     let _environment = crate::env_lock::lock();
     let worktree = TestWorktree::new("chariox-owned-run");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
@@ -731,6 +742,7 @@ fn chariox_owned_provider_run_provider_session_id_becomes_observer_target() {
 
 #[test]
 fn imported_observer_target_keeps_import_cursor_source_when_provider_run_matches() {
+    crate::test_support::isolated_env_test!();
     let _environment = crate::env_lock::lock();
     let worktree = TestWorktree::new("imported-observer");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");

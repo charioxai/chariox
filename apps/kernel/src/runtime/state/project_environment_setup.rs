@@ -3244,6 +3244,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn opaque_commands_write_only_isolated_home_without_automatic_ssh_authority() {
+        crate::test_support::isolated_env_test!();
         let root = std::env::temp_dir().join(format!(
             "chariox-project-environment-credential-boundary-{}-{}",
             std::process::id(),

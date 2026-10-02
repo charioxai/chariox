@@ -2999,6 +2999,7 @@ mod tests {
 
     #[tokio::test]
     async fn disposable_worker_peer_arm_requires_confirmed_home_binding_and_valid_plan() {
+        crate::test_support::isolated_env_test!();
         let _env_guard = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-disposable-peer-arm-{}-{}",
@@ -3396,6 +3397,7 @@ mod tests {
 
     #[test]
     fn encrypted_managed_context_peer_transfer_imports_repository_kernel_context_and_vault() {
+        crate::test_support::isolated_env_test!();
         std::thread::Builder::new()
             .name("managed-context-peer-transfer".to_string())
             .stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)

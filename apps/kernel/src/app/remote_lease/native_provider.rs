@@ -297,6 +297,7 @@ mod tests {
 
     #[test]
     fn leased_native_provider_launch_preserves_required_mcp_set() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let mut config = DaemonConfig::for_tests();
         config.accept_remote_leases = true;
@@ -414,6 +415,7 @@ mod tests {
 
     #[test]
     fn leased_native_provider_launch_projects_home_proxy_mcp_manifest() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let mut config = DaemonConfig::for_tests();
         config.accept_remote_leases = true;
@@ -487,6 +489,7 @@ mod tests {
 
     #[test]
     fn standard_home_worker_does_not_install_required_mcp_payload() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let mut config = DaemonConfig::for_tests();
         config.accept_remote_leases = true;

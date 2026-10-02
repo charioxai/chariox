@@ -208,6 +208,7 @@ impl BootstrapCloudClient for FakeCloud {
 #[cfg(unix)]
 #[test]
 fn bootstrap_verifies_release_persists_identity_and_profile_then_resumes_without_token() {
+    crate::test_support::isolated_env_test!();
     let _env = crate::env_lock::lock();
     let fixture = Fixture::new("complete");
     let previous_home = std::env::var_os("CHARIOX_HOME");
@@ -318,6 +319,7 @@ fn bootstrap_verifies_release_persists_identity_and_profile_then_resumes_without
 
 #[test]
 fn schema_two_bootstrap_persists_the_exact_managed_repository_root() {
+    crate::test_support::isolated_env_test!();
     let _env = crate::env_lock::lock();
     let fixture = Fixture::new("schema-two-repository-root");
     let previous_home = std::env::var_os("CHARIOX_HOME");
@@ -363,6 +365,7 @@ fn schema_two_bootstrap_persists_the_exact_managed_repository_root() {
 
 #[test]
 fn schema_two_bootstrap_rejects_a_cloud_repository_root_mismatch() {
+    crate::test_support::isolated_env_test!();
     let _env = crate::env_lock::lock();
     let fixture = Fixture::new("schema-two-repository-root-mismatch");
     let previous_home = std::env::var_os("CHARIOX_HOME");
@@ -396,6 +399,7 @@ fn schema_two_bootstrap_rejects_a_cloud_repository_root_mismatch() {
 
 #[test]
 fn exchanged_registration_can_confirm_after_the_one_time_token_expires() {
+    crate::test_support::isolated_env_test!();
     let _env = crate::env_lock::lock();
     let fixture = Fixture::new("late-confirm");
     let previous_home = std::env::var_os("CHARIOX_HOME");
@@ -437,6 +441,7 @@ fn exchanged_registration_can_confirm_after_the_one_time_token_expires() {
 
 #[test]
 fn bootstrap_rejects_a_tampered_kernel_before_contacting_cloud() {
+    crate::test_support::isolated_env_test!();
     let _env = crate::env_lock::lock();
     let fixture = Fixture::new("tampered");
     let previous_home = std::env::var_os("CHARIOX_HOME");
@@ -719,6 +724,7 @@ fn release_verifier_checks_digest_and_signature_before_manifest_identity() {
 
 #[test]
 fn bootstrap_rejects_a_context_source_in_another_relay_realm() {
+    crate::test_support::isolated_env_test!();
     let _env = crate::env_lock::lock();
     let fixture = Fixture::new("context-realm-mismatch");
     let previous_home = std::env::var_os("CHARIOX_HOME");
@@ -943,6 +949,7 @@ fn managed_slice_broker_owns_the_only_docker_socket_and_unlinks_its_endpoint() {
 
 #[test]
 fn managed_systemd_unit_remains_eligible_after_one_time_envelope_removal() {
+    crate::test_support::isolated_env_test!();
     let unit = include_str!("../../../../deploy/managed-kernel/chariox-managed-bootstrap.service");
     assert!(unit.contains("ConditionPathExists=/usr/local/bin/chariox-managed-bootstrap"));
     assert!(!unit.contains("ConditionPathExists=/var/lib/chariox/managed-bootstrap.json"));
@@ -1397,6 +1404,7 @@ fn set_release_evidence_env(fixture: &AttestedReleaseFixture) {
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
 fn managed_release_evidence_is_kernel_verified_from_active_release_and_receipt() {
+    crate::test_support::isolated_env_test!();
     let _env = crate::env_lock::lock();
     let fixture = AttestedReleaseFixture::new(
         "valid",
@@ -1430,6 +1438,7 @@ fn managed_release_evidence_is_kernel_verified_from_active_release_and_receipt()
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
 fn path1_release_evidence_requires_the_external_builder_key() {
+    crate::test_support::isolated_env_test!();
     use std::os::unix::fs::symlink;
 
     let _env = crate::env_lock::lock();
@@ -1486,6 +1495,7 @@ fn path1_release_evidence_requires_the_external_builder_key() {
 #[test]
 fn managed_release_evidence_fails_closed_for_attestation_target_source_signature_artifact_receipt_and_layout_mismatch(
 ) {
+    crate::test_support::isolated_env_test!();
     let _env = crate::env_lock::lock();
     for (label, source_commit, source_tree, target, expected) in [
         (

@@ -141,7 +141,17 @@ fn assert_workflow_completion_failure_and_restart(event_kind: &str, codex: bool)
     // Drop all first-kernel async owners without a shutdown cleanup that could
     // rewrite prompt state and hide a failed composite commit.
     drop(executor);
-    let restored = DaemonApp::bootstrap(config).expect("kernel state should restore");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let restored = loop {
+        match DaemonApp::bootstrap(config.clone()) {
+            Ok(app) => break app,
+            Err(crate::DaemonError::LocalTransport {
+                operation: "durable_state.acquire_owner",
+                ..
+            }) if std::time::Instant::now() < deadline => std::thread::yield_now(),
+            Err(error) => panic!("kernel state should restore: {error}"),
+        }
+    };
     let restored_session = restored
         .sessions()
         .get_session(&session_id)
@@ -1749,6 +1759,7 @@ async fn provider_terminal_failure_preserves_external_active_prompt_and_queue() 
         },
     );
     run.mark_running();
+    spawn_inert_pty_for_run(&mut app, run.id());
     app.providers_mut().insert_run_for_test(run.clone());
     app.sessions
         .set_active_provider_run(session.id(), Some(run.id().to_string()))

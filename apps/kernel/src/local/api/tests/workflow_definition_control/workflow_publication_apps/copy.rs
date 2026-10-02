@@ -401,6 +401,13 @@ fn a_consented_app_bound_deployment_runs_as_an_independent_copy() {
         "the copy's data is deleted with it"
     );
     assert!(installation(&set, "installed").inbox_routes[0].active);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while harness.runtime_state().fixture_session(&session_id).is_ok()
+        && std::time::Instant::now() < deadline
+    {
+        harness.pump_transport_runtime();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     assert!(harness
         .runtime_state()
         .fixture_session(&session_id)
@@ -528,6 +535,13 @@ fn disabling_the_source_publication_removes_its_copy() {
         [(DEFAULT_LOCAL_USER_ID.to_owned(), "copy".to_owned())]
     );
     assert!(installation(&set, "installed").inbox_routes[0].active);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while harness.runtime_state().fixture_session(&session_id).is_ok()
+        && std::time::Instant::now() < deadline
+    {
+        harness.pump_transport_runtime();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     assert!(harness
         .runtime_state()
         .fixture_session(&session_id)

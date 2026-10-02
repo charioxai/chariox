@@ -393,6 +393,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn publication_claude_account_is_authenticated_before_prompt_admission() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)

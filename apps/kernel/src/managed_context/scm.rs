@@ -1330,6 +1330,7 @@ esac
     #[cfg(unix)]
     #[test]
     fn managed_inventory_uses_the_managed_provider_home() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let (root, target_home, _) =
             fake_target("managed-inventory-home", Some("github-secret-canary"));

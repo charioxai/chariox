@@ -982,6 +982,7 @@ mod tests {
 
     #[test]
     fn worker_config_keeps_process_home_and_defaults_receipt_to_control_state() {
+        crate::test_support::isolated_env_test!();
         let _lock = crate::env_lock::lock();
         let names = [
             "HOME",
@@ -1027,6 +1028,7 @@ mod tests {
 
     #[test]
     fn disposable_worker_entry_requires_explicit_path1_topology() {
+        crate::test_support::isolated_env_test!();
         let _lock = crate::env_lock::lock();
         let previous = env::var_os(MANAGED_PROVIDER_TOPOLOGY_ENV);
 
@@ -1052,6 +1054,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn disposable_worker_spawn_uses_ordinary_kernel_and_scrubs_parent_state() {
+        crate::test_support::isolated_env_test!();
         use std::os::unix::fs::PermissionsExt;
         use std::os::unix::net::UnixStream;
 
@@ -1541,6 +1544,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn confirmation_retry_revalidates_the_installed_worker_profile() {
+        crate::test_support::isolated_env_test!();
         use std::sync::Mutex;
         struct Cloud {
             calls: Mutex<usize>,
@@ -1618,6 +1622,7 @@ mod tests {
 
     #[test]
     fn active_bootstrap_retries_same_identity_and_resumes_confirmed_without_exchange() {
+        crate::test_support::isolated_env_test!();
         use std::sync::Mutex;
         struct Cloud(Mutex<Vec<serde_json::Value>>);
         impl WorkerCloudClient for Cloud {
@@ -1703,6 +1708,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn confirmed_disposable_worker_materializes_selected_project_via_public_context_transfer()
     {
+        crate::test_support::isolated_env_test!();
         use std::sync::{Arc, Mutex as StdMutex};
 
         use chariox_relay::{RelayConfig, RelayServer};
@@ -2261,6 +2267,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test(flavor = "current_thread")]
     async fn authenticated_peer_worker_setup_preserves_attempt_two_and_rejects_replays() {
+        crate::test_support::isolated_env_test!();
         use crate::app::DaemonApp;
         use crate::config::KernelRuntimeRole;
         use crate::transport::relay_client::send_authenticated_peer_request_for_test;

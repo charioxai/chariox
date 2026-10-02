@@ -1335,6 +1335,7 @@ mod tests {
 
     #[test]
     fn provider_auth_status_reports_claude_launcher_failure_without_login_advice() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-claude-auth-failure-{}-{}",
@@ -1436,6 +1437,7 @@ mod tests {
 
     #[test]
     fn provider_auth_status_accepts_claude_provider_modes() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let path =
             std::env::temp_dir().join(format!("chariox-claude-auth-status-{}", std::process::id()));

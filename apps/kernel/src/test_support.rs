@@ -6,6 +6,23 @@ use crate::{DaemonApp, DaemonConfig, DaemonError};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod environment;
+mod runtime_mcp;
+pub(crate) use environment::{environment_test_isolated, isolate_environment_test};
+pub(crate) use runtime_mcp::TestRuntimeMcp;
+
+/// Run ambient-environment fixtures outside the parallel test process. A mutex
+/// around writers cannot protect unlocked readers or children inheriting env.
+/// Place this first in any test that mutates env or calls an env-mutating fixture.
+macro_rules! isolated_env_test {
+    () => {
+        if $crate::test_support::isolate_environment_test() {
+            return;
+        }
+    };
+}
+pub(crate) use isolated_env_test;
+
 static TEST_WORKTREE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// A real, disposable working directory for provider-launch fixtures.

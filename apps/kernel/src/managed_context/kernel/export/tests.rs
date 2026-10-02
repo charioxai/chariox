@@ -67,6 +67,7 @@ fn test_root(name: String) -> PathBuf {
 
 #[test]
 fn kernel_context_exports_one_unified_extension_set() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let root = test_root(format!(
         "chariox-kernel-context-export-{}-{}",
@@ -309,6 +310,7 @@ fn kernel_context_exports_one_unified_extension_set() {
 
 #[test]
 fn kernel_context_packages_and_hashes_portable_stdio_mcp_runtime() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let root = test_root(format!(
         "chariox-kernel-context-reject-{}-{}",
@@ -383,6 +385,7 @@ fn kernel_context_packages_and_hashes_portable_stdio_mcp_runtime() {
 
 #[test]
 fn kernel_context_rejects_stdio_mcp_absolute_environment_paths() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let root = test_root(format!(
         "chariox-kernel-context-stdio-env-path-{}-{}",
@@ -430,6 +433,7 @@ fn kernel_context_rejects_stdio_mcp_absolute_environment_paths() {
 
 #[test]
 fn kernel_context_rejects_http_mcp_credential_fragments() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let root = test_root(format!(
         "chariox-kernel-context-http-fragment-{}-{}",
@@ -464,6 +468,7 @@ fn kernel_context_rejects_http_mcp_credential_fragments() {
 
 #[test]
 fn kernel_context_rejects_literal_http_mcp_credentials() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let root = test_root(format!(
         "chariox-kernel-context-http-secret-{}-{}",
@@ -501,6 +506,7 @@ fn kernel_context_rejects_literal_http_mcp_credentials() {
 
 #[test]
 fn kernel_context_rejects_prefixed_connector_auth_fields() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let root = test_root(format!(
         "chariox-kernel-context-connector-secret-{}-{}",
@@ -553,6 +559,7 @@ fn kernel_context_rejects_prefixed_connector_auth_fields() {
 
 #[test]
 fn kernel_context_rejects_non_vault_credential_definitions() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let root = test_root(format!(
         "chariox-kernel-context-credential-{}-{}",
@@ -582,6 +589,7 @@ fn kernel_context_rejects_non_vault_credential_definitions() {
 
 #[test]
 fn kernel_context_rejects_literal_vault_credential_injection() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let root = test_root(format!(
         "chariox-kernel-context-credential-literal-{}-{}",
@@ -613,6 +621,7 @@ fn kernel_context_rejects_literal_vault_credential_injection() {
 
 #[test]
 fn kernel_context_rejects_registry_paths_outside_private_capture() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let root = test_root(format!(
         "chariox-kernel-context-path-escape-{}-{}",
@@ -667,6 +676,7 @@ fn kernel_context_rejects_registry_paths_outside_private_capture() {
 
 #[test]
 fn kernel_context_rejects_structurally_invalid_vault_snapshot() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let root = test_root(format!(
         "chariox-kernel-context-invalid-vault-{}-{}",
@@ -963,6 +973,7 @@ fn bundled_adapter_artifact_hash_covers_implementation_bytes() {
 #[cfg(unix)]
 #[test]
 fn kernel_context_rejects_symlinks_in_extension_roots() {
+    crate::test_support::isolated_env_test!();
     use std::os::unix::fs::symlink;
 
     let _guard = crate::env_lock::lock();

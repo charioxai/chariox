@@ -779,6 +779,7 @@ fn managed_destination_names_reserve_provider_control_entries() {
 
 #[test]
 fn managed_export_rejects_case_insensitive_source_basename_collisions() {
+    crate::test_support::isolated_env_test!();
     let _lock = crate::env_lock::lock();
     let root = test_root("managed-export-name-collision");
     let control_state = root.join("control-state");
@@ -821,6 +822,7 @@ fn managed_export_rejects_case_insensitive_source_basename_collisions() {
 
 #[test]
 fn managed_publication_preserves_basename_under_trusted_root_and_recovers_retry() {
+    crate::test_support::isolated_env_test!();
     let _lock = crate::env_lock::lock();
     let root = test_root("managed-publication-selected-root");
     let control_state = root.join("control-state");
@@ -883,6 +885,7 @@ fn managed_publication_preserves_basename_under_trusted_root_and_recovers_retry(
 
 #[test]
 fn managed_publication_rejects_existing_and_symlink_repository_targets() {
+    crate::test_support::isolated_env_test!();
     let _lock = crate::env_lock::lock();
     let root = test_root("managed-publication-target-collision");
     let control_state = root.join("control-state");
@@ -954,6 +957,7 @@ fn managed_publication_rejects_existing_and_symlink_repository_targets() {
 #[cfg(unix)]
 #[test]
 fn managed_publication_rejects_symlinked_and_traversing_repository_roots() {
+    crate::test_support::isolated_env_test!();
     use std::os::unix::fs::symlink;
 
     let _lock = crate::env_lock::lock();
@@ -1021,6 +1025,7 @@ fn managed_publication_rejects_symlinked_and_traversing_repository_roots() {
 
 #[test]
 fn managed_repository_root_defaults_to_home_chariox_without_bootstrap_selection() {
+    crate::test_support::isolated_env_test!();
     let _lock = crate::env_lock::lock();
     let _repository_root = TestEnvironmentVariableGuard::set(
         crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV,
@@ -1430,6 +1435,7 @@ fn supporting_repository_failure_publishes_no_partial_project() {
 
 #[test]
 fn import_rejects_unsafe_manifest_paths_and_archive_symlinks() {
+    crate::test_support::isolated_env_test!();
     let _lock = crate::env_lock::lock();
     let root = test_root("import-unsafe-manifest");
     let control_state = root.join("control-state");
@@ -1912,6 +1918,7 @@ fn managed_materialization_requires_the_explicit_trusted_control_parent() {
 
 #[test]
 fn managed_materialization_uses_the_bootstrap_repository_root() {
+    crate::test_support::isolated_env_test!();
     let _lock = crate::env_lock::lock();
     let previous = std::env::var_os(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV);
     let root = test_root("managed-configured-root");

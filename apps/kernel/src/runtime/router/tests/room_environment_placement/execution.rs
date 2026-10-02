@@ -2,6 +2,7 @@ use super::*;
 
 #[test]
 fn room_environment_execution_rejects_worker_identity_collisions_after_binding() {
+    crate::test_support::isolated_env_test!();
     run_test(rejects_worker_identity_collisions_after_binding);
 }
 
@@ -48,6 +49,7 @@ async fn rejects_worker_identity_collisions_after_binding() {
 
 #[test]
 fn room_environment_execution_rejects_every_cross_room_admission_path() {
+    crate::test_support::isolated_env_test!();
     run_test(rejects_every_cross_room_admission_path);
 }
 
@@ -139,6 +141,7 @@ async fn rejects_every_cross_room_admission_path() {
 
 #[test]
 fn room_environment_execution_preserves_owner_admission_and_releases_failed_guards() {
+    crate::test_support::isolated_env_test!();
     run_test(preserves_owner_admission_and_releases_failed_guards);
 }
 
@@ -223,6 +226,7 @@ async fn preserves_owner_admission_and_releases_failed_guards() {
 
 #[test]
 fn room_environment_execution_rejects_cross_room_spawn_before_worktree_mutation() {
+    crate::test_support::isolated_env_test!();
     run_test(rejects_cross_room_spawn_before_worktree_mutation);
 }
 

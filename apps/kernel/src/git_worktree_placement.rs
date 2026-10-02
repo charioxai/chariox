@@ -734,6 +734,7 @@ mod tests {
 
     #[test]
     fn ordinary_and_path1_inputs_share_the_same_access_contract() {
+        crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let root = plain_temp_directory("common-preflight");
         let home = root.join("user-home");
@@ -807,6 +808,7 @@ mod tests {
 
     #[test]
     fn path1_provider_home_child_uses_ordinary_cwd_contract() {
+        crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let root = plain_temp_directory("path1-provider-home");
         let provider_home = root.join("provider-home");
@@ -861,6 +863,7 @@ mod tests {
 
     #[test]
     fn chariox_home_authorizes_only_kernel_workflow_runtime_instance_children() {
+        crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let root = plain_temp_directory("workflow-runtime-auth");
         let instance = root
@@ -890,6 +893,7 @@ mod tests {
 
     #[test]
     fn workflow_runtime_git_provisioning_reaches_kernel_owned_instance_root() {
+        crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let root = plain_temp_directory("workflow-runtime-git");
         let chariox_home = root.join("chariox-home");
@@ -976,6 +980,7 @@ mod tests {
 
     #[test]
     fn home_fallback_protects_only_home_chariox_state() {
+        crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let root = plain_temp_directory("common-preflight-home-fallback");
         let home = root.join("home");
@@ -1007,6 +1012,7 @@ mod tests {
 
     #[test]
     fn only_exact_control_state_and_service_descendants_are_rejected() {
+        crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let root = plain_temp_directory("common-preflight-control-state");
         let service = root.join("service-state");

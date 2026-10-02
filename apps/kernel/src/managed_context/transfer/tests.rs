@@ -428,6 +428,7 @@ fn credential_only_import_is_consumed_without_publishing_a_launch_target() {
 
 #[test]
 fn schema_v4_empty_launch_target_gains_a_durable_workspace_on_upgrade() {
+    crate::test_support::isolated_env_test!();
     let _lock = crate::env_lock::lock();
     let root = test_root("schema-v4-empty-workspace");
     fs::create_dir_all(&root).expect("create transfer root");
@@ -475,6 +476,7 @@ fn schema_v4_empty_launch_target_gains_a_durable_workspace_on_upgrade() {
 
 #[test]
 fn schema_v3_pruned_import_recovers_launch_target_from_confirmed_publication() {
+    crate::test_support::isolated_env_test!();
     let _environment = crate::env_lock::lock();
     let root = test_root("schema-v3-pruned-launch-target");
     let transfer_root = root.join("managed-context-transfers");
@@ -636,6 +638,7 @@ fn schema_v3_pruned_import_recovers_launch_target_from_confirmed_publication() {
 
 #[test]
 fn schema_v3_pruned_import_rejects_legacy_publication_without_source_bindings() {
+    crate::test_support::isolated_env_test!();
     let _environment = crate::env_lock::lock();
     let root = test_root("schema-v3-pruned-legacy-publication");
     let transfer_root = root.join("managed-context-transfers");
@@ -1482,23 +1485,46 @@ fn schema_v1_active_transfers_are_retired_without_blocking_startup() {
             .prepare_and_claim_import(&armed.transfer_id, &armed.capability, &caller, now + 3)
             .expect("claim legacy import"),
     );
-    fs::create_dir_all(&ready.destination_root).expect("create legacy publication");
+    fs::create_dir_all(ready.destination_root.join("repo")).expect("create legacy publication");
     fs::write(
         ready
             .destination_root
             .join(".chariox-managed-import-receipt.json"),
         serde_json::json!({
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "publicationId": armed.transfer_id,
             "archiveSha256": sha256_bytes(archive),
             "projectId": "project-1",
             "destinationRoot": ready.destination_root,
             "primaryRepositoryId": "repository-1",
-            "repositories": []
+            "sourceRepositoryBindingSha256s": ["a".repeat(64)],
+            "repositories": [{"repositoryId": "repository-1", "role": "primary",
+                "targetDirectory": "repo", "destinationPath": ready.destination_root.join("repo"),
+                "headSha": "b".repeat(40)}]
         })
         .to_string(),
     )
     .expect("write legacy publication receipt");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = fs::metadata(&ready.destination_root).unwrap();
+        let ownership = serde_json::json!({
+            "publication_id": armed.transfer_id,
+            "materialization_root": fs::canonicalize(&ready.destination_root).unwrap(),
+            "control_destination": fs::canonicalize(&ready.destination_root).unwrap(),
+            "control_identity": {"device": metadata.dev(), "inode": metadata.ino()},
+            "repositories": []
+        });
+        fs::write(
+            ready.destination_root.parent().unwrap().join(format!(
+                ".chariox-materialization-ownership-{}.json",
+                armed.transfer_id
+            )),
+            ownership.to_string(),
+        )
+        .unwrap();
+    }
     drop(store);
     rewrite_state_as_v1(&root.join("state.json"));
 

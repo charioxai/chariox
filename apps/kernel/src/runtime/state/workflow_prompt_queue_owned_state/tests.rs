@@ -350,6 +350,14 @@ fn assert_workflow_queue_promotion_append_failure_is_retryable(requested: bool) 
         .owned
         .session_snapshot(&session_id)
         .expect("baseline should project");
+    let queue_start_event_count_before = runtime
+        .owned
+        .durable_state_store
+        .load_events_by_kind("workflow.runtime.updated")
+        .unwrap()
+        .iter()
+        .filter(|event| event.payload["reason"] == "workflow_queue_run_created")
+        .count();
     let activity_sequence = runtime.managed_activity_change_sequence();
     let projection_sequence = runtime.owned.session_projection.change_sequence();
     // Queue promotion persists through the durable queue-start commit, whose
@@ -490,7 +498,7 @@ fn assert_workflow_queue_promotion_append_failure_is_retryable(requested: bool) 
             .iter()
             .filter(|event| event.payload["reason"] == "workflow_queue_run_created")
             .count(),
-        1,
+        queue_start_event_count_before + 1,
         "retry must durably promote exactly one prompt"
     );
     let owner_id = retried.host_daemon_id().to_string();

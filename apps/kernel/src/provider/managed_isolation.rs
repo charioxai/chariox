@@ -2333,17 +2333,14 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn namespace_args_mask_the_actual_process_temp_root() {
-        let _env = crate::env_lock::lock();
-        let previous_tmpdir = std::env::var_os("TMPDIR");
         let temp_root = std::env::temp_dir().join(format!(
             "chariox-managed-isolation-process-temp-{}-{}",
             std::process::id(),
             crate::session::unix_epoch_ms()
         ));
         std::fs::create_dir_all(&temp_root).expect("custom process temp root should exist");
-        std::env::set_var("TMPDIR", &temp_root);
-        let process_temp_root = std::env::temp_dir();
-        let (args, _) = managed_namespace_args(
+        let process_temp_root = temp_root.clone();
+        let (args, _) = managed_namespace_args_with_process_temp_root(
             None,
             |path| {
                 path == Path::new("/tmp")
@@ -2351,9 +2348,9 @@ mod tests {
                     || path == process_temp_root
             },
             None,
+            &process_temp_root,
         );
 
-        restore_env("TMPDIR", previous_tmpdir);
         let _ = std::fs::remove_dir_all(&temp_root);
 
         assert!(args.windows(2).any(|args| {
@@ -2466,6 +2463,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn managed_root_level_control_file_is_masked_without_masking_the_root() {
+        crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let previous = MANAGED_PROTECTED_FILE_ENV_NAMES
             .iter()
@@ -2498,6 +2496,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn managed_bootstrap_control_does_not_protect_the_shared_user_home() {
+        crate::test_support::isolated_env_test!();
         let root = std::env::temp_dir().join(format!(
             "chariox-managed-shared-home-parity-{}-{}",
             std::process::id(),
@@ -2619,6 +2618,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn managed_namespace_rebinds_current_runtime_after_trusted_paths_and_run_mask() {
+        crate::test_support::isolated_env_test!();
         let root = std::env::temp_dir().join(format!(
             "chariox-managed-trusted-runtime-order-{}-{}",
             std::process::id(),
@@ -2847,6 +2847,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn managed_collector_rebinds_selected_provider_home_workspace_in_launch_args() {
+        crate::test_support::isolated_env_test!();
         use std::os::unix::fs::PermissionsExt;
 
         let _env = crate::env_lock::lock();
@@ -3563,18 +3564,21 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn managed_collector_apply_protects_runtime_home_ancestor() {
+        crate::test_support::isolated_env_test!();
         run_managed_runtime_home_ancestor_launch_probe("home");
     }
 
     #[cfg(target_os = "linux")]
     #[test]
     fn managed_collector_apply_protects_runtime_config_ancestor() {
+        crate::test_support::isolated_env_test!();
         run_managed_runtime_home_ancestor_launch_probe("config");
     }
 
     #[cfg(target_os = "linux")]
     #[test]
     fn managed_collector_apply_rejects_exact_and_rebinds_nested_runtime_command_workspaces() {
+        crate::test_support::isolated_env_test!();
         run_managed_runtime_home_ancestor_launch_probe("openbox");
         run_managed_runtime_home_ancestor_launch_probe("nested-openbox");
     }
@@ -3582,6 +3586,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn managed_collector_rebinds_nested_cwd_when_ancestor_git_root_masks_command_directory() {
+        crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let nonce = format!("{}-{}", std::process::id(), crate::session::unix_epoch_ms());
         let root = std::env::temp_dir().join(format!("chariox-managed-git-ancestor-cwd-{nonce}"));
@@ -3974,6 +3979,7 @@ mod tests {
     #[test]
     fn managed_bwrap_probe_blocks_runtime_home_startup_and_openbox_commands_without_blocking_home_files(
     ) {
+        crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let previous_home = std::env::var_os("HOME");
         let root = std::env::temp_dir().join(format!(
@@ -4205,6 +4211,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn managed_configured_slice_publication_is_protected_not_trusted_wholesale() {
+        crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let previous_slice_root = std::env::var_os("CHARIOX_SLICE_ROOT");
         let previous_broker = std::env::var_os("CHARIOX_SLICE_DOCKER_BROKER_SOCKET");
@@ -4402,6 +4409,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn managed_account_paths_are_restored_only_inside_namespace() {
+        crate::test_support::isolated_env_test!();
         if !Path::new(BWRAP_PATH).is_file() {
             eprintln!(
                 "skipped managed account path namespace regression: {BWRAP_PATH} is unavailable"
@@ -4608,6 +4616,7 @@ printf 'managed account environment probe passed\n'
     #[cfg(target_os = "linux")]
     #[test]
     fn managed_relocated_daemon_socket_is_scrubbed_and_mount_masked() {
+        crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-managed-daemon-socket-boundary-{}-{}",
@@ -4715,6 +4724,7 @@ printf 'managed account environment probe passed\n'
     #[cfg(target_os = "linux")]
     #[test]
     fn managed_configured_roots_fail_closed_at_each_provider_boundary() {
+        crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-managed-configured-root-validation-{}-{}",
@@ -4892,6 +4902,7 @@ printf 'managed account environment probe passed\n'
     #[cfg(target_os = "linux")]
     #[test]
     fn managed_bwrap_probe_hides_unselected_slice_publication_siblings() {
+        crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let previous_slice_root = std::env::var_os("CHARIOX_SLICE_ROOT");
         let previous_broker = std::env::var_os("CHARIOX_SLICE_DOCKER_BROKER_SOCKET");
@@ -5035,6 +5046,7 @@ printf 'managed account environment probe passed\n'
     #[cfg(target_os = "linux")]
     #[test]
     fn managed_isolation_keeps_ordinary_repositories_outside_transfer_roots() {
+        crate::test_support::isolated_env_test!();
         let root = std::env::temp_dir().join(format!(
             "chariox-managed-isolation-ordinary-filesystem-{}-{}",
             std::process::id(),
@@ -5247,6 +5259,7 @@ printf 'managed account environment probe passed\n'
 
     #[test]
     fn path1_ordinary_provider_launch_is_unwrapped_and_scrubs_managed_controls() {
+        crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let previous_isolation = std::env::var_os(MANAGED_PROVIDER_ISOLATION_ENV);
         std::env::remove_var(MANAGED_PROVIDER_ISOLATION_ENV);
@@ -5379,6 +5392,7 @@ printf 'managed account environment probe passed\n'
 
     #[test]
     fn managed_slice_workspace_roots_are_loaded_and_removed_from_provider_environment() {
+        crate::test_support::isolated_env_test!();
         let primary = std::env::temp_dir().join(format!(
             "chariox-managed-slice-primary-{}-{}",
             std::process::id(),
@@ -5823,6 +5837,7 @@ printf 'managed account environment probe passed\n'
     #[cfg(unix)]
     #[test]
     fn ordinary_account_utility_child_scrubs_path1_controls_and_preserves_provider_env() {
+        crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let controls = [
             "CHARIOX_MANAGED_REPOSITORY_ROOT",

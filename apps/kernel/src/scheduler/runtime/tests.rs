@@ -856,6 +856,7 @@ fn workflow_completion_ignores_provider_output_recorded_before_prompt_dispatch()
 
 #[test]
 fn workflow_instruction_reference_is_written_under_kernel_state_root() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let config = DaemonConfig::for_tests();
     let runtime_root = config.workflow_runtime_artifact_root();
@@ -989,6 +990,7 @@ fn workflow_instruction_reference_is_written_under_kernel_state_root() {
 
 #[test]
 fn workflow_node_prompt_lists_public_multi_edge_routing_contracts() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let home = std::env::temp_dir().join(format!(
         "chariox-workflow-routing-prompt-test-{}",

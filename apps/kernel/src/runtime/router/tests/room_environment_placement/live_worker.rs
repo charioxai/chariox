@@ -565,6 +565,7 @@ impl Drop for LiveWorker {
 
 #[test]
 fn room_environment_worker_spawn_and_destroy_use_public_commands() {
+    crate::test_support::isolated_env_test!();
     run_test(spawn_and_destroy_use_public_commands);
 }
 
@@ -622,6 +623,7 @@ async fn spawn_and_destroy_use_public_commands() {
 
 #[test]
 fn room_environment_worker_alias_attaches_agent_to_slice() {
+    crate::test_support::isolated_env_test!();
     run_test(worker_alias_attaches_agent_to_slice);
 }
 
@@ -674,6 +676,7 @@ async fn worker_alias_attaches_agent_to_slice() {
 
 #[test]
 fn room_environment_worker_batch_preserves_mixed_target_attachments() {
+    crate::test_support::isolated_env_test!();
     run_test(batch_preserves_mixed_target_attachments);
 }
 
@@ -726,6 +729,7 @@ async fn batch_preserves_mixed_target_attachments() {
 
 #[test]
 fn room_environment_worker_cleanup_failure_preserves_agent_and_slice() {
+    crate::test_support::isolated_env_test!();
     run_test(cleanup_failure_preserves_agent_and_slice);
 }
 

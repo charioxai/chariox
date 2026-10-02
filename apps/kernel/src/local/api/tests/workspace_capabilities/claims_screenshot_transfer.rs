@@ -93,6 +93,7 @@ fn local_request_api_rejects_conflicting_workspace_write_claims_inner() {
 
 #[test]
 fn local_request_api_returns_structured_screenshot_unavailable_result() {
+    crate::test_support::isolated_env_test!();
     run_workspace_capability_test(
         "local_request_api_returns_structured_screenshot_unavailable_result",
         local_request_api_returns_structured_screenshot_unavailable_result_inner,

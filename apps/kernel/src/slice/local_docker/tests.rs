@@ -262,6 +262,7 @@ fn test_root(label: &str) -> std::path::PathBuf {
 #[cfg(unix)]
 #[test]
 fn managed_broker_slice_does_not_require_docker_in_the_kernel_namespace() {
+    crate::test_support::isolated_env_test!();
     let _lock = crate::env_lock::lock();
     let previous_path = std::env::var_os("PATH");
     let previous_required = std::env::var_os("CHARIOX_SLICE_DOCKER_BROKER_REQUIRED");
@@ -311,6 +312,7 @@ fn managed_broker_slice_does_not_require_docker_in_the_kernel_namespace() {
 #[cfg(unix)]
 #[test]
 fn disk_pressure_admission_fault_probe() {
+    crate::test_support::isolated_env_test!();
     use std::os::unix::fs::PermissionsExt;
 
     let _environment = crate::env_lock::lock();
@@ -445,6 +447,7 @@ exit 0
 #[cfg(unix)]
 #[test]
 fn public_headless_slice_save_gracefully_quiesces_before_capture_and_fails_closed() {
+    crate::test_support::isolated_env_test!();
     use std::os::unix::fs::PermissionsExt;
 
     let _environment = crate::env_lock::lock();
@@ -625,6 +628,7 @@ fn backup_restore_rejects_cross_slice_records_before_reading_artifacts() {
 #[cfg(unix)]
 #[test]
 fn backup_restore_quarantines_a_corrupt_archive_without_touching_known_good_state() {
+    crate::test_support::isolated_env_test!();
     use sha2::Digest as _;
     use std::os::unix::fs::PermissionsExt;
 
@@ -1429,6 +1433,7 @@ fn local_docker_slice_uses_the_safe_default_memory_limit() {
 
 #[test]
 fn local_docker_provider_sandbox_compatibility_selects_named_apparmor_boundary() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let previous_profile = std::env::var_os("CHARIOX_SLICE_APPARMOR_PROFILE");
     std::env::set_var("CHARIOX_SLICE_APPARMOR_PROFILE", "chariox-slice-provider");

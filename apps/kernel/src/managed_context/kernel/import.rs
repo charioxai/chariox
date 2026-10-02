@@ -1997,6 +1997,7 @@ mod tests {
 
     #[test]
     fn imports_unified_kernel_context_and_replays_exact_receipt() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let root = test_root("round-trip");
         let source_vault = root.join("source-vault.json");
@@ -2131,6 +2132,7 @@ mod tests {
 
     #[test]
     fn rejects_wrong_bindings_and_occupied_roots_before_publication() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let root = test_root("reject");
         let source_vault = root.join("source-vault.json");
@@ -2395,6 +2397,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn dependency_installer_clears_ambient_secrets_and_kills_descendants() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let root = test_root("installer-isolation");
         let previous = std::env::var_os("CHARIOX_INSTALLER_SECRET_CANARY");
@@ -2434,6 +2437,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn runtime_probe_rejects_burst_output_after_the_process_exits() {
+        crate::test_support::isolated_env_test!();
         use std::os::unix::fs::PermissionsExt;
 
         let root = test_root("runtime-probe-bound");

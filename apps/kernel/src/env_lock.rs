@@ -15,10 +15,16 @@ struct EnvLockInner {
 
 #[derive(Debug)]
 pub(crate) struct EnvGuard {
-    inner: &'static EnvLockInner,
+    inner: Option<&'static EnvLockInner>,
 }
 
 pub(crate) fn lock() -> EnvGuard {
+    // An isolated fixture has no neighboring tests. Holding this process-wide
+    // lock across async kernel work would block its own provider worker thread.
+    #[cfg(test)]
+    if crate::test_support::environment_test_isolated() {
+        return EnvGuard { inner: None };
+    }
     static LOCK: OnceLock<EnvLockInner> = OnceLock::new();
     let inner = LOCK.get_or_init(|| EnvLockInner {
         state: Mutex::new(EnvLockState {
@@ -53,14 +59,14 @@ pub(crate) fn lock() -> EnvGuard {
         }
     }
 
-    EnvGuard { inner }
+    EnvGuard { inner: Some(inner) }
 }
 
 impl Drop for EnvGuard {
     fn drop(&mut self) {
+        let Some(inner) = self.inner else { return };
         let thread_id = thread::current().id();
-        let mut state = self
-            .inner
+        let mut state = inner
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -69,7 +75,7 @@ impl Drop for EnvGuard {
             state.depth = state.depth.saturating_sub(1);
             if state.depth == 0 {
                 state.owner = None;
-                self.inner.ready.notify_all();
+                inner.ready.notify_all();
             }
         }
     }

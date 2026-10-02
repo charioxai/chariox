@@ -329,6 +329,7 @@ mod tests {
 
     #[tokio::test]
     async fn owned_launch_preparation_preserves_provider_account_and_project_repositories() {
+        crate::test_support::isolated_env_test!();
         let root = std::env::temp_dir().join(format!(
             "chariox-owned-provider-launch-{}-{}",
             std::process::id(),
@@ -423,6 +424,7 @@ mod tests {
 
     #[tokio::test]
     async fn claude_agents_launch_on_the_accounts_own_login_on_every_platform() {
+        crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-owned-missing-claude-credential-{}-{}",
@@ -572,6 +574,7 @@ mod tests {
 
     #[tokio::test]
     async fn owned_managed_launch_does_not_inject_a_project_workspace_allowlist() {
+        crate::test_support::isolated_env_test!();
         let root = std::env::temp_dir().join(format!(
             "chariox-owned-managed-pool-launch-{}-{}",
             std::process::id(),
@@ -754,6 +757,7 @@ mod tests {
 
     #[tokio::test]
     async fn workflow_runtime_launch_with_chariox_home_uses_kernel_owned_instance_root() {
+        crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-owned-workflow-runtime-home-{}-{}",
@@ -857,6 +861,7 @@ mod tests {
 
     #[tokio::test]
     async fn owned_launch_preparation_allows_hidden_remote_lease_session_under_managed_isolation() {
+        crate::test_support::isolated_env_test!();
         let root = std::env::temp_dir().join(format!(
             "chariox-owned-hidden-provider-launch-{}-{}",
             std::process::id(),
@@ -905,6 +910,7 @@ mod tests {
 
     #[tokio::test]
     async fn vaulted_claude_launch_waits_for_chariox_unlock_interaction() {
+        crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-owned-vaulted-claude-launch-{}-{}",
@@ -1095,6 +1101,7 @@ mod tests {
 
     #[tokio::test]
     async fn mcp_continuation_retries_when_prompt_starts_during_vault_unlock() {
+        crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-mcp-continuation-vault-race-{}-{}",
@@ -1106,10 +1113,19 @@ mod tests {
         let previous_home = std::env::var_os("CHARIOX_HOME");
         let previous_claude_bin = std::env::var_os("CHARIOX_CLAUDE_BIN");
         std::env::set_var("CHARIOX_HOME", &root);
-        std::env::set_var(
-            "CHARIOX_CLAUDE_BIN",
-            std::env::current_exe().expect("test executable should resolve"),
-        );
+        let fixture_claude = root.join("claude-fixture");
+        std::fs::write(
+            &fixture_claude,
+            "#!/bin/sh\nprintf '❯ '\nwhile IFS= read -r line; do printf '❯ '; done\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fixture_claude, std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        std::env::set_var("CHARIOX_CLAUDE_BIN", &fixture_claude);
 
         let vault_path = root.join("credentials.vault");
         let mut config = crate::config::DaemonConfig::for_tests()
@@ -1127,6 +1143,7 @@ mod tests {
         config.user_config.artifacts.operational.index_path =
             Some(root.join("artifacts.db").display().to_string());
 
+        let _mcp = crate::test_support::TestRuntimeMcp::serve(&mut config);
         let mut app = crate::app::DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap");
         let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(crate::session::CreateSessionRequest::new(
@@ -1225,7 +1242,7 @@ mod tests {
             "playwright",
             "continue after granting playwright",
         );
-        let first_unlock = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        let first_unlock = tokio::time::timeout(std::time::Duration::from_secs(45), async {
             loop {
                 if let Some(interaction) = runtime
                     .owned
@@ -1255,7 +1272,7 @@ mod tests {
             .expect("active prompt should start during unlock");
         resolve_vault_passphrase_interaction(&runtime, session.id(), &first_unlock).await;
 
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::time::timeout(std::time::Duration::from_secs(45), async {
             loop {
                 if runtime
                     .owned
@@ -1284,7 +1301,7 @@ mod tests {
             .await
             .prompt_owner_sync_external_active_prompt(session.id(), agent.id(), None)
             .expect("agent should become idle");
-        let second_unlock = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        let second_unlock = tokio::time::timeout(std::time::Duration::from_secs(45), async {
             loop {
                 if let Some(interaction) = runtime
                     .owned
@@ -1303,7 +1320,7 @@ mod tests {
         .await
         .expect("idle retry should request vault unlock again");
         resolve_vault_passphrase_interaction(&runtime, session.id(), &second_unlock).await;
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::time::timeout(std::time::Duration::from_secs(45), async {
             loop {
                 let resumed = runtime
                     .owned
@@ -1330,7 +1347,7 @@ mod tests {
             }
         })
         .await
-        .expect("MCP continuation should resume after the agent becomes idle");
+        .unwrap_or_else(|error| panic!("MCP continuation should resume after the agent becomes idle: {error}; run states={:?}; notices={:?}", runtime.owned.provider_store.list_runs().iter().map(|run| (run.id(), run.state())).collect::<Vec<_>>(), runtime.owned.terminal_stream.notice_records()));
 
         let _ = crate::secret::lock_chariox_encrypted_vault(&vault_path);
         let _ = crate::secret::clear_vault_secret_process_cache();

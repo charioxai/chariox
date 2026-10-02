@@ -7,6 +7,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 #[test]
 fn public_remote_completion_preserves_worker_termination() {
+    crate::test_support::isolated_env_test!();
     run_async_with_large_test_stack(
         "public-remote-completion-worker-termination",
         public_remote_completion_preserves_worker_termination_async,
@@ -315,6 +316,7 @@ async fn public_remote_completion_preserves_worker_termination_async() {
 
 #[test]
 fn agents_can_be_spawned_on_a_remote_machine_and_cleaned_up() {
+    crate::test_support::isolated_env_test!();
     run_async_with_large_test_stack(
         "remote-agents-spawn-resize-cleanup",
         agents_can_be_spawned_on_a_remote_machine_and_cleaned_up_async,
@@ -642,6 +644,7 @@ async fn assert_remote_native_terminal_resize(
 
 #[test]
 fn remote_machine_agents_execute_prompts_through_the_home_session() {
+    crate::test_support::isolated_env_test!();
     run_async_with_large_test_stack("remote-agents-execute-prompts", || {
         remote_machine_agents_execute_prompts_through_the_home_session_async(false)
     });
@@ -649,6 +652,7 @@ fn remote_machine_agents_execute_prompts_through_the_home_session() {
 
 #[test]
 fn remote_agent_message_steers_live_worker_without_a_user_queue() {
+    crate::test_support::isolated_env_test!();
     // Fixed worker IDs must not retain the previous fixture's generated trust key.
     for _ in 0..2 {
         run_async_with_large_test_stack("remote-agent-direct-message", || {
@@ -1398,6 +1402,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
 }
 #[tokio::test(flavor = "multi_thread")]
 async fn remote_machine_agents_materialize_file_attachments_on_the_worker() {
+    crate::test_support::isolated_env_test!();
     let _relay_test_guard = relay_client_test_guard().await;
     // The fixed worker ID gets a fresh key here; keep its pinned trust key private.
     let _test_home = RelayTestHome::new();
@@ -1604,6 +1609,7 @@ async fn wait_for_leased_agent_active_prompt_attachments(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn remote_machine_agents_cancel_prompts_through_the_home_session() {
+    crate::test_support::isolated_env_test!();
     let _relay_test_guard = relay_client_test_guard().await;
     // The fixed worker ID gets a fresh key here; keep its pinned trust key private.
     let _test_home = RelayTestHome::new();

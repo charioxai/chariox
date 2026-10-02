@@ -422,16 +422,20 @@ async fn kernel_websocket_delivers_terminal_workflow_run_update_without_reload()
 
     // Non-terminal progress (for example the node's provider starting) may
     // publish further Running updates before the terminal one.
-    let completed_event = loop {
-        let event = wait_for_event(&mut socket, "workflow_run_updated").await;
-        assert_eq!(
-            event["event"]["workflow_run"]["id"].as_str(),
-            Some(expected_run_id.as_str())
-        );
-        if event["event"]["workflow_run"]["status"].as_str() != Some("Running") {
-            break event;
+    let completed_event = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let event = wait_for_event(&mut socket, "workflow_run_updated").await;
+            assert_eq!(
+                event["event"]["workflow_run"]["id"].as_str(),
+                Some(expected_run_id.as_str())
+            );
+            if event["event"]["workflow_run"]["status"].as_str() != Some("Running") {
+                break event;
+            }
         }
-    };
+    })
+    .await
+    .expect("terminal workflow event should arrive after progress updates");
     assert_eq!(
         completed_event["event"]["workflow_run"]["status"].as_str(),
         Some("Completed")

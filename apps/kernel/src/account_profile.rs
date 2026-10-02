@@ -7303,6 +7303,7 @@ mod tests {
 
     #[test]
     fn managed_default_claude_profile_retains_its_credential_directory() {
+        crate::test_support::isolated_env_test!();
         let _lock = crate::env_lock::lock();
         struct Restore {
             variables: Vec<(&'static str, Option<std::ffi::OsString>)>,
@@ -8564,6 +8565,7 @@ mod tests {
 
     #[test]
     fn ambient_default_claude_profile_preserves_native_credential_scope() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let previous = std::env::var_os("CLAUDE_CONFIG_DIR");
         std::env::remove_var("CLAUDE_CONFIG_DIR");
@@ -8593,6 +8595,7 @@ mod tests {
 
     #[test]
     fn explicit_native_import_preserves_existing_claude_scope_and_default() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let previous = std::env::var_os("CLAUDE_CONFIG_DIR");
         std::env::remove_var("CLAUDE_CONFIG_DIR");
@@ -8643,6 +8646,7 @@ mod tests {
 
     #[test]
     fn native_import_is_idempotent_and_does_not_materialize_provider_state() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let previous = std::env::var_os("CLAUDE_CONFIG_DIR");
         std::env::remove_var("CLAUDE_CONFIG_DIR");
@@ -8669,6 +8673,7 @@ mod tests {
 
     #[test]
     fn managed_kernel_rejects_native_account_import() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let isolation_name = crate::provider::MANAGED_PROVIDER_ISOLATION_ENV;
         let previous = std::env::var_os(isolation_name);
@@ -8691,6 +8696,7 @@ mod tests {
 
     #[test]
     fn legacy_default_claude_profile_fails_safe_to_explicit_scope() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let previous = std::env::var_os("CLAUDE_CONFIG_DIR");
         std::env::remove_var("CLAUDE_CONFIG_DIR");
@@ -8724,6 +8730,7 @@ mod tests {
 
     #[test]
     fn explicit_default_claude_config_dir_is_preserved() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let previous = std::env::var_os("CLAUDE_CONFIG_DIR");
         let (root, registry) = fixture();
@@ -8775,6 +8782,7 @@ mod tests {
 
     #[test]
     fn managed_kernels_reject_host_linked_provider_account_roots() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let previous = std::env::var_os(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV);
         std::env::remove_var(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV);
