@@ -2,6 +2,7 @@ use super::*;
 
 mod control_authority;
 mod credential_authority;
+mod input_control_authority;
 mod meta_authority;
 mod native_launch_authority;
 mod session_authority;

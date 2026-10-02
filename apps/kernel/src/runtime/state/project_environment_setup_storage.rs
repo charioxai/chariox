@@ -1004,9 +1004,11 @@ impl ProjectEnvironmentSetupStore {
         session_id: &str,
         caller_user_id: &str,
         requires_worker_acknowledgement: bool,
+        authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
     ) -> Result<ProjectEnvironmentSetupStatus, DaemonError> {
         let gate = self.ordering_gate(operation_id);
         let _guard = gate.lock().await;
+        authorize()?;
         self.request_cancel(
             operation_id,
             session_id,
@@ -1020,9 +1022,11 @@ impl ProjectEnvironmentSetupStore {
         operation_id: &str,
         session_id: &str,
         caller_user_id: &str,
+        authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
     ) -> Result<ProjectEnvironmentSetupStatus, DaemonError> {
         let gate = self.ordering_gate(operation_id);
         let _guard = gate.lock().await;
+        authorize()?;
         let mut entries = self
             .entries
             .lock()

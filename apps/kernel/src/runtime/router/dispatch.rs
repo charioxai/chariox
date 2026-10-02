@@ -19,6 +19,19 @@ impl CommandRouter {
         mut request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         self.authorize_external_request(&command, &mut request)?;
+        let grant_id = command.external_grant_id();
+        let mut router = self.clone();
+        router.runtime_state = self
+            .runtime_state
+            .with_external_command_authority(grant_id.as_deref().map(|id| (id, &request)));
+        router.dispatch_authorized(command, request).await
+    }
+
+    async fn dispatch_authorized(
+        &self,
+        command: KernelCommand,
+        request: LocalDaemonRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
         if let Some(response) = self.dispatch_kernel_access(&command, &request)? {
             return Ok(response);
         }

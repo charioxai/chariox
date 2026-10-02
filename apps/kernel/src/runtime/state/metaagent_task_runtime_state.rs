@@ -48,11 +48,13 @@ impl KernelRuntimeState {
         reason: &str,
         mutate: impl FnOnce(&mut crate::session::SessionService) -> Result<Option<T>, DaemonError>,
     ) -> Result<Option<(T, crate::session::RuntimeSession)>, DaemonError> {
+        self.authorize_current_external_command()?;
         let activity_mutation = self.owned.begin_managed_activity_mutation();
         let committed = self
             .owned
             .durable_state_store
             .with_workflow_runtime_transition_lock(|| {
+                self.authorize_current_external_command()?;
                 let mut sessions = self.owned.session_store.write();
                 let before = sessions.get_session(session_id)?;
                 let result = (|| {
@@ -292,6 +294,7 @@ impl KernelRuntimeState {
         agent_id: &str,
         reason: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        self.authorize_current_external_command()?;
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         if agent.session_id() != session_id || !agent.is_metaagent() {
             return Ok(self.owned.session_store.get_session(session_id)?);
@@ -312,6 +315,7 @@ impl KernelRuntimeState {
         }
         self.sync_remote_leased_agent_meta_mode(session_id, agent_id, false)
             .await?;
+        self.authorize_current_external_command()?;
         self.owned
             .agent_store
             .deactivate_agent_meta_mode(agent_id)?;
@@ -536,6 +540,7 @@ impl KernelRuntimeState {
         &self,
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.authorize_current_external_command()?;
         match request {
             LocalDaemonRequest::UpdateMetaagentTask(request) => {
                 let metaagent =
@@ -766,6 +771,7 @@ impl KernelRuntimeState {
             .filter(|agent| agent.controlled_by_metaagent_id() == Some(metaagent.id()))
             .collect::<Vec<_>>();
         for agent in controlled_agents {
+            self.authorize_current_external_command()?;
             let _ = self
                 .owned
                 .remove_queued_prompts_for_agent(session_id, agent.id())?;
@@ -782,7 +788,14 @@ impl KernelRuntimeState {
             }
             let attachment_id = active_prompt.source_attachment_id().to_string();
             match self
-                .cancel_agent_prompt(session_id, agent.id(), &attachment_id)
+                .cancel_agent_prompt_with_external_authority(
+                    session_id,
+                    agent.id(),
+                    &attachment_id,
+                    self.external_command_authority.as_ref().map(
+                        super::external_command_authority::ExternalCommandAuthority::as_request,
+                    ),
+                )
                 .await
             {
                 Ok(cancellation) => {
@@ -816,6 +829,7 @@ impl KernelRuntimeState {
         metaagent: &crate::agent::AgentInstance,
         operation: &'static str,
     ) -> Result<(), DaemonError> {
+        self.authorize_current_external_command()?;
         let session = self.owned.session_store.get_session(session_id)?;
         let Some(active_prompt) = self
             .owned
@@ -829,7 +843,14 @@ impl KernelRuntimeState {
         }
         let attachment_id = self.ensure_metaagent_task_attachment(session_id, metaagent)?;
         match self
-            .cancel_agent_prompt(session_id, metaagent.id(), &attachment_id)
+            .cancel_agent_prompt_with_external_authority(
+                session_id,
+                metaagent.id(),
+                &attachment_id,
+                self.external_command_authority
+                    .as_ref()
+                    .map(super::external_command_authority::ExternalCommandAuthority::as_request),
+            )
             .await
         {
             Ok(cancellation) => {
