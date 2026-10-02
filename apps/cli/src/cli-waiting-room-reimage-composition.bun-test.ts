@@ -152,6 +152,21 @@ reimageTest("does not report cutover success when replacement attachment fails",
         harness.cleanup()
       }
     })
+reimageTest("MP-02/MP-08/MP-11 stopped enrolled launch retains the selected second kernel through lifecycle callbacks", async (router) => {
+  const harness = createHarness(router, { stoppedEnrolled: true })
+  try {
+    await harness.initialize()
+    harness.selectKernel("kernel-selected")
+    await harness.composition.startSessionFromWaitingRoomDefaults({ kind: "existing", environmentId: "environment-1" })
+    assert.deepEqual(resolveTargets(harness.local), [{ kernelRef: "kernel-selected", machineRef: "machine-old" }])
+    assert.equal(harness.state().selectedKernelRef, "kernel-selected")
+    assert.equal(requestCount(harness.replacement, "CreateSession"), 1)
+    assert.equal(requestCount(harness.local, "CreateSession"), 0)
+    assert.equal(requestCount(harness.replacement, "GetManagedContextLaunchTarget"), 0)
+    assert.deepEqual(harness.attachments, [{ sessionId: "session-new", created: true }])
+  } finally { harness.cleanup() }
+})
+
 type TestEndpoint = {
   readonly client: LocalIpcClient
   readonly requests: unknown[]
@@ -204,6 +219,7 @@ function createHarness(router: TestRouter, options: {
   contextPlan?: ManagedEnvironmentContextPlan
   setupFailure?: Error
   attachFailure?: Error
+  stoppedEnrolled?: boolean
 } = {}) {
   const contextPlan = options.contextPlan ?? emptyPlan()
   const oldEnvironment = environment({
@@ -213,8 +229,10 @@ function createHarness(router: TestRouter, options: {
     runtimeKernelId: "kernel-old",
     runtimeReleaseDigest: "sha256:old-release",
     contextPlan,
+    ...(options.stoppedEnrolled ? { desiredState: "stopped", observedState: "stopped" } : {}),
   })
-  const replacementEnvironment = environment({ contextPlan })
+  const replacementEnvironment = environment({ contextPlan,
+    ...(options.stoppedEnrolled ? { runtimeMachineId: "machine-old", runtimeKernelId: "kernel-old" } : {}) })
   const catalog = {
     computeClasses: [{ computeClass: "agent-small", regions: ["hel1"] }],
     contextSources: [],
@@ -240,14 +258,16 @@ function createHarness(router: TestRouter, options: {
             connection: {
               relay_url: old ? OLD_ENDPOINT : REPLACEMENT_ENDPOINT,
               relay_token: old ? "old-token" : "replacement-token",
-              target_daemon_id: old ? "kernel-old" : "kernel-new",
+              target_daemon_id: old ? "kernel-old" : options.stoppedEnrolled ? "kernel-selected" : "kernel-new",
               target_daemon_alias: old ? "old" : "replacement",
-              machine_id: old ? "machine-old" : "machine-new",
-              kernel_id: old ? "kernel-old" : "kernel-new",
+              machine_id: old || options.stoppedEnrolled ? "machine-old" : "machine-new",
+              kernel_id: old ? "kernel-old" : options.stoppedEnrolled ? "kernel-selected" : "kernel-new",
             },
           },
         }
       }
+      case "RequestManagedEnvironmentLifecycle":
+        return { ManagedEnvironmentLifecycleRequested: { result: { environment: replacementEnvironment, operation: null } } }
       case "RequestManagedEnvironmentReimage": {
         const payload = requestPayload(request, "RequestManagedEnvironmentReimage")
         return { ManagedEnvironmentReimageRequested: { result: reimageResult(replacementEnvironment, payload.idempotencyKey as string) } }
@@ -286,7 +306,8 @@ function createHarness(router: TestRouter, options: {
   const replacement = router.endpoint(REPLACEMENT_ENDPOINT, async (request) => {
     switch (requestKind(request)) {
       case "GetWaitingRoomPublicSnapshot":
-        return snapshotResponse("kernel-new", "machine-new", contextPlan)
+        return snapshotResponse(options.stoppedEnrolled ? "kernel-selected" : "kernel-new",
+          options.stoppedEnrolled ? "machine-old" : "machine-new", contextPlan)
       case "ListSlices":
         return { SlicesListed: { slices: [] } }
       case "ListManagedEnvironmentCatalog":
@@ -448,6 +469,7 @@ function createHarness(router: TestRouter, options: {
     attachments,
     rollbacks,
     state: () => waitingRoomState,
+    selectKernel: (kernel: string) => { waitingRoomState = { ...waitingRoomState, selectedKernelRef: kernel }; ownershipRevision += 1 },
     get observedThroughEndpoint() { return observedThroughEndpoint },
     cleanup() {
       __setWaitingRoomWorktreeInventoryForTest(null)
