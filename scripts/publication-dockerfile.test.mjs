@@ -5,6 +5,7 @@ import { test } from "node:test"
 
 const dockerfile = await readFile(new URL("../docker/publication/Dockerfile", import.meta.url), "utf8")
 const egressDockerfile = await readFile(new URL("../docker/publication-egress/Dockerfile", import.meta.url), "utf8")
+const runtimeTypes = await readFile(new URL("../apps/kernel/src/local/api/types.rs", import.meta.url), "utf8")
 const kernelTypes = await readFile(new URL("../packages/kernel-client/src/kernel-types.ts", import.meta.url), "utf8")
 const kernelCargo = await readFile(new URL("../apps/kernel/Cargo.toml", import.meta.url), "utf8")
 const workflowCode = await readFile(new URL("../apps/kernel/src/workflow_code.rs", import.meta.url), "utf8")
@@ -176,7 +177,8 @@ test("embedded toolchain SBOM removes volatile identity and time fields", () => 
 })
 
 test("publication image labels the protocol version verified against its kernel", () => {
-  const protocolVersion = kernelTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION\s*=\s*(\d+)/)?.[1]
+  const protocolVersion = runtimeTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+);/)?.[1]
+  assert.equal(kernelTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION\s*=\s*(\d+)/)?.[1], protocolVersion, "client and runtime protocols must agree")
   assert.ok(protocolVersion, "the shared kernel client protocol version must be readable")
   const protocolDefaults = [...dockerfile.matchAll(/^ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=(\d+)$/gm)]
     .map((match) => match[1])
