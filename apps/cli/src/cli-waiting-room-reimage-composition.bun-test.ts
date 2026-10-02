@@ -269,7 +269,7 @@ function createHarness(router: TestRouter, options: {
         }
       }
       case "RequestManagedEnvironmentLifecycle":
-        return { ManagedEnvironmentLifecycleRequested: { result: { environment: replacementEnvironment, operation: null } } }
+        return { ManagedEnvironmentLifecycleRequested: { result: { ...reimageResult(replacementEnvironment, "start-key"), operation: { ...reimageResult(replacementEnvironment, "start-key").operation, kind: "start" } } } }
       case "RequestManagedEnvironmentReimage": {
         const payload = requestPayload(request, "RequestManagedEnvironmentReimage")
         return { ManagedEnvironmentReimageRequested: { result: reimageResult(replacementEnvironment, payload.idempotencyKey as string) } }
