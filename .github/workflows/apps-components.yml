@@ -133,12 +133,6 @@ jobs:
           node --test --test-concurrency=1
           apps/kernel/slice-linux-docker/chromium-sandbox.test.mjs
           apps/kernel/slice-linux-docker/docker/chromium-sandbox-probe.test.mjs
-      - name: Test native pointer pacing and cancellation
-        if: runner.os == 'Linux'
-        run: >-
-          node --test --test-concurrency=1
-          apps/kernel/slice-linux-docker/slice-screen-pointer-click.test.mjs
-          apps/kernel/slice-linux-docker/slice-screen-process-group.test.mjs
       - name: Test kernel App routing and durable writer
         env:
           RUST_MIN_STACK: '16777216'

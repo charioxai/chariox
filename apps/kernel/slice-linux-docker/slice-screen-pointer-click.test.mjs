@@ -7,6 +7,7 @@ import test from "node:test"
 import { fileURLToPath } from "node:url"
 
 const helper = fileURLToPath(new URL("docker/slice-screen.sh", import.meta.url))
+const linuxOnly = { skip: process.platform === "linux" ? false : "native X11 helper requires GNU timeout" }
 
 function click(button, count) {
   const root = mkdtempSync(path.join(os.tmpdir(), "chariox-pointer-click-"))
@@ -29,17 +30,17 @@ function click(button, count) {
   }
 }
 
-test("single pointer click dispatches both coordinates and button without repeat pacing", () => {
+test("single pointer click dispatches both coordinates and button without repeat pacing", linuxOnly, () => {
   for (const [name, button] of [["left", "1"], ["middle", "2"], ["right", "3"]]) {
     assert.deepEqual(click(name, 1), ["mousemove", "120", "240", "click", "--repeat", "1", "--delay", "0", button])
   }
 })
 
-test("double pointer click keeps the 80ms interval", () => {
+test("double pointer click keeps the 80ms interval", linuxOnly, () => {
   assert.deepEqual(click("left", 2), ["mousemove", "120", "240", "click", "--repeat", "2", "--delay", "80", "1"])
 })
 
-test("invalid pointer clicks fail before dispatch", () => {
+test("invalid pointer clicks fail before dispatch", linuxOnly, () => {
   assert.throws(() => click("other", 1), /pointer button must/)
   assert.throws(() => click("left", 3), /pointer click count must/)
 })
