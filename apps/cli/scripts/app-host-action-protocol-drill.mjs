@@ -19,7 +19,7 @@ const checks = [
   ["worker-broker", "slot-run", ["cargo", "+1.88.0", "test", "--manifest-path", "apps/kernel/Cargo.toml", "--lib", "app_files_broker::tests", "--", "--nocapture"]],
   ["client-protocol", "slot-run", ["cargo", "+1.88.0", "test", "--manifest-path", "apps/kernel/Cargo.toml", "--lib", "client_protocol_conformance", "--", "--nocapture"]],
   ["client-app", "node", ["--test", "packages/kernel-client/dist/ipc-app-requests.test.js"]],
-  ["cli-host", "node", ["--test", "apps/cli/dist/app-host-action.test.js", "apps/cli/dist/app-command-handler.test.js", "apps/cli/dist/kernel-approval-controller.test.js"]],
+  ["cli-host", "node", ["--test", "apps/cli/dist/app-host-action.test.js", "apps/cli/dist/app-command-handler.test.js", "apps/cli/dist/kernel-approval-controller.test.js", "apps/cli/dist/cli-workflow-action-routing-composition.test.js"]],
   ["tui-render", "bun", ["test", "./apps/cli/dist/kernel-approval-renderer.bun-test.js"]],
   ["view-bridge", "node", ["--test", "apps/kernel/slice-linux-docker/docker/browser-controller-apps.test.mjs"]],
   ["sdk-host", "node", ["--test", "packages/app-sdk/test/sdk.test.js"]],

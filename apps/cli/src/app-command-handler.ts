@@ -11,6 +11,7 @@ import type { ParsedSlashCommand } from "./commands.js"
 
 export type AppCommandHandlerDeps = {
   appHostTerminal?: AppHostTerminal
+  currentAppHostOperationIds?: () => string[]
   appFileInstaller?: AppFileInstaller
   appDevLoop?: AppDevLoop
   appPublisherEnrollment?: AppPublisherEnrollment
@@ -29,11 +30,13 @@ export async function handleAppSlashCommand(
     return
   }
   if (command.args[0] === "host") {
-    const [, action, operation, ...extra] = tokenizeShellLine(command.raw.replace(/^\/app(?:\s|$)/, ""))
-    if (action !== "accept" || !operation || extra.length) throw new Error("usage: /app host accept OPERATION")
+    const [, action, explicitOperation, ...extra] = tokenizeShellLine(command.raw.replace(/^\/app(?:\s|$)/, ""))
+    if (action !== "accept" || extra.length) throw new Error("usage: /app host accept [OPERATION]")
     const session = deps.currentAppSessionId?.()
     if (!session) throw new Error("Attach to the session showing the App host request")
-    await acceptAppHostOffer(session, operation, deps.sendAppRequest, deps.appendNotice, deps.appHostTerminal)
+    const candidates = explicitOperation ? [explicitOperation] : deps.currentAppHostOperationIds?.() ?? []
+    if (candidates.length !== 1) throw new Error(candidates.length ? "Several App host requests are pending; use /app host accept OPERATION" : "No App host request is pending in this session")
+    await acceptAppHostOffer(session, candidates[0]!, deps.sendAppRequest, deps.appendNotice, deps.appHostTerminal)
     return
   }
   if (command.args[0] === "publisher") {

@@ -6,10 +6,6 @@ type ClipboardRenderer = {
 }
 
 export async function copyTextToClipboard(text: string, renderer: ClipboardRenderer) {
-  if (!text) {
-    return
-  }
-
   const copiedViaOsc52 = renderer.copyToClipboardOSC52(text)
 
   try {

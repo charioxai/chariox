@@ -2349,8 +2349,10 @@ link offers need no separate capability. Neither requires external-file access.
 Clipboard text and each of its JSON/visible escaped representations are limited
 to 256 KiB, so the complete trusted prompt fits one terminal projection. URLs are limited to 8 KiB, must
 be absolute HTTP(S) URLs with a host, and cannot contain whitespace, control
-characters, backslashes or invisible Unicode formatting. The exact submitted
-URL is shown and returned without normalization. Each installation may have
+characters, backslashes, invisible Unicode formatting or nonempty userinfo
+(username/password). The exact submitted URL is shown and returned without
+normalization; the prompt also shows its parsed ASCII destination host (punycode
+for IDNs). Each installation may have
 four unanswered host offers; they expire after five minutes, or when its
 active generation changes or it is uninstalled. Settled payloads are dropped.
 
@@ -2373,13 +2375,15 @@ text can be supplied by the accepting client. Acceptance consumes the offer;
 a failed host action or lost reply requires a new App request.
 
 The accepting terminal performs the action on its own machine. TUI users type
-`/app host accept OPERATION`: copying uses OSC 52 and always shows the escaped
-text as a visible fallback because OSC 52 has no acknowledgement; link opening
+`/app host accept` after closing the approval panel selects the sole pending
+host offer in the attached session. Multiple offers require
+`/app host accept OPERATION`. Copying uses the renderer-backed OSC 52/native
+clipboard helper and always shows the escaped text as a visible fallback
+because OSC 52 has no acknowledgement; link opening
 uses the existing default-browser shim and always prints the exact URL. Web
 clients must copy with `navigator.clipboard.writeText` from a trusted click,
 open a new tab with `noopener`, and show a visible fallback on failure. They
 must preserve browser user activation across kernel settlement (for example,
-reserve a blank tab synchronously on the click, then navigate only after
-successful settlement). App iframe/Room gestures only create offers and never
+show a fresh Copy/Open button after successful settlement). App iframe/Room gestures only create offers and never
 count as the human's acceptance. Clients exposing acceptance require protocol
 400; unrelated clients keep their existing minimum version.

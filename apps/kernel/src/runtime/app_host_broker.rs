@@ -126,6 +126,8 @@ fn parse_action(method: &str, params: Value) -> Result<AppHostAction, RemoteErro
             let parsed = url::Url::parse(&url).map_err(|_| error("INVALID_ARGUMENT"))?;
             if !matches!(parsed.scheme(), "http" | "https")
                 || parsed.host_str().is_none()
+                || !parsed.username().is_empty()
+                || parsed.password().is_some()
                 || !url
                     .to_ascii_lowercase()
                     .starts_with(&format!("{}://", parsed.scheme()))
@@ -161,6 +163,9 @@ mod tests {
             "mailto:a@b",
             "//example.org",
             "https:example.org",
+            "https://trusted.example@evil.example/",
+            "https://user:password@example.org/",
+            "https://:password@example.org/",
             "https:///example.org",
             "https://example.org/\n",
             "https://example.org/\u{202e}abc",
@@ -178,6 +183,7 @@ mod tests {
             "https://example.org/a?b=%20#c",
             "HTTP://example.org",
             "http://localhost:8080",
+            "https://bücher.example/path",
         ] {
             assert_eq!(
                 parse_action("host.open_link", json!({"url":url})).unwrap(),

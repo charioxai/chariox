@@ -131,11 +131,20 @@ fn host_interaction(offer: &HostOffer) -> RuntimeInteraction {
             "Copy text from an App",
             format!("Text ({} UTF-8 bytes): {}", text.len(), visible_text(text)),
         ),
-        AppHostAction::OpenLink { url } => ("Open a link from an App", format!("Exact URL: {url}")),
+        AppHostAction::OpenLink { url } => {
+            let parsed = url::Url::parse(url).expect("host broker validates URLs");
+            (
+                "Open a link from an App",
+                format!(
+                    "Exact URL: {url}\nDestination host (ASCII): {}",
+                    parsed.host_str().unwrap_or_default()
+                ),
+            )
+        }
     };
     RuntimeInteraction::for_kernel_operation(
         format!("app_host_{}", offer.operation_id), format!("host_action:{}", offer.operation_id), title,
-        format!("An App asks you to accept this action in your terminal.\n\nInstallation: {}\n{detail}\n\nOnly {} (the App's owner) can answer. Accept in this terminal, or decline. In a text terminal: /app host accept {}\nNo clipboard contents are read. The action is taken once.", offer.installation, offer.owner, offer.operation_id),
+        format!("An App asks you to accept this action in your terminal.\n\nInstallation: {}\n{detail}\n\nOnly {} (the App's owner) can answer. Accept in this terminal, or decline. In a text terminal: close this panel (Esc), then /app host accept\nIf several offers are pending: /app host accept {}\nNo clipboard contents are read. The action is taken once.", offer.installation, offer.owner, offer.operation_id),
         vec![RuntimeInteractionChoice::new("decline", "Decline", "deny", None)],
     )
 }
@@ -172,6 +181,17 @@ mod tests {
             .contains("/app host accept op"));
         assert_eq!(wire["choices"].as_array().unwrap().len(), 1);
         assert!(wire.get("default_on_timeout").is_none());
+        offer.action = AppHostAction::OpenLink {
+            url: "https://bücher.example/path".into(),
+        };
+        let prompt = host_interaction(&offer);
+        assert!(prompt
+            .message()
+            .contains("Exact URL: https://bücher.example/path"));
+        assert!(prompt
+            .message()
+            .contains("Destination host (ASCII): xn--bcher-kva.example"));
+        assert!(prompt.message().contains("then /app host accept\n"));
         offer.action = AppHostAction::ClipboardWrite {
             text: "\u{1b}]52;c;evil\n\u{202e}".into(),
         };
