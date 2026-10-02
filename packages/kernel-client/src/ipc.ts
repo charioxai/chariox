@@ -35,6 +35,7 @@ import {
 } from "./kernel-subscriptions.js"
 import { readLocalKernelAuthToken } from "./local-kernel-auth-token.js"
 import { LocalIpcError } from "./local-ipc-error.js"
+import { waitsForKernelAuthorization } from "./kernel-authorization-request-policy.js"
 import { sendLocalSocketRequest } from "./local-socket-transport.js"
 import { createRelayKeypair, decryptRelayPayload } from "./relay-crypto.js"
 import {
@@ -496,13 +497,14 @@ export class LocalIpcClient {
   }
 
   private sendLocalSocket<TResponse>(request: unknown): Promise<TResponse> {
-    return sendLocalSocketRequest(this.socketPath, request, IPC_TIMEOUT_MS)
+    return sendLocalSocketRequest(this.socketPath, request, waitsForKernelAuthorization(request) ? 0 : IPC_TIMEOUT_MS)
   }
 
   private async sendWebSocket<TResponse>(request: unknown, lane: KernelSocketLane = "control"): Promise<TResponse> {
     const lifetime = this.requestLifetime.capture()
     const requestId = randomUUID()
-    const retryUntilMs = lane === "control"
+    const waitsForAuthorization = waitsForKernelAuthorization(request)
+    const retryUntilMs = lane === "control" && !waitsForAuthorization
       ? Date.now() + this.controlRequestRetryDeadlineMs
       : Date.now()
     let retryDelayMs = KERNEL_RECONNECT_BASE_DELAY_MS
@@ -526,8 +528,7 @@ export class LocalIpcClient {
       const pending = this.pendingRequests.register<TResponse>(
         requestId,
         lane,
-        this.socketPath.startsWith("ws+unix://") && typeof request === "object" && request !== null && "RequestKernelAccess" in request
-          ? 24 * 60 * 60 * 1000 : this.requestAttemptTimeoutMs(lane, retryUntilMs),
+        waitsForAuthorization ? 0 : this.requestAttemptTimeoutMs(lane, retryUntilMs),
       )
 
       try {

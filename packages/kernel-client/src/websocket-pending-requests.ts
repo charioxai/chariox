@@ -4,7 +4,7 @@ import { LocalIpcError } from "./local-ipc-error.js"
 export type PendingKernelRequest = {
   resolve: (value: unknown) => void
   reject: (error: LocalIpcError) => void
-  timeout: NodeJS.Timeout
+  timeout: NodeJS.Timeout | null
   relayPrivateKey: Buffer | null
   lane: KernelSocketLane
 }
@@ -26,7 +26,8 @@ export class KernelPendingRequestRegistry {
     timeoutMs = this.timeoutMs,
   ): RegisteredKernelRequest<TResponse> {
     const promise = new Promise<TResponse>((resolve, reject) => {
-      const timeout = setTimeout(() => {
+      // Zero disables the response timer for kernel-owned authorization waits.
+      const timeout = timeoutMs === 0 ? null : setTimeout(() => {
         const pending = this.pending.get(requestId)
         if (!pending) {
           return
@@ -66,7 +67,7 @@ export class KernelPendingRequestRegistry {
     if (!pending) {
       return null
     }
-    clearTimeout(pending.timeout)
+    if (pending.timeout) clearTimeout(pending.timeout)
     this.pending.delete(requestId)
     return pending
   }
@@ -78,7 +79,7 @@ export class KernelPendingRequestRegistry {
       this.pending.delete(requestId)
     }
     for (const [, pending] of pendingEntries) {
-      clearTimeout(pending.timeout)
+      if (pending.timeout) clearTimeout(pending.timeout)
       pending.reject(new LocalIpcError("kernel websocket", message, "connection_closed", true))
     }
   }

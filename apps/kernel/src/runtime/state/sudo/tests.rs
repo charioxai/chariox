@@ -322,6 +322,50 @@ async fn sudo_cannot_mint_authority_answer_sudo_popup_or_submit_passkeys() {
 }
 
 #[tokio::test]
+async fn sudo_cannot_pair_invite_or_read_or_replace_relay_identity() {
+    let f = fixture();
+    let turn = running(&f);
+    for value in [
+        serde_json::json!({"CreatePairingInvite":{"intent":"client"}}),
+        serde_json::json!({"JoinPairingInvite":{"invite_token":"fixture"}}),
+        serde_json::json!({"CreateTerminalPairingLink":{}}),
+        serde_json::json!({"JoinTerminalPairingLink":{"pairing_link":"fixture"}}),
+        serde_json::json!({"RecordPairedClient":{"client_id":"fixture","public_key_thumbprint":"fixture"}}),
+        serde_json::json!({"ApproveRemoteMachine":{"machine_ref":"fixture"}}),
+        serde_json::json!({"CreateSessionInvite":{"session_id":"fixture"}}),
+        serde_json::json!({"JoinSessionInvite":{"invite_token":"fixture","user_id":"fixture"}}),
+        serde_json::json!({"CreateCloudSessionInvite":{"session_id":"fixture"}}),
+        serde_json::json!({"AcceptCloudSessionInvite":{"invite_token":"fixture"}}),
+        serde_json::json!({"ConfigureRelay":{"relay_url":"wss://fixture.invalid","relay_token":"fixture"}}),
+        serde_json::json!({"CloudRelayStatus":null}),
+        serde_json::json!({"StartCloudRelayLogin":{"api_url":"https://fixture.invalid"}}),
+        serde_json::json!({"PollCloudRelayLogin":{"api_url":"https://fixture.invalid","device_code":"fixture"}}),
+        serde_json::json!({"LogoutCloudRelay":{}}),
+        serde_json::json!({"PairCloudRelayClient":{"client_id":"fixture"}}),
+        serde_json::json!({"PairCloudRelayMachine":{"machine_id":"fixture"}}),
+        serde_json::json!({"ConnectCloudRelay":null}),
+    ] {
+        let request: LocalDaemonRequest = serde_json::from_value(value.clone()).unwrap();
+        assert!(
+            f.state
+                .authorize_sudo_request(&turn.entry_id, &request)
+                .is_err(),
+            "sudo admitted {value}"
+        );
+        // Exercise the actual runtime MCP router as well as the policy check.
+        assert!(f
+            .router
+            .dispatch_authenticated_runtime_tool_call(
+                "sudo-fixture-bearer",
+                "chariox_kernel_request",
+                serde_json::json!({"request": value}),
+            )
+            .await
+            .is_err());
+    }
+}
+
+#[tokio::test]
 async fn sudo_busy_authorization_is_memory_only_and_revoke_all_prevents_dispatch() {
     let f = fixture();
     let running_turn = running(&f);
@@ -628,6 +672,8 @@ async fn sudo_runtime_mcp_uses_shared_router_and_removes_tool_at_yield() {
     for path in [
         "kernel_access.request_timeout_minutes",
         "credential_vault.path",
+        "relay.url",
+        "relay.accept_remote_leases",
     ] {
         assert!(f
             .state
