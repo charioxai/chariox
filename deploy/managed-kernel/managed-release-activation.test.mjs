@@ -405,7 +405,7 @@ esac
     ["home needs daemon-reload", { SYSTEMD_HOME_NEED_DAEMON_RELOAD: "yes" }, 1, /needs systemd daemon-reload/],
     ["worker needs daemon-reload", { SYSTEMD_WORKER_NEED_DAEMON_RELOAD: "yes" }, 1, /needs systemd daemon-reload/],
     ["unknown home reload state", { SYSTEMD_HOME_NEED_DAEMON_RELOAD: "unknown" }, 1, /could not verify systemd reload state/],
-    ["malformed worker reload state", { SYSTEMD_WORKER_NEED_DAEMON_RELOAD: "no\\nno" }, 1, /could not verify systemd reload state/],
+    ["malformed worker reload state", { SYSTEMD_WORKER_NEED_DAEMON_RELOAD: "no\nno" }, 1, /could not verify systemd reload state/],
     ["home reload query failure", { SYSTEMD_HOME_RELOAD_QUERY_FAIL: "1" }, 1, /could not inspect systemd reload state/],
     ["worker reload query failure", { SYSTEMD_WORKER_RELOAD_QUERY_FAIL: "1" }, 1, /could not inspect systemd reload state/],
     ["home drop-in query failure", { SYSTEMD_HOME_DROP_INS_QUERY_FAIL: "1" }, 1, /could not inspect effective systemd drop-ins/],
