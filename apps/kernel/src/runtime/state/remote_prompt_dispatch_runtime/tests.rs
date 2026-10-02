@@ -328,6 +328,7 @@ async fn accept_claim_test_worker_metadata(
     (discovery, request_id, peer_addr)
 }
 
+#[expect(clippy::too_many_arguments, reason = "Names independent relay identity, failure and ordering controls for this fixture.")]
 async fn accept_claim_test_prompt(
     listener: &TcpListener,
     worker_id: &str,
@@ -465,6 +466,7 @@ async fn accept_claim_test_prompt(
     )
 }
 
+#[expect(clippy::too_many_arguments, reason = "Names independent relay identity, failure and ordering controls for this fixture.")]
 async fn acknowledge_claim_test_prompt(
     peer: &mut WebSocketStream<TcpStream>,
     request_id: String,
