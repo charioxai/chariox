@@ -18,7 +18,7 @@ pub(crate) use policy::is_sudo_prompt;
 pub(crate) use receipts::sudo_approval_receipt;
 #[cfg(test)]
 mod tests;
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod process_tests;
 
 pub(super) type SudoStore = Arc<std::sync::Mutex<BTreeMap<String, KernelSudoTurn>>>;

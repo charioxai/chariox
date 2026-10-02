@@ -16,13 +16,15 @@ pub(super) async fn admit_frame(
     frame: &KernelIncomingFrame,
 ) -> Result<KernelCaller, ()> {
     let runtime_state = router.runtime_state();
-    let sudo = runtime_state.sudo_for_peer(peer).ok().filter(|turn| {
-        bound_grant
-            .lock()
-            .expect("bound grant poisoned")
-            .as_ref()
-            .is_none_or(|id| id == &turn.entry_id)
-    });
+    let bound = bound_grant.lock().expect("bound grant poisoned").clone();
+    let sudo = if bound.as_deref().is_none_or(|id| id.starts_with("sudo:")) {
+        runtime_state
+            .sudo_for_peer(peer)
+            .ok()
+            .filter(|turn| bound.as_ref().is_none_or(|id| id == &turn.entry_id))
+    } else {
+        None
+    };
     if let Some(turn) = sudo {
         let allowed = match frame {
             KernelIncomingFrame::Request { request, .. } => runtime_state
@@ -63,12 +65,7 @@ pub(super) async fn admit_frame(
         deny_frame(runtime, outgoing_tx, close_tx, close_requested, frame);
         return Err(());
     }
-    if bound_grant
-        .lock()
-        .expect("bound grant poisoned")
-        .as_ref()
-        .is_some_and(|id| id.starts_with("sudo:"))
-    {
+    if bound.as_deref().is_some_and(|id| id.starts_with("sudo:")) {
         deny_frame(runtime, outgoing_tx, close_tx, close_requested, frame);
         return Err(());
     }

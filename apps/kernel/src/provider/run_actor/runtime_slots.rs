@@ -24,7 +24,7 @@ impl ProviderRunRuntimeRegistry {
         self.clear_tombstone(&run_id);
         self.claude_processes
             .lock()
-            .expect("Claude process registry poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(run_id.clone(), state.process_identity_slot());
         self.claude_runs
             .lock()
@@ -102,11 +102,11 @@ impl ProviderRunRuntimeRegistry {
     )> {
         self.claude_processes
             .lock()
-            .expect("Claude process registry poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .filter_map(|(id, slot)| {
                 slot.lock()
-                    .expect("Claude process identity poisoned")
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .clone()
                     .map(|identity| (id.clone(), identity))
             })
@@ -116,7 +116,7 @@ impl ProviderRunRuntimeRegistry {
     pub(super) fn clear_runtime_state(&self, run_id: &str, stop_opencode: bool) {
         self.claude_processes
             .lock()
-            .expect("Claude process registry poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(run_id);
         clear_runtime_state(
             &self.claude_runs,
@@ -587,6 +587,39 @@ mod process_identity_tests {
     use crate::provider::{
         AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
     };
+
+    #[test]
+    fn claude_process_identity_registry_recovers_poisoned_map_and_slot() {
+        let registry = ProviderRunRuntimeRegistry::default();
+        let identity = crate::runtime::kernel_access::process::inspect(std::process::id())
+            .unwrap()
+            .0;
+        let slot = Arc::new(Mutex::new(Some(identity.clone())));
+        registry
+            .claude_processes
+            .lock()
+            .unwrap()
+            .insert("fixture".into(), slot.clone());
+        let map = registry.claude_processes.clone();
+        assert!(std::thread::spawn(move || {
+            let _guard = map.lock().unwrap();
+            panic!("fixture map poison");
+        })
+        .join()
+        .is_err());
+        assert!(std::thread::spawn(move || {
+            let _guard = slot.lock().unwrap();
+            panic!("fixture slot poison");
+        })
+        .join()
+        .is_err());
+        assert_eq!(
+            registry.claude_process_identities(),
+            vec![("fixture".into(), identity)]
+        );
+        registry.clear_runtime_state("fixture", false);
+        assert!(registry.claude_process_identities().is_empty());
+    }
 
     #[test]
     fn claude_launch_identity_survives_actor_lease_and_clear_blocks_late_restore() {
