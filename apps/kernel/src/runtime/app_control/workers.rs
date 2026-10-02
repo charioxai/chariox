@@ -26,11 +26,9 @@ pub(super) struct ActiveWorkers(
 
 impl ActiveWorkers {
     fn is_dormant(&self, owner: &str, installation: &str) -> bool {
-        self.1.lock().is_ok_and(|dormant| {
-            dormant
-                .get(&(owner.to_owned(), installation.to_owned()))
-                .is_some_and(|d| d.suspended)
-        })
+        self.1
+            .lock()
+            .is_ok_and(|dormant| dormant.contains_key(&(owner.to_owned(), installation.to_owned())))
     }
     fn forget_dormant(&self, owner: &str, installation: &str) {
         if let Ok(mut dormant) = self.1.lock() {
@@ -97,7 +95,8 @@ impl AppWorkerPublisher {
             .map(|d| d.configuration.clone())
     }
     /// Reserve bounded capacity before draining or invoking App code. Reserved
-    /// entries stay invisible until the successful suspension is committed.
+    /// catalogs remain discoverable while suspension is pending. Configuration
+    /// and wake-pump keys remain commit-only until suspension succeeds.
     pub(crate) fn reserve_dormant(
         &self,
         owner: &str,
@@ -215,7 +214,7 @@ impl AppControlService {
             |dormant| {
                 dormant
                     .iter()
-                    .filter(|((key_owner, _), d)| key_owner == owner && d.suspended)
+                    .filter(|((key_owner, _), _)| key_owner == owner)
                     .map(|(_, dormant)| dormant.catalog.clone())
                     .collect()
             },

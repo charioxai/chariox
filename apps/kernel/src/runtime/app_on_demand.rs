@@ -76,7 +76,9 @@ impl OnDemandApps<'_> {
                     Err(crate::runtime::app_lifecycle::LifecycleError::LiveLimit) => {
                         if !evicted {
                             evicted = true;
-                            self.evict_idle_app(owner, installation).await;
+                            if !self.evict_idle_app(owner, installation).await {
+                                return Err(unavailable());
+                            }
                         }
                     }
                     Err(_) => {
@@ -94,7 +96,7 @@ impl OnDemandApps<'_> {
 
     /// Stop the least-recently-used idle worker (other than the target),
     /// keeping it dormant, so an on-demand start can take its live slot.
-    async fn evict_idle_app(&self, owner: &str, installation: &str) {
+    async fn evict_idle_app(&self, owner: &str, installation: &str) -> bool {
         let control = self.control.clone();
         let now = crate::session::unix_epoch_ms();
         let mut leases = control.active_app_leases(None, 16);
@@ -125,7 +127,7 @@ impl OnDemandApps<'_> {
         })
         .await
         else {
-            return;
+            return false;
         };
         let lease = leases.swap_remove(index);
         drop(leases);
@@ -134,7 +136,7 @@ impl OnDemandApps<'_> {
         let victim_owner = lease.owner().to_owned();
         let catalog = lease.catalog().clone();
         drop(lease);
-        let _ = tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
             let installation = catalog.installation_id().to_owned();
             lifecycle.request_idle_stop_blocking(&victim_owner, catalog, || {
                 control
@@ -145,7 +147,10 @@ impl OnDemandApps<'_> {
                     && !store.has_deliverable_app_events(&victim_owner, &installation)
             })
         })
-        .await;
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or(false)
     }
 
     async fn app_start_failed(&self, owner: &str, installation: &str) -> bool {

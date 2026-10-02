@@ -305,8 +305,9 @@ impl AppLifecycleService {
         owner: &str,
         catalog: Arc<chariox_app_runtime::app_outbox::EventCatalog>,
         still_idle: impl Fn() -> bool,
-    ) -> Result<()> {
-        self.queue_idle_stop(owner, catalog, still_idle).map(|_| ())
+    ) -> Result<bool> {
+        self.queue_idle_stop(owner, catalog, still_idle)
+            .map(|request| request.is_some())
     }
     #[cfg(test)]
     pub(crate) fn idle_stop_blocking(

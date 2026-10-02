@@ -274,13 +274,17 @@ human, agent, event or wake work). Admission drains, then `suspend` receives
 `{reason:"idle"}` before the worker is reaped and its catalog becomes dormant.
 This is not a real shutdown notification. Wake scans and eviction queue at most
 one suspend per worker and return without waiting on App code. Dormant capacity
-is reserved before admission drains; a full set keeps the worker live. On-demand
+is reserved before admission drains; a full set keeps the worker live. The reserved
+catalog stays discoverable during suspension, and a tool call waits for its outcome
+before restarting. Only completed suspension exposes configuration snapshots and
+wake-pump dormant keys. On-demand
 reactivation starts a new
 contained process, runs startup, then `resume` with
 `{reason:"idle",configuration:{connections:[{generatorId,connectionId}]}}`
 before publishing callable handles. The shared caller waits up to 180 seconds
 for queued victim suspension/drain, preparation and the full callback sequence;
-each callback retains its own shorter deadline. Tool execution starts its separate
+each callback retains its own shorter deadline. If the live limit is full and no
+victim suspension can be queued, the call fails promptly. Tool execution starts its separate
 30-second admission budget after readiness. Real stops retain the shutdown notification.
 Host sleep/wake does not create a second trigger or authority path.
 

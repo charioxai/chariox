@@ -650,3 +650,99 @@ fn an_old_owner_exit_before_dispatch_does_not_cancel_an_approved_update() {
     control.lifecycle().shutdown_blocking().unwrap();
     assert!(all_reaped(&observations));
 }
+
+#[test]
+fn on_demand_call_during_suspend_keeps_discovery_and_waits_for_the_outcome() {
+    let (_scratch, runtime, store, control, observations) = setup(Mode::LifecycleHangSuspend);
+    let catalog = control
+        .active_app_lease("alice", "installed")
+        .unwrap()
+        .catalog()
+        .clone();
+    assert!(control
+        .lifecycle()
+        .request_idle_stop_blocking("alice", catalog, || true)
+        .unwrap());
+    wait(|| contains(&observations, 0, "suspend"));
+    assert!(control.active_app_lease("alice", "installed").is_none());
+    assert!(control.is_app_dormant("alice", "installed"));
+    assert_eq!(control.dormant_app_catalogs("alice").len(), 1);
+    assert!(control.dormant_app_keys().is_empty());
+    assert!(control
+        .lifecycle()
+        .0
+        .publisher
+        .dormant_configuration("alice", "installed")
+        .is_none());
+    runtime.block_on(async {
+        let lease = crate::runtime::app_on_demand::app_lease_on_demand(
+            &control,
+            &store,
+            "alice",
+            "installed",
+        );
+        tokio::pin!(lease);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(400), &mut lease)
+                .await
+                .is_err(),
+            "the call must wait for the retained suspension owner"
+        );
+        let lifecycle = control.lifecycle().clone();
+        tokio::task::spawn_blocking(move || lifecycle.shutdown_blocking())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(tokio::time::timeout(Duration::from_secs(2), lease)
+            .await
+            .unwrap()
+            .is_err());
+    });
+    assert!(!control.is_app_dormant("alice", "installed"));
+    assert!(control.dormant_app_catalogs("alice").is_empty());
+    assert_eq!(names(&frames(&observations, 0)), ["startup", "suspend"]);
+    assert!(all_reaped(&observations));
+}
+
+#[test]
+fn on_demand_full_live_limit_without_an_evictable_victim_fails_promptly() {
+    let (_scratch, runtime, store, control, observations) = setup(Mode::Lifecycle);
+    let catalog = control
+        .active_app_lease("alice", "installed")
+        .unwrap()
+        .catalog()
+        .clone();
+    control
+        .lifecycle()
+        .idle_stop_blocking("alice", catalog, || true)
+        .unwrap();
+    // Saturate the actual admission semaphore: no idle worker can be evicted.
+    let live = control
+        .lifecycle()
+        .0
+        .live
+        .clone()
+        .try_acquire_many_owned(LIVE_LIMIT as u32)
+        .unwrap();
+    let before = Instant::now();
+    runtime.block_on(async {
+        assert!(tokio::time::timeout(
+            Duration::from_secs(2),
+            crate::runtime::app_on_demand::app_lease_on_demand(
+                &control,
+                &store,
+                "alice",
+                "installed",
+            ),
+        )
+        .await
+        .unwrap()
+        .is_err());
+    });
+    assert!(before.elapsed() < Duration::from_secs(2));
+    assert!(control.is_app_dormant("alice", "installed"));
+    assert_eq!(observations.lock().unwrap().len(), 1);
+    drop(live);
+    control.lifecycle().shutdown_blocking().unwrap();
+    assert!(all_reaped(&observations));
+}
