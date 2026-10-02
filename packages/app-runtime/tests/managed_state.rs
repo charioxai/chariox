@@ -503,3 +503,47 @@ fn wakes_require_an_active_installation_and_are_bounded() {
         MAX_WAKES
     );
 }
+
+#[test]
+fn a_short_clock_correction_recovers_retries_in_due_order_after_reopen() {
+    let fixture = Database::new();
+    let mut db = fixture.open();
+    install(&mut db, "todo");
+    let now = 1_000_000;
+    apply_wakes(
+        &mut db,
+        "todo",
+        &[
+            wake("older-z", now, "r1"),
+            wake("newer-a", now + 60_000, "r1"),
+            wake("later", now + 3_600_000, "r1"),
+        ],
+    )
+    .unwrap();
+    let ahead = now + 1_000_000;
+    let due = due_wakes(&db, ahead, 8).unwrap();
+    for wake in &due {
+        defer_wake(&db, wake, ahead).unwrap();
+    }
+    // An unchanged clock must still honor real retry backoff.
+    assert!(due_wakes(&db, ahead, 8).unwrap().is_empty());
+    drop(db);
+    let db = fixture.open();
+    let corrected = now + 120_000;
+    let recovered = due_wakes(&db, corrected, 8).unwrap();
+    assert_eq!(
+        recovered
+            .iter()
+            .map(|w| (w.wake.id.as_str(), w.attempts))
+            .collect::<Vec<_>>(),
+        [("older-z", 1), ("newer-a", 1)]
+    );
+    for wake in &recovered {
+        complete_wake(&db, wake).unwrap();
+    }
+    assert!(due_wakes(&db, corrected, 8).unwrap().is_empty());
+    assert_eq!(
+        due_wakes(&db, now + 3_600_000, 8).unwrap()[0].wake.id,
+        "later"
+    );
+}
