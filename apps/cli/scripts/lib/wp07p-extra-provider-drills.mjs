@@ -61,7 +61,7 @@ export async function roomsExtra(input){
   await writeFile(path.join(out,'drill-e-command.json'),JSON.stringify({...e,setupPromptIds,fixture:{reloadDelayMs:3800,buttons:3000,counts:Object.fromEntries(counts)}} ,null,2)+'\n',{mode:0o600});
   await screenshot('drill-e-after');
   await (await import('./wp07p-drill-e-realism.mjs')).runERealism({...input,agentIds:[provider.agentId,...otherAgents],sameTabId:same.tab_id,otherTabId:other.tab_id,turn,waitFor,out});
-  for(const agentId of [provider.agentId,...otherAgents]){const diagnostic=await captureRoomProviderDiagnostic({...input,agentId});await writeFile(path.join(out,`e-provider-${agentId}.json`),JSON.stringify({mp_items,diagnostic},null,2)+'\n',{mode:0o600})}
+  for(const agentId of [provider.agentId,...otherAgents]){const diagnostic=await captureRoomProviderDiagnostic({...input,agentId,latestPromptCount:20});await writeFile(path.join(out,`e-provider-${agentId}.json`),JSON.stringify({mp_items,diagnostic},null,2)+'\n',{mode:0o600})}
   }
   if(process.env.ROOMS_E_ONLY)return;
   // The suite captures observations; independent CRM/result checks remain required.

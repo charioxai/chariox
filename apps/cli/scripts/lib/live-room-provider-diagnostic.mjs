@@ -17,6 +17,7 @@ const errorSignals = [
   "vault", "workspace",
 ].map(signal => [signal, new RegExp(`\\b${signal}\\b`, "i")])
 const diagnosticPatterns = [
+  ["stale_document", /stale_document_(?:revision|reference)/i],
   ["endpoint_unhealthy", /(?:codex|claude|opencode)_endpoint_unhealthy/i],
   ["provider_launch", /provider launch/i],
   ["unauthorized", /unauthorized|authentication failed|invalid api key/i],
@@ -136,7 +137,7 @@ export async function captureRoomProviderDiagnostic(input) {
     }
   })
   await section("history_unavailable", async () => {
-    const outline = await request(requests.getSessionHistoryOutlineRequest(sessionId, [agentId], 2), "SessionHistoryOutline")
+    const outline = await request(requests.getSessionHistoryOutlineRequest(sessionId, [agentId], input.latestPromptCount ?? 2), "SessionHistoryOutline")
     const turns = outline.agents?.find((item) => item.agent_id === agentId)?.turns ?? []
     if (turns.length > 2) result.truncated = true
     // History outlines are chronological. Spend the bounded blob budget on
