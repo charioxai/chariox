@@ -162,6 +162,7 @@ reimageTest("MP-02/MP-08/MP-11 stopped enrolled launch retains the selected seco
     assert.equal(harness.state().selectedKernelRef, "kernel-selected")
     assert.equal(requestCount(harness.replacement, "CreateSession"), 1)
     assert.equal(requestCount(harness.local, "CreateSession"), 0)
+    assert.equal(requestCount(harness.local, "RequestManagedEnvironmentLifecycle"), 1)
     assert.equal(requestCount(harness.replacement, "GetManagedContextLaunchTarget"), 0)
     assert.deepEqual(harness.attachments, [{ sessionId: "session-new", created: true }])
   } finally { harness.cleanup() }
@@ -240,6 +241,7 @@ function createHarness(router: TestRouter, options: {
   }
   let mutableClient!: MutableLocalIpcClient
   let observedThroughEndpoint: string | null = null
+  let environmentReads = 0
   const local = router.endpoint(LOCAL_ENDPOINT, async (request) => {
     switch (requestKind(request)) {
       case "GetWaitingRoomPublicSnapshot":
@@ -273,7 +275,7 @@ function createHarness(router: TestRouter, options: {
         return { ManagedEnvironmentReimageRequested: { result: reimageResult(replacementEnvironment, payload.idempotencyKey as string) } }
       }
       case "GetManagedEnvironment":
-        return { ManagedEnvironment: { environment: replacementEnvironment } }
+        return { ManagedEnvironment: { environment: options.stoppedEnrolled && environmentReads++ === 0 ? oldEnvironment : replacementEnvironment } }
       default:
         throw new Error(`unexpected local request ${requestKind(request)}`)
     }

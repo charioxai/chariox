@@ -192,3 +192,15 @@ function remote() {
     ],
   }
 }
+
+for (const observedState of ["stopped", "starting"] as const) {
+  test(`MP-02/MP-08/MP-11 enrolled ${observedState} placement retains its selected owner without online inventory`, () => {
+    const environment = { environmentId: "environment-1", name: "Enrolled",
+      desiredState: "stopped" as const, observedState, desiredRevision: 2, observedRevision: 2,
+      runtimeMachineId: "machine-1", runtimeKernelId: "kernel-1a", contextManifestDigest: "sha256:manifest" }
+    const state = { selectedMachineRef: managedEnvironmentMachineRef(environment.environmentId), selectedKernelRef: "kernel-1b" }
+    assert.equal(waitingRoomSelectedLaunchKernelRef(state, { managedEnvironments: [environment], kernels: [] }), "kernel-1b")
+    assert.equal(normalizeWaitingRoomLaunchPlacement(state, { managedEnvironments: [environment], kernels: [] }).selectedKernelRef, "kernel-1b")
+    assert.equal(waitingRoomSelectedLaunchKernelRef(state, { managedEnvironments: [{ ...environment, contextManifestDigest: null }], kernels: [] }), "")
+  })
+}

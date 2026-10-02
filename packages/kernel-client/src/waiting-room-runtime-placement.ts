@@ -27,6 +27,7 @@ export type WaitingRoomLaunchManagedEnvironmentInput = {
   observedRevision: number
   runtimeMachineId: string | null
   runtimeKernelId: string | null
+  contextManifestDigest?: string | null
 }
 
 export const NEW_MANAGED_MACHINE_REF = "managed:new"
@@ -131,6 +132,10 @@ export function waitingRoomSelectedLaunchKernelRef(
   const machineRef = waitingRoomSelectedLaunchMachineRef(state, remote)
   const options = waitingRoomLaunchKernelOptions(remote, machineRef)
   const selected = state.selectedKernelRef?.trim() || (machineRef === "local" ? "local" : "")
+  const environmentId = managedEnvironmentIdFromMachineRef(machineRef)
+  const environment = remote.managedEnvironments?.find((candidate) => candidate.environmentId === environmentId)
+  // MP-02/MP-08/MP-11: enrollment survives offline inventory during STOP/START.
+  if (environment?.contextManifestDigest && !managedEnvironmentIsReady(environment) && selected) return selected
   return options.some((option) => option.id === selected) ? selected : options[0]?.id ?? ""
 }
 
