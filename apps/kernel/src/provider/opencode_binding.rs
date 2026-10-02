@@ -1235,44 +1235,28 @@ fn resolve_initial_selection(
     run: &RuntimeProviderRun,
     client: &OpenCodeClient,
 ) -> Result<OpenCodeRunSelection, DaemonError> {
-    if run.model() != "default" && run.variant().is_some() {
-        crate::logging::debug_with_fields(
-            "daemon.provider.opencode",
-            "skipped configured defaults lookup for explicit model and variant",
-            serde_json::json!({
-                "provider_run_id": run.id(),
-                "requested_model": run.model(),
-                "requested_variant": run.variant(),
-            }),
-        );
-        return Ok(OpenCodeRunSelection::default());
-    }
-
-    let resolved = client.configured_defaults()?;
-    crate::logging::debug_with_fields(
-        "daemon.provider.opencode",
-        "checked opencode configured defaults",
-        serde_json::json!({
-            "provider_run_id": run.id(),
-            "requested_model": run.model(),
-            "requested_variant": run.variant(),
-            "selected_agent": resolved.selected_agent,
-            "agent_model": resolved.agent_model,
-            "agent_variant": resolved.agent_variant,
-            "top_level_model": resolved.top_level_model,
-            "resolved_model": resolved.model,
-            "resolved_variant": resolved.variant,
-        }),
-    );
-
-    Ok(OpenCodeRunSelection {
-        model: (run.model() == "default")
-            .then_some(resolved.model)
-            .flatten(),
-        variant: run
-            .variant()
-            .is_none()
-            .then_some(resolved.variant)
-            .flatten(),
-    })
+    let resolved = if run.model() != "default" && run.variant().is_some() {
+        OpenCodeConfiguredDefaults::default()
+    } else {
+        client.configured_defaults()?
+    };
+    let requested_model = if run.model() == "default" {
+        resolved.model.as_deref()
+    } else {
+        Some(run.model())
+    };
+    let model = client.validated_model(requested_model)?;
+    // A configured variant belongs to its configured model, not any explicit selection.
+    let variant = run
+        .variant()
+        .is_none()
+        .then(|| {
+            if run.model() == "default" || resolved.model.as_deref() == model.as_deref() {
+                resolved.variant
+            } else {
+                None
+            }
+        })
+        .flatten();
+    Ok(OpenCodeRunSelection { model, variant })
 }

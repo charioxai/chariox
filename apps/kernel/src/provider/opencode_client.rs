@@ -8,6 +8,7 @@ mod health;
 mod http;
 mod mcp;
 mod message;
+mod model_selection;
 mod prompt_request;
 mod session;
 
@@ -75,16 +76,28 @@ mod tests {
         OpenCodeClient, OpenCodeEvent, OpenCodeMessageInfo, OpenCodeSelectedModel,
     };
 
+    fn respond_to_model_catalog(listener: &TcpListener) {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut request = [0_u8; 2048];
+        let count = stream.read(&mut request).unwrap();
+        assert!(String::from_utf8_lossy(&request[..count]).starts_with("GET /provider "));
+        let payload = serde_json::json!({"all": [{"id": "opencode", "name": "OpenCode",
+            "models": {"gpt-5.4": {"id": "gpt-5.4", "name": "Test model"}}}],
+            "default": {}, "connected": ["opencode"]})
+        .to_string();
+        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}", payload.len()).unwrap();
+    }
+
     #[test]
     fn parses_provider_model_ids() {
         assert_eq!(
             parse_model(Some("anthropic/claude-sonnet-4")),
             Ok(Some(("anthropic", "claude-sonnet-4")))
         );
-        assert_eq!(
-            parse_model(Some("gpt-5.4")),
-            Ok(Some(("opencode", "gpt-5.4")))
-        );
+        assert_eq!(parse_model(Some("gpt-5.4")), Err("gpt-5.4"));
         assert_eq!(parse_model(Some("default")), Ok(None));
         assert_eq!(parse_model(None), Ok(None));
     }
@@ -350,6 +363,7 @@ mod tests {
             .port();
 
         let server = thread::spawn(move || {
+            respond_to_model_catalog(&listener);
             let (mut stream, _) = listener.accept().expect("client should connect");
             stream
                 .set_read_timeout(Some(Duration::from_secs(1)))
@@ -425,6 +439,7 @@ mod tests {
             .port();
 
         let server = thread::spawn(move || {
+            respond_to_model_catalog(&listener);
             let (mut stream, _) = listener.accept().expect("client should connect");
             stream
                 .set_read_timeout(Some(Duration::from_secs(1)))
