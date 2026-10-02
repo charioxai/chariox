@@ -2,8 +2,20 @@ use super::*;
 use crate::local::AgentSubstituteAction;
 use crate::provider::{LaunchProviderRequest, ProviderRunState};
 
-async fn configured_runtime() -> (Arc<Mutex<DaemonApp>>, KernelRuntimeState, String, String) {
-    let (app, runtime, session, agent) = agent_config_runtime().await;
+async fn configured_runtime() -> (
+    Arc<Mutex<DaemonApp>>,
+    KernelRuntimeState,
+    String,
+    String,
+    crate::test_support::TestWorktree,
+) {
+    let worktree = crate::test_support::TestWorktree::new("workspace-substitute-launch");
+    let (app, runtime, session, agent) = agent_config_runtime_in_worktree(
+        crate::config::DaemonConfig::for_tests(),
+        crate::session::DEFAULT_LOCAL_USER_ID,
+        worktree.session_request(),
+    )
+    .await;
     runtime
         .update_agent_profile(
             &session,
@@ -32,7 +44,7 @@ async fn configured_runtime() -> (Arc<Mutex<DaemonApp>>, KernelRuntimeState, Str
         )
         .await
         .unwrap();
-    (app, runtime, session, agent)
+    (app, runtime, session, agent, worktree)
 }
 
 fn start_stub(runtime: &KernelRuntimeState, session: &str, agent: &str) -> String {
@@ -62,7 +74,7 @@ fn start_stub(runtime: &KernelRuntimeState, session: &str, agent: &str) -> Strin
 
 #[tokio::test]
 async fn substitute_list_edits_do_not_interrupt_the_running_profile() {
-    let (app, runtime, session, agent) = configured_runtime().await;
+    let (app, runtime, session, agent, _worktree) = configured_runtime().await;
     let old = start_stub(&runtime, &session, &agent);
     sync_active_prompt(&app, &session, &agent).await;
     for action in [
@@ -95,7 +107,7 @@ async fn substitute_list_edits_do_not_interrupt_the_running_profile() {
 #[tokio::test]
 async fn workflow_rotation_does_not_copy_another_providers_adapter() {
     for fresh in [false, true] {
-        let (_app, runtime, session, agent) = configured_runtime().await;
+        let (_app, runtime, session, agent, _worktree) = configured_runtime().await;
         let old = start_stub(&runtime, &session, &agent);
         runtime
             .owned
