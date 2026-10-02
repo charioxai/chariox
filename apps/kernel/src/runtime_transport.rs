@@ -1168,8 +1168,10 @@ async fn handle_incoming_payload(
     } else {
         None
     };
-    let connection_class = if external_caller.is_some() {
-        KernelConnectionClass::ExternalAgent
+    let connection_class = if let Some(caller) = external_caller.as_ref() {
+        caller
+            .connection_class
+            .unwrap_or(KernelConnectionClass::Unauthenticated)
     } else {
         connection_class
     };
@@ -1202,7 +1204,8 @@ async fn handle_incoming_payload(
                 causation_id.clone(),
                 &request,
             );
-            let fingerprint = (connection_class != KernelConnectionClass::ExternalAgent
+            let fingerprint = (peer.is_none()
+                && connection_class != KernelConnectionClass::ExternalAgent
                 && request_is_cacheable(&request))
             .then(|| CommandFingerprint::from_command_and_request(&command, &request));
             if let Some(fingerprint) = fingerprint.as_ref() {

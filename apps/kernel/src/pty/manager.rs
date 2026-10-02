@@ -384,6 +384,8 @@ impl PtyManager {
             command.cwd(working_directory);
         }
 
+        // portable-pty calls setsid before exec on Unix, including sandbox
+        // wrappers. Keep its controlling-terminal and isolation setup intact.
         let mut child = crate::process_spawn::spawn_pty(pair.slave, command).map_err(|error| {
             DaemonError::PtySpawn {
                 provider_run_id: request.provider_run_id.clone(),

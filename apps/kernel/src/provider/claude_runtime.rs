@@ -100,6 +100,11 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
             usage_file,
             last_usage_file_contents: None,
             mcp_config_file,
+            process_identity: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::runtime::kernel_access::process::inspect(child.id())
+                    .ok()
+                    .map(|(identity, _)| identity),
+            )),
             child,
             stdin,
             receiver,
@@ -442,6 +447,10 @@ fn restart_claude_runtime(
     state: &mut ClaudeRuntimeState,
     operation: &'static str,
 ) -> Result<(), DaemonError> {
+    *state
+        .process_identity
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     stop_child(&mut state.child);
     let resume_session_id = state
         .session_id
@@ -469,6 +478,13 @@ fn restart_claude_runtime(
         working_directory.as_ref(),
         operation,
     )?;
+    *state
+        .process_identity
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+        crate::runtime::kernel_access::process::inspect(child.id())
+            .ok()
+            .map(|(identity, _)| identity);
     state.child = child;
     state.stdin = stdin;
     state.receiver = receiver;
@@ -608,6 +624,7 @@ mod tests {
                 usage_file: None,
                 last_usage_file_contents: None,
                 mcp_config_file: None,
+                process_identity: std::sync::Arc::new(std::sync::Mutex::new(None)),
                 child,
                 stdin,
                 receiver,
@@ -822,6 +839,8 @@ cat >/dev/null
 
         let mut binding = initialize_claude_runtime(&run)
             .expect("Claude runtime should materialize and launch its MCP config");
+        let identity_slot = binding.state.process_identity_slot();
+        let launch_identity = identity_slot.lock().unwrap().clone().unwrap();
         let config_path = binding
             .state
             .args
@@ -856,6 +875,10 @@ cat >/dev/null
 
         restart_claude_runtime(&run, &mut binding.state, "test_claude_restart")
             .expect("Claude runtime should restart");
+        let restarted_identity = identity_slot.lock().unwrap().clone().unwrap();
+        assert_eq!(restarted_identity.pid, binding.state.child.id());
+        assert_ne!(restarted_identity, launch_identity);
+        assert!(!launch_identity.alive());
         assert!(
             config_path.is_file(),
             "restart must retain the active config file"

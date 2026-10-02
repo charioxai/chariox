@@ -34,6 +34,15 @@ impl ProviderProcessService {
         }
     }
 
+    pub(crate) fn launched_process_identities(
+        &self,
+    ) -> Vec<(
+        String,
+        crate::runtime::kernel_access::process::ProcessIdentity,
+    )> {
+        self.run_actor_mailbox.claude_process_identities()
+    }
+
     pub fn registry(&self) -> &ProviderRegistry {
         &self.registry
     }

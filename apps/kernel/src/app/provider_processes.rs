@@ -95,6 +95,11 @@ impl<'a> ProviderProcessTracker<'a> {
         let process_key = self.app.pty.process_key(run.id())?;
         let pid = self.app.pty.process_id(run.id())?;
         let process_id = format!("managed:{}:{}", run.provider(), process_key);
+        let identity = pid.and_then(|pid| {
+            crate::runtime::kernel_access::process::inspect(pid)
+                .ok()
+                .map(|(identity, _)| identity)
+        });
         let mut tracking = self.app.provider_process_tracking.write();
         let entry = tracking
             .processes
@@ -102,6 +107,7 @@ impl<'a> ProviderProcessTracker<'a> {
             .or_insert_with(|| TrackedProviderProcess {
                 process_id: process_id.clone(),
                 pid,
+                identity,
                 endpoint_mode: run.endpoint_mode(),
                 process_label: run.process_label().to_string(),
                 started_at_ms: run.started_at_ms(),
