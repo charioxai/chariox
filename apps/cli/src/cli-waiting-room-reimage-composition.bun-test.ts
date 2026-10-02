@@ -309,7 +309,9 @@ function createHarness(router: TestRouter, options: {
     switch (requestKind(request)) {
       case "GetWaitingRoomPublicSnapshot":
         return snapshotResponse(options.stoppedEnrolled ? "kernel-selected" : "kernel-new",
-          options.stoppedEnrolled ? "machine-old" : "machine-new", contextPlan)
+          options.stoppedEnrolled ? "machine-old" : "machine-new", contextPlan,
+          options.stoppedEnrolled ? [{ kernel_id: "kernel-old", machine_id: "machine-old" },
+            { kernel_id: "kernel-selected", machine_id: "machine-old" }] : [])
       case "ListSlices":
         return { SlicesListed: { slices: [] } }
       case "ListManagedEnvironmentCatalog":
@@ -510,7 +512,8 @@ function resolveTargets(endpoint: TestEndpoint) {
     })
 }
 
-function snapshotResponse(kernelId: string, machineId: string, plan: ManagedEnvironmentContextPlan) {
+function snapshotResponse(kernelId: string, machineId: string, plan: ManagedEnvironmentContextPlan,
+  kernels: Array<{ kernel_id: string; machine_id: string }> = []) {
   return {
     WaitingRoomPublicSnapshot: {
       snapshot: {
@@ -527,7 +530,7 @@ function snapshotResponse(kernelId: string, machineId: string, plan: ManagedEnvi
         }] : [],
         relay_status: relayStatusFor(kernelId, machineId),
         remote_machines: [],
-        remote_kernels: [],
+        remote_kernels: kernels,
         terminals: [],
         provider_accounts: [],
         git_credentials: [],
