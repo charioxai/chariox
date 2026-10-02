@@ -10,7 +10,7 @@ export const PRIVATE_ENVIRONMENT = Object.freeze({
 
 const PUBLIC_ENVIRONMENT = new Set([
   "PATH", "HOME", "USER", "LANG", "LC_ALL", "DISPLAY", "TERM", "SHELL",
-  "DEBIAN_FRONTEND", "NODE_VERSION", "YARN_VERSION", "CHARIOX_SLICE_ROOT", "CHARIOX_SLICE_SELKIES_BIN",
+  "DEBIAN_FRONTEND", "NODE_VERSION", "YARN_VERSION", "PULSE_RUNTIME_PATH", "CHARIOX_SLICE_ROOT", "CHARIOX_SLICE_SELKIES_BIN",
   "CHARIOX_SLICE_VIEWER_BACKEND", "CHARIOX_SLICE_DISPLAY_MODE", "CHARIOX_SLICE_DISPLAY_SERVER",
   "CHARIOX_SLICE_NOVNC_PORT", "CHARIOX_SLICE_SCREEN_GEOMETRY",
   "CHARIOX_SLICE_MIN_FREE_MB", "CHARIOX_MANAGED_WORKSPACE_ROOT_COUNT",
@@ -63,6 +63,7 @@ export function verifyProtectedCaptureLayout(inspect, receipt, trustedBaseDigest
     if (values.has(name) || (!PUBLIC_ENVIRONMENT.has(name) && !/^CHARIOX_MANAGED_WORKSPACE_ROOT_[0-9]+$/.test(name))) refuse()
     const value = assignment.slice(separator + 1)
     if (["NODE_VERSION", "YARN_VERSION"].includes(name) && !/^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$/.test(value)) refuse()
+    if (name === "PULSE_RUNTIME_PATH" && value !== "/tmp/chariox-pulse-runtime") refuse()
     if (name === "CHARIOX_SLICE_DISPLAY_SERVER" && !["xorg", "xvfb"].includes(value.toLowerCase())) refuse()
     values.set(name, value)
   }
