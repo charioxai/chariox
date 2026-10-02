@@ -6,11 +6,16 @@ export function roomProviderToolName(value) {
 
 export function roomProviderToolOutput(value) {
   try {
-    const output = typeof value === "string" ? JSON.parse(value) : value
+    const decode = value => {
+      for (let depth = 0; depth < 3 && typeof value === "string"; depth++) value = JSON.parse(value)
+      return value && typeof value === "object" ? value : null
+    }
+    const output = decode(value)
+    if (output?.structuredContent != null) return decode(output.structuredContent)
     if (!Array.isArray(output?.content)) return output
     const texts = output.content.filter(item => item?.type === "text" && typeof item.text === "string")
     // Ambiguous, non-JSON and image-only results cannot establish business data.
-    return texts.length === 1 ? JSON.parse(texts[0].text) : null
+    return texts.length === 1 ? decode(texts[0].text) : null
   } catch {
     return null
   }
