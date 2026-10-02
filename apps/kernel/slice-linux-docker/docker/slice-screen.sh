@@ -125,6 +125,24 @@ clear_chromium_profile_locks() {
   fi
 }
 
+stop_desktop_audio() {
+  stop_process_pattern '(^|/)pulseaudio([[:space:]]|$)'
+  if process_running '(^|/)pulseaudio([[:space:]]|$)'; then
+    log "PulseAudio did not stop before snapshot"
+    return 1
+  fi
+  # PulseAudio's per-machine runtime link points outside the durable home.
+  # Remove only these links after its writers stop, never their targets or
+  # persistent audio settings. The protected home scanner rejects them.
+  local pulse_config="${XDG_CONFIG_HOME:-$HOME/.config}/pulse"
+  local link
+  for link in "$pulse_config"/*-runtime; do
+    if [[ -L "$link" && "${link##*/}" =~ ^[a-f0-9]{32}-runtime$ ]]; then
+      rm -- "$link"
+    fi
+  done
+}
+
 chromium_has_restorable_session() {
   local default_profile="$CHROME_PROFILE/Default"
   if [[ -d "$default_profile/Sessions" ]] \
@@ -242,6 +260,7 @@ start_desktop() {
   stop_process_pattern '(^|/)tint2([[:space:]]|$)'
   stop_process_pattern "chromium.*$CHROME_PROFILE"
   stop_process_pattern "/usr/lib/chromium/chromium"
+  stop_desktop_audio
   stop_process_pattern "Xvfb $DISPLAY_ID"
   rm -f "/tmp/.X${DISPLAY_ID#:}-lock" "/tmp/.X11-unix/X${DISPLAY_ID#:}"
 
@@ -333,6 +352,7 @@ stop_desktop() {
   done
   stop_process_pattern "chromium.*$CHROME_PROFILE"
   stop_process_pattern "/usr/lib/chromium/chromium"
+  stop_desktop_audio
   stop_process_pattern "websockify.*127\\.0\\.0\\.1:$VNC_PORT"
   stop_process_pattern "websockify.*$NOVNC_PORT"
   stop_process_pattern "x11vnc.*$DISPLAY_ID"
