@@ -3081,6 +3081,12 @@ impl KernelRuntimeState {
         let dispatch_owns_active_prompt = self
             .owned
             .prompt_dispatch_matches_active_prompt(&dispatch)?;
+        if dispatch_owns_active_prompt {
+            let run = self.owned.provider_store.get_run(&dispatch.provider_run_id)?;
+            if self.try_provider_auth_recovery(&run, &error.to_string(), Some(&dispatch.prompt_id)).await? {
+                return Ok(());
+            }
+        }
         let failed_provider_run = dispatch_owns_active_prompt
             .then(|| {
                 self.owned

@@ -908,6 +908,33 @@ impl CommandRouter {
         .await
     }
 
+    pub(crate) async fn relay_update_native_interaction(
+        &self,
+        worker_id: &str,
+        context: crate::transport::relay_peer::RemoteNativeInteractionContext,
+        interaction_id: String,
+        login: Option<crate::session::RuntimeProviderLogin>,
+    ) -> Result<(), DaemonError> {
+        self.runtime_state
+            .authorize_forwarded_interaction(worker_id, &context)?;
+        if login
+            .as_ref()
+            .is_some_and(|login| login.kernel_id != worker_id)
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "update provider login interaction",
+                message: "login execution kernel mismatch".into(),
+            });
+        }
+        self.runtime_state
+            .update_forwarded_provider_login_interaction(
+                &context.home_session_id,
+                &context.home_agent_id,
+                &interaction_id,
+                login,
+            )
+    }
+
     pub(crate) async fn relay_forward_native_interaction(
         &self,
         worker_id: &str,

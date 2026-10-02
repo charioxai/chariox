@@ -381,3 +381,6 @@ async fn mcp_catalog_reregistration_marks_existing_grant_pending_synchronously()
         .remove(agent.id());
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[cfg(unix)]
+mod credential_copy_recovery;

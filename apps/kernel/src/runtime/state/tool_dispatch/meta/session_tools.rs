@@ -22,7 +22,8 @@ impl KernelRuntimeState {
             .active_interactions()
             .iter()
             .filter(|interaction| {
-                interaction.agent_id() != agent.id()
+                !interaction.provider_login_is_human_only()
+                    && interaction.agent_id() != agent.id()
                     && self
                         .owned
                         .agent_store
@@ -309,6 +310,14 @@ impl KernelRuntimeState {
                 }),
             });
         };
+        if interaction.provider_login_is_human_only() {
+            return Ok(RuntimeToolResult {
+                ok: false,
+                payload: serde_json::json!({
+                    "error": "Provider login requires a human response on the execution machine",
+                }),
+            });
+        }
         if interaction.agent_id() == metaagent.id() {
             return Ok(RuntimeToolResult {
                 ok: false,

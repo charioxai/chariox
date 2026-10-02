@@ -16,6 +16,9 @@ use sha2::{Digest, Sha256};
 
 use crate::error::DaemonError;
 
+#[path = "account_copy_notice.rs"]
+mod copy_notice;
+
 const REGISTRY_VERSION: u32 = 1;
 const SUPPORTED_PROVIDERS: [&str; 3] = ["codex", "claude", "opencode"];
 const MAX_MATERIALIZATION_BYTES: usize = 64 * 1024 * 1024;
@@ -842,6 +845,8 @@ struct ReplacedProviderAccountProfile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RegistryDocument {
     version: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    credential_copy_notices: Vec<copy_notice::CredentialCopyNotice>,
     #[serde(default)]
     profiles: Vec<StoredProviderAccountProfile>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -860,6 +865,7 @@ impl Default for RegistryDocument {
     fn default() -> Self {
         Self {
             version: REGISTRY_VERSION,
+            credential_copy_notices: Vec::new(),
             profiles: Vec::new(),
             pending_replica_cleanup: Vec::new(),
         }

@@ -28,6 +28,7 @@ mod opencode_client;
 mod opencode_runtime;
 mod process_info;
 mod prompt_signals;
+pub(crate) mod renewal_failure;
 mod registry;
 mod run_actor;
 mod runtime_run;

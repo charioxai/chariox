@@ -85,6 +85,23 @@ impl KernelRuntimeOwnedState {
         Ok(())
     }
 
+    pub(super) fn update_provider_login_interaction(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        login: crate::session::RuntimeProviderLogin,
+    ) -> Result<(), DaemonError> {
+        let mut session = self.session_store.get_session(session_id)?;
+        let Some(interaction) = session.remove_active_interaction(interaction_id) else {
+            return Ok(());
+        };
+        session.add_active_interaction(interaction.with_provider_login(login));
+        self.restore_session_and_publish_projection(session)?;
+        self.terminal_stream
+            .notify_terminal_projection_change(session_id);
+        Ok(())
+    }
+
     pub(super) fn resolve_runtime_interaction(
         &self,
         session_id: &str,

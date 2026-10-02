@@ -54,6 +54,16 @@ pub(crate) fn classify_provider_terminal_failure_text(
     if !matches!(adapter_key, "claude" | "codex" | "opencode") {
         return None;
     }
+    if super::renewal_failure::renewal_failed(adapter_key, text) {
+        let code = if super::renewal_failure::oauth_renewal_evidence(text) {
+            "refresh_token_invalidated"
+        } else {
+            "provider_authentication_failed"
+        };
+        return Some(format!(
+            "Provider authentication failed; log in on this machine ({code})"
+        ));
+    }
     if let Some(failure) = classify_provider_substitutable_failure_text(adapter_key, text) {
         return Some(failure);
     }

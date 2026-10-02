@@ -20,6 +20,7 @@ mod project_environment_manifest;
 mod project_environment_setup;
 mod prompt_settings;
 mod provider_account_credential;
+mod provider_auth_recovery;
 mod provider_usage_activity;
 mod publication;
 mod recall_terminal_metaagent;

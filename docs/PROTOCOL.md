@@ -207,6 +207,24 @@ Existing providers like OpenCode may continue to be adapted through their native
 
 ## 3.3.2 Native TUI Agents
 
+MP-08 / MP-10 / MP-11 (owner decision 2026-10-02): credential copying remains
+unchanged across leased workers, managed-context imports and slices, including
+profile-scoped Claude Keychain export and the Vault setup-token remote path.
+Receiving kernels publish one non-blocking notice per renewable account and
+Machine about possible refresh-token invalidation. API keys and Claude setup
+tokens do not receive it. There is no credential sync or shared refresh authority.
+A failed native renewal raises one kernel-owned `Log in to <Provider> on this
+machine` RuntimeInteraction. Accepting invokes the existing official login on
+the execution kernel; login success reloads the official harness and resumes the admitted Chariox turn.
+Protocol v376 adds optional ephemeral `RuntimeInteraction.provider_login`
+(receiving Kernel ID, official `ProviderLoginStart`, bounded terminal output).
+Challenges and masked native responses are human-only, excluded from model
+context, history and logs. Relay peer v68 updates/dismisses that projection
+through the existing lease-authorized native-interaction bridge. Standalone
+kernels use the same local path; no external auth coordinator is required.
+Existing clients retain their minimum versions; rendering this optional login
+projection requires v376. Older peer kernels reject the changed bridge version.
+
 Native TUI agents let a user run a familiar provider CLI UI while the Chariox kernel remains the session authority.
 
 Current commands:

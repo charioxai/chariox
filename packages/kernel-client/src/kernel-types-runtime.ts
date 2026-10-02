@@ -120,6 +120,7 @@ export type AgentForkPayload = {
 }
 
 export type RuntimeInteraction = {
+  provider_login?: import("./provider-login-projection.js").RuntimeProviderLogin | null
   project_environment_review?: ProjectEnvironmentReview | null
   id: string
   agent_id: string

@@ -145,6 +145,7 @@ struct KernelRuntimeOwnedState {
     legacy_workflow_history: crate::app::LegacyWorkflowHistoryStore,
     provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
     provider_login_processes: ProviderLoginProcessStore,
+    provider_auth_recovery_runs: Arc<std::sync::Mutex<BTreeSet<String>>>,
     event_connection_registry: crate::event_connection::EventConnectionRegistry,
     prompt_state_owner: crate::runtime::prompt_state::PromptStateOwner,
     active_turns: ActiveTurnStore,
@@ -325,6 +326,7 @@ mod project_environment_setup;
 #[cfg(test)]
 mod provider_output_runtime_tests;
 mod provider_prompt_failure_runtime;
+mod provider_auth_recovery;
 mod provider_prompt_settlement_runtime;
 mod provider_substitute_runtime;
 mod relay_peer_runtime_state;
@@ -686,6 +688,7 @@ impl KernelRuntimeState {
                 legacy_workflow_history,
                 provider_account_profiles,
                 provider_login_processes: ProviderLoginProcessStore::default(),
+                provider_auth_recovery_runs: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
                 prompt_state_owner,
                 active_turns,
                 prompt_activity,

@@ -692,6 +692,38 @@ home transfer carries credentials only, never provider configuration files.
 The reserved builder's slice-port flock is retired. A host-port collision recreates
 the lane-owned slice and retries at most three times.
 
+## Locked decision for 2026-10-02: provider credential copies and local login recovery
+
+MP-08 / MP-10 / MP-11: keep the existing credential-copy mechanisms for remote
+leases, managed contexts (including scoped Claude Keychain export), and slices.
+There is no cross-kernel or central refresh/login dependency and no ongoing
+credential synchronization. Prefer non-rotating credentials wherever Chariox
+already supports them; keep the Claude Vault setup-token remote path.
+
+When a renewable OAuth login is copied, Web and TUI show one short,
+non-blocking notice per account per receiving machine: `<Provider> credentials
+on <machine> were copied from <source machine>. The provider may invalidate one
+copy when another refreshes; you may need to log in on this machine later.`
+API keys and Claude setup tokens do not receive that notice.
+
+The execution kernel detects failed renewal and raises one shared
+`Log in to <Provider> on this machine` RuntimeInteraction. A human acceptance
+starts the official provider login on that same machine through the existing
+login paths. Login challenges and masked terminal responses are human-only;
+authentication success reloads the official harness and resumes the admitted
+turn. Credentials remain on that machine.
+
+MP-08 / MP-10 / MP-11 acceptance requires both:
+
+- [ ] A fake-OAuth drill returning `refresh_token_reused` proves the once-only
+  notice, detection, shared interaction, official login invoked by the correct
+  execution kernel, resume, and unchanged source credentials. Source tests
+  establish these seams only; they do not close the signed-release matrix.
+- [ ] An owner-gated REAL drill (Codex at least) on a remote or managed machine
+  prompts through Web/TUI and lets the owner perform the official login there.
+  Record exact release/source identities, successful resume, and absence of
+  credential synchronization. Agents must not perform the owner's real login.
+
 ## Product and architecture decisions
 
 ### One Room environment

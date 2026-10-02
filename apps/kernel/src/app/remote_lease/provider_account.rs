@@ -192,6 +192,13 @@ impl RemoteLeaseRuntime<'_> {
                 &materialization.profile.provider,
                 &materialization.profile.profile_id,
             )?;
+        self.app
+            .provider_account_profile_registry()
+            .record_credential_copy(
+                &lease.owner_user_id,
+                &materialization,
+                &context.home_kernel_id,
+            )?;
         self.app.durable_state_store().append_event(
             "provider_account.materialized",
             Some(lease.id),

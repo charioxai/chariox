@@ -763,6 +763,17 @@ The live validation path for this boundary is `pnpm --filter @chariox/cli run pr
 
 ### 5.3.2 Native TUI Client Interface
 
+MP-08 / MP-10 / MP-11: renewable provider-login copies receive a once-only,
+non-blocking receiving-Machine notice. Copy mechanisms, profile-scoped Claude
+Keychain export, API-key support and the Claude Vault setup-token path are
+unchanged. Each execution kernel owns renewal-failure detection, one shared
+RuntimeInteraction and its official provider login. Web/TUI render ephemeral
+login challenges and masked native responses through that interaction; they
+own no auth or resume policy. After successful login the kernel reloads the
+official harness and retries the
+same admitted Chariox turn. Credentials stay on that machine; independent
+kernels have no credential synchronization or shared refresh authority.
+
 Some agents can be launched through a provider-native TUI client interface, for example `chariox codex [session-ref]`, `chariox opencode [session-ref]`, or `chariox claude [session-ref]`.
 
 Boundary rules:

@@ -78,7 +78,7 @@ pub use types::{
     PromptDetachEffect, PromptOrigin, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
     QueuedMetaagentTask, RuntimeInteraction, RuntimeInteractionChoice,
     RuntimeInteractionChoiceStyle, RuntimeInteractionCustomChoice, RuntimeInteractionInputKind,
-    RuntimeInteractionKind, RuntimeInteractionLevel, RuntimeSession, RuntimeWorktreeAssignment,
+    RuntimeInteractionKind, RuntimeInteractionLevel, RuntimeProviderLogin, RuntimeSession, RuntimeWorktreeAssignment,
     SchedulerState, SessionAgentDefaults, SessionCollaborationAgentCounts, SessionConfigState,
     SessionExecutionMode, SessionInvite, SessionMember, SessionStatus, WorkflowArtifactRef,
     WorkflowCanvasLayout, WorkflowCanvasLayoutPatch, WorkflowCanvasPoint,

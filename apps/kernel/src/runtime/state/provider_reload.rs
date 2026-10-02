@@ -309,7 +309,7 @@ fn provider_reload_snapshot_is_still_current(
     !has_active_prompt && current_run.is_some_and(|run| run.id() == expected_run_id)
 }
 
-fn policy_reload_launch_request(
+pub(super) fn policy_reload_launch_request(
     run: &crate::provider::RuntimeProviderRun,
     agent_id: &str,
     durable_resume_state: crate::provider::ProviderResumeState,

@@ -838,13 +838,23 @@ fn import_provider_accounts(
             })?;
             let mut accounts = Vec::with_capacity(materializations.len());
             for materialization in materializations {
-                match target.registry.materialize_managed_context_replica(
-                    &target.owner_user_id,
-                    &request.expected_binding.plan.context_id,
-                    &request.expected_package_sha256,
-                    materialization,
-                ) {
-                    Ok(receipt) => accounts.push(receipt),
+                match target
+                    .registry
+                    .materialize_managed_context_replica(
+                        &target.owner_user_id,
+                        &request.expected_binding.plan.context_id,
+                        &request.expected_package_sha256,
+                        materialization,
+                    )
+                    .and_then(|receipt| {
+                        accounts.push(receipt);
+                        target.registry.record_credential_copy(
+                            &target.owner_user_id,
+                            materialization,
+                            &request.expected_binding.source_kernel_id,
+                        )
+                    }) {
+                    Ok(()) => {}
                     Err(error) => {
                         let imported =
                             ManagedContextImportedProviderAccounts::Selected { accounts };

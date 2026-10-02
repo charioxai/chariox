@@ -10,6 +10,7 @@ import type {
   AgentInstance,
   RuntimeInteraction,
 } from "./cli-types.js"
+import { providerLoginLines } from "@chariox/kernel-client/provider-login-projection"
 import { projectEnvironmentReviewLines } from "@chariox/kernel-client/project-environment-review"
 import { renderInteractionCustomChoiceValue } from "./interaction-custom-choice-render.js"
 import {
@@ -102,7 +103,7 @@ function renderInteractionStrip(
     const timeoutSuffix = interaction.timeout_sec
       ? ` • timeout ${interaction.timeout_sec}s`
       : ""
-    messageLine.content = `${interaction.project_environment_review ? projectEnvironmentReviewLines(interaction.project_environment_review).join("\n") : interaction.message}${timeoutSuffix}`
+    messageLine.content = `${interaction.project_environment_review ? projectEnvironmentReviewLines(interaction.project_environment_review).join("\n") : interaction.message}${interaction.provider_login ? "\n" + providerLoginLines(interaction.provider_login).join("\n") : ""}${timeoutSuffix}`
     box.add(titleLine)
     box.add(messageLine)
     renderInteractionChoices(options, box, interaction, focused)

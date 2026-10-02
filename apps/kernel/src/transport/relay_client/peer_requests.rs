@@ -1540,6 +1540,29 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::UpdateNativeInteraction {
+            context,
+            interaction_id,
+            login,
+        } => {
+            match router
+                .relay_update_native_interaction(
+                    stable_peer_daemon_id(from_daemon_id),
+                    context,
+                    interaction_id,
+                    login,
+                )
+                .await
+            {
+                Ok(()) => RelayPeerResponse::NativeInteractionUpdated {},
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    }
+                }
+            }
+        }
         RelayPeerRequest::ForwardNativeInteraction {
             context,
             interaction,

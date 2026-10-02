@@ -35,6 +35,7 @@
     "./workflow-publication-package-digest": "./dist/workflow-publication-package-digest.js",
     "./provider-namespace-command": "./dist/provider-namespace-command.js",
     "./provider-namespace-submit-policy": "./dist/provider-namespace-submit-policy.js",
+    "./provider-login-projection": "./dist/provider-login-projection.js",
     "./provider-status": "./dist/provider-status.js",
     "./queued-prompt-controls": "./dist/queued-prompt-controls.js",
     "./queued-prompt-strip-state": "./dist/queued-prompt-strip-state.js",
