@@ -619,14 +619,27 @@ async fn local_metaagent_task_pause_and_abort_cancel_active_prompt_inner() {
         .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
     let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
-    launch_test_provider(
+    let provider_run = launch_test_provider(
         &mut app,
         session.id(),
         metaagent.id(),
         "dev-stub",
         "dev-stub",
-        "meta-model",
+        "controlled-cancel-idle",
     );
+    // Hold completion until the test explicitly removes the fixture process.
+    // Await terminal setup before delivering a prompt so PTY echo cannot
+    // manufacture response content or settle the turn before cancellation.
+    crate::app::ProviderLaunchProcessRuntime::new(&mut app)
+        .spawn_for_launch(&provider_run)
+        .expect("controlled cancellation provider should start");
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while !workspace.join("controlled-cancel-ready").exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("controlled cancellation provider should disable echo");
     let app = Arc::new(Mutex::new(app));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
 
@@ -779,6 +792,10 @@ async fn local_metaagent_task_pause_and_abort_cancel_active_prompt_inner() {
             "{reason} must be durable across kernel restart"
         );
     }
+    app.lock()
+        .await
+        .pty_processes_mut()
+        .remove_process(provider_run.id());
 }
 
 #[test]
