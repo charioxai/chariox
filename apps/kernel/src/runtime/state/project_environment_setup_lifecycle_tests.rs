@@ -97,12 +97,14 @@ impl Drop for WorkerCommandGateCleanup {
 #[cfg(unix)]
 #[tokio::test]
 async fn public_setup_lifecycle_validates_supplied_definition_through_worker_boundary() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle(DefinitionScenario::Supplied).await;
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn public_setup_lifecycle_runs_on_an_ordinary_local_worker_without_cloud_receipt() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle_at_role(
         DefinitionScenario::Supplied,
         KernelRuntimeRole::General,
@@ -113,18 +115,21 @@ async fn public_setup_lifecycle_runs_on_an_ordinary_local_worker_without_cloud_r
 #[cfg(unix)]
 #[tokio::test]
 async fn public_setup_lifecycle_generates_definition_through_worker_boundary() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle(DefinitionScenario::Generated).await;
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn public_setup_lifecycle_reuses_unchanged_recipe_and_lockfile_inputs_without_utility() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle(DefinitionScenario::SuppliedInputReuse).await;
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn public_setup_lifecycle_repairs_stale_and_missing_inputs_before_ready() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle(DefinitionScenario::SuppliedStaleInputs).await;
     exercise_public_setup_lifecycle(DefinitionScenario::SuppliedMissingInputs).await;
 }
@@ -132,30 +137,35 @@ async fn public_setup_lifecycle_repairs_stale_and_missing_inputs_before_ready() 
 #[cfg(unix)]
 #[tokio::test]
 async fn public_setup_lifecycle_repairs_legacy_unattested_definition_before_ready() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle(DefinitionScenario::SuppliedLegacyUnattested).await;
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn public_setup_lifecycle_repairs_definition_for_followup_worker_without_utility() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle(DefinitionScenario::SuppliedSetupFailure).await;
 }
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn public_setup_cancellation_restores_ordinary_provider_without_retry() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle_with_options(DefinitionScenario::Supplied, false, None).await;
 }
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn pr364_generated_validation_failure_restores_previous_provider_snapshot() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle_with_candidate_failure(CandidateFailureMode::Validation).await;
 }
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn pr364_generated_validation_cancellation_restores_previous_provider_snapshot() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle_with_candidate_failure(CandidateFailureMode::Cancellation)
         .await;
 }
@@ -163,6 +173,7 @@ async fn pr364_generated_validation_cancellation_restores_previous_provider_snap
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn pr364_public_setup_second_restart_spawn_failure_restores_the_previous_provider_child() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle_with_second_restart_failure(
         ProviderLifecycleFailureStage::Spawn,
     )

@@ -33,7 +33,17 @@ impl Scratch {
         Self(path)
     }
     fn store(&self) -> DurableKernelStateStore {
-        DurableKernelStateStore::open_owned(self.0.join("kernel.sqlite")).unwrap()
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match DurableKernelStateStore::open_owned(self.0.join("kernel.sqlite")) {
+                Ok(store) => return store,
+                Err(crate::error::DaemonError::LocalTransport {
+                    operation: "durable_state.acquire_owner",
+                    ..
+                }) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+                Err(error) => panic!("released lifecycle fixture should reopen: {error}"),
+            }
+        }
     }
 }
 impl Drop for Scratch {

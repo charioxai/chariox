@@ -795,6 +795,7 @@ mod tests {
 
     #[tokio::test]
     async fn completed_agent_computer_input_reconciles_enabled_browser_controller_tabs() {
+        crate::test_support::isolated_env_test!();
         let tools = TestTools::new("agent-success");
         let _screen_tool = install_screen_tool(&tools.screen_tool);
         let mut room = TestRoom::new("agent-success");
@@ -825,6 +826,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn agent_computer_input_skips_reconcile_while_another_action_is_running_or_queued() {
+        crate::test_support::isolated_env_test!();
         let tools = TestTools::new("agent-busy");
         let _screen_tool = install_screen_tool(&tools.screen_tool);
         let mut room = TestRoom::new("agent-busy");
