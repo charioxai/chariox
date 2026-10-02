@@ -114,26 +114,15 @@ impl Fixture {
 #[test]
 #[ignore = "dedicated hosted Linux root setup: installs tiny signed bytes, never executes them"]
 fn hosted_install_signed_graph_for_storage_views() {
-    assert_eq!(std::env::var("GITHUB_ACTIONS").unwrap(), "true");
-    assert_eq!(
-        std::env::var("RUNNER_ENVIRONMENT").unwrap(),
-        "github-hosted"
-    );
-    assert_eq!(
-        std::env::var("GITHUB_REPOSITORY").unwrap(),
-        "charioxai/chariox"
-    );
-    assert_eq!(
-        std::env::var("CHARIOX_STORAGE_HOSTED").unwrap(),
-        "fixed-production-helper"
-    );
+    crate::storage_drill_fixture::require_dedicated_machine();
     assert_eq!(unsafe { libc::getuid() }, 0);
     assert_eq!(unsafe { libc::geteuid() }, 0);
     // Refuse to overwrite any existing trust authority, even in a marked runner.
     assert!(!Path::new("/etc/chariox/apps/runtime-enrollment.json")
         .try_exists()
         .unwrap());
-    let fixture = Fixture::at("/var/lib/chariox-runtime-fixture".into());
+    let mut fixture = Fixture::at("/var/lib/chariox-runtime-fixture".into());
+    fixture.key = crate::storage_drill_fixture::signing_key([71; 32]);
     let source = fixture.source("hosted-storage-views-only");
     let receipt = RuntimeInstaller::install(
         &source.path,
