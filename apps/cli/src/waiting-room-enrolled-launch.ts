@@ -9,6 +9,9 @@ export function prepareWaitingRoomEnrolledLaunch(options: {
   assertActive(): void
   prepareProjectEnvironment(session: RuntimeSession, assertActive: () => void): Promise<void>
 }): WaitingRoomPreparedManagedLaunch {
+  if (options.launch.ownerKernelRef && options.launch.ownerKernelRef !== options.prepared.kernelId) {
+    throw new Error("The connected enrolled kernel does not match the Waiting Room owner selection.")
+  }
   const { managedEnvironment: _managedEnvironment, ...ordinaryLaunch } = options.launch
   return {
     launch: {

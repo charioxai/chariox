@@ -57,3 +57,14 @@ test("MP-08/MP-11 enrolled CLI launch without Project selection avoids transfer 
   await h.prepared.prepareProject({} as RuntimeSession)
   assert.deepEqual(h.calls, [])
 })
+
+test("MP-02/MP-08/MP-11 enrolled adapter rejects a connection that replaced the selected owner", () => {
+  const h = harness()
+  assert.throws(() => prepareWaitingRoomEnrolledLaunch({
+    launch: { ...h.launch, ownerKernelRef: "selected-second-kernel" },
+    prepared: { kind: "enrolled", kernelId: "bootstrap-home-kernel",
+      environment: { runtimeMachineId: "enrolled-machine" } as ManagedEnvironmentSummary,
+      commit: async () => {}, rollback: async () => {} },
+    assertActive() {}, prepareProjectEnvironment: async () => {},
+  }), /does not match the Waiting Room owner selection/)
+})
