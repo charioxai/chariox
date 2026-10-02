@@ -269,6 +269,9 @@ const quotaRuntimeAssets = [...new Set([
   ),
 ])].sort()
 
+const brokerRuntimeAssets = await localEsmImportClosure(repositoryRoot,
+  "apps/kernel/slice-linux-docker/managed-docker-broker.mjs")
+
 async function makeFixture(root, variant = "", { dockerfileContents, omitQuotaAsset } = {}) {
   const kernel = join(root, "chariox-kernel")
   const supervisor = join(root, "chariox-managed-bootstrap")
@@ -292,11 +295,8 @@ async function makeFixture(root, variant = "", { dockerfileContents, omitQuotaAs
     ["apps/aegs-dummy/Cargo.toml", "[package]\nname = \"aegs-fixture\"\n"],
     ["apps/kernel/Cargo.toml", "[package]\nname = \"kernel-fixture\"\n"],
     ["apps/kernel/slice-linux-docker/docker/Dockerfile", dockerfileContents ?? "FROM fixture@sha256:0000000000000000000000000000000000000000000000000000000000000000\n"],
-    [
-      "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
-      await readFile(join(repositoryRoot, "apps/kernel/slice-linux-docker/managed-docker-broker.mjs")),
-    ],
-    ...await Promise.all(["slice-command-guard.py", "managed-extension-build.py", "managed-home-archive-stream.mjs", "managed-home-archive-digest.mjs", "home-archive-policy.json", "docker-image-reference.mjs", "docker-image-reference.json"].map(async (name) => {
+    ...await Promise.all(brokerRuntimeAssets.map(async (path) => [path, await readFile(join(repositoryRoot, path))])),
+    ...await Promise.all(["slice-command-guard.py", "managed-extension-build.py", "managed-home-archive-stream.mjs", "managed-home-archive-digest.mjs", "home-archive-policy.json", "docker-cpu-policy.json", "docker-image-reference.mjs", "docker-image-reference.json"].map(async (name) => {
       const path = `apps/kernel/slice-linux-docker/${name}`
       return [path, await readFile(join(repositoryRoot, path))]
     })),
@@ -1079,7 +1079,7 @@ test("Path-1 bootstrap and data-volume artifacts are signed and selected by imag
   const disconnectedBrokerDigest = `sha256:${createHash("sha256").update(disconnectedBrokerManifestBytes).digest("hex")}`
   const disconnectedBroker = runVerifier(releaseRoot, disconnectedBrokerDigest, fixture.trustedPublicKey, "path1", fixture.trustedBuilderPublicKey)
   assert.equal(disconnectedBroker.status, 1)
-  assert.match(disconnectedBroker.stderr, /must restart the one-shot broker before launch/)
+  assert.match(disconnectedBroker.stderr, /missing or overrides ExecStartPre=-\+\/usr\/bin\/systemctl restart chariox-slice-broker\.service/)
   await writeFile(path1UnitPath, path1Unit)
   await writeFile(manifestPath, originalManifestBytes)
   await writeFile(signaturePath, originalSignature)
