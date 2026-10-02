@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { drillEnvironment } from "./environment.mjs";
 
 export function checked(command, args, { timeout = 30000, env = process.env } = {}) {
   // GNU timeout owns the command group throughout execution. Never send a
@@ -15,13 +16,14 @@ export function checked(command, args, { timeout = 30000, env = process.env } = 
 export const docker = (args, options) => checked("docker", args, options);
 
 export function loadOwner(scratch) {
-  assert.equal(process.env.GITHUB_ACTIONS, "true", "hosted drill only");
+  const executionEnvironment = drillEnvironment();
   scratch = realpathSync(scratch);
   assert.equal(dirname(scratch), realpathSync(process.env.RUNNER_TEMP));
   assert.match(basename(scratch), /^chariox-chromium\.[A-Za-z0-9]+$/);
   const bytes = readFileSync(join(scratch, "owner.json"));
   assert.ok(bytes.length < 16384);
   const owner = JSON.parse(bytes);
+  assert.equal(owner.executionEnvironment, executionEnvironment);
   assert.match(owner.id, /^[a-f0-9]{24}$/);
   assert.equal(owner.image, `chariox-chromium-drill:${owner.id}`);
   return owner;

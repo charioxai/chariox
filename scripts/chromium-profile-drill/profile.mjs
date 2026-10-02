@@ -36,12 +36,18 @@ async function browserTask(mode) {
 }
 
 const mode = process.argv[2];
-if (!["seed", "verify", "revoked", "empty"].includes(mode)) throw new Error("invalid profile drill mode");
+if (!["seed", "verify", "revoked", "empty", "absent"].includes(mode)) throw new Error("invalid profile drill mode");
 const socket = await connect();
 try {
-  const url = "http://127.0.0.1:8765/app.html";
+  const fragment = process.argv[3] || "";
+  if (fragment && !/^fallback-(initial|restored)$/.test(fragment)) throw new Error("invalid fallback phase");
+  const url = "http://127.0.0.1:8765/app.html" + (fragment ? `#${fragment}` : "");
   const findTarget = async () => (await socket.send("Target.getTargets")).targetInfos.find(target => target.type === "page" && target.url === url);
   let target = await findTarget();
+  if (mode === "absent") {
+    if (target) throw new Error("fallback target already exists before launch");
+    console.log(JSON.stringify({ targetAbsent: true, targetUrl: url }));
+  } else {
   // Session restoration is asynchronous after the production launcher starts.
   // A verification turn must observe the saved tab instead of creating one
   // that could hide a restore failure or race a delayed restored target.
@@ -67,5 +73,6 @@ try {
   if (JSON.stringify([observed.authenticated, observed.cookie, observed.localStorage, observed.indexedDB]) !== JSON.stringify(expected)) {
     throw new Error(`unexpected fixture state: ${JSON.stringify(observed)}`);
   }
-  console.log(JSON.stringify({ mode, ...observed, sessionTabRestored }));
+  console.log(JSON.stringify({ mode, ...observed, sessionTabRestored, targetUrl: url, targetId: target.targetId }));
+  }
 } finally { socket.close(); }

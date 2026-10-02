@@ -3,6 +3,9 @@ import { appendFileSync, chmodSync, readFileSync, statSync, writeFileSync } from
 import { join } from "node:path";
 import { checked, cleanup, docker, loadOwner } from "./resources.mjs";
 import { source } from "./prepare.mjs";
+import { restoreScript } from "./restore.mjs";
+import { createHash } from "node:crypto";
+import { runController } from "./controller.mjs";
 
 const [mode, scratch] = process.argv.slice(2);
 const owner = loadOwner(scratch);
@@ -28,7 +31,7 @@ function create(role, home, extra = []) {
 function startBrowser(id, name) {
   docker(["start", id]);
   execute(id, ["bash", "/opt/chariox-slice/slice-screen.sh", "start"], 90);
-  const sandbox = JSON.parse(execute(id, ["node", "/opt/chariox-slice/chromium-sandbox-probe.mjs"], 30));
+  const sandbox = JSON.parse(execute(id, ["node", "/opt/chariox-drill/chromium-sandbox-probe.mjs"], 30));
   assert.equal(sandbox.chromiumSandboxVerified, true);
   const config = JSON.parse(docker(["inspect", "--format", "{{json .HostConfig}}", id]));
   assert.equal(config.Memory, 2 * 1024 ** 3);
@@ -40,19 +43,44 @@ function startBrowser(id, name) {
   assert.deepEqual(JSON.parse(config.SecurityOpt.find(option => option.startsWith("seccomp=")).slice(8)), JSON.parse(readFileSync(policy)));
   record(name, { ...sandbox, resourcesVerified: true });
 }
-function profile(id, action, name) {
-  const result = JSON.parse(execute(id, ["node", "/opt/chariox-drill/profile.mjs", action], 30));
+function profile(id, action, name, target = "") {
+  const result = JSON.parse(execute(id, ["node", "/opt/chariox-drill/profile.mjs", action, target], 30));
   record(name, result);
   return result;
 }
 
+function fallback(id, name, fragment) {
+  assert.equal(profile(id, "absent", `${name}-target-absent`, fragment).targetAbsent, true);
+  // Disable only this owned fixture's CDP URL helper to exercise the actual
+  // production same-profile launch fallback; always restore the packaged bytes.
+  execute(id, ["mv", "/opt/chariox-slice/browser-cdp.mjs", "/opt/chariox-slice/browser-cdp.mjs.disabled"], 5, "root");
+  try {
+    execute(id, ["bash", "/opt/chariox-slice/slice-screen.sh", "open-url", `http://127.0.0.1:8765/app.html#${fragment}`], 30);
+    profile(id, "verify", name, fragment);
+  } finally {
+    execute(id, ["mv", "/opt/chariox-slice/browser-cdp.mjs.disabled", "/opt/chariox-slice/browser-cdp.mjs"], 5, "root");
+  }
+}
+
 try {
+  record("environment", { executionEnvironment: owner.executionEnvironment, coordinatorUid: process.getuid(),
+    dockerSecurityOptions: JSON.parse(docker(["info", "--format", "{{json .SecurityOptions}}"])),
+    ownedLinuxRoomValidated: false, protectedRootlessTopologyValidated: false });
   const firstVolume = volume("source");
   const first = create("source", firstVolume);
   startBrowser(first, "initial-sandbox");
+  try {
+    record("exact-target-controller", runController(scratch, first));
+  } finally {
+    // Controller namespace entry is the last step that needs the leased UID.
+    // Revoke traversal before creating any stopped-home archive.
+    chmodSync(scratch, 0o700);
+  }
+  assert.equal(statSync(scratch).mode & 0o777, 0o700);
   writeFileSync(join(evidence, "versions.txt"), execute(first, ["bash", "-lc", "node --version; chromium --version; dpkg-query -W chromium chromium-sandbox; uname -r"]));
   profile(first, "seed", "seed");
   profile(first, "verify", "initial-storage");
+  fallback(first, "initial-fallback-storage", "fallback-initial");
   execute(first, ["bash", "/opt/chariox-slice/slice-screen.sh", "stop"], 90);
   assert.equal(execute(first, ["bash", "-lc", "pgrep -af '/usr/lib/chromium/chromium' | grep -v pgrep | grep -v defunct || true"]), "");
   // The archive contains the whole stopped home, including Local State,
@@ -64,21 +92,29 @@ try {
   docker(["stop", "--time", "10", first]);
   docker(["rm", first]);
 
-  const restoredVolume = volume("restored");
-  // Exercise the actual production restore action. Its Docker create calls get
-  // additional hosted resource limits and our cleanup label through this shim.
-  writeFileSync(join(scratch, "bin/docker"), `#!/usr/bin/env bash\nset -euo pipefail\nif [[ "$1" == create ]]; then shift; exec /usr/bin/docker create --network none --memory 512m --memory-swap 512m --cpus 1 --pids-limit 128 --label '${label}' "$@"; fi\nexec /usr/bin/docker "$@"\n`);
+  const restoredVolume = `chariox-chromium-${owner.id}-restored`;
+  // Invoke the production initial-home functions through a test-only adapter.
+  // Production creates the fresh volume and verifies its archive/token labels.
+  // The shim only adds helper resource limits and our cleanup ownership label.
+  writeFileSync(join(scratch, "bin/docker"), `#!/usr/bin/env bash\nset -euo pipefail\nif [[ "$1" == create ]]; then shift; exec /usr/bin/docker create --network none --memory 512m --memory-swap 512m --cpus 1 --pids-limit 128 --label '${label}' "$@"; fi\nif [[ "$1" == volume && "$2" == create ]]; then shift 2; exec /usr/bin/docker volume create --label '${label}' "$@"; fi\nexec /usr/bin/docker "$@"\n`);
   chmodSync(join(scratch, "bin/docker"), 0o700);
-  checked("bash", [join(source, "provision-linux-docker-slice.sh"), "restore-migration-home"], { timeout: 360000, env: {
+  const provisioner = readFileSync(join(source, "provision-linux-docker-slice.sh"));
+  assert.equal(createHash("sha256").update(restoreScript(provisioner.toString("utf8"))).digest("hex"), owner.inputs["restore-script"]);
+  checked("bash", ["-c", restoreScript(provisioner.toString("utf8"))], { timeout: 360000, env: {
     PATH: `${join(scratch, "bin")}:${process.env.PATH}`, HOME: join(scratch, "home"), TMPDIR: join(scratch, "tmp"),
     CHARIOX_SLICE_NAME: `chariox-chromium-${owner.id}`, CHARIOX_SLICE_HOME_VOLUME: restoredVolume,
     CHARIOX_SLICE_DOCKER_IMAGE: owner.image, CHARIOX_SLICE_SAVED_HOME_ARCHIVE: archive,
-    CHARIOX_SLICE_CHROMIUM_MIGRATION_ID: owner.id,
   } });
+  const restoredLabels = JSON.parse(docker(["volume", "inspect", "--format", "{{json .Labels}}", restoredVolume]));
+  assert.equal(restoredLabels["io.chariox.chromium-drill"], owner.id);
+  assert.equal(restoredLabels["io.chariox.saved-home.archive-sha256"], createHash("sha256").update(readFileSync(archive)).digest("hex"));
+  assert.match(restoredLabels["io.chariox.saved-home.initialization-token"], /^[a-f0-9]{64}$/);
+  record("production-initial-home-restore", { archiveIdentityVerified: true, initializationTokenVerified: true, privateScratchVerified: true, fullRestoreStateActionValidated: false });
   const restored = create("restored", restoredVolume);
   startBrowser(restored, "restored-sandbox");
   const restoredState = profile(restored, "verify", "restored-storage");
   assert.equal(restoredState.sessionTabRestored, true, "the production launcher did not restore the saved fixture tab");
+  fallback(restored, "restored-fallback-storage", "fallback-restored");
   profile(restored, "revoked", "server-revocation-negative");
   execute(restored, ["bash", "/opt/chariox-slice/slice-screen.sh", "stop"], 90);
   docker(["stop", "--time", "10", restored]);
