@@ -2503,12 +2503,24 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         ProjectEnvironmentSetupPhase::Requested
     );
     let cancel_during_missing_status_operation_id = "setup-cancel-during-missing-status";
+    let cancellation_fixture_request = StartProjectEnvironmentSetupRequest {
+        operation_id: cancel_during_missing_status_operation_id.to_string(),
+        ..start_request.clone()
+    };
+    // Model an already-retained operation whose original dispatch was lost.
+    // A fresh public Start spawns a task that may not run until reconnection;
+    // that legitimate initial dispatch is unrelated to Get/Cancel recovery.
+    let cancellation_fixture_execution = runtime
+        .prepare_setup_execution(cancellation_fixture_request.clone(), "user-1")
+        .expect("prepare retained cancellation fixture");
+    runtime
+        .owned
+        .project_environment_setups
+        .begin(cancellation_fixture_execution)
+        .expect("retain cancellation fixture without an outstanding original dispatch");
     let started_cancel_during_missing_status = runtime
         .execute_project_environment_setup_request(
-            LocalDaemonRequest::StartProjectEnvironmentSetup(StartProjectEnvironmentSetupRequest {
-                operation_id: cancel_during_missing_status_operation_id.to_string(),
-                ..start_request.clone()
-            }),
+            LocalDaemonRequest::StartProjectEnvironmentSetup(cancellation_fixture_request),
             "user-1",
         )
         .await
