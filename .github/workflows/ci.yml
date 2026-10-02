@@ -92,7 +92,11 @@ jobs:
         run: cargo test -p chariox-kernel client_protocol_conformance -- --nocapture
 
       - name: Release session project assignment regression
-        run: cargo test --release -p chariox-kernel --lib visible_session_project_assignment_survives_release_builds -- --nocapture
+        # MP-08/MP-10: partition the large kernel test crate for the CI compiler;
+        # keep release optimization and disabled debug assertions unchanged.
+        run: >-
+          cargo --config 'profile.release.package.chariox-kernel.codegen-units=256'
+          test --release -p chariox-kernel --lib visible_session_project_assignment_survives_release_builds -- --nocapture
 
       - name: Clippy
         run: |
