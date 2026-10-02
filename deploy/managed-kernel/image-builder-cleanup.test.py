@@ -5,6 +5,9 @@ import hashlib
 import importlib.util
 from pathlib import Path
 import unittest
+from unittest import mock
+from types import SimpleNamespace
+import stat
 
 
 spec = importlib.util.spec_from_file_location('cleanup_guard', Path(__file__).with_name('image-builder-cleanup.py'))
@@ -71,6 +74,24 @@ class FakeProvider:
 
 
 class CleanupTests(unittest.TestCase):
+    def test_receipt_task_directory_requires_private_mode(self):
+        # Exercise parent admission without opening any receipt or authority file.
+        receipt = Path('/protected/task/receipt.json')
+        for mode in [0o700, 0o750, 0o755]:
+            with self.subTest(mode=mode):
+                def metadata(path):
+                    return SimpleNamespace(st_uid=0, st_mode=stat.S_IFDIR | (mode if path == receipt.parent else 0o755))
+                with mock.patch.object(Path, 'lstat', autospec=True, side_effect=metadata), \
+                     mock.patch.object(guard.os, 'open', side_effect=RuntimeError('file-open seam admitted')) as opened:
+                    if mode == 0o700:
+                        with self.assertRaisesRegex(RuntimeError, 'file-open seam admitted'):
+                            guard.protected_bytes(receipt, 16384, private_parent=True)
+                        opened.assert_called_once()
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'task directory must have mode 0700'):
+                            guard.protected_bytes(receipt, 16384, private_parent=True)
+                        opened.assert_not_called()
+
     def test_timestamp_remains_compatible_with_creator_timer(self):
         for suffix in ['Z', '+00:00']:
             self.assertEqual(datetime.fromtimestamp(guard.timestamp('2026-09-27T20:00:00' + suffix), timezone.utc),
