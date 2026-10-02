@@ -1,11 +1,14 @@
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
 import path from "node:path"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import test from "node:test"
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const root = process.env.HIDDENINPUT_BUILD_ROOT ?? path.resolve(here, "../../..")
+const { setProviderAccountCredentialRequest } = await import(pathToFileURL(path.join(root, "packages/kernel-client/dist/ipc-requests.js")).href)
+const setupRunSupported = process.env.HIDDENINPUT_SETUP_RUN === "1"
+  || setProviderAccountCredentialRequest("claude", "default", "", false, {}, true).SetProviderAccountCredential.run === true
 const python = String.raw`
 import errno, fcntl, json, os, pathlib, pty, select, signal, struct, subprocess, tempfile, termios, time
 
@@ -79,7 +82,7 @@ with tempfile.TemporaryDirectory(prefix='hiddeninput-pty-', dir=state_root) as s
 for (const [surface, command] of [
   ["shell", "credential"], ["shell", "setup"], ["shell", "cancel"],
   ["tui", "credential"], ["tui", "setup"], ["tui", "login"], ["tui", "embedded"], ["tui", "cancel"],
-  ...(process.env.HIDDENINPUT_SETUP_RUN === "1" ? [["shell", "run"], ["tui", "run"]] : []),
+  ...(setupRunSupported ? [["shell", "run"], ["tui", "run"]] : []),
 ]) {
   test(`MP-08/MP-10/MP-11 ${surface} ${command}: secret absent from PTY output`, () => {
     const result = spawnSync("python3", ["-c", python, root,

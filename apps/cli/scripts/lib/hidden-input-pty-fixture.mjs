@@ -12,6 +12,7 @@ let started = false
 let lastRequest = "none"
 const fakeSend = async (request) => {
   lastRequest = Object.keys(request)[0]
+  if (request.ListProviderAccountProfiles) return { ProviderAccountProfilesListed: { profiles: [] } }
   if (request.SetCredentialSecret) {
     if (request.SetCredentialSecret.value !== expected) throw new Error("fixture value mismatch")
     delivered++
