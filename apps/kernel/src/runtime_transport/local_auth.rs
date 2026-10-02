@@ -4,9 +4,8 @@
 //! hosted workers) require that host token, unchanged. Every other kernel (the
 //! laptop kernel) generates a fresh token at each start, writes it to an
 //! owner-only file in its state directory, and accepts it on the same
-//! `Authorization: Bearer` header. Until enforcement ships, the laptop kernel
-//! runs in log mode: upgrades without its token, or with a wrong one, are still
-//! accepted and only logged, rate-limited and without any token value.
+//! `Authorization: Bearer` header. Missing or wrong tokens are refused before
+//! websocket admission and logged without any token value.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -37,7 +36,7 @@ pub(crate) enum KernelLocalAuth {
     Unconfigured,
     /// The host controller's token. Upgrades without it are refused.
     HostToken(Arc<str>),
-    /// The laptop kernel's generated token, in log mode.
+    /// The laptop kernel's required generated token.
     LocalToken(Arc<LocalTokenAuth>),
 }
 
@@ -46,10 +45,9 @@ pub(crate) enum KernelLocalAuth {
 pub(crate) enum KernelLocalCredential {
     HostToken,
     LocalToken,
-    /// No `Authorization` header (accepted in log mode).
+    /// No `Authorization` header (refused).
     Missing,
-    /// An `Authorization` header that is not this kernel's token (accepted in
-    /// log mode).
+    /// An `Authorization` header that is not this kernel's token (refused).
     Wrong,
     Unchecked,
 }
@@ -105,7 +103,7 @@ impl KernelLocalAuth {
                         crate::logging::info_with_fields(
                             LOCAL_AUTH_LOG_COMPONENT,
                             "kernel local auth token written",
-                            serde_json::json!({ "path": path, "enforcement": "log" }),
+                            serde_json::json!({ "path": path, "enforcement": "required" }),
                         );
                         Some(file)
                     }
@@ -132,14 +130,14 @@ impl KernelLocalAuth {
     }
 
     pub(crate) fn required(&self) -> bool {
-        matches!(self, Self::HostToken(_))
+        !matches!(self, Self::Unconfigured)
     }
 
     pub(crate) fn mode_label(&self) -> &'static str {
         match self {
             Self::Unconfigured => "unconfigured",
             Self::HostToken(_) => "host_token",
-            Self::LocalToken(_) => "local_token_log",
+            Self::LocalToken(_) => "local_token_required",
         }
     }
 
@@ -152,18 +150,23 @@ impl KernelLocalAuth {
             Self::Unconfigured => Some(KernelLocalCredential::Unchecked),
             Self::HostToken(token) => presented_token_matches(authorization, token)
                 .then_some(KernelLocalCredential::HostToken),
-            Self::LocalToken(auth) => Some(if authorization.is_none() {
-                KernelLocalCredential::Missing
-            } else if presented_token_matches(authorization, &auth.token) {
-                KernelLocalCredential::LocalToken
-            } else {
-                KernelLocalCredential::Wrong
-            }),
+            Self::LocalToken(auth) => presented_token_matches(authorization, &auth.token)
+                .then_some(KernelLocalCredential::LocalToken),
         }
     }
 
-    /// Record an accepted connection; warns, rate-limited, when a laptop
-    /// kernel connection did not present its token.
+    pub(crate) fn rejection_message(&self, port: u16, unix_socket: &Path) -> String {
+        match self {
+            Self::LocalToken(_) => format!(
+                "Kernel local authentication required. Terminals must send the token from {} as Authorization: Bearer. External agents must request access over the Unix socket ws+unix://{}.",
+                DaemonConfig::default_kernel_local_auth_token_path(port).display(),
+                unix_socket.display(),
+            ),
+            _ => "Unauthorized".to_string(),
+        }
+    }
+
+    /// Record an admission outcome; rate-limit warnings for refused upgrades.
     pub(crate) fn record(&self, credential: KernelLocalCredential, peer_addr: Option<SocketAddr>) {
         let Self::LocalToken(auth) = self else {
             return;
@@ -207,7 +210,7 @@ pub(crate) fn generate_kernel_local_auth_token() -> String {
     )
 }
 
-/// The laptop token and its log-mode bookkeeping.
+/// The laptop token and admission audit counters.
 pub(crate) struct LocalTokenAuth {
     token: Arc<str>,
     authenticated: AtomicU64,
@@ -278,11 +281,11 @@ impl LocalTokenAuth {
             }
             KernelLocalCredential::Missing => (
                 &mut warnings.missing,
-                "kernel websocket connection without the local auth token accepted (log mode)",
+                "kernel websocket connection without the local auth token refused",
             ),
             KernelLocalCredential::Wrong => (
                 &mut warnings.wrong,
-                "kernel websocket connection with a wrong local auth token accepted (log mode)",
+                "kernel websocket connection with a wrong local auth token refused",
             ),
             KernelLocalCredential::HostToken | KernelLocalCredential::Unchecked => return None,
         };
@@ -301,7 +304,7 @@ impl LocalTokenAuth {
             message,
             fields: serde_json::json!({
                 "credential": credential.as_str(),
-                "enforcement": "log",
+                "enforcement": "required",
                 "transport_source": KernelCommandSource::LocalCli,
                 "peer_addr": peer_addr.map(|addr| addr.to_string()),
                 "peer_loopback": peer_addr.map(|addr| addr.ip().is_loopback()),

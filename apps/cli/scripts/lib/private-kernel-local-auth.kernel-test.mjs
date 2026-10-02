@@ -6,12 +6,13 @@ import net from "node:net"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
+import WebSocket from "ws"
 import { LocalIpcClient } from "../../../../packages/kernel-client/dist/ipc.js"
 import { attachToSessionRequest, createSessionRequest, listSessionsRequest } from "../../../../packages/kernel-client/dist/ipc-requests.js"
 import { waitForKernelIpc } from "./live-provider-context-injection-drill-helpers.mjs"
 
 for (const isolation of ["CHARIOX_HOME", "XDG_STATE_HOME"]) {
-  test(`private ${isolation} clients authenticate in log mode, including after restart`, {
+  test(`private ${isolation} clients authenticate under enforcement, including after restart`, {
     skip: !process.env.CHARIOX_LOCAL_AUTH_KERNEL_BINARY,
     timeout: 60_000,
   }, async () => {
@@ -69,6 +70,25 @@ for (const isolation of ["CHARIOX_HOME", "XDG_STATE_HOME"]) {
         await stopKernel(kernel.child)
         const logs = kernel.output + await readLogs(kernel.env.CHARIOX_LOG_DIR)
         assert.doesNotMatch(logs, /without the local auth token|wrong local auth token/)
+        // First-party lanes above produce no auth refusals. Independently
+        // probe raw upgrades after restart so client-side checks cannot mask
+        // the kernel's enforcement boundary.
+        kernel.child = startKernel(kernel, children)
+        await waitForKernelIpc(LocalIpcClient, listSessionsRequest, kernel.endpoint, kernel.child, 25_000, kernel.env)
+        for (const headers of [undefined, { authorization: "Bearer wrong-drill-fixture" }]) {
+          const rejection = await rejectedUpgrade(kernel.endpoint, headers)
+          assert.equal(rejection.status, 401)
+          assert.match(rejection.body, /kernel-local-auth\/\d+\.token/)
+          assert.ok(rejection.body.includes(`ws+unix://${kernel.env.CHARIOX_DAEMON_SOCKET}`))
+          assert.doesNotMatch(rejection.body, /wrong-drill-fixture|chx_kat_/)
+        }
+        const unix = new LocalIpcClient(`ws+unix://${kernel.env.CHARIOX_DAEMON_SOCKET}`)
+        try {
+          await assert.rejects(unix.send(listSessionsRequest()), (error) => error.code === "kernel_access_denied")
+        } finally {
+          unix.destroy()
+        }
+        await stopKernel(kernel.child)
       }
     } finally {
       for (const client of clients) client.destroy()
@@ -119,4 +139,24 @@ async function readLogs(directory) {
     logs += entry.isDirectory() ? await readLogs(file) : await readFile(file, "utf8")
   }
   return logs
+}
+
+async function rejectedUpgrade(endpoint, headers) {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(endpoint, { headers })
+    const timer = setTimeout(() => { socket.terminate(); reject(new Error("upgrade did not resolve")) }, 5000)
+    socket.once("open", () => { clearTimeout(timer); socket.terminate(); reject(new Error("unauthenticated upgrade admitted")) })
+    socket.on("error", () => {})
+    socket.once("unexpected-response", (_request, response) => {
+      let body = ""
+      response.setEncoding("utf8")
+      response.on("data", (chunk) => { body += chunk })
+      response.once("end", () => {
+        clearTimeout(timer)
+        socket.terminate()
+        resolve({ status: response.statusCode, body })
+      })
+      response.once("error", (error) => { clearTimeout(timer); socket.terminate(); reject(error) })
+    })
+  })
 }

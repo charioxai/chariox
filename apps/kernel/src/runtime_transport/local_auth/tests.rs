@@ -30,25 +30,22 @@ fn generated_tokens_are_prefixed_32_byte_base64url_and_fresh() {
 }
 
 #[test]
-fn local_token_is_authenticated_and_missing_or_wrong_headers_are_still_admitted() {
+fn local_token_is_required_and_missing_or_wrong_headers_are_refused() {
     let (local_auth, auth) = local_token_auth();
     assert_eq!(
         local_auth.admit(Some(&bearer(auth.token()))),
         Some(KernelLocalCredential::LocalToken)
     );
-    assert_eq!(local_auth.admit(None), Some(KernelLocalCredential::Missing));
+    assert_eq!(local_auth.admit(None), None);
     for wrong in [
         bearer("chx_kat_wrong"),
         bearer(&format!("{}x", auth.token())),
         HeaderValue::from_str(auth.token()).expect("raw token header"),
         HeaderValue::from_static("Basic Zm9vOmJhcg=="),
     ] {
-        assert_eq!(
-            local_auth.admit(Some(&wrong)),
-            Some(KernelLocalCredential::Wrong)
-        );
+        assert_eq!(local_auth.admit(Some(&wrong)), None);
     }
-    assert!(!local_auth.required());
+    assert!(local_auth.required());
 }
 
 #[test]
@@ -79,11 +76,6 @@ fn each_credential_admits_its_connection_class() {
         (
             laptop.admit(Some(&bearer(auth.token()))),
             KernelConnectionClass::Terminal,
-        ),
-        (laptop.admit(None), KernelConnectionClass::Unauthenticated),
-        (
-            laptop.admit(Some(&bearer("chx_kat_wrong"))),
-            KernelConnectionClass::Unauthenticated,
         ),
         (
             host.admit(Some(&bearer("host-sentinel"))),
@@ -116,7 +108,7 @@ fn warnings_are_rate_limited_per_class_and_never_carry_a_token() {
         .observe(KernelLocalCredential::Missing, peer, start)
         .expect("first missing token should warn");
     assert_eq!(missing.fields["credential"], "missing");
-    assert_eq!(missing.fields["enforcement"], "log");
+    assert_eq!(missing.fields["enforcement"], "required");
     assert_eq!(missing.fields["transport_source"], "local_cli");
     assert_eq!(missing.fields["peer_addr"], "127.0.0.1:50123");
     assert_eq!(missing.fields["peer_loopback"], true);
