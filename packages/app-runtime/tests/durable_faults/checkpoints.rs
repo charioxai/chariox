@@ -167,6 +167,7 @@ fn state_child(root: &Path, point: &str) -> ! {
             due_at_ms: 100,
             revision: "revision-1".into(),
         })],
+        false,
     )
     .unwrap();
     let checkpoint = json!({"revision":revision,"outbox":format!("{outbox:?}"),"inbox":format!("{inbox:?}"),"wake":{"id":"due","revision":"revision-1"},"acknowledged":point.ends_with("after_commit")});
