@@ -915,7 +915,7 @@ impl KernelRuntimeState {
                     });
                 }
                 let reservation = owned.reserve_remote_queued_prompt_steer(
-|                    &session_id,
+                    &session_id,
                     &target_agent_id,
                     &attachment_id,
                     &prompt_id,
@@ -1018,11 +1018,11 @@ impl KernelRuntimeState {
                             .await);
                     }
                     return Err(DaemonError::LocalTransport {
-|                        operation: "refresh remote queued prompt steer binding",
+                        operation: "refresh remote queued prompt steer binding",
                         message: format!(
                             "agent `{target_agent_id}` did not have remote execution after binding refresh"
                         ),
-|                    });
+                    });
                 }
             };
             let prepared_retry = self
@@ -1095,7 +1095,7 @@ impl KernelRuntimeState {
                 &relay_config,
                 &remote_execution,
                 &payload,
-|            )
+            )
             .await;
             // A retry timeout or disconnect is ambiguous: the worker might
             // have accepted the steer, so only an explicit peer rejection or
@@ -1654,8 +1654,10 @@ async fn send_remote_queued_prompt_steer(
     relay_config: &crate::config::DaemonConfig,
     remote_execution: &crate::agent::RemoteAgentBinding,
     payload: &RemoteQueuedPromptSteerPayload,
+    state: &KernelRuntimeState,
+    authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
 ) -> Result<RelayPeerResponse, DaemonError> {
-    crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+    crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized(
         relay_config,
         ClientTarget {
             daemon_id: Some(remote_execution.worker_kernel_id.clone()),
@@ -1671,6 +1673,7 @@ async fn send_remote_queued_prompt_steer(
             required_skills: payload.required_skills.clone(),
         },
         crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
+        || state.authorize_prompt_command(authority),
     )
     .await
 }

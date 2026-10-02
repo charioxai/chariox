@@ -129,6 +129,7 @@ pub(crate) use runtime_tool_call_activity::RuntimeToolCallActivity;
 
 #[derive(Clone)]
 pub(crate) struct KernelRuntimeState {
+    prompt_command_authority: Option<PromptCommandAuthority>,
     #[cfg(test)]
     app_lock_wait_probe: Option<Arc<tokio::sync::Notify>>,
     app: Arc<Mutex<DaemonApp>>,
@@ -360,6 +361,8 @@ mod prompt;
 mod prompt_activity_owned_state;
 mod prompt_cancellation_owned_state;
 mod prompt_dispatch;
+mod prompt_command_authority;
+use prompt_command_authority::PromptCommandAuthority;
 mod prompt_git_observer_runtime;
 mod prompt_queue_owned_state;
 mod prompt_skill_context_state;
@@ -699,6 +702,7 @@ impl KernelRuntimeState {
             };
         provider_store.set_managed_kernel_admission_gate(managed_kernel_quiescence.clone());
         let runtime = Self {
+            prompt_command_authority: None,
             #[cfg(test)]
             app_lock_wait_probe: None,
             app,

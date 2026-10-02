@@ -105,7 +105,7 @@ impl KernelRuntimeState {
                 cancellation_intent,
                 &mut cancellation_claim,
             )
-|            .await;
+            .await;
         if cancellation_claim.release_or_restart() {
             let state = self.clone();
             let session_id = session_id.to_string();
@@ -176,7 +176,7 @@ impl KernelRuntimeState {
                 )?;
                 if let Err(error) = self
                     .send_remote_agent_prompt_cancellation_with_claim(
-|                        session_id,
+                        session_id,
                         target_agent_id,
                         &attachment_id,
                         &active_prompt,
@@ -489,7 +489,7 @@ impl KernelRuntimeState {
                 self.authorize_prompt_command(authority)?;
                 let relay_config = app.relay_config_for_remote_execution(&remote_execution);
                 app.block_on_relay_future(
-                    crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                    crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized(
                         &relay_config,
                         ClientTarget {
                             daemon_id: Some(remote_execution.worker_kernel_id.clone()),
@@ -498,6 +498,8 @@ impl KernelRuntimeState {
                         RelayPeerRequest::CompleteLeasedPrompt {
                             leased_agent_id: remote_execution.leased_agent_id.clone(),
                         },
+                        std::time::Duration::from_millis(relay_config.relay_request_timeout_ms),
+                        || self.authorize_prompt_command(authority),
                     ),
                 )
             })
