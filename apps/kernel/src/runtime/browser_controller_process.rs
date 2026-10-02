@@ -137,14 +137,7 @@ pub(crate) trait BrowserControllerProcessBackend {
     ) -> Result<BrowserControllerBrowserSnapshot, String> {
         Err("browser controller backend does not support browser reconciliation".to_string())
     }
-    #[cfg(test)]
-    fn capture_browser_snapshot(
-        &mut self,
-        _target_id: &str,
-        _document_id: &str,
-    ) -> Result<BrowserControllerStructuredSnapshot, String> {
-        Err("browser controller backend does not support structured snapshots".to_string())
-    }
+    
     #[cfg(test)]
     fn perform_browser_action(
         &mut self,
@@ -156,16 +149,7 @@ pub(crate) trait BrowserControllerProcessBackend {
     ) -> Result<BrowserControllerActionResult, String> {
         Err("browser controller backend does not support locator actions".to_string())
     }
-    #[cfg(test)]
-    fn wait_for_browser(
-        &mut self,
-        _target_id: &str,
-        _document_id: &str,
-        _wait: &BrowserCompatibilityWait,
-        _timeout_ms: u64,
-    ) -> Result<BrowserControllerCompatibilityWaitResult, String> {
-        Err("browser controller backend does not support compatibility waits".to_string())
-    }
+    
     #[cfg(test)]
     fn handle_browser_dialog(
         &mut self,
@@ -710,24 +694,7 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         Ok(snapshot)
     }
 
-    #[cfg(test)]
-    fn capture_browser_snapshot(
-        &mut self,
-        target_id: &str,
-        document_id: &str,
-    ) -> Result<BrowserControllerStructuredSnapshot, String> {
-        let response = self.request(
-            "browser.snapshot",
-            serde_json::json!({
-                "target_id": target_id,
-                "document_id": document_id,
-            }),
-        )?;
-        let snapshot =
-            response.into_result::<BrowserControllerStructuredSnapshot>("browser.snapshot")?;
-        snapshot.validate(target_id, document_id)?;
-        Ok(snapshot)
-    }
+    
 
     #[cfg(test)]
     fn perform_browser_action(
@@ -755,30 +722,7 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         Ok(result)
     }
 
-    #[cfg(test)]
-    fn wait_for_browser(
-        &mut self,
-        target_id: &str,
-        document_id: &str,
-        wait: &BrowserCompatibilityWait,
-        timeout_ms: u64,
-    ) -> Result<BrowserControllerCompatibilityWaitResult, String> {
-        wait.validate(timeout_ms)?;
-        let response = self.request(
-            "browser.wait",
-            serde_json::json!({
-                "target_id": target_id,
-                "document_id": document_id,
-                "kind": wait.kind(),
-                "selector": wait.selector(),
-                "timeout_ms": timeout_ms,
-            }),
-        )?;
-        let result =
-            response.into_result::<BrowserControllerCompatibilityWaitResult>("browser.wait")?;
-        result.validate(target_id, document_id, wait)?;
-        Ok(result)
-    }
+    
 
     #[cfg(test)]
     fn handle_browser_dialog(
@@ -1213,17 +1157,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
         self.supervisor.reconcile_browser(viewport)
     }
 
-    #[cfg(test)]
-    pub(crate) fn capture_browser_snapshot(
-        &mut self,
-        session_id: &str,
-        target_id: &str,
-        document_id: &str,
-    ) -> Result<BrowserControllerStructuredSnapshot, String> {
-        self.require_lease(session_id)?;
-        self.supervisor
-            .capture_browser_snapshot(target_id, document_id)
-    }
+    
 
     #[cfg(test)]
     pub(crate) fn perform_browser_action(
@@ -1240,19 +1174,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
             .perform_browser_action(target_id, document_id, node_ref, action, timeout_ms)
     }
 
-    #[cfg(test)]
-    pub(crate) fn wait_for_browser(
-        &mut self,
-        session_id: &str,
-        target_id: &str,
-        document_id: &str,
-        wait: &BrowserCompatibilityWait,
-        timeout_ms: u64,
-    ) -> Result<BrowserControllerCompatibilityWaitResult, String> {
-        self.require_lease(session_id)?;
-        self.supervisor
-            .wait_for_browser(target_id, document_id, wait, timeout_ms)
-    }
+    
 
     #[cfg(test)]
     pub(crate) fn handle_browser_dialog(
@@ -1750,16 +1672,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         Ok(BrowserControllerReconciliation { process, browser })
     }
 
-    #[cfg(test)]
-    fn capture_browser_snapshot(
-        &mut self,
-        target_id: &str,
-        document_id: &str,
-    ) -> Result<BrowserControllerStructuredSnapshot, String> {
-        self.ensure_started_without_transparent_restart()?;
-        self.backend
-            .capture_browser_snapshot(target_id, document_id)
-    }
+    
 
     #[cfg(test)]
     fn perform_browser_action(
@@ -1775,18 +1688,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
             .perform_browser_action(target_id, document_id, node_ref, action, timeout_ms)
     }
 
-    #[cfg(test)]
-    fn wait_for_browser(
-        &mut self,
-        target_id: &str,
-        document_id: &str,
-        wait: &BrowserCompatibilityWait,
-        timeout_ms: u64,
-    ) -> Result<BrowserControllerCompatibilityWaitResult, String> {
-        self.ensure_started_without_transparent_restart()?;
-        self.backend
-            .wait_for_browser(target_id, document_id, wait, timeout_ms)
-    }
+    
 
     #[cfg(test)]
     fn handle_browser_dialog(

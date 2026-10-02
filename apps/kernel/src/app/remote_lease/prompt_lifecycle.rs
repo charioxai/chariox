@@ -1151,13 +1151,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         self.persist_worker_steer_receipt(leased_agent_id, receipt)
     }
 
-    pub(crate) fn rollback_leased_prompt_steer(&mut self, leased_agent_id: &str, steer_id: &str) {
-        if let Some(leased_agent) = self.app.leased_agents.get_mut(leased_agent_id) {
-            leased_agent
-                .applied_home_steer_ids
-                .retain(|applied| applied != steer_id);
-        }
-    }
+    
 
     fn cancelled_leased_prompt_provider_run_id(
         &self,

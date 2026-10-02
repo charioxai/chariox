@@ -503,59 +503,7 @@ impl DaemonApp {
         Ok(())
     }
 
-    pub(crate) fn finish_kernel_remote_prompt_dispatch(
-        &mut self,
-        dispatch: KernelRemotePromptDispatch,
-        result: Result<String, DaemonError>,
-    ) -> Result<(), DaemonError> {
-        match result {
-            Ok(remote_provider_run_id) => {
-                let _ = self
-                    .agents
-                    .set_remote_execution_active_worker_provider_run_id(
-                        &dispatch.agent_id,
-                        Some(remote_provider_run_id.clone()),
-                    )?;
-                self.echo_prompt_to_other_attachments(
-                    &dispatch.session_id,
-                    &remote_provider_run_id,
-                    &dispatch.prompt_id,
-                    &dispatch.source_attachment_id,
-                    &dispatch.prompt,
-                    &dispatch.attachments,
-                );
-                self.mark_active_prompt_delivery(
-                    &dispatch.session_id,
-                    &dispatch.agent_id,
-                    &dispatch.prompt_id,
-                    crate::session::DurablePromptDeliveryPhase::Delivered,
-                    Some(remote_provider_run_id),
-                    None,
-                )?;
-                Ok(())
-            }
-            Err(error) => {
-                let _ = self
-                    .agents
-                    .set_remote_execution_active_worker_provider_run_id(&dispatch.agent_id, None);
-                let _ = self.prompt_owner_cancel_active_prompt_only(
-                    &dispatch.session_id,
-                    &dispatch.agent_id,
-                );
-                let _ = crate::app::KernelSessionReadService::new(self)
-                    .session_snapshot(&dispatch.session_id);
-                self.record_notice_for_agent(
-                    &dispatch.session_id,
-                    None,
-                    Some(&dispatch.agent_id),
-                    self.attachments
-                        .list_session_attachment_ids(&dispatch.session_id),
-                    format!("Remote prompt dispatch failed after acknowledgement: {error}"),
-                );
-                Err(error)
-            }
-        }
-    }
+    
 
     #[doc(hidden)]
     pub fn complete_active_prompt(

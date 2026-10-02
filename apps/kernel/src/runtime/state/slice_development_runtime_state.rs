@@ -221,21 +221,7 @@ impl KernelRuntimeState {
     }
 }
 
-fn materialize_slice_development_publication(
-    publication_parent: &Path,
-    project_id: &str,
-    repositories: &[DevelopmentSourceRepositoryBinding],
-    expected_publication: Option<&crate::slice::SliceDevelopmentPublication>,
-) -> Result<crate::slice::SliceDevelopmentPublication, DaemonError> {
-    materialize_slice_development_publication_with_access(
-        publication_parent,
-        project_id,
-        repositories,
-        expected_publication,
-        update_managed_publication_access,
-        None,
-    )
-}
+
 
 fn materialize_slice_development_publication_with_access(
     publication_parent: &Path,

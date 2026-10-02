@@ -1025,24 +1025,7 @@ impl ProjectEnvironmentSetupStore {
         Ok((entry.status.clone(), entry.execution.definition.clone()))
     }
 
-    pub(super) fn reconcile_remote(
-        &self,
-        operation_id: &str,
-        expected: &SetupExecution,
-        status: ProjectEnvironmentSetupStatus,
-        definition: Option<ProjectEnvironmentDefinition>,
-        observation_generation: Option<u64>,
-    ) -> Result<ProjectEnvironmentSetupStatus, DaemonError> {
-        self.reconcile_remote_with(
-            operation_id,
-            expected,
-            status,
-            definition,
-            observation_generation,
-            RemoteSetupReconcileSource::StatusObservation,
-            |_, _, _| Ok(()),
-        )
-    }
+    
 
     pub(super) fn reconcile_remote_with<F>(
         &self,

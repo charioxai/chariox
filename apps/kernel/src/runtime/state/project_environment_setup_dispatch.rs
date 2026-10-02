@@ -202,25 +202,7 @@ pub(super) async fn cancel_remote_setup(
     .await
 }
 
-pub(super) async fn retry_remote_setup(
-    state: &KernelRuntimeState,
-    execution: &SetupExecution,
-) -> Result<RelayProjectEnvironmentSetupStatus, DaemonError> {
-    let (relay_config, target) = remote_relay_context(state, execution).await?;
-    send_setup_request(
-        state,
-        relay_config,
-        target,
-        RelayPeerRequest::RetryLeasedProjectEnvironmentSetup {
-            leased_agent_id: remote_leased_agent_id(execution)?,
-            operation_id: execution.operation_id.clone(),
-            home_session_id: execution.session_id.clone(),
-            home_agent_id: execution.agent_id.clone(),
-        },
-        RelaySetupResponseKind::Retried,
-    )
-    .await
-}
+
 
 pub(super) async fn retry_remote_setup_with_deadline(
     state: &KernelRuntimeState,
