@@ -67,7 +67,7 @@ impl KernelRuntimeState {
                 let granted_agent = self
                     .grant_agent_mcp(agent.id(), args.name.clone(), agent.owner_user_id())
                     .await?;
-                let (source_attachment_id, previous_prompt) = self
+                let previous_prompt = self
                     .owned
                     .session_store
                     .get_session(session_id)
@@ -76,14 +76,9 @@ impl KernelRuntimeState {
                         self.owned
                             .prompt_state_owner
                             .active_prompt_for_agent(&session, granted_agent.id())
-                            .map(|prompt| {
-                                (
-                                    prompt.source_attachment_id().to_string(),
-                                    prompt.prompt().to_string(),
-                                )
-                            })
+                            .map(|prompt| prompt.prompt().to_string())
                     })
-                    .unwrap_or_else(|| ("chariox-runtime".to_string(), String::new()));
+                    .unwrap_or_default();
                 self.remember_pending_mcp_continuation(
                     session_id,
                     granted_agent.id(),
