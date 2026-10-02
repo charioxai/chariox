@@ -444,6 +444,9 @@ test("gateway remaps portable package workspace paths before local materializati
     await loadPublicationPackageConfig(root, {
       kernelEndpoint: "ws://kernel",
       materialize: true,
+      // MP-08/MP-10: select the fixture workspace explicitly; a container may
+      // already have the production /workspace default.
+      runtimeWorkspace,
       validateProviderBindings: false,
       validateRequirements: false,
       client: {
