@@ -17,6 +17,8 @@ import {
   getProviderAuthStatusRequest,
   getProviderLoginStatusRequest,
   sendProviderLoginInputRequest,
+  setProviderAccountCredentialRequest,
+  type ProviderAccountCredentialRequestContext,
   cancelProviderLoginRequest,
   listProviderAccountProfilesRequest,
   createProviderAccountProfileRequest,
@@ -237,6 +239,19 @@ export async function getProviderLoginStatus(
 ): Promise<ProviderLoginStatus> {
   const response = await client.send<Record<string, unknown>>(getProviderLoginStatusRequest(loginId))
   return expectVariant<{ login: ProviderLoginStatus }>(response, "ProviderLoginStatus").login
+}
+
+export async function storeProviderSetupToken(
+  client: LocalIpcClient,
+  accountProfile: string,
+  value: string,
+  replace: boolean,
+  context: ProviderAccountCredentialRequestContext = {},
+): Promise<{ replaced: boolean }> {
+  const response = await client.send<Record<string, unknown>>(
+    setProviderAccountCredentialRequest("claude", accountProfile, value, replace, context),
+  )
+  return expectVariant<{ replaced: boolean }>(response, "ProviderAccountCredentialStored")
 }
 
 export async function sendProviderLoginInput(

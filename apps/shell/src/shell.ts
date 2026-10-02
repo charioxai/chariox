@@ -1,3 +1,4 @@
+import { readHiddenInput } from "@chariox/kernel-client/hidden-input"
 import { createInterface } from "node:readline/promises"
 import { readFile } from "node:fs/promises"
 import { stdin as defaultStdin, stdout as defaultStdout, stderr as defaultStderr } from "node:process"
@@ -172,7 +173,7 @@ export async function runShellRepl(options: ShellCliOptions, io: ShellIo = {
           readSecret: async (prompt) => {
             readline.pause()
             try {
-              return await readHiddenLine(prompt, io)
+              return await readHiddenInput({ prompt, manageBracketedPaste: true, input: io.input as NodeJS.ReadStream, output: io.output })
             } finally {
               readline.resume()
             }
@@ -195,66 +196,6 @@ export async function runShellRepl(options: ShellCliOptions, io: ShellIo = {
     readline.close()
     await client.close()
   }
-}
-
-async function readHiddenLine(prompt: string, io: ShellIo): Promise<string> {
-  const input = io.input as NodeJS.ReadStream & {
-    isRaw?: boolean
-    setRawMode?: (enabled: boolean) => NodeJS.ReadStream
-  }
-  const output = io.output as NodeJS.WritableStream & { isTTY?: boolean }
-  if (!input.isTTY || !output.isTTY || typeof input.setRawMode !== "function") {
-    throw new Error("hidden credential input requires an interactive TTY")
-  }
-
-  return await new Promise<string>((resolve, reject) => {
-    const wasRaw = Boolean(input.isRaw)
-    const chunks: string[] = []
-    let settled = false
-
-    const cleanup = () => {
-      input.off("data", onData)
-      input.setRawMode?.(wasRaw)
-      output.write("\n")
-    }
-    const finish = (value: string) => {
-      if (settled) return
-      settled = true
-      cleanup()
-      resolve(value)
-    }
-    const fail = (error: Error) => {
-      if (settled) return
-      settled = true
-      cleanup()
-      reject(error)
-    }
-    const onData = (chunk: Buffer | string) => {
-      const text = chunk.toString("utf8")
-      for (const char of text) {
-        if (char === "\u0003") {
-          fail(new Error("credential input cancelled"))
-          return
-        }
-        if (char === "\r" || char === "\n") {
-          finish(chunks.join(""))
-          return
-        }
-        if (char === "\u007f" || char === "\b") {
-          chunks.pop()
-          continue
-        }
-        if (char >= " ") {
-          chunks.push(char)
-        }
-      }
-    }
-
-    output.write(prompt)
-    input.setRawMode(true)
-    input.resume()
-    input.on("data", onData)
-  })
 }
 
 export async function runShellScript(options: ShellCliOptions, io: ShellIo = {

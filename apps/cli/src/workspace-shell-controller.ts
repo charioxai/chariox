@@ -40,6 +40,7 @@ type WorkspaceShellSubmitDeps = {
   clientId?: string | undefined
   executeShellLine?: typeof executeShellLine
   openRoomViewer?: ShellExecutorDeps["openRoomViewer"]
+  readSecret?: ShellExecutorDeps["readSecret"]
   workspaceShellContext: () => ShellContext
   setWorkspaceShellContext: (context: ShellContext) => void
   nextEntryId: () => number
@@ -83,6 +84,7 @@ export async function submitWorkspaceShellCommand(
     client: deps.client,
     clientId: deps.clientId,
     ...(deps.openRoomViewer ? { openRoomViewer: deps.openRoomViewer } : {}),
+    ...(deps.readSecret ? { readSecret: deps.readSecret } : {}),
   }, (text) => output.push(text))
   const rendered = output.join("").trimEnd()
   const nextContext = result.context

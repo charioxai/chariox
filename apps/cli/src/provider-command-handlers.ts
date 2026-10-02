@@ -32,6 +32,7 @@ export type ProviderCommandHandlerDeps = {
   sendProviderLoginInput?: (loginId: string, dataBase64: string) => Promise<{ login_id: string; byte_count: number }>
   cancelProviderLogin?: (loginId: string) => Promise<ProviderLoginStatus>
   readSecret?: (prompt: string) => Promise<string>
+  storeProviderSetupToken?: (profile: string, value: string, replace: boolean) => Promise<{ replaced: boolean }>
   logoutProvider?: (provider: string, accountProfile?: string) => Promise<ProviderLogoutOutcome>
   listProviderAccountProfiles?: (provider?: string | null) => Promise<ProviderAccountProfile[]>
   createProviderAccountProfile?: (provider: string, label: string) => Promise<ProviderAccountProfile>
@@ -75,6 +76,26 @@ export async function handleProviderSlashCommand(
   }
   if (action === "login") {
     await startProviderLogin(deps, maybeProvider ?? deps.currentProviderId(), maybeProfile, method.value)
+    return
+  }
+  if (action === "setup-token" && !parts.includes("--run")) {
+    const args = parts.slice(2)
+    const profile = args.find((value) => !value.startsWith("--")) ?? "default"
+    if (parts[1] !== "claude" || args.filter((value) => !value.startsWith("--")).length > 1
+      || args.some((value) => value.startsWith("--") && value !== "--replace")) {
+      deps.flashFooter("usage: /provider setup-token claude [account-profile] [--replace]", "error")
+      return
+    }
+    if (!deps.readSecret || !deps.storeProviderSetupToken) {
+      deps.flashFooter("provider setup-token requires hidden input support", "error")
+      return
+    }
+    const resolved = await resolveProviderAccountReference(deps, "claude", profile)
+    if (resolved === null) return
+    const value = (await deps.readSecret("Claude setup token: ")).trim()
+    if (!value) { deps.flashFooter("Claude setup token must not be empty", "error"); return }
+    const stored = await deps.storeProviderSetupToken(resolved ?? "default", value, args.includes("--replace"))
+    deps.flashFooter(`Claude setup token ${stored.replaced ? "replaced" : "stored"} in Chariox Vault`, "info")
     return
   }
   if (action === "setup-token") {

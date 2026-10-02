@@ -10,7 +10,7 @@ import { setTimeout as sleep } from "node:timers/promises"
 
 import { BoxRenderable, ScrollBoxRenderable, TextRenderable, type TextareaRenderable } from "@opentui/core"
 import { useRenderer, useTerminalDimensions } from "@opentui/solid"
-import { batch, createEffect } from "solid-js"
+import { batch, createEffect, onCleanup } from "solid-js"
 import { reconcile } from "solid-js/store"
 
 import type {
@@ -20,6 +20,7 @@ import type {
   TranscriptEntry,
 } from "./cli-types.js"
 import { createCliAgentPaneComposition } from "./cli-agent-pane-composition.js"
+import { createCliSecretInput } from "./cli-secret-input.js"
 import { createCliAppState } from "./cli-app-state.js"
 import { createCliAppCommandRoutingComposition } from "./cli-app-command-routing-composition.js"
 import { createCliAppProcessRuntimeComposition } from "./cli-app-process-runtime-composition.js"
@@ -214,6 +215,8 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     client_id: options.clientId,
   })
   const renderer = useRenderer()
+  const secretInput = createCliSecretInput(renderer)
+  onCleanup(secretInput.cancel)
   const dimensions = useTerminalDimensions()
   const setCenterMode = (_mode: "transcript") => {}
   const setDirectoryTreeState = (_value: null) => {}
@@ -883,6 +886,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     currentModelId, currentVariantId, focusedAgentId, multiAgentResponseLayout,
     currentAccountProfileId: () => waitingRoomState().accountProfileId || options.accountProfile || "default",
     maxAgentsPerScreen, flashFooter, appendNotice, appendCloudNotice,
+    readSecret: secretInput.readSecret,
     attachBinding, transitionToNoSession, applyProviderSelection, applyAccountSelection, applyModelSelection,
     applyVariantSelection, applyModeSelection, applyPermissionSelection,
     currentExecutionMode: () => waitingRoomState().executionMode ?? "build",

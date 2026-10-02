@@ -125,6 +125,7 @@ import {
   logoutProvider,
   cancelProviderLogin,
   sendProviderLoginInput,
+  storeProviderSetupToken,
   startProviderLogin,
   teardownProviderProcesses,
   updateSessionConfig,
@@ -554,6 +555,9 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     sendProviderLoginInput: (loginId, dataBase64) => sendProviderLoginInput(client, loginId, dataBase64),
     cancelProviderLogin: (loginId) => cancelProviderLogin(client, loginId),
     ...(readSecret ? { readSecret } : {}),
+    storeProviderSetupToken: (profile, value, replace) => storeProviderSetupToken(client, profile, value, replace, {
+      ...(isAttached() ? { sessionId: sessionState().id, agentId: focusedAgentId() } : {}),
+    }),
     logoutProvider: (provider, accountProfile) => logoutProvider(client, provider, accountProfile),
     listProviderAccountProfiles: (provider) => listProviderAccountProfiles(client, provider),
     createProviderAccountProfile: (provider, label) => createProviderAccountProfile(client, provider, label),
