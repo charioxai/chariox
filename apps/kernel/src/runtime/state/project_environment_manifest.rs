@@ -536,7 +536,7 @@ mod tests {
                 session.id(),
                 unlock.id(),
                 "passphrase",
-                Some("synthetic-envlayer4-passphrase".into()),
+                Some("synthetic-envlayer4-passphrase"),
             )
             .await
             .unwrap();
