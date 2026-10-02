@@ -26,7 +26,7 @@ export async function runERealism(i){
   result.checks.kernelHumanTakeover=true;
   await client.send(requests.releaseRoomEnvironmentInputRequest(sessionId,{kind:'browser_tab',id:sameTabId}));owned=false;
   const actions=(await readDrillEActionHistory(client,requests,sessionId)).filter(a=>a.sequence>baseline);
-  result.actions=actions.map(a=>({actionId:a.action_id,sequence:a.sequence,actorId:a.actor_id,kind:a.kind,state:a.state,targets:a.targets,submittedAt:a.submitted_at_ms,startedAt:a.started_at_ms,finishedAt:a.finished_at_ms}));
+  result.actions=actions.map(a=>({actionId:a.action_id,sequence:a.sequence,actorId:a.actor_id,kind:a.kind,state:a.state,outcome:a.outcome,targets:a.targets,submittedAt:a.submitted_at_ms,startedAt:a.started_at_ms,finishedAt:a.finished_at_ms}));
   for(const [n,id] of agentIds.entries()){
    assert.ok(actions.some(a=>a.actor_id==='agent:'+id&&a.state==='completed'&&(n<2?['browser_status','browser_find'].includes(a.kind):a.kind==='browser_history_reload')),'MP-08/MP-10 native agent read/work missing');
    assert.ok(actions.some(a=>a.actor_id==='agent:'+id&&a.kind==='browser_history_reload'&&a.state==='completed'&&a.targets.some(t=>t.kind==='browser_tab'&&t.id===(n<2?sameTabId:otherTabId))),'MP-08/MP-10 native mutation target missing');
