@@ -721,10 +721,6 @@ async function observeControlFileProtection(identity) {
     if (error?.code !== "EACCES" && error?.code !== "EPERM") throw error
     controlDenied = true
   }
-  if (!controlDenied) {
-    const productEvidence = requireObservedEvidence(parseJsonEnv("CHARIOX_PARITY_CONTROL_PROTECTION_EVIDENCE_JSON"), "control file protection")
-    controlDenied = productEvidence.control_file_denied === true
-  }
   const parentWorkspace = dirname(resolve(controlFile))
   const siblingPath = await realpath(sibling)
   if (dirname(siblingPath) !== await realpath(parentWorkspace)

@@ -126,6 +126,16 @@ collector creates independent ephemeral relay keys per client: such a token
 cannot be substituted without sharing its normal client identity with every
 observer. Use the normal resolved connection contract for this collector.
 
+MP-03 requires `CHARIOX_PARITY_CONTROL_FILE` and
+`CHARIOX_PARITY_CONTROL_SIBLING` to identify real selected control protection
+and an unrelated sibling under the same parent. The probe observes Unix access
+as the provider user; the control file must deny combined read/write access,
+while the parent and sibling support workspace operations. No qualified proof
+schema or producer exists for `CHARIOX_PARITY_CONTROL_PROTECTION_EVIDENCE_JSON`;
+its former caller-boolean fallback is removed. Missing paths, an accessible
+control file, or an unavailable parent/sibling fail closed. A synthetic sentinel
+only proves the probe boundary, not protection of actual product control roots.
+
 Product-route process binding requires local protocol 371's
 `RelayStatus.runtime_process_identity`. Boot ID, PID, and process start ticks
 must agree with the independent Linux observation before and after collection.

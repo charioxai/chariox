@@ -148,12 +148,13 @@ test("control-file protection requires its parent to remain writable as a worksp
     }
     await transferFixtureOwnership(root)
   }
+  await chmod(controlFile, 0o400)
   await chmod(controlParent, 0o555)
   context.after(async () => {
     await chmod(controlParent, 0o755)
     await rm(root, { recursive: true, force: true })
   })
-  const result = await execFileAsync(process.execPath, [
+  const probeArguments = [
     destination,
     "--source-root", root,
     "--reviewed-commit", reviewedCommit,
@@ -165,7 +166,8 @@ test("control-file protection requires its parent to remain writable as a worksp
     "--tmp-path", "/tmp",
     "--nested-path", join(os.tmpdir(), `chariox-parity-nested-${process.pid}`),
     "--new-directory", join(os.tmpdir(), `chariox-parity-created-${process.pid}`),
-  ], {
+  ]
+  const result = await execFileAsync(process.execPath, probeArguments, {
     ...restrictedIdentity,
     cwd: root,
     encoding: "utf8",
@@ -188,6 +190,20 @@ test("control-file protection requires its parent to remain writable as a worksp
   const payload = JSON.parse(result.stdout)
   assert.equal(payload.ok, false)
   assert.match(payload.error, /parent workspace/)
+  await chmod(controlParent, 0o755)
+  const actual = await execFileAsync(process.execPath, probeArguments, {
+    ...restrictedIdentity, cwd: root, encoding: "utf8", env: {
+      ...process.env,
+      CHARIOX_PARITY_CONTROL_FILE: controlFile,
+      CHARIOX_PARITY_CONTROL_SIBLING: sibling,
+      CHARIOX_PARITY_CONTROL_PROTECTION_EVIDENCE_JSON: "",
+    },
+  })
+  const protectedResult = JSON.parse(actual.stdout)
+  assert.equal(protectedResult.ok, true)
+  assert.equal(protectedResult.result.control_file_denied, true)
+  assert.equal(protectedResult.result.parent_workspace_accessible, true)
+  assert.equal(protectedResult.result.sibling_accessible, true)
 })
 
 test("control-file protection rejects an accessible file outside the control workspace", async (context) => {
@@ -332,4 +348,32 @@ test("mount normalization preserves comparable topology facts", () => {
   assert.equal(first.length, 1)
   assert.equal(first[0].mount_point, "/rw")
   assert.notDeepEqual(first, second)
+})
+
+// MP-03: a caller assertion must not override the observed Unix boundary.
+test("MP-03 rejects a forged denial for an accessible exact control file", async (t) => {
+  const root = await mkdtemp(join(os.tmpdir(), "chariox-parity-control-forged-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const probe = await copyProbeRuntimeSources(root)
+  const control = join(root, "control.json")
+  const sibling = join(root, "sibling")
+  await writeFile(control, "fixture")
+  await writeFile(sibling, "fixture")
+  await git(root, ["init", "--quiet"])
+  await git(root, ["config", "user.name", "parity-probe-test"])
+  await git(root, ["config", "user.email", "parity-probe-test@example.invalid"])
+  await git(root, ["add", "."])
+  await git(root, ["commit", "--quiet", "-m", "MP-03 fixture"])
+  const commit = await git(root, ["rev-parse", "HEAD"])
+  const output = await execFileAsync(process.execPath, [probe,
+    "--source-root", root, "--reviewed-commit", commit,
+    "--parity-row", "MP-03", "--parity-check", "control_file_protection",
+    "--topology", "ordinary", "--json", "--home-path", "/home", "--tmp-path", "/tmp",
+    "--nested-path", "/tmp/chariox-parity-control-nested", "--new-directory", "/tmp/chariox-parity-control-new",
+  ], { cwd: root, encoding: "utf8", env: {
+    ...process.env, CHARIOX_PARITY_CONTROL_FILE: control, CHARIOX_PARITY_CONTROL_SIBLING: sibling,
+    CHARIOX_PARITY_CONTROL_PROTECTION_EVIDENCE_JSON: JSON.stringify({ observed: true, control_file_denied: true }),
+  } }).then(result => ({ code: 0, ...result })).catch(error => ({ code: error.code, stdout: error.stdout, stderr: error.stderr }))
+  assert.equal(output.code, 1, output.stdout)
+  assert.match(JSON.parse(output.stdout).error, /exact control file protection was not observed/)
 })
