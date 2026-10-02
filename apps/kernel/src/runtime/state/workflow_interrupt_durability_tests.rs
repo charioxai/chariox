@@ -532,7 +532,13 @@ struct InterruptFixture {
 
 fn interrupt_fixture() -> InterruptFixture {
     let worktree = crate::test_support::TestWorktree::new("workflow-interrupt-durability");
-    let config = crate::config::DaemonConfig::for_tests();
+    interrupt_fixture_with_config(worktree, crate::config::DaemonConfig::for_tests())
+}
+
+fn interrupt_fixture_with_config(
+    worktree: crate::test_support::TestWorktree,
+    config: crate::config::DaemonConfig,
+) -> InterruptFixture {
     let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
     let (session, _) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
@@ -832,4 +838,293 @@ fn runtime_state_from_app(app: DaemonApp) -> KernelRuntimeState {
         metaagent_events,
         workspace_coordinator,
     )
+}
+
+#[tokio::test]
+async fn kernel_access_workflow_control_pause_rechecks_provider_lane_wait() {
+    revoked_workflow_interrupt(true).await;
+}
+
+#[tokio::test]
+async fn kernel_access_workflow_control_cancel_rechecks_provider_lane_wait() {
+    revoked_workflow_interrupt(false).await;
+}
+
+async fn revoked_workflow_interrupt(pause: bool) {
+    let fixture = interrupt_fixture();
+    let state = &fixture.runtime;
+    let grant = state.insert_access_grant_for_test(&fixture.session_id);
+    let request = if pause {
+        LocalDaemonRequest::PauseWorkflowRun(crate::local::PauseWorkflowRunRequest {
+            session_id: fixture.session_id.clone(),
+            workflow_run_ref: fixture.workflow_run_id.clone(),
+        })
+    } else {
+        LocalDaemonRequest::CancelWorkflowRun(crate::local::CancelWorkflowRunRequest {
+            session_id: fixture.session_id.clone(),
+            workflow_run_ref: fixture.workflow_run_id.clone(),
+        })
+    };
+    let runtime = crate::runtime::workflow_actor::WorkflowRuntime::new(
+        state.clone(),
+        state.owned.session_projection.clone(),
+        state.owned.agent_runtime_projection.clone(),
+    );
+    let before = state.owned.session_snapshot(&fixture.session_id).unwrap();
+    let prompts = state
+        .owned
+        .prompt_state_owner
+        .state_parts(&before, &fixture.target_agent_id);
+    let permit = state
+        .provider_runtime_lanes
+        .acquire("interrupt-provider-run")
+        .await;
+    let probe = state
+        .provider_runtime_lanes
+        .notify_on_next_acquire_for_tests("interrupt-provider-run");
+    let mut command = crate::runtime::command::KernelCommand::from_local_request(
+        "external-workflow-control",
+        None,
+        None,
+        &request,
+    );
+    command.caller.connection_class = Some(crate::local::KernelConnectionClass::ExternalAgent);
+    command.caller.caller_id = grant.clone();
+    let pending = tokio::spawn({
+        let runtime = runtime.clone();
+        let request = request.clone();
+        async move { runtime.dispatch_workflow_command(command, request).await }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(3), probe.notified())
+        .await
+        .unwrap();
+    state
+        .revoke_kernel_access(None, Some(&grant), "explicit_revoke")
+        .unwrap();
+    drop(permit);
+    let result = tokio::time::timeout(std::time::Duration::from_secs(3), pending)
+        .await
+        .unwrap()
+        .unwrap();
+    let after = state.owned.session_snapshot(&fixture.session_id).unwrap();
+    assert!(
+        before == after,
+        "revoked workflow control changed run/session"
+    );
+    assert_eq!(
+        state
+            .owned
+            .prompt_state_owner
+            .state_parts(&after, &fixture.target_agent_id),
+        prompts
+    );
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("grant revoked or expired"));
+    let command = crate::runtime::command::KernelCommand::from_local_request(
+        "terminal-workflow-control",
+        None,
+        None,
+        &request,
+    );
+    runtime
+        .dispatch_workflow_command(command, request)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn kernel_access_workflow_control_resume_rechecks_settlement_wait() {
+    let fixture = interrupt_fixture();
+    let state = &fixture.runtime;
+    state
+        .owned
+        .session_store
+        .write()
+        .pause_workflow_run(&fixture.session_id, &fixture.workflow_run_id)
+        .unwrap();
+    let session = state
+        .owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    state
+        .owned
+        .prompt_state_owner
+        .begin_cancelling_active_prompt(&session, &fixture.target_agent_id)
+        .unwrap();
+    let grant = state.insert_access_grant_for_test(&fixture.session_id);
+    let request = LocalDaemonRequest::ResumeWorkflowRun(crate::local::ResumeWorkflowRunRequest {
+        session_id: fixture.session_id.clone(),
+        workflow_run_ref: fixture.workflow_run_id.clone(),
+    });
+    let scoped = state.with_external_command_authority(Some((&grant, &request)));
+    let LocalDaemonRequest::ResumeWorkflowRun(inner) = request else {
+        unreachable!()
+    };
+    let pending = scoped.execute_workflow_resume_run_request(inner.clone());
+    tokio::pin!(pending);
+    // Poll the actual continuation through its cancellation-settlement sleep.
+    tokio::select! { biased;
+        result = &mut pending => panic!("resume did not wait for cancellation: {}", result.0.is_ok()),
+        _ = tokio::task::yield_now() => {}
+    }
+    state
+        .revoke_kernel_access(None, Some(&grant), "explicit_revoke")
+        .unwrap();
+    state
+        .owned
+        .cancel_active_prompt_only(&fixture.session_id, &fixture.target_agent_id)
+        .unwrap();
+    let before = state.owned.session_snapshot(&fixture.session_id).unwrap();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(3), pending)
+        .await
+        .unwrap();
+    let after = state.owned.session_snapshot(&fixture.session_id).unwrap();
+    assert!(before == after, "revoked resume changed workflow/prompts");
+    assert!(result
+        .0
+        .unwrap_err()
+        .to_string()
+        .contains("grant revoked or expired"));
+    state
+        .execute_workflow_resume_run_request(inner)
+        .await
+        .0
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kernel_access_workflow_control_remote_cancel_rechecks_app_wait() {
+    revoked_remote_workflow_interrupt(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kernel_access_workflow_control_remote_cancel_rechecks_discovery_wait() {
+    revoked_remote_workflow_interrupt(true).await;
+}
+
+async fn revoked_remote_workflow_interrupt(discovery: bool) {
+    use crate::runtime::state::kernel_access::test_support::worker_spy::WorkerSpy;
+    use std::sync::atomic::Ordering;
+    let worker = WorkerSpy::new(discovery);
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.relay_url = Some(worker.url.clone());
+    config.relay_token = Some("workflow-control-fixture".into());
+    let mut fixture = interrupt_fixture_with_config(
+        crate::test_support::TestWorktree::new("access-workflow-interrupt"),
+        config,
+    );
+    let probe = Arc::new(tokio::sync::Notify::new());
+    fixture
+        .runtime
+        .observe_app_lock_wait_for_test(probe.clone());
+    let state = &fixture.runtime;
+    state
+        .owned
+        .agent_store
+        .bind_remote_execution(
+            &fixture.target_agent_id,
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: worker.id.clone(),
+                worker_machine_id: "fixture-machine".into(),
+                execution_lease_id: "lease".into(),
+                leased_agent_id: "leased-agent".into(),
+                active_worker_provider_run_id: Some("worker-run".into()),
+                relay_url: None,
+                relay_token: None,
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                ),
+            },
+        )
+        .unwrap();
+    let before = state
+        .owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let active = state
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&before, &fixture.target_agent_id)
+        .unwrap();
+    let attachment_id = active.source_attachment_id().to_string();
+    let grant = state.insert_access_grant_for_test(&fixture.session_id);
+    let request = LocalDaemonRequest::PauseWorkflowRun(crate::local::PauseWorkflowRunRequest {
+        session_id: fixture.session_id.clone(),
+        workflow_run_ref: fixture.workflow_run_id.clone(),
+    });
+    let runtime = crate::runtime::workflow_actor::WorkflowRuntime::new(
+        state.clone(),
+        state.owned.session_projection.clone(),
+        state.owned.agent_runtime_projection.clone(),
+    );
+    let guard = if discovery {
+        None
+    } else {
+        Some(state.app.lock().await)
+    };
+    let mut command = crate::runtime::command::KernelCommand::from_local_request(
+        "external-workflow-control",
+        None,
+        None,
+        &request,
+    );
+    command.caller.connection_class = Some(crate::local::KernelConnectionClass::ExternalAgent);
+    command.caller.caller_id = grant.clone();
+    let pending =
+        tokio::spawn(async move { runtime.dispatch_workflow_command(command, request).await });
+    let wait = if discovery {
+        worker.discovery_started.clone()
+    } else {
+        probe
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(3), wait.notified())
+        .await
+        .unwrap();
+    state
+        .revoke_kernel_access(None, Some(&grant), "explicit_revoke")
+        .unwrap();
+    drop(guard);
+    if discovery {
+        worker.release_discovery.notify_one();
+    }
+    let result = tokio::time::timeout(std::time::Duration::from_secs(3), pending)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        worker.requests.load(Ordering::SeqCst),
+        0,
+        "revoked workflow cancellation reached worker"
+    );
+    let after = state
+        .owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    assert_eq!(
+        state
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&after, &fixture.target_agent_id)
+            .unwrap(),
+        active,
+        "revoked cancellation changed active prompt"
+    );
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("grant revoked or expired"));
+    state
+        .cancel_agent_prompt(
+            &fixture.session_id,
+            &fixture.target_agent_id,
+            &attachment_id,
+        )
+        .await
+        .unwrap();
+    assert_eq!(worker.requests.load(Ordering::SeqCst), 1);
 }

@@ -181,3 +181,143 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" })
         assert_eq!(registry.list().unwrap().len(), artifacts.len() + 1);
     }
 }
+
+#[tokio::test]
+async fn kernel_access_artifact_registry_refuses_other_session_source() {
+    let worktree = crate::test_support::TestWorktree::new("access-artifact-source");
+    let root = crate::test_support::TestWorktree::new("access-artifact-state");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.user_config.state.path = Some(root.path().join("state.db").display().to_string());
+    let artifact_root = config.workflow_code_artifact_root();
+    let mut daemon = crate::test_support::bootstrap_authenticated_app(config).unwrap();
+    let (allowed, _) = crate::app::KernelSessionService::new(&mut daemon)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let (other, _) = crate::app::KernelSessionService::new(&mut daemon)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let app = Arc::new(Mutex::new(daemon));
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(app, 32);
+    let state = router.runtime_state();
+    let runtime = WorkflowRuntime::new(
+        state.clone(),
+        state.owned.session_projection.clone(),
+        state.owned.agent_runtime_projection.clone(),
+    );
+    let source = "workflow.define({alias: 'private-source'})\nconst n = workflow.node({handle: 'n', agent: workflow.newAgent({provider: 'dev-stub', model: 'default'}), instructions: 'Finish.', canCompleteWorkflowRun: true})\nworkflow.endpoint(n, {handle: 'entry'})".to_string();
+    let request = LocalDaemonRequest::ApplyWorkflowCode(crate::local::ApplyWorkflowCodeRequest {
+        session_id: other.id().into(),
+        node_path: "node".into(),
+        source: source.clone(),
+        language: None,
+        provider_rebindings: vec![],
+        agent_rebindings: vec![],
+    });
+    let command = crate::runtime::command::KernelCommand::from_local_request(
+        "terminal-save-private-source",
+        None,
+        None,
+        &request,
+    );
+    runtime
+        .dispatch_workflow_command(command, request)
+        .await
+        .unwrap();
+    let registry = crate::workflow_code::WorkflowCodeArtifactRegistry::new(vec![artifact_root]);
+    let artifacts = registry.list().unwrap();
+    assert_eq!(artifacts.len(), 1);
+    let name = artifacts[0].name.clone();
+    let victim = registry.get(&name).unwrap().unwrap();
+    let before = state.session_snapshot(other.id()).await.unwrap();
+    let grant = state.insert_access_grant_for_test(allowed.id());
+    let requests = vec![
+        LocalDaemonRequest::GetWorkflowCodeArtifact(crate::local::GetWorkflowCodeArtifactRequest {
+            session_id: allowed.id().into(),
+            name: name.clone(),
+        }),
+        LocalDaemonRequest::ListWorkflowCodeArtifacts(
+            crate::local::ListWorkflowCodeArtifactsRequest {
+                session_id: allowed.id().into(),
+            },
+        ),
+        LocalDaemonRequest::UpdateWorkflowCodeArtifact(
+            crate::local::UpdateWorkflowCodeArtifactRequest {
+                session_id: allowed.id().into(),
+                name: name.clone(),
+                language: crate::workflow_code::WorkflowCodeLanguage::JavaScript,
+                node_path: "node".into(),
+                source: source.clone(),
+            },
+        ),
+        LocalDaemonRequest::CreateWorkflowCodeArtifact(
+            crate::local::CreateWorkflowCodeArtifactRequest {
+                session_id: allowed.id().into(),
+                name: name.clone(),
+                language: crate::workflow_code::WorkflowCodeLanguage::JavaScript,
+                node_path: "node".into(),
+                source,
+            },
+        ),
+        LocalDaemonRequest::DeleteWorkflowCodeArtifact(
+            crate::local::DeleteWorkflowCodeArtifactRequest {
+                session_id: allowed.id().into(),
+                name: name.clone(),
+            },
+        ),
+        LocalDaemonRequest::ExportWorkflowCodeArtifact(
+            crate::local::ExportWorkflowCodeArtifactRequest {
+                session_id: allowed.id().into(),
+                name: name.clone(),
+            },
+        ),
+        LocalDaemonRequest::ExportWorkflowCodePackage(
+            crate::local::ExportWorkflowCodePackageRequest {
+                session_id: allowed.id().into(),
+                name: name.clone(),
+                target: None,
+                agent_mode: Default::default(),
+            },
+        ),
+        LocalDaemonRequest::ExportWorkflowCodeSource(
+            crate::local::ExportWorkflowCodeSourceRequest {
+                session_id: allowed.id().into(),
+                target: crate::local::WorkflowCodeSourceExportTarget::Artifact {
+                    name: name.clone(),
+                },
+                format: Default::default(),
+                agent_mode: Default::default(),
+            },
+        ),
+    ];
+    for request in requests {
+        let command = external_command(&request, &grant);
+        let response = runtime.dispatch_workflow_command(command, request).await;
+        assert!(
+            response.is_err(),
+            "external grant reached global source registry"
+        );
+        assert_eq!(registry.list().unwrap(), artifacts);
+        let remaining = registry.get(&name).unwrap().unwrap();
+        assert_eq!(remaining.source, victim.source);
+        assert_eq!(remaining.metadata, victim.metadata);
+    }
+    assert!(state.session_snapshot(other.id()).await.unwrap() == before);
+    let request =
+        LocalDaemonRequest::GetWorkflowCodeArtifact(crate::local::GetWorkflowCodeArtifactRequest {
+            session_id: other.id().into(),
+            name,
+        });
+    let command = crate::runtime::command::KernelCommand::from_local_request(
+        "terminal-read-private-source",
+        None,
+        None,
+        &request,
+    );
+    assert!(matches!(
+        runtime
+            .dispatch_workflow_command(command, request)
+            .await
+            .unwrap(),
+        LocalDaemonResponse::WorkflowCodeArtifact { .. }
+    ));
+}

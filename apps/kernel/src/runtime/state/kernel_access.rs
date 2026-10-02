@@ -452,4 +452,4 @@ impl KernelRuntimeState {
 
 mod policy;
 #[cfg(test)]
-mod test_support;
+pub(super) mod test_support;
