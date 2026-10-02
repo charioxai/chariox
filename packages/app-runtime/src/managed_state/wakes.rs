@@ -48,7 +48,12 @@ pub(super) fn initialize(connection: &Connection) -> Result<()> {
            next_attempt_at_ms INTEGER NOT NULL CHECK(next_attempt_at_ms >= 0),
            PRIMARY KEY(installation_id, wake_id)
          );
-         CREATE INDEX IF NOT EXISTS app_wakes_due ON app_wakes(next_attempt_at_ms);",
+         CREATE INDEX IF NOT EXISTS app_wakes_due ON app_wakes(next_attempt_at_ms);
+         CREATE TABLE IF NOT EXISTS app_wake_clock (
+           singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+           last_poll_at_ms INTEGER NOT NULL CHECK(last_poll_at_ms >= 0)
+         );
+         INSERT OR IGNORE INTO app_wake_clock VALUES (1, 0);",
     )?;
     Ok(())
 }
@@ -141,9 +146,27 @@ fn row_wake(row: &rusqlite::Row<'_>) -> rusqlite::Result<Wake> {
 /// Due wakes across installations, oldest first. Reading claims nothing: the
 /// kernel's single wake pump delivers them and then completes or defers each.
 pub fn due_wakes(connection: &Connection, now_ms: u64, limit: usize) -> Result<Vec<DueWake>> {
-    let mut statement = connection.prepare(
+    // Persist the observed clock so even a small correction across a restart
+    // releases old retry deadlines. Future wakes keep their original due time.
+    // Use the caller's transaction when present (for durable checkpoint tests).
+    let transaction = connection
+        .is_autocommit()
+        .then(|| connection.unchecked_transaction())
+        .transpose()?;
+    let reader = transaction.as_deref().unwrap_or(connection);
+    reader.execute(
+        "UPDATE app_wakes SET next_attempt_at_ms=MAX(due_at_ms, ?1)
+         WHERE next_attempt_at_ms>MAX(due_at_ms, ?1)
+           AND EXISTS(SELECT 1 FROM app_wake_clock WHERE last_poll_at_ms>?1)",
+        [now_ms as i64],
+    )?;
+    reader.execute(
+        "UPDATE app_wake_clock SET last_poll_at_ms=?1 WHERE singleton=1",
+        [now_ms as i64],
+    )?;
+    let mut statement = reader.prepare(
         "SELECT owner_id,installation_id,wake_id,due_at_ms,revision,attempts FROM app_wakes
-         WHERE next_attempt_at_ms<=?1 ORDER BY next_attempt_at_ms, installation_id, wake_id LIMIT ?2",
+         WHERE next_attempt_at_ms<=?1 ORDER BY due_at_ms, installation_id, wake_id LIMIT ?2",
     )?;
     let rows = statement.query_map(params![now_ms as i64, limit as i64], |row| {
         Ok(DueWake {
@@ -157,8 +180,12 @@ pub fn due_wakes(connection: &Connection, now_ms: u64, limit: usize) -> Result<V
             attempts: row.get::<_, i64>(5)?.max(0) as u32,
         })
     })?;
-    rows.collect::<std::result::Result<_, _>>()
-        .map_err(Into::into)
+    let due = rows.collect::<std::result::Result<_, _>>()?;
+    drop(statement);
+    if let Some(transaction) = transaction {
+        transaction.commit()?;
+    }
+    Ok(due)
 }
 
 /// Remove a delivered wake. A wake replaced since delivery began keeps its
