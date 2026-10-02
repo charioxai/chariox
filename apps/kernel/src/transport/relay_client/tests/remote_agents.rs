@@ -1181,7 +1181,6 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
     );
     assert_ne!(projected_provider_run_id, local_provider_run_id);
 
-    let mut held_reply_observation = None;
     if direct_message_only {
         let sender_prompt_id = {
             let mut app = app_home.lock().await;
@@ -1272,7 +1271,14 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
             let direct_message_result = dispatch
                 .await
                 .expect("agent message dispatch task should join");
-            held_reply_observation = Some((relay_reply_is_waiting, home_app_lock_available));
+            assert!(
+                relay_reply_is_waiting,
+                "fake relay should have a routed agent-message request pending while the worker is paused"
+            );
+            assert!(
+                home_app_lock_available,
+                "home DaemonApp lock must remain available while the remote worker reply is pending"
+            );
             if finish_target_before_direct_reply {
                 assert!(
                     !direct_message_result.as_ref().is_ok_and(|result| result.ok),
@@ -2103,16 +2109,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
         .expect("worker connector should join");
     let _ = server_shutdown_tx.send(());
     server_task.await.expect("server task should join");
-    if let Some((relay_reply_is_waiting, home_app_lock_available)) = held_reply_observation {
-        assert!(
-            relay_reply_is_waiting,
-            "fake relay should have a routed agent-message request pending while the worker is paused"
-        );
-        assert!(
-            home_app_lock_available,
-            "home DaemonApp lock must remain available while the remote worker reply is pending"
-        );
-    }
+
 }
 #[test]
 fn remote_machine_agents_materialize_file_attachments_on_the_worker() {
