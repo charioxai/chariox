@@ -496,6 +496,25 @@ async fn runtime_with_substitutes(
             "Go and Zen",
         )
         .expect("isolated account");
+    // MP-08/MP-10: this fixture submits a turn, so its synthetic model must
+    // exist in the isolated native account catalog used by model preflight.
+    let environment = registry
+        .resolve_environment(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "opencode",
+            &profile.profile_id,
+        )
+        .expect("isolated fixture account environment");
+    let config_directory = std::path::PathBuf::from(&environment["OPENCODE_CONFIG_DIR"]);
+    std::fs::create_dir_all(&config_directory).unwrap();
+    std::fs::write(
+        config_directory.join("opencode.json"),
+        serde_json::json!({"provider": {"opencode": {"models": {
+            "deepseek-v4-pro": {"name": "Substitution fixture"}
+        }}}})
+        .to_string(),
+    )
+    .expect("declare synthetic catalog model without credentials");
     registry
         .update_observation(
             crate::session::DEFAULT_LOCAL_USER_ID,

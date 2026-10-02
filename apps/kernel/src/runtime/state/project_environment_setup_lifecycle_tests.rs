@@ -6674,6 +6674,20 @@ fn serve_provider_request(
         .expect("provider fixture state should not poison")
         .record(format!("{method} {path}"));
     match (method, path) {
+        // MP-08/MP-10: model preflight uses the same fixture server as prompts.
+        ("GET", "/provider") => {
+            write_json_response(
+                &mut stream,
+                200,
+                &serde_json::json!({
+                    "all": [{"id": "opencode", "name": "Fixture", "models": {
+                        "test-model": {"id": "test-model", "name": "Fixture model"}
+                    }}],
+                    "connected": ["opencode"],
+                    "default": {"opencode": "test-model"}
+                }),
+            );
+        }
         ("GET", "/global/health") => {
             write_json_response(&mut stream, 200, &serde_json::json!({"healthy": true}));
         }
