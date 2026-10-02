@@ -136,15 +136,18 @@ test("shared allocator coordination helper is packaged and writable to the broke
   assert.match(installer, /slice-disk-quota-coordinator\.mjs/)
 })
 
-test("paired disk-cap user-config fields are covered by local-daemon protocol 374", async () => {
+test("paired disk-cap user-config fields are covered by local-daemon protocol 375", async () => {
   const [rust, client, snapshot] = await Promise.all([
     read("../src/local/api/types.rs"),
     read("../../../packages/kernel-client/src/kernel-types.ts"),
     read("../src/local/api/tests/protocol_shapes/slice_disk_quota.rs"),
   ])
-  assert.match(rust, /LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 374/)
-  assert.match(client, /LOCAL_DAEMON_PROTOCOL_VERSION = 374/)
-  assert.match(snapshot, /assert_eq!\(LOCAL_DAEMON_PROTOCOL_VERSION, 374\)/)
+  const runtimeVersion = Number(rust.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+)/)?.[1])
+  const clientVersion = Number(client.match(/LOCAL_DAEMON_PROTOCOL_VERSION = (\d+)/)?.[1])
+  const snapshotVersion = Number(snapshot.match(/assert_eq!\(LOCAL_DAEMON_PROTOCOL_VERSION, (\d+)\)/)?.[1])
+  assert.equal(runtimeVersion, 375)
+  assert.equal(clientVersion, runtimeVersion)
+  assert.equal(snapshotVersion, runtimeVersion)
   assert.match(snapshot, /disk_layer_mb/)
   assert.match(snapshot, /disk_home_mb/)
 })
