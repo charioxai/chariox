@@ -8,7 +8,6 @@ use chariox_kernel::local::{
     LocalDaemonRequest, RunShellCapabilityRequest, SubmitPromptRequest,
 };
 use chariox_kernel::runtime_transport::run_kernel_websocket_server_on_listener;
-use chariox_kernel::session::CreateSessionRequest;
 use chariox_kernel::{DaemonApp, DaemonConfig};
 use serde_json::json;
 use tokio::sync::oneshot;
@@ -584,18 +583,11 @@ fn kernel_websocket_prompt_submit_acks_while_shell_capability_is_slow() {
         });
 
         let mut socket = connect_with_retry(&config.kernel_websocket_url()).await;
-        let cwd = std::env::current_dir()
-            .expect("current directory should be available")
-            .to_string_lossy()
-            .to_string();
 
         let create_response = send_request(
             &mut socket,
             "create-session",
-            LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-                cwd.as_str(),
-                cwd.as_str(),
-            )),
+            LocalDaemonRequest::CreateSession(workspace.session_request()),
         )
         .await;
         let session = &response_variant(&create_response, "SessionCreated")["session"];
