@@ -51,6 +51,7 @@ impl Drop for SliceDockerEnv {
 #[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
 async fn save_api_rejects_unsupported_layout_before_snapshot_or_park() {
+    crate::test_support::isolated_env_test!();
     use std::os::unix::fs::PermissionsExt;
 
     let _environment_lock = SLICE_DOCKER_ENV_LOCK
