@@ -37,15 +37,32 @@ fn requests_a_replay_runs_again_are_the_ones_the_kernel_client_never_resends() {
 }
 
 #[test]
-fn command_cache_estimates_json_byte_arrays_by_heap_footprint() {
+fn command_cache_stores_shared_serialized_byte_arrays() {
     let byte_count = 64 * 1024;
     let value = serde_json::to_value(vec![7_u8; byte_count]).expect("bytes should serialize");
-    let estimated = value_heap_bytes(&value);
-
-    assert!(
-        estimated >= (byte_count * std::mem::size_of::<Value>()) as u64,
-        "JSON byte arrays must be charged for each heap-resident Value: {estimated}"
+    let result = persistent_result_for_test(
+        "bytes",
+        CommandResultCache::fingerprint_from_bytes_for_test(b"bytes"),
+        1,
+        Some(value.clone()),
+    )
+    .result;
+    let serialized = serde_json::to_string(&value).unwrap();
+    assert_eq!(result.response.as_ref().unwrap().get(), serialized);
+    assert_eq!(*result.response_value(), Some(value));
+    assert!(cached_command_result_memory_bytes("bytes", &result) < serialized.len() as u64 + 1024);
+    let cloned = result.clone();
+    assert!(Arc::ptr_eq(
+        result.response.as_ref().unwrap(),
+        cloned.response.as_ref().unwrap()
+    ));
+    let persisted = serde_json::to_string(&result).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&persisted).unwrap()["response"],
+        serde_json::from_str::<Value>(&serialized).unwrap()
     );
+    let restored: CachedCommandResult = serde_json::from_str(&persisted).unwrap();
+    assert_eq!(*restored.response_value(), *result.response_value());
 }
 
 #[test]
@@ -146,7 +163,7 @@ async fn pending_interaction_replay_waits_for_one_volatile_result() {
         )
         .await;
     let replayed = replay.await.expect("interaction replay should resolve");
-    assert_eq!(*replayed.response, Some(response));
+    assert_eq!(*replayed.response_value(), Some(response));
     assert!(fs::read_to_string(&path).unwrap_or_default().is_empty());
 
     let restored = CommandResultCache::new_with_persistent_path(path.clone())
@@ -181,7 +198,10 @@ async fn persistent_command_cache_recovers_completed_results() {
         _ => panic!("completed command should be replayable after reload"),
     };
     let result = wait.await.expect("cached result should resolve");
-    assert_eq!(*result.response, Some(serde_json::json!({"ok": true})));
+    assert_eq!(
+        *result.response_value(),
+        Some(serde_json::json!({"ok": true}))
+    );
 
     let _ = fs::remove_file(path);
 }
@@ -700,7 +720,7 @@ fn persistent_result_for_test(
         command_id: command_id.to_string(),
         completed_at_ms,
         result: CachedCommandResult {
-            response: Box::new(response),
+            response: serialized_response(&response),
             error: None,
             completed_at_ms,
             fingerprint,
@@ -818,7 +838,7 @@ async fn at_most_once_duplicates_wait_for_durable_settlement() {
         CommandReservation::Wait(wait) => wait,
         _ => panic!("settled receipt must replay"),
     };
-    assert_eq!(*replay.await.unwrap().response, Some(success));
+    assert_eq!(*replay.await.unwrap().response_value(), Some(success));
     let _ = fs::remove_file(path);
 }
 
@@ -862,7 +882,7 @@ async fn at_most_once_sync_failure_reports_unknown_to_every_caller() {
         CommandReservation::Wait(wait) => wait,
         _ => panic!("failed settlement must never redispatch"),
     };
-    assert_eq!(*replay.await.unwrap().response, Some(unknown));
+    assert_eq!(*replay.await.unwrap().response_value(), Some(unknown));
     let _ = fs::remove_file(path);
 }
 
@@ -875,4 +895,20 @@ fn saved_snapshot_restore_is_not_transport_cacheable() {
             snapshot_id: "snapshot-saved".into(),
         });
     assert!(!request_is_cacheable(&request));
+}
+
+#[test]
+fn command_cache_replays_generated_responses_beyond_input_nesting_limit() {
+    let mut response = Value::Null;
+    for _ in 0..150 {
+        response = Value::Array(vec![response]);
+    }
+    let result = persistent_result_for_test(
+        "nested",
+        CommandResultCache::fingerprint_from_bytes_for_test(b"nested"),
+        1,
+        Some(response.clone()),
+    )
+    .result;
+    assert_eq!(*result.response_value(), Some(response));
 }

@@ -383,7 +383,9 @@ async fn dispatch_relay_client_request(
         {
             CommandReservation::Wait(wait_rx) => {
                 return match wait_rx.await {
-                    Ok(cached) => cached_relay_dispatch_outcome(cached.response, cached.error),
+                    Ok(cached) => {
+                        cached_relay_dispatch_outcome(cached.response_value(), cached.error)
+                    }
                     Err(_) => RelayDispatchOutcome::RelayError(relay_error(
                         "duplicate_command_unavailable",
                         "original duplicate command result was unavailable",

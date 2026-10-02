@@ -1196,7 +1196,7 @@ async fn handle_incoming_payload(
                                 &transport_health,
                                 KernelOutgoingFrame::Response {
                                     request_id,
-                                    response: cached.response,
+                                    response: cached.response_value(),
                                     error: cached.error,
                                 },
                                 session_id.as_deref(),
