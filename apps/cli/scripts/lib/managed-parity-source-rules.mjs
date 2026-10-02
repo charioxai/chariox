@@ -2824,7 +2824,7 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
     "openFindings": [
       "MP-02/MP-08/MP-10/MP-11: implementation observation only; independent exact-head semantic review, signed aggregate release and fresh-machine comparison remain pending."
     ]
-  }
+  },
   {
     "id": "mp11b-ready-machine-launch-choice-reset",
     "sourceCommit": "2ba8a709170fcb82d1288346bef02dc7987cfb69",
@@ -2847,7 +2847,7 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
     "openFindings": [
       "MP-02/MP-08/MP-10/MP-11: implementation observation only; independent exact-head semantic review, signed aggregate release and fresh-machine comparison remain pending."
     ]
-  }
+  },
   {
     "id": "mp11b-ready-machine-execution-worker-reset",
     "sourceCommit": "c718a7a9553db941da4dc21f52e8fdf7e0a7aada",
@@ -2879,7 +2879,7 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
       "MP-02/MP-08/MP-10/MP-11: implementation observation only; independent exact-head semantic review, signed aggregate release and fresh-machine comparison remain pending."
     ],
     "repository": "cloud"
-  }
+  },
   {
     "id": "parity3-supervisor-broker-response-owner",
     "sourceCommit": "ead7d3d89a9d80377a2f9f60513715b3d3bd9780",
