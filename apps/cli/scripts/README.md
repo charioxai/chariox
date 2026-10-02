@@ -501,3 +501,21 @@ pnpm --filter @chariox/cli run remote-restart:drill
 ```
 
 It launches isolated relay, home, and worker kernels, spawns a remote dev-stub agent, prompts it, restarts home, restarts worker, restarts both, and fails unless the home kernel restores the durable remote agent and refreshes stale worker leases. Pass `--keep-artifacts-on-failure` to preserve the isolated logs.
+
+## Private kernel local authentication
+
+Helpers that start isolated kernels pass their `CHARIOX_HOME`, `XDG_STATE_HOME`,
+or full kernel environment as `LocalIpcClient`'s `localAuthEnvironment` option.
+The client keeps only state-directory paths and rereads the per-port token on
+each connection. Readiness probes and local TUI child processes must use the
+same state directory. Relay clients do not use this option or send local tokens.
+
+After building the kernel and kernel client, run the focused log-mode drill:
+
+```sh
+CHARIOX_LOCAL_AUTH_KERNEL_BINARY=/absolute/path/to/chariox-kernel \
+  node --test apps/cli/scripts/lib/private-kernel-local-auth.kernel-test.mjs
+```
+
+It starts two disposable kernels per isolation mode, reconnects after restart,
+checks for missing/wrong-token warnings, and removes its temporary state.

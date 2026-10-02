@@ -336,7 +336,7 @@ async function run() {
   ])
   requests = importedRequests
   client = await waitFor(async () => {
-    const candidate = interruption.guardClient(new LocalIpcClient(`ws://127.0.0.1:${kernelPort}/kernel`))
+    const candidate = interruption.guardClient(new LocalIpcClient(`ws://127.0.0.1:${kernelPort}/kernel`, { localAuthEnvironment: kernelEnv }))
     try {
       await candidate.send(requests.listSlicesRequest())
       return candidate
@@ -345,7 +345,7 @@ async function run() {
       throw error
     }
   }, 60_000, "kernel did not accept local connections")
-  observerClient = interruption.guardClient(new LocalIpcClient(`ws://127.0.0.1:${kernelPort}/kernel`))
+  observerClient = interruption.guardClient(new LocalIpcClient(`ws://127.0.0.1:${kernelPort}/kernel`, { localAuthEnvironment: kernelEnv }))
 
   if (realProviderOptions) {
     realProviderOptions = await importRoomNativeProviderAccount({ client, requests, options: realProviderOptions })
@@ -2361,7 +2361,7 @@ async function startLocalTui({ tempRoot, kernelUrl }) {
   return await startTui({
     kind: "local",
     tempRoot,
-    env: isolatedTuiEnvironment(tempRoot, "local"),
+    env: { ...isolatedTuiEnvironment(tempRoot, "local"), CHARIOX_HOME: path.join(tempRoot, "home") },
     connectionArgs: ["--kernel-url", kernelUrl],
   })
 }

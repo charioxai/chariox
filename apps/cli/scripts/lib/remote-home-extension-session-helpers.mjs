@@ -1,9 +1,9 @@
 import { setTimeout as sleep } from "node:timers/promises"
 
-export async function waitForDaemon(LocalIpcClient, kernelUrl, listRemoteMachinesRequest) {
+export async function waitForDaemon(LocalIpcClient, kernelUrl, listRemoteMachinesRequest, localAuthEnvironment) {
   let lastError = null
   for (let attempt = 0; attempt < 80; attempt += 1) {
-    const client = new LocalIpcClient(kernelUrl)
+    const client = new LocalIpcClient(kernelUrl, { localAuthEnvironment })
     try {
       await client.send(listRemoteMachinesRequest())
       await client.close().catch(() => {})

@@ -196,9 +196,10 @@ async function terminateChild(child, signal = 'SIGTERM') {
   }
 }
 
-async function waitForLocalDaemon(LocalIpcClient, kernelUrl, createSessionRequest, endSessionRequest, workspace) {
+async function waitForLocalDaemon(LocalIpcClient, kernelUrl, createSessionRequest, endSessionRequest, workspace, localAuthEnvironment) {
   for (let attempt = 0; attempt < 80; attempt += 1) {
     const probe = new LocalIpcClient(kernelUrl, {
+      localAuthEnvironment,
       kernelPingIntervalMs: 60_000,
       kernelMaxMissedPongs: 10,
     })
@@ -374,11 +375,12 @@ async function main() {
       stdio: ['ignore', 'ignore', 'inherit'],
     })
 
-    await waitForLocalDaemon(LocalIpcClient, homeKernelUrl, createSessionRequest, endSessionRequest, repoRoot)
+    await waitForLocalDaemon(LocalIpcClient, homeKernelUrl, createSessionRequest, endSessionRequest, repoRoot, { ...process.env, XDG_STATE_HOME: path.join(rootDir, `${homeDaemonId}-xdg-state`) })
     await waitForRelayTarget(LocalIpcClient, listRemoteMachinesRequest, relayUrl, relayToken, 'home')
     await waitForRelayTarget(LocalIpcClient, listRemoteMachinesRequest, relayUrl, relayToken, 'worker')
 
     localClient = new LocalIpcClient(homeKernelUrl, {
+      localAuthEnvironment: { ...process.env, XDG_STATE_HOME: path.join(rootDir, `${homeDaemonId}-xdg-state`) },
       kernelPingIntervalMs: 60_000,
       kernelMaxMissedPongs: 10,
     })
@@ -390,6 +392,7 @@ async function main() {
       const model = options.providerModels[provider]
         ?? (options.model === DEFAULT_MODEL ? defaultModelForProvider(provider) : options.model)
       const workerClient = new LocalIpcClient(workerKernelUrl, {
+        localAuthEnvironment: { ...process.env, XDG_STATE_HOME: path.join(rootDir, `${workerDaemonId}-xdg-state`) },
         kernelPingIntervalMs: 60_000,
         kernelMaxMissedPongs: 10,
       })

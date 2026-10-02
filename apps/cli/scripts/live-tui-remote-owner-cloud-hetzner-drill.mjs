@@ -546,7 +546,7 @@ async function main() {
       localKernelStderr += chunk.toString()
       if (localKernelStderr.length > 16_000) localKernelStderr = localKernelStderr.slice(-16_000)
     })
-    localClient = new LocalIpcClient(`ws://127.0.0.1:${ports.localKernelPort}`)
+    localClient = new LocalIpcClient(`ws://127.0.0.1:${ports.localKernelPort}`, { localAuthEnvironment: { ...process.env, XDG_STATE_HOME: localState } })
     await waitForKernel(localClient, options.workspace, options.worktree)
     await localClient.send({ ConnectCloudRelay: null })
 

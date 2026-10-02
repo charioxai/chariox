@@ -205,12 +205,13 @@ async function runWorkerResumeMatrix({ options, runtimeRoot, evidenceRoot, ports
       stderrPath: path.join(runtimeRoot, "worker-kernel.stderr.log"),
     })
 
-    await waitForLocalDaemon(homeKernelUrl, runtimeRoot, runtimeRoot)
-    await waitForLocalDaemon(workerKernelUrl, runtimeRoot, runtimeRoot)
+    await waitForLocalDaemon(homeKernelUrl, runtimeRoot, runtimeRoot, homeEnv)
+    await waitForLocalDaemon(workerKernelUrl, runtimeRoot, runtimeRoot, workerEnv)
     await waitForRelayTarget(relayUrl, clientRelayToken, "home", Math.min(options.timeoutMs, 120_000), options.pollMs)
     await waitForRelayTarget(relayUrl, clientRelayToken, "worker", Math.min(options.timeoutMs, 120_000), options.pollMs)
 
     const client = new LocalIpcClient(homeKernelUrl, {
+      localAuthEnvironment: homeEnv,
       kernelPingIntervalMs: 60_000,
       kernelMaxMissedPongs: 10,
     })
@@ -235,7 +236,7 @@ async function runWorkerResumeMatrix({ options, runtimeRoot, evidenceRoot, ports
           workerStorageRoot,
           sourceProviderEnv: homeProvider,
           destinationProviderEnv: workerProvider,
-          options,
+          options: { ...options, localAuthEnvironment: homeEnv },
         })
         matrix.results.push(result)
         await writeFile(
@@ -410,7 +411,7 @@ async function main() {
         })
         daemonChild.stdout?.pipe(stdout)
         daemonChild.stderr?.pipe(stderr)
-        await waitForLocalDaemon(kernelUrl, runtimeRoot, runtimeRoot)
+        await waitForLocalDaemon(kernelUrl, runtimeRoot, runtimeRoot, daemonEnv)
       }
 
       let runScenario = runLocalReloadScenario
@@ -421,7 +422,9 @@ async function main() {
         runScenario = runLiveMigrateToSliceScenario
       }
       for (const provider of options.providers) {
-        const result = await runScenario({ provider, root: runtimeRoot, kernelUrl, options })
+        const result = await runScenario({ provider, root: runtimeRoot, kernelUrl, options: {
+          ...options, localAuthEnvironment: options.spawnDaemon ? { CHARIOX_HOME: daemonHome } : process.env,
+        } })
         matrix.results.push(result)
         await writeFile(
           path.join(evidenceRoot, `${provider}-${options.drill}-result.json`),
