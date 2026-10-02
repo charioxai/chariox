@@ -380,6 +380,48 @@ async fn wrong_passkeys_are_rate_limited_until_the_lockout_ends() {
 }
 
 #[tokio::test]
+async fn host_owner_routing_cannot_use_the_terminals_remember_window() {
+    let f = Fixture::new(true);
+    let first = f.critical("first").await;
+    let second = f.critical("second").await;
+    let third = f.critical("third").await;
+    f.answer("first", "approve", Some(PASSKEY), Some(5))
+        .await
+        .unwrap();
+    assert_eq!(first.await.unwrap().choice_id.as_deref(), Some("approve"));
+    Fixture::refused_with(
+        f.answer_as(
+            "second",
+            "approve",
+            None,
+            None,
+            KernelCommandSource::LocalCli,
+            local_caller(KernelConnectionClass::Host),
+        )
+        .await,
+        "PASSKEY_REQUIRED",
+    );
+    assert!(f.audits("second").is_empty());
+    f.answer_as(
+        "second",
+        "deny",
+        None,
+        None,
+        KernelCommandSource::LocalCli,
+        local_caller(KernelConnectionClass::Host),
+    )
+    .await
+    .unwrap();
+    assert_eq!(second.await.unwrap().choice_id.as_deref(), Some("deny"));
+    f.answer("third", "approve", None, None).await.unwrap();
+    assert_eq!(third.await.unwrap().choice_id.as_deref(), Some("approve"));
+    assert_eq!(
+        f.audits("third"),
+        [("remembered".into(), serde_json::json!("terminal"))]
+    );
+}
+
+#[tokio::test]
 async fn remember_window_is_opt_in_bounded_and_expires() {
     let f = Fixture::new(true);
     let _first = f.critical("first").await;

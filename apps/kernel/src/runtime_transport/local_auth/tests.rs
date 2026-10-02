@@ -161,7 +161,8 @@ fn laptop_kernel_writes_a_fresh_owner_only_token_file_at_each_start() {
     let _environment = crate::env_lock::lock();
     let home = TempHome::new("token-file");
 
-    let (first_auth, first_file) = KernelLocalAuth::for_local_kernel(None, Ok(loopback(43_901)));
+    let (first_auth, first_file) =
+        KernelLocalAuth::for_local_kernel(None, Ok(loopback(43_901))).unwrap();
     let first_file = first_file.expect("token file should be written");
     let KernelLocalAuth::LocalToken(first) = &first_auth else {
         panic!("a kernel without a host token should use its local token");
@@ -185,7 +186,8 @@ fn laptop_kernel_writes_a_fresh_owner_only_token_file_at_each_start() {
     assert_eq!(file_mode, 0o600);
     assert_eq!(directory_mode, 0o700);
 
-    let (second_auth, second_file) = KernelLocalAuth::for_local_kernel(None, Ok(loopback(43_901)));
+    let (second_auth, second_file) =
+        KernelLocalAuth::for_local_kernel(None, Ok(loopback(43_901))).unwrap();
     let second_file = second_file.expect("restart should replace the token file");
     let KernelLocalAuth::LocalToken(second) = &second_auth else {
         panic!("a kernel without a host token should use its local token");
@@ -211,7 +213,7 @@ fn a_loose_token_directory_is_tightened_to_owner_only() {
     std::fs::create_dir_all(&directory).unwrap();
     std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-    let (_auth, file) = KernelLocalAuth::for_local_kernel(None, Ok(loopback(43_902)));
+    let (_auth, file) = KernelLocalAuth::for_local_kernel(None, Ok(loopback(43_902))).unwrap();
     assert!(file.is_some());
     assert_eq!(
         std::fs::metadata(&directory).unwrap().permissions().mode() & 0o777,
@@ -233,9 +235,13 @@ fn a_symlinked_token_directory_is_refused() {
     )
     .unwrap();
 
-    let (auth, file) = KernelLocalAuth::for_local_kernel(None, Ok(loopback(43_903)));
-    assert!(file.is_none());
-    assert!(matches!(auth, KernelLocalAuth::LocalToken(_)));
+    let result = KernelLocalAuth::for_local_kernel(None, Ok(loopback(43_903)));
+    let Err(error) = result else {
+        panic!("unwritable auth must stop startup")
+    };
+    assert!(error
+        .to_string()
+        .contains("cannot write required token file"));
     assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
 }
 
@@ -246,7 +252,8 @@ fn a_host_token_kernel_writes_no_local_token_file() {
     let home = TempHome::new("host-token");
 
     let (auth, file) =
-        KernelLocalAuth::for_local_kernel(Some(Arc::from("host-sentinel")), Ok(loopback(43_904)));
+        KernelLocalAuth::for_local_kernel(Some(Arc::from("host-sentinel")), Ok(loopback(43_904)))
+            .unwrap();
     assert!(matches!(auth, KernelLocalAuth::HostToken(_)));
     assert!(file.is_none());
     assert!(!home.path().join("state").exists());
@@ -258,7 +265,7 @@ fn provider_environments_carry_neither_the_token_nor_its_path() {
     let _environment = crate::env_lock::lock();
     let _home = TempHome::new("provider-env");
 
-    let (auth, file) = KernelLocalAuth::for_local_kernel(None, Ok(loopback(43_905)));
+    let (auth, file) = KernelLocalAuth::for_local_kernel(None, Ok(loopback(43_905))).unwrap();
     let file = file.expect("token file should be written");
     let KernelLocalAuth::LocalToken(auth) = &auth else {
         panic!("a kernel without a host token should use its local token");
@@ -323,4 +330,18 @@ impl Drop for TempHome {
         }
         let _ = std::fs::remove_dir_all(&self.path);
     }
+}
+
+#[test]
+fn missing_listener_address_stops_local_token_startup() {
+    let result = KernelLocalAuth::for_local_kernel(
+        None,
+        Err(std::io::Error::other("test listener failure")),
+    );
+    let Err(error) = result else {
+        panic!("missing address must stop startup")
+    };
+    assert!(error
+        .to_string()
+        .contains("kernel websocket address unavailable"));
 }
