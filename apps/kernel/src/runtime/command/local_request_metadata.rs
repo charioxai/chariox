@@ -977,7 +977,6 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::RequestManagedEnvironmentReleaseUpdate(_)
         | LocalDaemonRequest::GetManagedEnvironmentReleaseUpdate(_)
         | LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(_)
-        | LocalDaemonRequest::AdjustProjectEnvironment(_)
         | LocalDaemonRequest::StartManagedContextTransfer(_)
         | LocalDaemonRequest::GetManagedContextTransferStatus(_)
         | LocalDaemonRequest::GetManagedContextLaunchTarget(_)
