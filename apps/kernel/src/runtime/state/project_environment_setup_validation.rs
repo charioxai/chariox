@@ -1070,20 +1070,17 @@ pub(super) fn run_worker_validation_command_with_output_timeout(
                 output
             }
             Err(error) if error.process_group_settled => {
-                match settle_validation_output_readers(
+                if let Ok(None) = settle_validation_output_readers(
                     Some(stdout_reader),
                     Some(stderr_reader),
                     output_settle_timeout,
                 ) {
-                    Ok(None) => {
-                        return Err(mark_validation_output_unsettled(
-                            store,
-                            operation_id,
-                            attempt,
-                            command_index,
-                        ));
-                    }
-                    Ok(Some(_)) | Err(_) => {}
+                    return Err(mark_validation_output_unsettled(
+                        store,
+                        operation_id,
+                        attempt,
+                        command_index,
+                    ));
                 }
                 cleanup_after_settled_group(scratch, store, operation_id, attempt, command_index)?;
                 Err(error.message)
