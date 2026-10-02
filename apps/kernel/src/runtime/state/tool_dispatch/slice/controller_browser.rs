@@ -1086,7 +1086,11 @@ pub(super) async fn ensure_controller_browser_environment(
             operation,
             message: format!("{}: {error:?}", error.code()),
         })?;
-    if environment.lifecycle == crate::session::EnvironmentLifecycle::Starting {
+    if matches!(
+        environment.lifecycle,
+        crate::session::EnvironmentLifecycle::Starting
+            | crate::session::EnvironmentLifecycle::Degraded
+    ) {
         state
             .finish_room_environment_controller_start(session_id, operation)
             .await?;
