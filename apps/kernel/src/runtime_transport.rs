@@ -697,6 +697,10 @@ where
                     operation: "accept kernel websocket",
                     message: error.to_string(),
                 })?;
+                stream.set_nodelay(true).map_err(|error| DaemonError::LocalTransport {
+                    operation: "configure kernel websocket TCP_NODELAY",
+                    message: error.to_string(),
+                })?;
                 let runtime = Arc::clone(&runtime);
                 let router = Arc::clone(&router);
                 let inbound_request_admission = inbound_request_admission.clone();
