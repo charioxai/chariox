@@ -35,7 +35,7 @@ test("merged auxiliary output releases evicted renderables across 1,000 streams"
     activeAgentIdsForSession: () => [agentId],
   })
   const trim = (_agentId: string, next: TranscriptEntry[]) =>
-    transcriptRetentionSlice(next, { maxEntries: 400, maxChars: 256 }).kept
+    transcriptRetentionSlice(next, { maxEntries: 400, maxChars: 512 }).kept
   const commit = createAgentPaneStreamingCommitController({
     trimLiveAgentPaneEntries: trim,
     collapsedTurnIdsForAgent: () => [],
@@ -60,14 +60,17 @@ test("merged auxiliary output releases evicted renderables across 1,000 streams"
   })
   try {
     for (let index = 0; index < 1_000; index += 1) {
-      // The first chunk fits alongside the previous entry. Only its continuation
+      // The first chunk fits alongside three previous entries. Its continuation
       // exceeds the budget, exercising the merged-output path rather than append.
       stream.appendProviderChunk(agentId, "assistant", "a".repeat(32), `stream-${index}`)
+      const survivor = index >= 3 ? entries[1]! : undefined
+      const survivorRenderable = survivor ? renderables.get(agentId)?.get(survivor.id) : undefined
       stream.appendProviderChunk(agentId, "assistant", "b".repeat(128), `stream-${index}`)
+      if (survivor) assert.equal(renderables.get(agentId)?.get(survivor.id), survivorRenderable)
       if (index % 50 === 0) await harness.renderOnce()
     }
     await harness.renderOnce()
-    assert.equal(entries.length, 1)
+    assert.equal(entries.length, 3)
     assert.equal(renderables.get(agentId)?.size, entries.length)
     assert.equal(scrollbox.getChildren().length, entries.length)
     assert.equal(
