@@ -294,7 +294,7 @@ Agent notification rules:
 
 Remote coordination is required only when agents are working in the same logical repo and branch/workspace as local agents. Different repos, branches, directories, or unjoined workspaces are outside live I/O coordination.
 
-Workspace identity must not be treated as static. Local and remote workspace identity can change at any time through checkout, branch switch, remote rewrite, worktree movement, or repo reconfiguration. The kernel must detect identity changes and reclassify whether a provider run belongs to a coordinated workspace.
+Workspace identity must not be treated as static. Local and remote workspace identity can change at any time through a branch switch, remote rewrite, worktree movement, or repo reconfiguration. The kernel must detect identity changes and reclassify whether a provider run belongs to a coordinated workspace. Commits, resets, and checkouts that keep the same branch label, including detached HEAD, move only `head_commit`. The kernel reports the new head but does not treat it as an identity change. Snapshot-aware external-change detection handles any file drift they cause.
 
 Identity inputs:
 
