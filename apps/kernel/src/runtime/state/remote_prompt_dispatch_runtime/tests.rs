@@ -342,7 +342,7 @@ async fn accept_claim_test_prompt(
     lifecycle_probe: Option<&ClaimTestRelayLifecycleProbe>,
     diagnostics: impl Fn() -> String,
 ) -> (WebSocketStream<TcpStream>, String, String, String, String) {
-    let (mut discovery, request_id, discovery_peer) = accept_claim_test_worker_metadata(
+    let (mut discovery, request_id, _) = accept_claim_test_worker_metadata(
         listener,
         worker_id,
         home_relay_token,
