@@ -2246,7 +2246,11 @@ Workflow trigger and deployment direction:
   for one session. Kernel-launched processes receive no external authority,
   even if the holder is an ancestor of the kernel. Session IDs, references,
   attachments, and every session in a batch are checked. `ListSessions`
-  returns only the granted session. Global requests fail closed. The scope
+  returns only the granted session. Global requests fail closed. Saved workflow
+  artifacts live in kernel/user registries, so direct artifact creation, lookup,
+  enumeration, mutation, import, and artifact-target export are outside external
+  session grants even when their envelopes include a session ID. Session-local source
+  Apply/Run and exports targeting a workflow remain available. The scope
   match covers every request variant without a fallback, so an undecided new
   request fails compilation. A grant cannot answer kernel-owned decisions
   or critical approvals, or submit a passkey.
@@ -2256,6 +2260,8 @@ Workflow trigger and deployment direction:
   revokes all of them. Expiry, explicit revoke, holder exit, session end,
   passkey rotation, and kernel shutdown revoke authority. Idle subscriptions,
   queued commands, cached replies, and event replay check live authority.
+  Workflow controls also recheck after provider-lane and cancellation-settlement
+  waits; remote workflow cancellation carries the same command authority.
   A Unix connection binds to its first approved or admitted grant and never
   switches authority. Session references resolve once to an authorized session
   ID before dispatch. A later approval on that socket creates a grant for

@@ -13,18 +13,18 @@ use tokio::sync::Notify;
 use tokio::time::timeout;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
-pub(super) struct WorkerSpy {
-    pub(super) id: String,
-    pub(super) url: String,
-    pub(super) requests: Arc<AtomicUsize>,
-    pub(super) discovery_started: Arc<Notify>,
-    pub(super) release_discovery: Arc<Notify>,
+pub(in crate::runtime::state) struct WorkerSpy {
+    pub(in crate::runtime::state) id: String,
+    pub(in crate::runtime::state) url: String,
+    pub(in crate::runtime::state) requests: Arc<AtomicUsize>,
+    pub(in crate::runtime::state) discovery_started: Arc<Notify>,
+    pub(in crate::runtime::state) release_discovery: Arc<Notify>,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl WorkerSpy {
-    pub(super) fn new(pause_discovery: bool) -> Self {
+    pub(in crate::runtime::state) fn new(pause_discovery: bool) -> Self {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let url = format!("ws://{}", listener.local_addr().unwrap());
@@ -88,6 +88,10 @@ impl WorkerSpy {
                                     "model":null, "effort":null, "execution_mode":execution_mode, "permission_level":permission_level,
                                     "backing_session_id":"worker-session", "backing_agent_id":"worker-agent", "backing_attachment_id":"worker-attachment", "created_at_ms":1
                                 })).unwrap() },
+                                RelayPeerRequest::CancelLeasedPrompt { .. } => RelayPeerResponse::LeasedPromptCancelled { cancellation: crate::session::PromptCancellation {
+                                    prompt: crate::session::PromptQueueItem::new("worker-prompt", "worker-attachment", "worker-agent", "fixture", crate::session::PromptStatus::Cancelled),
+                                    started_next: None,
+                                } },
                                 _ => panic!("unexpected worker request"),
                             };
                             send(&mut socket, RelayEnvelope::DaemonPeerResponse { request_id, from_daemon_id: worker_id.clone(), encrypted_response: Some(relay_crypto::encrypt_payload_for_peer(&worker.relay_private_key, &registration.public_key, &serde_json::to_vec(&response).unwrap()).unwrap()), error: None }).await;

@@ -366,6 +366,7 @@ impl KernelRuntimeState {
             {
                 return Ok(cancellation);
             }
+            self.authorize_prompt_command(authority)?;
             if let Some(cancellation) =
                 owned.cancel_local_prompt(session_id, target_agent_id, attachment_id)?
             {

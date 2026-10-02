@@ -102,7 +102,19 @@ impl KernelRuntimeState {
                 | LocalDaemonRequest::ArmDeploymentCredentialEnrollment(_)
                 | LocalDaemonRequest::ExportDebugBundle(_)
                 | LocalDaemonRequest::ImportExternalProviderAgent(_)
-        );
+                // Saved artifacts are kernel/user resources, not session-owned.
+                | LocalDaemonRequest::CreateWorkflowCodeArtifact(_)
+                | LocalDaemonRequest::UpdateWorkflowCodeArtifact(_)
+                | LocalDaemonRequest::GetWorkflowCodeArtifact(_)
+                | LocalDaemonRequest::ListWorkflowCodeArtifacts(_)
+                | LocalDaemonRequest::DeleteWorkflowCodeArtifact(_)
+                | LocalDaemonRequest::ExportWorkflowCodeArtifact(_)
+                | LocalDaemonRequest::ImportWorkflowCodeArtifact(_)
+                | LocalDaemonRequest::ImportWorkflowCodePackage(_)
+        ) || matches!(request, LocalDaemonRequest::ExportWorkflowCodePackage(request)
+            if !matches!(request.target, Some(crate::local::WorkflowCodePackageExportTarget::Workflow { .. })))
+            || matches!(request, LocalDaemonRequest::ExportWorkflowCodeSource(request)
+                if matches!(request.target, crate::local::WorkflowCodeSourceExportTarget::Artifact { .. }));
         // Responding to routine agent questions is allowed; kernel decisions, even denials, remain human owned.
         let forbidden = if let LocalDaemonRequest::RespondToInteraction(response) = request {
             response.passkey.is_some()
