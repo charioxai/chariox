@@ -1,38 +1,43 @@
-# Phase 1 builder worker
+# Remote worker driver
 
-The Mac kernel owns the sessions, prompts, permissions and history. The Hetzner
-kernel hosts leased Codex processes. The relay carries encrypted kernel-to-kernel
-packets over a Mac-origin SSH reverse tunnel. All listeners are loopback-only.
+The home kernel owns sessions, prompts, permissions and history. A remote kernel
+hosts leased Codex processes. The relay carries encrypted kernel-to-kernel
+packets. A worker behind SSH can reach the home relay through a reverse tunnel,
+with all listeners bound to loopback.
 
-`apps/cli/scripts/cx-worker.mjs` drives both local and remote workers through the
-home kernel. Set `CX_SESSION_DB` to an absolute state-file path outside source
-checkouts and `CX_IPC_MODULE` to a built CLI `ipc.js` module if its default location
-is unavailable. The live stack wrapper supplies both settings.
+`apps/cli/scripts/cx-worker.mjs` drives local and remote workers through the home
+kernel. Set these operator-owned values before using it:
+
+- `KERNEL_URL`: the home kernel's WebSocket URL.
+- `CX_PROFILE`: the selected home Codex account profile, required for creation.
+- `CX_REMOTE_KERNEL`: the registered worker kernel ID or alias, required for
+  `new-remote`.
+- `CX_SESSION_DB`: an absolute state-file path outside source checkouts.
+- `CX_IPC_MODULE`: a built CLI `ipc.js` module, if the default location is absent.
 
 Run `new-remote` from a local git checkout. Its current checkout anchors the home
-session; the supplied absolute path selects an existing checkout on the builder.
-The worker kernel validates that path. The driver never resolves it on the Mac.
+session; the supplied absolute path selects an existing checkout on the worker.
+The worker kernel validates that path. The driver never resolves it locally.
 
 ```sh
-node /Users/miguel/.chariox/dev/apps-phase1/stack/cx.mjs new-remote worker-name /w/worker-checkout
-node /Users/miguel/.chariox/dev/apps-phase1/stack/cx.mjs say worker-name /absolute/prompt.txt
-node /Users/miguel/.chariox/dev/apps-phase1/stack/cx.mjs wait worker-name 30
-node /Users/miguel/.chariox/dev/apps-phase1/stack/cx.mjs out worker-name
-node /Users/miguel/.chariox/dev/apps-phase1/stack/cx.mjs st
-node /Users/miguel/.chariox/dev/apps-phase1/stack/cx.mjs drop worker-name
+node apps/cli/scripts/cx-worker.mjs new-remote worker-name /absolute/worker-checkout
+node apps/cli/scripts/cx-worker.mjs say worker-name /absolute/prompt.txt
+node apps/cli/scripts/cx-worker.mjs wait worker-name 30
+node apps/cli/scripts/cx-worker.mjs out worker-name
+node apps/cli/scripts/cx-worker.mjs st
+node apps/cli/scripts/cx-worker.mjs drop worker-name
 ```
 
-The default placement is `apps-phase1-builder-worker-g`. Override it with
-`CX_REMOTE_KERNEL`. Agent defaults match the Phase 1 stack: provider `codex`,
-model `gpt-6.1-sol`, high effort, profile `codex-1-6s6cnmim`, build mode and yolo
-permissions. `CX_PROFILE` and `CX_MODEL` override the account and model.
-`new` retains explicit local placement. Existing sessions keep their placement.
+The agent defaults to provider `codex`, model `gpt-6.1-sol`, high effort, build
+mode and yolo permissions. `CX_MODEL` overrides the model. `new` retains explicit
+local placement. Existing sessions keep their placement. `drop` destroys the
+agent through the kernel's normal cleanup request before deleting its session.
 
 The selected Codex account replicates through the encrypted remote lease before
 spawn. The target owns its replica and provider-native state. No auth files need
 to be copied by an operator. `say`, `wait`, `out` and `st` use the home session's
 normal protocol requests, including remote final text stored in history summaries.
-A timed-out `wait` exits unsuccessfully.
+Failed or cancelled turns and timed-out waits exit unsuccessfully.
 
 GitHub access is a separate provisioning requirement. The existing SCM exporter
 and materializer are currently wired to Cloud managed-context transfers.
@@ -42,7 +47,8 @@ request without those bindings. Public `git ls-remote` success does not prove
 that `git push` or `gh` is authenticated. Do not repair this gap by copying tokens,
 auth files or Keychain items.
 
-The Phase 1 validation evidence, exact setup and stop commands live at
-`/Users/miguel/.codex/evidence/chariox-apps-phase1/takeover/builder-worker/`.
-The builder allocation ends on 2026-10-03 at 20:59 UTC. Its replicated account
-profiles and kernel identities are durable credential state, not cleanup targets.
+Replicated account profiles and kernel identities are durable credential state,
+not cleanup targets. Keep operator-specific tunnel commands, service definitions,
+expiry dates and validation receipts in external evidence and runtime directories.
+
+Run the driver contract checks with `pnpm --filter @chariox/cli run test:cx-worker`.

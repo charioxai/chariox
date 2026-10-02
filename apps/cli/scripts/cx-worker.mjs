@@ -1,14 +1,14 @@
-// Drive Chariox worker agents (Codex, gpt-6.1-sol, kaissandra.ai credits) on the live kernel.
-//   node cx.mjs new <alias> <git-worktree-dir>     create a session (workspace = repo root, worktree = dir) and its Codex agent
-//   node cx.mjs new-remote <alias> <builder-path> create a home session and lease its Codex agent on CX_REMOTE_KERNEL
-//   node cx.mjs say <alias> <prompt-file>          submit a prompt to the alias's agent
-//   node cx.mjs wait <alias> [max-minutes]         block until the agent's current turn finishes (run in background to be notified)
-//   node cx.mjs st                                 status of every worker agent
-//   node cx.mjs out <alias> [chars]                last output of the alias's agent
-//   node cx.mjs drop <alias>                       delete the alias's session
+// Drive Chariox Codex workers through their home kernel.
+//   node apps/cli/scripts/cx-worker.mjs new <alias> <git-worktree-dir>     create a session (workspace = repo root, worktree = dir) and its Codex agent
+//   node apps/cli/scripts/cx-worker.mjs new-remote <alias> <builder-path> create a home session and lease its Codex agent on CX_REMOTE_KERNEL
+//   node apps/cli/scripts/cx-worker.mjs say <alias> <prompt-file>          submit a prompt to the alias's agent
+//   node apps/cli/scripts/cx-worker.mjs wait <alias> [max-minutes]         block until the agent's current turn finishes (run in background to be notified)
+//   node apps/cli/scripts/cx-worker.mjs st                                 status of every worker agent
+//   node apps/cli/scripts/cx-worker.mjs out <alias> [chars]                last output of the alias's agent
+//   node apps/cli/scripts/cx-worker.mjs drop <alias>                       delete the alias's session
 // Set CX_IPC_MODULE to the built CLI ipc.js module if needed.
 // CX_SESSION_DB must be an absolute path outside source checkouts.
-// CX_REMOTE_KERNEL defaults to apps-phase1-builder-worker-g.
+// Set KERNEL_URL, CX_PROFILE and CX_REMOTE_KERNEL in the operator environment.
 // Remote checkout paths belong to the worker; the current local git checkout anchors the home session.
 import { readFileSync, writeFileSync, existsSync } from "node:fs"
 import { execFileSync } from "node:child_process"
@@ -17,10 +17,11 @@ import { pathToFileURL } from "node:url"
 const { LocalIpcClient } = await import(process.env.CX_IPC_MODULE ? pathToFileURL(process.env.CX_IPC_MODULE).href : new URL("../dist/ipc.js", import.meta.url).href)
 const DB = process.env.CX_SESSION_DB
 if (!DB || !isAbsolute(DB)) throw new Error("CX_SESSION_DB must be an absolute path outside source checkouts")
-const REMOTE_KERNEL = process.env.CX_REMOTE_KERNEL ?? "apps-phase1-builder-worker-g"
-const PROFILE = process.env.CX_PROFILE ?? "codex-1-6s6cnmim"
+const REMOTE_KERNEL = process.env.CX_REMOTE_KERNEL
+const PROFILE = process.env.CX_PROFILE
 const MODEL = process.env.CX_MODEL ?? "gpt-6.1-sol"
-const client = new LocalIpcClient(process.env.KERNEL_URL ?? "ws://127.0.0.1:44240/kernel", {})
+if (!process.env.KERNEL_URL) throw new Error("KERNEL_URL must identify the home kernel")
+const client = new LocalIpcClient(process.env.KERNEL_URL, {})
 const db = existsSync(DB) ? JSON.parse(readFileSync(DB, "utf8")) : {}
 const save = () => writeFileSync(DB, JSON.stringify(db, null, 2))
 const first = (x, key) => { if (x && typeof x === "object") { if (key in x && typeof x[key] === "string") return x[key]; for (const v of Object.values(x)) { const r = first(v, key); if (r) return r } } return null }
@@ -33,6 +34,8 @@ if (cmd === "new" || cmd === "new-remote") {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(alias)) throw new Error("alias must start with a letter or digit and contain only letters, digits, underscores, or hyphens")
   if (Object.hasOwn(db, alias)) throw new Error(`alias ${alias} already exists`)
   const remote = cmd === "new-remote"
+  if (!PROFILE) throw new Error("CX_PROFILE must identify the selected home account")
+  if (remote && !REMOTE_KERNEL) throw new Error("CX_REMOTE_KERNEL must identify the worker kernel")
   if (remote && !isAbsolute(arg)) throw new Error("remote checkout path must be absolute")
   const homeCheckout = remote ? process.cwd() : arg
   const worktree = git(homeCheckout, "rev-parse", "--show-toplevel")
@@ -40,6 +43,7 @@ if (cmd === "new" || cmd === "new-remote") {
   const workspace = common.endsWith("/.git") ? common.slice(0, -5) : worktree
   const created = await client.send({ CreateSession: { workspace_id: workspace, worktree_id: worktree, alias: `cx-${alias}`, slice_ref: null } })
   const session = first(created, "session_id") ?? first(created, "id")
+  if (!session) throw new Error("kernel did not confirm session creation")
   let spawned
   try {
     spawned = await client.send({ SpawnAgent: { session_id: session, provider: "codex", account_profile: PROFILE, alias, model: MODEL, effort: "high", execution_mode: "build", permission_level: "yolo", worktree_id: remote ? arg : null, kernel_ref: remote ? REMOTE_KERNEL : null, slice_ref: null, worktree_placement: null } })
@@ -69,9 +73,10 @@ if (cmd === "new" || cmd === "new-remote") {
     const o = await client.send({ GetSessionHistoryOutline: { session_id: session, agent_ids: [agent], latest_prompt_count: 1 } }).catch(() => null)
     const turn = (o?.SessionHistoryOutline?.agents?.[0]?.turns ?? []).at(-1)
     const started = turn?.started_at_ms ?? turn?.prompt_timestamp_ms ?? turn?.blobs?.[0]?.timestamp_ms ?? turn?.entries?.[0]?.entry?.timestamp_ms ?? 0
-    const state = !turn ? "no turn" : started < lastSay - 5_000 ? "old turn" : turn.completed_at_ms ? "completed" : "running"
+    const state = !turn ? "no turn" : started < lastSay - 5_000 ? "old turn" : turn.completed_at_ms ? turn.lifecycle ?? "unknown" : "running"
     if (state !== last) { console.log(new Date().toISOString().slice(11, 19), alias, state); last = state }
     if (state === "completed") break
+    if (["failed", "cancelled", "unknown"].includes(state)) throw new Error(`turn ${state} for ${alias}`)
     await new Promise((r) => setTimeout(r, 20_000))
   }
   console.log(alias, "wait ended:", last)
@@ -87,13 +92,13 @@ if (cmd === "new" || cmd === "new-remote") {
   const { session, agent } = db[alias]
   const outline = await client.send({ GetSessionHistoryOutline: { session_id: session, agent_ids: [agent], latest_prompt_count: 1 } })
   const turn = (outline.SessionHistoryOutline?.agents?.[0]?.turns ?? []).at(-1) ?? {}
-  const entries = []
-  const collect = (x) => { if (x && typeof x === "object") { if (typeof x.kind === "string" && typeof x.text === "string") entries.push(x); else for (const v of Object.values(x)) collect(v) } }
+  const entries = [], sequences = new Set()
+  const collect = (x) => { if (x && typeof x === "object") { if (typeof x.entry_index === "number") sequences.add(x.entry_index); if (typeof x.kind === "string" && typeof x.text === "string") entries.push(x); else for (const v of Object.values(x)) collect(v) } }
   for (const b of turn.blobs ?? []) collect(await client.send({ GetSessionHistoryBlobContent: { session_id: session, agent_id: agent, blob_id: b.blob_id } }).catch(() => null))
-  for (const e of turn.entries ?? []) collect(e.entry ?? e)
+  for (const e of turn.entries ?? []) collect(e)
   // The final provider message can live only in the outline summary.
   const summary = turn.summary?.entry
-  if (summary?.kind === "provider_output" && !entries.some((e) => e.kind === summary.kind && e.merge_key === summary.merge_key)) collect(summary)
+  if (summary?.kind === "provider_output" && !sequences.has(turn.summary.entry_index) && !entries.some((e) => e.kind === summary.kind && e.text === summary.text && e.timestamp_ms === summary.timestamp_ms && e.merge_key === summary.merge_key)) collect(summary)
   let text = "", key = null, tools = 0
   for (const e of entries) {
     if (e.kind === "provider_output") { if (key && e.merge_key !== key) text += "\n"; text += e.text; key = e.merge_key }
@@ -101,8 +106,9 @@ if (cmd === "new" || cmd === "new-remote") {
   }
   console.log(`[${tools} tool entries; turn ${turn.completed_at_ms ? "completed" : "open"}]\n` + text.slice(-Number(arg ?? 2500)))
 } else if (cmd === "drop") {
-  const { session, workspace } = db[alias]
-  console.log(JSON.stringify(await client.send({ DeleteSession: { session_ref: session, workspace_id: workspace ?? null } }).catch((e) => ({ error: e.message.slice(0, 200) }))).slice(0, 200))
+  const { session, agent, workspace } = db[alias]
+  await client.send({ DestroyAgent: { session_id: session, agent_id: agent } })
+  console.log(JSON.stringify(await client.send({ DeleteSession: { session_ref: session, workspace_id: workspace ?? null } })).slice(0, 200))
   delete db[alias]; save()
 } else {
   console.log("usage: new <alias> <dir> | new-remote <alias> <worker-dir> | say <alias> <file> | wait <alias> [min] | st | out <alias> [chars] | drop <alias>")

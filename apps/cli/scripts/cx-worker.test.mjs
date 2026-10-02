@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 
 const script = fileURLToPath(new URL('./cx-worker.mjs', import.meta.url))
 function fixture(t, options = {}) {
-  const root = mkdtempSync(path.join(tmpdir(), 'chariox-cx-worker-'))
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), 'chariox-cx-worker-')))
   t.after(() => rmSync(root, { recursive: true }))
   execFileSync('git', ['init', '-q', root])
   const db = path.join(root, 'sessions.json'), calls = path.join(root, 'calls.jsonl'), ipc = path.join(root, 'ipc.mjs')
@@ -19,9 +19,9 @@ function fixture(t, options = {}) {
     export class LocalIpcClient {
       async send(r) {
         appendFileSync(${JSON.stringify(calls)}, JSON.stringify(r)+'\\n');
-        if(r.CreateSession) return {SessionCreated:{session:{id:'session-1'}}};
+        if(r.CreateSession) return options.missingSession ? {} : {SessionCreated:{session:{id:'session-1'}}};
         if(r.SpawnAgent) {if(options.failSpawn) throw new Error('worker offline'); return {AgentSpawned:{agent:{id:'agent-1',remote_execution:{worker_kernel_id:'builder'}}}};}
-        if(r.GetSessionHistoryOutline) return {SessionHistoryOutline:{agents:[{turns:[{started_at_ms:Date.now(),completed_at_ms:Date.now(),entries: options.inline ? [{entry:{kind:'provider_output',merge_key:'final',text:'REMOTE FINAL'}}] : [],summary:{entry:{kind:'provider_output',merge_key:'final',text:'REMOTE FINAL'}}}]}]}};
+        if(r.GetSessionHistoryOutline) return {SessionHistoryOutline:{agents:[{turns:[{started_at_ms:Date.now(),completed_at_ms:Date.now(),lifecycle:options.lifecycle??'completed',entries: options.earlierOutput ? [{entry:{kind:'provider_output',text:'EARLIER'}}] : options.inline ? [{entry:{kind:'provider_output',merge_key:options.noMergeKey?undefined:'final',text:'REMOTE FINAL'}}] : [],summary:{entry:{kind:'provider_output',merge_key:options.noMergeKey?undefined:'final',text:'REMOTE FINAL'}}}]}]}};
         if(r.AttachToSession) return {SessionAttached:{attachment:{id:'attachment-1'}}};
         if(r.SubmitPrompt) return {PromptSubmitted:{}};
         if(r.ListAgents) return {AgentsListed:{agents:[{id:'agent-1',state:'Focused',model:'gpt-6.1-sol',is_processing:false}]}};
@@ -30,7 +30,7 @@ function fixture(t, options = {}) {
       close(){}
     }
   `)
-  const run = (...args) => spawnSync(process.execPath, [script, ...args], { cwd: root, encoding: 'utf8', env: { ...process.env, CX_IPC_MODULE: ipc, CX_SESSION_DB: db, CX_REMOTE_KERNEL: 'builder' } })
+  const run = (...args) => spawnSync(process.execPath, [script, ...args], { cwd: root, encoding: 'utf8', env: { ...process.env, CX_IPC_MODULE: ipc, CX_SESSION_DB: db, CX_REMOTE_KERNEL: 'builder', CX_PROFILE: 'test-codex-account', KERNEL_URL: 'ws://127.0.0.1:12345/kernel' } })
   const requests = () => { try { return readFileSync(calls, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) } catch { return [] } }
   return { root, db, run, requests }
 }
@@ -44,7 +44,7 @@ test('remote spawn keeps the home checkout and sends the worker path and selecte
   const spawn = req[1].SpawnAgent
   assert.equal(spawn.worktree_id, '/w/repo')
   assert.equal(spawn.kernel_ref, 'builder')
-  assert.equal(spawn.account_profile, 'codex-1-6s6cnmim')
+  assert.equal(spawn.account_profile, 'test-codex-account')
   assert.equal(spawn.model, 'gpt-6.1-sol')
   assert.equal(spawn.effort, 'high')
   assert.equal(JSON.parse(readFileSync(f.db)).worker.kernel, 'builder')
@@ -88,4 +88,37 @@ test('say, wait, and st use the home session and remote agent IDs', t => {
   assert.equal(req.find(r => r.SubmitPrompt).SubmitPrompt.target_agent_id, 'agent-1')
   assert.equal(req.find(r => r.GetSessionHistoryOutline).GetSessionHistoryOutline.session_id, 'session-1')
   assert.equal(req.find(r => r.ListAgents).ListAgents.session_id, 'session-1')
+})
+
+
+test('wait rejects failed and cancelled remote turns', t => {
+  for (const lifecycle of ['failed', 'cancelled']) {
+    const f = fixture(t, { lifecycle, db: { worker: { session: 'session-1', agent: 'agent-1' } } })
+    const r = f.run('wait', 'worker', '1')
+    assert.notEqual(r.status, 0)
+    assert.match(r.stderr, new RegExp(`turn ${lifecycle}`))
+  }
+})
+
+test('out retains an unkeyed final after an earlier unkeyed message', t => {
+  const f = fixture(t, { noMergeKey: true, earlierOutput: true, db: { worker: { session: 'session-1', agent: 'agent-1' } } })
+  const r = f.run('out', 'worker')
+  assert.equal(r.status, 0, r.stderr)
+  assert.match(r.stdout, /EARLIER/)
+  assert.match(r.stdout, /REMOTE FINAL/)
+})
+
+test('missing session confirmation causes no agent spawn or deletion', t => {
+  const f = fixture(t, { missingSession: true }), r = f.run('new-remote', 'worker', '/w/repo')
+  assert.notEqual(r.status, 0)
+  assert.equal(f.requests().length, 1)
+  assert.ok(f.requests()[0].CreateSession)
+})
+
+test('drop destroys the leased agent before deleting its home session', t => {
+  const f = fixture(t, { db: { worker: { session: 'session-1', agent: 'agent-1' } } })
+  const r = f.run('drop', 'worker')
+  assert.equal(r.status, 0, r.stderr)
+  assert.deepEqual(f.requests().map(r => Object.keys(r)[0]), ['DestroyAgent', 'DeleteSession'])
+  assert.deepEqual(JSON.parse(readFileSync(f.db)), {})
 })
