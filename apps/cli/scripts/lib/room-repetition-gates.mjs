@@ -24,7 +24,7 @@ export async function detachOwnedAttachment(send, request, attachmentId) {
   }
 }
 
-export function classifyOwnedListeners(listeners, historicalPorts, containers, runId, servicePids, observedOwnedPids=new Set(), foreignHostPids=new Set()) {
+export function classifyOwnedListeners(listeners, historicalPorts, containers, runId, servicePids, observedOwnedPids=new Set(), foreignHostPids=new Set(), confirmedForeignProxyPids=new Set(), ceasedProxyPids=new Set()) {
  const foreignPorts=new Map()
  for(const row of containers) {
   const [containerId,containerName,,published='']=row.split('|')
@@ -40,7 +40,9 @@ export function classifyOwnedListeners(listeners, historicalPorts, containers, r
   const listenerPids=[...listener.matchAll(/pid=(\d+),/g)].map(m=>Number(m[1]))
   const ownService=listenerPids.some(pid=>servicePids.includes(pid)||observedOwnedPids.has(pid))
   const foreign=foreignPorts.get(port)
-  if(foreign&&!ownService)reused.push({listener,port,...foreign})
+  if(listenerPids.length&&listenerPids.every(pid=>ceasedProxyPids.has(pid)))reused.push({listener,port,ceasedProxyPids:listenerPids})
+  else if(!ownService&&listenerPids.length&&listenerPids.every(pid=>confirmedForeignProxyPids.has(pid)))reused.push({listener,port,confirmedForeignProxyPids:listenerPids})
+  else if(foreign&&!ownService)reused.push({listener,port,...foreign})
   else if(!ownService&&!listener.includes('docker-proxy')&&listenerPids.length&&listenerPids.every(pid=>foreignHostPids.has(pid)))reused.push({listener,port,foreignHostPids:listenerPids})
   else owned.push(listener)
  }
