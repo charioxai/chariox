@@ -233,8 +233,8 @@ impl KernelRuntimeState {
                 let (session, agent, _cleanup) = review_identity.as_ref().expect("review identity");
                 additions = self
                     .review_project_environment(
-                        &session,
-                        &agent,
+                        session,
+                        agent,
                         &mut state,
                         &mut discovery_input,
                         &roots,

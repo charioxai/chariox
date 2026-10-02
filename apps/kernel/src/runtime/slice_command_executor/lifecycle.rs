@@ -1176,7 +1176,7 @@ async fn hosted_cloud_slice_relay_token(
     let Some(profile) = config.cloud_relay.clone() else {
         return Ok(fallback_relay_token);
     };
-    validate_hosted_slice_identity(&config, slice, &profile)?;
+    validate_hosted_slice_identity(config, slice, &profile)?;
     let issued = issue_cloud_slice_runtime_token(
         &profile,
         &slice.worker_kernel_ref,

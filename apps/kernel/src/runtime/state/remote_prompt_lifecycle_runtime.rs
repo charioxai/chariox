@@ -93,7 +93,7 @@ impl KernelRuntimeState {
         else {
             return Ok(Some(cancellation_intent));
         };
-        cancellation_claim.mark_active_prompt(&active_prompt.id());
+        cancellation_claim.mark_active_prompt(active_prompt.id());
         let cancellation = self
             .send_remote_agent_prompt_cancellation_with_claim(
                 session_id,
