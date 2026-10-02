@@ -1481,9 +1481,47 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
 pub(crate) struct BrowserControllerProcessStore {
     ownership: Option<Arc<Mutex<StdioOwnership>>>,
     executions: cancellation::BrowserActionExecutions,
+    authorizer: Option<Arc<dyn Fn() -> Result<(), String> + Send + Sync>>,
+    #[cfg(test)]
+    lock_wait_probe: Option<Arc<tokio::sync::Notify>>,
 }
 
 impl BrowserControllerProcessStore {
+    pub(crate) fn with_authorizer(
+        &self,
+        authorizer: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
+    ) -> Self {
+        let mut store = self.clone();
+        store.authorizer = Some(authorizer);
+        store
+    }
+
+    fn authorize(&self) -> Result<(), String> {
+        if let Some(authorizer) = &self.authorizer {
+            authorizer()?;
+        }
+        Ok(())
+    }
+
+    fn lock_ownership(&self) -> Result<Option<std::sync::MutexGuard<'_, StdioOwnership>>, String> {
+        let Some(ownership) = &self.ownership else {
+            return Ok(None);
+        };
+        let ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        self.authorize()?;
+        Ok(Some(ownership))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observe_supervisor_lock_wait_for_test(
+        &mut self,
+        probe: Arc<tokio::sync::Notify>,
+    ) {
+        self.lock_wait_probe = Some(probe);
+    }
+
     pub(crate) fn new(command: impl Into<PathBuf>, args: Vec<String>, timeout: Duration) -> Self {
         Self {
             ownership: Some(Arc::new(Mutex::new(
@@ -1531,12 +1569,9 @@ impl BrowserControllerProcessStore {
         &self,
         session_id: &str,
     ) -> Result<Option<BrowserControllerProcessSnapshot>, String> {
-        let Some(ownership) = &self.ownership else {
+        let Some(mut ownership) = self.lock_ownership()? else {
             return Ok(None);
         };
-        let mut ownership = ownership
-            .lock()
-            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
         ownership.acquire(session_id).map(Some)
     }
 
@@ -1544,12 +1579,13 @@ impl BrowserControllerProcessStore {
         &self,
         session_id: &str,
     ) -> Result<Option<BrowserControllerProcessSnapshot>, String> {
-        let Some(ownership) = &self.ownership else {
+        #[cfg(test)]
+        if let Some(probe) = &self.lock_wait_probe {
+            probe.notify_one();
+        }
+        let Some(mut ownership) = self.lock_ownership()? else {
             return Ok(None);
         };
-        let mut ownership = ownership
-            .lock()
-            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
         ownership.release(session_id).map(Some)
     }
 
@@ -1559,15 +1595,10 @@ impl BrowserControllerProcessStore {
         viewport: &CanonicalViewport,
         browser_bar_visible: bool,
     ) -> Result<Option<BrowserControllerReconciliation>, String> {
-        let Some(ownership) = &self.ownership else {
+        let Some(mut ownership) = self.lock_ownership()? else {
             return Ok(None);
         };
-        let mut ownership = ownership
-            .lock()
-            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
-        ownership
-            .reconcile_browser(session_id, viewport, browser_bar_visible)
-            .map(Some)
+        ownership.reconcile_browser(session_id, viewport, browser_bar_visible).map(Some)
     }
 
     pub(crate) fn capture_browser_snapshot(
@@ -1576,12 +1607,9 @@ impl BrowserControllerProcessStore {
         target_id: &str,
         document_id: &str,
     ) -> Result<Option<BrowserControllerStructuredSnapshot>, String> {
-        let Some(ownership) = &self.ownership else {
+        let Some(mut ownership) = self.lock_ownership()? else {
             return Ok(None);
         };
-        let mut ownership = ownership
-            .lock()
-            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
         ownership
             .capture_browser_snapshot(session_id, target_id, document_id)
             .map(Some)
@@ -1596,12 +1624,9 @@ impl BrowserControllerProcessStore {
         action: &BrowserLocatorAction,
         timeout_ms: u64,
     ) -> Result<Option<BrowserControllerActionResult>, String> {
-        let Some(ownership) = &self.ownership else {
+        let Some(mut ownership) = self.lock_ownership()? else {
             return Ok(None);
         };
-        let mut ownership = ownership
-            .lock()
-            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
         ownership
             .perform_browser_action(
                 session_id,
@@ -1622,12 +1647,9 @@ impl BrowserControllerProcessStore {
         wait: &BrowserCompatibilityWait,
         timeout_ms: u64,
     ) -> Result<Option<BrowserControllerCompatibilityWaitResult>, String> {
-        let Some(ownership) = &self.ownership else {
+        let Some(mut ownership) = self.lock_ownership()? else {
             return Ok(None);
         };
-        let mut ownership = ownership
-            .lock()
-            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
         ownership
             .wait_for_browser(session_id, target_id, document_id, wait, timeout_ms)
             .map(Some)
@@ -1640,12 +1662,9 @@ impl BrowserControllerProcessStore {
         document_id: &str,
         action: &BrowserDialogAction,
     ) -> Result<Option<BrowserControllerDialogResult>, String> {
-        let Some(ownership) = &self.ownership else {
+        let Some(mut ownership) = self.lock_ownership()? else {
             return Ok(None);
         };
-        let mut ownership = ownership
-            .lock()
-            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
         ownership
             .handle_browser_dialog(session_id, target_id, document_id, action)
             .map(Some)
@@ -1656,12 +1675,9 @@ impl BrowserControllerProcessStore {
         session_id: &str,
         cancellation: &BrowserDownloadCancellation,
     ) -> Result<Option<BrowserControllerDownloadCancellationResult>, String> {
-        let Some(ownership) = &self.ownership else {
+        let Some(mut ownership) = self.lock_ownership()? else {
             return Ok(None);
         };
-        let mut ownership = ownership
-            .lock()
-            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
         ownership
             .cancel_browser_download(session_id, cancellation)
             .map(Some)
@@ -1672,12 +1688,9 @@ impl BrowserControllerProcessStore {
         session_id: &str,
         request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
     ) -> Result<Option<serde_json::Value>, String> {
-        let Some(ownership) = &self.ownership else {
+        let Some(mut ownership) = self.lock_ownership()? else {
             return Ok(None);
         };
-        let mut ownership = ownership
-            .lock()
-            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
         ownership.app_view(session_id, request).map(Some)
     }
 
@@ -1688,12 +1701,9 @@ impl BrowserControllerProcessStore {
         cursor: u64,
         limit: u16,
     ) -> Result<Option<BrowserControllerEventBatch>, String> {
-        let Some(ownership) = &self.ownership else {
+        let Some(mut ownership) = self.lock_ownership()? else {
             return Ok(None);
         };
-        let mut ownership = ownership
-            .lock()
-            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
         ownership
             .poll_browser_events(session_id, browser_generation, cursor, limit)
             .map(Some)
@@ -1712,12 +1722,9 @@ impl BrowserControllerProcessStore {
         overwrite: bool,
         payload: &crate::runtime::browser_import_payload::BrowserImportPayload,
     ) -> Result<Option<BrowserCookieImportOutcome>, String> {
-        let Some(ownership) = &self.ownership else {
+        let Some(mut ownership) = self.lock_ownership()? else {
             return Ok(None);
         };
-        let mut ownership = ownership
-            .lock()
-            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
         ownership
             .import_browser_cookies(
                 session_id,
@@ -1740,34 +1747,25 @@ impl BrowserControllerProcessStore {
         binding: &crate::transport::room_browser_controller::RoomBrowserImportBinding,
         target_id: &str,
     ) -> Result<Option<()>, String> {
-        let Some(ownership) = &self.ownership else {
+        let Some(mut ownership) = self.lock_ownership()? else {
             return Ok(None);
         };
-        let mut ownership = ownership
-            .lock()
-            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
         ownership
             .recover_browser_cookie_import(session_id, binding, target_id)
             .map(Some)
     }
 
     pub(crate) fn shutdown(&self) -> Result<Option<BrowserControllerProcessSnapshot>, String> {
-        let Some(ownership) = &self.ownership else {
+        let Some(mut ownership) = self.lock_ownership()? else {
             return Ok(None);
         };
-        let mut ownership = ownership
-            .lock()
-            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
         ownership.shutdown().map(Some)
     }
 
     pub(crate) fn snapshot(&self) -> Result<Option<BrowserControllerProcessSnapshot>, String> {
-        let Some(ownership) = &self.ownership else {
+        let Some(ownership) = self.lock_ownership()? else {
             return Ok(None);
         };
-        let ownership = ownership
-            .lock()
-            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
         Ok(Some(ownership.supervisor.snapshot().clone()))
     }
 }

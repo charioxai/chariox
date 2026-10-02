@@ -195,13 +195,13 @@ async function ensureCliBuilt() {
   return { cliDist, kernelBinary }
 }
 
-async function waitForKernel(kernelUrl) {
+async function waitForKernel(kernelUrl, localAuthEnvironment) {
   const { LocalIpcClient } = await import('../../../packages/kernel-client/dist/ipc.js')
   const { listSessionsRequest } = await import('../../../packages/kernel-client/dist/ipc-requests.js')
   const deadline = Date.now() + 20_000
   let lastError = null
   while (Date.now() < deadline) {
-    const client = new LocalIpcClient(kernelUrl)
+    const client = new LocalIpcClient(kernelUrl, { localAuthEnvironment })
     try {
       await client.send(listSessionsRequest())
       await client.close().catch(() => {})
@@ -519,7 +519,7 @@ async function main() {
 
     if (!options.noSpawnDaemon) {
       daemon = spawn(kernelBinary, [], { cwd: repoRoot, env, stdio: ['ignore', 'ignore', 'inherit'] })
-      await waitForKernel(kernelUrl)
+      await waitForKernel(kernelUrl, options.noSpawnDaemon ? process.env : env)
     }
     log('kernel-ready', { kernelUrl })
 
@@ -534,7 +534,7 @@ async function main() {
       updateSessionConfigRequest,
       setWorkspaceLiveSyncModeRequest,
     } = await import('../../../packages/kernel-client/dist/ipc-requests.js')
-    client = new LocalIpcClient(kernelUrl)
+    client = new LocalIpcClient(kernelUrl, { localAuthEnvironment: options.noSpawnDaemon ? process.env : env })
 
     const session = unwrap(await client.send(createSessionRequest(workspace, workspace, `workspace-live-sync-permission-${provider}`)), 'SessionCreated').session
     const sessionId = session.id

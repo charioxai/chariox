@@ -33,7 +33,9 @@ import {
   kernelSubscriptionScopeValue,
   type KernelSubscriptionState,
 } from "./kernel-subscriptions.js"
+import { readLocalKernelAuthToken } from "./local-kernel-auth-token.js"
 import { LocalIpcError } from "./local-ipc-error.js"
+import { waitsForKernelAuthorization } from "./kernel-authorization-request-policy.js"
 import { sendLocalSocketRequest } from "./local-socket-transport.js"
 import { createRelayKeypair, decryptRelayPayload } from "./relay-crypto.js"
 import {
@@ -209,6 +211,8 @@ function isHostedPublicationGateway() {
 }
 
 type LocalIpcClientOptions = {
+  /** State directory of a private local kernel; never used for relay connections. */
+  localAuthEnvironment?: NodeJS.ProcessEnv | undefined
   localAuthToken?: string | undefined
   relayAuthToken?: string | undefined
   targetDaemonId?: string | undefined
@@ -224,6 +228,7 @@ type LocalIpcClientOptions = {
 
 export class LocalIpcClient {
   readonly socketPath: string
+  private readonly localAuthEnvironment: NodeJS.ProcessEnv
   private readonly localAuthEndpoint: string | null
   private readonly localAuthToken: string | null
   private readonly relayAuthToken: string | null
@@ -260,7 +265,16 @@ export class LocalIpcClient {
   private readonly kernelMaxMissedPongs: number
 
   constructor(endpoint: string, options: LocalIpcClientOptions = {}) {
+    if (endpoint.startsWith("ws+unix://") && (options.localAuthToken !== undefined || options.relayAuthToken !== undefined)) {
+      throw new Error("Unix kernel access uses OS process identity, without bearer credentials")
+    }
     this.socketPath = endpoint
+    const localAuthEnvironment = options.localAuthEnvironment ?? process.env
+    this.localAuthEnvironment = {
+      CHARIOX_HOME: localAuthEnvironment.CHARIOX_HOME,
+      XDG_STATE_HOME: localAuthEnvironment.XDG_STATE_HOME,
+      HOME: localAuthEnvironment.HOME,
+    }
     const staleMs = options.kernelEventStaleMs ?? DEFAULT_KERNEL_EVENT_STALE_MS
     this.kernelEventStaleMs = staleMs > 0 ? Math.max(staleMs, 250) : 0
     this.kernelPingIntervalMs = Math.max(options.kernelPingIntervalMs ?? DEFAULT_KERNEL_PING_INTERVAL_MS, 250)
@@ -296,7 +310,7 @@ export class LocalIpcClient {
     if (explicitLocalAuthToken && isHostedPublicationGateway()) {
       throw new Error("hosted publication gateways require a one-shot kernel local auth token file")
     }
-    this.localAuthToken = this.relayAuthToken
+    this.localAuthToken = this.relayAuthToken || endpoint.startsWith("ws+unix://")
       ? null
       : explicitLocalAuthToken ?? consumeKernelLocalAuthTokenFromEnv(endpoint) ?? null
     this.localAuthEndpoint = this.localAuthToken
@@ -492,13 +506,14 @@ export class LocalIpcClient {
   }
 
   private sendLocalSocket<TResponse>(request: unknown): Promise<TResponse> {
-    return sendLocalSocketRequest(this.socketPath, request, IPC_TIMEOUT_MS)
+    return sendLocalSocketRequest(this.socketPath, request, waitsForKernelAuthorization(request) ? 0 : IPC_TIMEOUT_MS)
   }
 
   private async sendWebSocket<TResponse>(request: unknown, lane: KernelSocketLane = "control"): Promise<TResponse> {
     const lifetime = this.requestLifetime.capture()
     const requestId = randomUUID()
-    const retryUntilMs = lane === "control"
+    const waitsForAuthorization = waitsForKernelAuthorization(request)
+    const retryUntilMs = lane === "control" && !waitsForAuthorization
       ? Date.now() + this.controlRequestRetryDeadlineMs
       : Date.now()
     const replayAfterWrite = !runsAgainOnReplay(request)
@@ -523,7 +538,7 @@ export class LocalIpcClient {
       const pending = this.pendingRequests.register<TResponse>(
         requestId,
         lane,
-        replayAfterWrite ? this.requestAttemptTimeoutMs(lane, retryUntilMs) : IPC_TIMEOUT_MS,
+        waitsForAuthorization ? 0 : replayAfterWrite ? this.requestAttemptTimeoutMs(lane, retryUntilMs) : IPC_TIMEOUT_MS,
       )
 
       try {
@@ -648,6 +663,31 @@ export class LocalIpcClient {
     await pending.promise
   }
 
+  private openKernelWebSocket(): WebSocket {
+    if (this.socketPath.startsWith("ws+unix://")) {
+      const socket = this.socketPath.slice("ws+unix://".length)
+      if (!socket.startsWith("/") || socket.includes(":") || socket.includes("?")) {
+        throw new Error("ws+unix endpoint must name an absolute Unix socket path")
+      }
+      return new WebSocket(`ws+unix:${socket}:/kernel`)
+    }
+    if (this.isRelayMode()) {
+      return new WebSocket(this.socketPath)
+    }
+    if (this.localAuthToken && this.localAuthEndpoint) {
+      return new WebSocket(this.localAuthEndpoint, {
+        headers: { authorization: `Bearer ${this.localAuthToken}` },
+      })
+    }
+    // A laptop kernel writes a new token at each start, so read it for every
+    // connection: a reconnect after a kernel restart presents the new one.
+    // Without a readable token the kernel still accepts the connection (log mode).
+    const laptopKernelToken = readLocalKernelAuthToken(this.socketPath, this.localAuthEnvironment)
+    return laptopKernelToken
+      ? new WebSocket(this.socketPath, { headers: { authorization: `Bearer ${laptopKernelToken}` } })
+      : new WebSocket(this.socketPath)
+  }
+
   private async ensureWebSocket(lane: KernelSocketLane = "control"): Promise<WebSocket> {
     const existing = this.getWebSocket(lane)
     if (existing?.readyState === WebSocket.OPEN) {
@@ -659,11 +699,7 @@ export class LocalIpcClient {
     }
 
     const nextConnectPromise = new Promise<WebSocket>((resolve, reject) => {
-      const socket = this.localAuthToken && this.localAuthEndpoint && !this.isRelayMode()
-        ? new WebSocket(this.localAuthEndpoint, {
-            headers: { authorization: `Bearer ${this.localAuthToken}` },
-          })
-        : new WebSocket(this.socketPath)
+      const socket = this.openKernelWebSocket()
       let settled = false
       this.setConnectingWebSocket(lane, socket)
 
@@ -969,12 +1005,7 @@ export class LocalIpcClient {
             message: "kernel websocket heartbeat missed; reconnecting",
           })
         }
-        this.setSuppressNextCloseEvent(lane, true)
-        socket.terminate()
-        this.setWebSocket(lane, null)
-        this.setRelayDaemonPublicKey(lane, null)
-        // Its close handler no longer sees this socket as the lane's.
-        this.rejectPending("kernel websocket heartbeat missed", lane)
+        this.destroyWebSocket(lane, "kernel websocket heartbeat missed")
         if (lane === "event") {
           this.scheduleReconnect()
         }
@@ -990,12 +1021,7 @@ export class LocalIpcClient {
             message: "kernel websocket heartbeat failed; reconnecting",
           })
         }
-        this.setSuppressNextCloseEvent(lane, true)
-        socket.terminate()
-        this.setWebSocket(lane, null)
-        this.setRelayDaemonPublicKey(lane, null)
-        // Its close handler no longer sees this socket as the lane's.
-        this.rejectPending("kernel websocket heartbeat missed", lane)
+        this.destroyWebSocket(lane, "kernel websocket heartbeat failed")
         if (lane === "event") {
           this.scheduleReconnect()
         }
@@ -1190,7 +1216,10 @@ export class LocalIpcClient {
     })
   }
 
-  private destroyWebSocket(lane: KernelSocketLane): void {
+  private destroyWebSocket(lane: KernelSocketLane, message = "kernel websocket reset"): void {
+    // Retiring the lane makes its asynchronous close/error callbacks stale.
+    // Settle requests here, including untimed human authorization waits.
+    this.rejectPending(message, lane)
     const socket = this.getWebSocket(lane) ?? this.getConnectingWebSocket(lane)
     this.setWebSocket(lane, null)
     this.setConnectingWebSocket(lane, null)

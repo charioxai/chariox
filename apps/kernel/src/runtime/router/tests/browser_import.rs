@@ -100,6 +100,7 @@ async fn consent_round_trip(cleanup_failure: Option<bool>) {
         realm_id: Some("test-realm".into()),
         public_key_thumbprint: Some("test-client-key".into()),
         metaagent_id: None,
+        connection_class: None,
     };
     let prepare = json!({"PrepareBrowserImport": {"selection": selection}});
     // Seed durable state directly to model a prior executor/kernel restart.

@@ -124,11 +124,11 @@ async function buildKernel() {
   return path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel')
 }
 
-async function waitForKernel(kernelUrl) {
+async function waitForKernel(kernelUrl, localAuthEnvironment) {
   const deadline = Date.now() + 20_000
   let lastError = null
   while (Date.now() < deadline) {
-    const client = new LocalIpcClient(kernelUrl)
+    const client = new LocalIpcClient(kernelUrl, { localAuthEnvironment })
     try {
       await client.send(listSessionsRequest())
       await client.close().catch(() => {})
@@ -228,9 +228,10 @@ async function closeHttpServer(server) {
   await new Promise((resolve) => server.close(resolve)).catch(() => {})
 }
 
-async function startSemanticSite({ port, gatewayUrl, kernelUrl, sessionId }) {
+async function startSemanticSite({ port, gatewayUrl, kernelUrl, sessionId, localAuthEnvironment }) {
   const cache = new Map()
   const client = new LocalIpcClient(kernelUrl, {
+      localAuthEnvironment,
     kernelPingIntervalMs: 60_000,
     kernelMaxMissedPongs: 10,
   })
@@ -406,8 +407,9 @@ async function main() {
 
     const kernelBinary = await buildKernel()
     kernel = startProcess(kernelBinary, [], env, 'kernel')
-    await waitForKernel(kernelUrl)
+    await waitForKernel(kernelUrl, env)
     client = new LocalIpcClient(kernelUrl, {
+      localAuthEnvironment: env,
       kernelPingIntervalMs: 60_000,
       kernelMaxMissedPongs: 10,
     })
@@ -492,7 +494,7 @@ async function main() {
     )
     await waitForGateway(gatewayUrl)
 
-    semanticSite = await startSemanticSite({ port: semanticPort, gatewayUrl, kernelUrl, sessionId })
+    semanticSite = await startSemanticSite({ port: semanticPort, gatewayUrl, kernelUrl, sessionId, localAuthEnvironment: env })
     logStep('semantic_site_ready', { semanticUrl })
 
     const renderUrl = `${semanticUrl}/about/${encodeURIComponent('serve me this page with green neon colors in black background')}`

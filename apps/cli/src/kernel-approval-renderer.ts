@@ -5,8 +5,6 @@ import { theme } from "./theme.js"
 export function createKernelApprovalRenderer(renderer: CliRenderer, actions: {
   show(): void
   choose(interactionId: string, choiceId: string): void
-  cycleRemember(): void
-  submitPasskey(): void
 }) {
   let box: BoxRenderable | undefined
   let body: ScrollBoxRenderable | undefined
@@ -74,26 +72,12 @@ export function createKernelApprovalRenderer(renderer: CliRenderer, actions: {
         body!.add(row)
       })
       if (view.error) text(body, view.error)
-      if (view.passkey) {
-        // Hidden input: only the length is ever rendered.
-        text(panel, `Chariox passkey: ${"•".repeat(Math.min(view.passkey.length, 40))}▏`, true)
-        const remember = text(panel, `Remember for: ${view.passkey.rememberMinutes ? `${view.passkey.rememberMinutes} minutes` : "off"}`)
-        remember.onMouseUp = (event) => {
-          event.stopPropagation()
-          if (event.button === MouseButton.LEFT) actions.cycleRemember()
-        }
-        const confirm = text(panel, "[ Approve with passkey ]", true)
-        confirm.onMouseUp = (event) => {
-          event.stopPropagation()
-          if (event.button === MouseButton.LEFT && view.connected && !view.pending) actions.submitPasskey()
-        }
-      } else if (view.selected !== null && !view.pending) {
+      if (view.selected !== null && !view.pending) {
         const choice = view.interaction.choices[view.selected]
         if (choice) text(panel, `Selected: ${choice.label}`, true)
       }
       text(panel, view.pending ? "Waiting for kernel confirmation…"
         : !view.connected ? "Disconnected · reconnect to respond"
-        : view.passkey ? "Type passkey · Enter approve · Tab remember · Esc back"
         : "↑/↓ select · Enter confirm · ←/→ approvals · PgUp/PgDn scroll")
       box.add(panel)
       box.requestRender()

@@ -668,10 +668,12 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   const kernelApprovals = createCliKernelApprovalComposition({
     client, renderer, session: sessionState, dimensions, themeRevision,
     connected: () => isAttached() && !daemonDisconnected(),
+    kernelConnected: () => !daemonDisconnected(),
     currentFocus: currentFocusedRenderable,
     promptFocus: promptInputRefController.currentOrNull,
     closeOtherDialog: closeActiveDialogOverlay,
     applySession: applySessionState,
+    notify: (message) => flashFooter(message, "info"),
   })
 
   const runUiBatch = uiBatchController.run
@@ -1023,6 +1025,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       assignFooterSummaryBox={assignFooterSummaryBox}
       assignDialogOverlayBox={assignDialogOverlayBox}
       assignKernelApprovalBox={kernelApprovals.assignBox}
+      assignPasskeyPopupBox={kernelApprovals.assignPopupBox}
       kernelApprovalOwnsInput={kernelApprovals.ownsInput}
       handlePromptKeyDown={handlePromptKeyDown}
       handlePromptContentChange={handlePromptContentChange}

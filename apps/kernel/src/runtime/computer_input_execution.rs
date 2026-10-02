@@ -13,9 +13,25 @@ struct ComputerInputExecutionState {
 #[derive(Clone)]
 pub(crate) struct ComputerInputCancellation {
     state: Arc<ComputerInputExecutionState>,
+    authorizer: Option<Arc<dyn Fn() -> Result<(), crate::error::DaemonError> + Send + Sync>>,
 }
 
 impl ComputerInputCancellation {
+    pub(crate) fn with_authorizer(
+        mut self,
+        authorizer: Arc<dyn Fn() -> Result<(), crate::error::DaemonError> + Send + Sync>,
+    ) -> Self {
+        self.authorizer = Some(authorizer);
+        self
+    }
+
+    pub(crate) fn authorize(&self) -> Result<(), crate::error::DaemonError> {
+        if let Some(authorizer) = &self.authorizer {
+            authorizer()?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn requested(&self) -> bool {
         self.state.cancellation_requested.load(Ordering::Acquire)
     }
@@ -119,6 +135,7 @@ impl ComputerInputExecution {
     pub(crate) fn cancellation(&self) -> ComputerInputCancellation {
         ComputerInputCancellation {
             state: Arc::clone(&self.state),
+            authorizer: None,
         }
     }
 }

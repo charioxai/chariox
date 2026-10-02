@@ -491,6 +491,7 @@ impl KernelRuntimeState {
         let refresh_agent_id = agent_id.to_string();
         let stale_leased_agent_id = stale_binding.leased_agent_id.clone();
         let refresh_stale_provider_run_id = stale_provider_run_id.to_string();
+        let authorizer = self.clone();
         let rebound = self
             .with_app_side_effect_blocking(move |app| {
                 let agent = app.agents().get_agent(&refresh_agent_id)?;
@@ -503,8 +504,10 @@ impl KernelRuntimeState {
                 {
                     return Ok(None);
                 }
-                app.refresh_remote_agent_binding(&refresh_agent_id)
-                    .map(Some)
+                app.refresh_remote_agent_binding_authorized(&refresh_agent_id, &|| {
+                    authorizer.authorize_current_external_command()
+                })
+                .map(Some)
             })
             .await?;
         let Some(rebound) = rebound else {

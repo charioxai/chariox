@@ -7,7 +7,7 @@ impl KernelRuntimeState {
         &self,
         request: crate::local::ListWorkflowRegistryRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        self.with_app_side_effect(move |app| {
+        self.with_authorized_app_side_effect(move |app| {
             let registry = workflow_registry_for_session(app, &request.session_id)?;
             let limits = app.config().workflow_code_limits();
             let node_path = crate::workflow_code::discover_workflow_code_node_path()?;
@@ -41,7 +41,7 @@ impl KernelRuntimeState {
         &self,
         request: crate::local::GetWorkflowRegistryEntryRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        self.with_app_side_effect(move |app| {
+        self.with_authorized_app_side_effect(move |app| {
             let registry = workflow_registry_for_session(app, &request.session_id)?;
             let limits = app.config().workflow_code_limits();
             let node_path = crate::workflow_code::discover_workflow_code_node_path()?;
@@ -58,7 +58,7 @@ impl KernelRuntimeState {
         &self,
         request: crate::local::AddWorkflowRegistryEntryRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        self.with_app_side_effect(move |app| {
+        self.with_authorized_app_side_effect(move |app| {
             let limits = app.config().workflow_code_limits();
             let registry = workflow_registry_for_session(app, &request.session_id)?;
             let scope = workflow_registry_write_scope(app, &request.session_id, request.scope)?;
@@ -83,7 +83,7 @@ impl KernelRuntimeState {
         &self,
         request: crate::local::AddWorkflowRegistryEntryFromWorkflowRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        self.with_app_side_effect(move |app| {
+        self.with_authorized_app_side_effect(move |app| {
             let limits = app.config().workflow_code_limits();
             let session = crate::app::KernelSessionReadService::new(app)
                 .session_snapshot(&request.session_id)?;
@@ -121,7 +121,7 @@ impl KernelRuntimeState {
         &self,
         request: crate::local::DeleteWorkflowRegistryEntryRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        self.with_app_side_effect(move |app| {
+        self.with_authorized_app_side_effect(move |app| {
             let registry = workflow_registry_for_session(app, &request.session_id)?;
             let path = registry.delete(&request.name, request.scope)?;
             app.durable_state_store().append_event(
@@ -150,7 +150,7 @@ impl KernelRuntimeState {
         let controlled_by_metaagent_id = caller_metaagent_id.map(str::to_string);
         let session_id = request.session_id.clone();
         let result = self
-            .with_app_side_effect(move |app| {
+            .with_authorized_app_side_effect(move |app| {
                 let (entry, result) = workflow_registry_apply_result(
                     app,
                     &request.session_id,
@@ -163,6 +163,7 @@ impl KernelRuntimeState {
                     "workflow_registry.load",
                     None,
                     None,
+                    &|| self.authorize_current_external_command(),
                 )?;
                 let session =
                     crate::app::KernelSessionReadService::new(app).session_snapshot(&session_id)?;
@@ -190,7 +191,7 @@ impl KernelRuntimeState {
         let controlled_by_metaagent_id = caller_metaagent_id.map(str::to_string);
         let session_id = request.session_id.clone();
         let (entry, apply_result) = match self
-            .with_app_side_effect({
+            .with_authorized_app_side_effect({
                 let session_id = session_id.clone();
                 let name = request.name.clone();
                 let parameters = request.parameters.clone();
@@ -212,6 +213,7 @@ impl KernelRuntimeState {
                         "workflow_registry.run",
                         Some(endpoint.as_deref()),
                         queue_ref.as_deref(),
+                        &|| self.authorize_current_external_command(),
                     )
                 }
             })

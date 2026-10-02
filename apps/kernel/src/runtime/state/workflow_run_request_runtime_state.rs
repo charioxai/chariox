@@ -16,6 +16,9 @@ impl KernelRuntimeState {
         Result<LocalDaemonResponse, DaemonError>,
         Option<crate::session::RuntimeSession>,
     ) {
+        if let Err(error) = self.authorize_current_external_command() {
+            return (Err(error), None);
+        }
         let owned = &self.owned;
         let result = match owned.ensure_workflow_endpoint_owner(
             &request.session_id,
@@ -178,6 +181,7 @@ impl KernelRuntimeState {
         workflow_run_ref: &str,
         pause: bool,
     ) -> Result<(crate::session::WorkflowRun, crate::session::RuntimeSession), DaemonError> {
+        self.authorize_current_external_command()?;
         let owned = &self.owned;
         let session = owned.session_store.get_session(session_id)?;
         let resolved_workflow_run = owned
@@ -219,11 +223,14 @@ impl KernelRuntimeState {
         let mut _provider_run_permits = Vec::with_capacity(provider_run_ids.len());
         for provider_run_id in provider_run_ids {
             _provider_run_permits.push(self.provider_runtime_lanes.acquire(&provider_run_id).await);
+            self.authorize_current_external_command()?;
         }
+        self.authorize_current_external_command()?;
         let activity_mutation = owned.begin_managed_activity_mutation();
         let durable_state_store = owned.durable_state_store.clone();
         let (workflow_run, archived_runs) = durable_state_store
             .with_workflow_runtime_transition_lock(|| {
+                self.authorize_current_external_command()?;
                 let mut sessions = owned.session_store.write();
                 let session_before_interrupt = sessions.get_session(session_id)?;
                 // Prompt records of every agent holding this run's queued prompts commit in
@@ -318,7 +325,14 @@ impl KernelRuntimeState {
             .collect::<Vec<_>>();
         for (agent_id, attachment_id) in active_agents {
             let cancellation = match self
-                .cancel_agent_prompt(session_id, &agent_id, &attachment_id)
+                .cancel_agent_prompt_with_external_authority(
+                    session_id,
+                    &agent_id,
+                    &attachment_id,
+                    self.external_command_authority
+                        .as_ref()
+                        .map(external_command_authority::ExternalCommandAuthority::as_request),
+                )
                 .await
             {
                 Ok(cancellation) => cancellation,
@@ -353,6 +367,9 @@ impl KernelRuntimeState {
         {
             return (Err(error), owned.session_snapshot(&session_id).ok());
         }
+        if let Err(error) = self.authorize_current_external_command() {
+            return (Err(error), None);
+        }
         let result = match owned.workflow_resume_run(&request.session_id, &request.workflow_run_ref)
         {
             Ok((workflow_run, dispatches)) => {
@@ -384,6 +401,7 @@ impl KernelRuntimeState {
             .to_string();
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(25);
         loop {
+            self.authorize_current_external_command()?;
             self.reap_structured_prompt_jobs_and_dispatch();
             let session = self.owned.session_store.get_session(session_id)?;
             let cancelling = self

@@ -23,6 +23,8 @@ use crate::transport::kernel_protocol::{
     WAITING_ROOM_INVENTORY_SENTINEL_ID, WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
 };
 
+use crate::transport::passkey_prompt_feed::PasskeyPromptFeed;
+
 use super::outgoing::{try_send_outgoing_frame, KernelOutgoingSender};
 use super::{
     ConnectionCloseCommand, KernelSubscription, KernelTransportRuntime, HEARTBEAT_INTERVAL_TICKS,
@@ -38,6 +40,11 @@ pub(super) async fn run_subscription_loop(
     close_requested: Arc<AtomicBool>,
     subscription: KernelSubscription,
 ) {
+    // A local connection acts as the local owner.
+    let mut passkey_prompts = PasskeyPromptFeed::new(
+        subscription.connection_class,
+        crate::session::DEFAULT_LOCAL_USER_ID,
+    );
     if subscription.subscription_scope == KernelSubscriptionScope::WaitingRoomInventory {
         run_waiting_room_inventory_subscription_loop(
             router,
@@ -45,6 +52,7 @@ pub(super) async fn run_subscription_loop(
             outgoing_tx,
             close_tx,
             close_requested,
+            passkey_prompts,
         )
         .await;
         return;
@@ -58,6 +66,22 @@ pub(super) async fn run_subscription_loop(
         subscription_event_stream_id(&subscription.session_id, &subscription.attachment_id);
 
     loop {
+        if let Some(event) = passkey_prompts.next_event(&router) {
+            if !emit_kernel_event(
+                &runtime,
+                &outgoing_tx,
+                &close_tx,
+                &close_requested,
+                event,
+                Some(&event_stream_id),
+                Some(&subscription.session_id),
+                Some(&subscription.attachment_id),
+            )
+            .await
+            {
+                break;
+            }
+        }
         let terminal_attachment_change_sequence = router.terminal_attachment_change_sequence(
             &subscription.session_id,
             &subscription.attachment_id,
@@ -357,6 +381,7 @@ pub(super) async fn run_subscription_loop(
                     _ = router.wait_for_workflow_design_change_after(
                         workflow_design_change_sequence
                     ) => {}
+                    _ = passkey_prompts.changed(&router) => {}
                 }
             },
         )
@@ -831,6 +856,7 @@ async fn run_waiting_room_inventory_subscription_loop(
     outgoing_tx: KernelOutgoingSender,
     close_tx: mpsc::UnboundedSender<ConnectionCloseCommand>,
     close_requested: Arc<AtomicBool>,
+    mut passkey_prompts: PasskeyPromptFeed,
 ) {
     let mut waiting_room_event_projection = WaitingRoomInventoryEventProjection::default();
     let mut previous_relay_status: Option<RelayStatus> = None;
@@ -842,6 +868,22 @@ async fn run_waiting_room_inventory_subscription_loop(
     let mut next_heartbeat_at = Instant::now();
     let mut next_relay_status_at = Instant::now();
     loop {
+        if let Some(event) = passkey_prompts.next_event(&router) {
+            if !emit_kernel_event(
+                &runtime,
+                &outgoing_tx,
+                &close_tx,
+                &close_requested,
+                event,
+                Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+                None,
+                None,
+            )
+            .await
+            {
+                break;
+            }
+        }
         let waiting_room_change_sequence = router.waiting_room_change_sequence();
         let session_projection_change_sequence = router.session_projection_change_sequence();
         if inventory_dirty || tick.is_multiple_of(WAITING_ROOM_INVENTORY_INTERVAL_TICKS) {
@@ -1009,13 +1051,21 @@ async fn run_waiting_room_inventory_subscription_loop(
             next_heartbeat_at
                 .checked_duration_since(Instant::now())
                 .unwrap_or(Duration::ZERO),
-            wait_for_waiting_room_inventory_change(
-                router.wait_for_waiting_room_change_after(waiting_room_change_sequence),
-                router.wait_for_session_projection_change_after(session_projection_change_sequence),
-            ),
+            async {
+                tokio::select! {
+                    _ = wait_for_waiting_room_inventory_change(
+                        router.wait_for_waiting_room_change_after(waiting_room_change_sequence),
+                        router.wait_for_session_projection_change_after(
+                            session_projection_change_sequence,
+                        ),
+                    ) => true,
+                    // Popups are sent at once, without the inventory coalescing.
+                    _ = passkey_prompts.changed(&router) => false,
+                }
+            },
         )
         .await;
-        if wait_result.is_ok() {
+        if matches!(wait_result, Ok(true)) {
             sleep(Duration::from_millis(WAITING_ROOM_ROW_COALESCE_MS)).await;
             inventory_dirty = true;
         }

@@ -155,8 +155,8 @@ async function main() {
     daemon = spawnProcess(kernelPath, [], { cwd: repoRoot, env: daemonEnv, name: "kernel" })
 
     const kernelUrl = `ws://127.0.0.1:${ports.kernelPort}/kernel`
-    await waitForLocalDaemon(LocalIpcClient, requests, kernelUrl, workspace)
-    localClient = new LocalIpcClient(kernelUrl)
+    await waitForLocalDaemon(LocalIpcClient, requests, kernelUrl, workspace, daemonEnv)
+    localClient = new LocalIpcClient(kernelUrl, { localAuthEnvironment: daemonEnv })
 
     const notices = []
     const handlers = commandActions.createCommandActionHandlers(createHostedCommandDeps({

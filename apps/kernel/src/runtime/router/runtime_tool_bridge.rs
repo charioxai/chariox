@@ -54,6 +54,35 @@ impl CommandRouter {
         let _claude_waits = self
             .runtime_state
             .begin_claude_runtime_tool_waits(auth_token);
+        if tool_name == "chariox_kernel_request" {
+            let turn = self.runtime_state.sudo_for_auth_token(auth_token)?;
+            let request: crate::local::LocalDaemonRequest =
+                serde_json::from_value(arguments.get("request").cloned().ok_or_else(|| {
+                    crate::runtime::kernel_access::error("kernel_request needs request")
+                })?)
+                .map_err(|_| crate::runtime::kernel_access::error("invalid kernel request"))?;
+            self.runtime_state
+                .authorize_sudo_request(&turn.entry_id, &request)?;
+            let mut command = crate::runtime::command::KernelCommand::from_local_request(
+                format!("{}:{}", turn.entry_id, rand::random::<u64>()),
+                turn.prompt_id.clone(),
+                Some(turn.entry_id.clone()),
+                &request,
+            );
+            command.caller = crate::runtime::command::KernelCaller::for_source(
+                &crate::runtime::command::KernelCommandSource::LocalIpc,
+            )
+            .with_connection_class(crate::local::KernelConnectionClass::KernelAgent);
+            command.caller.caller_id = turn.entry_id;
+            command.caller.user_id = Some(turn.owner_user_id);
+            let response = Box::pin(self.dispatch(command, request)).await?;
+            return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                ok: true,
+                payload: serde_json::to_value(response).map_err(|_| {
+                    crate::runtime::kernel_access::error("kernel response serialization failed")
+                })?,
+            });
+        }
         if crate::transport::runtime_tools::canonical_meta_tool_name(tool_name)
             == Some(crate::transport::runtime_tools::META_RUN_COMMAND_TOOL)
         {

@@ -1,9 +1,13 @@
 //! Protocol 383: a critical approval needs the Chariox passkey (the vault
 //! passphrase) or the owner's remember window; deny and routine decisions
-//! need neither, and agent or Meta answers stay refused.
+//! need neither, and agent or Meta answers stay refused. Protocol 393: only
+//! terminals may submit the passkey, and audits name the connection class.
 use super::*;
 use crate::durable_state::DurableKernelStateStore;
+use crate::local::KernelConnectionClass;
 use crate::session::{RuntimeSession, DEFAULT_LOCAL_USER_ID};
+use chariox_relay::auth::RelaySubjectKind;
+use chariox_relay::protocol::RelayCallerIdentity;
 
 const PASSKEY: &str = "correct horse battery";
 const NEW_PASSKEY: &str = "Correct Horse Battery \u{c9}!";
@@ -33,6 +37,15 @@ fn id(name: &str) -> String {
 impl Fixture {
     /// With `vault`, the encrypted vault exists (locked) with `PASSKEY`.
     fn new(vault: bool) -> Self {
+        Self::build(vault, None)
+    }
+
+    /// The local owner hosts a session shared with `guest`.
+    fn shared_with(guest: &str) -> Self {
+        Self::build(true, Some(guest))
+    }
+
+    fn build(vault: bool, guest: Option<&str>) -> Self {
         let root = std::env::temp_dir().join(format!("passkey-{:016x}", rand::random::<u64>()));
         std::fs::create_dir_all(&root).unwrap();
         let vault_path = root.join("vault.json");
@@ -45,7 +58,7 @@ impl Fixture {
         config.user_config.credential_vault.path = vault_path.display().to_string();
         config.user_config_path = root.join("config.toml");
         let app = DaemonApp::bootstrap(config).unwrap();
-        let session = RuntimeSession::new(
+        let mut session = RuntimeSession::new(
             format!("passkey-{:016x}", rand::random::<u64>()),
             None,
             "workspace",
@@ -53,6 +66,13 @@ impl Fixture {
             "machine",
             "kernel",
         );
+        if let Some(guest) = guest {
+            session.add_member(
+                guest,
+                Some(DEFAULT_LOCAL_USER_ID.to_owned()),
+                crate::session::CollaborationLevel::Full,
+            );
+        }
         let session_id = session.id().to_owned();
         app.sessions_mut().restore_session(session);
         let agent = format!("vault-agent-{:016x}", rand::random::<u64>());
@@ -111,6 +131,27 @@ impl Fixture {
         passkey: Option<&str>,
         remember: Option<u32>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.answer_as(
+            id,
+            choice,
+            passkey,
+            remember,
+            KernelCommandSource::LocalCli,
+            KernelCaller::default(),
+        )
+        .await
+    }
+
+    /// An answer from a caller admitted on a given connection.
+    async fn answer_as(
+        &self,
+        id: &str,
+        choice: &str,
+        passkey: Option<&str>,
+        remember: Option<u32>,
+        source: KernelCommandSource,
+        caller: KernelCaller,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
         let request =
             LocalDaemonRequest::RespondToInteraction(crate::local::RespondToInteractionRequest {
                 session_id: self.session.clone(),
@@ -120,8 +161,10 @@ impl Fixture {
                 passkey: passkey.map(crate::local::ApprovalPasskey::new),
                 passkey_remember_minutes: remember,
             });
-        let command = KernelCommand::from_local_request(
+        let command = KernelCommand::from_local_request_with_caller(
             format!("answer-{id}-{choice}-{}", rand::random::<u64>()),
+            source,
+            caller,
             None,
             None,
             &request,
@@ -209,6 +252,14 @@ impl Fixture {
     }
 
     fn outcomes(&self, id: &str) -> Vec<String> {
+        self.audits(id)
+            .into_iter()
+            .map(|(outcome, _)| outcome)
+            .collect()
+    }
+
+    /// Each audit's outcome and connection class; no audit holds a passkey.
+    fn audits(&self, id: &str) -> Vec<(String, serde_json::Value)> {
         let events = self
             .durable
             .load_subject_events_by_kind(
@@ -220,8 +271,29 @@ impl Fixture {
         events
             .into_iter()
             .map(|event| {
+                // The outcome and attribution only: never a passkey.
+                let mut keys = event
+                    .payload
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .collect::<Vec<_>>();
+                keys.sort();
+                assert_eq!(
+                    keys,
+                    [
+                        "connection_class",
+                        "interaction_id",
+                        "outcome",
+                        "owner",
+                        "remember_minutes"
+                    ]
+                );
                 assert!(!event.payload.to_string().contains(PASSKEY));
-                event.payload["outcome"].as_str().unwrap().to_owned()
+                (
+                    event.payload["outcome"].as_str().unwrap().to_owned(),
+                    event.payload["connection_class"].clone(),
+                )
             })
             .collect()
     }
@@ -385,6 +457,7 @@ async fn routine_decisions_agent_meta_and_other_users_are_unchanged() {
             Some("other-user"),
             Some(&crate::local::ApprovalPasskey::new(PASSKEY)),
             None,
+            Some(KernelConnectionClass::Terminal),
         )
         .await
         .is_err());
@@ -461,6 +534,163 @@ async fn a_swapped_vault_path_or_file_cannot_supply_the_passkey() {
     assert_eq!(second.await.unwrap().choice_id.as_deref(), Some("approve"));
 }
 
+fn local_caller(class: KernelConnectionClass) -> KernelCaller {
+    KernelCaller::for_source(&KernelCommandSource::LocalCli).with_connection_class(class)
+}
+
+fn relay_caller(subject_kind: RelaySubjectKind) -> KernelCaller {
+    KernelCaller::from_relay_identity(RelayCallerIdentity {
+        realm_id: "realm-1".into(),
+        subject: "subject-1".into(),
+        subject_kind,
+        expires_at_ms: u64::MAX,
+        token_id: None,
+        user_id: Some(DEFAULT_LOCAL_USER_ID.into()),
+        public_key_thumbprint: None,
+    })
+}
+
+#[tokio::test]
+async fn critical_approval_audits_name_the_answering_connection_class() {
+    let f = Fixture::new(true);
+    let local = f.critical("local").await;
+    let relayed = f.critical("relayed").await;
+    // In log mode a tokenless local connection keeps today's treatment.
+    let tokenless = || local_caller(KernelConnectionClass::Unauthenticated);
+    let cli = KernelCommandSource::LocalCli;
+    Fixture::refused_with(
+        f.answer_as("local", "approve", None, None, cli.clone(), tokenless())
+            .await,
+        "PASSKEY_REQUIRED",
+    );
+    Fixture::refused_with(
+        f.answer_as(
+            "local",
+            "approve",
+            Some("guess"),
+            None,
+            cli.clone(),
+            tokenless(),
+        )
+        .await,
+        "PASSKEY_REJECTED",
+    );
+    // A terminal presenting the local token.
+    f.answer_as(
+        "local",
+        "approve",
+        Some(PASSKEY),
+        None,
+        cli,
+        local_caller(KernelConnectionClass::Terminal),
+    )
+    .await
+    .unwrap();
+    assert_eq!(local.await.unwrap().choice_id.as_deref(), Some("approve"));
+    // A relay client with the owner's user id (web, remote TUI).
+    f.answer_as(
+        "relayed",
+        "approve",
+        Some(PASSKEY),
+        None,
+        KernelCommandSource::RelayClient,
+        relay_caller(RelaySubjectKind::Client),
+    )
+    .await
+    .unwrap();
+    assert_eq!(relayed.await.unwrap().choice_id.as_deref(), Some("approve"));
+
+    let audit = |outcome: &str, class: &str| (outcome.to_owned(), serde_json::json!(class));
+    assert_eq!(
+        f.audits("local"),
+        [
+            audit("missing", "unauthenticated"),
+            audit("rejected", "unauthenticated"),
+            audit("verified", "terminal"),
+        ]
+    );
+    assert_eq!(f.audits("relayed"), [audit("verified", "terminal")]);
+}
+
+#[tokio::test]
+async fn a_passkey_from_a_refused_class_is_neither_verified_nor_counted() {
+    let f = Fixture::new(true);
+    let receiver = f.critical("guarded").await;
+    let cli = KernelCommandSource::LocalCli;
+    let refused = [
+        (cli.clone(), local_caller(KernelConnectionClass::Host)),
+        (
+            cli.clone(),
+            local_caller(KernelConnectionClass::KernelAgent),
+        ),
+        (
+            cli.clone(),
+            local_caller(KernelConnectionClass::ExternalAgent),
+        ),
+        (
+            KernelCommandSource::RelayClient,
+            relay_caller(RelaySubjectKind::Kernel),
+        ),
+    ];
+    // Far more wrong passkeys than the owner's free failures, and the right
+    // one: none is verified, audited or counted.
+    for _ in 0..2 {
+        for (source, caller) in &refused {
+            for passkey in ["guess", PASSKEY] {
+                Fixture::refused_with(
+                    f.answer_as(
+                        "guarded",
+                        "approve",
+                        Some(passkey),
+                        None,
+                        source.clone(),
+                        caller.clone(),
+                    )
+                    .await,
+                    "PASSKEY_NOT_ACCEPTED",
+                );
+            }
+        }
+    }
+    // A stray passkey on a deny from these classes is refused as well.
+    Fixture::refused_with(
+        f.answer_as(
+            "guarded",
+            "deny",
+            Some("guess"),
+            None,
+            cli.clone(),
+            local_caller(KernelConnectionClass::Host),
+        )
+        .await,
+        "PASSKEY_NOT_ACCEPTED",
+    );
+    assert!(f.outcomes("guarded").is_empty());
+    assert_eq!(f.active().await, 1);
+    // Protocol 394: the popup stays open on the owner's terminals.
+    assert_eq!(f.prompt_ids(), [id("guarded")]);
+    // The owner is not locked out: a terminal's passkey is verified at once.
+    f.answer_as(
+        "guarded",
+        "approve",
+        Some(PASSKEY),
+        None,
+        cli,
+        local_caller(KernelConnectionClass::Terminal),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        receiver.await.unwrap().choice_id.as_deref(),
+        Some("approve")
+    );
+    assert_eq!(
+        f.audits("guarded"),
+        [("verified".to_owned(), serde_json::json!("terminal"))]
+    );
+}
+
+mod passkey_prompts;
 #[tokio::test]
 async fn a_vault_passphrase_change_rotates_the_passkey_and_ends_remember_windows() {
     let f = Fixture::new(true);

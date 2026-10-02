@@ -2,6 +2,7 @@ pub(crate) mod event_delivery_client;
 pub(crate) mod flow_control;
 pub(crate) mod kernel_protocol;
 pub(crate) mod mcp_server;
+pub(crate) mod passkey_prompt_feed;
 pub(crate) mod relay_client;
 pub(crate) mod relay_crypto;
 pub(crate) mod relay_discovery;

@@ -23,6 +23,7 @@ use tokio_tungstenite::{
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
+use crate::local::KernelConnectionClass;
 use crate::runtime::command::{KernelCommand, KernelCommandPriority, KernelCommandSource};
 use crate::runtime::event_log::EventLog;
 use crate::runtime::projection::TransportHealthStore;
@@ -33,7 +34,9 @@ use crate::transport::kernel_protocol::{
     WAITING_ROOM_INVENTORY_SENTINEL_ID, WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
 };
 
+mod local_auth;
 mod local_presence;
+mod unix_access;
 
 pub(crate) mod command_cache;
 mod outgoing;
@@ -43,6 +46,7 @@ pub(crate) use command_cache::COMMAND_RESULT_CACHE_LIMIT;
 use command_cache::{
     request_is_cacheable, CommandFingerprint, CommandReservation, CommandResultCache,
 };
+use local_auth::KernelLocalAuth;
 use outgoing::{try_send_outgoing_frame, KernelOutgoingSender};
 use subscriptions::{
     emit_replay_gap_snapshot, replay_recent_events, run_subscription_loop, ReplaySubscriptionResult,
@@ -330,6 +334,8 @@ struct KernelSubscription {
     session_id: String,
     attachment_id: String,
     subscription_scope: KernelSubscriptionScope,
+    /// Protocol 394: whether the subscription carries passkey prompts.
+    connection_class: KernelConnectionClass,
 }
 
 #[derive(Debug)]
@@ -432,14 +438,12 @@ where
             "bind_port": bind_port,
         }),
     );
-    let _local_presence = local_presence::LocalKernelPresenceLease::start(&router, &listener).await;
-    run_kernel_websocket_server_with_bound_listener(
-        router,
-        listener,
+    let (local_auth, _local_auth_token_file) = KernelLocalAuth::for_local_kernel(
         configured_kernel_local_auth_token(),
-        shutdown,
-    )
-    .await
+        listener.local_addr(),
+    );
+    let _local_presence = local_presence::LocalKernelPresenceLease::start(&router, &listener).await;
+    run_kernel_websocket_server_with_bound_listener(router, listener, local_auth, shutdown).await
 }
 
 pub(crate) async fn run_kernel_websocket_server_with_router<F>(
@@ -467,14 +471,12 @@ where
             "bind_port": bind_port,
         }),
     );
-    let _local_presence = local_presence::LocalKernelPresenceLease::start(&router, &listener).await;
-    run_kernel_websocket_server_with_bound_listener(
-        router,
-        listener,
+    let (local_auth, _local_auth_token_file) = KernelLocalAuth::for_local_kernel(
         configured_kernel_local_auth_token(),
-        shutdown,
-    )
-    .await
+        listener.local_addr(),
+    );
+    let _local_presence = local_presence::LocalKernelPresenceLease::start(&router, &listener).await;
+    run_kernel_websocket_server_with_bound_listener(router, listener, local_auth, shutdown).await
 }
 
 pub async fn run_kernel_websocket_server_on_listener<F>(
@@ -489,7 +491,7 @@ where
     run_kernel_websocket_server_on_listener_with_auth(
         app,
         listener,
-        configured_kernel_local_auth_token(),
+        KernelLocalAuth::host_token_or_unconfigured(configured_kernel_local_auth_token()),
         shutdown,
     )
     .await
@@ -515,20 +517,18 @@ where
             operation: "adopt kernel websocket listener",
             message: error.to_string(),
         })?;
-    let _local_presence = local_presence::LocalKernelPresenceLease::start(&router, &listener).await;
-    run_kernel_websocket_server_with_bound_listener(
-        router,
-        listener,
+    let (local_auth, _local_auth_token_file) = KernelLocalAuth::for_local_kernel(
         configured_kernel_local_auth_token(),
-        shutdown,
-    )
-    .await
+        listener.local_addr(),
+    );
+    let _local_presence = local_presence::LocalKernelPresenceLease::start(&router, &listener).await;
+    run_kernel_websocket_server_with_bound_listener(router, listener, local_auth, shutdown).await
 }
 
 async fn run_kernel_websocket_server_on_listener_with_auth<F>(
     app: Arc<Mutex<DaemonApp>>,
     listener: StdTcpListener,
-    local_auth_token: Option<Arc<str>>,
+    local_auth: KernelLocalAuth,
     shutdown: F,
 ) -> Result<(), DaemonError>
 where
@@ -539,8 +539,7 @@ where
         app,
         crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
     ));
-    run_kernel_websocket_server_with_bound_listener(router, listener, local_auth_token, shutdown)
-        .await
+    run_kernel_websocket_server_with_bound_listener(router, listener, local_auth, shutdown).await
 }
 
 #[cfg(test)]
@@ -548,7 +547,7 @@ async fn run_kernel_websocket_server_on_listeners_with_auth<F>(
     app: Arc<Mutex<DaemonApp>>,
     listener: StdTcpListener,
     mcp_listener: StdTcpListener,
-    local_auth_token: Option<Arc<str>>,
+    local_auth: KernelLocalAuth,
     shutdown: F,
 ) -> Result<(), DaemonError>
 where
@@ -564,7 +563,7 @@ where
         router,
         listener,
         mcp_listener,
-        local_auth_token,
+        local_auth,
         shutdown,
     )
     .await
@@ -589,7 +588,7 @@ fn adopt_std_listener(
 async fn run_kernel_websocket_server_with_bound_listener<F>(
     router: Arc<CommandRouter>,
     listener: TcpListener,
-    local_auth_token: Option<Arc<str>>,
+    local_auth: KernelLocalAuth,
     shutdown: F,
 ) -> Result<(), DaemonError>
 where
@@ -600,7 +599,7 @@ where
         router,
         listener,
         mcp_listener,
-        local_auth_token,
+        local_auth,
         shutdown,
     )
     .await
@@ -610,12 +609,16 @@ async fn run_kernel_websocket_server_with_bound_listeners<F>(
     router: Arc<CommandRouter>,
     listener: TcpListener,
     mcp_listener: TcpListener,
-    local_auth_token: Option<Arc<str>>,
+    local_auth: KernelLocalAuth,
     shutdown: F,
 ) -> Result<(), DaemonError>
 where
     F: Future<Output = ()>,
 {
+    let unix_listener = crate::local::ipc::LocalIpcListener::bind(
+        router.kernel_local_socket_path(),
+    )
+    .map_err(|e| crate::runtime::kernel_access::error(format!("bind Unix websocket: {e}")))?;
     let transport_health = router.transport_health_store();
     let durable_snapshot_scheduler = router.durable_snapshot_scheduler();
     let event_counter_path = router.kernel_event_counter_path();
@@ -632,7 +635,8 @@ where
         serde_json::json!({
             "phase": "runtime_ready",
             "kernel_websocket_addr": local_addr,
-            "kernel_local_auth_required": local_auth_token.is_some(),
+            "kernel_local_auth_required": local_auth.required(),
+            "kernel_local_auth_mode": local_auth.mode_label(),
             "recent_event_limit": RECENT_EVENT_LIMIT,
             "process_inbound_request_limit": process_inbound_request_limit,
             "connection_inbound_request_limit": CONNECTION_INBOUND_REQUEST_LIMIT,
@@ -645,6 +649,7 @@ where
     let pump_router = Arc::clone(&router);
     let pump_task = tokio::spawn(async move {
         loop {
+            pump_router.runtime_state().pump_kernel_access();
             pump_router.pump_transport_runtime().await;
             let change_sequence = pump_router.transport_runtime_pump_change_sequence();
             let pty_output_sequence = pump_router.pty_output_change_sequence();
@@ -690,8 +695,16 @@ where
                     task.abort();
                 }
                 mcp_task.abort();
+                let _ = router.runtime_state().revoke_kernel_access(None, None, "kernel_shutdown");
                 let _ = router.shutdown_cleanup().await;
                 return Ok(());
+            },
+            accept_result = unix_listener.listener.accept() => {
+                let (stream, _) = accept_result.map_err(|e| crate::runtime::kernel_access::error(e.to_string()))?;
+                let runtime = Arc::clone(&runtime);
+                let router = Arc::clone(&router);
+                let admission = inbound_request_admission.clone();
+                tokio::spawn(unix_access::serve_connection(runtime, router, admission, stream));
             },
             accept_result = listener.accept() => {
                 let (stream, _) = accept_result.map_err(|error| DaemonError::LocalTransport {
@@ -701,13 +714,13 @@ where
                 let runtime = Arc::clone(&runtime);
                 let router = Arc::clone(&router);
                 let inbound_request_admission = inbound_request_admission.clone();
-                let local_auth_token = local_auth_token.clone();
+                let local_auth = local_auth.clone();
                 tokio::spawn(async move {
                     let _ = handle_kernel_connection(
                         runtime,
                         router,
                         inbound_request_admission,
-                        local_auth_token,
+                        local_auth,
                         stream,
                     )
                     .await;
@@ -757,29 +770,18 @@ impl<T> EventWriteCoalescer<T> {
     }
 }
 
-fn kernel_local_authorization_matches(value: Option<&str>, expected_token: &str) -> bool {
-    let Some(token) = value.and_then(|value| value.strip_prefix("Bearer ")) else {
-        return false;
-    };
-    let expected = expected_token.as_bytes();
-    let supplied = token.as_bytes();
-    let mut difference = expected.len() ^ supplied.len();
-    for (index, byte) in expected.iter().enumerate() {
-        difference |= usize::from(*byte ^ supplied.get(index).copied().unwrap_or_default());
-    }
-    difference == 0
-}
-
 async fn handle_kernel_connection(
     runtime: Arc<KernelTransportRuntime>,
     router: Arc<CommandRouter>,
     inbound_request_admission: InboundRequestAdmission,
-    local_auth_token: Option<Arc<str>>,
+    local_auth: KernelLocalAuth,
     stream: tokio::net::TcpStream,
 ) -> Result<(), DaemonError> {
+    let peer_addr = stream.peer_addr().ok();
+    let mut local_credential = None;
     let socket = accept_hdr_async(
         stream,
-        move |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+        |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
             // Browsers always send Origin; no kernel client does (the browser
             // reaches the kernel through the relay). Refusing it keeps web
             // pages on this machine from driving the kernel over loopback,
@@ -789,21 +791,13 @@ async fn handle_kernel_connection(
                 *error.status_mut() = StatusCode::FORBIDDEN;
                 return Err(error);
             }
-            let Some(expected_token) = local_auth_token.as_deref() else {
-                return Ok(response);
+            let Some(credential) = local_auth.admit(request.headers().get("authorization")) else {
+                let mut error = ErrorResponse::new(Some("Unauthorized".to_string()));
+                *error.status_mut() = StatusCode::UNAUTHORIZED;
+                return Err(error);
             };
-            if kernel_local_authorization_matches(
-                request
-                    .headers()
-                    .get("authorization")
-                    .and_then(|value| value.to_str().ok()),
-                expected_token,
-            ) {
-                return Ok(response);
-            }
-            let mut error = ErrorResponse::new(Some("Unauthorized".to_string()));
-            *error.status_mut() = StatusCode::UNAUTHORIZED;
-            Err(error)
+            local_credential = Some(credential);
+            Ok(response)
         },
     )
     .await
@@ -811,6 +805,36 @@ async fn handle_kernel_connection(
         operation: "accept kernel websocket handshake",
         message: error.to_string(),
     })?;
+    if let Some(credential) = local_credential {
+        local_auth.record(credential, peer_addr);
+    }
+    let connection_class = local_credential.map_or(
+        KernelConnectionClass::Unauthenticated,
+        local_auth::KernelLocalCredential::connection_class,
+    );
+    serve_kernel_socket(
+        runtime,
+        router,
+        inbound_request_admission,
+        socket,
+        connection_class,
+        None,
+    )
+    .await
+}
+
+async fn serve_kernel_socket<S>(
+    runtime: Arc<KernelTransportRuntime>,
+    router: Arc<CommandRouter>,
+    inbound_request_admission: InboundRequestAdmission,
+    socket: tokio_tungstenite::WebSocketStream<S>,
+    connection_class: KernelConnectionClass,
+    peer: Option<crate::runtime::kernel_access::process::ProcessIdentity>,
+) -> Result<(), DaemonError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let bound_grant: Arc<std::sync::Mutex<Option<String>>> = Arc::default();
     runtime.transport_health.record_connection_opened();
     let _connection_guard = TransportConnectionGuard {
         transport_health: runtime.transport_health.clone(),
@@ -831,6 +855,9 @@ async fn handle_kernel_connection(
         watch_task: None,
     }));
 
+    let delivery_peer = peer.clone();
+    let delivery_grant = bound_grant.clone();
+    let delivery_runtime = router.runtime_state();
     let writer_task = tokio::spawn(async move {
         let mut transport_ping =
             tokio::time::interval(Duration::from_millis(WEBSOCKET_PING_INTERVAL_MS));
@@ -858,20 +885,23 @@ async fn handle_kernel_connection(
                         }
                     }
                     Some(frame) = priority_rx.recv() => {
-                        if !send_kernel_frame(&mut writer, frame).await {
+                        if !unix_access::delivery_live(&delivery_runtime, delivery_peer.as_ref(), &delivery_grant)
+                            || !send_kernel_frame(&mut writer, frame).await {
                             break;
                         }
                     }
                     Some(frame) = event_rx.recv() => {
                         if let Some(frame) = event_write_coalescer.push_event(frame, tokio::time::Instant::now()) {
-                            if !send_kernel_frame(&mut writer, frame).await {
+                            if !unix_access::delivery_live(&delivery_runtime, delivery_peer.as_ref(), &delivery_grant)
+                            || !send_kernel_frame(&mut writer, frame).await {
                                 break;
                             }
                         }
                     }
                     _ = tokio::time::sleep_until(ready_at) => {
                         for frame in event_write_coalescer.drain_ready() {
-                            if !send_kernel_frame(&mut writer, frame).await {
+                            if !unix_access::delivery_live(&delivery_runtime, delivery_peer.as_ref(), &delivery_grant)
+                            || !send_kernel_frame(&mut writer, frame).await {
                                 break 'writer_loop;
                             }
                         }
@@ -901,7 +931,8 @@ async fn handle_kernel_connection(
                     }
                 }
                 Some(frame) = priority_rx.recv() => {
-                    if !send_kernel_frame(&mut writer, frame).await {
+                    if !unix_access::delivery_live(&delivery_runtime, delivery_peer.as_ref(), &delivery_grant)
+                        || !send_kernel_frame(&mut writer, frame).await {
                         break;
                     }
                 }
@@ -909,7 +940,8 @@ async fn handle_kernel_connection(
                     let Some(frame) = event_write_coalescer.push_event(frame, tokio::time::Instant::now()) else {
                         continue;
                     };
-                    if !send_kernel_frame(&mut writer, frame).await {
+                    if !unix_access::delivery_live(&delivery_runtime, delivery_peer.as_ref(), &delivery_grant)
+                        || !send_kernel_frame(&mut writer, frame).await {
                         break;
                     }
                 }
@@ -919,7 +951,16 @@ async fn handle_kernel_connection(
     });
 
     let mut read_error = None;
-    while let Some(message_result) = reader.next().await {
+    let mut access_tick = tokio::time::interval(Duration::from_millis(100));
+    loop {
+        let message_result = tokio::select! {
+            message = reader.next() => match message { Some(message) => message, None => break },
+            _ = access_tick.tick(), if peer.is_some() => {
+                router.runtime_state().pump_kernel_access();
+                if !unix_access::delivery_live(&router.runtime_state(), peer.as_ref(), &bound_grant) { break; }
+                continue;
+            }
+        };
         let message = match message_result {
             Ok(message) => message,
             Err(error) => {
@@ -942,6 +983,9 @@ async fn handle_kernel_connection(
                     &outgoing_tx,
                     &close_tx,
                     &close_requested,
+                    connection_class,
+                    peer.as_ref(),
+                    &bound_grant,
                     payload.as_bytes(),
                 )
                 .await;
@@ -956,6 +1000,9 @@ async fn handle_kernel_connection(
                     &outgoing_tx,
                     &close_tx,
                     &close_requested,
+                    connection_class,
+                    peer.as_ref(),
+                    &bound_grant,
                     &payload,
                 )
                 .await;
@@ -1113,6 +1160,9 @@ async fn handle_incoming_payload(
     outgoing_tx: &KernelOutgoingSender,
     close_tx: &mpsc::UnboundedSender<ConnectionCloseCommand>,
     close_requested: &Arc<AtomicBool>,
+    connection_class: KernelConnectionClass,
+    peer: Option<&crate::runtime::kernel_access::process::ProcessIdentity>,
+    bound_grant: &Arc<std::sync::Mutex<Option<String>>>,
     payload: &[u8],
 ) {
     let frame = match serde_json::from_slice::<KernelIncomingFrame>(payload) {
@@ -1131,6 +1181,32 @@ async fn handle_incoming_payload(
         }
     };
 
+    let external_caller = if let Some(peer) = peer {
+        match unix_access::admit_frame(
+            runtime,
+            router,
+            inbound_request_admission,
+            connection_inbound_request_permits,
+            outgoing_tx,
+            close_tx,
+            close_requested,
+            peer,
+            bound_grant,
+            &frame,
+        )
+        .await
+        {
+            Ok(caller) => Some(caller),
+            Err(()) => return,
+        }
+    } else {
+        None
+    };
+    let connection_class = if external_caller.is_some() {
+        KernelConnectionClass::ExternalAgent
+    } else {
+        connection_class
+    };
     match frame {
         KernelIncomingFrame::Request {
             request_id,
@@ -1140,19 +1216,29 @@ async fn handle_incoming_payload(
             request,
         } => {
             runtime.transport_health.record_incoming_request();
-            let caller = router
-                .local_command_caller(KernelCommandSource::LocalCli)
-                .await;
+            let caller = match external_caller {
+                Some(caller) => caller,
+                None => {
+                    router
+                        .local_command_caller(KernelCommandSource::LocalCli, connection_class)
+                        .await
+                }
+            };
             let command = KernelCommand::from_local_request_with_caller(
                 command_id.unwrap_or_else(|| request_id.clone()),
-                KernelCommandSource::LocalCli,
+                if peer.is_some() {
+                    KernelCommandSource::LocalIpc
+                } else {
+                    KernelCommandSource::LocalCli
+                },
                 caller,
                 correlation_id.clone(),
                 causation_id.clone(),
                 &request,
             );
-            let fingerprint = request_is_cacheable(&request)
-                .then(|| CommandFingerprint::from_command_and_request(&command, &request));
+            let fingerprint = (connection_class != KernelConnectionClass::ExternalAgent
+                && request_is_cacheable(&request))
+            .then(|| CommandFingerprint::from_command_and_request(&command, &request));
             if let Some(fingerprint) = fingerprint.as_ref() {
                 match runtime
                     .command_result_cache
@@ -1281,6 +1367,7 @@ async fn handle_incoming_payload(
                         "session_id": command.session_id,
                         "attachment_id": command.attachment_id,
                         "agent_id": command.agent_id,
+                        "connection_class": connection_class,
                     }),
                 );
             }
@@ -1342,6 +1429,7 @@ async fn handle_incoming_payload(
                     "attachment_id": attachment_id,
                     "subscription_scope": subscription_scope,
                     "resume_from_event_id": resume_from_event_id,
+                    "connection_class": connection_class,
                 }),
             );
             if scope != KernelSubscriptionScope::WaitingRoomInventory
@@ -1435,6 +1523,7 @@ async fn handle_incoming_payload(
                     session_id: session_id.clone(),
                     attachment_id: attachment_id.clone(),
                     subscription_scope: scope.clone(),
+                    connection_class,
                 });
                 state.watch_task = Some(tokio::spawn(run_subscription_loop(
                     Arc::clone(router),
@@ -1446,6 +1535,7 @@ async fn handle_incoming_payload(
                         session_id: session_id.clone(),
                         attachment_id: attachment_id.clone(),
                         subscription_scope: scope,
+                        connection_class,
                     },
                 )));
             }

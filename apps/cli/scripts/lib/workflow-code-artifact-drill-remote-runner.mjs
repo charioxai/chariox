@@ -150,6 +150,7 @@ export async function startKernel(repo, bundle, timeoutMs, LocalIpcClient, reque
   closeSync(stdoutFd)
   closeSync(stderrFd)
   const client = new LocalIpcClient('ws://127.0.0.1:' + port, {
+    localAuthEnvironment: { CHARIOX_HOME: path.join(root, 'chariox-home') },
     kernelPingIntervalMs: 60_000,
     kernelMaxMissedPongs: 10,
   })

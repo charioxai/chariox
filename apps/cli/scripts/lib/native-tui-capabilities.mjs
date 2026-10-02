@@ -47,6 +47,7 @@ export async function installNativeDrillCapabilities({
 
   if (options.standardHomeWorker && (workerClient || workerKernelUrl)) {
     const targetWorkerClient = workerClient ?? new LocalIpcClient(workerKernelUrl, {
+      localAuthEnvironment: options.workerLocalAuthEnvironment,
       kernelPingIntervalMs: 60_000,
       kernelMaxMissedPongs: 10,
     })

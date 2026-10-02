@@ -2,51 +2,96 @@ import type { BoxRenderable, CliRenderer } from "@opentui/core"
 import { createEffect, onCleanup } from "solid-js"
 import type { RuntimeSession } from "./cli-types.js"
 import { captureCliDialogFocus, restoreCliDialogFocus, type CliDialogFocusTarget } from "./cli-dialog-focus-controller.js"
-import { createKernelApprovalController } from "./kernel-approval-controller.js"
+import { createKernelApprovalController, type KernelApprovalKey } from "./kernel-approval-controller.js"
 import { createKernelApprovalRenderer } from "./kernel-approval-renderer.js"
 import type { LocalIpcClient } from "./ipc.js"
+import { createPasskeyPopupController, passkeyPromptsFromEvent } from "./passkey-popup-controller.js"
+import { createPasskeyPopupRenderer } from "./passkey-popup-renderer.js"
 import { respondToInteraction } from "./prompt-runtime-api.js"
-import { routeRawPastes } from "./raw-paste-routing.js"
+import { routeRawPastes, type RawPasteEvent } from "./raw-paste-routing.js"
 
+/** The kernel's decisions on this terminal: the session's approval panel and,
+ * on top of it, the passkey popup (protocol 394), which shows the owner's
+ * passkey prompts whether or not a session is attached. */
 export function createCliKernelApprovalComposition(deps: {
   client: LocalIpcClient
   renderer: CliRenderer
   session(): RuntimeSession
+  /** Attached to a session and connected: the panel can answer. */
   connected(): boolean
+  /** Connected to the kernel: the popup can answer. */
+  kernelConnected(): boolean
   dimensions(): { width: number; height: number }
   themeRevision(): unknown
   currentFocus(): CliDialogFocusTarget | null
   promptFocus(): CliDialogFocusTarget | null
   closeOtherDialog(): void
   applySession(session: RuntimeSession): void
+  notify(message: string): void
 }) {
   let savedFocus: CliDialogFocusTarget | null = null
+  let dialogs = 0
+  const opened = () => {
+    if (dialogs++ === 0) {
+      deps.closeOtherDialog()
+      savedFocus = captureCliDialogFocus(deps.currentFocus(), deps.promptFocus())
+    }
+  }
+  const closed = () => {
+    if (--dialogs === 0) { restoreCliDialogFocus(savedFocus); savedFocus = null }
+  }
+  const popupSurface = createPasskeyPopupRenderer(deps.renderer, {
+    show: () => { popup.show() },
+    approve: () => { void popup.approve() },
+    refuse: () => { void popup.refuse() },
+    cycleRemember: () => popup.cycleRemember(),
+  })
+  const popup = createPasskeyPopupController({
+    connected: deps.kernelConnected,
+    onView: (view) => popupSurface.render(view, deps.dimensions()),
+    onOpen: opened,
+    onClose: closed,
+    scroll: popupSurface.scroll,
+    respond: (prompt, choiceId, proof) =>
+      respondToInteraction(deps.client, prompt.session_id, prompt.interaction_id, choiceId, null, proof),
+    notify: deps.notify,
+  })
   const surface = createKernelApprovalRenderer(deps.renderer, {
     show: () => controller.show(),
     choose: (interactionId, choiceId) => { void controller.choose(interactionId, choiceId) },
-    cycleRemember: () => controller.cycleRemember(),
-    submitPasskey: () => { void controller.submitPasskey() },
   })
   const controller = createKernelApprovalController({
     getSession: deps.session,
     connected: deps.connected,
     onView: (view) => surface.render(view, deps.dimensions()),
-    onOpen: () => {
-      deps.closeOtherDialog()
-      savedFocus = captureCliDialogFocus(deps.currentFocus(), deps.promptFocus())
-    },
-    onClose: () => { restoreCliDialogFocus(savedFocus); savedFocus = null },
+    onOpen: opened,
+    onClose: closed,
     scroll: surface.scroll,
-    respond: (sessionId, interactionId, choiceId, proof) =>
-      respondToInteraction(deps.client, sessionId, interactionId, choiceId, null, proof),
+    respond: (sessionId, interactionId, choiceId) =>
+      respondToInteraction(deps.client, sessionId, interactionId, choiceId, null),
     applySession: deps.applySession,
+    showPasskeyPrompt: (sessionId, interactionId) => popup.show(sessionId, interactionId),
   })
-  createEffect(() => { deps.themeRevision(); deps.dimensions(); controller.sync() })
-  // A paste while the panel is open belongs to the passkey, never the prompt.
-  onCleanup(routeRawPastes(deps.renderer.keyInput, controller.handlePaste))
-  onCleanup(() => controller.dispose())
+  createEffect(() => {
+    deps.themeRevision()
+    deps.dimensions()
+    controller.sync()
+    popupSurface.render(popup.view(), deps.dimensions())
+  })
+  onCleanup(deps.client.onKernelEvent((event) => {
+    if (event.event === "passkey_prompts_changed") popup.apply(passkeyPromptsFromEvent(event.prompts))
+  }))
+  // A paste while the popup or the panel is open never reaches the prompt;
+  // in the popup it belongs to the passkey.
+  onCleanup(routeRawPastes(deps.renderer.keyInput,
+    (event: RawPasteEvent) => popup.handlePaste(event) || controller.handlePaste(event)))
+  onCleanup(() => { popup.dispose(); controller.dispose() })
   return {
     ...controller,
+    /** The popup takes keys first: it sits over the panel. */
+    handleKey: (event: KernelApprovalKey) => popup.handleKey(event) || controller.handleKey(event),
+    ownsInput: () => popup.ownsInput() || controller.ownsInput(),
     assignBox(value: BoxRenderable) { surface.assign(value); controller.sync() },
+    assignPopupBox(value: BoxRenderable) { popupSurface.assign(value); popupSurface.render(popup.view(), deps.dimensions()) },
   }
 }

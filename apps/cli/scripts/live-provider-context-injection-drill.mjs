@@ -694,8 +694,8 @@ async function claudeHeadlessMidturnSteeringProbe(options, root) {
   daemon.stderr.pipe(kernelLog)
   let client = null
   try {
-    await waitForKernelIpc(LocalIpcClient, requests.listSessionsRequest, kernelUrl, daemon)
-    client = new LocalIpcClient(kernelUrl)
+    await waitForKernelIpc(LocalIpcClient, requests.listSessionsRequest, kernelUrl, daemon, 25_000, { CHARIOX_HOME: charioxHome })
+    client = new LocalIpcClient(kernelUrl, { localAuthEnvironment: { CHARIOX_HOME: charioxHome } })
     const session = unwrap(
       await client.send(requests.createSessionRequest(workspace, workspace, "claude-headless-steering")),
       "SessionCreated",

@@ -157,3 +157,34 @@ fn meta_agent_spawn_parser_rejects_positional_and_flag_model() {
 
     assert!(format!("{error}").contains("either positional [model] or --model"));
 }
+
+#[test]
+fn metaagent_commands_carry_the_kernel_agent_connection_class() {
+    let metaagent = crate::agent::AgentInstance::new(
+        "meta-1",
+        "meta-1",
+        "session-1",
+        None,
+        "codex",
+        None,
+        None,
+        None,
+        crate::agent::GridPosition::new(0, 0, 1, 1),
+    );
+    let request = LocalDaemonRequest::ListAgents(crate::local::ListAgentsRequest {
+        session_id: "session-1".to_string(),
+    });
+
+    // Local runs reach the kernel through their runtime MCP bearer; remote
+    // ones through the worker forwarding that bearer's calls.
+    for command in [
+        super::request::meta_kernel_command(None, &metaagent, &request),
+        super::request::meta_kernel_command_without_request(&metaagent, &request),
+    ] {
+        assert_eq!(command.caller.caller_kind, KernelCallerKind::Metaagent);
+        assert_eq!(
+            command.caller.connection_class,
+            Some(crate::local::KernelConnectionClass::KernelAgent)
+        );
+    }
+}

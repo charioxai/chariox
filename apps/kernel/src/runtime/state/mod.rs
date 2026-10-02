@@ -76,6 +76,14 @@ mod app_host_runtime;
 mod computer_secret_input_runtime_state;
 mod config_runtime_state;
 mod critical_approval_passkey;
+mod kernel_access;
+mod sudo;
+pub(crate) use sudo::{is_sudo_prompt, sudo_approval_receipt};
+#[cfg(test)]
+pub(crate) use critical_approval_passkey::critical_approval_audit_payload;
+mod passkey_prompts;
+#[cfg(test)]
+pub(crate) use passkey_prompts::PASSKEY_ALREADY_ANSWERED;
 mod native_catalog_refresh;
 mod provider_output_deadline_store;
 mod provider_reload;
@@ -106,6 +114,9 @@ pub(crate) use runtime_tool_call_activity::RuntimeToolCallActivity;
 
 #[derive(Clone)]
 pub(crate) struct KernelRuntimeState {
+    external_command_authority: Option<ExternalCommandAuthority>,
+    #[cfg(test)]
+    app_lock_wait_probe: Option<Arc<tokio::sync::Notify>>,
     app: Arc<Mutex<DaemonApp>>,
     provider_runtime_lanes: ProviderRunOperationLanes,
     leased_agent_operations: leased_agent_operations::LeasedAgentOperations,
@@ -117,6 +128,9 @@ pub(crate) struct KernelRuntimeState {
 struct KernelRuntimeOwnedState {
     app_control: crate::runtime::app_control::AppControlService,
     critical_approval_passkeys: critical_approval_passkey::CriticalApprovalPasskeys,
+    passkey_prompts: Arc<passkey_prompts::PasskeyPromptBoard>,
+    kernel_access: crate::runtime::kernel_access::AccessStore,
+    sudo_turns: sudo::SudoStore,
     config_projection: crate::runtime::projection::DaemonConfigProjectionStore,
     session_store: SessionStateStore,
     agent_store: AgentServiceStore,
@@ -320,6 +334,8 @@ mod prompt;
 mod prompt_activity_owned_state;
 mod prompt_cancellation_owned_state;
 mod prompt_dispatch;
+mod external_command_authority;
+use external_command_authority::ExternalCommandAuthority;
 mod prompt_git_observer_runtime;
 mod prompt_queue_owned_state;
 mod prompt_skill_context_state;
@@ -603,6 +619,9 @@ impl KernelRuntimeState {
                 managed_activity_kernel_id,
             );
         let runtime = Self {
+            external_command_authority: None,
+            #[cfg(test)]
+            app_lock_wait_probe: None,
             app,
             provider_runtime_lanes,
             leased_agent_operations: leased_agent_operations::LeasedAgentOperations::default(),
@@ -613,6 +632,9 @@ impl KernelRuntimeState {
                     critical_approval_passkey::CriticalApprovalPasskeys::new(
                         &config_projection.snapshot().user_config.credential_vault,
                     ),
+                passkey_prompts: Arc::default(),
+                kernel_access: Default::default(),
+                sudo_turns: Default::default(),
                 config_projection,
                 session_store,
                 agent_store,
@@ -709,13 +731,23 @@ impl KernelRuntimeState {
             },
         };
         runtime.owned.record_managed_activity_transition();
+        runtime.recover_sudo_notices();
         runtime
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observe_app_lock_wait_for_test(&mut self, probe: Arc<tokio::sync::Notify>) {
+        self.app_lock_wait_probe = Some(probe);
     }
 
     pub(crate) async fn with_app_side_effect<R>(
         &self,
         operation: impl FnOnce(&mut DaemonApp) -> R,
     ) -> R {
+        #[cfg(test)]
+        if let Some(probe) = &self.app_lock_wait_probe {
+            probe.notify_one();
+        }
         let mut app =
             crate::runtime::app_lock::lock_app_instrumented(&self.app, "kernel_runtime_state")
                 .await;
@@ -731,7 +763,13 @@ impl KernelRuntimeState {
         R: Send + 'static,
     {
         let app = Arc::clone(&self.app);
+        #[cfg(test)]
+        let probe = self.app_lock_wait_probe.clone();
         tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            if let Some(probe) = probe {
+                probe.notify_one();
+            }
             let mut app = app.blocking_lock();
             operation(&mut app)
         })

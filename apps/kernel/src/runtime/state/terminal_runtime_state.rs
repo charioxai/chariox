@@ -10,11 +10,14 @@ impl KernelRuntimeState {
         cols: u16,
         rows: u16,
     ) -> Result<(), DaemonError> {
+        self.authorize_current_external_command()?;
         match self.owned.resize_terminal(session_id, provider_run_id)? {
             super::session::ProviderTerminalResizeTarget::None => Ok(()),
             super::session::ProviderTerminalResizeTarget::Local { provider_run_id } => {
-                self.with_app_side_effect(|app| app.pty_mut().resize(&provider_run_id, cols, rows))
-                    .await
+                self.with_authorized_app_side_effect(|app| {
+                    app.pty_mut().resize(&provider_run_id, cols, rows)
+                })
+                .await
             }
             super::session::ProviderTerminalResizeTarget::Remote {
                 remote_execution,
@@ -28,7 +31,7 @@ impl KernelRuntimeState {
                     relay_config.apply_remote_relay_override(relay_url, relay_token);
                 }
                 let response =
-                    crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                    crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized(
                         &relay_config,
                         ClientTarget {
                             daemon_id: Some(remote_execution.worker_kernel_id),
@@ -40,6 +43,8 @@ impl KernelRuntimeState {
                             cols,
                             rows,
                         },
+                        Duration::from_millis(relay_config.relay_request_timeout_ms),
+                        || self.authorize_current_external_command(),
                     )
                     .await?;
                 match response {
@@ -69,6 +74,7 @@ impl KernelRuntimeState {
         provider_run_id: Option<&str>,
         data_base64: &str,
     ) -> Result<usize, DaemonError> {
+        self.authorize_current_external_command()?;
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(data_base64)
             .map_err(|error| DaemonError::LocalTransport {
@@ -120,7 +126,7 @@ impl KernelRuntimeState {
                             relay_config.apply_remote_relay_override(relay_url, relay_token);
                         }
                         let response =
-                            crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                            crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized(
                                 &relay_config,
                                 ClientTarget {
                                     daemon_id: Some(remote_execution.worker_kernel_id.clone()),
@@ -132,6 +138,8 @@ impl KernelRuntimeState {
                                     attachment_id: attachment_id.clone(),
                                     data_base64: data_base64.to_string(),
                                 },
+                                Duration::from_millis(relay_config.relay_request_timeout_ms),
+                                || self.authorize_current_external_command(),
                             )
                             .await?;
                         return match response {
@@ -149,7 +157,7 @@ impl KernelRuntimeState {
                 }
             }
         }
-        self.with_app_side_effect(move |app| {
+        self.with_authorized_app_side_effect(move |app| {
             app.send_terminal_input(&session_id, &attachment_id, Some(&provider_run_id), &bytes)
         })
         .await?;

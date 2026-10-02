@@ -22,6 +22,7 @@ mod daemon;
 mod event_publication;
 mod external_provider_session;
 mod history;
+mod kernel_access;
 mod managed_context;
 mod managed_environment;
 mod metaagent;
@@ -54,6 +55,7 @@ pub use daemon::*;
 pub use event_publication::*;
 pub use external_provider_session::*;
 pub use history::*;
+pub use kernel_access::*;
 pub use managed_context::*;
 pub use managed_environment::*;
 pub use metaagent::*;
@@ -211,4 +213,4 @@ pub use workspace::*;
 /// Version 398 exposes `AppWorkerPhase::Quarantined` after the supervisor's
 /// restart limit is exhausted. Recovery uses the existing explicit start action.
 /// Version 400 adds owner-mediated App clipboard and link acceptance.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 400;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 404;

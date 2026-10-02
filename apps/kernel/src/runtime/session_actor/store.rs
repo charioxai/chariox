@@ -3,7 +3,7 @@ use crate::local::{
     AcknowledgeAgentOutputSeenRequest, AliasSessionRequest, ArchiveProjectRequest,
     AttachToSessionRequest, CancelRoomEnvironmentActionRequest, CycleAgentFocusRequest,
     DeleteProjectRequest, DeleteSessionRequest, DetachFromSessionRequest, EndSessionRequest,
-    FocusAgentRequest, ListProjectsRequest, LocalDaemonResponse,
+    FocusAgentRequest, ListProjectsRequest, LocalDaemonRequest, LocalDaemonResponse,
     ReadRoomEnvironmentClipboardRequest, ReleaseRoomEnvironmentInputRequest, RenameProjectRequest,
     RequestRoomEnvironmentInputTakeoverRequest, RespondToInteractionRequest, RestoreProjectRequest,
     RetryRoomEnvironmentRequest, SetRoomBrowserBarRequest, StartRoomEnvironmentRequest,
@@ -28,6 +28,23 @@ pub(crate) struct SessionRuntimeStore {
 }
 
 impl SessionRuntimeStore {
+    pub(super) fn with_external_command_authority(
+        &self,
+        authority: Option<(&str, &LocalDaemonRequest)>,
+    ) -> Self {
+        Self::new(self.state.with_external_command_authority(authority))
+    }
+
+    pub(super) fn authorize_external_access(
+        &self,
+        id: &str,
+        request: &LocalDaemonRequest,
+    ) -> Result<(), DaemonError> {
+        self.state
+            .authorize_external_request(id, request)
+            .map(|_| ())
+    }
+
     pub(super) fn bind_room_environment_slice(
         &self,
         request: crate::local::BindRoomEnvironmentSliceRequest,
@@ -758,6 +775,7 @@ impl SessionRuntimeStore {
         &self,
         request: RespondToInteractionRequest,
         terminal_user_id: Option<String>,
+        connection_class: Option<crate::local::KernelConnectionClass>,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
@@ -781,6 +799,7 @@ impl SessionRuntimeStore {
                 terminal_user_id.as_deref(),
                 passkey.as_ref(),
                 passkey_remember_minutes,
+                connection_class,
             )
             .await
         {

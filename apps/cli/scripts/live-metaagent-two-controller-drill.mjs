@@ -293,11 +293,11 @@ async function observeTwoControllers({ client, requests, sessionId, historyDir, 
   throw new Error(`timed out waiting for two-controller validation: ${JSON.stringify({ state, session: finalSession }, null, 2)}`)
 }
 
-async function cleanupSession(kernelUrl, sessionId) {
+async function cleanupSession(kernelUrl, sessionId, localAuthEnvironment) {
   if (!sessionId) return
   const { LocalIpcClient } = await import('../../../packages/kernel-client/dist/ipc.js')
   const { endSessionRequest } = await import('../../../packages/kernel-client/dist/ipc-requests.js')
-  const client = new LocalIpcClient(kernelUrl)
+  const client = new LocalIpcClient(kernelUrl, { localAuthEnvironment })
   try {
     await client.send(endSessionRequest(sessionId)).catch(() => {})
   } finally {
@@ -362,6 +362,7 @@ async function main() {
     const { LocalIpcClient } = await import('../../../packages/kernel-client/dist/ipc.js')
     const requests = await import('../../../packages/kernel-client/dist/ipc-requests.js')
     client = new LocalIpcClient(kernelUrl, {
+      localAuthEnvironment: env,
       kernelMaxMissedPongs: Math.max(180, Math.ceil(options.timeoutMs / 5_000)),
     })
     const created = unwrap(await client.send(requests.createSessionRequest(
@@ -436,7 +437,7 @@ async function main() {
     throw error
   } finally {
     if (client) await client.close().catch(() => {})
-    await cleanupSession(kernelUrl, sessionId)
+    await cleanupSession(kernelUrl, sessionId, env)
     await terminateChild(daemon)
     await finalizeDrillArtifacts({
       rootDir,

@@ -361,7 +361,19 @@ impl KernelRuntimeOwnedState {
         target_agent_id: &str,
         attachment_id: &str,
     ) -> Result<Option<crate::app::KernelPromptCancellation>, DaemonError> {
-        if !crate::scheduler::runtime::is_workflow_prompt_attachment(attachment_id) {
+        self.cancel_local_prompt_if_matches(session_id, target_agent_id, attachment_id, None)
+    }
+
+    pub(super) fn cancel_local_prompt_if_matches(
+        &self,
+        session_id: &str,
+        target_agent_id: &str,
+        attachment_id: &str,
+        expected: Option<&str>,
+    ) -> Result<Option<crate::app::KernelPromptCancellation>, DaemonError> {
+        if expected.is_none()
+            && !crate::scheduler::runtime::is_workflow_prompt_attachment(attachment_id)
+        {
             let _ = self.ensure_attachment_in_session(session_id, attachment_id)?;
         }
         let target_agent = self.agent_store.get_agent(target_agent_id)?;
@@ -407,7 +419,7 @@ impl KernelRuntimeOwnedState {
 
         let prompt = self
             .prompt_state_owner
-            .begin_cancelling_active_prompt(&session, target_agent_id)
+            .begin_cancelling_prompt_if_matches(&session, target_agent_id, expected)
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;

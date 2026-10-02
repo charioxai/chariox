@@ -55,3 +55,17 @@ test("KernelPendingRequestRegistry supports a bounded attempt timeout", async ()
   })
   assert.ok(Date.now() - startedAt < 1_000)
 })
+
+test("KernelPendingRequestRegistry leaves authorization waits untimed but rejects on disconnect", async () => {
+  const registry = new KernelPendingRequestRegistry(1)
+  const request = registry.register<string>("authorization", "control", 0)
+  await new Promise(resolve => setTimeout(resolve, 25))
+  const pending = registry.take("authorization")
+  assert.equal(pending?.timeout, null)
+  pending?.resolve("approved")
+  assert.equal(await request.promise, "approved")
+
+  const disconnected = registry.register<string>("authorization-2", "control", 0)
+  registry.rejectMatching("closed", "control")
+  await assert.rejects(disconnected.promise, /closed/)
+})

@@ -2,6 +2,57 @@ use super::*;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::{accept_async, WebSocketStream};
 
+#[tokio::test]
+async fn known_peer_request_rechecks_authority_after_enqueue_lock_wait() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let home = crate::config::DaemonConfig::for_tests();
+    let worker = crate::config::DaemonConfig::for_tests();
+    let state = Arc::new(RwLock::new(RelayClientState::default()));
+    let (sender, mut priority_rx, _event_rx) = RelayOutgoingSender::channel(4);
+    let mut guard = state.write().await;
+    guard.test_set_connected_sender(sender, "ws://fixture");
+    let authorized = AtomicBool::new(true);
+    let pending = send_peer_request_to_known_kernel_via_relay_authorized(
+        &home,
+        &state,
+        ClientTarget {
+            daemon_id: Some("worker".into()),
+            daemon_alias: None,
+        },
+        &worker.relay_public_key,
+        RelayPeerRequest::Ping {
+            value: "must-not-send".into(),
+        },
+        Duration::from_secs(3),
+        || {
+            if authorized.load(Ordering::SeqCst) {
+                Ok(())
+            } else {
+                Err(DaemonError::LocalTransport {
+                    operation: "authorize test peer request",
+                    message: "revoked".into(),
+                })
+            }
+        },
+    );
+    tokio::pin!(pending);
+    // Poll to the held write lock before revoking; no timer determines the race.
+    std::future::poll_fn(|cx| {
+        use std::future::Future;
+        assert!(pending.as_mut().poll(cx).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
+    authorized.store(false, Ordering::SeqCst);
+    drop(guard);
+    assert!(pending.await.unwrap_err().to_string().contains("revoked"));
+    assert!(
+        priority_rx.try_recv().is_err(),
+        "revoked request was enqueued"
+    );
+    assert!(state.read().await.pending_peer_requests.is_empty());
+}
+
 // The relay's claimed sender and the encrypted sender must both match discovery.
 // This peer-client test injects hostile wire responses, not mocked kernel code.
 #[tokio::test]
@@ -139,5 +190,73 @@ async fn rejects_mismatched_identity(wrong_key: bool) {
             .to_string()
             .contains("peer response identity mismatch"),
         "{error}"
+    );
+}
+
+#[tokio::test]
+async fn temporary_peer_request_rechecks_authority_after_discovery_before_send() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let mut home = crate::config::DaemonConfig::for_tests();
+    let worker = crate::config::DaemonConfig::for_tests();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    home.relay_url = Some(format!("ws://{}", listener.local_addr().unwrap()));
+    home.relay_token = Some("authorization-fixture".into());
+    let server = tokio::spawn(async move {
+        let mut metadata = accept_async(listener.accept().await.unwrap().0)
+            .await
+            .unwrap();
+        let RelayEnvelope::ClientMetadataRequest { request_id, .. } = receive(&mut metadata).await
+        else {
+            panic!("expected discovery")
+        };
+        let presence = serde_json::from_value(serde_json::json!({"kernel_id":"worker", "machine_id":"fixture-machine", "public_key":worker.relay_public_key})).unwrap();
+        send(
+            &mut metadata,
+            RelayEnvelope::ClientMetadataResponse {
+                request_id,
+                machines: None,
+                kernels: None,
+                kernel: Some(presence),
+                error: None,
+            },
+        )
+        .await;
+        assert!(matches!(metadata.next().await, Some(Ok(Message::Close(_)))));
+        let _ = metadata.close(None).await;
+        listener
+    });
+    let checks = AtomicUsize::new(0);
+    let result = send_peer_request_via_temporary_connection_authorized(
+        &home,
+        ClientTarget {
+            daemon_id: Some("worker".into()),
+            daemon_alias: None,
+        },
+        RelayPeerRequest::Ping {
+            value: "must-not-send".into(),
+        },
+        Duration::from_secs(3),
+        || {
+            if checks.fetch_add(1, Ordering::SeqCst) == 0 {
+                Ok(())
+            } else {
+                Err(DaemonError::LocalTransport {
+                    operation: "peer request authorization",
+                    message: "test grant revoked".into(),
+                })
+            }
+        },
+    )
+    .await;
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("test grant revoked"));
+    assert_eq!(checks.load(Ordering::SeqCst), 2);
+    let listener = server.await.unwrap().into_std().unwrap();
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock,
+        "invalid authority opened a peer socket"
     );
 }

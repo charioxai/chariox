@@ -808,7 +808,7 @@ async function main() {
         sliceRoot: path.join(options.rootDir, "slices"),
       }), logDir))
     }
-    state.client = await connectKernel(LocalIpcClient, requests, kernelUrl, children)
+    state.client = await connectKernel(LocalIpcClient, requests, kernelUrl, children, existingKernel ? process.env : { CHARIOX_HOME: kernelHome })
 
     const inventory = await readKernelInventory(state.client, requests)
     let priorKernelState
@@ -1228,12 +1228,12 @@ async function readKernelInventory(client, requests) {
   return { sessions, slices }
 }
 
-async function connectKernel(LocalIpcClient, requests, kernelUrl, children) {
+async function connectKernel(LocalIpcClient, requests, kernelUrl, children, localAuthEnvironment) {
   let lastError = null
   const deadline = Date.now() + 60_000
   while (Date.now() < deadline) {
     for (const child of children) assertChildAlive(child)
-    const client = new LocalIpcClient(kernelUrl)
+    const client = new LocalIpcClient(kernelUrl, { localAuthEnvironment })
     try {
       unwrap(await client.send(requests.listSlicesRequest()), "SlicesListed")
       return client

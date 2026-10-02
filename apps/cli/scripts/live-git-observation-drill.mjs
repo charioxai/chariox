@@ -104,13 +104,13 @@ function startDaemon(binary, env) {
   return child
 }
 
-async function waitForDaemon(kernelUrl, daemon) {
+async function waitForDaemon(kernelUrl, daemon, localAuthEnvironment) {
   let lastError = null
   for (let attempt = 0; attempt < 80; attempt += 1) {
     if (daemon?.exitCode !== null || daemon?.signalCode !== null) {
       throw new Error(`daemon exited before ready code=${daemon.exitCode} signal=${daemon.signalCode}\nstdout:\n${daemon.logs?.stdout ?? ''}\nstderr:\n${daemon.logs?.stderr ?? ''}`)
     }
-    const client = new LocalIpcClient(kernelUrl)
+    const client = new LocalIpcClient(kernelUrl, { localAuthEnvironment })
     try {
       await client.send({ GetDaemonHealth: null })
       await client.close().catch(() => {})
@@ -218,8 +218,8 @@ snapshot_interval_events = 1
 
     const kernelBinary = await buildKernel()
     daemon = startDaemon(kernelBinary, env)
-    await waitForDaemon(kernelUrl, daemon)
-    client = new LocalIpcClient(kernelUrl)
+    await waitForDaemon(kernelUrl, daemon, env)
+    client = new LocalIpcClient(kernelUrl, { localAuthEnvironment: env })
 
     const created = variant(await client.send(createSessionRequest(workspace, workspace, 'git-observation')), 'SessionCreated')
     const session = created.session
