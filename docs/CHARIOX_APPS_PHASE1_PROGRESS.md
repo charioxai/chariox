@@ -180,7 +180,7 @@ Each row's status follows the audit in `CHARIOX_APPS_PHASE1_VERIFICATION.md` (ma
 | V-UX-08 | Freeform deploy | Hosted and connected-ingress drill. | Partial (g public invocation PASS); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
 | V-UX-09 | Broken automation | App view, workflow and TUI all show the same state and recovery action. | Implemented (g); interim 2026-10-02, exact candidate/PR and remaining legs in verification ledger |
 | V-UX-10 | One App Tab, many terminals | Every client reports the same Environment and tab_id. Closing or refreshing a viewer neither duplicates nor closes the managed App Tab. | Implemented (see verification) |
-| V-UX-11 | Deploy with Apps | Deployed copy installs the same Apps; App event runs the deployed workflow once; rollback restores the App set. | Implemented: kernel path live end to end (`v-ux-11/`, drill 9), the Cloud-side deploy, Update Apps and rollback through the web (`v-ux-08-stub/`), and one run per mention on Slack 1.1.6 (`slack-one-run/`) |
+| V-UX-11 | Deploy with Apps | Deployed copy installs the same Apps; App event runs the deployed workflow once; rollback restores the App set. | Partial (owner-kernel deployment PASS); hosted-container exclusion still needs #709 sign-off; interim verification ledger |
 
 ### Reference-App acceptance
 
