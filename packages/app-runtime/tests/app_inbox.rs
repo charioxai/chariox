@@ -108,6 +108,76 @@ fn routes_are_owned_and_unique() {
 }
 
 #[test]
+fn paused_generator_routes_and_accepted_work_survive_database_reopen() {
+    let path = std::env::temp_dir().join(format!(
+        "chariox-inbox-reopen-{}-{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let db = Connection::open(&path).unwrap();
+    app_inbox::initialize(&db).unwrap();
+    let mut expected = vec![route("active-control")];
+    app_inbox::create_route_in(&db, &expected[0], 1).unwrap();
+    for id in ["mentions", "messages", "reactions", "dummy"] {
+        let mut route = route(id);
+        route.source = Some(app_inbox::InboxSource {
+            generator_id: "dev.example.events".into(),
+            connection_id: "fixture-connection".into(),
+            connection_scope: "fixture-scope".into(),
+            filter_json: "null".into(),
+        });
+        app_inbox::create_route_in(&db, &route, 1).unwrap();
+        expected.push(route);
+    }
+    let Accepted::New(sequence) =
+        app_inbox::accept_in(&db, &expected[1], "accepted", &json!({"text":"hi"}), 3, 100).unwrap()
+    else {
+        panic!("first acceptance must be new");
+    };
+    for route in expected.iter_mut().skip(1) {
+        app_inbox::set_route_active_in(&db, "owner", "installed", &route.route_id, false).unwrap();
+        route.active = false;
+    }
+    drop(db);
+
+    let db = Connection::open(&path).unwrap();
+    // Opening a kernel initializes an existing schema again. Neither that
+    // step nor repeated initialization may undo deployment handover state.
+    app_inbox::initialize(&db).unwrap();
+    app_inbox::initialize(&db).unwrap();
+    expected.sort_by(|left, right| left.route_id.cmp(&right.route_id));
+    assert_eq!(
+        app_inbox::routes(&db, "owner", "installed").unwrap(),
+        expected
+    );
+    let paused = app_inbox::route(&db, "owner", "installed", "mentions")
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        app_inbox::accept_in(&db, &paused, "new", &json!({"text":"hi"}), 3, 200),
+        Err(InboxError::NotFound)
+    ));
+    // Pausing admission does not discard work accepted before the handover.
+    let due = app_inbox::due(&db, 200, 10).unwrap();
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].sequence, sequence);
+    assert_eq!(due[0].occurrence_id, "accepted");
+    app_inbox::set_route_active_in(&db, "owner", "installed", "mentions", true).unwrap();
+    let resumed = app_inbox::route(&db, "owner", "installed", "mentions")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        app_inbox::accept_in(&db, &resumed, "accepted", &json!({"text":"hi"}), 3, 200).unwrap(),
+        Accepted::Duplicate(sequence)
+    );
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn accepting_dedupes_by_source_occurrence() {
     let db = db();
     let route = route("r1");

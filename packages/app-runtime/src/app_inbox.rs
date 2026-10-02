@@ -94,6 +94,9 @@ pub struct InboxRoute {
     pub event_name: String,
     pub source_event_type: String,
     pub source_event_version: u32,
+    /// Persisted admission state. Deployment handover pauses an owner's route
+    /// while a copy claims its event interest, then resumes it when the copy
+    /// leaves. This is not a worker or event-connection health indicator.
     pub active: bool,
     /// Set when occurrences come from an event generator connection; absent
     /// for routes fed only by the owner (`TestAppInboxRoute`).
