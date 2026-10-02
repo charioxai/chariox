@@ -302,3 +302,95 @@ async fn contended_input(outcome: WaitingInput) {
         std::panic::resume_unwind(panic);
     }
 }
+
+#[test]
+fn human_unicode_text_then_immediate_click_applies_in_order() {
+    run_test(unicode_text_then_click);
+}
+
+async fn unicode_text_then_click() {
+    let mut fixture = LiveWorker::start_configured(false, true).await;
+    let title = fixture._worker_state.root.join("draft.txt");
+    let todo = fixture._worker_state.root.join("todo.txt");
+    let helper = fixture._worker_state.root.join("ordered-input-helper.sh");
+    // Model the remote form at the physical input executor boundary. A click
+    // must read the text written by the preceding slow Unicode text action.
+    std::fs::write(&helper, format!(
+        "#!/bin/sh\nset -eu\ncase \"$1\" in\n  computer-type-stdin) sleep 0.1; cat >> '{}' ;;\n  pointer-click) cat '{}' >> '{}'; : > '{}' ;;\n  *) exit 2 ;;\nesac\n",
+        title.display(), title.display(), todo.display(), title.display()
+    )).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::env::set_var("CHARIOX_SLICE_SCREEN_TOOL", &helper);
+    let assertions = std::panic::AssertUnwindSafe(async {
+        fixture.create_slice().await;
+        fixture.home.app.lock().await.slices().set_status("desktop", SliceStatus::Running, 1).unwrap();
+        let room = &fixture.rooms[0];
+        dispatch_json(&fixture.home, bind(room, "desktop")).await.unwrap();
+        let started = dispatch_json(&fixture.home, json!({"StartRoomEnvironment": {
+            "session_id":room,"viewport": {"css_width":1280,"css_height":800,"device_scale_factor":1,
+                "desktop_pixel_width":1280,"desktop_pixel_height":800}
+        }})).await.unwrap();
+        let environment = &started["RoomEnvironmentUpdated"]["environment"];
+        dispatch_json(&fixture.home, json!({"RequestRoomEnvironmentInputTakeover": {
+            "session_id":room,"target":{"kind":"desktop"}
+        }})).await.unwrap();
+        let text = "café 日本語 ✓";
+        let text_request = json!({"SubmitRoomEnvironmentAction": {
+            "session_id":room,"runtime_generation":environment["runtime_generation"],
+            "viewport_revision":environment["viewport"]["revision"],"idempotency_key":"ordered-unicode-text",
+            "action":{"kind":"keyboard_text","text":text}
+        }});
+        let click_request = json!({"SubmitRoomEnvironmentAction": {
+            "session_id":room,"runtime_generation":environment["runtime_generation"],
+            "viewport_revision":environment["viewport"]["revision"],"idempotency_key":"ordered-add-click",
+            "action":{"kind":"pointer_click","x":717,"y":95,"button":"left","click_count":1}
+        }});
+        let click = async {
+            let actor_id = timeout(Duration::from_secs(2), async {
+                loop {
+                    let snapshot = fixture.home.runtime_state.room_environment_snapshot(room).unwrap();
+                    if let Some(action) = snapshot.actions.iter().find(|action| action.kind == "keyboard_text") {
+                        assert_eq!(action.state, crate::session::EnvironmentActionState::Running);
+                        break action.actor_id.clone();
+                    }
+                    tokio::task::yield_now().await;
+                }
+            }).await.unwrap();
+            let LocalDaemonRequest::SubmitRoomEnvironmentAction(request) = serde_json::from_value(click_request.clone()).unwrap()
+                else { unreachable!() };
+            // Bypass the session command lane to exercise simultaneous kernel
+            // admission. Submit the click as soon as the text enters Running.
+            fixture.home.runtime_state.execute_human_room_environment_action(request,
+                crate::session::EnvironmentActor::new(actor_id, crate::session::EnvironmentActorKind::Human, "viewer")).await
+        };
+        let (typed, clicked) = tokio::join!(dispatch_json(&fixture.home, text_request.clone()), click);
+        let typed = typed.unwrap();
+        let (click_id, snapshot) = clicked.unwrap();
+        assert_eq!(std::fs::read_to_string(&todo).unwrap(), text);
+        let actions: Vec<_> = snapshot.actions.iter().filter(|action| matches!(action.kind.as_str(), "keyboard_text" | "pointer_click")).collect();
+        assert_eq!(actions.len(), 2);
+        assert!(actions.iter().all(|action| action.state == crate::session::EnvironmentActionState::Completed));
+        let text_action = actions.iter().find(|action| action.kind == "keyboard_text").unwrap();
+        let click_action = actions.iter().find(|action| action.action_id == click_id).unwrap();
+        assert!(text_action.sequence < click_action.sequence);
+        assert!(text_action.finished_at_ms <= click_action.started_at_ms);
+        let repeated = dispatch_json(&fixture.home, text_request).await.unwrap();
+        assert_eq!(repeated["RoomEnvironmentActionSubmitted"]["action_id"], typed["RoomEnvironmentActionSubmitted"]["action_id"]);
+        let repeated = dispatch_json(&fixture.home, click_request).await.unwrap();
+        assert_eq!(repeated["RoomEnvironmentActionSubmitted"]["action_id"], click_id);
+        assert_eq!(std::fs::read_to_string(&todo).unwrap(), text);
+        assert_eq!(std::fs::read_to_string(&title).unwrap(), "");
+    }).catch_unwind().await;
+    let cleanup = fixture
+        .worker
+        .runtime_state
+        .shutdown_browser_controller_process()
+        .await;
+    fixture.stop().await;
+    std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL");
+    cleanup.unwrap();
+    if let Err(panic) = assertions {
+        std::panic::resume_unwind(panic);
+    }
+}
