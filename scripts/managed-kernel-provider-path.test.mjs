@@ -50,7 +50,7 @@ test("Path-1 provider PATH is resolved after verification without importing prof
   const supervisorLaunchSource = supervisorSource.slice(supervisorLaunchStart, supervisorLaunchEnd)
   const workerLaunchStart = workerSource.indexOf("fn spawn_kernel(")
   const workerLaunchEnd = workerSource.indexOf(
-    '\n#[cfg(target_os = "linux")]\nfn prepare_disposable_worker_provider_home',
+    '\nfn confirm_when_relay_ready(',
     workerLaunchStart,
   )
   assert.ok(workerLaunchStart >= 0 && workerLaunchEnd > workerLaunchStart)
@@ -72,19 +72,19 @@ test("Path-1 provider PATH is resolved after verification without importing prof
   )
   assert.match(
     providerPathSource,
-    /pub\(super\) fn resolve_login_path\(home: &Path\) -> OsString \{\s*resolve_login_path_with_fallback\(home, false\)/,
+    /pub\(super\) fn resolve_login_path\(home: &Path\) -> OsString \{\s*resolve_login_path_with_fallback\(home\)/,
   )
   assert.match(
     providerPathSource,
-    /pub\(super\) fn resolve_worker_login_path\(home: &Path\) -> OsString \{\s*resolve_login_path_with_fallback\(home, true\)/,
+    /pub\(super\) fn resolve_worker_login_path\(home: &Path\) -> OsString \{\s*resolve_login_path_with_fallback\(home\)/,
   )
   assert.match(
     providerPathSource,
-    /fn fallback_path\(home: &Path, include_home_local_bin: bool\)[\s\S]*?home\.join\("\.local\/bin"\)[\s\S]*?is_safe_path_component\(component\)[\s\S]*?format!\("\{local_bin\}:\{BOOTSTRAP_PATH\}"\)[\s\S]*?BOOTSTRAP_PATH\.to_string\(\)/,
+    /fn fallback_path\(home: &Path\)[\s\S]*?home\.is_absolute\(\)[\s\S]*?Component::ParentDir[\s\S]*?home\.join\("\.local"\)\.join\("bin"\)[\s\S]*?std::env::join_paths\(entries\)[\s\S]*?MAX_PROVIDER_PATH_BYTES/,
   )
   assert.match(
     providerPathSource,
-    /Err\(reason\) => \{\s*let fallback_path = fallback_path\(home, include_home_local_bin\);[\s\S]*?crate::logging::warn_with_fields\(\s*"managed_bootstrap\.provider_path_probe_failed"[\s\S]*?"fallback_path": fallback_path\.as_str\(\),[\s\S]*?OsString::from\(fallback_path\)/,
+    /Err\(reason\) => \{\s*let fallback_path = fallback_path\(home\);[\s\S]*?crate::logging::warn_with_fields\(\s*"managed_bootstrap\.provider_path_probe_failed"[\s\S]*?"fallback_path": fallback_path_for_log,[\s\S]*?fallback_path/,
   )
 
   const fixtureHome = await mkdtemp(join(tmpdir(), "chariox-provider-path-security-"))
