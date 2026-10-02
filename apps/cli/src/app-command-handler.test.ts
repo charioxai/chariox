@@ -131,3 +131,30 @@ test("App slash rejects incomplete quoted recovery before sending a request", as
     flashFooter: message => assert.fail(message),
   }, command), /unterminated quote/)
 })
+
+
+test("App slash inbox test preserves a single-quoted JSON payload and explains quoting", async () => {
+  const requests: unknown[] = []
+  const notices: string[] = []
+  const flashes: string[] = []
+  const deps = {
+    sendAppRequest: async (request: Record<string, unknown>) => {
+      requests.push(request)
+      return { AppInboxOccurrenceAccepted: { route_id: "mail", occurrence_id: "occ-1", duplicate: false } }
+    },
+    appendNotice: (message: string) => { notices.push(message) },
+    flashFooter: (message: string) => { flashes.push(message) },
+  }
+  const command = parseSlashCommand(`/app inbox test todo mail occ-1 '{"title":"hello world","nested":{"n":1}}'`)
+  if (command?.kind !== "app") assert.fail("quoted inbox payload must parse as an App command")
+  await handleAppSlashCommand(deps, command)
+  assert.deepEqual(requests, [{ TestAppInboxRoute: { installation_id: "todo", route_id: "mail",
+    occurrence_id: "occ-1", payload: { title: "hello world", nested: { n: 1 } } } }])
+  assert.equal(notices.length, 1)
+  assert.deepEqual(flashes, [])
+  const unquoted = parseSlashCommand('/app inbox test todo mail occ-2 {"title":"x"}')
+  if (unquoted?.kind !== "app") assert.fail("inbox command must be recognized")
+  await handleAppSlashCommand(deps, unquoted)
+  assert.equal(requests.length, 1)
+  assert.match(flashes[0]!, /'<json-payload>'/)
+})

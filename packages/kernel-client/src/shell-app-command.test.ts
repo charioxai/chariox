@@ -164,6 +164,7 @@ test("app inbox configures routes and test occurrences through the shared reques
   for (const args of [["inbox", "test", "todo", "mail", "occ", "{bad"], ["inbox", "add", "todo", "mail", "e", "t", "--version", "0"], ["inbox", "list"]]) {
     const result = await executeAppCommand(args, { send: async () => { throw new Error("unexpected request") } })
     assert.equal(result.ok, false)
+    assert.match(result.message!, /'<json-payload>'/)
   }
   const refused = await executeAppCommand(["inbox", "list", "todo"], { send: async () => ({ AppRequestFailed: { code: "invalid_request" } }) })
   assert.match(refused.message!, /declares as incoming/)

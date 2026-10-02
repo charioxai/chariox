@@ -20,7 +20,7 @@ const usage = [
   "       app automation disable <installation-id> <automation-id> <revision>",
   "       app inbox list <installation-id> | remove <installation-id> <route-id>",
   "       app inbox add <installation-id> <route-id> <event> <source-event-type> [--version <n>] [--connection <generator>/<connection-id>/<scope>]",
-  "       app inbox test <installation-id> <route-id> <occurrence-id> <json-payload>",
+  "       app inbox test <installation-id> <route-id> <occurrence-id> '<json-payload>'",
   "       app connection list <installation-id> | grant <installation-id> <generator>/<connection-id> | revoke <installation-id> <connection-id>",
 ].join("\n")
 
