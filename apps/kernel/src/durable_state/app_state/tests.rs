@@ -187,12 +187,15 @@ fn package_variant(
     version: &str,
     schema: u32,
 ) -> (Vec<u8>, TrustedPublisher) {
-    package_build(with_tools, with_network, version, schema, false)
+    package_build(with_tools, with_network, version, schema, false, false)
 }
 /// An App that also declares the incoming event `received` (a generator
 /// occurrence, or just `text`).
 pub(super) fn inbox_package() -> (Vec<u8>, TrustedPublisher) {
-    package_build(false, false, "1.0.0", 0, true)
+    package_build(false, false, "1.0.0", 0, true, false)
+}
+pub(super) fn host_package() -> (Vec<u8>, TrustedPublisher) {
+    package_build(false, false, "1.0.0", 0, false, true)
 }
 fn package_build(
     with_tools: bool,
@@ -200,6 +203,7 @@ fn package_build(
     version: &str,
     schema: u32,
     incoming: bool,
+    clipboard_write: bool,
 ) -> (Vec<u8>, TrustedPublisher) {
     let mut manifest: Manifest=serde_json::from_value(json!({
         "schema":"chariox.app.v1","appId":"com.example.state","version":version,
@@ -208,6 +212,9 @@ fn package_build(
         "resourcePolicy":"chariox.app.resources.v1","runtime":{"engine":"node","entry":"runtime/main.js"},
         "ui":{"entry":"ui/index.html"},"events":"schemas/events.json","capabilities":{}
     })).unwrap();
+    if clipboard_write {
+        manifest.capabilities.clipboard = vec![chariox_app_package::ClipboardAccess::Write];
+    }
     if with_network {
         manifest.capabilities.network = vec![chariox_app_package::NetworkDestination {
             origin: "https://api.example.com".into(),

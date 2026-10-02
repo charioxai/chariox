@@ -18,6 +18,24 @@ impl KernelRuntimeState {
         command: &KernelCommand,
         request: &LocalDaemonRequest,
     ) -> Option<LocalDaemonResponse> {
+        if let LocalDaemonRequest::AcceptAppHostAction(request) = request {
+            use crate::runtime::command::{KernelCallerKind, KernelCommandSource};
+            if !matches!(
+                command.source,
+                KernelCommandSource::LocalCli
+                    | KernelCommandSource::LocalIpc
+                    | KernelCommandSource::RelayClient
+            ) || !matches!(
+                command.caller.caller_kind,
+                KernelCallerKind::LocalClient | KernelCallerKind::RemoteClient
+            ) {
+                return Some(failed(AppRequestErrorCode::Unauthorized));
+            }
+            return Some(match crate::runtime::app_control::owner(command) {
+                Ok(owner) => self.accept_app_host_action(owner, request.clone()).await,
+                Err(code) => failed(code),
+            });
+        }
         if let LocalDaemonRequest::GrantAppFile(request) = request {
             return Some(match crate::runtime::app_control::owner(command) {
                 Ok(owner) => self.grant_app_file(owner, request.clone()).await,

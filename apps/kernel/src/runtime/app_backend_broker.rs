@@ -59,6 +59,12 @@ fn build(
     }
     let fence = Arc::new(tokio::sync::RwLock::new(()));
     Ok(BackendBroker {
+        host: super::app_host_broker::AppHostBroker::new(
+            store.clone(),
+            owner.clone(),
+            catalog.clone(),
+            admission.clone(),
+        ),
         connections: super::app_connection_broker::AppConnectionBroker::new(
             store.clone(),
             owner.clone(),
@@ -120,6 +126,7 @@ fn build(
 }
 #[derive(Clone)]
 struct BackendBroker {
+    host: super::app_host_broker::AppHostBroker,
     state: AppStorageBroker,
     logs: super::app_log_broker::AppLogBroker,
     validation: super::app_validation_broker::AppValidationBroker,
@@ -175,6 +182,7 @@ impl Broker for BackendBroker {
                 "host.pick_file" | "host.pick_file_status" | "files.export" => {
                     delegate.file_grants.dispatch(request).await
                 }
+                "host.clipboard_write" | "host.open_link" => delegate.host.dispatch(request).await,
                 "log.write" => delegate.logs.dispatch(request).await,
                 "validation.request" | "validation.status" => {
                     delegate.validation.dispatch(request).await

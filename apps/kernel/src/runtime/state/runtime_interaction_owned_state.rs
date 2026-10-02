@@ -36,6 +36,43 @@ impl KernelRuntimeOwnedState {
         custom_reply: Option<&str>,
         caller_user_id: Option<&str>,
     ) -> Result<(), DaemonError> {
+        self.resolve_runtime_interaction_inner(
+            session_id,
+            interaction_id,
+            choice_id,
+            custom_reply,
+            caller_user_id,
+            false,
+        )
+    }
+
+    /// The dedicated terminal take path competes with decline/expiry under
+    /// the same interaction mutation lock. No generic reply can take an offer.
+    pub(super) fn take_app_host_interaction(
+        &self,
+        session_id: &str,
+        operation_id: &str,
+        owner: &str,
+    ) -> Result<(), DaemonError> {
+        self.resolve_runtime_interaction_inner(
+            session_id,
+            &format!("app_host_{operation_id}"),
+            "accept_host_action",
+            None,
+            Some(owner),
+            true,
+        )
+    }
+
+    fn resolve_runtime_interaction_inner(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        choice_id: &str,
+        custom_reply: Option<&str>,
+        caller_user_id: Option<&str>,
+        take_host: bool,
+    ) -> Result<(), DaemonError> {
         let _mutation = self
             .pending_interactions
             .mutation
@@ -95,7 +132,19 @@ impl KernelRuntimeOwnedState {
                 operation: "resolve runtime interaction",
                 message: format!("interaction {interaction_id} is not active in session"),
             })?;
-        let resolved_reply = if let Some(choice) = interaction.choice(choice_id) {
+        if take_host
+            && (pending.kernel_operation_owner.as_deref() != caller_user_id
+                || !interaction.kernel_operation_id().is_some_and(|subject| {
+                    subject
+                        .strip_prefix("host_action:")
+                        .is_some_and(|operation| interaction_id == format!("app_host_{operation}"))
+                }))
+        {
+            return Err(interaction_error("Not an owner-bound App host offer"));
+        }
+        let resolved_reply = if take_host {
+            "accept_host_action".to_owned()
+        } else if let Some(choice) = interaction.choice(choice_id) {
             if let Some(reply) = custom_reply {
                 let custom_choice =
                     interaction

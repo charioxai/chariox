@@ -9,7 +9,8 @@ export const APP_ORIGIN_SUFFIX = ".app.chariox.internal";
 const MAX_ASSETS = 256;
 const MAX_ASSET_BYTES = 8 * 1024 * 1024;
 const MAX_PENDING_CALLS = 64;
-const MAX_CALL_BYTES = 256 * 1024;
+// The bounded host text plus its JSON envelope must fit a view call.
+const MAX_CALL_BYTES = 512 * 1024;
 // The trusted conversation panel needs room to be usable.
 const MIN_PANEL = { width: 240, height: 160 };
 const PANEL_METHOD = "chariox.panel";
@@ -53,6 +54,10 @@ const BRIDGE_SOURCE = `(() => {
   } });
   Object.defineProperty(globalThis, "chariox", { value: Object.freeze({
     call(method, params = {}) { return request(method, params); },
+    host: Object.freeze({
+      openLink(url) { return request("host.open_link", { url }); },
+      writeClipboard(text) { return request("host.clipboard_write", { text }); },
+    }),
     // Chariox draws the private conversation over this area of the page, in
     // the trusted terminal. The App learns that it is reserved, nothing more.
     panel: Object.freeze({

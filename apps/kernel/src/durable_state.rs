@@ -23,6 +23,7 @@ pub(crate) mod app_event_delivery;
 pub(crate) mod app_event_maintenance;
 pub(crate) mod app_connections;
 pub(crate) mod app_file_exports;
+pub(crate) mod app_host_actions;
 pub(crate) mod app_file_grants;
 pub(crate) mod app_inbox;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -166,6 +167,7 @@ enum DurableWriterRequest {
     AppValidation(Box<app_validations::ValidationRequest>),
     AppFileGrant(Box<app_file_grants::FileGrantRequest>),
     AppFileExport(Box<app_file_exports::FileExportRequest>),
+    AppHostAction(Box<app_host_actions::HostActionRequest>),
     AppConnectionGrant(Box<app_connections::ConnectionGrantRequest>),
     AppBinding(Box<app_bindings::AppBindingRequest>),
     AppAutomation(Box<app_automations::AppAutomationRequest>),
@@ -353,6 +355,7 @@ impl DurableKernelStateStore {
         })?;
         app_file_grants::initialize(&connection)
             .and_then(|()| app_file_exports::initialize(&connection))
+            .and_then(|()| app_host_actions::initialize(&connection))
             .and_then(|()| app_connections::initialize(&connection))
             .map_err(|_| DaemonError::LocalTransport {
                 operation: "durable_state.app_file_grants",
@@ -1457,6 +1460,10 @@ fn run_durable_writer(
                 app_file_grants::execute(&mut connection, *request);
                 continue;
             }
+            DurableWriterRequest::AppHostAction(request) => {
+                app_host_actions::execute(&mut connection, *request);
+                continue;
+            }
             DurableWriterRequest::AppFileExport(request) => {
                 app_file_exports::execute(&mut connection, *request);
                 continue;
@@ -1568,6 +1575,7 @@ fn run_durable_writer(
                     | DurableWriterRequest::AppValidation(_)
                     | DurableWriterRequest::AppFileGrant(_)
                     | DurableWriterRequest::AppFileExport(_)
+                    | DurableWriterRequest::AppHostAction(_)
                     | DurableWriterRequest::AppConnectionGrant(_)
                     | DurableWriterRequest::AppBinding(_)
                     | DurableWriterRequest::AppAutomation(_)

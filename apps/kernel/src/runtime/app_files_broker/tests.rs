@@ -8,6 +8,7 @@ mod authority;
 mod cancellation;
 mod connections;
 mod file_grants;
+mod host_actions;
 mod outcomes;
 mod snapshots;
 mod support;

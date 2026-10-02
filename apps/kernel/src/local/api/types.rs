@@ -175,4 +175,5 @@ pub use workspace::*;
 /// before, is approved by the `kernel_deployment_consent:<interaction>`
 /// policy. Copy installations are tagged with their deployment: absent from
 /// `ListAppInstallations`, marked by `AppSetInstallation.deployment_id`.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 367;
+/// Version 400 adds owner-mediated App clipboard and link acceptance.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 400;

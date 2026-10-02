@@ -187,6 +187,10 @@ impl AppControlService {
             .remove(operation_id);
     }
 
+    pub(crate) fn admission(&self) -> Arc<Semaphore> {
+        Arc::clone(&self.admission)
+    }
+
     pub(crate) fn try_admit(
         &self,
     ) -> Result<tokio::sync::OwnedSemaphorePermit, AppRequestErrorCode> {

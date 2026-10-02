@@ -441,6 +441,17 @@ impl KernelRuntimeState {
                 "The App was updated; reopen its view",
             ));
         }
+        if matches!(tool, "host.clipboard_write" | "host.open_link") {
+            return crate::runtime::app_host_broker::AppHostBroker::new(
+                self.owned.durable_state_store.clone(),
+                binding.owner.clone(),
+                lease.catalog().clone(),
+                self.app_control().admission(),
+            )
+            .request(tool, input)
+            .await
+            .map_err(|error| view_error(&error.code, &error.message));
+        }
         let tool = view_tool(lease.catalog().app_catalog(), tool)
             .ok_or_else(|| view_error("UNKNOWN_TOOL", "The App declares no such tool"))?;
         let slot = lease

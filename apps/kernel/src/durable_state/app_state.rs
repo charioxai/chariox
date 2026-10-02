@@ -343,3 +343,15 @@ pub(crate) fn fixture_tool_catalog(store: &DurableKernelStateStore) -> Arc<Event
 pub(crate) fn fixture_tool_package() -> (Vec<u8>, chariox_app_package::TrustedPublisher) {
     tests::tool_package()
 }
+
+#[cfg(test)]
+pub(crate) fn fixture_host_package() -> (Vec<u8>, chariox_app_package::TrustedPublisher) {
+    tests::host_package()
+}
+#[cfg(test)]
+pub(crate) fn fixture_event_catalog_from_package(
+    store: &DurableKernelStateStore,
+    package: (Vec<u8>, chariox_app_package::TrustedPublisher),
+) -> Arc<EventCatalog> {
+    tests::catalog_for_owner(store, "alice", package)
+}

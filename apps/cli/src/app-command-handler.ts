@@ -3,12 +3,14 @@ import { basename } from "node:path"
 import { grantAppFileRequest, saveAppFileExportRequest } from "@chariox/kernel-client/ipc-requests"
 import { executeAppCommand } from "@chariox/kernel-client/shell-app-command"
 import { tokenizeShellLine } from "@chariox/kernel-client/shell-core"
+import { acceptAppHostOffer, type AppHostTerminal } from "./app-host-action.js"
 import type { AppDevLoop } from "./app-dev-loop.js"
 import { AppFileInstaller, formatInstallOperation } from "./app-install-file.js"
 import { AppPublisherEnrollment, formatPublisherReview } from "./app-publisher-file.js"
 import type { ParsedSlashCommand } from "./commands.js"
 
 export type AppCommandHandlerDeps = {
+  appHostTerminal?: AppHostTerminal
   appFileInstaller?: AppFileInstaller
   appDevLoop?: AppDevLoop
   appPublisherEnrollment?: AppPublisherEnrollment
@@ -24,6 +26,14 @@ export async function handleAppSlashCommand(
 ): Promise<void> {
   if (!deps.sendAppRequest) {
     deps.flashFooter("Apps are unavailable in this kernel", "error")
+    return
+  }
+  if (command.args[0] === "host") {
+    const [, action, operation, ...extra] = tokenizeShellLine(command.raw.replace(/^\/app(?:\s|$)/, ""))
+    if (action !== "accept" || !operation || extra.length) throw new Error("usage: /app host accept OPERATION")
+    const session = deps.currentAppSessionId?.()
+    if (!session) throw new Error("Attach to the session showing the App host request")
+    await acceptAppHostOffer(session, operation, deps.sendAppRequest, deps.appendNotice, deps.appHostTerminal)
     return
   }
   if (command.args[0] === "publisher") {

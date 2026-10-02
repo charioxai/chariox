@@ -2334,3 +2334,52 @@ Queue and turn direction:
 ## 5.0 Capability, Session, Workflow, Security, and Versioning Details
 
 Detailed capability API baseline, Workspace Live Sync coordination, provider control operations, session/attachment semantics, workflow contracts, security semantics, compatibility rules, versioning strategy, and cross-platform terminal conformance now live in [PROTOCOL_CAPABILITY_SESSION_WORKFLOW.md](PROTOCOL_CAPABILITY_SESSION_WORKFLOW.md). Keep this main protocol document focused on scope, lanes, native provider behavior, envelope shape, current transport baseline, and command/workflow message direction.
+
+### Protocol 400: App clipboard copy-out and link opening
+
+`host.clipboard_write {text}` and `host.open_link {url}` on the App worker SDK
+channel create a pending, owner/installation/generation-bound offer:
+`{operationId, state:"pending", expiresAtMs}`. Room App views expose
+`window.chariox.host.writeClipboard(text)` and `openLink(url)` through the same
+host methods, after the kernel validates the view binding and generation.
+Neither backend nor view code performs the host action itself. There is no
+clipboard-read method. Clipboard offers require the signed `capabilities.clipboard: ["write"]` declaration;
+link offers need no separate capability. Neither requires external-file access.
+
+Clipboard text and each of its JSON/visible escaped representations are limited
+to 256 KiB, so the complete trusted prompt fits one terminal projection. URLs are limited to 8 KiB, must
+be absolute HTTP(S) URLs with a host, and cannot contain whitespace, control
+characters, backslashes or invisible Unicode formatting. The exact submitted
+URL is shown and returned without normalization. Each installation may have
+four unanswered host offers; they expire after five minutes, or when its
+active generation changes or it is uninstalled. Settled payloads are dropped.
+
+The file-export prompt pump projects one `RuntimeInteraction` to the owner's
+terminals (local TUI, remote TUI and web), with id `app_host_<operationId>` and
+kernel subject `host_action:<operationId>`. It shows the exact URL or an escaped,
+complete representation of the offered text, plus a Decline choice and no
+approval on timeout. App views and agents cannot settle this prompt.
+
+An explicit human gesture in a trusted terminal sends
+`AcceptAppHostAction {session_id, operation_id}`. The kernel validates a human
+client, owner, showing session, pending interaction, generation and deadline,
+and arbitrates this take against decline/expiry under the existing interaction
+lock. It returns `AppHostActionAccepted {operation_id, action}` once:
+`action` is either `{kind:"clipboard_write", text}` or `{kind:"open_link", url}`.
+A generic `RespondToInteraction` can decline but cannot take the offer; clients
+must use this dedicated acceptance path. Stale, declined, expired, foreign or
+already accepted offers fail without returning a payload. No owner, URL or
+text can be supplied by the accepting client. Acceptance consumes the offer;
+a failed host action or lost reply requires a new App request.
+
+The accepting terminal performs the action on its own machine. TUI users type
+`/app host accept OPERATION`: copying uses OSC 52 and always shows the escaped
+text as a visible fallback because OSC 52 has no acknowledgement; link opening
+uses the existing default-browser shim and always prints the exact URL. Web
+clients must copy with `navigator.clipboard.writeText` from a trusted click,
+open a new tab with `noopener`, and show a visible fallback on failure. They
+must preserve browser user activation across kernel settlement (for example,
+reserve a blank tab synchronously on the click, then navigate only after
+successful settlement). App iframe/Room gestures only create offers and never
+count as the human's acceptance. Clients exposing acceptance require protocol
+400; unrelated clients keep their existing minimum version.

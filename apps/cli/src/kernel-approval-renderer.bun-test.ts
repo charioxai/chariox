@@ -135,3 +135,24 @@ test("actual mouse clicks require the primary button and a connected, nonpending
     assert.match(harness.captureCharFrame(), /Selected: Allow/)
   } finally { harness.renderer.destroy() }
 })
+
+test("App clipboard and link offers show the payload, explicit typed acceptance and Decline in the trusted TUI", async () => {
+  const harness = await createTestRenderer({ width: 100, height: 26, useThread: false })
+  const box = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0 })
+  harness.renderer.root.add(box)
+  const surface = createKernelApprovalRenderer(harness.renderer, { show() {}, choose() {} })
+  surface.assign(box)
+  try {
+    for (const [title, payload] of [["Open a link from an App", "Exact URL: https://example.org/a?x=%20"], ["Copy text from an App", 'Text (11 UTF-8 bytes): "copy\\ntext"']] as const) {
+      surface.render({ ...view, open: true, interaction: { id: "app_host_offer", kernel_operation_id: "host_action:offer", kind: "permission", level: "warning", requested_at_ms: 1, title,
+        message: `${payload}\nOnly alice can answer.\n/app host accept offer`, choices: [{ id: "decline", label: "Decline", reply: "deny" }] } }, { width: 100, height: 26 })
+      await harness.renderOnce()
+      const frame = harness.captureCharFrame()
+      assert.ok(frame.includes(title!))
+      assert.ok(frame.includes(payload!))
+      assert.match(frame, /\/app host accept offer/)
+      assert.match(frame, /Decline/)
+      assert.doesNotMatch(frame, /› Decline/)
+    }
+  } finally { harness.renderer.destroy() }
+})

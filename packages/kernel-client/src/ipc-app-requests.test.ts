@@ -9,7 +9,7 @@ import { grantAppFileRequest, saveAppFileExportRequest } from "./ipc-app-request
 import { prepareDeploymentAppsRequest, previewDeploymentAppsRequest } from "./ipc-app-requests.js"
 
 test("App inspection shares protocol 297 without client owner or host paths", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 367)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 400)
   assert.deepEqual(listAppInstallationsRequest(), { ListAppInstallations: { after: null, limit: null } })
   assert.deepEqual(listAppInstallationsRequest({ after: "todo", limit: 1 }), { ListAppInstallations: { after: "todo", limit: 1 } })
   assert.deepEqual(getAppInstallationRequest("todo"), { GetAppInstallation: { installation_id: "todo" } })
@@ -147,4 +147,10 @@ test("deployment App preview names only the publication", () => {
   assert.deepEqual(previewDeploymentAppsRequest("session", "publication-1"), {
     PreviewDeploymentApps: { session_id: "session", publication_ref: "publication-1" },
   })
+})
+
+test("App host acceptance names only the session and operation, never a client payload or owner", async () => {
+  const { acceptAppHostActionRequest } = await import("./ipc-app-requests.js")
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 400)
+  assert.deepEqual(acceptAppHostActionRequest("s", "offer"), { AcceptAppHostAction: { session_id: "s", operation_id: "offer" } })
 })

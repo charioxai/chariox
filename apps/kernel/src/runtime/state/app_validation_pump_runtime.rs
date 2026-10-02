@@ -29,6 +29,7 @@ impl KernelRuntimeState {
             runtime.app_validation_pass(now_ms).await;
             runtime.app_file_pick_pass(now_ms).await;
             runtime.app_file_export_pass(now_ms).await;
+            runtime.app_host_action_pass(now_ms).await;
         });
     }
 

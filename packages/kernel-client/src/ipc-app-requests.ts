@@ -184,3 +184,9 @@ export function grantAppFileRequest(sessionId: string, operationId: string, file
 export function saveAppFileExportRequest(sessionId: string, operationId: string) {
   return { SaveAppFileExport: { session_id: sessionId, operation_id: operationId } }
 }
+
+/** Protocol 400: take a copy/link offer once, after an explicit human gesture.
+ * Execute the returned payload in the accepting terminal, never in an App view. */
+export function acceptAppHostActionRequest(sessionId: string, operationId: string) {
+  return { AcceptAppHostAction: { session_id: sessionId, operation_id: operationId } }
+}

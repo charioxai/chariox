@@ -252,3 +252,19 @@ test("reload serves the new generation's assets to the same Tab and reloads it",
   assert.equal(Buffer.from(app.assets.get("index.html").body, "base64").toString(), "<p>v2</p>");
   assert.equal(app.assets.has("app.js"), false);
 });
+
+test("view host helpers only queue the shared copy/link methods, never operate the browser or clipboard", async () => {
+  const { connection } = await opened();
+  const bridge = connection.sent.find((m) => m.method === "Page.addScriptToEvaluateOnNewDocument").params.source;
+  const sent = [];
+  const context = vm.createContext({ crypto: globalThis.crypto, __charioxAppCall: payload => sent.push(JSON.parse(payload)),
+    navigator: { clipboard: { writeText() { assert.fail("App view must not copy directly"); } } },
+    open() { assert.fail("App view must not open directly"); } });
+  vm.runInContext(bridge, context);
+  vm.runInContext("chariox.host.openLink('https://example.org/a?x=%20'); chariox.host.writeClipboard('copy text')", context);
+  assert.deepEqual(sent.map(({ method, params }) => ({ method, params })), [
+    { method: "host.open_link", params: { url: "https://example.org/a?x=%20" } },
+    { method: "host.clipboard_write", params: { text: "copy text" } },
+  ]);
+  assert.equal(vm.runInContext("'readClipboard' in chariox.host", context), false);
+});

@@ -257,3 +257,19 @@ The shared JSON vectors in `test/wire-vectors.json` contain `generation` and
 corpus, while their stream tests separately exercise binary framing and bounds.
 `rawCases` use a `json` string instead of `message` to retain duplicates, number
 spellings and invalid surrogate escapes that object parsing would erase.
+
+`host.clipboard_write {text}` (at most 256 KiB of UTF-8 and of each JSON/visible
+escaped representation) and
+`host.open_link {url}` (absolute HTTP(S), at most 8 KiB, no whitespace, controls,
+backslashes or invisible formatting) return
+`{operationId, state:"pending", expiresAtMs}` immediately. Clipboard requires the signed
+`capabilities.clipboard: ["write"]` declaration; links need no separate capability. The owner receives a trusted kernel prompt, outside the
+App view, and must explicitly take the offer from a terminal before anything
+is copied or opened. Four offers may wait per installation, for up to five
+minutes; updating/uninstalling the App invalidates them. The App cannot accept,
+read a clipboard, or inspect the human's result. Taking an offer is one-shot;
+a failed local action requires a new request. A Room view has
+`chariox.host.writeClipboard(text)` and `chariox.host.openLink(url)` with the
+same pending result; its bridge invokes these same methods, never native
+clipboard/window APIs. Trusted clients require local daemon protocol 400 for
+`AcceptAppHostAction` / `AppHostActionAccepted`.

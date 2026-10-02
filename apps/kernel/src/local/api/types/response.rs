@@ -27,6 +27,7 @@ pub enum LocalDaemonResponse {
     DeploymentAppsConsent { consent: DeploymentAppsConsent, },
     AppFileGranted { operation_id: String, files: u32, },
     AppFileExport { operation_id: String, name: String, contents_base64: String, },
+    AppHostActionAccepted { operation_id: String, action: AppHostAction, },
     AppInboxOccurrenceAccepted { installation_id: String, route_id: String, occurrence_id: String, duplicate: bool, },
     SessionCreated { session: RuntimeSession, agent: AgentInstance, },
     SessionAttached { attachment: RuntimeAttachment, },
