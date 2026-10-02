@@ -1031,6 +1031,7 @@ impl KernelRuntimeOwnedState {
         )
     }
 
+    #[expect(clippy::too_many_arguments, reason = "Keeps the existing session, worker and lease binding fields explicit without a second protocol representation.")]
     pub(super) fn mark_remote_queued_prompt_steer_uncertain(
         &self,
         session_id: &str,
@@ -1248,6 +1249,7 @@ impl KernelRuntimeOwnedState {
         .map(Some)
     }
 
+    #[expect(clippy::too_many_arguments, reason = "Keeps the existing session, worker and lease binding fields explicit without a second protocol representation.")]
     pub(super) fn finish_remote_queued_prompt_steer(
         &self,
         session_id: &str,

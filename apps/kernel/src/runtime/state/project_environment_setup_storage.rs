@@ -1025,6 +1025,7 @@ impl ProjectEnvironmentSetupStore {
         Ok((entry.status.clone(), entry.execution.definition.clone()))
     }
 
+    #[expect(clippy::too_many_arguments, reason = "Keeps the existing session, worker and lease binding fields explicit without a second protocol representation.")]
     pub(super) fn reconcile_remote_with<F>(
         &self,
         operation_id: &str,
@@ -1173,6 +1174,7 @@ impl ProjectEnvironmentSetupStore {
         Ok(status)
     }
 
+    #[expect(clippy::too_many_arguments, reason = "Keeps the existing session, worker and lease binding fields explicit without a second protocol representation.")]
     pub(super) fn acknowledge_home_definition_persistence(
         &self,
         operation_id: &str,

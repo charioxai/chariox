@@ -1038,6 +1038,7 @@ impl KernelRuntimeState {
         .await
     }
 
+    #[expect(clippy::too_many_arguments, reason = "Keeps the existing session, worker and lease binding fields explicit without a second protocol representation.")]
     pub(crate) async fn relay_acknowledge_leased_project_environment_setup_definition(
         &self,
         leased_agent_id: &str,

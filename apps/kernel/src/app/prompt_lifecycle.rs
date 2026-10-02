@@ -100,6 +100,7 @@ impl<'a> ProviderPromptDispatcher<'a> {
         Self { app }
     }
 
+    #[expect(clippy::too_many_arguments, reason = "Keeps the existing session, worker and lease binding fields explicit without a second protocol representation.")]
     pub(crate) fn dispatch_prompt_to_provider(
         &mut self,
         session_id: &str,
@@ -697,6 +698,7 @@ impl DaemonApp {
         )
     }
 
+    #[expect(clippy::too_many_arguments, reason = "Keeps the existing session, worker and lease binding fields explicit without a second protocol representation.")]
     pub(crate) fn advance_next_queued_prompt_remote_with_workflow_dispatch(
         &mut self,
         session_id: &str,
