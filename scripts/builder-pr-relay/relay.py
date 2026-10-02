@@ -16,6 +16,10 @@ TRAILER = "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*\Z")
 
 
+class TransportFailure(RuntimeError):
+    """SSH is unavailable; retry the tick rather than splitting records."""
+
+
 def validate_request(request):
     branch, base = request["branch"], request["base"]
     if not valid_branch(branch) or not isinstance(base, str) or not REF.fullmatch(base):
@@ -56,7 +60,8 @@ def run(argv, *, data=None, env=None):
                              stderr=subprocess.PIPE, env=env, timeout=120)
     if process.returncode:
         # Avoid dumping tool diagnostics, which can contain credential-helper data.
-        raise RuntimeError(f"{Path(argv[0]).name} failed with exit {process.returncode}")
+        error = TransportFailure if Path(argv[0]).name == "ssh" and process.returncode == 255 else RuntimeError
+        raise error(f"{Path(argv[0]).name} failed with exit {process.returncode}")
     return process.stdout
 
 
@@ -99,7 +104,7 @@ class Relay:
         commits = self.git(repo, "rev-list", head, "--not", baseline, *origin.values()).splitlines()
         validate_commits([self.git(repo, "show", "-s", "--format=%B", commit) for commit in commits])
         for commit in commits:
-            if self.git(repo, "diff-tree", "--root", "-m", "--no-commit-id", "--name-only", "-r", commit, "--", ".github"):
+            if self.git(repo, "diff-tree", "--root", "-c", "--no-commit-id", "--name-only", "-r", commit, "--", ".github"):
                 raise ValueError("builder publication cannot change .github")
         validate_commits([self.git(repo, "show", "-s", "--format=%B", head)])
         self.git(repo, "push", "--porcelain", f"--force-with-lease=refs/heads/{branch}:{existing or ''}",
@@ -205,7 +210,11 @@ class Relay:
     def send_batch(self, records):
         try:
             self.remote("write", json.dumps(records))
-        except (RuntimeError, ValueError, subprocess.TimeoutExpired):
+        except TransportFailure:
+            raise
+        except subprocess.TimeoutExpired as error:
+            raise TransportFailure("builder SSH timed out") from error
+        except (RuntimeError, ValueError):
             if len(records) > 1:
                 for record in records:
                     self.send_batch([record])
@@ -242,7 +251,10 @@ class Relay:
                 self.repository(repo, inbox["requests"][repo])
             except (RuntimeError, ValueError, subprocess.TimeoutExpired):
                 self.failures.append(f"{repo}: repository unavailable")
-        self.flush()
+        try:
+            self.flush()
+        except TransportFailure:
+            self.failures.append("builder: transport unavailable; remaining mirror writes deferred")
         report = {"at": int(time.time()), "mirrored_records": len(self.records), "failures": self.failures}
         temporary = self.args.state_dir / "status.tmp"
         temporary.write_text(json.dumps(report, indent=2) + "\n")

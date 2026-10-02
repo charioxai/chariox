@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from bridge import collect, write_mirror, valid_branch, FOOTER
-from relay import Relay, choose_pr, validate_commits, validate_request, TRAILER
+from relay import Relay, TransportFailure, choose_pr, validate_commits, validate_request, TRAILER
 
 
 class RelayTests(unittest.TestCase):
@@ -167,6 +167,41 @@ class GitPublicationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.relay.publish("chariox", "apps/p1-proof", head, None, {"main": self.base})
 
+        self.assertNotIn("apps/p1-proof", self.command("git", "--git-dir", str(self.remote), "for-each-ref", "--format=%(refname)"))
+
+    def prepare_upstream_merge(self):
+        self.command("git", "-C", str(self.source), "switch", "-c", "feature")
+        feature = self.commit("feature [skip ci]")
+        self.fetch()
+        self.relay.publish("chariox", "apps/p1-proof", feature, None, {"main": self.base})
+        self.command("git", "-C", str(self.source), "switch", "main")
+        workflow = self.source / ".github/workflows/upstream.yml"
+        workflow.parent.mkdir(parents=True)
+        workflow.write_text("trusted upstream content\n")
+        self.command("git", "-C", str(self.source), "add", ".github")
+        main = self.commit("upstream workflow [skip ci]")
+        self.command("git", "-C", str(self.source), "push", str(self.remote), "main")
+        self.command("git", "-C", str(self.source), "switch", "feature")
+        self.command("git", "-C", str(self.source), "merge", "--no-ff", "--no-commit", "main")
+        return feature, main, workflow
+
+    def test_trusted_upstream_workflow_merge_can_publish(self):
+        feature, main, workflow = self.prepare_upstream_merge()
+        head = self.commit("sync upstream [skip ci]")
+        self.fetch()
+        self.relay.publish("chariox", "apps/p1-proof", head, feature, {"main": main, "apps/p1-proof": feature})
+        self.assertEqual(self.command("git", "--git-dir", str(self.remote), "rev-parse", "apps/p1-proof"), head)
+
+    def test_merge_authored_workflow_content_is_rejected(self):
+        feature, main, workflow = self.prepare_upstream_merge()
+        workflow.write_text("builder-authored unsafe merge content\n")
+        self.command("git", "-C", str(self.source), "add", ".github")
+        head = self.commit("evil merge [skip ci]")
+        self.fetch()
+        with self.assertRaises(ValueError):
+            self.relay.publish("chariox", "apps/p1-proof", head, feature, {"main": main, "apps/p1-proof": feature})
+        self.assertEqual(self.command("git", "--git-dir", str(self.remote), "rev-parse", "apps/p1-proof"), feature)
+
     def test_divergence_and_racing_remote_never_overwritten(self):
         head = self.commit("one [skip ci]")
         self.fetch()
@@ -273,6 +308,19 @@ class PublicationFlowTests(unittest.TestCase):
         self.assertEqual(set(relay.success), {"branches/apps/p1-proof", "one", "two", "good"})
         self.assertEqual(len(relay.failures), 2)
         self.assertTrue(all(len(json.dumps(batch).encode()) <= 8 * 1024 * 1024 for batch in relay.sent))
+
+    def test_transport_outage_does_not_split_or_retry_every_record(self):
+        args = SimpleNamespace(ssh_config=Path("unused"), git_root=Path("unused"))
+        class OfflineRelay(Relay):
+            attempts = 0
+            def remote(self, action, data=None):
+                self.attempts += 1
+                raise TransportFailure("offline")
+        relay = OfflineRelay(args)
+        relay.records = [dict(repo="chariox", key=str(i), value={}) for i in range(1, 556)]
+        with self.assertRaises(TransportFailure):
+            relay.flush()
+        self.assertEqual(relay.attempts, 1)
 
     def test_review_reply_must_match_full_sha(self):
         request = dict(branch="apps/p1-proof", base="main", title="proof", body=FOOTER,
