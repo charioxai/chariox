@@ -1091,6 +1091,31 @@ fn remote_git_turn_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn launch_credential_retry_requires_the_typed_worker_diagnostic() {
+        use crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE;
+
+        for operation in ["read relay peer response", "read temporary relay peer response"] {
+            let required = DaemonError::RelayTransport {
+                operation,
+                code: REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE.to_string(),
+                message: "worker requested a credential for a cold provider launch".to_string(),
+                retryable: false,
+            };
+            assert!(remote_prompt_error_requires_provider_launch_credential(&required));
+        }
+        let unrelated = DaemonError::LocalTransport {
+            operation: "read relay peer response",
+            message: "worker unavailable".to_string(),
+        };
+        assert!(!remote_prompt_error_requires_provider_launch_credential(&unrelated));
+        let untyped_required = DaemonError::LocalTransport {
+            operation: "read relay peer response",
+            message: format!("{REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE}: relaunch"),
+        };
+        assert!(!remote_prompt_error_requires_provider_launch_credential(&untyped_required));
+    }
     use std::sync::Arc;
 
     use crate::app::{DaemonApp, KernelPreparedPromptSubmission};
