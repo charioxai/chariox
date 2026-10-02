@@ -20,15 +20,18 @@ use std::{
 };
 
 pub(super) fn proofs() -> (VerifiedReleaseLease, EnrolledRuntime, StageTrustBinding) {
-    let (package, runtime, binding, _) = proofs_with_registry();
+    let (package, runtime, binding, _, _) = proofs_with_registry("factory-only");
     (package, runtime, binding)
 }
 
-fn proofs_with_registry() -> (
+fn proofs_with_registry(
+    installation: &str,
+) -> (
     VerifiedReleaseLease,
     EnrolledRuntime,
     StageTrustBinding,
     rusqlite::Connection,
+    VerifiedInstallCandidate,
 ) {
     let key = SigningKey::from_bytes(&[27; 32]);
     let publisher = TrustedPublisher {
@@ -97,7 +100,7 @@ fn proofs_with_registry() -> (
     let mut installs = InstallationRegistry::new(&mut connection);
     installs.initialize().unwrap();
     let update = installs
-        .create_and_stage_verified("factory-only", "hosted-owner", &candidate, 2)
+        .create_and_stage_verified(installation, "hosted-owner", &candidate, 2)
         .unwrap();
     let binding = installs
         .staged_trust("hosted-owner", &update.token)
@@ -107,6 +110,7 @@ fn proofs_with_registry() -> (
         EnrolledRuntime::open_installed().unwrap(),
         binding,
         connection,
+        candidate,
     )
 }
 
@@ -200,7 +204,7 @@ fn hosted_prepared_worker_uses_only_enrolled_sources_and_reclaims_unstarted_doma
 #[ignore = "dedicated hosted fresh Linux preparation with signed tiny graph; never spawns it"]
 fn hosted_fresh_first_install_prepares_without_a_committed_generation() {
     let context = Context::open("66666666666666666666666666666666");
-    let (package, runtime, binding, mut connection) = proofs_with_registry();
+    let (package, runtime, binding, mut connection, _) = proofs_with_registry("factory-only");
     let token = binding.token();
     assert_eq!(token.base_generation, 0);
     assert_eq!(token.generation, 1);
@@ -253,4 +257,98 @@ fn hosted_fresh_first_install_prepares_without_a_committed_generation() {
         .collect();
     assert!(leaves.is_empty());
     println!("Fresh signed generation 1 over base 0 reached production Linux PreparedWorker and verified registry commit with no prior generation; restart with Some(1) and domain reclamation passed; tiny graph never executed");
+}
+
+#[test]
+#[ignore = "dedicated hosted Linux retained-data reinstall and snapshot rollback"]
+fn hosted_failed_retained_data_reinstall_restores_the_retained_release() {
+    let context = Context::open("77777777777777777777777777777777");
+    let (_package, _runtime, binding, mut connection, candidate) =
+        proofs_with_registry("retained-reinstall");
+    let snapshot = PublisherTrustRegistry::new(&mut connection)
+        .trusted_publisher("hosted-owner", "com.example", "fixture")
+        .unwrap();
+    let mut installs = InstallationRegistry::new(&mut connection);
+    let approval = || CapabilityDecision::Approved {
+        approval: CapabilityApproval {
+            decision_id: "reinstall-approval".into(),
+            authority_ref: "dedicated-root-drill".into(),
+        },
+    };
+    let token = binding.token();
+    installs.decide(token, approval(), 3).unwrap();
+    installs.quiesce(token, 4).unwrap();
+    let mut original =
+        Lease::acquire("hosted-owner", "retained-reinstall", 1, None, &context.leaf).unwrap();
+    fs::write(original.data_path().join("todos"), b"retained data").unwrap();
+    installs.mark_prepared(token, 5).unwrap();
+    installs
+        .commit_verified(token, "hosted-owner", &snapshot, 6)
+        .unwrap();
+    original.release().unwrap();
+    let uninstalled = installs.uninstall("retained-reinstall", 1, 7).unwrap();
+    assert!(uninstalled.active.is_none());
+    assert!(uninstalled.generation > 1); // Uninstall fence, not the data generation.
+    assert_eq!(uninstalled.data_release().unwrap().generation, 1);
+    // Each failed reinstall must start from retained data, including after
+    // another failed reinstall dirtied the data volume.
+    for now in [8, 16] {
+        let stage = installs
+            .stage_verified(
+                "retained-reinstall",
+                "hosted-owner",
+                uninstalled.generation,
+                &candidate,
+                now,
+            )
+            .unwrap();
+        assert!(stage.token.generation > uninstalled.generation);
+        installs.decide(&stage.token, approval(), now + 1).unwrap();
+        installs.quiesce(&stage.token, now + 2).unwrap();
+        let committed = installs
+            .get("retained-reinstall")
+            .unwrap()
+            .data_release()
+            .map(|release| release.generation);
+        assert_eq!(committed, Some(1));
+        let mut staged = Lease::acquire(
+            "hosted-owner",
+            "retained-reinstall",
+            stage.token.generation,
+            committed,
+            &context.leaf,
+        )
+        .unwrap();
+        assert!(staged
+            .data_path()
+            .parent()
+            .unwrap()
+            .join("data-snapshot.ext4")
+            .exists());
+        assert_eq!(
+            fs::read(staged.data_path().join("todos")).unwrap(),
+            b"retained data"
+        );
+        assert!(!staged.data_path().join("failed-only").exists());
+        fs::write(staged.data_path().join("todos"), b"failed reinstall writes").unwrap();
+        fs::write(staged.data_path().join("failed-only"), b"uncommitted").unwrap();
+        staged.release().unwrap();
+        installs
+            .abort(&stage.token, "fixture reinstall failed", now + 3)
+            .unwrap();
+    }
+    let mut restored = context.lease("retained-reinstall", 1);
+    assert_eq!(
+        fs::read(restored.data_path().join("todos")).unwrap(),
+        b"retained data"
+    );
+    assert!(!restored.data_path().join("failed-only").exists());
+    assert!(!restored
+        .data_path()
+        .parent()
+        .unwrap()
+        .join("data-snapshot.ext4")
+        .exists());
+    restored.release().unwrap();
+    println!("Retained-data uninstall fence differs from the data generation; two failed signed reinstalls took snapshots and restored retained generation 1 without preserving failed writes");
 }
