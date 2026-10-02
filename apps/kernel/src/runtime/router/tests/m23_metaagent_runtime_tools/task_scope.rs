@@ -792,10 +792,7 @@ async fn local_metaagent_task_pause_and_abort_cancel_active_prompt_inner() {
             "{reason} must be durable across kernel restart"
         );
     }
-    app.lock()
-        .await
-        .pty_processes_mut()
-        .remove_process(provider_run.id());
+    let _ = app.lock().await.pty_mut().remove_process(provider_run.id());
 }
 
 #[test]
