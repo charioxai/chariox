@@ -324,7 +324,7 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
                 .agent(&request.agent_id)
         }
-        LocalDaemonRequest::RequestNativeProviderInteraction(request) => {
+        LocalDaemonRequest::RequestNativeProviderTurnInteraction(request) => {
             LocalRequestMetadata::new("native_provider.interaction.request", Normal)
                 .session(&request.session_id)
                 .agent(&request.agent_id)
@@ -789,7 +789,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::RequestCredentialEnrollmentInteraction(_) => {
             "credential_enrollment.interaction.request"
         }
-        LocalDaemonRequest::RequestNativeProviderInteraction(_) => {
+        LocalDaemonRequest::RequestNativeProviderTurnInteraction(_) => {
             "native_provider.interaction.request"
         }
         LocalDaemonRequest::CompletePrompt(_) => "prompt.complete",

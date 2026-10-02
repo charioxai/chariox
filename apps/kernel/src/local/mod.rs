@@ -163,7 +163,7 @@ pub use api::{
     RemoveWorkflowScheduleRequest, RemoveWorkflowWatchdogRequest, RenameProjectRequest,
     RenameRemoteMachineRequest, RequestCredentialEnrollmentInteractionRequest,
     RequestManagedEnvironmentLifecycleRequest, RequestManagedEnvironmentReimageRequest,
-    RequestNativeProviderInteractionRequest, RequestRoomEnvironmentInputTakeoverRequest,
+    RequestNativeProviderTurnInteractionRequest, RequestRoomEnvironmentInputTakeoverRequest,
     ResetAllPromptSettingsRequest, ResetPromptSettingRequest, ResizeTerminalRequest,
     ResolveKernelClientConnectionRequest, ResolveSessionRequest, ResolveWorkflowRequest,
     RespondToInteractionRequest, RestoreProjectRequest, RestoreSliceBackupRequest,

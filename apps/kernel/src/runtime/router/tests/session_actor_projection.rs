@@ -1,5 +1,5 @@
 use super::*;
-use crate::local::RequestNativeProviderInteractionRequest;
+use crate::local::RequestNativeProviderTurnInteractionRequest;
 
 mod kernel_operation_interactions;
 mod output_seen;

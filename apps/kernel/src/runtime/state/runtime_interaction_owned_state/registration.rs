@@ -23,8 +23,12 @@ impl KernelRuntimeOwnedState {
         }
         // Resolve agent identity before taking the session write guard; session
         // updates must not acquire the agent store in the opposite lock order.
+        let mut remote_run_id = None;
         if let Some(agent_id) = interaction.agent_id() {
             let agent = self.agent_store.get_agent(agent_id)?;
+            remote_run_id = agent
+                .remote_execution()
+                .and_then(|remote| remote.active_worker_provider_run_id.clone());
             if agent.session_id() != session_id {
                 return Err(DaemonError::AgentNotInSession {
                     session_id: session_id.into(),
@@ -83,6 +87,28 @@ impl KernelRuntimeOwnedState {
             return Err(interaction_error(super::INTERACTION_ALREADY_PENDING));
         }
         let agent_lifetime = interaction.agent_id().map(|agent_id| {
+            if let Some(origin) = interaction.native_origin() {
+                use crate::session::NativeInteractionOrigin;
+                let (prompt_id, native_turn_id) = match origin {
+                    NativeInteractionOrigin::Prompt { prompt_id, .. } => {
+                        (Some(prompt_id.clone()), None)
+                    }
+                    NativeInteractionOrigin::NativeTurn { native_turn_id, .. } => {
+                        (None, Some(native_turn_id.clone()))
+                    }
+                    NativeInteractionOrigin::ProviderStartup { .. } => (None, None),
+                };
+                return super::super::PendingAgentInteractionLifetime {
+                    agent_id: agent_id.into(),
+                    prompt_id,
+                    native_turn_id,
+                    provider_run_id: (remote_run_id.as_deref() != Some(origin.provider_run_id()))
+                        .then(|| origin.provider_run_id().into()),
+                    worker_provider_run_id: (remote_run_id.as_deref()
+                        == Some(origin.provider_run_id()))
+                    .then(|| origin.provider_run_id().into()),
+                };
+            }
             let prompt_id = self
                 .prompt_state_owner
                 .active_prompt_for_agent(&session, agent_id)
@@ -105,9 +131,9 @@ impl KernelRuntimeOwnedState {
                 prompt_id,
                 native_turn_id,
                 provider_run_id,
+                worker_provider_run_id: None,
             }
         });
-        session.add_active_interaction(interaction.clone());
         let pending = super::super::PendingInteraction {
             agent_lifetime,
             session_id: session_id.into(),
@@ -123,6 +149,22 @@ impl KernelRuntimeOwnedState {
             }),
             responder: std::sync::Arc::new(std::sync::Mutex::new(Some(responder))),
         };
+        if !self.agent_interaction_turn_is_live(&pending, &session) {
+            if let Some(sender) = pending
+                .responder
+                .lock()
+                .expect("interaction responder")
+                .take()
+            {
+                let _ = sender.send(super::super::PendingInteractionResolution {
+                    status: "timed_out",
+                    choice_id: None,
+                    reply: None,
+                });
+            }
+            return Ok(());
+        }
+        session.add_active_interaction(interaction.clone());
         let identity = pending.responder.clone();
         self.pending_interactions
             .write()

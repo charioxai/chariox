@@ -23,6 +23,7 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         agent_id: &str,
+        origin: &crate::session::NativeInteractionOrigin,
     ) -> Result<
         Option<(
             crate::config::DaemonConfig,
@@ -33,11 +34,49 @@ impl KernelRuntimeState {
     > {
         let session_id = session_id.to_string();
         let agent_id = agent_id.to_string();
+        let origin = origin.clone();
         self.with_app_side_effect(move |app| {
+            // Freeze the home identity only while the backing prompt still matches
+            // the producer's identity. Never map a delayed request onto a new turn.
+            if let crate::session::NativeInteractionOrigin::Prompt { prompt_id, .. } = &origin {
+                if app
+                    .prompt_owner_active_prompt_for_agent(&session_id, &agent_id)?
+                    .is_none_or(|prompt| prompt.id() != prompt_id)
+                {
+                    return Ok(None);
+                }
+            }
+            if let crate::session::NativeInteractionOrigin::NativeTurn { native_turn_id, .. } =
+                &origin
+            {
+                if app
+                    .active_turns
+                    .get(origin.provider_run_id())
+                    .is_none_or(|turn| {
+                        turn.prompt_id != *native_turn_id
+                            && turn
+                                .external_observed_id
+                                .as_ref()
+                                .is_none_or(|id| id.provider_turn_id != *native_turn_id)
+                    })
+                {
+                    return Ok(None);
+                }
+            }
+            if let crate::session::NativeInteractionOrigin::NativeTurn { .. } = &origin {
+                if let Some(turn) = app.active_turns.get(origin.provider_run_id()) {
+                    if app
+                        .prompt_owner_active_prompt_for_agent(&session_id, &agent_id)?
+                        .is_some_and(|prompt| prompt.id() != turn.prompt_id)
+                    {
+                        return Ok(None);
+                    }
+                }
+            }
             let target = RemoteLeaseRuntime::new(app).native_interaction_context_for_backing_agent(
                 &session_id,
                 &agent_id,
-                "unknown",
+                origin.provider_run_id(),
             );
             Ok::<_, DaemonError>(
                 target.map(|(daemon_id, context)| (app.config().clone(), daemon_id, context)),
@@ -1141,8 +1180,8 @@ mod relay_native_provider_launch_tests {
     fn native_lease_fixture() -> NativeLeaseFixture {
         let mut config = crate::config::DaemonConfig::for_tests();
         config.accept_remote_leases = true;
-        let mut app = crate::app::DaemonApp::bootstrap(config)
-            .expect("worker app should bootstrap");
+        let mut app =
+            crate::app::DaemonApp::bootstrap(config).expect("worker app should bootstrap");
         let (leased_agent_id, matching_request) = {
             let mut runtime = RemoteLeaseRuntime::new(&mut app);
             let lease = runtime

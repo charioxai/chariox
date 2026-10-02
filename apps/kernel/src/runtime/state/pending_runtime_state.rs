@@ -67,12 +67,13 @@ pub(super) struct PendingInteraction {
     pub(super) responder: Arc<StdMutex<Option<oneshot::Sender<PendingInteractionResolution>>>>,
 }
 
-/// Internal ownership only. Client protocol interactions retain their existing shape.
+/// Internal ownership of the originating prompt/run, including forwarded worker runs.
 #[derive(Debug, Clone)]
 pub(super) struct PendingAgentInteractionLifetime {
     pub(super) agent_id: String,
     pub(super) prompt_id: Option<String>,
     pub(super) native_turn_id: Option<String>,
+    pub(super) worker_provider_run_id: Option<String>,
     pub(super) provider_run_id: Option<String>,
 }
 

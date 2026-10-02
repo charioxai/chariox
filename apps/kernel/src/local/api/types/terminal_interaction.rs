@@ -88,7 +88,8 @@ impl Drop for CredentialEnrollmentCallback {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RequestNativeProviderInteractionRequest {
+pub struct RequestNativeProviderTurnInteractionRequest {
+    pub origin: crate::session::NativeInteractionOrigin,
     pub session_id: String,
     pub agent_id: String,
     pub interaction_id: String,
@@ -105,7 +106,7 @@ pub struct RequestNativeProviderInteractionRequest {
     pub default_on_timeout: Option<String>,
 }
 
-impl RequestNativeProviderInteractionRequest {
+impl RequestNativeProviderTurnInteractionRequest {
     pub fn allow_deny(
         session_id: impl Into<String>,
         agent_id: impl Into<String>,
@@ -113,8 +114,10 @@ impl RequestNativeProviderInteractionRequest {
         title: Option<String>,
         message: impl Into<String>,
         timeout_sec: Option<u64>,
+        origin: crate::session::NativeInteractionOrigin,
     ) -> Self {
         Self {
+            origin,
             session_id: session_id.into(),
             agent_id: agent_id.into(),
             interaction_id: interaction_id.into(),

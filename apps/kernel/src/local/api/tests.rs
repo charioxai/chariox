@@ -53,7 +53,7 @@ use super::{
     PushWorkspaceBranchRequest, QueryRecallRequest, ReadDirectoryTreeCapabilityRequest,
     ReadFileCapabilityRequest, ReadRoomEnvironmentClipboardRequest,
     ReleaseRoomEnvironmentInputRequest, RemoteMachineTrustStatus, RemoveWorkflowEdgeRequest,
-    RemoveWorkflowNodeRequest, RenameProjectRequest, RequestNativeProviderInteractionRequest,
+    RemoveWorkflowNodeRequest, RenameProjectRequest, RequestNativeProviderTurnInteractionRequest,
     RequestRoomEnvironmentInputTakeoverRequest, ResolveKernelClientConnectionRequest,
     ResolveSessionRequest, ResolveWorkflowRequest, RespondToInteractionRequest,
     RestoreProjectRequest, ResumeWorkflowRunRequest, RetryRoomEnvironmentRequest,

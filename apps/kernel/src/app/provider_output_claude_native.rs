@@ -427,8 +427,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                         continue;
                     }
                 }
-                if let Some(request_id) =
-                    event.get("hook_context_request_id").and_then(Value::as_str)
+                if event
+                    .get("hook_context_request_id")
+                    .and_then(Value::as_str)
+                    .is_some()
                 {
                     let context =
                         self.claude_native_prompt_context(session_id, &agent_id, prompt)?;
@@ -443,7 +445,6 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                             message: error.to_string(),
                         }
                     })?;
-                    write_claude_hook_context_response(context_file, request_id, &context);
                 }
                 let Some(runtime_attachment_id) = runtime_attachment_id.as_deref() else {
                     continue;
@@ -467,7 +468,19 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     attachments,
                 )?;
                 if let crate::session::PromptSubmissionOutcome::Started { prompt } = outcome {
+                    fs::write(format!("{context_file}.approval-origin"), prompt.id()).map_err(
+                        |error| DaemonError::LocalTransport {
+                            operation: "claude_approval_origin",
+                            message: error.to_string(),
+                        },
+                    )?;
                     write_claude_native_marker(context_file, &format!("native:{}", prompt.id()));
+                }
+                if let Some(request_id) =
+                    event.get("hook_context_request_id").and_then(Value::as_str)
+                {
+                    let context = fs::read_to_string(context_file).unwrap_or_default();
+                    write_claude_hook_context_response(context_file, request_id, &context);
                 }
             } else if event_name == "StopFailure" {
                 outcome.terminal_failure = crate::provider::claude_native_stop_failure(&event);
@@ -967,6 +980,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         );
         write_claude_native_marker(context_file, &format!("permission:{interaction_id}"));
         clear_claude_permission_recent(context_file);
+        let origin = bridge.capture_turn_origin(session_id, &agent_id, provider_run_id);
         let interaction = RuntimeInteraction::new(
             interaction_id.clone(),
             agent_id,
@@ -992,6 +1006,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             Some(300),
             Some("deny".to_string()),
         );
+        let interaction = interaction.with_native_origin(origin);
         let session_id = session_id.to_string();
         let context_file = context_file.to_string();
         std::thread::spawn(move || {
@@ -1001,6 +1016,9 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                         || resolution.choice_id.as_deref() == Some("allow_once") =>
                 {
                     b"\r".to_vec()
+                }
+                Ok(resolution) if resolution.choice_id.is_none() && resolution.reply.is_none() => {
+                    return
                 }
                 Ok(_) => vec![0x03],
                 Err(error) => {
@@ -1089,6 +1107,17 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             Some(300),
             Some("deny".to_string()),
         );
+        let origin = event
+            .get("native_prompt_id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .map(
+                |prompt_id| crate::session::NativeInteractionOrigin::Prompt {
+                    provider_run_id: provider_run_id.into(),
+                    prompt_id: prompt_id.into(),
+                },
+            );
+        let interaction = interaction.with_native_origin(origin);
         let session_id = session_id.to_string();
         let context_file = context_file.to_string();
         let request_id = request_id.to_string();
@@ -1321,6 +1350,14 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         }) {
             return Ok(());
         }
+        fs::write(
+            format!("{context_file}.approval-origin"),
+            prompt.origin_prompt_id,
+        )
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "claude_approval_origin",
+            message: error.to_string(),
+        })?;
         let force_post_stop_ready = provider_run.provider() == "claude-headless"
             && marker
                 .as_deref()
@@ -1682,6 +1719,11 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             Some(300),
             Some("deny".to_string()),
         );
+        let interaction = interaction.with_native_origin(Some(
+            crate::session::NativeInteractionOrigin::ProviderStartup {
+                provider_run_id: provider_run_id.into(),
+            },
+        ));
         let session_id = session_id.to_string();
         let context_file = context_file.to_string();
         std::thread::spawn(move || {
@@ -1691,6 +1733,9 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                         || resolution.choice_id.as_deref() == Some("allow_once") =>
                 {
                     b"\r".to_vec()
+                }
+                Ok(resolution) if resolution.choice_id.is_none() && resolution.reply.is_none() => {
+                    return
                 }
                 Ok(_) => vec![0x03],
                 Err(error) => {

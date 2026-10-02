@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { execFileSync, spawn } from "node:child_process"
-import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises"
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -94,6 +94,8 @@ test("Claude permission bridge preserves event-specific allow and deny response 
   await mkdir(contextResponses)
   await mkdir(permissionResponses)
   await writeClaudeHookHandler(handler)
+  const originFile = path.join(root, "approval-origin.json")
+  await writeFile(originFile, JSON.stringify({ scope: "prompt", prompt_id: "prompt-A", provider_run_id: "run-1" }))
   let interactionCount = 0
   const bridge = await startClaudePermissionBridge({
     client: {
@@ -117,6 +119,7 @@ test("Claude permission bridge preserves event-specific allow and deny response 
     CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES: contextResponses,
     CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES: permissionResponses,
     CHARIOX_CLAUDE_NATIVE_HOOK_BRIDGE_URL: bridge.url,
+    CHARIOX_CLAUDE_NATIVE_ORIGIN: originFile,
   }
 
   try {

@@ -355,6 +355,31 @@ fn native_interaction_subscription_app(
             ClientCapabilityLevel::FullTerminal,
         ))
         .expect("attachment should attach");
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "dev-stub",
+        "claude-code",
+        "default",
+        "sonnet",
+    )
+    .with_agent_id(agent.id());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-native-test",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "native-interaction-test".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: Default::default(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    app.providers.write().insert_run_for_test(run);
     (
         Arc::new(Mutex::new(app)),
         session.id().to_string(),
@@ -418,14 +443,17 @@ async fn run_dispatched_native_provider_interaction_scenario() {
         }
     };
 
-    let request = LocalDaemonRequest::RequestNativeProviderInteraction(
-        RequestNativeProviderInteractionRequest::allow_deny(
+    let request = LocalDaemonRequest::RequestNativeProviderTurnInteraction(
+        RequestNativeProviderTurnInteractionRequest::allow_deny(
             &session_id,
             &agent_id,
             "native-interaction-dispatch",
             Some("Approve file changes?".to_string()),
             "Approve file changes?".to_string(),
             Some(30),
+            crate::session::NativeInteractionOrigin::ProviderStartup {
+                provider_run_id: "provider-run-native-test".into(),
+            },
         ),
     );
     let command = KernelCommand::from_local_request(
@@ -535,14 +563,17 @@ async fn native_provider_interaction_wakes_subscription_projection_across_router
     };
 
     let before_relay_sequence = relay_router.session_projection_change_sequence();
-    let request = LocalDaemonRequest::RequestNativeProviderInteraction(
-        RequestNativeProviderInteractionRequest::allow_deny(
+    let request = LocalDaemonRequest::RequestNativeProviderTurnInteraction(
+        RequestNativeProviderTurnInteractionRequest::allow_deny(
             &session_id,
             &agent_id,
             "cross-router-native-interaction",
             Some("Approve file changes?".to_string()),
             "Approve file changes?".to_string(),
             Some(30),
+            crate::session::NativeInteractionOrigin::ProviderStartup {
+                provider_run_id: "provider-run-native-test".into(),
+            },
         ),
     );
     let command = KernelCommand::from_local_request(

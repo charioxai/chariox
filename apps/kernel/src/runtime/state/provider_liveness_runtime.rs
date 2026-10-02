@@ -15,6 +15,7 @@ impl KernelRuntimeState {
             provider_run_id,
             None,
         )? {
+            owned.withdraw_stale_agent_interactions();
             let (_, process_key) = self
                 .with_app_side_effect(|app| {
                     crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(provider_run_id)
@@ -124,6 +125,7 @@ impl KernelRuntimeState {
         else {
             return Ok(false);
         };
+        owned.withdraw_stale_agent_interactions();
         let terminal_diagnostic = process_terminal_diagnostic
             .or_else(|| exit.ended_run.terminal_diagnostic().map(str::to_string));
         if let Some(diagnostic) = terminal_diagnostic.as_deref() {

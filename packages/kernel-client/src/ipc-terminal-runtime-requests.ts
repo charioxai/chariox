@@ -1,3 +1,5 @@
+import type { NativeInteractionOrigin } from "./kernel-types-runtime.js"
+
 import type { PromptAttachmentPart } from "./kernel-types.js"
 
 export const DEPLOYMENT_CREDENTIAL_ENROLLMENT_SERVICE_SUBJECT_PREFIX = "deployment-credential-enrollment:"
@@ -351,16 +353,20 @@ export function requestCredentialEnrollmentInteractionRequest(
   }
 }
 
+export const nativeProviderInteractionMinimumProtocolVersion = 396
+
 export function requestNativeProviderInteractionRequest(
   sessionId: string,
   agentId: string,
   interactionId: string,
   title: string | null,
   message: string,
+  origin: NativeInteractionOrigin,
   timeoutSec = 300,
 ) {
   return {
-    RequestNativeProviderInteraction: {
+    RequestNativeProviderTurnInteraction: {
+      origin,
       session_id: sessionId,
       agent_id: agentId,
       interaction_id: interactionId,

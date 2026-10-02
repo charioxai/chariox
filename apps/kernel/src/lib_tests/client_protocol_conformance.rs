@@ -143,7 +143,7 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                     vec![
                         evidence(
                             "apps/kernel/src/local/api/tests/protocol_shapes/native_spawn_slice.rs",
-                            &["LOCAL_DAEMON_PROTOCOL_VERSION", "RequestNativeProviderInteraction"],
+                            &["LOCAL_DAEMON_PROTOCOL_VERSION", "RequestNativeProviderTurnInteraction"],
                         ),
                         evidence(
                             "apps/kernel/src/local/api/tests/protocol_shapes/provider_usage_activity.rs",
@@ -424,7 +424,7 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                         ),
                         evidence(
                             "apps/kernel/src/local/api/tests/protocol_shapes/native_spawn_slice.rs",
-                            &["RequestNativeProviderInteraction"],
+                            &["RequestNativeProviderTurnInteraction"],
                         ),
                     ],
                 ),
@@ -504,7 +504,7 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                         evidence(
                             "packages/kernel-client/src/ipc-terminal-runtime-requests.ts",
                             &[
-                                "RequestNativeProviderInteraction",
+                                "RequestNativeProviderTurnInteraction",
                                 "armDeploymentCredentialEnrollmentRequest",
                                 "requestCredentialEnrollmentInteractionRequest",
                             ],

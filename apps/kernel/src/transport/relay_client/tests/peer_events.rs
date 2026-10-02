@@ -288,11 +288,45 @@ async fn forwarded_native_interactions_resolve_back_to_worker_over_temporary_con
         None,
         None,
     );
+    let interaction = interaction.with_native_origin(Some(
+        crate::session::NativeInteractionOrigin::ProviderStartup {
+            provider_run_id: "provider-run-test".into(),
+        },
+    ));
+    {
+        let app = app_home.lock().await;
+        let request = crate::provider::LaunchProviderRequest::new(
+            &home_session_id,
+            "dev-stub",
+            "claude-code",
+            "default",
+            "sonnet",
+        )
+        .with_agent_id(&home_agent_id);
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            "provider-run-test",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "relay-native-interaction-test".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: Default::default(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        app.providers.write().insert_run_for_test(run);
+    }
     let context = crate::transport::relay_peer::RemoteNativeInteractionContext {
         home_session_id: home_session_id.clone(),
         home_agent_id: home_agent_id.clone(),
         leased_agent_id: "leased-agent-test".to_string(),
         worker_provider_run_id: "provider-run-test".to_string(),
+        home_prompt_id: None,
     };
 
     let worker_request = {
@@ -304,7 +338,7 @@ async fn forwarded_native_interactions_resolve_back_to_worker_over_temporary_con
                     daemon_id: Some("daemon-home".to_string()),
                     daemon_alias: None,
                 },
-                RelayPeerRequest::ForwardNativeInteraction {
+                RelayPeerRequest::ForwardNativeTurnInteraction {
                     context,
                     interaction,
                 },

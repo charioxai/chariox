@@ -2,30 +2,49 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_native_provider_interaction_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 367);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 396);
 
-    let request = LocalDaemonRequest::RequestNativeProviderInteraction(
-        RequestNativeProviderInteractionRequest::allow_deny(
+    let request = LocalDaemonRequest::RequestNativeProviderTurnInteraction(
+        RequestNativeProviderTurnInteractionRequest::allow_deny(
             "session-1",
             "agent-1",
             "native-permission-1",
             Some("Approve Claude Code Bash?".to_string()),
             "Claude Code wants to run:\n\n`echo hello`",
             Some(300),
+            crate::session::NativeInteractionOrigin::Prompt {
+                provider_run_id: "provider-run-1".into(),
+                prompt_id: "prompt-1".into(),
+            },
         ),
     );
     let snapshot = serde_json::to_value(request).expect("request should serialize");
     assert_eq!(
-        snapshot.pointer("/RequestNativeProviderInteraction/interaction_id"),
+        snapshot.pointer("/RequestNativeProviderTurnInteraction/interaction_id"),
         Some(&serde_json::json!("native-permission-1"))
     );
     assert_eq!(
-        snapshot.pointer("/RequestNativeProviderInteraction/choices/0/id"),
+        snapshot.pointer("/RequestNativeProviderTurnInteraction/choices/0/id"),
         Some(&serde_json::json!("allow_once"))
     );
     assert_eq!(
-        snapshot.pointer("/RequestNativeProviderInteraction/default_on_timeout"),
+        snapshot.pointer("/RequestNativeProviderTurnInteraction/default_on_timeout"),
         Some(&serde_json::json!("deny"))
+    );
+    assert_eq!(
+        snapshot.pointer("/RequestNativeProviderTurnInteraction/origin"),
+        Some(
+            &serde_json::json!({"scope":"prompt","provider_run_id":"provider-run-1","prompt_id":"prompt-1"})
+        )
+    );
+    let mut unbound = snapshot.clone();
+    unbound["RequestNativeProviderTurnInteraction"]
+        .as_object_mut()
+        .unwrap()
+        .remove("origin");
+    assert!(
+        serde_json::from_value::<LocalDaemonRequest>(unbound).is_err(),
+        "native IPC approvals require an origin"
     );
     let response = LocalDaemonResponse::NativeProviderInteractionResolved {
         resolution: super::NativeProviderInteractionResolution {
@@ -47,13 +66,13 @@ fn local_daemon_protocol_native_provider_interaction_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "de3b26de0ee408204a7afaf15173bf02180358db6c10ea566f0f9f22b0d32031"
+        "421844dba4bc44da6c7c1a5f44f5dca477a927ed1c3ba73815ddcf53c93c752d"
     );
 }
 
 #[test]
 fn local_daemon_protocol_kernel_targeted_spawn_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 367);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 396);
 
     let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
         account_profile: None,
@@ -87,7 +106,7 @@ fn local_daemon_protocol_kernel_targeted_spawn_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_slice_targeted_spawn_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 367);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 396);
 
     let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
         account_profile: None,
@@ -124,7 +143,7 @@ fn local_daemon_protocol_slice_targeted_spawn_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_batch_spawn_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 367);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 396);
 
     let request = LocalDaemonRequest::SpawnAgents(SpawnAgentsRequest {
         session_id: "session-1".to_string(),
@@ -159,7 +178,7 @@ fn local_daemon_protocol_batch_spawn_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_turn_undo_and_agent_fork_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 367);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 396);
 
     let undo_request = LocalDaemonRequest::UndoTurn(crate::local::UndoTurnRequest {
         session_id: "session-1".to_string(),
@@ -273,7 +292,7 @@ fn local_daemon_protocol_turn_undo_and_agent_fork_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_slice_targeted_create_session_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 367);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 396);
 
     let request = LocalDaemonRequest::CreateSession(
         CreateSessionRequest::new("workspace-1", "worktree-1")
@@ -296,7 +315,7 @@ fn local_daemon_protocol_slice_targeted_create_session_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_create_session_worktree_placement_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 367);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 396);
 
     let request = LocalDaemonRequest::CreateSession(
         CreateSessionRequest::new("workspace-1", "worktree-1").with_worktree_placement(
@@ -327,7 +346,7 @@ fn local_daemon_protocol_create_session_worktree_placement_shape_is_versioned() 
 
 #[test]
 fn local_daemon_protocol_kernel_targeted_create_session_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 367);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 396);
 
     let request = LocalDaemonRequest::CreateSession(
         CreateSessionRequest::new("workspace-1", "worktree-1")
@@ -356,7 +375,7 @@ fn local_daemon_protocol_kernel_targeted_create_session_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_slice_record_relay_endpoint_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 367);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 396);
 
     let response = LocalDaemonResponse::Slice {
         slice: crate::slice::SliceRecord {
@@ -451,7 +470,7 @@ fn local_daemon_protocol_slice_record_relay_endpoint_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_slice_saved_state_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 367);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 396);
 
     let create_request = LocalDaemonRequest::CreateSlice(crate::local::CreateSliceRequest {
         name: "linux-dev".to_string(),
@@ -636,7 +655,7 @@ fn local_daemon_protocol_slice_saved_state_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_slice_multi_repository_development_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 367);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 396);
     let request = LocalDaemonRequest::CreateSlice(crate::local::CreateSliceRequest {
         name: "project-slice".to_string(),
         backend: crate::slice::SliceBackendKind::LocalDocker,
@@ -711,7 +730,7 @@ fn local_daemon_protocol_slice_multi_repository_development_shape_is_versioned()
 
 #[test]
 fn local_daemon_protocol_slice_auth_remove_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 367);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 396);
 
     let request =
         LocalDaemonRequest::RemoveSliceProviderAuth(crate::local::RemoveSliceProviderAuthRequest {
@@ -780,7 +799,7 @@ fn local_daemon_protocol_slice_auth_remove_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_slice_provider_login_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 367);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 396);
 
     let request =
         LocalDaemonRequest::StartSliceProviderLogin(crate::local::StartSliceProviderLoginRequest {

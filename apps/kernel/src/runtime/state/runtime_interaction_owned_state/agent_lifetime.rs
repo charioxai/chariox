@@ -2,6 +2,31 @@
 use super::*;
 
 impl KernelRuntimeOwnedState {
+    pub(crate) fn capture_native_interaction_origin(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: &str,
+    ) -> Option<crate::session::NativeInteractionOrigin> {
+        use crate::session::NativeInteractionOrigin;
+        let session = self.session_store.get_session(session_id).ok()?;
+        if let Some(prompt) = self
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+        {
+            return Some(NativeInteractionOrigin::Prompt {
+                provider_run_id: provider_run_id.into(),
+                prompt_id: prompt.id().into(),
+            });
+        }
+        self.active_turns
+            .get(provider_run_id)
+            .map(|turn| NativeInteractionOrigin::NativeTurn {
+                provider_run_id: provider_run_id.into(),
+                native_turn_id: turn.prompt_id,
+            })
+    }
+
     pub(super) fn agent_interaction_is_live(
         &self,
         pending: &super::super::PendingInteraction,
@@ -14,6 +39,13 @@ impl KernelRuntimeOwnedState {
         };
         if agent.session_id() != pending.session_id {
             return false;
+        }
+        if let Some(worker_run_id) = &lifetime.worker_provider_run_id {
+            if !agent.remote_execution().is_some_and(|remote| {
+                remote.active_worker_provider_run_id.as_ref() == Some(worker_run_id)
+            }) {
+                return false;
+            }
         }
         let Ok(session) = self.session_store.get_session(&pending.session_id) else {
             return false;
@@ -53,17 +85,36 @@ impl KernelRuntimeOwnedState {
                 .provider_run_id
                 .as_deref()
                 .and_then(|id| self.active_turns.get(id))
-                .is_some_and(|turn| turn.prompt_id == *turn_id)
+                .is_some_and(|turn| {
+                    let identity_matches = turn.prompt_id == *turn_id
+                        || turn
+                            .external_observed_id
+                            .as_ref()
+                            .is_some_and(|id| id.provider_turn_id == *turn_id);
+                    identity_matches
+                        && self
+                            .prompt_state_owner
+                            .active_prompt_for_agent(session, &lifetime.agent_id)
+                            .is_none_or(|prompt| {
+                                prompt.id() == turn.prompt_id
+                                    && matches!(
+                                        prompt.status(),
+                                        crate::session::PromptStatus::Running
+                                            | crate::session::PromptStatus::Dispatching
+                                    )
+                            })
+                })
             {
                 return false;
             }
         }
         if let Some(run_id) = &lifetime.provider_run_id {
-            if !self
-                .provider_store
-                .get_run(run_id)
-                .is_ok_and(|run| run.state() == crate::provider::ProviderRunState::Running)
-            {
+            let local_live = self.provider_store.get_run(run_id).is_ok_and(|run| {
+                run.state() == crate::provider::ProviderRunState::Running
+                    && run.session_id() == pending.session_id
+                    && run.agent_instance_id() == Some(lifetime.agent_id.as_str())
+            });
+            if !local_live {
                 return false;
             }
         }
@@ -165,5 +216,17 @@ impl KernelRuntimeOwnedState {
             self.session_snapshot(&pending.session_id)?;
         }
         Ok(())
+    }
+}
+
+impl KernelRuntimeState {
+    pub(crate) fn capture_native_interaction_origin(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        run_id: &str,
+    ) -> Option<crate::session::NativeInteractionOrigin> {
+        self.owned
+            .capture_native_interaction_origin(session_id, agent_id, run_id)
     }
 }

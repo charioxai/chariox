@@ -231,6 +231,8 @@ async function readHookInput() {
   })
 }
 
+let nativePromptId = null
+try { nativePromptId = readFileSync(`${process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT}.approval-origin`, "utf8").trim() || null } catch {}
 const raw = await readHookInput()
 let input = {}
 try {
@@ -255,6 +257,7 @@ if (!contextOnlyHook) {
     at: new Date().toISOString(),
     hook_event_name: eventName,
     hook_context_request_id: hookContextRequestId,
+    native_prompt_id: nativePromptId,
     prompt: input.prompt ?? null,
     transcript_path: input.transcript_path ?? null,
     permission_mode: input.permission_mode ?? null,

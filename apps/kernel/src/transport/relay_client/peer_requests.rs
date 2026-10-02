@@ -1412,7 +1412,7 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
-        RelayPeerRequest::ForwardNativeInteraction {
+        RelayPeerRequest::ForwardNativeTurnInteraction {
             context,
             interaction,
         } => {

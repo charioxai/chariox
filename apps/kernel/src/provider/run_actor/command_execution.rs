@@ -26,6 +26,7 @@ pub(super) fn execute_submit_command(
     runtime_registry: &ProviderRunRuntimeRegistry,
     run: RuntimeProviderRun,
     envelope: PromptEnvelope,
+    prompt_id: &str,
 ) -> Result<ProviderPromptSubmitAcknowledgement, DaemonError> {
     let run_id = run.id().to_string();
     if run.adapter_key() == "dev-stub" && run.provider() == "slow-structured" {
@@ -36,6 +37,12 @@ pub(super) fn execute_submit_command(
     }
     if run.adapter_key() == "codex" {
         let (slot, mut state) = runtime_registry.take_codex_runtime(&run_id)?;
+        if !envelope.steering {
+            state.native_approval_origin = Some(crate::session::NativeInteractionOrigin::Prompt {
+                provider_run_id: run_id.clone(),
+                prompt_id: prompt_id.into(),
+            });
+        }
         let result = submit_codex_prompt(&run, &mut state, &envelope);
         let mut resume_state = run.resume_state().clone();
         resume_state.set_codex_thread_id(state.thread_id());
@@ -64,6 +71,12 @@ pub(super) fn execute_submit_command(
     }
 
     let (slot, mut state) = runtime_registry.take_opencode_runtime(&run_id)?;
+    if !envelope.steering {
+        state.native_approval_origin = Some(crate::session::NativeInteractionOrigin::Prompt {
+            provider_run_id: run_id.clone(),
+            prompt_id: prompt_id.into(),
+        });
+    }
     let result = submit_opencode_prompt(&run, &mut state, &envelope);
     let resume_state = ProviderResumeState::from_opencode_session_id(state.session_id());
     runtime_registry.restore_opencode_runtime_if_live(&run_id, &slot, state);

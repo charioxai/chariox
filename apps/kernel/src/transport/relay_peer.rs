@@ -394,6 +394,7 @@ pub struct RemoteNativeInteractionContext {
     pub home_agent_id: String,
     pub leased_agent_id: String,
     pub worker_provider_run_id: String,
+    pub home_prompt_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -817,7 +818,7 @@ pub enum RelayPeerRequest {
         context: RemoteWorkspaceLiveSyncApplyContext,
         change: crate::git_observer::WorkspaceLiveSyncChange,
     },
-    ForwardNativeInteraction {
+    ForwardNativeTurnInteraction {
         context: RemoteNativeInteractionContext,
         interaction: crate::session::RuntimeInteraction,
     },
@@ -1410,6 +1411,32 @@ mod tests {
             serde_json::from_value::<RelayPeerResponse>(response_value)
                 .expect("response should deserialize"),
             response
+        );
+    }
+}
+
+#[cfg(test)]
+mod native_approval_protocol_tests {
+    #[test]
+    fn native_approval_origin_relay_shape_is_versioned() {
+        use sha2::{Digest, Sha256};
+        assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 396);
+        let snapshot = serde_json::json!({"kind": "forward_native_turn_interaction",
+            "context": {"home_session_id":"home-session", "home_agent_id":"home-agent",
+                "leased_agent_id":"lease", "worker_provider_run_id":"run", "home_prompt_id":"home-prompt-A"},
+            "interaction": {"id":"approval", "agent_id":"worker-agent", "kind":"permission", "level":"warning",
+                "message":"Allow?", "choices":[], "native_origin":{"scope":"prompt", "provider_run_id":"run", "prompt_id":"worker-prompt-A"},
+                "requested_at_ms":1}
+        });
+        let request: super::RelayPeerRequest = serde_json::from_value(snapshot.clone()).unwrap();
+        let mut legacy = snapshot.clone();
+        legacy["kind"] = serde_json::json!("forward_native_interaction");
+        assert!(serde_json::from_value::<super::RelayPeerRequest>(legacy).is_err());
+        assert_eq!(serde_json::to_value(request).unwrap(), snapshot);
+        let encoded = serde_json::to_vec(&snapshot).unwrap();
+        assert_eq!(
+            format!("{:x}", Sha256::digest(encoded)),
+            "dee36b9bf4d4a4e4877a46ea81e1be63d696f78ebc07ebf90d964606c6d93084"
         );
     }
 }

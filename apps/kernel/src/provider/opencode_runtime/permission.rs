@@ -33,7 +33,8 @@ pub(super) fn handle_permission_request(
             "patterns": request.patterns,
         }),
     );
-    let response = resolve_permission_interaction(run, native_interaction_bridge, request)?;
+    let origin = permission_origin(run, state, request);
+    let response = resolve_permission_interaction(run, native_interaction_bridge, request, origin)?;
     crate::logging::debug_with_fields(
         "provider.opencode.permission",
         "replying to opencode permission request",
@@ -48,10 +49,28 @@ pub(super) fn handle_permission_request(
     client.reply_permission(state.session_id(), &request.id, response)
 }
 
+fn permission_origin(
+    run: &RuntimeProviderRun,
+    state: &OpenCodeRuntimeState,
+    request: &OpenCodePermissionRequest,
+) -> Option<crate::session::NativeInteractionOrigin> {
+    let message_id = request.message_id.as_ref()?;
+    let parent = state.message_parent_ids.get(message_id)?.as_deref()?;
+    match state.active_user_message_id.as_deref() {
+        Some(active) if parent == active => state.native_approval_origin.clone(),
+        Some(_) => None,
+        None => Some(crate::session::NativeInteractionOrigin::NativeTurn {
+            provider_run_id: run.id().into(),
+            native_turn_id: parent.into(),
+        }),
+    }
+}
+
 fn resolve_permission_interaction(
     run: &RuntimeProviderRun,
     native_interaction_bridge: Option<Arc<dyn ProviderNativeInteractionBridge>>,
     request: &OpenCodePermissionRequest,
+    origin: Option<crate::session::NativeInteractionOrigin>,
 ) -> Result<&'static str, DaemonError> {
     if request_touches_unfenced_workspace_live_sync_root(run, request) {
         crate::logging::warn_with_fields(
@@ -160,6 +179,7 @@ fn resolve_permission_interaction(
             "permission": request.permission,
         }),
     );
+    let interaction = interaction.with_native_origin(origin);
     let resolution = bridge.request_blocking(run.session_id(), interaction)?;
     crate::logging::debug_with_fields(
         "provider.opencode.permission",
@@ -429,6 +449,7 @@ mod tests {
             session_id: "opencode-session-1".to_string(),
             permission: permission.to_string(),
             tool: Some(permission.to_string()),
+            message_id: Some("assistant-message".into()),
             command: command.map(str::to_string),
             cwd: cwd.map(str::to_string),
             reason: None,
@@ -463,6 +484,47 @@ mod tests {
                 structured_endpoint: Some("http://127.0.0.1:1".to_string()),
             },
         )
+    }
+
+    #[test]
+    fn approval_lifetime_opencode_buffered_request_refuses_previous_user_message() {
+        let run = run("/tmp/chariox-workspace", true);
+        let mut state = super::super::OpenCodeRuntimeState::new(
+            "http://127.0.0.1:1".into(),
+            "opencode-session-1".into(),
+            crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(
+                std::sync::mpsc::channel().1,
+            ),
+        );
+        state.note_prompt_submitted("user-B".into());
+        let origin = crate::session::NativeInteractionOrigin::Prompt {
+            provider_run_id: run.id().into(),
+            prompt_id: "prompt-B".into(),
+        };
+        state.native_approval_origin = Some(origin.clone());
+        state
+            .message_parent_ids
+            .insert("assistant-message".into(), Some("user-A".into()));
+        let request = request("bash", None, None, &[]);
+        assert_eq!(super::permission_origin(&run, &state, &request), None);
+        state
+            .message_parent_ids
+            .insert("assistant-message".into(), Some("user-B".into()));
+        assert_eq!(
+            super::permission_origin(&run, &state, &request),
+            Some(origin)
+        );
+        state.active_user_message_id = None;
+        state
+            .message_parent_ids
+            .insert("assistant-message".into(), Some("native-user-A".into()));
+        assert_eq!(
+            super::permission_origin(&run, &state, &request),
+            Some(crate::session::NativeInteractionOrigin::NativeTurn {
+                provider_run_id: run.id().into(),
+                native_turn_id: "native-user-A".into(),
+            })
+        );
     }
 
     #[test]
