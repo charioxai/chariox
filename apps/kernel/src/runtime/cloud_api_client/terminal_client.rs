@@ -33,10 +33,9 @@ pub(crate) async fn issue_cloud_terminal_client_token(
     let client_id = if account_authority {
         requested_client_id.to_string()
     } else {
-        if !profile
+        if profile
             .machine_credential
-            .as_deref()
-            .is_some_and(|credential| !credential.trim().is_empty())
+            .as_deref().is_none_or(|credential| credential.trim().is_empty())
         {
             return Err(client_scope_error(
                 "Cloud terminal pairing requires active credentials",
