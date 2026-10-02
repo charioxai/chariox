@@ -24,8 +24,6 @@ fn spawn_validation_output_reader<R>(output: R) -> Result<ValidationOutputReader
 where
     R: Read + Send + std::os::fd::AsRawFd + 'static,
 {
-    use std::os::fd::AsRawFd;
-
     let fd = output.as_raw_fd();
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
     if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
@@ -2734,8 +2732,6 @@ fn count_validation_output_nonblocking<R>(
 where
     R: Read + std::os::fd::AsRawFd,
 {
-    use std::os::fd::AsRawFd;
-
     let mut buffer = [0_u8; 8192];
     let mut bytes = 0_usize;
     loop {

@@ -11,8 +11,10 @@ use wait_timeout::ChildExt;
 
 use super::browser_controller_action::{
     validate_browser_action_timeout, BrowserControllerActionResult, BrowserControllerDialogResult,
-    BrowserDialogAction, BrowserLocatorAction,
+    BrowserLocatorAction,
 };
+#[cfg(test)]
+use super::browser_controller_action::BrowserDialogAction;
 use super::browser_controller_compatibility::{
     normalize_browser_navigation_url, BrowserCompatibilityWait,
     BrowserControllerCompatibilityWaitResult, BrowserControllerNavigationResult,
