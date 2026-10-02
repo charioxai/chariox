@@ -26,6 +26,7 @@ trap cleanup_host EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
 cd "$fixture_repo"
+"$fixture_node" --test apps/app-worker/tests/linux-native-contract.test.mjs
 mapfile -t fixture_pin < <(node -e 'const p=require("./apps/app-worker/sandbox.lock.json").bubblewrap; for(const v of [p.url,p.sha256,p.size,p.version]) console.log(v)')
 [[ "${fixture_pin[0]}" == https://github.com/containers/bubblewrap/releases/download/v0.12.0/bubblewrap-0.12.0.tar.xz ]]
 [[ "${fixture_pin[1]}" =~ ^[a-f0-9]{64}$ && "${fixture_pin[2]}" == 126452 && "${fixture_pin[3]}" == 0.12.0 ]]
