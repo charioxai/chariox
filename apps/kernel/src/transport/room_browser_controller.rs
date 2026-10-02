@@ -39,6 +39,10 @@ pub(crate) enum RoomComputerPointerButton {
 pub(crate) struct RoomComputerSecretInput(String);
 
 impl RoomComputerSecretInput {
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+
     pub(crate) fn new(value: String) -> Self {
         Self(value)
     }
@@ -128,6 +132,31 @@ impl std::fmt::Debug for RoomComputerClipboardText {
     }
 }
 
+// MP-08 / MP-11: display-stack metadata only, bound before user approval.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RoomComputerSecretTarget {
+    pub(crate) focus_window: u64,
+    pub(crate) active_window: u64,
+    pub(crate) geometry: [i64; 4],
+    pub(crate) window_geometry: [i64; 4],
+}
+
+impl RoomComputerSecretTarget {
+    pub(crate) fn valid(&self) -> bool {
+        self.focus_window > 1
+            && self.active_window > 1
+            && [self.geometry, self.window_geometry]
+                .iter()
+                .all(|geometry| {
+                    geometry[2] > 0
+                        && geometry[3] > 0
+                        && geometry[2] <= 32768
+                        && geometry[3] <= 32768
+                })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum RoomComputerInputAction {
@@ -166,6 +195,7 @@ pub(crate) enum RoomComputerInputAction {
     },
     SecretText {
         input: RoomComputerSecretInput,
+        expected_target: RoomComputerSecretTarget,
     },
 }
 
@@ -318,6 +348,7 @@ pub(crate) enum RoomBrowserControllerCommand {
         desktop_pixel_height: u32,
         action: RoomComputerInputAction,
     },
+    ComputerSecretTarget,
     ComputerClipboardRead {
         actor_id: String,
         runtime_generation: u64,
@@ -357,6 +388,9 @@ pub(crate) enum RoomBrowserControllerResult {
     },
     Action {
         result: Option<crate::runtime::browser_controller_action::BrowserControllerActionResult>,
+    },
+    ComputerSecretTarget {
+        target: RoomComputerSecretTarget,
     },
     ComputerInputApplied {
         action_id: String,

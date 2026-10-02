@@ -41,6 +41,17 @@ impl KernelRuntimeState {
         agent_id: &str,
         input: RoomComputerInputAction,
     ) -> Result<ComputerControllerActionExecution, DaemonError> {
+        self.execute_computer_input_as_agent_for_generation(session_id, agent_id, input, None)
+            .await
+    }
+
+    pub(super) async fn execute_computer_input_as_agent_for_generation(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        input: RoomComputerInputAction,
+        approved_generation: Option<u64>,
+    ) -> Result<ComputerControllerActionExecution, DaemonError> {
         let _execution_guard = self
             .owned
             .environment_execution_gates
@@ -50,6 +61,14 @@ impl KernelRuntimeState {
         let environment = self
             .reconcile_room_environment_actors(session_id, None)
             .map_err(action_environment_error)?;
+        if approved_generation
+            .is_some_and(|generation| generation != environment.runtime_generation)
+        {
+            return Err(action_dispatch_error(
+                "computer credential input aborted: Room Environment changed after approval"
+                    .to_string(),
+            ));
+        }
         let actor_id = agent_environment_actor_id(agent_id);
         crate::runtime::computer_input_action::validate_computer_input_action(
             &environment.viewport,

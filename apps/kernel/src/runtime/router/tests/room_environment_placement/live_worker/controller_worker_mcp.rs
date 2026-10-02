@@ -1706,7 +1706,7 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
     std::fs::write(&screenshot, &screenshot_bytes).expect("computer screenshot fixture");
     std::fs::write(
         &screen_tool,
-        "#!/bin/sh\nset -eu\ncase \"${1:-}\" in\n  status)\n    printf 'available=true\\ndisplay=:99\\nscreen=1024x600\\nviewer=http://127.0.0.1:6080/vnc.html\\nmode=desktop\\n'\n    printf 'worker-viewer=http://127.0.0.1:6080/vnc.html\\n' >&2\n    ;;\n  screenshot)\n    cp \"$CHARIOX_REMOTE_ROOM_SCREENSHOT\" \"$2\"\n    ;;\n  ocr)\n    if [ \"$#\" -eq 2 ]; then\n      cmp \"$2\" \"$CHARIOX_REMOTE_ROOM_SCREENSHOT\"\n      printf 'worker-path=%s\\n' \"$2\" >&2\n      printf 'Artifact OCR\\n'\n    else\n      printf 'Grüße 世界\\nShared Computer\\n'\n    fi\n    ;;\n  find-text)\n    if [ \"${2:-}\" = 'Shared Computer' ]; then\n      if [ \"$#\" -eq 3 ]; then\n        cmp \"$3\" \"$CHARIOX_REMOTE_ROOM_SCREENSHOT\"\n        printf 'worker-path=%s\\n' \"$3\" >&2\n        printf '%s\\n' '{\"text\":\"Shared Computer\",\"left\":640,\"top\":400,\"width\":240,\"height\":40,\"center_x\":760,\"center_y\":420}'\n      else\n        printf '%s\\n' '{\"text\":\"Shared Computer\",\"left\":320,\"top\":200,\"width\":240,\"height\":40,\"center_x\":440,\"center_y\":220}'\n      fi\n    else\n      printf 'null\\n'\n      exit 1\n    fi\n    ;;\n  computer-secret-paste-stdin)\n    input=$(cat)\n    [ \"$input\" = \"$CHARIOX_REMOTE_ROOM_COMPUTER_SECRET\" ]\n    printf 'computer-secret-input-ok\\n' >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\n  computer-type-stdin|computer-key-stdin|computer-clipboard-write-stdin)\n    input=$(cat)\n    printf '%s|%s\\n' \"$*\" \"$input\" >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\n  *)\n    printf '%s\\n' \"$*\" >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\nesac\n",
+        "#!/bin/sh\nset -eu\ncase \"${1:-}\" in\n  status)\n    printf 'available=true\\ndisplay=:99\\nscreen=1024x600\\nviewer=http://127.0.0.1:6080/vnc.html\\nmode=desktop\\n'\n    printf 'worker-viewer=http://127.0.0.1:6080/vnc.html\\n' >&2\n    ;;\n  screenshot)\n    cp \"$CHARIOX_REMOTE_ROOM_SCREENSHOT\" \"$2\"\n    ;;\n  ocr)\n    if [ \"$#\" -eq 2 ]; then\n      cmp \"$2\" \"$CHARIOX_REMOTE_ROOM_SCREENSHOT\"\n      printf 'worker-path=%s\\n' \"$2\" >&2\n      printf 'Artifact OCR\\n'\n    else\n      printf 'Grüße 世界\\nShared Computer\\n'\n    fi\n    ;;\n  find-text)\n    if [ \"${2:-}\" = 'Shared Computer' ]; then\n      if [ \"$#\" -eq 3 ]; then\n        cmp \"$3\" \"$CHARIOX_REMOTE_ROOM_SCREENSHOT\"\n        printf 'worker-path=%s\\n' \"$3\" >&2\n        printf '%s\\n' '{\"text\":\"Shared Computer\",\"left\":640,\"top\":400,\"width\":240,\"height\":40,\"center_x\":760,\"center_y\":420}'\n      else\n        printf '%s\\n' '{\"text\":\"Shared Computer\",\"left\":320,\"top\":200,\"width\":240,\"height\":40,\"center_x\":440,\"center_y\":220}'\n      fi\n    else\n      printf 'null\\n'\n      exit 1\n    fi\n    ;;\n  computer-secret-target)\n    printf '%s\\n' '{\"focus_window\":101,\"active_window\":100,\"geometry\":[20,30,200,40],\"window_geometry\":[0,0,800,600]}'\n    ;;\n  computer-secret-paste-stdin)\n    input=$(cat)\n    [ \"$input\" = \"$CHARIOX_REMOTE_ROOM_COMPUTER_SECRET\" ]\n    printf 'computer-secret-input-ok\\n' >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\n  computer-type-stdin|computer-key-stdin|computer-clipboard-write-stdin)\n    input=$(cat)\n    printf '%s|%s\\n' \"$*\" \"$input\" >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\n  *)\n    printf '%s\\n' \"$*\" >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\nesac\n",
     )
     .expect("computer secret screen helper");
     let multi_match_tool = fixture
@@ -2229,6 +2229,12 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
                 .iter()
                 .find(|interaction| interaction.title() == Some("Computer credential input"))
             {
+                assert!(interaction
+                    .message()
+                    .contains("approving an unmasked field can expose the credential"));
+                assert!(interaction
+                    .message()
+                    .contains("native window 100, focused control 101"));
                 break interaction.id().to_string();
             }
             tokio::task::yield_now().await;

@@ -84,3 +84,12 @@ async function reachableControllerModules(entry) {
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
+
+// MP-08 / MP-11: fail closed on refreshed images missing the target guard.
+test("slice packaging installs the physical keyboard and Computer secret target guard", async () => {
+  const [dockerfile, provisioner] = await Promise.all([
+    readFile(dockerfilePath, "utf8"), readFile(provisionerPath, "utf8"),
+  ])
+  assert.match(dockerfile, /docker\/slice-keyboard\.py\s+\/opt\/chariox-slice\/slice-keyboard\.py/)
+  assert.match(provisioner, /copy_required_slice_overlay[^\n]*docker\/slice-keyboard\.py[^\n]*\/opt\/chariox-slice\/slice-keyboard\.py/)
+})

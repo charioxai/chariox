@@ -36,6 +36,12 @@ impl CapabilityRuntimeStore {
         Self { state }
     }
 
+    pub(super) fn capture_guard(
+        &self,
+    ) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, DaemonError> {
+        self.state.computer_screen_capture_guard()
+    }
+
     pub(super) async fn context(
         &self,
         session_id: &str,

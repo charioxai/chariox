@@ -571,9 +571,18 @@ secret_paste_submit_stdin() {
   node "$ROOT/browser-cdp.mjs" secret-paste-submit-stdin
 }
 
+computer_secret_target() {
+  require_screen_available
+  /opt/chariox-selkies/bin/python "${BASH_SOURCE[0]%/*}/slice-keyboard.py" secret-target
+}
+
 computer_secret_paste_stdin() {
   require_screen_available
-  run_xdotool_utf8 type --clearmodifiers --delay 5 --file -
+  if [[ $# != 1 ]]; then
+    log "computer credential input requires an approved display target"
+    return 2
+  fi
+  /opt/chariox-selkies/bin/python "${BASH_SOURCE[0]%/*}/slice-keyboard.py" secret "$1"
 }
 
 browser_status() {
@@ -746,7 +755,8 @@ case "${1:-status}" in
   paste-stdin|paste_stdin) paste_stdin ;;
   secret-paste-stdin|secret_paste_stdin) shift; secret_paste_stdin "$@" ;;
   secret-paste-submit-stdin|secret_paste_submit_stdin) shift; secret_paste_submit_stdin "$@" ;;
-  computer-secret-paste-stdin|computer_secret_paste_stdin) computer_secret_paste_stdin ;;
+  computer-secret-target) computer_secret_target ;;
+  computer-secret-paste-stdin|computer_secret_paste_stdin) shift; computer_secret_paste_stdin "$@" ;;
   browser-status|browser_status) browser_status ;;
   browser-find|browser_find) shift; browser_find "$@" ;;
   browser-fill|browser_fill) shift; browser_fill "$@" ;;

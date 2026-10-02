@@ -634,7 +634,7 @@ done
     std::fs::write(
         &one_shot,
         format!(
-            "#!/bin/sh\nset -eu\nprintf 'called %s\\n' \"$*\" >> '{}'\nif [ \"${{1:-}}\" = computer-secret-paste-stdin ]; then\n  input=$(cat)\n  [ \"$input\" = \"$CHARIOX_CONTROLLER_MCP_COMPUTER_SECRET\" ]\n  printf 'computer-secret-match\\n' >> '{}'\n  exit 0\nfi\nexit 91\n",
+            "#!/bin/sh\nset -eu\nprintf 'called %s\\n' \"$*\" >> '{}'\nif [ \"${{1:-}}\" = computer-secret-target ]; then\n  printf '%s\\n' '{{\"focus_window\":101,\"active_window\":100,\"geometry\":[20,30,200,40],\"window_geometry\":[0,0,800,600]}}'\n  exit 0\nfi\nif [ \"${{1:-}}\" = computer-secret-paste-stdin ]; then\n  input=$(cat)\n  [ \"$input\" = \"$CHARIOX_CONTROLLER_MCP_COMPUTER_SECRET\" ]\n  printf 'computer-secret-match\\n' >> '{}'\n  exit 0\nfi\nexit 91\n",
             one_shot_log.display(),
             one_shot_log.display()
         ),
@@ -977,6 +977,16 @@ done
                 .iter()
                 .find(|interaction| interaction.title() == Some("Computer credential input"))
             {
+                assert!(interaction
+                    .message()
+                    .contains("Confirm that this focused field masks secret input"));
+                assert!(interaction
+                    .message()
+                    .contains("approving an unmasked field can expose the credential"));
+                assert!(interaction
+                    .message()
+                    .contains("native window 100, focused control 101 at [20, 30, 200, 40]"));
+                assert_eq!(interaction.default_on_timeout(), Some("deny"));
                 break interaction.id().to_string();
             }
             tokio::task::yield_now().await;
@@ -1012,8 +1022,8 @@ done
     );
     assert_eq!(
         std::fs::read_to_string(&one_shot_log).unwrap_or_default(),
-        one_shot_before_denial,
-        "denial must not reach the desktop input helper"
+        format!("{one_shot_before_denial}called computer-secret-target\n"),
+        "denial must not submit any credential keystrokes"
     );
     assert!(
         router

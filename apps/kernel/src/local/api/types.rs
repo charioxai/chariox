@@ -123,4 +123,5 @@ pub use workspace::*;
 /// the value-free Project environment layer and inputs (MP-08).
 /// Version 372 adds session-bound post-launch Project Environment adjustment (MP-08).
 /// Version 373 adds worker Environment queries and waiting-room pending review visibility (MP-08).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 373;
+/// Version 374 binds Computer credential approval to a native display target (MP-08).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 374;

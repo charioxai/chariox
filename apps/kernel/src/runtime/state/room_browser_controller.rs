@@ -196,6 +196,11 @@ impl KernelRuntimeState {
                 } => Duration::from_millis(
                     crate::runtime::computer_input_action::keyboard_text_timeout_ms(input.as_str()) + 10_000,
                 ),
+                Command::ComputerInput {
+                    action: crate::transport::room_browser_controller::RoomComputerInputAction::SecretText { input, .. }, ..
+                } => Duration::from_millis(
+                    crate::runtime::computer_input_action::keyboard_text_timeout_ms(input.as_str()) + 10_000,
+                ),
                 _ => Duration::from_secs(15),
             };
             self.send_room_slice_peer_request(&config, target, request(command), timeout)
@@ -249,7 +254,9 @@ impl KernelRuntimeState {
         }
         if !matches!(
             &command,
-            Command::ComputerInput { .. } | Command::ComputerClipboardRead { .. }
+            Command::ComputerInput { .. }
+                | Command::ComputerClipboardRead { .. }
+                | Command::ComputerSecretTarget
         ) && !self.browser_controller_process_enabled()
         {
             return Err(controller_route_error(
@@ -410,6 +417,12 @@ async fn execute_local(
             let execution = computer_input_executions
                 .begin(session_id, &action_id)
                 .map_err(controller_route_error)?;
+            if matches!(
+                &action,
+                crate::transport::room_browser_controller::RoomComputerInputAction::SecretText { .. }
+            ) {
+                execution.withhold_capture().await;
+            }
             let cancellation = execution.cancellation();
             let input_result = match action {
                 crate::transport::room_browser_controller::RoomComputerInputAction::PointerMove {
@@ -489,8 +502,8 @@ async fn execute_local(
                     .await
                 }
                 crate::transport::room_browser_controller::RoomComputerInputAction::SecretText {
-                    input,
-                } => super::tool_dispatch::run_room_secret_text_input(input, cancellation).await,
+                    input, expected_target,
+                } => super::tool_dispatch::run_room_secret_text_input(input, expected_target, cancellation).await,
             };
             if matches!(
                 input_result,
@@ -503,6 +516,14 @@ async fn execute_local(
             }
             input_result?;
             return Ok(Response::ComputerInputApplied { action_id });
+        }
+        Command::ComputerSecretTarget => {
+            let capture_guard = computer_input_executions
+                .capture_guard()
+                .map_err(controller_route_error)?;
+            let target =
+                super::tool_dispatch::capture_computer_secret_target(capture_guard).await?;
+            return Ok(Response::ComputerSecretTarget { target });
         }
         Command::ComputerClipboardRead {
             actor_id,
@@ -736,6 +757,9 @@ async fn execute_local(
             &action,
             timeout_ms,
         ),
+        Command::ComputerSecretTarget => {
+            unreachable!("Computer focus executes before the blocking controller path")
+        }
         Command::ComputerInput { .. } => {
             unreachable!("Computer input executes before the blocking controller path")
         }

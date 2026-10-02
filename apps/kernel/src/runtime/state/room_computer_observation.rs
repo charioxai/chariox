@@ -102,6 +102,11 @@ impl KernelRuntimeState {
             session_id,
             slice_id,
         )?;
+        let capture_guard = self
+            .owned
+            .computer_input_executions
+            .capture_guard()
+            .map_err(computer_observation_error)?;
         let artifact_path = match &call {
             RemoteRoomComputerObservationCall::Ocr {
                 artifact_id: Some(artifact_id),
@@ -117,7 +122,8 @@ impl KernelRuntimeState {
             )?),
             _ => None,
         };
-        super::tool_dispatch::execute_room_computer_observation(call, artifact_path).await
+        super::tool_dispatch::execute_room_computer_observation(call, artifact_path, capture_guard)
+            .await
     }
 }
 
