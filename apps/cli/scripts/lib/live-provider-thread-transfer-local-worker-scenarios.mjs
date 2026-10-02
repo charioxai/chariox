@@ -47,6 +47,7 @@ export async function runLocalReloadScenario({ provider, root, kernelUrl, option
   await writeFile(path.join(workspace, "README.md"), `# Provider thread transfer drill for ${provider}\n`, "utf8")
 
   const client = new LocalIpcClient(kernelUrl, {
+    localAuthEnvironment: options.localAuthEnvironment,
     kernelPingIntervalMs: 60_000,
     kernelMaxMissedPongs: 10,
   })
@@ -142,6 +143,7 @@ export async function runLocalReloadScenario({ provider, root, kernelUrl, option
       ),
       `submit initial marker prompt for ${provider}`,
       Math.min(options.timeoutMs, 60_000),
+      options.localAuthEnvironment,
     )
     logStep(result, provider, "initial-marker-submit-accepted")
     await waitForHistoryOutputMarker({
@@ -177,6 +179,7 @@ export async function runLocalReloadScenario({ provider, root, kernelUrl, option
       grantAgentExtensionRequest(workspace, agent.id, "mcp", mcpName),
       `grant MCP ${mcpName}`,
       Math.min(options.timeoutMs, 60_000),
+      options.localAuthEnvironment,
     )
     result.evidence.granted_agent = variant(grantResponse, "AgentExtensionGranted").agent
     logStep(result, provider, "wait-provider-reload", { previousRunId: beforeRun.id })
@@ -216,6 +219,7 @@ export async function runLocalReloadScenario({ provider, root, kernelUrl, option
         ),
         `submit recall marker prompt for ${provider}`,
         Math.min(options.timeoutMs, 60_000),
+        options.localAuthEnvironment,
       )
       logStep(result, provider, "recall-marker-submit-accepted")
       await waitForHistoryOutputMarker({
@@ -290,6 +294,7 @@ export async function runWorkerResumeScenario({
   await writeFile(path.join(workspace, "README.md"), `# Worker resume provider thread transfer drill for ${provider}\n`, "utf8")
 
   const client = new LocalIpcClient(kernelUrl, {
+    localAuthEnvironment: options.localAuthEnvironment,
     kernelPingIntervalMs: 60_000,
     kernelMaxMissedPongs: 10,
   })
@@ -375,6 +380,7 @@ export async function runWorkerResumeScenario({
       ),
       `submit local marker prompt for ${provider}`,
       Math.min(options.timeoutMs, 60_000),
+      options.localAuthEnvironment,
     )
     await waitForHistoryOutputMarker({
       client,
@@ -407,6 +413,7 @@ export async function runWorkerResumeScenario({
         teardownProviderProcessesRequest(provider, true),
         `teardown local ${provider} provider process`,
         Math.min(options.timeoutMs, 60_000),
+        options.localAuthEnvironment,
       ),
       "ProviderProcessesTornDown",
     )
@@ -526,6 +533,7 @@ export async function runWorkerResumeScenario({
       ),
       `submit worker recall marker prompt for ${provider}`,
       Math.min(options.timeoutMs, 60_000),
+      options.localAuthEnvironment,
     )
     await waitForHistoryOutputMarker({
       client,
@@ -576,6 +584,7 @@ export async function runWorkerResumeScenario({
             teardownProviderProcessesRequest(provider, true),
             `tear down worker ${provider} provider process`,
             Math.min(options.timeoutMs, 60_000),
+            options.localAuthEnvironment,
           ),
           "ProviderProcessesTornDown",
         )

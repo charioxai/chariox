@@ -408,10 +408,10 @@ export async function issueSessionScopedClientToken(apiUrl, {
   return runtime.token
 }
 
-export async function waitForLocalDaemon(LocalIpcClient, requests, kernelUrl, workspace) {
+export async function waitForLocalDaemon(LocalIpcClient, requests, kernelUrl, workspace, localAuthEnvironment) {
   let lastError = null
   for (let attempt = 0; attempt < 80; attempt += 1) {
-    const probe = new LocalIpcClient(kernelUrl)
+    const probe = new LocalIpcClient(kernelUrl, { localAuthEnvironment })
     try {
       const created = unwrap(
         await probe.send(requests.createSessionRequest(workspace, workspace)),

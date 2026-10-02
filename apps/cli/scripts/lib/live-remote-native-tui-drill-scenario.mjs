@@ -108,9 +108,10 @@ function unwrap(response, variant) {
   return response[variant]
 }
 
-export async function waitForLocalDaemon(kernelUrl, workspace, worktree) {
+export async function waitForLocalDaemon(kernelUrl, workspace, worktree, localAuthEnvironment) {
   for (let attempt = 0; attempt < 80; attempt += 1) {
     const client = new LocalIpcClient(kernelUrl, {
+      localAuthEnvironment,
       kernelPingIntervalMs: 60_000,
       kernelMaxMissedPongs: 10,
     })

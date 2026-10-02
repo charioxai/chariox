@@ -97,10 +97,10 @@ function unwrap(response, key) {
   return response?.[key] ?? response
 }
 
-async function waitForKernel(LocalIpcClient, requests, kernelUrl) {
+async function waitForKernel(LocalIpcClient, requests, kernelUrl, localAuthEnvironment) {
   let lastError = null
   for (let attempt = 0; attempt < 80; attempt += 1) {
-    const client = new LocalIpcClient(kernelUrl)
+    const client = new LocalIpcClient(kernelUrl, { localAuthEnvironment })
     try {
       await client.send(requests.listSessionsRequest())
       await client.close().catch(() => {})
@@ -114,9 +114,9 @@ async function waitForKernel(LocalIpcClient, requests, kernelUrl) {
   throw new Error(`kernel did not become ready at ${kernelUrl}: ${lastError instanceof Error ? lastError.message : String(lastError)}`)
 }
 
-async function openClient(LocalIpcClient, requests, kernelUrl) {
-  await waitForKernel(LocalIpcClient, requests, kernelUrl)
-  return new LocalIpcClient(kernelUrl)
+async function openClient(LocalIpcClient, requests, kernelUrl, localAuthEnvironment) {
+  await waitForKernel(LocalIpcClient, requests, kernelUrl, localAuthEnvironment)
+  return new LocalIpcClient(kernelUrl, { localAuthEnvironment })
 }
 
 async function relayStatus(client, requests) {
@@ -174,7 +174,7 @@ async function main() {
 
     log("start-kernel-a", { port: portA })
     kernel = startKernel(binary, envA, "kernel-a")
-    client = await openClient(LocalIpcClient, requests, urlA)
+    client = await openClient(LocalIpcClient, requests, urlA, envA)
     statusA1 = await relayStatus(client, requests)
     const created = unwrap(
       await client.send(requests.createSessionRequest(workspace, workspace, "identity-drill-session")),
@@ -190,7 +190,7 @@ async function main() {
 
     log("restart-kernel-a", { port: portA })
     kernel = startKernel(binary, envA, "kernel-a-restart")
-    client = await openClient(LocalIpcClient, requests, urlA)
+    client = await openClient(LocalIpcClient, requests, urlA, envA)
     statusA2 = await relayStatus(client, requests)
     assert(statusA2.daemon_id === statusA1.daemon_id, "same host/port should retain kernel id", { first: statusA1, second: statusA2 })
     assert(statusA2.machine_id === statusA1.machine_id, "same machine should retain machine id", { first: statusA1, second: statusA2 })
@@ -202,7 +202,7 @@ async function main() {
 
     log("start-kernel-b", { port: portB })
     kernel = startKernel(binary, envB, "kernel-b")
-    client = await openClient(LocalIpcClient, requests, urlB)
+    client = await openClient(LocalIpcClient, requests, urlB, envB)
     statusB = await relayStatus(client, requests)
     assert(statusB.daemon_id !== statusA1.daemon_id, "different host/port should get a distinct kernel id", { first: statusA1, second: statusB })
     assert(statusB.machine_id === statusA1.machine_id, "different kernel on same OS user should share machine id", { first: statusA1, second: statusB })
@@ -214,7 +214,7 @@ async function main() {
 
     log("delete-kernel-a")
     kernel = startKernel(binary, envA, "kernel-a-delete")
-    client = await openClient(LocalIpcClient, requests, urlA)
+    client = await openClient(LocalIpcClient, requests, urlA, envA)
     assert((await listSessionIds(client, requests)).includes(sessionId), "kernel A session should reappear before delete")
     const deleted = unwrap(await client.send(requests.deleteKernelRequest()), "KernelDeleted")
     assert(deleted.kernel_id === statusA1.daemon_id, "delete should target kernel A identity", deleted)
