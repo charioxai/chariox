@@ -44,9 +44,9 @@ function harness() {
   }
 }
 
-test("only well-formed critical approval prompts reach the popup", () => {
+test("only well-formed passkey prompts reach the popup", () => {
   const malformed = [
-    { ...prompt("a"), kind: "sudo" },
+    { ...prompt("a"), kind: "unknown" },
     { ...prompt("b"), interaction_id: " " },
     { ...prompt("c"), refuse_choice_id: "approve" },
     { ...prompt("d"), expires_at_ms: "soon" },
@@ -265,4 +265,28 @@ test("access grants and extensions require a fresh passkey and let the owner cho
     assert.deepEqual(h.requests.at(-1), [kind, "approve", { passkey: "fresh", rememberMinutes: null, accessLifetimeMinutes: 45 }])
     h.resolve(); await settle()
   }
+})
+
+test("sudo always asks for a fresh passkey and has no remember or lifetime control", async () => {
+  const h = harness()
+  h.popup.apply([prompt("critical")])
+  type(h, "correct")
+  h.popup.handleKey(key("tab"))
+  h.popup.handleKey(key("return"))
+  h.resolve(); await settle()
+  const sudo = { ...prompt("sudo"), kind: "sudo" as const }
+  assert.deepEqual(passkeyPromptsFromEvent([sudo]), [sudo])
+  h.popup.apply([sudo])
+  const count = h.requests.length
+  h.popup.handleKey(key("return"))
+  await settle()
+  assert.equal(h.requests.length, count)
+  assert.match(h.popup.view().error!, /Enter your Chariox passkey/)
+  h.popup.handleKey(key("tab"))
+  assert.equal(h.popup.view().passkey.rememberMinutes, 0)
+  assert.equal(h.popup.view().passkey.accessLifetimeMinutes, undefined)
+  type(h, "fresh")
+  h.popup.handleKey(key("return"))
+  assert.deepEqual(h.requests.at(-1), ["sudo", "approve", { passkey: "fresh", rememberMinutes: null }])
+  h.resolve(); await settle()
 })

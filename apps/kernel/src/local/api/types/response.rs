@@ -4,7 +4,7 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonResponse {
     KernelAccessGranted { grant: KernelAccessGrant, },
-    KernelAccessGrantsListed { grants: Vec<KernelAccessGrant>, },
+    KernelAccessGrantsListed { grants: Vec<KernelAccessGrant>, sudo_turns: Vec<KernelSudoTurn>, },
     KernelAccessRevoked { revoked: usize, },
     AppPublisherEnrollmentStatus { operation: AppPublisherEnrollmentSummary, },
     AppInstallOperationStatus { operation: AppInstallOperationSummary, },

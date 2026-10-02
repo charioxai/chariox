@@ -74,6 +74,8 @@ mod computer_secret_input_runtime_state;
 mod config_runtime_state;
 mod critical_approval_passkey;
 mod kernel_access;
+mod sudo;
+pub(crate) use sudo::{is_sudo_prompt, sudo_approval_receipt};
 #[cfg(test)]
 pub(crate) use critical_approval_passkey::critical_approval_audit_payload;
 mod passkey_prompts;
@@ -124,6 +126,7 @@ struct KernelRuntimeOwnedState {
     critical_approval_passkeys: critical_approval_passkey::CriticalApprovalPasskeys,
     passkey_prompts: Arc<passkey_prompts::PasskeyPromptBoard>,
     kernel_access: crate::runtime::kernel_access::AccessStore,
+    sudo_turns: sudo::SudoStore,
     config_projection: crate::runtime::projection::DaemonConfigProjectionStore,
     session_store: SessionStateStore,
     agent_store: AgentServiceStore,
@@ -619,6 +622,7 @@ impl KernelRuntimeState {
                     ),
                 passkey_prompts: Arc::default(),
                 kernel_access: Default::default(),
+                sudo_turns: Default::default(),
                 config_projection,
                 session_store,
                 agent_store,
@@ -715,6 +719,7 @@ impl KernelRuntimeState {
             },
         };
         runtime.owned.record_managed_activity_transition();
+        runtime.recover_sudo_notices();
         runtime
     }
 

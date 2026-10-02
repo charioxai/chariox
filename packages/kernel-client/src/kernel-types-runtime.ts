@@ -150,7 +150,7 @@ export type RuntimeInteractionChoice = {
  * `RespondToInteraction`: the approve choice with the passkey, or the refuse
  * choice without it. */
 export type PasskeyPrompt = {
-  kind: "critical_approval" | "access_grant" | "access_extension"
+  kind: "critical_approval" | "access_grant" | "access_extension" | "sudo"
   lifetime_minutes?: number | null
   max_lifetime_minutes?: number | null
   session_id: string
@@ -442,5 +442,7 @@ export type KernelAccessGrant = {
   expires_at_ms: number
 }
 export type KernelAccessGrantedResponse = { KernelAccessGranted: { grant: KernelAccessGrant } }
-export type KernelAccessGrantsListedResponse = { KernelAccessGrantsListed: { grants: KernelAccessGrant[] } }
+export type KernelAccessGrantsListedResponse = { KernelAccessGrantsListed: { grants: KernelAccessGrant[]; sudo_turns: KernelSudoTurn[] } }
 export type KernelAccessRevokedResponse = { KernelAccessRevoked: { revoked: number } }
+
+export type KernelSudoTurn = { entry_id: string; session_id: string; agent_id: string; owner_user_id: string; terminal_id: string; prompt_id: string | null; provider_run_id: string | null }
