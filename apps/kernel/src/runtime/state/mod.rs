@@ -108,6 +108,8 @@ use runtime_tool_call_activity::RuntimeToolCallActivity;
 
 #[derive(Clone)]
 pub(crate) struct KernelRuntimeState {
+    #[cfg(test)]
+    app_lock_wait_probe: Option<Arc<tokio::sync::Notify>>,
     app: Arc<Mutex<DaemonApp>>,
     provider_runtime_lanes: ProviderRunOperationLanes,
     leased_agent_operations: leased_agent_operations::LeasedAgentOperations,
@@ -599,6 +601,8 @@ impl KernelRuntimeState {
                 managed_activity_kernel_id,
             );
         let runtime = Self {
+            #[cfg(test)]
+            app_lock_wait_probe: None,
             app,
             provider_runtime_lanes,
             leased_agent_operations: leased_agent_operations::LeasedAgentOperations::default(),
@@ -710,10 +714,19 @@ impl KernelRuntimeState {
         runtime
     }
 
+    #[cfg(test)]
+    pub(crate) fn observe_app_lock_wait_for_test(&mut self, probe: Arc<tokio::sync::Notify>) {
+        self.app_lock_wait_probe = Some(probe);
+    }
+
     pub(crate) async fn with_app_side_effect<R>(
         &self,
         operation: impl FnOnce(&mut DaemonApp) -> R,
     ) -> R {
+        #[cfg(test)]
+        if let Some(probe) = &self.app_lock_wait_probe {
+            probe.notify_one();
+        }
         let mut app =
             crate::runtime::app_lock::lock_app_instrumented(&self.app, "kernel_runtime_state")
                 .await;

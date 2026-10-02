@@ -11,6 +11,7 @@ impl KernelRuntimeState {
         session_id: &str,
         target_agent_id: &str,
         attachment_id: &str,
+        authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
     ) -> Result<Option<crate::app::KernelPromptCancellation>, DaemonError> {
         let owned = &self.owned;
         let Some(remote_execution) = owned
@@ -30,6 +31,7 @@ impl KernelRuntimeState {
             .is_some_and(|prompt| prompt.status() == crate::session::PromptStatus::Cancelling);
         let cancellation_response = self
             .with_app_side_effect(|app| {
+                self.authorize_prompt_command(authority)?;
                 let relay_config = app.relay_config_for_remote_execution(&remote_execution);
                 app.block_on_relay_future(
                     crate::transport::relay_client::send_peer_request_via_temporary_connection(
@@ -45,6 +47,7 @@ impl KernelRuntimeState {
                 )
             })
             .await;
+        self.authorize_prompt_command(authority)?;
         match cancellation_response {
             Ok(RelayPeerResponse::LeasedPromptCancelled { .. }) => {
                 if prompt_already_cancelling {
@@ -97,6 +100,7 @@ impl KernelRuntimeState {
         target_agent_id: &str,
         owned_provider_run_id: Option<String>,
         next_queued_prompt: Option<&crate::session::PromptQueueItem>,
+        authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
     ) -> Result<Option<crate::session::PromptCompletion>, DaemonError> {
         let owned = &self.owned;
         let Some(remote_execution) = owned
@@ -109,6 +113,7 @@ impl KernelRuntimeState {
         };
         let completion_response = self
             .with_app_side_effect(|app| {
+                self.authorize_prompt_command(authority)?;
                 let relay_config = app.relay_config_for_remote_execution(&remote_execution);
                 app.block_on_relay_future(
                     crate::transport::relay_client::send_peer_request_via_temporary_connection(
@@ -218,6 +223,7 @@ impl KernelRuntimeState {
                     });
                 }
             };
+        self.authorize_prompt_command(authority)?;
         let completion = owned.complete_remote_prompt_owner_with_termination(
             session_id,
             target_agent_id,
