@@ -115,7 +115,7 @@ fn owned_multigroup_launch_keeps_app_authority_empty() {
         lease,
         &binding,
         None,
-        0,
+        None,
     );
     if std::env::var("CHARIOX_GROUPS_EXPECT_PREPARE_REFUSAL").as_deref() == Ok("1") {
         assert!(
