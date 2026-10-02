@@ -907,6 +907,7 @@ ensure_container() {
       fi
     fi
     local docker_create_args=(
+      --init
       --name "$SLICE_NAME"
       --hostname "$SLICE_HOSTNAME"
       --ulimit core=0:0

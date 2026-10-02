@@ -142,6 +142,8 @@ struct KernelRuntimeOwnedState {
     environment_execution_gates: environment_execution_gate::EnvironmentExecutionGates,
     computer_input_executions:
         crate::runtime::computer_input_execution::ComputerInputExecutionStore,
+    room_browser_health_pass: Arc<Mutex<()>>,
+    next_room_browser_health_at_ms: Arc<AtomicU64>,
     browser_controller_generations:
         Arc<std::sync::Mutex<BTreeMap<String, (u64, bool)>>>,
     session_projection: crate::runtime::projection::SessionStateProjectionStore,
@@ -298,6 +300,7 @@ mod browser_controller_compatibility_runtime_state;
 pub(crate) use browser_controller_action_execution_runtime_state::BrowserControllerActionExecution;
 mod browser_configuration_runtime_state;
 mod browser_controller_runtime_state;
+mod room_browser_health;
 mod browser_download_cancellation_runtime_state;
 mod browser_upload_runtime_state;
 mod capability_owned_state;
@@ -637,6 +640,8 @@ impl KernelRuntimeState {
                 environment_execution_gates: Default::default(),
                 computer_input_executions:
                     crate::runtime::computer_input_execution::ComputerInputExecutionStore::default(),
+                room_browser_health_pass: Arc::new(Mutex::new(())),
+                next_room_browser_health_at_ms: Arc::new(AtomicU64::new(0)),
                 browser_controller_generations: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
                 session_projection,
                 agent_runtime_projection,

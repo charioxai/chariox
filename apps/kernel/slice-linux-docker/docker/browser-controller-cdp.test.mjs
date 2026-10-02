@@ -1432,3 +1432,51 @@ class DialogFaultSocket extends FakeSocket {
   assert.equal(connects, 0);
   assert.equal(browser.appViewport, undefined);
 });
+
+test("closing the final page creates a blank page before closing the window", async () => {
+  const browser = new BrowserCdpClient();
+  const calls = [];
+  const connection = { async send(method, params) {
+    calls.push([method, params]);
+    if (method === "Target.getTargets") return { targetInfos: [{type:"page",targetId:"last"}] };
+    return {success:true,targetId:"blank"};
+  }};
+  await browser.closePageTarget(connection, "last");
+  assert.deepEqual(calls, [
+    ["Target.getTargets", undefined],
+    ["Target.createTarget", {url:"about:blank"}],
+    ["Target.closeTarget", {targetId:"last"}],
+  ]);
+});
+
+test("failed replacement leaves the last page open and releases the close queue", async () => {
+  const browser = new BrowserCdpClient();
+  let failure = true;
+  let closed = 0;
+  const connection = { async send(method) {
+    if (method === "Target.getTargets") return {targetInfos:[{type:"page",targetId:"last"}]};
+    if (method === "Target.createTarget" && failure) throw new Error("cannot create page");
+    if (method === "Target.closeTarget") closed++;
+    return {success:true};
+  }};
+  await assert.rejects(browser.closePageTarget(connection, "last"), /cannot create page/);
+  assert.equal(closed, 0);
+  failure = false;
+  await browser.closePageTarget(connection, "last");
+  assert.equal(closed, 1);
+});
+
+test("concurrent closes preserve a page after the final original tab closes", async () => {
+  const browser = new BrowserCdpClient();
+  const pages = new Set(["a", "b"]);
+  const connection = { async send(method, params) {
+    await new Promise(resolve => setImmediate(resolve));
+    if (method === "Target.getTargets") return {targetInfos:[...pages].map(targetId=>({type:"page",targetId}))};
+    if (method === "Target.createTarget") pages.add("blank");
+    if (method === "Target.closeTarget") pages.delete(params.targetId);
+    assert.ok(pages.size);
+    return {success:true};
+  }};
+  await Promise.all([browser.closePageTarget(connection,"a"),browser.closePageTarget(connection,"b")]);
+  assert.deepEqual([...pages], ["blank"]);
+});

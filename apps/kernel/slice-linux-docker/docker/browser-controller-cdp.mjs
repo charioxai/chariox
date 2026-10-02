@@ -82,6 +82,7 @@ export class BrowserCdpClient {
     this.fileSystem = fileSystem;
     this.eventJournal = eventJournal;
     this.connection = null;
+    this.pageCloseQueue = Promise.resolve();
     this.unsubscribeFromConnection = null;
     this.browserGeneration = 0;
     this.sessionsByTarget = new Map();
@@ -455,7 +456,7 @@ export class BrowserCdpClient {
     if (action === "activate") {
       await connection.send("Target.activateTarget", { targetId });
     } else {
-      const result = await connection.send("Target.closeTarget", { targetId });
+      const result = await this.closePageTarget(connection, targetId, { signal });
       if (result?.success !== true) {
         throw new BrowserControllerError(
           "browser_tab_close_failed",
@@ -470,6 +471,28 @@ export class BrowserCdpClient {
       document_id: documentId,
       action,
     };
+  }
+
+  async closePageTarget(connection, targetId, { signal } = {}) {
+    const previous = this.pageCloseQueue;
+    let release;
+    this.pageCloseQueue = new Promise((resolve) => { release = resolve; });
+    await previous;
+    try {
+      assertNotCancelled(signal);
+      const { targetInfos = [] } = await connection.send("Target.getTargets");
+      const pages = targetInfos.filter((target) => target?.type === "page");
+      assertNotCancelled(signal);
+      if (pages.some((target) => target.targetId === targetId) && pages.length === 1) {
+        // Headed Chromium exits with its last window. Create the replacement
+        // before closing; if creation fails, leave the original page open.
+        await connection.send("Target.createTarget", { url: "about:blank" });
+      }
+      assertNotCancelled(signal);
+      return await connection.send("Target.closeTarget", { targetId });
+    } finally {
+      release();
+    }
   }
 
   async waitForTargetClosure(connection, targetId) {

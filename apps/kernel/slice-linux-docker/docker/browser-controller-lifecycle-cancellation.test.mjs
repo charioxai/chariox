@@ -54,6 +54,7 @@ for (const [method, args, mutation, preparation] of cases) {
           }
           switch (command) {
             case "Target.getTargets": return { targetInfos: closed ? [] : [{ type: "page", targetId: "page", url: entries[currentIndex].url, title: "Fixture" }] };
+            case "Target.createTarget": return { targetId: "blank" };
             case "Target.attachToTarget": return { sessionId: "cdp" };
             case "Page.getFrameTree": return { frameTree: { frame: { id: "main", loaderId: document, url: entries[currentIndex].url } } };
             case "Page.getNavigationHistory": return { currentIndex, entries };
