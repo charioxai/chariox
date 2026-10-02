@@ -504,6 +504,7 @@ mod tests {
 
     #[test]
     fn imports_newest_provider_capabilities_after_deduplication() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let workspace = temp_root("workspace");
         let codex_home = temp_root("codex-home");

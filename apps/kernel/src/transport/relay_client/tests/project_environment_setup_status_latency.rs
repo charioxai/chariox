@@ -87,6 +87,7 @@ where
 
 #[test]
 fn authenticated_public_setup_status_request_has_a_bounded_worker_response_deadline() {
+    crate::test_support::isolated_env_test!();
     run_async_with_large_test_stack(
         "public-project-environment-setup-status-latency",
         authenticated_public_setup_status_request_has_a_bounded_worker_response_deadline_async,
@@ -435,6 +436,7 @@ async fn authenticated_public_worker_loss_after_acknowledged_replay_reopens_same
 
 #[test]
 fn authenticated_public_lost_replay_status_then_second_worker_loss_reopens_same_attempt_recovery() {
+    crate::test_support::isolated_env_test!();
     run_async_with_large_test_stack(
         "public-project-environment-setup-lost-replay-status-second-loss",
         authenticated_public_lost_replay_status_then_second_worker_loss_reopens_same_attempt_recovery_async,

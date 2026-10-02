@@ -616,17 +616,34 @@ async fn local_metaagent_task_pause_and_abort_cancel_active_prompt_inner() {
         ))
         .expect("session should be created");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta")
+                .with_model("controlled-cancel-idle"),
+        )
         .expect("metaagent should spawn");
     let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
-    launch_test_provider(
+    let provider_run = launch_test_provider(
         &mut app,
         session.id(),
         metaagent.id(),
         "dev-stub",
         "dev-stub",
-        "meta-model",
+        "controlled-cancel-idle",
     );
+    // Hold completion until the test explicitly removes the fixture process.
+    // Await terminal setup before delivering a prompt so PTY echo cannot
+    // manufacture response content or settle the turn before cancellation.
+    crate::app::ProviderLaunchProcessRuntime::new(&mut app)
+        .spawn_for_launch(&provider_run)
+        .expect("controlled cancellation provider should start");
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while !workspace.join("controlled-cancel-ready").exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("controlled cancellation provider should disable echo");
     let app = Arc::new(Mutex::new(app));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
 
@@ -644,6 +661,13 @@ async fn local_metaagent_task_pause_and_abort_cancel_active_prompt_inner() {
         )
         .await
         .expect("task update should start notification prompt");
+
+    // Withhold the abort dispatch until the intermediate Cancelling state
+    // has been asserted; a successful PTY abort otherwise settles immediately.
+    let cancellation_lane = router
+        .provider_runtime_lanes
+        .acquire(provider_run.id())
+        .await;
 
     let pause = LocalDaemonRequest::PauseMetaagentTask(crate::local::PauseMetaagentTaskRequest {
         session_id: session.id().to_string(),
@@ -779,6 +803,8 @@ async fn local_metaagent_task_pause_and_abort_cancel_active_prompt_inner() {
             "{reason} must be durable across kernel restart"
         );
     }
+    drop(cancellation_lane);
+    let _ = app.lock().await.pty_mut().remove_process(provider_run.id());
 }
 
 #[test]

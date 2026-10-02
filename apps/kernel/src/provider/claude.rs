@@ -614,6 +614,7 @@ mod tests {
 
     #[test]
     fn resolves_override_path_for_tests() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
             "chariox-claude-resolve-test-{}",
@@ -631,6 +632,7 @@ mod tests {
 
     #[test]
     fn resolves_native_binary_when_path_shim_is_non_executable_stub() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_guard();
         std::env::remove_var("CHARIOX_CLAUDE_BIN");
         let root = std::env::temp_dir().join(format!(
@@ -674,6 +676,7 @@ mod tests {
 
     #[test]
     fn catalog_reads_additional_claude_model_options_cache() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
             "chariox-claude-config-models-{}.json",
@@ -735,6 +738,7 @@ mod tests {
 
     #[test]
     fn plans_structured_stdio_launch_with_permission_mapping() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
             "chariox-claude-resolve-test-{}-launch",
@@ -798,6 +802,7 @@ mod tests {
 
     #[test]
     fn plans_claude_print_mode_with_structured_stdio() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
             "chariox-claude-resolve-test-{}-print-mode",
@@ -839,6 +844,7 @@ mod tests {
 
     #[test]
     fn plans_claude_headless_mode_without_print_stream_json() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_guard();
         let root = std::env::temp_dir().join(format!(
             "chariox-claude-resolve-test-{}-headless-mode",
@@ -904,6 +910,7 @@ mod tests {
 
     #[test]
     fn plans_claude_headless_onboarding_in_the_selected_account_profile() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_guard();
         let root = std::env::temp_dir().join(format!(
             "chariox-claude-selected-profile-onboarding-{}",
@@ -957,6 +964,7 @@ mod tests {
 
     #[test]
     fn completes_existing_claude_headless_state_without_dropping_fields() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_guard();
         let root = std::env::temp_dir().join(format!(
             "chariox-claude-existing-headless-state-{}",
@@ -1076,6 +1084,7 @@ mod tests {
 
     #[test]
     fn maps_yolo_build_to_bypass_permissions() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
             "chariox-claude-resolve-test-{}-yolo",
@@ -1108,6 +1117,7 @@ mod tests {
 
     #[test]
     fn injects_runtime_mcp_config_into_launch_args() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
             "chariox-claude-resolve-test-{}-mcp",
@@ -1154,6 +1164,7 @@ mod tests {
 
     #[test]
     fn metaagent_launch_disables_claude_builtin_tools_but_keeps_runtime_mcp() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
             "chariox-claude-resolve-test-{}-meta-tools",
@@ -1186,6 +1197,7 @@ mod tests {
 
     #[test]
     fn injects_mcp_config_into_native_tui_launch_args() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
             "chariox-claude-resolve-test-{}-native-mcp",

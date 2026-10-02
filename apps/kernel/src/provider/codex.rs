@@ -198,6 +198,7 @@ mod tests {
 
     #[test]
     fn resolves_override_path_for_tests() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_guard();
         let path =
             std::env::temp_dir().join(format!("chariox-codex-resolve-test-{}", std::process::id()));
@@ -213,6 +214,7 @@ mod tests {
 
     #[test]
     fn plans_codex_app_server_launch() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
             "chariox-codex-resolve-test-{}-serve",
@@ -249,6 +251,7 @@ mod tests {
 
     #[test]
     fn plans_codex_launch_scrubs_inherited_session_env() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
             "chariox-codex-resolve-test-{}-env-remove",
@@ -293,6 +296,7 @@ mod tests {
 
     #[test]
     fn plans_codex_catalog_launch_without_explicit_port_override() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
             "chariox-codex-resolve-test-{}-managed-catalog-port",
@@ -317,6 +321,7 @@ mod tests {
 
     #[test]
     fn injects_runtime_mcp_config_into_managed_launch() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
             "chariox-codex-resolve-test-{}-mcp",
@@ -387,6 +392,7 @@ mod tests {
 
     #[test]
     fn runtime_mcp_config_does_not_force_workspace_live_sync_overrides_for_unrestricted_launch() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
             "chariox-codex-resolve-test-{}-runtime-mcp-unrestricted",
@@ -436,6 +442,7 @@ mod tests {
 
     #[test]
     fn injects_granted_mcp_config_into_managed_launch() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
             "chariox-codex-resolve-test-{}-granted-mcp",
@@ -474,6 +481,7 @@ mod tests {
 
     #[test]
     fn renders_granted_mcp_as_provider_facing_proxy_when_runtime_mcp_is_bound() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
             "chariox-codex-resolve-test-{}-proxied-mcp",
@@ -517,6 +525,7 @@ mod tests {
 
     #[test]
     fn plans_managed_workspace_live_sync_launch() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
             "chariox-codex-resolve-test-{}-workspace-live-sync",
@@ -545,6 +554,7 @@ mod tests {
 
     #[test]
     fn logout_codex_invokes_the_configured_executable() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_guard();
         let path =
             std::env::temp_dir().join(format!("chariox-codex-logout-test-{}", std::process::id()));

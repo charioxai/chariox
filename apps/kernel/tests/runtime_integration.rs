@@ -491,13 +491,14 @@ fn local_request_surface_supports_prompt_queue_and_config_updates() {
 }
 
 fn local_request_surface_supports_prompt_queue_and_config_updates_inner() {
+    let worktree = support::test_worktree::TestWorktree::new("integration");
     let app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let client = LocalDaemonClient::new(app).expect("local daemon client should start");
 
     let session = match client
         .send(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-integration", "worktree-integration"),
+            CreateSessionRequest::new("workspace-integration", worktree.path_string()),
         ))
         .expect("session create should succeed")
     {
@@ -597,14 +598,14 @@ fn local_request_surface_supports_prompt_queue_and_config_updates_inner() {
             outcome: PromptSubmissionOutcome::Started { .. },
             ..
         } => {}
-        _ => panic!("unexpected first prompt response"),
+        response => panic!("unexpected first prompt response: {response:?}"),
     }
     match second_prompt {
         LocalDaemonResponse::PromptSubmitted {
             outcome: PromptSubmissionOutcome::Queued { .. },
             ..
         } => {}
-        _ => panic!("unexpected second prompt response"),
+        response => panic!("unexpected second prompt response: {response:?}"),
     }
     match config {
         LocalDaemonResponse::SessionConfigUpdated { config, .. } => {

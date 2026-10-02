@@ -86,9 +86,12 @@ done
             }
         );
     });
-    let cancelled = fs::read_to_string(root.join("cancel-requests")).unwrap();
-    assert!(cancelled.contains(r#""method":"browser.cancel""#));
-    assert!(cancelled.contains(r#""request_id":2"#));
+    let imported: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(root.join("import-requests")).unwrap()).unwrap();
+    let cancelled: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(root.join("cancel-requests")).unwrap()).unwrap();
+    assert_eq!(cancelled["method"], "browser.cancel");
+    assert_eq!(cancelled["params"]["request_id"], imported["id"]);
     store.shutdown().unwrap();
     fs::remove_dir_all(root).unwrap();
 }

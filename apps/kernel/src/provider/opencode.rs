@@ -202,6 +202,7 @@ mod tests {
 
     #[test]
     fn resolves_override_path_for_tests() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
             "chariox-opencode-resolve-test-{}",
@@ -219,6 +220,7 @@ mod tests {
 
     #[test]
     fn resolves_standard_installer_path_when_daemon_path_omits_it() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_guard();
         let root = std::env::temp_dir().join(format!(
             "chariox-opencode-standard-install-test-{}",
@@ -262,6 +264,7 @@ mod tests {
 
     #[test]
     fn plans_opencode_serve_launch() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
             "chariox-opencode-resolve-test-{}-serve",
@@ -317,6 +320,7 @@ mod tests {
 
     #[test]
     fn injects_runtime_mcp_config_into_managed_launch() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
             "chariox-opencode-resolve-test-{}-mcp",
@@ -356,6 +360,7 @@ mod tests {
 
     #[test]
     fn runtime_mcp_launch_uses_isolated_opencode_server() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
             "chariox-opencode-resolve-test-{}-isolated-mcp",
@@ -396,6 +401,7 @@ mod tests {
 
     #[test]
     fn provider_runs_ignore_external_opencode_endpoint_override() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
             "chariox-opencode-resolve-test-{}-ignore-endpoint",
@@ -432,6 +438,7 @@ mod tests {
 
     #[test]
     fn injects_granted_mcp_config_into_managed_launch() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
             "chariox-opencode-resolve-test-{}-granted-mcp",
@@ -472,6 +479,7 @@ mod tests {
 
     #[test]
     fn renders_granted_mcp_as_provider_facing_proxy_when_runtime_mcp_is_bound() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
             "chariox-opencode-resolve-test-{}-proxied-mcp",
@@ -519,6 +527,7 @@ mod tests {
 
     #[test]
     fn plans_managed_workspace_live_sync_launch() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
             "chariox-opencode-resolve-test-{}-workspace-live-sync",
@@ -556,6 +565,7 @@ mod tests {
 
     #[test]
     fn plans_catalog_launch_without_explicit_opencode_port_override() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_guard();
         let previous_bin = std::env::var_os("CHARIOX_OPENCODE_BIN");
         let path = std::env::temp_dir().join(format!(

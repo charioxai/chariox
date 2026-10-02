@@ -97,12 +97,14 @@ impl Drop for WorkerCommandGateCleanup {
 #[cfg(unix)]
 #[tokio::test]
 async fn public_setup_lifecycle_validates_supplied_definition_through_worker_boundary() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle(DefinitionScenario::Supplied).await;
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn public_setup_lifecycle_runs_on_an_ordinary_local_worker_without_cloud_receipt() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle_at_role(
         DefinitionScenario::Supplied,
         KernelRuntimeRole::General,
@@ -113,18 +115,21 @@ async fn public_setup_lifecycle_runs_on_an_ordinary_local_worker_without_cloud_r
 #[cfg(unix)]
 #[tokio::test]
 async fn public_setup_lifecycle_generates_definition_through_worker_boundary() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle(DefinitionScenario::Generated).await;
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn public_setup_lifecycle_reuses_unchanged_recipe_and_lockfile_inputs_without_utility() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle(DefinitionScenario::SuppliedInputReuse).await;
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn public_setup_lifecycle_repairs_stale_and_missing_inputs_before_ready() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle(DefinitionScenario::SuppliedStaleInputs).await;
     exercise_public_setup_lifecycle(DefinitionScenario::SuppliedMissingInputs).await;
 }
@@ -132,30 +137,35 @@ async fn public_setup_lifecycle_repairs_stale_and_missing_inputs_before_ready() 
 #[cfg(unix)]
 #[tokio::test]
 async fn public_setup_lifecycle_repairs_legacy_unattested_definition_before_ready() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle(DefinitionScenario::SuppliedLegacyUnattested).await;
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn public_setup_lifecycle_repairs_definition_for_followup_worker_without_utility() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle(DefinitionScenario::SuppliedSetupFailure).await;
 }
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn public_setup_cancellation_restores_ordinary_provider_without_retry() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle_with_options(DefinitionScenario::Supplied, false, None).await;
 }
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn pr364_generated_validation_failure_restores_previous_provider_snapshot() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle_with_candidate_failure(CandidateFailureMode::Validation).await;
 }
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn pr364_generated_validation_cancellation_restores_previous_provider_snapshot() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle_with_candidate_failure(CandidateFailureMode::Cancellation)
         .await;
 }
@@ -163,6 +173,7 @@ async fn pr364_generated_validation_cancellation_restores_previous_provider_snap
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn pr364_public_setup_second_restart_spawn_failure_restores_the_previous_provider_child() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle_with_second_restart_failure(
         ProviderLifecycleFailureStage::Spawn,
     )
@@ -172,6 +183,7 @@ async fn pr364_public_setup_second_restart_spawn_failure_restores_the_previous_p
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn pr364_public_setup_second_restart_binding_failure_restores_the_previous_provider_child() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle_with_second_restart_failure(
         ProviderLifecycleFailureStage::Bind,
     )
@@ -1086,8 +1098,11 @@ async fn exercise_public_setup_lifecycle_with_failure_timing(
                 "a reusable definition must be applied by the worker before validation"
             );
             assert_eq!(
-                provider_fixture.diagnostics(),
-                "<no requests observed>",
+                provider_fixture
+                    .diagnostics()
+                    .matches("/prompt_async")
+                    .count(),
+                0,
                 "a passing reusable definition must not invoke the utility agent"
             );
         }
@@ -1097,8 +1112,11 @@ async fn exercise_public_setup_lifecycle_with_failure_timing(
         | DefinitionScenario::SuppliedMissingInputs
         | DefinitionScenario::SuppliedLegacyUnattested => {
             assert_ne!(
-                provider_fixture.diagnostics(),
-                "<no requests observed>",
+                provider_fixture
+                    .diagnostics()
+                    .matches("/prompt_async")
+                    .count(),
+                0,
                 "missing or failed setup must invoke the existing utility agent"
             );
         }
@@ -1157,7 +1175,10 @@ async fn exercise_public_setup_lifecycle_with_failure_timing(
             );
         }
 
-        let utility_trace = provider_fixture.diagnostics();
+        let utility_trace = provider_fixture
+            .diagnostics()
+            .matches("/prompt_async")
+            .count();
         let materialized_inputs: Vec<(&str, &[u8])> = if input_scenario {
             vec![
                 (recipe_path, recipe_contents),
@@ -1213,7 +1234,10 @@ async fn exercise_public_setup_lifecycle_with_failure_timing(
             );
         }
         assert_eq!(
-            provider_fixture.diagnostics(),
+            provider_fixture
+                .diagnostics()
+                .matches("/prompt_async")
+                .count(),
             utility_trace,
             "the follow-up worker must reuse the repaired definition without utility"
         );
@@ -1512,6 +1536,7 @@ async fn run_repaired_definition_on_fresh_worker(
 #[cfg(unix)]
 #[test]
 fn public_setup_status_transport_recovery_and_missing_dispatch_replay_preserve_operation() {
+    crate::test_support::isolated_env_test!();
     std::thread::Builder::new()
         .name("project-environment-setup-transport-recovery".to_string())
         .stack_size(8 * 1024 * 1024)
@@ -2489,12 +2514,24 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         ProjectEnvironmentSetupPhase::Requested
     );
     let cancel_during_missing_status_operation_id = "setup-cancel-during-missing-status";
+    let cancellation_fixture_request = StartProjectEnvironmentSetupRequest {
+        operation_id: cancel_during_missing_status_operation_id.to_string(),
+        ..start_request.clone()
+    };
+    // Model an already-retained operation whose original dispatch was lost.
+    // A fresh public Start spawns a task that may not run until reconnection;
+    // that legitimate initial dispatch is unrelated to Get/Cancel recovery.
+    let cancellation_fixture_execution = runtime
+        .prepare_setup_execution(cancellation_fixture_request.clone(), "user-1")
+        .expect("prepare retained cancellation fixture");
+    runtime
+        .owned
+        .project_environment_setups
+        .begin(cancellation_fixture_execution)
+        .expect("retain cancellation fixture without an outstanding original dispatch");
     let started_cancel_during_missing_status = runtime
         .execute_project_environment_setup_request(
-            LocalDaemonRequest::StartProjectEnvironmentSetup(StartProjectEnvironmentSetupRequest {
-                operation_id: cancel_during_missing_status_operation_id.to_string(),
-                ..start_request.clone()
-            }),
+            LocalDaemonRequest::StartProjectEnvironmentSetup(cancellation_fixture_request),
             "user-1",
         )
         .await
@@ -2561,6 +2598,8 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
             )
             .await
     });
+    // Other pending operations may redispatch as the worker reconnects. The
+    // no-redispatch assertion belongs to the operation whose Cancel is gated.
     let get_release = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             match worker_request_rx.recv().await {
@@ -2570,7 +2609,9 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
                 }) if operation_id == cancel_during_missing_status_operation_id => {
                     break release;
                 }
-                Some(TestPeerRequestObservation::StartProjectEnvironmentSetup { operation_id }) => {
+                Some(TestPeerRequestObservation::StartProjectEnvironmentSetup { operation_id })
+                    if operation_id == cancel_during_missing_status_operation_id =>
+                {
                     panic!(
                         "unexpected worker setup start before cancellation intent: {operation_id}"
                     )
@@ -2608,7 +2649,9 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
                 }) if operation_id == cancel_during_missing_status_operation_id => {
                     break release;
                 }
-                Some(TestPeerRequestObservation::StartProjectEnvironmentSetup { operation_id }) => {
+                Some(TestPeerRequestObservation::StartProjectEnvironmentSetup { operation_id })
+                    if operation_id == cancel_during_missing_status_operation_id =>
+                {
                     panic!(
                     "worker setup was redispatched before cancellation response: {operation_id}"
                 )
@@ -2648,8 +2691,10 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         if let TestPeerRequestObservation::StartProjectEnvironmentSetup { operation_id } =
             observation
         {
-            redispatched_start = Some(operation_id);
-            break;
+            if operation_id == cancel_during_missing_status_operation_id {
+                redispatched_start = Some(operation_id);
+                break;
+            }
         }
     }
     assert_eq!(
@@ -4613,6 +4658,7 @@ impl Drop for UtilityProviderFixture {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn pr364_opencode_discovery_rejects_source_mcp_and_restores_ordinary_config() {
+    crate::test_support::isolated_env_test!();
     let _environment_lock = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!(
         "chariox-opencode-discovery-mcp-lifecycle-{}-{}",

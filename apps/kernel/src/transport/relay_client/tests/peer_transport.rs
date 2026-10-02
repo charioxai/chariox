@@ -602,6 +602,7 @@ async fn proxied_peer_requests_are_handled_through_relay() {
 #[tokio::test(flavor = "multi_thread")]
 async fn public_authenticated_workspace_live_sync_business_error_fails_fast_and_disconnect_recovers(
 ) {
+    crate::test_support::isolated_env_test!();
     let _relay_test_guard = relay_client_test_guard().await;
     let _test_home = RelayTestHome::new();
     let test_root = std::env::temp_dir().join(format!(

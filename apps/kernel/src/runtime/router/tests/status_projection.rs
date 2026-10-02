@@ -30,9 +30,10 @@ fn daemon_health_projection_reports_session_and_agent_mailboxes() {
 }
 
 async fn daemon_health_projection_reports_session_and_agent_mailboxes_inner() {
+    let worktree = crate::test_support::TestWorktree::new("daemon-health-projection-reports");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let session_id = session.id().to_string();
     let agent_id = agent.id().to_string();
@@ -98,7 +99,25 @@ async fn daemon_health_projection_reports_session_and_agent_mailboxes_inner() {
     router
         .dispatch(shell_command, shell_request)
         .await
-        .expect_err("capability command should report executor failure for missing test worktree");
+        .expect("capability command should run in the test worktree");
+
+    let removed_directory = worktree.path().join("removed-capability-directory");
+    std::fs::create_dir(&removed_directory).expect("failure fixture directory should exist");
+    std::fs::remove_dir(&removed_directory).expect("failure fixture directory should be removed");
+    let failing_request = LocalDaemonRequest::RunShellCommand(RunShellCapabilityRequest {
+        session_id: session_id.clone(),
+        attachment_id: attachment.id().to_string(),
+        command: "/bin/true".to_string(),
+        args: Vec::new(),
+        working_directory: Some(removed_directory),
+        timeout_ms: Some(1_000),
+    });
+    let failing_command =
+        KernelCommand::from_local_request("cmd-capability-failure", None, None, &failing_request);
+    router
+        .dispatch(failing_command, failing_request)
+        .await
+        .expect_err("capability command should fail in a removed working directory");
 
     let projection = router.daemon_health_projection(0).await;
     assert!(projection
@@ -133,8 +152,8 @@ async fn daemon_health_projection_reports_session_and_agent_mailboxes_inner() {
         .is_empty());
     assert_eq!(projection.capability_executor.max_concurrent_jobs, 64);
     assert_eq!(projection.capability_executor.available_permits, 64);
-    assert_eq!(projection.capability_executor.submitted_jobs, 1);
-    assert_eq!(projection.capability_executor.completed_jobs, 0);
+    assert_eq!(projection.capability_executor.submitted_jobs, 2);
+    assert_eq!(projection.capability_executor.completed_jobs, 1);
     assert_eq!(projection.capability_executor.failed_jobs, 1);
     assert_eq!(projection.capability_executor.rejected_jobs, 0);
     assert!(!projection.provider_catalog.cached);
@@ -142,9 +161,10 @@ async fn daemon_health_projection_reports_session_and_agent_mailboxes_inner() {
 
 #[tokio::test]
 async fn daemon_health_reports_duplicate_active_chariox_provider_runs_per_agent() {
+    let worktree = crate::test_support::TestWorktree::new("daemon-health-reports-duplicate");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let session_id = session.id().to_string();
     let agent_id = agent.id().to_string();
@@ -244,9 +264,10 @@ async fn provider_run_projection_lookup_prefers_deterministic_latest_highest_sta
 
 #[tokio::test]
 async fn daemon_health_reports_multi_interface_provider_runs_per_agent() {
+    let worktree = crate::test_support::TestWorktree::new("daemon-health-reports-multi");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let session_id = session.id().to_string();
     let agent_id = agent.id().to_string();
@@ -393,9 +414,10 @@ async fn daemon_health_reports_duplicate_active_native_tui_provider_runs_per_age
 
 #[tokio::test]
 async fn daemon_health_reports_active_provider_run_for_nonfocused_agent() {
+    let worktree = crate::test_support::TestWorktree::new("daemon-health-reports-active");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, focused_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let session_id = session.id().to_string();
     let focused_agent_id = focused_agent.id().to_string();
@@ -452,9 +474,10 @@ async fn daemon_health_reports_active_provider_run_for_nonfocused_agent() {
 
 #[tokio::test]
 async fn daemon_health_accepts_parallel_provider_runs_for_focused_and_background_agents() {
+    let worktree = crate::test_support::TestWorktree::new("daemon-health-accepts-parallel");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, focused_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let session_id = session.id().to_string();
     let focused_agent_id = focused_agent.id().to_string();

@@ -3,6 +3,7 @@ use crate::managed_bootstrap::state::{disposable_worker_binding_digest, Disposab
 
 #[test]
 fn ordinary_bootstrap_rejects_legacy_worker_records_without_mutation() {
+    crate::test_support::isolated_env_test!();
     let _lock = crate::env_lock::lock();
     for with_receipt in [false, true] {
         let fixture = Fixture::new("legacy-worker-rejection");

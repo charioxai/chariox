@@ -174,6 +174,7 @@ async fn proxied_session_requests_are_handled_through_relay() {
 
 #[test]
 fn authenticated_public_client_preserves_worker_relay_retryability() {
+    crate::test_support::isolated_env_test!();
     run_async_with_large_test_stack(
         "public-worker-relay-retryability",
         authenticated_public_client_preserves_worker_relay_retryability_async,
@@ -343,18 +344,20 @@ async fn authenticated_public_client_preserves_worker_relay_retryability_async()
     .await;
     let daemon_public_key = expect_client_connected(&mut client_socket).await;
 
-    let launch_request = || {
-        LocalDaemonRequest::LaunchProviderRun(LaunchProviderRunRequest {
+    // A native launch repairs a missing lease before returning. Configuration
+    // updates surface that worker rejection directly, so use that public seam.
+    let config_request = || {
+        LocalDaemonRequest::UpdateAgentConfig(crate::local::UpdateAgentConfigRequest {
             session_id: session_id.clone(),
-            agent_id: Some(remote_agent_id.clone()),
-            adapter_key: crate::provider::adapter_key_for_provider(&provider).to_string(),
-            provider: provider.clone(),
-            account_profile: "default".to_string(),
-            model: "default".to_string(),
-            variant: Some("medium".to_string()),
-            structured_endpoint: None,
-            provider_session_id: None,
-            native_tui: true,
+            agent_id: remote_agent_id.clone(),
+            execution_mode: Some(crate::provider::AgentExecutionMode::Plan),
+            clear_execution_mode: false,
+            permission_level: None,
+            clear_permission_level: false,
+            workspace_id: None,
+            clear_workspace_id: false,
+            worktree_id: None,
+            clear_worktree_id: false,
         })
     };
 
@@ -363,7 +366,7 @@ async fn authenticated_public_client_preserves_worker_relay_retryability_async()
         "worker-business-error-1",
         &config_home.daemon_id,
         &daemon_public_key,
-        launch_request(),
+        config_request(),
     )
     .await;
     let worker_error =
@@ -410,7 +413,7 @@ async fn authenticated_public_client_preserves_worker_relay_retryability_async()
         "relay-disconnect-1",
         &config_home.daemon_id,
         &daemon_public_key,
-        launch_request(),
+        config_request(),
     )
     .await;
     let transient_error =

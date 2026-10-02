@@ -300,6 +300,7 @@ fn structured_provider_test_app() -> (
     let worktree = crate::test_support::TestWorktree::new("provider-output-structured-poll");
     let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
+    app.providers_mut().use_manual_output_polls_for_tests();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
         .expect("session should be created");

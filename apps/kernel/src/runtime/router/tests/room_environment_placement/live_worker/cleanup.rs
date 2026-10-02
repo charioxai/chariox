@@ -5,6 +5,7 @@ use chariox_relay::protocol::ClientTarget;
 
 #[test]
 fn room_environment_worker_cleanup_retries_after_agent_acknowledgement_loss() {
+    crate::test_support::isolated_env_test!();
     run_test(cleanup_retries_after_agent_acknowledgement_loss);
 }
 
@@ -14,6 +15,7 @@ async fn cleanup_retries_after_agent_acknowledgement_loss() {
 
 #[test]
 fn room_environment_worker_cleanup_retries_after_lease_acknowledgement_loss() {
+    crate::test_support::isolated_env_test!();
     run_test(cleanup_retries_after_lease_acknowledgement_loss);
 }
 
@@ -145,6 +147,7 @@ async fn cleanup_retries_after_acknowledgement_loss(lease_also_deleted: bool) {
 
 #[test]
 fn room_environment_worker_cleanup_uses_the_slice_private_relay() {
+    crate::test_support::isolated_env_test!();
     run_test(cleanup_uses_the_slice_private_relay);
 }
 

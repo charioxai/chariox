@@ -6,28 +6,15 @@ fn public_session_state_preserves_failed_settlement_termination_after_late_compl
     let harness = LocalRouterTestHarness::new();
     let (session, agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            worktree.session_request(),
+            worktree
+                .session_request()
+                .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
         ))
         .expect("session create should succeed")
     {
         LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
         other => panic!("unexpected local response: {other:?}"),
     };
-    harness.with_app(|app| {
-        let registry = app.provider_account_profile_registry();
-        for profile in registry
-            .list_all()
-            .expect("synthetic provider profiles should list")
-        {
-            crate::test_support::authenticate_provider_account(
-                &registry,
-                &profile.owner_user_id,
-                &profile.provider,
-                &profile.profile_id,
-            )
-            .expect("synthetic provider account should be authenticated");
-        }
-    });
     let attachment = match harness
         .dispatch(LocalDaemonRequest::AttachToSession(
             AttachToSessionRequest {

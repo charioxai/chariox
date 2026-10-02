@@ -2037,6 +2037,7 @@ mod tests {
 
     #[tokio::test]
     async fn restart_recovery_preserves_superseding_resume_as_uncertain_delivery() {
+        crate::test_support::isolated_env_test!();
         let _environment = crate::env_lock::lock();
         let mut app = crate::test_support::bootstrap_authenticated_app(DaemonConfig::for_tests())
             .expect("daemon should boot");

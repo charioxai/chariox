@@ -471,6 +471,7 @@ mod tests {
 
     #[test]
     fn streamable_http_proxy_uses_configured_http_proxy_for_external_mcp() {
+        crate::test_support::isolated_env_test!();
         let _environment_lock = crate::env_lock::lock();
         let _environment_restore = EnvironmentRestore::capture(&[
             "ALL_PROXY",
@@ -552,6 +553,7 @@ mod tests {
 
     #[test]
     fn streamable_http_proxy_respects_no_proxy_for_external_mcp() {
+        crate::test_support::isolated_env_test!();
         let _environment_lock = crate::env_lock::lock();
         let _environment_restore = EnvironmentRestore::capture(&[
             "ALL_PROXY",
@@ -583,6 +585,7 @@ mod tests {
 
     #[test]
     fn streamable_http_proxy_bypasses_bracketed_ipv6_loopback() {
+        crate::test_support::isolated_env_test!();
         let _environment_lock = crate::env_lock::lock();
         let _environment_restore = EnvironmentRestore::capture(&[
             "ALL_PROXY",
@@ -614,6 +617,7 @@ mod tests {
 
     #[test]
     fn streamable_http_proxy_matches_bracketed_ipv6_no_proxy_host() {
+        crate::test_support::isolated_env_test!();
         let _environment_lock = crate::env_lock::lock();
         let _environment_restore = EnvironmentRestore::capture(&[
             "ALL_PROXY",
@@ -645,6 +649,7 @@ mod tests {
 
     #[test]
     fn streamable_https_proxy_prefers_https_proxy_configuration() {
+        crate::test_support::isolated_env_test!();
         let _environment_lock = crate::env_lock::lock();
         let _environment_restore = EnvironmentRestore::capture(&[
             "ALL_PROXY",
@@ -676,6 +681,7 @@ mod tests {
 
     #[test]
     fn streamable_http_proxy_rejects_malformed_proxy_configuration() {
+        crate::test_support::isolated_env_test!();
         let _environment_lock = crate::env_lock::lock();
         let _environment_restore = EnvironmentRestore::capture(&[
             "ALL_PROXY",

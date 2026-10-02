@@ -26,8 +26,14 @@ async fn claude_stop_failure_hook_advances_queued_workflow_on_substitute_once() 
 }
 
 async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
+    if crate::provider::resolve_opencode_executable().is_err() {
+        eprintln!("SKIP automatic substitution provider launch: opencode binary is absent");
+        return;
+    }
+    let mut config = crate::DaemonConfig::for_tests();
+    let _mcp = crate::test_support::TestRuntimeMcp::serve(&mut config);
     let (runtime, session_id, agent_id, profile_id) =
-        runtime_with_substitutes(&["opencode/deepseek-v4-pro"], true).await;
+        runtime_with_substitutes_and_config(&["opencode/deepseek-v4-pro"], true, config).await;
     let starter_provider = if claude_hook {
         "claude-headless"
     } else {
@@ -304,10 +310,38 @@ async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
     );
     let active = active.expect("queued prompt must be promoted exactly once");
     assert_eq!(active.status(), crate::session::PromptStatus::Running);
+    // A fast provider can already have acknowledged delivery. Assert the
+    // exact durable admission transition for this prompt, independently of
+    // how quickly its live phase advances after the dispatch is scheduled.
+    let dispatching = runtime
+        .owned
+        .durable_state_store
+        .load_events_after(0)
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND)
+        .filter_map(|event| {
+            let mut payload: crate::durable_prompt_state::DurablePromptStateEventPayload =
+                serde_json::from_value(event.payload).unwrap();
+            payload.restore_private_states();
+            (payload.session_id == session_id && payload.agent_id == agent_id)
+                .then_some(payload.active_prompt)
+                .flatten()
+        })
+        .find(|prompt| {
+            prompt.id() == active.id()
+                && prompt.durable_delivery_phase()
+                    == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+        })
+        .expect("the replacement must have a durable normal-dispatch admission");
     assert_eq!(
-        active.durable_delivery_phase(),
-        Some(crate::session::DurablePromptDeliveryPhase::Dispatching),
-        "the replacement must be admitted through the normal dispatch phase"
+        dispatching.durable_delivery_phase(),
+        Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+    );
+    assert_eq!(
+        dispatching.durable_delivery_provider_run_id(),
+        active.durable_delivery_provider_run_id(),
+        "durable dispatch admission must bind the replacement provider run"
     );
     assert_ne!(
         active.id(),
@@ -350,17 +384,30 @@ async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
     );
 
     let output_records = runtime.owned.terminal_stream.output_records();
+    let expected_error = if claude_hook {
+        crate::provider::sanitize_provider_diagnostic(
+            runtime
+                .owned
+                .provider_store
+                .get_run(run.id())
+                .unwrap()
+                .terminal_diagnostic()
+                .unwrap(),
+        )
+    } else {
+        "insufficient balance".to_string()
+    };
     let provider_errors = output_records
         .iter()
         .filter(|record| {
             record.provider_run_id == run.id()
                 && record.kind == crate::terminal::TerminalOutputKind::ProviderError
-                && record.bytes == b"insufficient balance"
+                && record.bytes == expected_error.as_bytes()
         })
         .count();
     assert_eq!(
         provider_errors, 1,
-        "the failed prompt must expose one actionable provider error"
+        "the failed prompt must expose one actionable provider error matching {expected_error:?}; errors={:?}", output_records.iter().filter(|record| record.kind == crate::terminal::TerminalOutputKind::ProviderError).map(|record| String::from_utf8_lossy(&record.bytes)).collect::<Vec<_>>()
     );
     let replacement_echoes = output_records
         .iter()
@@ -457,7 +504,16 @@ async fn runtime_with_substitutes(
     models: &[&str],
     reset_in_future: bool,
 ) -> (KernelRuntimeState, String, String, String) {
-    let (app, runtime, session_id, agent_id) = agent_config_runtime().await;
+    runtime_with_substitutes_and_config(models, reset_in_future, crate::DaemonConfig::for_tests())
+        .await
+}
+
+async fn runtime_with_substitutes_and_config(
+    models: &[&str],
+    reset_in_future: bool,
+    config: crate::DaemonConfig,
+) -> (KernelRuntimeState, String, String, String) {
+    let (app, runtime, session_id, agent_id) = agent_config_runtime_with_config(config).await;
     let registry = app.lock().await.provider_account_profile_registry();
     let profile = registry
         .create_managed(

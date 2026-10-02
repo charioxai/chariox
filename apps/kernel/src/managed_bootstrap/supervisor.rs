@@ -641,6 +641,7 @@ mod broker_proxy_tests {
 
     #[test]
     fn managed_provider_topology_is_explicit_and_fail_closed() {
+        crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let previous = std::env::var_os(MANAGED_PROVIDER_TOPOLOGY_ENV);
 
@@ -670,6 +671,7 @@ mod broker_proxy_tests {
 
     #[test]
     fn managed_and_path1_kernel_children_keep_their_launch_boundaries_separate() {
+        crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-managed-supervisor-boundary-contract-{}-{}",
@@ -1050,8 +1052,16 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             );
         }
         for name in PATH1_SHARED_HOST_SELECTOR_ENVS {
+            // Without a broker lease, spawn_with_broker_lease marks the child
+            // broker-required (fail closed) instead of inheriting the parent's
+            // value; every other selector must be scrubbed.
+            let expected = if *name == BROKER_REQUIRED_ENV {
+                "1"
+            } else {
+                "<unset>"
+            };
             assert!(
-                observed.contains(&format!("{name}=<unset>\n")),
+                observed.contains(&format!("{name}={expected}\n")),
                 "confirmation child inherited {name}: {observed}"
             );
         }
@@ -1094,6 +1104,7 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
     #[cfg(target_os = "linux")]
     #[test]
     fn path1_confirmation_restart_reapplies_ordinary_boundary() {
+        crate::test_support::isolated_env_test!();
         use std::os::unix::fs::PermissionsExt;
 
         let _env = crate::env_lock::lock();

@@ -219,6 +219,7 @@ impl Drop for Fixture {
 
 #[test]
 fn remote_dispatch_callers_require_vaulted_claude_token_before_transport() {
+    crate::test_support::isolated_env_test!();
     let _env = crate::env_lock::lock();
     for caller in [Caller::Workflow, Caller::Compatibility, Caller::Queued] {
         let mut fixture = Fixture::new();
@@ -232,6 +233,7 @@ fn remote_dispatch_callers_require_vaulted_claude_token_before_transport() {
 
 #[test]
 fn remote_dispatch_callers_surface_locked_vault_before_transport() {
+    crate::test_support::isolated_env_test!();
     let _env = crate::env_lock::lock();
     for caller in [Caller::Workflow, Caller::Compatibility, Caller::Queued] {
         let mut fixture = Fixture::new();
@@ -250,6 +252,7 @@ fn remote_dispatch_callers_surface_locked_vault_before_transport() {
 
 #[test]
 fn remote_dispatch_callers_admit_vaulted_launch_and_reuse_active_run_without_token() {
+    crate::test_support::isolated_env_test!();
     let _env = crate::env_lock::lock();
     for caller in [Caller::Workflow, Caller::Compatibility, Caller::Queued] {
         for active_run in [false, true] {

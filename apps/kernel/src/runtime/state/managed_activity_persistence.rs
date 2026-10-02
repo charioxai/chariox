@@ -48,6 +48,7 @@ struct ManagedActivityTransitionInner {
     pending: VecDeque<PendingManagedActivityTransition>,
     pending_journal_dirty: bool,
     last_runtime_sequence: u64,
+    latest_prompt_finish_at_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +65,15 @@ impl ManagedActivityTransitionState {
             kernel_id: Arc::new(Mutex::new(kernel_id)),
             inner: Arc::new(Mutex::new(ManagedActivityTransitionInner::default())),
         }
+    }
+
+    pub(super) fn record_prompt_finish(&self, observed_at_ms: u64) -> u64 {
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("managed activity transition mutex poisoned");
+        inner.latest_prompt_finish_at_ms = inner.latest_prompt_finish_at_ms.max(observed_at_ms);
+        inner.latest_prompt_finish_at_ms
     }
 
     pub(super) fn is_enabled(&self) -> bool {

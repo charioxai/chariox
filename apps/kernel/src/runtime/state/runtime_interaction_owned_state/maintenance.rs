@@ -37,3 +37,10 @@ impl KernelRuntimeOwnedState {
         }
     }
 }
+
+#[cfg(test)]
+impl KernelRuntimeState {
+    pub(crate) fn sweep_kernel_decisions_for_test(&self) {
+        self.owned.sweep_kernel_operation_interactions(false);
+    }
+}

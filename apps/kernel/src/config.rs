@@ -343,6 +343,7 @@ impl DaemonConfig {
                 .display()
                 .to_string(),
         );
+        config.user_config_path = config.durable_state_path().with_file_name("config.toml");
         config.user_config.workflow.max_queues_per_workflow = Some(10);
         config.user_config.providers.workspace_live_sync =
             crate::config::WorkspaceLiveSyncConfig::from_mode(

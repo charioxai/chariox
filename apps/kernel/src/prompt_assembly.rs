@@ -1399,9 +1399,9 @@ mod tests {
             &path,
             concat!(
                 "You are running inside a Chariox slice. Slice-only runtime MCP tools are available for the slice screen, browser, keyboard, mouse, and OCR. Use these tools only for the slice environment attached to this agent.\n\n",
-                "Use `slice_screen_status` to inspect the display and viewer URL, `slice_screenshot` to capture the screen, `slice_ocr` to extract screen text, `slice_find_text` to locate visible text coordinates, `slice_mouse` for mouse actions, `slice_keyboard` for keyboard actions, `slice_clipboard_write` to write clipboard text without reading it back, and `slice_open_url` to open a URL in the slice browser.\n\n",
+                "Use `slice_screen_status` to inspect the display and viewer URL, `slice_screenshot` to capture the screen, `slice_ocr` to extract screen text, `slice_find_text` to locate visible text coordinates, `slice_mouse` for mouse actions, `slice_keyboard` for keyboard actions, and `slice_open_url` to open a URL in the slice browser.\n\n",
                 "Use `paste_secret_to_slice` only after focusing the intended browser field. Pass the credential id and set `submit` only when the focused form should be submitted with Return. This pastes the secret through the slice screen without exposing the secret value in your answer or terminal output.\n\n",
-                "Prefer `slice_find_text` before clicking text in the browser or GUI because it returns every visible occurrence in reading order using native screen coordinates. Use `slice_ocr` when visual text matters but the page or app is not accessible through files, terminal output, or browser automation.",
+                "Prefer `slice_find_text` before clicking text in the browser or GUI because it returns screen coordinates directly. Use `slice_ocr` when visual text matters but the page or app is not accessible through files, terminal output, or browser automation.",
             ),
         )
         .expect("legacy slice default should write");
@@ -1726,6 +1726,7 @@ mod tests {
 
     #[test]
     fn slice_kernels_include_slice_template() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_lock::lock();
         std::env::set_var("CHARIOX_MACHINE_ID", "slice:test");
         std::env::remove_var("CHARIOX_SLICE_MACHINE_ID");
@@ -2070,6 +2071,7 @@ mod tests {
 
     #[test]
     fn scheduled_prompt_context_uses_the_markdown_catalog() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_lock::lock();
         let home = temp_prompt_root("configured-scheduled-prompt");
         let root = home.join("prompts");

@@ -33,7 +33,17 @@ impl Scratch {
         Self(path)
     }
     fn store(&self) -> DurableKernelStateStore {
-        DurableKernelStateStore::open_owned(self.0.join("kernel.sqlite")).unwrap()
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match DurableKernelStateStore::open_owned(self.0.join("kernel.sqlite")) {
+                Ok(store) => return store,
+                Err(crate::error::DaemonError::LocalTransport {
+                    operation: "durable_state.acquire_owner",
+                    ..
+                }) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+                Err(error) => panic!("released lifecycle fixture should reopen: {error}"),
+            }
+        }
     }
 }
 impl Drop for Scratch {
@@ -59,8 +69,11 @@ fn runtime() -> Runtime {
         .build()
         .unwrap()
 }
+#[track_caller]
 fn wait(mut predicate: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(6);
+    // Native startup and registration have 15-second production budgets.
+    // Await the durable lifecycle result without imposing a shorter fixture deadline.
+    let deadline = Instant::now() + Duration::from_secs(30);
     while !predicate() {
         assert!(Instant::now() < deadline, "lifecycle condition timed out");
         std::thread::sleep(Duration::from_millis(10));
@@ -112,7 +125,7 @@ fn all_reaped(observations: &Mutex<Vec<Observation>>) -> bool {
 #[test]
 fn recovery_starts_without_view_serializes_restart_and_preserves_manual_stop_after_reopen() {
     let scratch = Scratch::new();
-    let runtime = runtime();
+    let executor = runtime();
     let native = Arc::new(NativeFixture::compile().unwrap());
     let store = scratch.store();
     fixture_event_catalog(&store);
@@ -120,7 +133,7 @@ fn recovery_starts_without_view_serializes_restart_and_preserves_manual_stop_aft
     let (control, observations) = make_control(&store, native.clone());
     let service = control.lifecycle();
     // This is the daemon's real recovery entry, with no terminal/App view.
-    service.schedule_recovery(runtime.handle().clone());
+    service.schedule_recovery(executor.handle().clone());
     wait(|| control.active_app_lease("alice", "installed").is_some());
     let running = store
         .app_worker_status("alice", "installed")
@@ -129,7 +142,7 @@ fn recovery_starts_without_view_serializes_restart_and_preserves_manual_stop_aft
     assert_eq!(running.phase, WorkerPhase::Running);
     assert_eq!(
         service
-            .start_active_blocking("alice", "installed", runtime.handle().clone())
+            .start_active_blocking("alice", "installed", executor.handle().clone())
             .unwrap(),
         StartDisposition::Existing {
             attempt: running.attempt
@@ -169,7 +182,7 @@ fn recovery_starts_without_view_serializes_restart_and_preserves_manual_stop_aft
     assert_eq!(stopped.phase, WorkerPhase::Stopped);
     assert!(!stopped.desired_running);
     service
-        .start_active_blocking("alice", "installed", runtime.handle().clone())
+        .start_active_blocking("alice", "installed", executor.handle().clone())
         .unwrap();
     wait(|| control.active_app_lease("alice", "installed").is_some());
     assert_eq!(observations.lock().unwrap().len(), 2);
@@ -190,13 +203,16 @@ fn recovery_starts_without_view_serializes_restart_and_preserves_manual_stop_aft
             .desired_running
     );
     drop(old);
+    drop(service);
     drop(control);
+    drop(executor);
     drop(store);
     let store = scratch.store();
+    let executor = runtime();
     let (control, restarted) = make_control(&store, native);
     control
         .lifecycle()
-        .schedule_recovery(runtime.handle().clone());
+        .schedule_recovery(executor.handle().clone());
     wait(|| control.active_app_lease("alice", "installed").is_some());
     assert_eq!(restarted.lock().unwrap().len(), 1);
     control
@@ -205,6 +221,7 @@ fn recovery_starts_without_view_serializes_restart_and_preserves_manual_stop_aft
         .unwrap();
     control.lifecycle().shutdown_blocking().unwrap();
     drop(control);
+    drop(executor);
     drop(store);
     let store = scratch.store();
     assert!(store

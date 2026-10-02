@@ -236,6 +236,7 @@ fn test_root(label: &str) -> std::path::PathBuf {
 #[cfg(unix)]
 #[test]
 fn managed_broker_slice_does_not_require_docker_in_the_kernel_namespace() {
+    crate::test_support::isolated_env_test!();
     let _lock = crate::env_lock::lock();
     let previous_path = std::env::var_os("PATH");
     let previous_required = std::env::var_os("CHARIOX_SLICE_DOCKER_BROKER_REQUIRED");
@@ -285,6 +286,7 @@ fn managed_broker_slice_does_not_require_docker_in_the_kernel_namespace() {
 #[cfg(unix)]
 #[test]
 fn disk_pressure_admission_fault_probe() {
+    crate::test_support::isolated_env_test!();
     use std::os::unix::fs::PermissionsExt;
 
     let _environment = crate::env_lock::lock();
@@ -418,6 +420,7 @@ exit 0
 #[cfg(unix)]
 #[test]
 fn public_headless_slice_save_gracefully_quiesces_before_capture_and_fails_closed() {
+    crate::test_support::isolated_env_test!();
     use std::os::unix::fs::PermissionsExt;
 
     let _environment = crate::env_lock::lock();
@@ -650,6 +653,7 @@ fn backup_restore_rejects_cross_slice_records_before_reading_artifacts() {
 #[cfg(unix)]
 #[test]
 fn backup_restore_quarantines_a_corrupt_archive_without_touching_known_good_state() {
+    crate::test_support::isolated_env_test!();
     use sha2::Digest as _;
     use std::os::unix::fs::PermissionsExt;
 
@@ -1453,6 +1457,7 @@ fn local_docker_slice_uses_the_safe_default_memory_limit() {
 
 #[test]
 fn local_docker_provider_sandbox_compatibility_selects_named_apparmor_boundary() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let previous_profile = std::env::var_os("CHARIOX_SLICE_APPARMOR_PROFILE");
     std::env::set_var("CHARIOX_SLICE_APPARMOR_PROFILE", "chariox-slice-provider");
@@ -1798,6 +1803,10 @@ if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then
   case "$*" in
     *relay-peer-protocol-version*) printf '%s\n' "$EXPECTED_PROTOCOL" ;;
     *runtime-source-revision*) printf '%s\n' "$EXPECTED_REVISION" ;;
+    *selkies-version*) printf '1.0\n' ;;
+    *selkies-source-revision*) printf '%040d\n' 1 ;;
+    *selkies-source*) printf 'https://github.com/selkies-project/selkies/commit/%040d\n' 1 ;;
+    *selkies-license*) printf 'MPL-2.0\n' ;;
     *'{{.Id}}'*) printf 'sha256:backup-image\n' ;;
   esac
   exit 0
@@ -1826,15 +1835,30 @@ if [ "$1" = "rm" ] && [ "${2:-}" = "saved-slice" ]; then
   exit 0
 fi
 if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
-  [ -f "$DOCKER_VOLUME" ]
-  exit $?
+  if [ "${3:-}" = "-f" ]; then
+    case "$4" in
+      *archive-sha256*) sed -n '1p' "$DOCKER_VOLUME" ;;
+      *initialization-token*) sed -n '2p' "$DOCKER_VOLUME" ;;
+    esac
+    exit 0
+  fi
+  if [ -f "$DOCKER_VOLUME" ]; then exit 0; fi
+  printf 'Error response from daemon: get saved-slice-home: no such volume\n' >&2
+  exit 1
 fi
 if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then
   rm -f "$DOCKER_VOLUME"
   exit 0
 fi
 if [ "$1" = "volume" ] && [ "$2" = "create" ]; then
-  : > "$DOCKER_VOLUME"
+  archive=""; token=""
+  for argument in "$@"; do
+    case "$argument" in
+      io.chariox.saved-home.archive-sha256=*) archive="${argument#*=}" ;;
+      io.chariox.saved-home.initialization-token=*) token="${argument#*=}" ;;
+    esac
+  done
+  printf '%s\n%s\n' "$archive" "$token" > "$DOCKER_VOLUME"
   exit 0
 fi
 if [ "$1" = "create" ]; then
@@ -1912,7 +1936,12 @@ exit 0
     };
     let remove_container = position("rm saved-slice");
     let remove_volume = position("volume rm saved-slice-home");
-    let create_volume = position("volume create saved-slice-home");
+    let create_volume = calls
+        .iter()
+        .position(|call| {
+            call.starts_with("volume create --label ") && call.ends_with(" saved-slice-home")
+        })
+        .expect("a labeled fresh home volume should be created");
     let create_container = position("create --name saved-slice ");
     let start_container = calls
         .iter()

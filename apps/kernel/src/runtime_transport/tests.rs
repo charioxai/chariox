@@ -353,6 +353,7 @@ async fn kernel_websocket_auth_rejects_missing_or_wrong_tokens_before_accepting_
 #[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
 async fn slice_state_save_acknowledgement_replays_without_a_second_dispatch() {
+    crate::test_support::isolated_env_test!();
     use std::os::unix::fs::PermissionsExt;
 
     let _environment = crate::env_lock::lock();
@@ -544,6 +545,7 @@ exit 0
 #[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
 async fn slice_backup_restore_interruption_after_container_creation_rolls_back_on_restart() {
+    crate::test_support::isolated_env_test!();
     use sha2::{Digest as _, Sha256};
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::process::ExitStatusExt;
@@ -930,6 +932,7 @@ exit 0
 #[cfg(unix)]
 #[test]
 fn room_takeover_response_loss_and_reconnect_retain_human_input_authority() {
+    crate::test_support::isolated_env_test!();
     let test_thread = std::thread::Builder::new()
         .name("room-takeover-reconnect".to_string())
         .stack_size(32 * 1024 * 1024)

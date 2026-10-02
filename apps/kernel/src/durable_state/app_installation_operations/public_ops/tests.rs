@@ -4,18 +4,14 @@ use chariox_app_package::{verify, VerificationPolicy};
 
 struct Fixture {
     store: DurableKernelStateStore,
-    path: std::path::PathBuf,
+    _root: crate::test_support::TestWorktree,
 }
 impl Fixture {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "chariox-public-install-{:016x}",
-            rand::random::<u64>()
-        ));
-        std::fs::create_dir(&path).unwrap();
-        let store = DurableKernelStateStore::open_owned(path.join("kernel.sqlite")).unwrap();
+        let root = crate::test_support::TestWorktree::new("public-install");
+        let store = DurableKernelStateStore::open_owned(root.path().join("kernel.sqlite")).unwrap();
         fixture_event_catalog(&store);
-        Self { store, path }
+        Self { store, _root: root }
     }
     fn candidate(&self) -> VerifiedInstallCandidate {
         let (bytes, publisher) = fixture_event_package();
@@ -56,12 +52,6 @@ impl Fixture {
             InstallReviewDisposition::Prompt(value) => value,
             _ => panic!("expected exact pending decision"),
         }
-    }
-}
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = self.store.fence_writer();
-        let _ = std::fs::remove_dir_all(&self.path);
     }
 }
 fn budget() -> AppOperationBudget {
@@ -114,7 +104,10 @@ fn preparing_ack_replay_and_cancel_survive_reopen_without_creating_a_stage() {
         .store
         .get_app_installation("alice", &initial.token.installation_id)
         .is_err());
-    let reopened = DurableKernelStateStore::open_owned(f.store.path().to_path_buf()).unwrap();
+    let path = f.store.path().to_path_buf();
+    f.store.fence_writer().unwrap();
+    drop(f.store);
+    let reopened = DurableKernelStateStore::open_owned(path).unwrap();
     assert_eq!(
         cancelled,
         reopened
