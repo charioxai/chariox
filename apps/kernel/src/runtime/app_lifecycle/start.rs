@@ -134,6 +134,15 @@ pub(super) fn register(
     }
     let prepared = spawn(context, binding, &verified, release, migrate_from)?;
     let process = prepared.process;
+    *context
+        .control
+        .restore_data
+        .lock()
+        .map_err(|_| LifecycleError::Supervisor)? = Some(
+        process
+            .private_data()
+            .map_err(|_| LifecycleError::Preparation)?,
+    );
     if context.control.stopped() {
         return Err(LifecycleError::Stopped);
     }
@@ -241,6 +250,13 @@ fn spawn(
             .get_app_installation(binding.owner_id(), &binding.token().installation_id)
             .map(|installation| installation.generation)
             .map_err(|_| LifecycleError::Preparation)?;
+        crate::runtime::app_snapshot_restore::require_recovery_generation(
+            &context.store,
+            binding.owner_id(),
+            &binding.token().installation_id,
+            binding.token().generation,
+        )
+        .map_err(|_| LifecycleError::Preparation)?;
         let prepared = chariox_app_runtime::worker_process::PreparedWorker::prepare_linux(
             runtime,
             release,
@@ -252,6 +268,16 @@ fn spawn(
         if context.control.stopped() {
             return Err(LifecycleError::Stopped);
         }
+        let (prepared, recovered) = prepared
+            .visit_private_data(|data| {
+                crate::runtime::app_snapshot_restore::recover(
+                    &context.store,
+                    binding.owner_id(),
+                    data,
+                )
+            })
+            .map_err(|_| LifecycleError::Preparation)?;
+        recovered.map_err(|_| LifecycleError::Preparation)?;
         let process = WorkerProcess::spawn_blocking(prepared, WorkerLimits::default())
             .map_err(|_| LifecycleError::Preparation)?;
         Ok(PreparedProcess {

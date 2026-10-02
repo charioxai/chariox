@@ -13,6 +13,7 @@ impl Control {
     pub(super) fn new() -> Self {
         Self {
             first_request: None,
+            restore_data: Mutex::new(None),
             stop: AtomicBool::new(false),
             manual: AtomicBool::new(false),
             manual_committed: AtomicBool::new(false),
@@ -66,6 +67,10 @@ impl Control {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
     pub(super) fn complete(&self) {
+        self.restore_data
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         *self
             .done
             .lock()

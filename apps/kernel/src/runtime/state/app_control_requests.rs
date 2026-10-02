@@ -18,6 +18,30 @@ impl KernelRuntimeState {
         command: &KernelCommand,
         request: &LocalDaemonRequest,
     ) -> Option<LocalDaemonResponse> {
+        if let LocalDaemonRequest::RestoreAppDataSnapshot(request) = request {
+            let owner = match crate::runtime::app_control::owner(command) {
+                Ok(owner) => owner,
+                Err(code) => return Some(failed(code)),
+            };
+            let lifecycle = self.app_control().lifecycle().clone();
+            let request = request.clone();
+            let response = LocalDaemonResponse::AppDataSnapshotRestored {
+                installation_id: request.installation_id.clone(),
+                generation: request.expected_generation.clone(),
+                snapshot_id: request.snapshot_id.clone(),
+            };
+            return Some(
+                match tokio::task::spawn_blocking(move || {
+                    lifecycle.restore_snapshot_blocking(&owner, &request)
+                })
+                .await
+                {
+                    Ok(Ok(())) => response,
+                    Ok(Err(code)) => failed(code),
+                    Err(_) => failed(AppRequestErrorCode::StorageUnavailable),
+                },
+            );
+        }
         if let LocalDaemonRequest::GrantAppFile(request) = request {
             return Some(match crate::runtime::app_control::owner(command) {
                 Ok(owner) => self.grant_app_file(owner, request.clone()).await,

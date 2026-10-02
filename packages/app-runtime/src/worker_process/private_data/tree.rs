@@ -46,6 +46,18 @@ const SYSTEM_ENTRIES: [&str; 5] = [
 const MAX_DIRECTORY_ENTRIES: usize = 10_000;
 
 impl PrivateData {
+    /// Descriptor-confined validation/copy of a kernel-owned saved tree. The
+    /// caller must check the returned inventory before any destructive effect.
+    pub fn copy_saved_tree(
+        source: &Path,
+        destination: Option<&Path>,
+        limits: TreeLimits,
+    ) -> Result<TreeCopy> {
+        let from = Dir::open_private(source).map_err(fs)?;
+        let to = destination.map(Dir::open_private).transpose().map_err(fs)?;
+        copy(&from, to.as_ref(), limits, &mut || true)
+    }
+
     /// Copies the data tree into `destination`, an empty kernel-private
     /// directory, fsyncing every file. In-flight SDK replacements and entries
     /// that vanish mid-walk are skipped. `proceed` is asked before each file;
@@ -65,12 +77,22 @@ impl PrivateData {
     /// the source is walked within `limits` first, then everything but volume
     /// bookkeeping is removed and the source copied in.
     pub fn restore_tree(&self, source: &Path, limits: TreeLimits) -> Result<TreeCopy> {
+        self.restore_tree_while(source, limits, &mut || true)
+    }
+    /// Recovery may stop copying after a fault; its durable journal must remain
+    /// owned until a later complete, synced replay.
+    pub fn restore_tree_while(
+        &self,
+        source: &Path,
+        limits: TreeLimits,
+        proceed: &mut dyn FnMut() -> bool,
+    ) -> Result<TreeCopy> {
         let from = Dir::open_private(source).map_err(fs)?;
         copy(&from, None, limits, &mut || true)?;
         let to = Dir(self.root.0.try_clone().map_err(io)?);
         let device = to.0.metadata().map_err(io)?.dev();
         clear(&to, 0, device, limits.depth)?;
-        copy(&from, Some(&to), limits, &mut || true)
+        copy(&from, Some(&to), limits, proceed)
     }
 }
 

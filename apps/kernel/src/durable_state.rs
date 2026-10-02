@@ -35,6 +35,8 @@ pub(crate) mod app_installation_staging;
 pub(crate) mod app_publisher_operations;
 pub(crate) mod app_publishers;
 pub(crate) mod app_snapshots;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_snapshot_restore;
 pub(crate) mod app_state;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_tools;
@@ -160,6 +162,8 @@ enum DurableWriterRequest {
     AppPublisherOperation(Box<app_publisher_operations::PublisherOperationRequest>),
     VerifiedApp(Box<app_installation_staging::AppVerifiedInstallationRequest>),
     AppState(Box<app_state::AppStateRequest>),
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    AppRestore(Box<app_snapshot_restore::RestoreRequest>),
     AppWake(Box<app_wakes::AppWakeRequest>),
     AppInbox(Box<app_inbox::AppInboxRequest>),
     AppLog(Box<app_logs::AppLogRequest>),
@@ -1433,6 +1437,14 @@ fn run_durable_writer(
                 app_installation_staging::execute(&mut connection, *request);
                 continue;
             }
+            #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+            DurableWriterRequest::AppRestore(request) => {
+                if app_snapshot_restore::execute(&mut connection, *request, &health.fatal) {
+                    health.fatal.store(true, Ordering::Release);
+                    break;
+                }
+                continue;
+            }
             DurableWriterRequest::AppState(request) => {
                 app_state::execute(&mut connection, *request);
                 continue;
@@ -1551,7 +1563,8 @@ fn run_durable_writer(
                     request @ (DurableWriterRequest::AppTools(_)
                     | DurableWriterRequest::AppFile(_)
                     | DurableWriterRequest::AppHttp(_)
-                    | DurableWriterRequest::AppInstallationOperation(_)),
+                    | DurableWriterRequest::AppInstallationOperation(_)
+                    | DurableWriterRequest::AppRestore(_)),
                 ) => {
                     pending = Some(request);
                     break;
@@ -1874,6 +1887,11 @@ fn write_entity_checkpoint(
 }
 
 const DURABLE_STATE_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS app_restore_receipts (
+    owner_id TEXT NOT NULL,
+    installation_id TEXT PRIMARY KEY,
+    restore_id TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS durable_browser_import (
     environment_id TEXT PRIMARY KEY,
     request_id TEXT NOT NULL,

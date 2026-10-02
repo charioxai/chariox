@@ -132,3 +132,10 @@ export type DeploymentAppsPreview = {
     apps: (WorkflowPublicationApp & { capabilities: Record<string, unknown> })[]
   }) | null
 }
+
+/** Protocol 401: owner-scoped restore result. Authority is never restored. */
+export interface AppDataSnapshotRestored {
+  installation_id: string
+  generation: string
+  snapshot_id: string
+}

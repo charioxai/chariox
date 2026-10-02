@@ -12,7 +12,9 @@ pub(crate) mod app_file_grant_broker;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_files_broker;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-mod app_snapshot_broker;
+pub(crate) mod app_snapshot_broker;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_snapshot_restore;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_connection_broker;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]

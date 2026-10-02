@@ -3,6 +3,7 @@
 mod first_install;
 mod manual_stop;
 mod operations;
+mod restore;
 mod owner;
 mod ownership;
 mod recovery;
@@ -133,6 +134,7 @@ struct Entry {
 }
 struct Control {
     first_request: Option<String>,
+    restore_data: Mutex<Option<chariox_app_runtime::worker_process::PrivateData>>,
     stop: AtomicBool,
     manual: AtomicBool,
     manual_committed: AtomicBool,

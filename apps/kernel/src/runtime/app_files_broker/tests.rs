@@ -10,6 +10,7 @@ mod connections;
 mod file_grants;
 mod outcomes;
 mod snapshots;
+mod snapshot_restore;
 mod support;
 
 #[test]

@@ -547,3 +547,13 @@ pub struct AppAutomationSummary {
     pub scheduled: bool,
     pub status: AppAutomationStatus,
 }
+
+/// Protocol 401: owner-scoped restore of one saved same-generation snapshot.
+/// The worker is drained and left stopped. No authority comes from the copy.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RestoreAppDataSnapshotRequest {
+    pub installation_id: String,
+    pub expected_generation: String,
+    pub snapshot_id: String,
+}
