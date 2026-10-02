@@ -1,17 +1,18 @@
 import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
 import { once } from "node:events"
-import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
+import WebSocket from "ws"
 import { LocalIpcClient } from "../../../../packages/kernel-client/dist/ipc.js"
 import { attachToSessionRequest, createSessionRequest, listSessionsRequest } from "../../../../packages/kernel-client/dist/ipc-requests.js"
 import { waitForKernelIpc } from "./live-provider-context-injection-drill-helpers.mjs"
 
 for (const isolation of ["CHARIOX_HOME", "XDG_STATE_HOME"]) {
-  test(`private ${isolation} clients authenticate in log mode, including after restart`, {
+  test(`private ${isolation} clients authenticate under enforcement, including after restart`, {
     skip: !process.env.CHARIOX_LOCAL_AUTH_KERNEL_BINARY,
     timeout: 60_000,
   }, async () => {
@@ -69,6 +70,25 @@ for (const isolation of ["CHARIOX_HOME", "XDG_STATE_HOME"]) {
         await stopKernel(kernel.child)
         const logs = kernel.output + await readLogs(kernel.env.CHARIOX_LOG_DIR)
         assert.doesNotMatch(logs, /without the local auth token|wrong local auth token/)
+        // First-party lanes above produce no auth refusals. Independently
+        // probe raw upgrades after restart so client-side checks cannot mask
+        // the kernel's enforcement boundary.
+        kernel.child = startKernel(kernel, children)
+        await waitForKernelIpc(LocalIpcClient, listSessionsRequest, kernel.endpoint, kernel.child, 25_000, kernel.env)
+        for (const headers of [undefined, { authorization: "Bearer wrong-drill-fixture" }]) {
+          const rejection = await rejectedUpgrade(kernel.endpoint, headers)
+          assert.equal(rejection.status, 401)
+          assert.match(rejection.body, /kernel-local-auth\/\d+\.token/)
+          assert.ok(rejection.body.includes(`ws+unix://${kernel.env.CHARIOX_DAEMON_SOCKET}`))
+          assert.doesNotMatch(rejection.body, /wrong-drill-fixture|chx_kat_/)
+        }
+        const unix = new LocalIpcClient(`ws+unix://${kernel.env.CHARIOX_DAEMON_SOCKET}`)
+        try {
+          await assert.rejects(unix.send(listSessionsRequest()), (error) => error.code === "kernel_access_denied")
+        } finally {
+          unix.destroy()
+        }
+        await stopKernel(kernel.child)
       }
     } finally {
       for (const client of clients) client.destroy()
@@ -77,6 +97,43 @@ for (const isolation of ["CHARIOX_HOME", "XDG_STATE_HOME"]) {
     }
   })
 }
+
+test("kernel startup fails when its required local token cannot be written", {
+  skip: !process.env.CHARIOX_LOCAL_AUTH_KERNEL_BINARY,
+  timeout: 30_000,
+}, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-auth-startup-failure-"))
+  const children = new Set()
+  try {
+    const home = path.join(root, "private")
+    await mkdir(path.join(home, "state"), { recursive: true })
+    await writeFile(path.join(home, "state", "kernel-local-auth"), "directory blocked by owned fixture")
+    const ports = await reservePorts()
+    const kernel = { directory: root, output: "", env: {
+      PATH: process.env.PATH,
+      HOME: path.join(root, "home"),
+      CHARIOX_HOME: home,
+      XDG_CONFIG_HOME: path.join(root, "config"),
+      CHARIOX_LOG_DIR: path.join(root, "logs"),
+      TOKIO_WORKER_THREADS: "1",
+      CHARIOX_KERNEL_PORT: String(ports[0]),
+      CHARIOX_MCP_PORT: String(ports[1]),
+      CHARIOX_CODEX_PORT: String(ports[2]),
+      CHARIOX_OPENCODE_PORT: String(ports[3]),
+      CHARIOX_DAEMON_SOCKET: path.join(root, "daemon.sock"),
+      CHARIOX_DAEMON_ID: "auth-startup-failure",
+      CHARIOX_MACHINE_ID: "auth-startup-failure",
+    } }
+    kernel.child = startKernel(kernel, children)
+    const [code] = await once(kernel.child, "close", { signal: AbortSignal.timeout(10_000) })
+    assert.notEqual(code, 0, kernel.output)
+    assert.match(kernel.output, /prepare kernel local auth/)
+    assert.match(kernel.output, /cannot write required token file/)
+  } finally {
+    await Promise.all([...children].map(stopKernel))
+    await rm(root, { recursive: true, force: true })
+  }
+})
 
 function startKernel(kernel, children) {
   const child = spawn(process.env.CHARIOX_LOCAL_AUTH_KERNEL_BINARY, [], {
@@ -119,4 +176,24 @@ async function readLogs(directory) {
     logs += entry.isDirectory() ? await readLogs(file) : await readFile(file, "utf8")
   }
   return logs
+}
+
+async function rejectedUpgrade(endpoint, headers) {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(endpoint, { headers })
+    const timer = setTimeout(() => { socket.terminate(); reject(new Error("upgrade did not resolve")) }, 5000)
+    socket.once("open", () => { clearTimeout(timer); socket.terminate(); reject(new Error("unauthenticated upgrade admitted")) })
+    socket.on("error", () => {})
+    socket.once("unexpected-response", (_request, response) => {
+      let body = ""
+      response.setEncoding("utf8")
+      response.on("data", (chunk) => { body += chunk })
+      response.once("end", () => {
+        clearTimeout(timer)
+        socket.terminate()
+        resolve({ status: response.statusCode, body })
+      })
+      response.once("error", (error) => { clearTimeout(timer); socket.terminate(); reject(error) })
+    })
+  })
 }

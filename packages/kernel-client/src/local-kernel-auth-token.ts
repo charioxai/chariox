@@ -24,7 +24,7 @@ export function localKernelAuthTokenPath(
 /**
  * Reads the token the local kernel on this endpoint's port wrote. Returns null
  * when there is none or the file is not a private regular file of this user;
- * the kernel still accepts such connections in log mode. Never throws.
+ * enforcement refuses such connections with a diagnostic. Never throws.
  */
 export function readLocalKernelAuthToken(endpoint: string, environment: NodeJS.ProcessEnv = process.env): string | null {
   const path = localKernelAuthTokenPath(endpoint, environment)

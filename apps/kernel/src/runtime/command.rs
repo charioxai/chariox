@@ -679,8 +679,47 @@ mod tests {
                 &request,
             );
             assert_eq!(command.caller.connection_class, Some(class));
-            // The class does not decide terminal status yet.
+            // Terminal status follows the class assigned by admission.
             assert_eq!(command.is_terminal_caller(), terminal);
+        }
+    }
+
+    #[test]
+    fn terminal_status_requires_the_admitted_terminal_class() {
+        use crate::local::KernelConnectionClass;
+        let request = LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest);
+        for source in [
+            KernelCommandSource::LocalCli,
+            KernelCommandSource::LocalIpc,
+            KernelCommandSource::RelayClient,
+        ] {
+            for class in [
+                None,
+                Some(KernelConnectionClass::Unauthenticated),
+                Some(KernelConnectionClass::ExternalAgent),
+                Some(KernelConnectionClass::KernelAgent),
+                Some(KernelConnectionClass::Host),
+                Some(KernelConnectionClass::RelayPeer),
+                Some(KernelConnectionClass::Terminal),
+            ] {
+                let mut caller = KernelCaller::for_source(&source);
+                caller.connection_class = class;
+                for metaagent in [None, Some("agent-1".to_string())] {
+                    caller.metaagent_id = metaagent.clone();
+                    let command = KernelCommand::from_local_request_with_caller(
+                        "class",
+                        source.clone(),
+                        caller.clone(),
+                        None,
+                        None,
+                        &request,
+                    );
+                    assert_eq!(
+                        command.is_terminal_caller(),
+                        class == Some(KernelConnectionClass::Terminal) && metaagent.is_none()
+                    );
+                }
+            }
         }
     }
 

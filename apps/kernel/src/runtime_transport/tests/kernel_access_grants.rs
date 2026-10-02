@@ -340,7 +340,12 @@ struct Client {
 impl Client {
     fn start(root: &Path) -> Self {
         let mut child = Command::new(std::env::current_exe().unwrap())
-            .args(["kernel_access_client_child", "--ignored", "--nocapture"])
+            .args([
+                "kernel_access_client_child",
+                "--ignored",
+                "--nocapture",
+                "--quiet",
+            ])
             .env("CHARIOX_ACCESS_TEST_CLIENT", root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

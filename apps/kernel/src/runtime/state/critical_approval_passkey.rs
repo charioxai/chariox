@@ -466,8 +466,10 @@ impl KernelRuntimeState {
     /// Whether this answer proves the owner's presence for a passkey-gated
     /// choice. Not verified when the choice needs no passkey or the caller
     /// does not own the decision (the answer path then refuses on its own
-    /// terms). Every gated answer is audited, with its outcome and the
-    /// connection's class only. A passkey from a class that may not submit
+    /// terms). Passkey audit events record check outcomes and the
+    /// connection's class only. Hosts stay outside this gate and
+    /// its audits; the resolution path refuses their passkey-required choices
+    /// without verified presence. A passkey from a class that may not submit
     /// one is refused first, without verification or a count against the
     /// owner's limit.
     #[allow(clippy::too_many_arguments)]
@@ -486,6 +488,12 @@ impl KernelRuntimeState {
                 PASSKEY_NOT_ACCEPTED,
                 "only a Chariox terminal can submit the passkey",
             ));
+        }
+        // Hosts retain owner decision routing, but never enter the passkey
+        // gate. The resolution path refuses passkey-required choices without
+        // verified presence, while still allowing refusals and routine choices.
+        if connection_class == Some(KernelConnectionClass::Host) {
+            return Ok(CriticalApprovalAuthorization::without_passkey(false));
         }
         let Some((owner, operation_id)) =
             self.owned
@@ -525,7 +533,10 @@ impl KernelRuntimeState {
             ));
         }
         let Some(passkey) = passkey else {
-            if !fresh && presence.remembered(&owner, Instant::now()) {
+            if !fresh
+                && connection_class == Some(KernelConnectionClass::Terminal)
+                && presence.remembered(&owner, Instant::now())
+            {
                 audit("remembered")?;
                 return Ok(CriticalApprovalAuthorization::without_passkey(true));
             }

@@ -429,8 +429,8 @@ Current implementation notes:
 
 - the TypeScript CLI now defaults to `ws://127.0.0.1:${CHARIOX_KERNEL_PORT:-43118}/kernel`
 - the Rust daemon process hosts that WebSocket listener directly
-- local credentials travel on the upgrade's `Authorization: Bearer <token>` header, not in any frame. A kernel started with `CHARIOX_KERNEL_LOCAL_AUTH_TOKEN(_FILE)` (managed and hosted workers) refuses upgrades without that token with HTTP 401. Any other kernel generates a fresh `chx_kat_`-prefixed token at each start and writes it to the owner-only file `<state dir>/kernel-local-auth/<port>.token`, where the state dir is `$CHARIOX_HOME/state`, `$XDG_STATE_HOME/chariox` or `$HOME/.local/state/chariox`. Local clients read that file on every connection to a loopback endpoint and present the token. For now this is log mode: upgrades without the token, or with a wrong one, are accepted and logged (rate-limited, never the token itself)
-- the older Unix-socket local IPC path still exists for daemon harnessing/tests and compatibility shims, but it is no longer the primary CLI transport
+- local credentials travel on the upgrade's `Authorization: Bearer <token>` header, not in any frame. A kernel started with `CHARIOX_KERNEL_LOCAL_AUTH_TOKEN(_FILE)` (managed and hosted workers) refuses upgrades without that token with HTTP 401. Any other kernel generates a fresh `chx_kat_`-prefixed token at each start and writes it to the owner-only file `<state dir>/kernel-local-auth/<port>.token`, where the state dir is `$CHARIOX_HOME/state`, `$XDG_STATE_HOME/chariox` or `$HOME/.local/state/chariox`. Local clients read that file on every connection to a loopback endpoint and present the token. Since protocol 403, upgrades without the token, or with a wrong one, receive HTTP 401 naming the token file and the Unix socket; refusals are logged (rate-limited, never the token itself)
+- the Unix socket serves the same websocket protocol with OS peer identity and process-bound access grants; an ungranted peer can only request access
 - the current wire shape now supports request/response plus pushed kernel events over one long-lived connection
 - subscriptions carry optional `resume_from_event_id`
 - the kernel emits monotonic in-process `event_id` values on pushed events
@@ -2479,6 +2479,41 @@ Workflow trigger and deployment direction:
   grant_extend_notice_minutes = 5
   request_timeout_minutes = 10
   ```
+- protocol 403: local access enforcement.
+
+  TCP websocket admission now requires the generated local token. Missing, wrong,
+  malformed and stale credentials receive HTTP 401 before command dispatch. Its
+  body names `<state>/kernel-local-auth/<port>.token` and the configured
+  `ws+unix:///absolute/socket` endpoint. `LocalIpcClient` reports that diagnostic
+  as a non-retryable `authentication_failed` error. It continues reading the
+  private token file for each reconnect; managed host-token kernels retain their
+  existing admission behavior and owner-decision reply routing. Hosts remain
+  unable to submit passkeys or answer credential prompts. Remember-window
+  approvals are restricted to the terminal class; host controllers cannot use them.
+  If the generated token file cannot be written or the listener address is
+  unavailable, startup fails before publishing local presence. First-party
+  clients send the local token only to loopback endpoints; direct LAN access,
+  including a non-loopback `CHARIOX_KERNEL_HOST`, is unsupported. Physical
+  devices use the Cloud/relay path.
+
+  Terminal authority follows the admitted `terminal` connection class, rather
+  than the command transport source. Only that class may submit a passkey or
+  receive owner passkey popups. Unauthenticated Unix peers can only request
+  access; approved external peers keep the process-bound, session-scoped grant
+  path from protocol 395 and cannot answer critical approvals. Relay identities,
+  per-run runtime MCP admission and the publication gateway keep their existing
+  credential paths. No first-party minimum version rises: token-aware clients
+  also work with older log-mode kernels, and this change adds no request or event
+  shape that a client requires.
+
+  Focused validation: `runtime_transport::tests::laptop_kernel_websocket_enforces_local_tokens`,
+  `runtime::command::tests::terminal_status_requires_the_admitted_terminal_class`,
+  `runtime_transport::tests::kernel_access_grants`, and
+  `apps/cli/scripts/lib/private-kernel-local-auth.kernel-test.mjs` (set
+  `CHARIOX_LOCAL_AUTH_KERNEL_BINARY` to the candidate binary). The private-kernel
+  drill checks both state-root conventions, control/event lanes and token rotation
+  without provisioning any provider account. Grant/passkey drills use temporary
+  test vaults. The owner's real passkey sitting remains separate.
 - protocol 404: terminal `/sudo <prompt>` raises a fresh-passkey popup of kind
   `sudo`. The resulting authorization is kernel-memory state, attached to one
   exact provider turn; yield and interruption consume its ephemeral binding.

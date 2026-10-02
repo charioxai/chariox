@@ -87,11 +87,10 @@ fn kernel_connection_classes_and_their_audit_attribution_are_versioned() {
             class
         );
     }
-    // Only terminals may submit a passkey; unauthenticated connections keep
-    // their current treatment until enforcement.
+    // Protocol 403: only admitted terminals may submit a passkey.
     assert_eq!(
         classes.map(KernelConnectionClass::may_submit_passkey),
-        [true, false, false, false, false, true]
+        [true, false, false, false, false, false]
     );
 
     let audit = critical_approval_audit_payload(
