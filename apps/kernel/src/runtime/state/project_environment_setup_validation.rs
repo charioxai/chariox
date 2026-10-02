@@ -66,10 +66,10 @@ fn settle_validation_output_readers(
     loop {
         if stdout
             .as_ref()
-            .map_or(true, |reader| reader.task.is_finished())
+            .is_none_or(|reader| reader.task.is_finished())
             && stderr
                 .as_ref()
-                .map_or(true, |reader| reader.task.is_finished())
+                .is_none_or(|reader| reader.task.is_finished())
         {
             let stdout_bytes = stdout
                 .take()
@@ -93,10 +93,10 @@ fn settle_validation_output_readers(
             while Instant::now() < stop_deadline
                 && !(stdout
                     .as_ref()
-                    .map_or(true, |reader| reader.task.is_finished())
+                    .is_none_or(|reader| reader.task.is_finished())
                     && stderr
                         .as_ref()
-                        .map_or(true, |reader| reader.task.is_finished()))
+                        .is_none_or(|reader| reader.task.is_finished()))
             {
                 std::thread::sleep(
                     VALIDATION_OUTPUT_POLL_INTERVAL

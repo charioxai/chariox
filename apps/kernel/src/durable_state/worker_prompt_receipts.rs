@@ -152,7 +152,7 @@ fn receipt_record_has_identity(record: &WorkerPromptReceiptRecord) -> bool {
         && receipt
             .worker_provider_run_id
             .as_deref()
-            .map_or(true, |run_id| !run_id.trim().is_empty())
+            .is_none_or(|run_id| !run_id.trim().is_empty())
         && (receipt.phase != WorkerPromptReceiptPhase::Accepted
             || receipt.worker_provider_run_id.is_some())
 }
