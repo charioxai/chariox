@@ -208,4 +208,6 @@ pub use workspace::*;
 /// `active_substitute_index` and `last_substitution`. An agent persisted on a
 /// substitute loads on its primary profile.
 /// Version 396 binds native approvals to the originating turn and provider run.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 396;
+/// Version 398 exposes `AppWorkerPhase::Quarantined` after the supervisor's
+/// restart limit is exhausted. Recovery uses the existing explicit start action.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 398;

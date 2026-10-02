@@ -755,3 +755,152 @@ async fn rejected_app_requests() {
         stopped
     );
 }
+
+/// V-RUN-03: exercise durable restart admission through the shared relay status
+/// response without spawning a provider, App worker, or live kernel service.
+#[tokio::test]
+async fn app_quarantine_status_survives_the_relay_boundary_and_explicit_start_clears_it() {
+    use crate::{
+        durable_state::app_worker_lifecycle::{LifecycleStoreError, WorkerPhase},
+        local::{AppWorkerPhase, AppWorkerRequest},
+        runtime::app_operation_budget::AppOperationBudget,
+    };
+    let root = TestRoot::new();
+    let app = crate::DaemonApp::bootstrap(root.config()).unwrap();
+    let store = app.durable_state_store();
+    crate::durable_state::app_state::fixture_event_catalog(&store);
+    crate::durable_state::app_state::fixture_copy_installation(
+        &store,
+        "alice",
+        "neighbour",
+        "fixture-deployment",
+        crate::durable_state::app_state::fixture_event_package(),
+    );
+    let budget = || AppOperationBudget::from_supervisor(|| false);
+    let neighbour = store
+        .claim_active_app_start("alice", "neighbour", "neighbour", false, budget())
+        .unwrap();
+    store
+        .record_app_worker(&neighbour, WorkerPhase::Running, true, None, budget())
+        .unwrap();
+    let router =
+        CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 8);
+    let cache = CommandResultCache::default();
+    let worker_request = |id: &str| {
+        LocalDaemonRequest::GetAppWorker(AppWorkerRequest {
+            installation_id: id.into(),
+        })
+    };
+    for failures in 1..=4 {
+        let attempt = format!("failure-{failures}");
+        let admission = store
+            .claim_active_app_start("alice", "installed", &attempt, failures > 1, budget())
+            .unwrap();
+        store
+            .record_app_worker(
+                &admission,
+                WorkerPhase::Failed,
+                true,
+                Some("app_worker_exited"),
+                budget(),
+            )
+            .unwrap();
+        let LocalDaemonResponse::AppWorker { worker } = dispatch(
+            &router,
+            &cache,
+            Some("alice"),
+            worker_request("installed"),
+            &attempt,
+        )
+        .await
+        else {
+            panic!("worker status must cross the relay boundary")
+        };
+        assert_eq!(
+            worker.phase,
+            if failures == 4 {
+                AppWorkerPhase::Quarantined
+            } else {
+                AppWorkerPhase::Failed
+            }
+        );
+        assert_eq!(worker.failure.as_deref(), Some("app_worker_exited"));
+        assert!(worker.enabled);
+        assert_eq!(
+            store
+                .app_worker_status("alice", "installed")
+                .unwrap()
+                .unwrap()
+                .failures,
+            failures
+        );
+        // Backdate the completed failure to avoid sleeping through the backoff.
+        // Failure four must still refuse recovery even after that delay expires.
+        rusqlite::Connection::open(store.path())
+            .unwrap()
+            .execute(
+                "UPDATE app_worker_lifecycle SET updated_ms=0 WHERE installation_id='installed'",
+                [],
+            )
+            .unwrap();
+    }
+    assert!(matches!(
+        store.claim_active_app_start("alice", "installed", "automatic", true, budget()),
+        Err(LifecycleStoreError::Stopped)
+    ));
+    let LocalDaemonResponse::AppWorker { worker } = dispatch(
+        &router,
+        &cache,
+        Some("alice"),
+        worker_request("neighbour"),
+        "neighbour",
+    )
+    .await
+    else {
+        panic!("neighbour status must remain available")
+    };
+    assert_eq!(worker.phase, AppWorkerPhase::Running);
+    assert!(worker.enabled);
+    assert!(worker.failure.is_none());
+    // The existing explicit start admission, unlike recovery, clears failures.
+    let recovered = store
+        .claim_active_app_start("alice", "installed", "explicit-start", false, budget())
+        .unwrap();
+    assert_eq!(
+        store
+            .app_worker_status("alice", "installed")
+            .unwrap()
+            .unwrap()
+            .failures,
+        0
+    );
+    let LocalDaemonResponse::AppWorker { worker } = dispatch(
+        &router,
+        &cache,
+        Some("alice"),
+        worker_request("installed"),
+        "starting",
+    )
+    .await
+    else {
+        panic!("explicit start status must be visible")
+    };
+    assert_eq!(worker.phase, AppWorkerPhase::Starting);
+    assert!(worker.failure.is_none());
+    store
+        .record_app_worker(&recovered, WorkerPhase::Running, true, None, budget())
+        .unwrap();
+    let LocalDaemonResponse::AppWorker { worker } = dispatch(
+        &router,
+        &cache,
+        Some("alice"),
+        worker_request("installed"),
+        "recovered",
+    )
+    .await
+    else {
+        panic!("recovered status must be visible")
+    };
+    assert_eq!(worker.phase, AppWorkerPhase::Running);
+    assert!(worker.failure.is_none());
+}

@@ -22,7 +22,7 @@ const usage = [
   "       app automation disable <installation-id> <automation-id> <revision>",
   "       app inbox list <installation-id> | remove <installation-id> <route-id>",
   "       app inbox add <installation-id> <route-id> <event> <source-event-type> [--version <n>] [--connection <generator>/<connection-id>/<scope>]",
-  "       app inbox test <installation-id> <route-id> <occurrence-id> <json-payload>",
+  "       app inbox test <installation-id> <route-id> <occurrence-id> '<json-payload>'",
   "       app connection list <installation-id> | grant <installation-id> <generator>/<connection-id> | revoke <installation-id> <connection-id>",
   "       app file revoke <installation-id> [<operation-id>]",
 ].join("\n")
@@ -37,7 +37,7 @@ export function appCommandArgs(raw: string, args: readonly string[]): string[] {
 export async function executeAppCommand(
   args: string[],
   client: Client,
-  defaults: { sessionId?: string | undefined } = {},
+  defaults: { sessionId?: string | undefined; appCommandPrefix?: string } = {},
 ): Promise<ShellCommandResult> {
   const [action = "list", ...rest] = args
   let request: Record<string, unknown>
@@ -167,7 +167,7 @@ export async function executeAppCommand(
   }
   if (response.AppWorker) {
     const data = expect<{ worker: AppWorkerSummary }>(response, "AppWorker")
-    return { ok: true, message: formatWorker(data.worker), data }
+    return { ok: true, message: formatWorker(data.worker, defaults.appCommandPrefix ?? "app"), data }
   }
   if (response.AppAutomations) {
     const data = expect<{ installation_id: string; automations: AppAutomationSummary[] }>(response, "AppAutomations")
@@ -262,13 +262,16 @@ function formatInboxRoute(route: AppInboxRouteSummary): string {
   return `${route.route_id} · ${route.source_event_type} v${route.source_event_version}${source} → ${route.event_name} · ${counts}`
 }
 
-function formatWorker(worker: AppWorkerSummary): string {
+function formatWorker(worker: AppWorkerSummary, commandPrefix: string): string {
   const enabled = worker.enabled ? "" : " (stopped by user)"
   const hint = worker.failure === "app_lifecycle_disk_space"
     ? `: not enough free disk space on the host; app logs ${worker.installation_id} says how much to free`
     : ""
   const failure = worker.failure ? ` · ${worker.failure}${hint}` : ""
-  return `${worker.installation_id} · ${worker.phase.replace("_", " ")}${enabled}${failure}`
+  const recovery = worker.phase === "quarantined"
+    ? ` · explicit start required: ${commandPrefix} start ${JSON.stringify(worker.installation_id)}`
+    : ""
+  return `${worker.installation_id} · ${worker.phase.replace("_", " ")}${recovery}${enabled}${failure}`
 }
 
 function formatAutomation(automation: AppAutomationSummary): string {

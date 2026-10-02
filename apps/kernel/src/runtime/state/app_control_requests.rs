@@ -3,7 +3,7 @@
 //! installation. Automation targets are resolved under workflow ownership.
 use super::{app_automation_owned_state::ConfigureAppAutomation, KernelRuntimeState};
 use crate::{
-    durable_state::app_worker_lifecycle::WorkerPhase,
+    durable_state::app_worker_lifecycle::{WorkerPhase, WorkerStatus},
     local::{
         AppAutomationStatus, AppAutomationSummary, AppRequestErrorCode, AppWorkerAction,
         AppWorkerPhase, AppWorkerSummary, LocalDaemonRequest, LocalDaemonResponse,
@@ -529,7 +529,7 @@ impl KernelRuntimeState {
             },
             Some(status) => AppWorkerSummary {
                 installation_id: installation,
-                phase: worker_phase(status.phase, dormant),
+                phase: worker_phase(&status, dormant),
                 enabled: status.desired_running,
                 failure: status.failure,
                 updated_at_ms: Some(status.updated_ms),
@@ -540,12 +540,13 @@ impl KernelRuntimeState {
 }
 
 /// An idle-stopped worker restarts on use (Dormant); a user stop does not.
-fn worker_phase(phase: WorkerPhase, dormant: bool) -> AppWorkerPhase {
-    match phase {
+fn worker_phase(status: &WorkerStatus, dormant: bool) -> AppWorkerPhase {
+    match status.phase {
         WorkerPhase::Starting => AppWorkerPhase::Starting,
         WorkerPhase::Running => AppWorkerPhase::Running,
         WorkerPhase::Stopped if dormant => AppWorkerPhase::Dormant,
         WorkerPhase::Stopped => AppWorkerPhase::Stopped,
+        WorkerPhase::Failed if status.is_quarantined() => AppWorkerPhase::Quarantined,
         WorkerPhase::Failed => AppWorkerPhase::Failed,
     }
 }
@@ -630,22 +631,34 @@ mod tests {
     use super::*;
     use crate::runtime::app_lifecycle::LifecycleError;
 
+    fn status(phase: WorkerPhase, failures: u32) -> WorkerStatus {
+        WorkerStatus {
+            generation: 1,
+            attempt: "attempt".into(),
+            phase,
+            desired_running: true,
+            failure: None,
+            updated_ms: 1,
+            failures,
+        }
+    }
+
     #[test]
     fn only_an_idle_stop_reports_dormant() {
         assert_eq!(
-            worker_phase(WorkerPhase::Stopped, true),
+            worker_phase(&status(WorkerPhase::Stopped, 0), true),
             AppWorkerPhase::Dormant
         );
         assert_eq!(
-            worker_phase(WorkerPhase::Stopped, false),
+            worker_phase(&status(WorkerPhase::Stopped, 0), false),
             AppWorkerPhase::Stopped
         );
         assert_eq!(
-            worker_phase(WorkerPhase::Running, true),
+            worker_phase(&status(WorkerPhase::Running, 0), true),
             AppWorkerPhase::Running
         );
         assert_eq!(
-            worker_phase(WorkerPhase::Failed, true),
+            worker_phase(&status(WorkerPhase::Failed, 1), true),
             AppWorkerPhase::Failed
         );
     }
@@ -719,5 +732,35 @@ mod tests {
             assert!(!evicted);
             assert_eq!(tried.len(), 1);
         }
+    }
+
+    #[test]
+    fn quarantine_is_distinct_from_backoff_and_only_applies_to_failed_workers() {
+        for dormant in [false, true] {
+            for failures in [0, 1, 2, 3] {
+                assert_eq!(
+                    worker_phase(&status(WorkerPhase::Failed, failures), dormant),
+                    AppWorkerPhase::Failed
+                );
+            }
+            for failures in [4, 5, u32::MAX] {
+                assert_eq!(
+                    worker_phase(&status(WorkerPhase::Failed, failures), dormant),
+                    AppWorkerPhase::Quarantined
+                );
+                assert_eq!(
+                    worker_phase(&status(WorkerPhase::Running, failures), dormant),
+                    AppWorkerPhase::Running
+                );
+                assert_eq!(
+                    worker_phase(&status(WorkerPhase::Starting, failures), dormant),
+                    AppWorkerPhase::Starting
+                );
+            }
+        }
+        assert_eq!(
+            worker_phase(&status(WorkerPhase::Stopped, 4), false),
+            AppWorkerPhase::Stopped
+        );
     }
 }

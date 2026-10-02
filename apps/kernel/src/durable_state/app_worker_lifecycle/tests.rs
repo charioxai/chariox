@@ -254,6 +254,7 @@ fn a_failed_worker_restarts_with_backoff_then_is_quarantined() {
     };
     // Restarts wait 1, 4 and 16 seconds after the failure.
     for (failures, wait) in [(1, 1_000), (2, 4_000), (3, 16_000)] {
+        assert!(!failed(failures).is_quarantined());
         assert!(!store::restart_allowed(
             &failed(failures),
             10_000 + wait - 1
@@ -261,6 +262,7 @@ fn a_failed_worker_restarts_with_backoff_then_is_quarantined() {
         assert!(store::restart_allowed(&failed(failures), 10_000 + wait));
     }
     // A fourth failure in a row quarantines it until an explicit start.
+    assert!(failed(4).is_quarantined());
     assert!(!store::restart_allowed(&failed(4), u64::MAX / 2));
 }
 

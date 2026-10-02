@@ -66,7 +66,8 @@ export type AppInstallOperationSummary = {
 /** Protocol 345 worker control. `dormant` workers start on their next use. */
 export type AppWorkerSummary = {
   installation_id: string
-  phase: "not_started" | "starting" | "running" | "dormant" | "stopped" | "failed"
+  /** Protocol 398: quarantine requires an explicit start. */
+  phase: "not_started" | "starting" | "running" | "dormant" | "stopped" | "failed" | "quarantined"
   /** False after a user stop; on-demand use does not restart it. */
   enabled: boolean
   failure: string | null

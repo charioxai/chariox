@@ -190,3 +190,73 @@ test("/app open preserves the kernel's actionable transport error", async () => 
     flashFooter: notice => assert.fail(notice),
   }, { kind: "app", raw: "/app open todo", args: ["open", "todo"] }), { message })
 })
+
+
+test("App slash quarantine names the existing explicit start action and shows recovery", async () => {
+  const notices: string[] = []
+  const requests: unknown[] = []
+  const deps = {
+    sendAppRequest: async (request: Record<string, unknown>) => {
+      requests.push(request)
+      return { AppWorker: { worker: { installation_id: "install-1",
+        phase: request.ControlAppWorker ? "running" : "quarantined", enabled: true,
+        failure: request.ControlAppWorker ? null : "app_worker_exited", updated_at_ms: 1 } } }
+    },
+    appendNotice: (message: string) => { notices.push(message) },
+    flashFooter: (message: string) => assert.fail(message),
+  }
+  await handleAppSlashCommand(deps, { kind: "app", raw: "/app worker install-1", args: ["worker", "install-1"] })
+  const recovery = notices[0]!.split("explicit start required: ")[1]!.split(" · ")[0]!
+  const command = parseSlashCommand(recovery)
+  assert.equal(command?.kind, "app")
+  if (command?.kind !== "app") assert.fail("recovery hint must parse as an App command")
+  assert.deepEqual(command.args, ["start", "install-1"])
+  await handleAppSlashCommand(deps, command)
+  assert.deepEqual(requests, [
+    { GetAppWorker: { installation_id: "install-1" } },
+    { ControlAppWorker: { installation_id: "install-1", action: "start" } },
+  ])
+  assert.deepEqual(notices, [
+    'install-1 · quarantined · explicit start required: /app start "install-1" · app_worker_exited',
+    "install-1 · running",
+  ])
+})
+
+
+test("App slash rejects incomplete quoted recovery before sending a request", async () => {
+  const command = parseSlashCommand('/app start "install-1')
+  assert.equal(command?.kind, "app")
+  if (command?.kind !== "app") assert.fail("incomplete App input remains recognizable")
+  await assert.rejects(handleAppSlashCommand({
+    sendAppRequest: async () => assert.fail("malformed recovery must not be sent"),
+    appendNotice: message => assert.fail(message),
+    flashFooter: message => assert.fail(message),
+  }, command), /unterminated quote/)
+})
+
+
+test("App slash inbox test preserves a single-quoted JSON payload and explains quoting", async () => {
+  const requests: unknown[] = []
+  const notices: string[] = []
+  const flashes: string[] = []
+  const deps = {
+    sendAppRequest: async (request: Record<string, unknown>) => {
+      requests.push(request)
+      return { AppInboxOccurrenceAccepted: { route_id: "mail", occurrence_id: "occ-1", duplicate: false } }
+    },
+    appendNotice: (message: string) => { notices.push(message) },
+    flashFooter: (message: string) => { flashes.push(message) },
+  }
+  const command = parseSlashCommand(`/app inbox test todo mail occ-1 '{"title":"hello world","nested":{"n":1}}'`)
+  if (command?.kind !== "app") assert.fail("quoted inbox payload must parse as an App command")
+  await handleAppSlashCommand(deps, command)
+  assert.deepEqual(requests, [{ TestAppInboxRoute: { installation_id: "todo", route_id: "mail",
+    occurrence_id: "occ-1", payload: { title: "hello world", nested: { n: 1 } } } }])
+  assert.equal(notices.length, 1)
+  assert.deepEqual(flashes, [])
+  const unquoted = parseSlashCommand('/app inbox test todo mail occ-2 {"title":"x"}')
+  if (unquoted?.kind !== "app") assert.fail("inbox command must be recognized")
+  await handleAppSlashCommand(deps, unquoted)
+  assert.equal(requests.length, 2)
+  assert.deepEqual(flashes, [])
+})
