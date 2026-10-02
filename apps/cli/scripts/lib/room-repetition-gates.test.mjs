@@ -67,3 +67,13 @@ test('MP-08/MP-10: transient decoded canvas cannot pass stable live-view gate', 
  assert.throws(()=>assertStableDecodedViews([[frame],[frame]],true))
  assert.throws(()=>assertStableDecodedViews([[frame],[{...frame,streamId:'new'}]],false))
 })
+
+// MP-08/MP-10/MP-11: keep portable repetition contracts in the normal CLI gate.
+test('MP-08/MP-10/MP-11 normal test gate runs Node and Python repetition contracts', async () => {
+  const {readFile} = await import('node:fs/promises')
+  const {scripts} = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8'))
+  assert.ok(scripts.test.includes('pnpm run test:drill-evidence-fixtures'))
+  const [nodeGate, pythonGate] = scripts['test:drill-evidence-fixtures'].split(' && ')
+  assert.ok(nodeGate.split(/\s+/).includes('scripts/lib/room-repetition-gates.test.mjs'))
+  assert.equal(pythonGate, 'python3 -B scripts/lib/room-repetition-private-relay-probe.test.py')
+})
