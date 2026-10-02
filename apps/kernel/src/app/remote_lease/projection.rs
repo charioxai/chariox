@@ -1950,10 +1950,19 @@ mod explicit_completion_tests {
             completed_at_ms,
         );
 
+        // The first drain after the submission carries the provider run, but
+        // not the completion that still waits for output.
         let before_output = RemoteLeaseRuntime::new(&mut app)
             .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
-            .expect("completion-only projection should succeed");
-        assert!(before_output.is_none());
+            .expect("completion-only projection should succeed")
+            .expect("the first drain after the submission should carry the provider run");
+        let RelayPeerEvent::LeasedRuntimeProjection {
+            provider_run,
+            completions,
+            ..
+        } = before_output.1;
+        assert!(provider_run.is_some());
+        assert!(completions.is_empty());
         assert!(app
             .prompt_owner_active_prompt_for_agent_snapshot(
                 &leased_agent.backing_session_id,

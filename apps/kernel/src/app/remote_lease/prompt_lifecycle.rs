@@ -296,12 +296,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
         if started {
             crate::transport::flow_control::note_prompt_started(self.app, &provider_run_id);
         }
-        let provider_run_projection = self
-            .app
-            .providers
-            .get_run(&provider_run_id)
-            .ok()
-            .map(|run| (run.id().to_string(), run.state()));
         if started
             || leased_agent.active_home_prompt_id.is_none()
             || backing_active.is_none()
@@ -316,10 +310,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 agent.active_home_prompt_started_at_ms = Some(accepted_prompt.created_at_ms());
             }
         }
-        if let Some(provider_run_projection) = provider_run_projection {
-            if let Some(agent) = self.app.leased_agents.get_mut(&leased_agent.id) {
-                agent.projected_provider_run = Some(provider_run_projection);
-            }
+        // The home kernel binds this provider run only when it processes the
+        // submit acknowledgement, and it drops run snapshots that arrive
+        // earlier. Clear the marker so the home's first drain after the ACK
+        // carries the run even if the run never changes state again.
+        if let Some(agent) = self.app.leased_agents.get_mut(&leased_agent.id) {
+            agent.projected_provider_run = None;
         }
         if let Some(context) = workflow_context {
             let binding_home_prompt_id = home_prompt_id
