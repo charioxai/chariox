@@ -114,7 +114,7 @@ Terminology:
 - Daemon lib, runtime integration, websocket integration, relay-client, and bin tests remain green after any drill fixes.
 - Docs reflect the final drill results before new tasks begin.
 
-Workspace identity note: workspace live sync captures repo/branch/head identity for each provider run. If a drill changes `HEAD`, branch, or repo identity while another workspace live sync run is active, the kernel may reject the next tool call with `workspace_identity_changed`. That is expected protection, not a merge conflict; rerun the drill from a stable workspace identity.
+Workspace identity note: workspace live sync captures repo/branch/worktree identity for each provider run. Commits that move `HEAD` on the same branch keep that identity. If a drill switches branch, repo, or worktree while another workspace live sync run is active, the kernel may reject the next tool call with `workspace_identity_changed`. That is expected protection, not a merge conflict; rerun the drill from a stable workspace identity.
 
 ## Current Results
 
