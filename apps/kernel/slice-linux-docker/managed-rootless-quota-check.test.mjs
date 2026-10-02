@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
@@ -42,4 +42,35 @@ test("fresh-image quota config keeps ~/.config owned by the rootless user", () =
   const userConfig = script.indexOf('install -d -o chariox-docker -g chariox-docker -m 0700 "$ROOTLESS_HOME/.config"')
   const rootConfig = script.indexOf('install -d -o root -g root -m 0755 "$ROOTLESS_HOME/.config/docker"')
   assert.ok(userConfig > 0 && rootConfig > userConfig)
+})
+
+
+test("MP-02/MP-08/MP-10/MP-11 config-parent preparation repairs old root ownership and refuses aliases", () => {
+  const helper = script.match(/^ensure_rootless_config_parent\(\) \{\n[\s\S]*?^\}/m)?.[0]
+  assert.ok(helper, "production config-parent helper exists")
+  const root = mkdtempSync(join(tmpdir(), "lownits-rootless-config-"))
+  try {
+    const home = join(root, "home")
+    const bin = join(root, "bin")
+    mkdirSync(home)
+    mkdirSync(bin)
+    const fixtureUid = process.getuid() === 0 ? 61002 : process.getuid()
+    const fixtureGid = process.getuid() === 0 ? 61002 : process.getgid()
+    // Numeric fixture ownership avoids creating or modifying host service accounts.
+    writeFileSync(join(bin, "install"), '#!/bin/bash\nargs=()\nwhile (( $# )); do case "$1" in -o|-g) shift 2 ;; *) args+=("$1"); shift ;; esac; done\n/usr/bin/install "${args[@]}" || exit $?\nexec /usr/bin/chown "$FIXTURE_UID:$FIXTURE_GID" "${args[-1]}"\n')
+    chmodSync(join(bin, "install"), 0o755)
+    const run = () => spawnSync("/bin/sh", ["-c", helper + "\nensure_rootless_config_parent"], {
+      env: { PATH: bin + ":/usr/bin:/bin", ROOTLESS_HOME: home, FIXTURE_UID: String(fixtureUid), FIXTURE_GID: String(fixtureGid) }, encoding: "utf8",
+    })
+    mkdirSync(join(home, ".config"), { mode: 0o700 })
+    const result = run()
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(statSync(join(home, ".config")).uid, fixtureUid)
+    assert.equal(statSync(join(home, ".config")).mode & 0o777, 0o700)
+    rmSync(join(home, ".config"), { recursive: true })
+    symlinkSync(bin, join(home, ".config"))
+    const alias = run()
+    assert.equal(alias.status, 1)
+    assert.match(alias.stderr, /config parent is not a real directory/)
+  } finally { rmSync(root, { recursive: true, force: true }) }
 })
