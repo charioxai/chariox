@@ -422,3 +422,231 @@ fn shutdown_wins_over_a_hung_callback_without_waiting_for_its_deadline() {
     );
     assert!(all_reaped(&observations));
 }
+
+#[test]
+fn configuration_callback_releases_every_shared_admission_permit() {
+    let (_scratch, _runtime, store, control, observations) =
+        setup(Mode::LifecycleHangConfiguration);
+    grant(&store, "connection-1");
+    wait(|| contains(&observations, 0, "configuration_change"));
+    let permits = control
+        .lifecycle()
+        .0
+        .admission
+        .clone()
+        .try_acquire_many_owned(8)
+        .expect("App callback must not pin shared admission");
+    control.lifecycle().shutdown_blocking().unwrap();
+    assert!(all_reaped(&observations));
+    drop(permits);
+}
+
+#[test]
+fn idle_request_returns_without_waiting_for_suspend_and_keeps_one_owner() {
+    let (_scratch, runtime, _store, control, observations) = setup(Mode::LifecycleHangSuspend);
+    let catalog = control
+        .active_app_lease("alice", "installed")
+        .unwrap()
+        .catalog()
+        .clone();
+    let before = Instant::now();
+    control
+        .lifecycle()
+        .request_idle_stop_blocking("alice", catalog.clone(), || true)
+        .unwrap();
+    assert!(before.elapsed() < Duration::from_secs(1));
+    wait(|| contains(&observations, 0, "suspend"));
+    assert_eq!(
+        control
+            .lifecycle()
+            .request_idle_stop_blocking("alice", catalog, || true),
+        Err(LifecycleError::Busy)
+    );
+    assert_eq!(
+        control.lifecycle().start_on_demand_blocking(
+            "alice",
+            "installed",
+            runtime.handle().clone()
+        ),
+        Err(LifecycleError::Busy)
+    );
+    control.lifecycle().shutdown_blocking().unwrap();
+    assert_eq!(names(&frames(&observations, 0)), ["startup", "suspend"]);
+    assert!(all_reaped(&observations));
+}
+
+#[test]
+fn full_dormant_capacity_keeps_the_worker_live_without_dispatch_or_failure() {
+    let (_scratch, _runtime, store, control, observations) = setup(Mode::Lifecycle);
+    let catalog = control
+        .active_app_lease("alice", "installed")
+        .unwrap()
+        .catalog()
+        .clone();
+    let publisher = &control.lifecycle().0.publisher;
+    for index in 0..64 {
+        assert!(publisher
+            .reserve_dormant(
+                &format!("other-{index}"),
+                catalog.clone(),
+                json!({"connections":[]})
+            )
+            .unwrap()
+            .commit());
+    }
+    assert_eq!(
+        control
+            .lifecycle()
+            .idle_stop_blocking("alice", catalog, || true),
+        Err(LifecycleError::Busy)
+    );
+    assert!(control.active_app_lease("alice", "installed").is_some());
+    assert!(!control.is_app_dormant("alice", "installed"));
+    assert_eq!(
+        store
+            .app_worker_status("alice", "installed")
+            .unwrap()
+            .unwrap()
+            .phase,
+        WorkerPhase::Running
+    );
+    assert_eq!(names(&frames(&observations, 0)), ["startup"]);
+    control.lifecycle().shutdown_blocking().unwrap();
+    assert!(all_reaped(&observations));
+}
+
+#[test]
+fn completed_owner_rejects_new_requests_and_returns_non_refusal_for_queued_work() {
+    let control = Control::new();
+    let receipt = control.enqueue("prepare_update", json!(null)).unwrap();
+    control.complete();
+    assert_eq!(
+        control.wait_notification(receipt),
+        Err(LifecycleError::NotificationNotDispatched)
+    );
+    assert!(matches!(
+        control.enqueue("prepare_update", json!(null)),
+        Err(LifecycleError::NotificationNotDispatched)
+    ));
+}
+
+#[test]
+fn on_demand_caller_waits_for_a_valid_resume_longer_than_twenty_seconds() {
+    let (_scratch, runtime, store, control, observations) = setup(Mode::LifecycleSlowResume);
+    let catalog = control
+        .active_app_lease("alice", "installed")
+        .unwrap()
+        .catalog()
+        .clone();
+    control
+        .lifecycle()
+        .idle_stop_blocking("alice", catalog, || true)
+        .unwrap();
+    let before = Instant::now();
+    // This is the complete production caller path delegated by
+    // KernelRuntimeState::app_lease_on_demand, including its actual wait cap.
+    let lease = runtime
+        .block_on(crate::runtime::app_on_demand::app_lease_on_demand(
+            &control,
+            &store,
+            "alice",
+            "installed",
+        ))
+        .unwrap();
+    assert_eq!(lease.catalog().installation_id(), "installed");
+    assert!(
+        before.elapsed() >= Duration::from_secs(20) && before.elapsed() < Duration::from_secs(30)
+    );
+    assert_eq!(names(&frames(&observations, 1)), ["startup", "resume"]);
+    control.lifecycle().shutdown_blocking().unwrap();
+    assert!(all_reaped(&observations));
+}
+
+#[test]
+fn an_old_owner_exit_before_dispatch_does_not_cancel_an_approved_update() {
+    use crate::durable_state::app_connections::ConnectionGrantCommand;
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let store = scratch.store();
+    let (control, observations, id) = local_update::installed(&store, &runtime);
+    control.lifecycle().stop_blocking("alice", &id).unwrap();
+    control
+        .lifecycle()
+        .0
+        .fixture
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .lifecycle = Some(Mode::LifecycleFailConfiguration);
+    control
+        .lifecycle()
+        .start_active_blocking("alice", &id, runtime.handle().clone())
+        .unwrap();
+    wait(|| control.active_app_lease("alice", &id).is_some());
+    let old = control
+        .lifecycle()
+        .0
+        .entries
+        .lock()
+        .unwrap()
+        .get(&("alice".into(), id.clone()))
+        .unwrap()
+        .control
+        .clone();
+    let (paused, ready) = std::sync::mpsc::sync_channel(1);
+    let (release, resume) = std::sync::mpsc::sync_channel(1);
+    let resume = Mutex::new(resume);
+    *old.completion_checkpoint.lock().unwrap() = Some(Arc::new(move || {
+        let _ = paused.send(());
+        let _ = resume.lock().unwrap().recv();
+    }));
+    store
+        .app_connection_grant(ConnectionGrantCommand::Grant {
+            owner: "alice".into(),
+            installation: id.clone(),
+            generator_id: "dev.chariox.slack".into(),
+            connection_id: "end-owner".into(),
+            now_ms: 1,
+        })
+        .unwrap();
+    ready.recv_timeout(Duration::from_secs(6)).unwrap();
+    assert!(observations.lock().unwrap()[1].was_reaped());
+    assert!(!old.finished());
+    let update = local_update::stage_update(&store, &id, "owner_gone_update", "1.1.0", 0);
+    control
+        .lifecycle()
+        .0
+        .fixture
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .lifecycle = Some(Mode::Lifecycle);
+    let service = control.lifecycle().clone();
+    let handle = runtime.handle().clone();
+    let updating = std::thread::spawn(move || {
+        service.start_first_blocking("alice", "owner_gone_update", handle)
+    });
+    wait(|| old.notification.lock().unwrap().is_some());
+    release.send(()).unwrap();
+    updating.join().unwrap().unwrap();
+    wait(|| {
+        control
+            .active_app_lease("alice", &id)
+            .is_some_and(|lease| lease.catalog().generation() == update.token.generation)
+    });
+    assert_eq!(
+        store
+            .first_app_install_status("alice", "owner_gone_update")
+            .unwrap()
+            .phase,
+        InstallPhase::Committed
+    );
+    assert_eq!(
+        names(&frames(&observations, 1)),
+        ["startup", "configuration_change"]
+    );
+    control.lifecycle().shutdown_blocking().unwrap();
+    assert!(all_reaped(&observations));
+}

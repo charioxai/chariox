@@ -46,6 +46,8 @@ pub enum Mode {
     LifecycleHangSuspend,
     LifecycleHangResume,
     LifecycleHangConfiguration,
+    LifecycleSlowResume,
+    LifecycleFailConfiguration,
 }
 impl Mode {
     fn argument(self) -> &'static str {
@@ -69,6 +71,8 @@ impl Mode {
             Self::LifecycleHangSuspend => "sdk_lifecycle_hang_suspend",
             Self::LifecycleHangResume => "sdk_lifecycle_hang_resume",
             Self::LifecycleHangConfiguration => "sdk_lifecycle_hang_configuration_change",
+            Self::LifecycleSlowResume => "sdk_lifecycle_slow_resume",
+            Self::LifecycleFailConfiguration => "sdk_lifecycle_fail_configuration_change",
         }
     }
 }

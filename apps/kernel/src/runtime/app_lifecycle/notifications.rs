@@ -7,35 +7,61 @@ pub(super) struct Request {
     pub event: &'static str,
     pub data: Value,
     pub reply: mpsc::SyncSender<Result<()>>,
+    dispatched: Arc<AtomicBool>,
+}
+pub(super) struct Receipt {
+    response: mpsc::Receiver<Result<()>>,
+    dispatched: Arc<AtomicBool>,
 }
 impl Control {
-    pub(super) fn notify(&self, event: &'static str, data: Value) -> Result<()> {
+    pub(super) fn enqueue(&self, event: &'static str, data: Value) -> Result<Receipt> {
         let (reply, response) = mpsc::sync_channel(1);
-        {
-            let mut pending = self
-                .notification
-                .lock()
-                .map_err(|_| LifecycleError::Supervisor)?;
-            if self.stopped() || self.finished() {
-                return Err(LifecycleError::Stopped);
-            }
-            if pending.is_some() {
-                return Err(LifecycleError::Busy);
-            }
-            *pending = Some(Request { event, data, reply });
+        let dispatched = Arc::new(AtomicBool::new(false));
+        let mut pending = self
+            .notification
+            .lock()
+            .map_err(|_| LifecycleError::Supervisor)?;
+        if self.finished() {
+            return Err(LifecycleError::NotificationNotDispatched);
         }
+        if self.stopped() {
+            return Err(LifecycleError::Stopped);
+        }
+        if pending.is_some() || self.idle_requested.load(Ordering::Acquire) {
+            return Err(LifecycleError::Busy);
+        }
+        if event == "suspend" {
+            self.idle_requested.store(true, Ordering::Release);
+        }
+        *pending = Some(Request {
+            event,
+            data,
+            reply,
+            dispatched: dispatched.clone(),
+        });
         self.wake.notify_all();
-        // Includes an already admitted startup and the wire's 30 s cap. An
-        // abandoned request never survives into a later worker generation.
-        match response.recv_timeout(Duration::from_secs(45)) {
+        Ok(Receipt {
+            response,
+            dispatched,
+        })
+    }
+    pub(super) fn wait_notification(&self, receipt: Receipt) -> Result<()> {
+        match receipt.response.recv_timeout(Duration::from_secs(45)) {
             Ok(result) => result,
-            Err(_) => {
-                // A timed-out caller cannot leave a notification queued to run
-                // later. Withdrawal wakes the owner and preempts dispatch.
-                self.cancel(false);
-                Err(LifecycleError::Notification)
+            Err(error) => {
+                if matches!(error, mpsc::RecvTimeoutError::Timeout) {
+                    self.cancel(false);
+                }
+                if receipt.dispatched.load(Ordering::Acquire) {
+                    Err(LifecycleError::Notification)
+                } else {
+                    Err(LifecycleError::NotificationNotDispatched)
+                }
             }
         }
+    }
+    pub(super) fn notify(&self, event: &'static str, data: Value) -> Result<()> {
+        self.wait_notification(self.enqueue(event, data)?)
     }
 }
 
@@ -133,9 +159,28 @@ pub(super) fn serve(
                 .map_err(|_| LifecycleError::Supervisor)?
                 .take();
             if let Some(request) = request {
+                let reservation = if request.event == "suspend" {
+                    let Some(reservation) = context.publisher.reserve_dormant(
+                        &context.owner,
+                        catalog.clone(),
+                        configuration.clone(),
+                    ) else {
+                        // Capacity refusal never drains or fails a live worker.
+                        context
+                            .control
+                            .idle_requested
+                            .store(false, Ordering::Release);
+                        let _ = request.reply.send(Err(LifecycleError::Busy));
+                        continue;
+                    };
+                    Some(reservation)
+                } else {
+                    None
+                };
+                request.dispatched.store(true, Ordering::Release);
                 callback_settled = false;
                 let result = (|| {
-                    if request.event == "suspend" {
+                    if reservation.is_some() {
                         owner
                             .begin_draining()
                             .map_err(|_| LifecycleError::Notification)?;
@@ -144,22 +189,10 @@ pub(super) fn serve(
                         .notify_blocking(request.event, request.data, || context.control.stopped())
                         .map_err(|_| LifecycleError::Notification)?;
                     callback_settled = true;
-                    if request.event == "suspend" {
-                        if context.control.stopped() {
+                    if let Some(reservation) = reservation {
+                        context.control.cancel_idle()?;
+                        if !reservation.commit() {
                             return Err(LifecycleError::Stopped);
-                        }
-                        if !context.publisher.retain_dormant(
-                            &context.owner,
-                            catalog.clone(),
-                            configuration.clone(),
-                        ) {
-                            return Err(LifecycleError::Busy);
-                        }
-                        if let Err(error) = context.control.cancel_idle() {
-                            context
-                                .publisher
-                                .forget_dormant(&context.owner, &context.installation);
-                            return Err(error);
                         }
                     }
                     Ok(())
@@ -184,6 +217,7 @@ pub(super) fn serve(
                         .store
                         .verify_app_start(admission, budget.fork(|| false))?;
                     let current = notifications::configuration(context)?;
+                    drop(_permit);
                     if current != configuration {
                         callback_settled = false;
                         owner

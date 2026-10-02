@@ -21,6 +21,9 @@ impl Control {
             drain: Mutex::new(None),
             notification: Mutex::new(None),
             idle: AtomicBool::new(false),
+            idle_requested: AtomicBool::new(false),
+            #[cfg(test)]
+            completion_checkpoint: Mutex::new(None),
         }
     }
     pub(super) fn cancel_idle(&self) -> Result<()> {
@@ -86,15 +89,21 @@ impl Control {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
     pub(super) fn complete(&self) {
-        // Wake a caller whose queued notification lost to shutdown or failure.
-        self.notification
+        // Match enqueue's lock order and publish done before releasing a
+        // never-dispatched request. No notification can enter the cleanup gap.
+        let mut pending = self
+            .notification
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *self
             .done
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+        if let Some(request) = pending.take() {
+            let _ = request
+                .reply
+                .send(Err(LifecycleError::NotificationNotDispatched));
+        }
         self.wake.notify_all();
     }
     pub(super) fn wait(&self, duration: Duration) {

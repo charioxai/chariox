@@ -31,7 +31,12 @@ static int fixture_lifecycle_run(const struct cx_launch_record* record, const ch
           fixture_sdk_receive(response,cx_monotonic_ms()+5000)!=1 ||
           !strstr(response,"\"id\":\"prepare-write\",\"result\":")) { close(file); return 145; }
     }
-    if (fixture_health_reply(id,!strcmp(mode,"sdk_lifecycle_fail_prepare") && !strcmp(event,"prepare_update"))!=1) {
+    if (!strcmp(mode,"sdk_lifecycle_slow_resume") && !strcmp(event,"resume")) {
+      struct timespec remaining={21,0};
+      while (nanosleep(&remaining,&remaining)<0 && errno==EINTR) {}
+    }
+    if (fixture_health_reply(id,(!strcmp(mode,"sdk_lifecycle_fail_prepare") && !strcmp(event,"prepare_update")) ||
+        (!strcmp(mode,"sdk_lifecycle_fail_configuration_change") && !strcmp(event,"configuration_change")))!=1) {
       close(file); return 146;
     }
     if (!strcmp(event,"shutdown")) { close(file); return 0; }

@@ -38,6 +38,10 @@ impl Admitted {
 struct Completion(Arc<Control>);
 impl Drop for Completion {
     fn drop(&mut self) {
+        #[cfg(test)]
+        if let Some(checkpoint) = self.0.completion_checkpoint.lock().unwrap().clone() {
+            checkpoint();
+        }
         self.0.complete();
     }
 }

@@ -61,6 +61,8 @@ pub(crate) enum LifecycleError {
     Startup,
     #[error("app_lifecycle_notification")]
     Notification,
+    #[error("app_lifecycle_notification_not_dispatched")]
+    NotificationNotDispatched,
     #[error("app_lifecycle_worker_exit")]
     WorkerExit,
     #[error("app_lifecycle_supervisor")]
@@ -149,6 +151,9 @@ struct Control {
     drain: Mutex<Option<crate::runtime::app_worker::AppWorkerDrain>>,
     notification: Mutex<Option<notifications::Request>>,
     idle: AtomicBool,
+    idle_requested: AtomicBool,
+    #[cfg(test)]
+    completion_checkpoint: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 struct Operation<'a> {
     inner: &'a Inner,

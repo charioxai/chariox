@@ -272,10 +272,16 @@ termination and reap do not wait for a cooperative lifecycle reply.
 Suspend uses the kernel's existing idle path (currently ten minutes without
 human, agent, event or wake work). Admission drains, then `suspend` receives
 `{reason:"idle"}` before the worker is reaped and its catalog becomes dormant.
-This is not a real shutdown notification. On-demand reactivation starts a new
+This is not a real shutdown notification. Wake scans and eviction queue at most
+one suspend per worker and return without waiting on App code. Dormant capacity
+is reserved before admission drains; a full set keeps the worker live. On-demand
+reactivation starts a new
 contained process, runs startup, then `resume` with
 `{reason:"idle",configuration:{connections:[{generatorId,connectionId}]}}`
-before publishing callable handles. Real stops retain the shutdown notification.
+before publishing callable handles. The shared caller waits up to 180 seconds
+for queued victim suspension/drain, preparation and the full callback sequence;
+each callback retains its own shorter deadline. Tool execution starts its separate
+30-second admission budget after readiness. Real stops retain the shutdown notification.
 Host sleep/wake does not create a second trigger or authority path.
 
 The mutable installation configuration currently exposed by the backend is its
@@ -294,4 +300,5 @@ successful callback may flush approved state before shutdown/drain/reap and the
 existing migration/health/commit path. Failure or timeout refuses and cancels the
 precommit update without fencing or snapshotting the old data; the old generation
 remains installed and can restart. If no old worker exists, there is no callback
-to deliver. The existing precommit rollback and postcommit recovery rules apply.
+to deliver; an undispatched request cleared during old-owner completion is not
+an App refusal and does not cancel the approved update. The existing precommit rollback and postcommit recovery rules apply.
