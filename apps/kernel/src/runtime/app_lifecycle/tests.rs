@@ -69,8 +69,11 @@ fn runtime() -> Runtime {
         .build()
         .unwrap()
 }
+#[track_caller]
 fn wait(mut predicate: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(6);
+    // Native startup and registration have 15-second production budgets.
+    // Await the durable lifecycle result without imposing a shorter fixture deadline.
+    let deadline = Instant::now() + Duration::from_secs(30);
     while !predicate() {
         assert!(Instant::now() < deadline, "lifecycle condition timed out");
         std::thread::sleep(Duration::from_millis(10));
