@@ -466,8 +466,10 @@ impl KernelRuntimeState {
     /// Whether this answer proves the owner's presence for a passkey-gated
     /// choice. Not verified when the choice needs no passkey or the caller
     /// does not own the decision (the answer path then refuses on its own
-    /// terms). Every gated answer is audited, with its outcome and the
-    /// connection's class only. A passkey from a class that may not submit
+    /// terms). Passkey audit events record check outcomes and the
+    /// connection's class only. Hosts stay outside this gate and
+    /// its audits; the resolution path refuses their passkey-required choices
+    /// without verified presence. A passkey from a class that may not submit
     /// one is refused first, without verification or a count against the
     /// owner's limit.
     #[allow(clippy::too_many_arguments)]
