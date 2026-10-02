@@ -199,7 +199,7 @@ require_screen_available() {
   return 1
 }
 
-launch_chromium() {
+run_chromium() {
   local -a chrome_startup_target_args=()
   if ! process_running "chromium.*$CHROME_PROFILE"; then
     clear_chromium_profile_locks
@@ -213,7 +213,7 @@ launch_chromium() {
     chrome_startup_target_args=(-- "$CHROME_URL")
   fi
 
-  nohup chromium \
+  exec chromium \
     --user-data-dir="$CHROME_PROFILE" \
     --password-store=basic \
     --no-first-run \
@@ -223,7 +223,49 @@ launch_chromium() {
     --disable-gpu \
     --remote-debugging-address=127.0.0.1 \
     --remote-debugging-port=9222 \
-    "${chrome_startup_target_args[@]}" >>"$LOGS/chromium-gui.log" 2>&1 &
+    "${chrome_startup_target_args[@]}" >>"$LOGS/chromium-gui.log" 2>&1
+}
+
+# Own the browser child and wait for every exit. Docker --init reaps orphaned
+# renderer/crashpad children; this supervisor reaps the browser itself.
+supervise_chromium() {
+  exec 3>"$LOGS/chromium-supervisor.lock"
+  flock -n 3 || return 0
+  printf '%s\n' "$$" >"$LOGS/chromium-supervisor.pid"
+  local browser_pid=""
+  trap 'trap - TERM INT; [[ -z "$browser_pid" ]] || kill -TERM "$browser_pid" 2>/dev/null || true; [[ -z "$browser_pid" ]] || wait "$browser_pid" || true; rm -f "$LOGS/chromium-supervisor.pid"; exit 0' TERM INT
+  while true; do
+    run_chromium "$@" 3>&- &
+    browser_pid=$!
+    wait "$browser_pid" || true
+    browser_pid=""
+    # Avoid a restart storm, and leave a bounded loss window for Room health.
+    log "Chromium exited; relaunching in 6 seconds"
+    sleep 6
+    set --
+  done
+}
+
+launch_chromium() {
+  if process_running "chromium.*$CHROME_PROFILE"; then
+    run_chromium "$@" &
+  else
+    nohup bash "$ROOT/slice-screen.sh" supervise-browser "$@" >>"$LOGS/chromium-supervisor.log" 2>&1 &
+  fi
+}
+
+stop_chromium_supervisor() {
+  local supervisor_pid
+  if [[ -f "$LOGS/chromium-supervisor.pid" ]]; then
+    supervisor_pid="$(cat "$LOGS/chromium-supervisor.pid")"
+    if [[ "$supervisor_pid" =~ ^[0-9]+$ ]]; then
+      kill -TERM "$supervisor_pid" 2>/dev/null || true
+      for _ in $(seq 1 50); do
+        [[ -f "$LOGS/chromium-supervisor.pid" ]] || break
+        sleep 0.1
+      done
+    fi
+  fi
 }
 
 start_desktop() {
@@ -310,6 +352,7 @@ status() {
 }
 
 stop_desktop() {
+  stop_chromium_supervisor
   local streamer_exit=0
   if [[ -x /opt/chariox-selkies/bin/python ]]; then
     slice_selkies stop >/dev/null || streamer_exit=$?
@@ -728,6 +771,7 @@ cleanup_failed_start() {
 }
 
 case "${1:-status}" in
+  supervise-browser) shift; supervise_chromium "$@" ;;
   start)
     # Keep errexit active inside start_desktop. An `if start_desktop` wrapper
     # would suppress failures inside the function and could report success.

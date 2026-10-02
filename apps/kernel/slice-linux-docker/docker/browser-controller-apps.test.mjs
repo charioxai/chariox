@@ -1,3 +1,4 @@
+import { BrowserCdpClient } from "./browser-controller-cdp.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
@@ -29,6 +30,8 @@ function fakeBrowser() {
   const browser = {
     connection: fakeConnection(),
     ensureConnection: async () => browser.connection,
+    closePageTarget: (...args) => BrowserCdpClient.prototype.closePageTarget.call(browser, ...args),
+    pageCloseQueue: Promise.resolve(),
     // t1 keeps session s1, as the other tests expect; later targets get their own.
     ensureTargetSession: async (_connection, targetId) => (targetId === "t1" ? "s1" : `s-${targetId}`),
   };
@@ -138,7 +141,7 @@ test("closes popups opened by an App tab", async () => {
   connection.sent.length = 0;
   await connection.emit({ method: "Target.targetCreated", params: { targetInfo: { targetId: "p", openerId: "t1" } } });
   await connection.emit({ method: "Target.targetCreated", params: { targetInfo: { targetId: "q" } } });
-  assert.deepEqual(connection.sent, [{ method: "Target.closeTarget", params: { targetId: "p" }, sessionId: undefined }]);
+  assert.deepEqual(connection.sent.filter((m) => m.method !== "Target.getTargets"), [{ method: "Target.closeTarget", params: { targetId: "p" }, sessionId: undefined }]);
 });
 
 test("queues bridge calls bound to the installation and resolves responses", async () => {

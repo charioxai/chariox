@@ -137,7 +137,7 @@ export class AppTabs {
       await connection.send("Page.navigate", { url: `${origin}/` }, sessionId);
     } catch (error) {
       this.apps.delete(sessionId);
-      await connection.send("Target.closeTarget", { targetId }).catch(() => {});
+      await this.browser.closePageTarget(connection, targetId).catch(() => {});
       throw error;
     }
     return { target_id: targetId, origin };
@@ -174,7 +174,7 @@ export class AppTabs {
     if (message?.method === "Target.targetCreated") {
       const opener = message.params?.targetInfo?.openerId;
       if (opener && [...this.apps.values()].some((app) => app.targetId === opener)) {
-        await connection.send("Target.closeTarget", { targetId: message.params.targetInfo.targetId });
+        await this.browser.closePageTarget(connection, message.params.targetInfo.targetId);
       }
       return;
     }
@@ -278,7 +278,7 @@ export class AppTabs {
       let host = "";
       try { host = new URL(target.url).hostname; } catch {}
       if (host.endsWith(APP_ORIGIN_SUFFIX) && !owned.has(target.targetId)) {
-        await connection.send("Target.closeTarget", { targetId: target.targetId }).catch(() => {});
+        await this.browser.closePageTarget(connection, target.targetId).catch(() => {});
       }
     }
     this.swept = true;

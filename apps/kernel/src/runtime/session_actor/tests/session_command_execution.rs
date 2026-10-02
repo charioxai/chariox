@@ -1,6 +1,7 @@
 use super::*;
 
 mod browser_isolation;
+mod browser_health;
 
 struct TestBrowserControllerTool {
     root: std::path::PathBuf,

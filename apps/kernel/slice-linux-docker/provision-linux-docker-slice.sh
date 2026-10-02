@@ -839,6 +839,7 @@ ensure_container() {
     log "creating container $SLICE_NAME"
     prepare_home_volume
     local docker_create_args=(
+      --init
       --name "$SLICE_NAME"
       --hostname "$SLICE_HOSTNAME"
       --ulimit core=0:0
