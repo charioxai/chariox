@@ -240,7 +240,7 @@ function formatAutomation(automation: AppAutomationSummary): string {
 }
 
 function formatInstallation(app: AppInstallationSummary): string {
-  const version = app.active_release ? `version ${app.active_release.version}` : "no active release"
+  const version = app.active_release ? `version ${app.active_release.version}; digest ${app.active_release.package_digest}` : "no active release"
   const pending = app.pending_generation == null ? "" : `; pending generation ${app.pending_generation}`
   const paused = app.admission_paused ? "; admission paused" : ""
   const kept = app.data_kept ? "; data kept" : ""

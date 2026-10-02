@@ -33,6 +33,15 @@ test("App status and journal use the shared requests and stable errors", async (
   }
 })
 
+test("App status shows the full active package digest and handles uninstalled Apps", async () => {
+  const digest = `sha256:${"a".repeat(64)}`
+  const installation = { installation_id: "todo", app_id: "com.chariox.todo", generation: "7", active_release: { version: "1.0.0", package_digest: digest }, pending_generation: null, admission_paused: false, data_kept: false }
+  const status = await executeAppCommand(["status", "todo"], { send: async () => ({ AppInstallation: { installation } }) })
+  assert.equal(status.message, `todo · com.chariox.todo · version 1.0.0; digest ${digest}; generation 7`)
+  const removed = await executeAppCommand(["status", "todo"], { send: async () => ({ AppInstallation: { installation: { ...installation, active_release: null } } }) })
+  assert.equal(removed.message, "todo · com.chariox.todo · no active release; generation 7")
+})
+
 test("App worker control uses owner-free requests and shows dormant Apps", async () => {
   const worker = { installation_id: "todo", phase: "dormant", enabled: true, failure: null, updated_at_ms: 1 }
   for (const [args, request] of [
