@@ -3,9 +3,9 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import vm from 'node:vm'
-const source = await readFile(new URL('./idle-authenticated-browser-soak-runtime.mjs', import.meta.url), 'utf8')
+const source = await readFile(process.env.IDLE_SOAK_REGRESSION_SOURCE ?? new URL('./idle-authenticated-browser-soak-runtime.mjs', import.meta.url), 'utf8')
 const checkpointBody = source.split('  async function checkpoint(label) {')[1].split('    if (fixture.authenticatedRequests <= beforeRequests)')[0]
-async function checkpoint(label) {
+async function checkpoint(label, navigateDuringWait = true) {
   const calls = [], fixture = {baseUrl:'http://fixture', authenticatedRequests:7}
   let generation = 1
   const context = {
@@ -19,7 +19,7 @@ async function checkpoint(label) {
     }},
     assertControllerReady:value=>value, assertOwnedAlive:async()=>{},
     waitForFreshAuthenticatedRequest:async(_fixture, baseline, timeout)=>{
-      calls.push({baseline, timeout});fixture.authenticatedRequests++;generation++
+      calls.push({baseline, timeout});fixture.authenticatedRequests++;if(navigateDuringWait)generation++
     }, Math, JSON,
   }
   await vm.runInNewContext(`(async()=>{${checkpointBody}})()`, context)
@@ -27,7 +27,7 @@ async function checkpoint(label) {
 }
 test('MP-08 / MP-10 final/restart request must start after the checkpoint begins', async()=>{
   for (const label of ['initial','restart','final']) {
-    const calls=await checkpoint(label)
+    const calls=await checkpoint(label, false)
     assert.equal(calls.find(x=>x.baseline!=null).baseline,7)
   }
 })
