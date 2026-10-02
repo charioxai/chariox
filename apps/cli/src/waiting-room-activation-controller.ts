@@ -143,7 +143,9 @@ export function createWaitingRoomActivationController(
     }
   }
 
-  const startSessionFromWaitingRoomDefaults = async () => {
+  const startSessionFromWaitingRoomDefaults = async (
+    managedEnvironment?: WaitingRoomLaunchConfig["managedEnvironment"],
+  ) => {
     try {
       if (!deps.isKernelConnected()) {
         await deps.connectKernel()
@@ -156,7 +158,9 @@ export function createWaitingRoomActivationController(
         currentModel: deps.getCurrentModel(),
         remote: deps.getRemoteState(),
       })
-      return await applyCreateSessionDecision(decision)
+      return await applyCreateSessionDecision(decision.action === "create" && managedEnvironment
+        ? { ...decision, launch: { ...decision.launch, managedEnvironment } }
+        : decision)
     } catch (error) {
       deps.warn("waiting room prompt bootstrap failed", {
         error: deps.formatError(error),

@@ -94,6 +94,8 @@ reimageTest("keeps destructive admission local and launches the exact replacemen
           { kernelRef: "kernel-new", machineRef: "machine-new" },
         ])
         assert.equal(requestCount(harness.replacement, "CreateSession"), 1)
+        assert.equal(requestCount(harness.local, "CreateSession"), 0)
+        assert.equal(requestCount(harness.replacement, "GetManagedContextLaunchTarget"), 0)
         assert.deepEqual(harness.attachments, [{ sessionId: "session-new", created: true }])
         assert.equal(harness.state().selectedMachineRef, managedEnvironmentMachineRef("environment-1"))
         const selectedReplacement = harness.composition.waitingRoomTargets()
@@ -223,7 +225,7 @@ function createHarness(router: TestRouter, options: {
   const local = router.endpoint(LOCAL_ENDPOINT, async (request) => {
     switch (requestKind(request)) {
       case "GetWaitingRoomPublicSnapshot":
-        return snapshotResponse("kernel-local", "machine-local")
+        return snapshotResponse("kernel-local", "machine-local", contextPlan)
       case "ListSlices":
         return { SlicesListed: { slices: [] } }
       case "ListManagedEnvironmentCatalog":
@@ -259,7 +261,7 @@ function createHarness(router: TestRouter, options: {
   const old = router.endpoint(OLD_ENDPOINT, async (request) => {
     switch (requestKind(request)) {
       case "GetWaitingRoomPublicSnapshot":
-        return snapshotResponse("kernel-old", "machine-old")
+        return snapshotResponse("kernel-old", "machine-old", contextPlan)
       case "ListSlices":
         return { SlicesListed: { slices: [] } }
       case "ListManagedEnvironmentCatalog":
@@ -284,7 +286,7 @@ function createHarness(router: TestRouter, options: {
   const replacement = router.endpoint(REPLACEMENT_ENDPOINT, async (request) => {
     switch (requestKind(request)) {
       case "GetWaitingRoomPublicSnapshot":
-        return snapshotResponse("kernel-new", "machine-new")
+        return snapshotResponse("kernel-new", "machine-new", contextPlan)
       case "ListSlices":
         return { SlicesListed: { slices: [] } }
       case "ListManagedEnvironmentCatalog":
@@ -329,6 +331,8 @@ function createHarness(router: TestRouter, options: {
     worktreeSelectionId: "existing:/staged/worktree",
     selectedMachineRef: managedEnvironmentMachineRef("environment-1"),
     selectedKernelRef: "kernel-old",
+    projectSelectionId: contextPlan.developmentSetup.kind === "source_project"
+      ? `existing:${contextPlan.developmentSetup.projectId}` : "default",
   }
   let ownershipRevision = 0
   let relayStatus = relayStatusFor("kernel-local", "machine-local")
@@ -482,7 +486,7 @@ function resolveTargets(endpoint: TestEndpoint) {
     })
 }
 
-function snapshotResponse(kernelId: string, machineId: string) {
+function snapshotResponse(kernelId: string, machineId: string, plan: ManagedEnvironmentContextPlan) {
   return {
     WaitingRoomPublicSnapshot: {
       snapshot: {
@@ -492,7 +496,11 @@ function snapshotResponse(kernelId: string, machineId: string) {
         activity_revision: `${kernelId}:activity`,
         generated_at_ms: 1,
         sessions: [],
-        projects: [],
+        projects: plan.developmentSetup.kind === "source_project" ? [{
+          id: plan.developmentSetup.projectId, name: "Selected Project",
+          kind: "named", status: "active", workspace_id: "/staged",
+          workspace_ids: ["/staged"], created_at_ms: 1, updated_at_ms: 1,
+        }] : [],
         relay_status: relayStatusFor(kernelId, machineId),
         remote_machines: [],
         remote_kernels: [],
@@ -730,15 +738,15 @@ function setupStatus(
     project_id: input.projectId,
     session_id: input.sessionId,
     agent_id: input.agentId,
-    worker_id: input.targetWorkerId,
-    platform: input.targetPlatform,
+    worker_id: input.targetWorkerId || "kernel-new",
+    platform: input.targetPlatform || "linux",
     phase: failure ? "failed" : "ready",
     attempt: 1,
     progress_percent: failure ? 60 : 100,
     definition_digest: "sha256:definition",
     validation: {
-      worker_id: input.targetWorkerId,
-      platform: input.targetPlatform,
+      worker_id: input.targetWorkerId || "kernel-new",
+      platform: input.targetPlatform || "linux",
       commands: [],
     },
     message: failure?.message ?? "ready",

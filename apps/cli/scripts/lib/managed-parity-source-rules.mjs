@@ -2998,13 +2998,17 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
   },
   {
     "id": "impld-repository-component-safety",
-    "sourceCommit": "6263ab3e124f0fbce71b87b9a3bb9e51bcf8c25f",
+    "sourceCommit": "05a0cb7f4f188348daf2e14f3e13175a47679ced",
     "path": "apps/kernel/src/managed_context/development/export.rs",
-    "blob": "2345bc99727316145449e3e1c00443ba4e655c71",
+    "blob": "bfd2fa952039e2f1d7bd4d3d61f6f1f77db4b30d",
     "ranges": [
       [
-        481,
-        533
+        515,
+        539
+      ],
+      [
+        551,
+        567
       ]
     ],
     "classification": "shared_repository_component_safety",
@@ -3029,29 +3033,17 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
   },
   {
     "id": "impld-repository-final-destination",
-    "sourceCommit": "6263ab3e124f0fbce71b87b9a3bb9e51bcf8c25f",
+    "sourceCommit": "05a0cb7f4f188348daf2e14f3e13175a47679ced",
     "path": "apps/kernel/src/managed_context/development/import.rs",
-    "blob": "3ae084bed7404564814783a275c42d6eead24e67",
+    "blob": "6bcee96a2fe2ba32964e29993d528d84e594d694",
     "ranges": [
       [
-        507,
-        519
+        856,
+        864
       ],
       [
-        747,
-        754
-      ],
-      [
-        1081,
-        1124
-      ],
-      [
-        1320,
-        1360
-      ],
-      [
-        1573,
-        1618
+        1190,
+        1229
       ]
     ],
     "classification": "actual_repository_destination_control_and_ownership",

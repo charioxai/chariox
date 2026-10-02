@@ -821,7 +821,9 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
         selectedKernelRef: environment.runtimeKernelId ?? "",
       })
       deps.rebuildTranscript()
-      await startSessionFromWaitingRoomDefaults()
+      // MP-02/MP-08/MP-11: a reimage cutover retains transactional connection
+      // ownership while the enrolled adapter preserves ordinary launch choices.
+      await startSessionFromWaitingRoomDefaults({ kind: "existing", environmentId: environment.environmentId })
     },
     createIdempotencyKey: randomUUID,
     delay: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
