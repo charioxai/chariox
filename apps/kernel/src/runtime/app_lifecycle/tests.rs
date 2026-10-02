@@ -860,12 +860,13 @@ fn an_idle_stop_keeps_a_worker_whose_wake_was_admitted_after_its_idle_check() {
     // An eviction or idle stop reads the worker as idle, then the wake pump
     // admits a wake before the stop drains it: the worker keeps running.
     let delivery = std::cell::RefCell::new(None);
-    service
-        .idle_stop_blocking("alice", catalog.clone(), || {
+    assert!(matches!(
+        service.idle_stop_blocking("alice", catalog.clone(), || {
             *delivery.borrow_mut() = Some(lease.fixture_hold_delivery());
             true
-        })
-        .unwrap();
+        }),
+        Err(LifecycleError::Busy)
+    ));
     assert!(control.active_app_lease("alice", "installed").is_some());
     assert!(!control.is_app_dormant("alice", "installed"));
     // While the wake is in its handler, nothing reads the worker as idle.
