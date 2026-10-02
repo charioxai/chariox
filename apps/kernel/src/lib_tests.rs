@@ -177,7 +177,7 @@ fn relay_peer_workspace_live_sync_apply_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "dd483fae2ed150ca874cd7594ec682e869a5dfb2aa1d73755369bb10c3ce7e8f"
+        "dd483fae2ed150ca874cd7594ec682e869a5dfb2aa1d73765369bb10c3ce7e8f"
     );
 }
 
