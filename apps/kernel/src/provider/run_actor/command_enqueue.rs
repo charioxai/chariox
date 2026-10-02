@@ -220,6 +220,13 @@ impl ProviderRunActorMailbox {
         if !self.mark_structured_output_poll_in_flight(provider_run_id.clone()) {
             return Ok(false);
         }
+        #[cfg(test)]
+        if self.manual_output_polls.load(Ordering::Relaxed) {
+            // Injected completions own this fixture's poll. Do not race them
+            // with a real adapter request to its deliberately fake endpoint.
+            self.operation_lanes.record_command_enqueued();
+            return Ok(true);
+        }
         let sender = self.worker_for_run(&provider_run_id);
         match sender.try_send(ProviderRunActorCommand::PollOutput {
             provider_run_id: provider_run_id.clone(),
@@ -350,6 +357,9 @@ impl ProviderRunActorMailbox {
         finished: FinishedProviderOutputPollJob,
     ) {
         let provider_run_id = finished.provider_run_id.clone();
+        if self.manual_output_polls.load(Ordering::Relaxed) {
+            self.clear_structured_output_poll_in_flight(&provider_run_id);
+        }
         push_finished_output_poll(&self.finished_output_polls, finished);
         self.completion_signal.record_completion(&provider_run_id);
     }
