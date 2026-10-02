@@ -262,6 +262,12 @@ async fn run_workflow_command_lane(
             Err(error) => Err(error),
             Ok(_) => {
                 executor
+                    .with_external_command_authority(
+                        envelope
+                            .external_grant_id
+                            .as_deref()
+                            .map(|id| (id, &envelope.request)),
+                    )
                     .execute(
                         envelope.request,
                         envelope.caller_user_id,
@@ -289,6 +295,15 @@ struct WorkflowRuntimeCommandExecutor {
 }
 
 impl WorkflowRuntimeCommandExecutor {
+    fn with_external_command_authority(
+        &self,
+        authority: Option<(&str, &LocalDaemonRequest)>,
+    ) -> Self {
+        let mut executor = self.clone();
+        executor.store.state = self.store.state.with_external_command_authority(authority);
+        executor
+    }
+
     fn new(
         store: WorkflowRuntimeStore,
         session_projection: SessionStateProjectionStore,

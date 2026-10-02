@@ -187,6 +187,7 @@ pub(super) fn workflow_registry_apply_result(
     operation: &'static str,
     run_endpoint: Option<Option<&str>>,
     run_queue: Option<&str>,
+    authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
 ) -> Result<
     (
         crate::workflow_code::WorkflowRegistryEntryMetadata,
@@ -194,6 +195,7 @@ pub(super) fn workflow_registry_apply_result(
     ),
     DaemonError,
 > {
+    authorize()?;
     let entry = workflow_registry_for_session(app, session_id)?.resolve(name)?;
     let limits = app.config().workflow_code_limits();
     let node_path = crate::workflow_code::discover_workflow_code_node_path()?;
@@ -208,21 +210,22 @@ pub(super) fn workflow_registry_apply_result(
         )?;
     reject_invalid_workflow_code_run_compile(operation, &compile.validation)?;
     let metaagent_id = controlled_by_metaagent_id.as_deref();
-    let (definition, validation) = crate::app::KernelSessionService::new(app)
-        .validate_workflow_code_definition_with_rebindings(
-            session_id,
-            &compile.definition,
-            &limits,
-            provider_rebindings,
-            agent_rebindings,
-            metaagent_id,
-        )?;
+    let (definition, validation) =
+        crate::app::KernelSessionService::with_authorization(app, authorize)
+            .validate_workflow_code_definition_with_rebindings(
+                session_id,
+                &compile.definition,
+                &limits,
+                provider_rebindings,
+                agent_rebindings,
+                metaagent_id,
+            )?;
     reject_invalid_workflow_code_run_compile(operation, &validation)?;
     if let Some(endpoint) = run_endpoint {
         workflow_code_run_endpoint_preflight(&definition, endpoint, operation)?;
     }
     workflow_code_run_queue_preflight(&definition, run_queue, operation)?;
-    let apply = crate::app::KernelSessionService::new(app)
+    let apply = crate::app::KernelSessionService::with_authorization(app, authorize)
         .apply_workflow_code_definition_with_alias_base(
             session_id,
             &definition,
@@ -257,7 +260,9 @@ pub(super) fn workflow_code_artifact_apply_result(
     operation: &'static str,
     run_endpoint: Option<Option<&str>>,
     run_queue: Option<&str>,
+    authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
 ) -> Result<crate::workflow_code::WorkflowCodeCompileAndApplyResult, DaemonError> {
+    authorize()?;
     let artifact = {
         let registry = workflow_code_registry_for_session(app, session_id)?;
         registry
@@ -269,15 +274,16 @@ pub(super) fn workflow_code_artifact_apply_result(
     };
     let limits = app.config().workflow_code_limits();
     let metaagent_id = controlled_by_metaagent_id.as_deref();
-    let (definition, validation) = crate::app::KernelSessionService::new(app)
-        .validate_workflow_code_definition_with_rebindings(
-            session_id,
-            &artifact.definition,
-            &limits,
-            provider_rebindings,
-            agent_rebindings,
-            metaagent_id,
-        )?;
+    let (definition, validation) =
+        crate::app::KernelSessionService::with_authorization(app, authorize)
+            .validate_workflow_code_definition_with_rebindings(
+                session_id,
+                &artifact.definition,
+                &limits,
+                provider_rebindings,
+                agent_rebindings,
+                metaagent_id,
+            )?;
     if !validation.ok {
         return Err(DaemonError::LocalTransport {
             operation,
@@ -296,15 +302,17 @@ pub(super) fn workflow_code_artifact_apply_result(
         workflow_code_run_endpoint_preflight(&definition, endpoint, operation)?;
     }
     workflow_code_run_queue_preflight(&definition, run_queue, operation)?;
-    let apply = crate::app::KernelSessionService::new(app).apply_workflow_code_definition(
-        session_id,
-        &definition,
-        &limits,
-        caller_user_id.clone(),
-        controlled_by_metaagent_id.clone(),
-    )?;
+    let apply = crate::app::KernelSessionService::with_authorization(app, authorize)
+        .apply_workflow_code_definition(
+            session_id,
+            &definition,
+            &limits,
+            caller_user_id.clone(),
+            controlled_by_metaagent_id.clone(),
+        )?;
     let actor =
         workflow_code_artifact_actor(&caller_user_id, controlled_by_metaagent_id.as_deref());
+    authorize()?;
     workflow_code_registry_for_session(app, session_id)?.record_apply_history(
         artifact_name,
         actor,

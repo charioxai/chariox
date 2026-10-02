@@ -1,9 +1,12 @@
 use super::*;
 
+mod control_authority;
 mod credential_authority;
 mod meta_authority;
 mod native_launch_authority;
 mod session_authority;
+mod worker_spy;
+mod workflow_authority;
 
 impl KernelRuntimeState {
     pub(crate) fn insert_access_grant_for_test(&self, session_id: &str) -> String {

@@ -12,6 +12,7 @@ impl<'a> KernelSessionService<'a> {
         agent_rebindings: &[crate::workflow_code::WorkflowCodeAgentRebinding],
         alias_base: Option<&str>,
     ) -> Result<WorkflowCodeApplyReport, DaemonError> {
+        self.authorize()?;
         let validation = definition.validate_with_limits(limits);
         if !validation.ok {
             return Err(DaemonError::LocalTransport {
@@ -59,6 +60,7 @@ impl<'a> KernelSessionService<'a> {
         let binding_session = self.app.sessions().get_session(session_id)?;
         let mut node_agent_ids = BTreeMap::new();
         for node in &definition.nodes {
+            self.authorize()?;
             let agent_id = match &node.agent {
                 WorkflowCodeAgentBinding::Create(agent) => {
                     let mut request = CreateAgentRequest::new(session_id, agent.provider.clone())
@@ -80,6 +82,7 @@ impl<'a> KernelSessionService<'a> {
                     }
                     let created =
                         self.spawn_workflow_code_generated_agent(request, agent.alias.as_deref())?;
+                    self.authorize()?;
                     self.grant_workflow_code_node_extensions(created.id(), &node.extensions)?;
                     created.id().to_string()
                 }
@@ -121,6 +124,7 @@ impl<'a> KernelSessionService<'a> {
                             });
                         }
                     }
+                    self.authorize()?;
                     self.grant_workflow_code_node_extensions(agent.id(), &node.extensions)?;
                     agent.id().to_string()
                 }
@@ -128,6 +132,7 @@ impl<'a> KernelSessionService<'a> {
             node_agent_ids.insert(node.handle.clone(), agent_id);
         }
 
+        self.authorize()?;
         let session_store = self.app.session_state_store();
         let mut sessions = session_store.write();
         let report = if let Some(alias_base) = alias_base {
@@ -409,6 +414,7 @@ impl<'a> KernelSessionService<'a> {
         provider_rebindings: &[crate::workflow_code::WorkflowCodeProviderRebinding],
         agent_rebindings: &[crate::workflow_code::WorkflowCodeAgentRebinding],
     ) -> Result<WorkflowCodeCompileAndApplyResult, DaemonError> {
+        self.authorize()?;
         let schema_import_root = self.workflow_code_schema_import_root(session_id)?;
         let compile = compile_workflow_code_source_with_schema_import_root(
             node_path,
@@ -439,6 +445,7 @@ impl<'a> KernelSessionService<'a> {
                 &compile.source_spans,
             );
         }
+        self.authorize()?;
         let apply = self.apply_workflow_code_definition_with_rebindings(
             session_id,
             &rebound_definition,

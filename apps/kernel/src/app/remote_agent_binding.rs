@@ -717,6 +717,17 @@ impl DaemonApp {
         agent_ref: &str,
         machine_ref: &str,
     ) -> Result<AgentInstance, DaemonError> {
+        self.move_agent_to_remote_authorized(session_id, agent_ref, machine_ref, &|| Ok(()))
+    }
+
+    pub(crate) fn move_agent_to_remote_authorized(
+        &mut self,
+        session_id: &str,
+        agent_ref: &str,
+        machine_ref: &str,
+        authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
+    ) -> Result<AgentInstance, DaemonError> {
+        authorize()?;
         let agent = self
             .agents
             .get_agent(agent_ref)
@@ -757,12 +768,14 @@ impl DaemonApp {
             &discovery_config,
         )?;
         let worker_worktree_id = self.worker_worktree_id_for_kernel_ref(machine_ref, None);
-        self.bind_remote_agent_to_worker(
+        authorize()?;
+        self.bind_remote_agent_to_worker_authorized(
             &agent,
             &worker_kernel,
             worker_worktree_id,
             None,
             relay_override,
+            authorize,
         )
     }
 
@@ -771,6 +784,16 @@ impl DaemonApp {
         session_id: &str,
         agent_ref: &str,
     ) -> Result<AgentInstance, DaemonError> {
+        self.move_agent_to_local_authorized(session_id, agent_ref, &|| Ok(()))
+    }
+
+    pub(crate) fn move_agent_to_local_authorized(
+        &mut self,
+        session_id: &str,
+        agent_ref: &str,
+        authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
+    ) -> Result<AgentInstance, DaemonError> {
+        authorize()?;
         let agent = self
             .agents
             .get_agent(agent_ref)
@@ -805,13 +828,14 @@ impl DaemonApp {
         };
         let use_connected_relay =
             self.hosted_shared_slice_uses_connected_relay(&remote_execution.worker_kernel_id);
-        match self.send_remote_binding_request(
+        match self.send_remote_binding_request_authorized(
             &relay_config,
             target.clone(),
             RelayPeerRequest::DestroyLeasedAgent {
                 leased_agent_id: remote_execution.leased_agent_id.clone(),
             },
             use_connected_relay,
+            authorize,
         )? {
             RelayPeerResponse::LeasedAgentDestroyed { .. } => {}
             other => {
@@ -821,13 +845,14 @@ impl DaemonApp {
                 });
             }
         }
-        match self.send_remote_binding_request(
+        match self.send_remote_binding_request_authorized(
             &relay_config,
             target,
             RelayPeerRequest::DestroyExecutionLease {
                 lease_id: remote_execution.execution_lease_id.clone(),
             },
             use_connected_relay,
+            authorize,
         )? {
             RelayPeerResponse::ExecutionLeaseDestroyed { .. } => {}
             other => {
@@ -837,6 +862,7 @@ impl DaemonApp {
                 });
             }
         }
+        authorize()?;
         let moved = self.agents.clear_remote_execution(agent.id())?;
         self.durable_state_store().append_event(
             "agent.updated",

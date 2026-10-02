@@ -22,6 +22,18 @@ impl ExternalCommandAuthority {
 }
 
 impl KernelRuntimeState {
+    pub(super) async fn with_authorized_app_side_effect<R>(
+        &self,
+        operation: impl FnOnce(&mut crate::DaemonApp) -> Result<R, DaemonError>,
+    ) -> Result<R, DaemonError> {
+        self.authorize_current_external_command()?;
+        self.with_app_side_effect(|app| {
+            self.authorize_current_external_command()?;
+            operation(app)
+        })
+        .await
+    }
+
     pub(crate) fn with_external_command_authority(
         &self,
         authority: Option<(&str, &LocalDaemonRequest)>,
