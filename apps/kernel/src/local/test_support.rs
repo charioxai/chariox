@@ -73,7 +73,11 @@ impl LocalRouterTestHarness {
         &self,
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        self.dispatch_with_caller(request, KernelCaller::default().with_connection_class(crate::local::KernelConnectionClass::Terminal))
+        self.dispatch_with_caller(
+            request,
+            KernelCaller::default()
+                .with_connection_class(crate::local::KernelConnectionClass::Terminal),
+        )
     }
 
     pub(crate) fn dispatch_runtime_tool(
@@ -93,7 +97,8 @@ impl LocalRouterTestHarness {
         user_id: &str,
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let mut caller = KernelCaller::default().with_connection_class(crate::local::KernelConnectionClass::Terminal);
+        let mut caller = KernelCaller::default()
+            .with_connection_class(crate::local::KernelConnectionClass::Terminal);
         caller.user_id = Some(user_id.to_string());
         self.dispatch_with_caller(request, caller)
     }
