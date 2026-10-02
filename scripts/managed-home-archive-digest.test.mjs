@@ -84,7 +84,7 @@ ssize_t read(int fd, void *buf, size_t count) {
  const moduleUrl=new URL("../apps/kernel/slice-linux-docker/managed-home-archive-digest.mjs",import.meta.url).href
   const script=fault === "healthy"
   ? `import {openSync,closeSync} from 'node:fs';import {digestPinnedHomeArchive} from ${JSON.stringify(moduleUrl)};const fd=openSync(${JSON.stringify(archive)},'r');try{const start=Date.now();const digest=await digestPinnedHomeArchive(fd,200);if(Date.now()-start<=200 || digest!==${JSON.stringify(sha256(contents))})throw Error('healthy progress failed')}finally{closeSync(fd)}`
-  : `import {openSync,closeSync} from 'node:fs';import {digestPinnedHomeArchive} from ${JSON.stringify(moduleUrl)};const fd=openSync(${JSON.stringify(archive)},'r');try{await digestPinnedHomeArchive(fd,50);process.exitCode=99}catch(e){if(!/made no progress/.test(e.message))throw e}finally{closeSync(fd)}`
+  : `import {openSync,closeSync} from 'node:fs';import {digestPinnedHomeArchive} from ${JSON.stringify(moduleUrl)};const fd=openSync(${JSON.stringify(archive)},'r');try{await digestPinnedHomeArchive(fd,1000);process.exitCode=99}catch(e){if(!/made no progress/.test(e.message))throw e}finally{closeSync(fd)}`
  const result=spawnSync(process.execPath,["--input-type=module","-e",script],{env:{...process.env,LD_PRELOAD:library},encoding:"utf8",timeout:4000})
  assert.equal(result.status,0,result.stderr)
  const pid=(await readFile(marker,"utf8")).trim()
