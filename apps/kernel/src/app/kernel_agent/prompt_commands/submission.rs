@@ -78,6 +78,30 @@ impl<'a> KernelAgentService<'a> {
         hidden_system_context: &str,
         attachments: Vec<PromptAttachment>,
     ) -> Result<PromptSubmissionOutcome, DaemonError> {
+        let (outcome, dispatch) = self.submit_prompt_holding_dispatch(
+            session_id,
+            attachment_id,
+            target_agent_id,
+            prompt,
+            hidden_system_context,
+            attachments,
+        )?;
+        self.finish_compat_prompt_dispatch(dispatch)?;
+        crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)?;
+        Ok(outcome)
+    }
+
+    /// Admits a prompt like `submit_prompt_with_hidden_system_context`, but
+    /// returns its local provider dispatch instead of sending it.
+    pub(crate) fn submit_prompt_holding_dispatch(
+        &mut self,
+        session_id: &str,
+        attachment_id: &str,
+        target_agent_id: Option<&str>,
+        prompt: &str,
+        hidden_system_context: &str,
+        attachments: Vec<PromptAttachment>,
+    ) -> Result<(PromptSubmissionOutcome, Option<KernelPromptDispatch>), DaemonError> {
         crate::app::KernelSessionReadService::new(self.app)
             .ensure_attachment_in_session(session_id, attachment_id)?;
         let target_agent_id = match target_agent_id {
@@ -107,11 +131,8 @@ impl<'a> KernelAgentService<'a> {
             force_queue: false,
             refresh_projection: true,
         })?;
-        let outcome = submitted.outcome;
-        self.finish_compat_prompt_dispatch(submitted.dispatch)?;
         self.finish_compat_remote_prompt_dispatch(submitted.remote_dispatch)?;
-        crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)?;
-        Ok(outcome)
+        Ok((submitted.outcome, submitted.dispatch))
     }
 
     pub(crate) fn record_native_prompt_started(
@@ -172,7 +193,7 @@ impl<'a> KernelAgentService<'a> {
         Ok(submitted.outcome)
     }
 
-    pub(super) fn finish_compat_prompt_dispatch(
+    pub(crate) fn finish_compat_prompt_dispatch(
         &mut self,
         dispatch: Option<KernelPromptDispatch>,
     ) -> Result<(), DaemonError> {

@@ -266,11 +266,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let home_prompt_id = git_context
             .as_ref()
             .map(|context| context.home_prompt_id.clone());
-        if let Some(git_context) = git_context {
-            self.observe_leased_git_before(&leased_agent, &provider_run_id, git_context);
-        }
-        let outcome = crate::app::KernelAgentService::new(self.app)
-            .submit_prompt_with_hidden_system_context(
+        let must_wait_for_capacity = self.leased_turn_must_wait_for_capacity();
+        let (outcome, dispatch) = crate::app::KernelAgentService::new(self.app)
+            .submit_prompt_holding_dispatch(
                 &leased_agent.backing_session_id,
                 &leased_agent.backing_attachment_id,
                 Some(&leased_agent.backing_agent_id),
@@ -278,6 +276,21 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 &hidden_system_context,
                 materialized_attachments,
             )?;
+        let held_for_capacity = must_wait_for_capacity && dispatch.is_some();
+        match dispatch {
+            Some(dispatch) if held_for_capacity => {
+                self.hold_leased_turn_for_capacity(&leased_agent.id, dispatch, git_context)
+            }
+            dispatch => {
+                if let Some(git_context) = git_context {
+                    self.observe_leased_git_before(&leased_agent, &provider_run_id, git_context);
+                }
+                crate::app::KernelAgentService::new(self.app)
+                    .finish_compat_prompt_dispatch(dispatch)?
+            }
+        }
+        crate::app::KernelSessionReadService::new(self.app)
+            .session_snapshot(&leased_agent.backing_session_id)?;
         let started = matches!(outcome, PromptSubmissionOutcome::Started { .. });
         let accepted_prompt = match &outcome {
             PromptSubmissionOutcome::Started { prompt }
@@ -293,7 +306,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 && active.hidden_system_context() == accepted_prompt.hidden_system_context()
                 && active.attachments() == accepted_prompt.attachments()
         });
-        if started {
+        if started && !held_for_capacity {
             crate::transport::flow_control::note_prompt_started(self.app, &provider_run_id);
         }
         let provider_run_projection = self
@@ -410,6 +423,18 @@ impl<'a> RemoteLeaseRuntime<'a> {
         }
         let materialized_attachments =
             self.materialize_leased_prompt_attachments(&leased_agent, attachments)?;
+        if self.leased_turn_is_waiting_for_capacity(leased_agent_id) {
+            self.add_steer_to_held_turn(
+                leased_agent_id,
+                prompt,
+                hidden_system_context,
+                materialized_attachments,
+            );
+            if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
+                agent.applied_home_steer_ids.push(steer_id.to_string());
+            }
+            return Ok((provider_run.id().to_string(), None));
+        }
         Ok((
             provider_run.id().to_string(),
             Some(crate::app::KernelPromptDispatch {
@@ -517,6 +542,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 self.app.leased_workflow_turns.remove(&binding_key);
             }
         }
+        self.admit_leased_turns_waiting_for_capacity();
         Ok(completion)
     }
 
@@ -532,11 +558,14 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok_or_else(|| DaemonError::LeasedAgentNotFound {
                 leased_agent_id: leased_agent_id.to_string(),
             })?;
-        let cancellation = self.app.cancel_active_prompt_internal(
-            &leased_agent.backing_session_id,
-            &leased_agent.backing_agent_id,
-            None,
-        )?;
+        let cancellation = match self.cancel_leased_turn_waiting_for_capacity(leased_agent_id)? {
+            Some(cancellation) => cancellation,
+            None => self.app.cancel_active_prompt_internal(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+                None,
+            )?,
+        };
         self.app
             .leased_workflow_turns
             .retain(|_, binding| binding.leased_agent_id != leased_agent_id);
@@ -593,7 +622,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
     }
 }
 
-fn join_hidden_context(first: &str, second: &str) -> String {
+pub(super) fn join_hidden_context(first: &str, second: &str) -> String {
     match (first.trim(), second.trim()) {
         ("", "") => String::new(),
         ("", second) => second.to_string(),
