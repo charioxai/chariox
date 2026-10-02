@@ -165,7 +165,7 @@ impl KernelRuntimeState {
         agent_id: &str,
         task_prompt: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
-        self.authorize_current_prompt_command()?;
+        self.authorize_current_external_command()?;
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         if agent.session_id() != session_id {
             return Err(DaemonError::LocalTransport {
@@ -183,7 +183,7 @@ impl KernelRuntimeState {
             self.rollback_meta_prompt_activation(&agent).await;
             return Err(error);
         }
-        if let Err(error) = self.authorize_current_prompt_command() {
+        if let Err(error) = self.authorize_current_external_command() {
             self.rollback_meta_prompt_activation(&agent).await;
             return Err(error);
         }
@@ -194,7 +194,7 @@ impl KernelRuntimeState {
             self.rollback_meta_prompt_activation(&agent).await;
             return Err(error);
         }
-        if let Err(error) = self.authorize_current_prompt_command() {
+        if let Err(error) = self.authorize_current_external_command() {
             self.rollback_meta_prompt_activation(&agent).await;
             return Err(error);
         }
@@ -209,7 +209,7 @@ impl KernelRuntimeState {
             Err(error) => {
                 drop(activity_mutation);
                 drop(_admission);
-                let rollback = self.with_prompt_command_authority(None);
+                let rollback = self.with_external_command_authority(None);
                 let _ = rollback
                     .sync_remote_leased_agent_meta_mode(session_id, agent_id, false)
                     .await;
@@ -234,7 +234,7 @@ impl KernelRuntimeState {
         {
             drop(activity_mutation);
             drop(_admission);
-            let rollback = self.with_prompt_command_authority(None);
+            let rollback = self.with_external_command_authority(None);
             let _ = rollback
                 .sync_remote_leased_agent_meta_mode(session_id, agent_id, false)
                 .await;
@@ -259,7 +259,7 @@ impl KernelRuntimeState {
     async fn rollback_meta_prompt_activation(&self, original: &crate::agent::AgentInstance) {
         // Compensate only the provisional activation. An expired external
         // grant cannot prevent kernel-owned restoration of the previous mode.
-        let rollback = self.with_prompt_command_authority(None);
+        let rollback = self.with_external_command_authority(None);
         let _ = rollback
             .sync_remote_leased_agent_meta_mode(
                 original.session_id(),
@@ -278,7 +278,7 @@ impl KernelRuntimeState {
                 .agent_store
                 .deactivate_agent_meta_mode(original.id());
         }
-        if let Some(authority) = &self.prompt_command_authority {
+        if let Some(authority) = &self.external_command_authority {
             let mut pending = self.owned.pending_provider_reloads.write();
             if pending
                 .get(original.id())
@@ -337,7 +337,7 @@ impl KernelRuntimeState {
         agent_id: &str,
         active: bool,
     ) -> Result<(), DaemonError> {
-        self.authorize_current_prompt_command()?;
+        self.authorize_current_external_command()?;
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         if agent.session_id() != session_id {
             return Err(DaemonError::LocalTransport {
@@ -355,7 +355,7 @@ impl KernelRuntimeState {
         ) {
             config.apply_remote_relay_override(relay_url, relay_token);
         }
-        self.authorize_current_prompt_command()?;
+        self.authorize_current_external_command()?;
         match tokio::time::timeout(
             std::time::Duration::from_secs(5),
             crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized(
@@ -369,7 +369,7 @@ impl KernelRuntimeState {
                     active,
                 },
                 std::time::Duration::from_secs(5),
-                || self.authorize_current_prompt_command(),
+                || self.authorize_current_external_command(),
             ),
         )
         .await

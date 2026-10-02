@@ -243,13 +243,24 @@ impl<'a> KernelSessionService<'a> {
 
     pub(crate) fn spawn_agent(
         &mut self,
-        mut request: CreateAgentRequest,
+        request: CreateAgentRequest,
     ) -> Result<AgentInstance, DaemonError> {
+        self.spawn_agent_authorized(request, &|| Ok(()))
+    }
+
+    pub(crate) fn spawn_agent_authorized(
+        &mut self,
+        mut request: CreateAgentRequest,
+        authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
+    ) -> Result<AgentInstance, DaemonError> {
+        authorize()?;
         if let Some(kernel_ref) = request.kernel_ref.clone() {
             if self.app.kernel_ref_is_local(&kernel_ref) {
                 request.kernel_ref = None;
             } else {
-                let agent = self.app.spawn_worker_agent(request, &kernel_ref)?;
+                let agent = self
+                    .app
+                    .spawn_worker_agent(request, &kernel_ref, authorize)?;
                 self.app.durable_state_store().append_event(
                     "agent.created",
                     Some(agent.id().to_string()),

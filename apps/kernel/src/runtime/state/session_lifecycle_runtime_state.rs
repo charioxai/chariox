@@ -540,13 +540,16 @@ impl KernelRuntimeState {
         &self,
         mut request: crate::agent::CreateAgentRequest,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.authorize_current_external_command()?;
         self.normalize_local_kernel_ref(&mut request);
         if request.kernel_ref.is_none() {
             request = self.prepare_local_agent_worktree_placement(request)?;
             return self.owned.spawn_agent(request);
         }
         self.with_app_side_effect(|app| {
-            crate::app::KernelSessionService::new(app).spawn_agent(request)
+            self.authorize_current_external_command()?;
+            crate::app::KernelSessionService::new(app)
+                .spawn_agent_authorized(request, &|| self.authorize_current_external_command())
         })
         .await
     }
@@ -763,11 +766,28 @@ impl KernelRuntimeState {
         Ok(agent)
     }
 
+    pub(crate) async fn destroy_agent_in_session(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        caller_user_id: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let agent = self.owned.agent_store.get_agent(agent_id)?;
+        if agent.session_id() != session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: session_id.into(),
+                agent_id: agent_id.into(),
+            });
+        }
+        self.destroy_agent(agent_id, caller_user_id).await
+    }
+
     pub(crate) async fn destroy_agent(
         &self,
         agent_id: &str,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.authorize_current_external_command()?;
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         let local_provider_run_ids = if agent.remote_execution().is_none() {
             self.owned
@@ -796,7 +816,11 @@ impl KernelRuntimeState {
             .ensure_agent_owner(agent.id(), caller_user_id, "destroy agent")?;
         if agent.remote_execution().is_some() {
             self.with_app_side_effect(|app| {
-                crate::app::KernelSessionService::new(app).destroy_agent_worker_execution(&agent)
+                self.authorize_current_external_command()?;
+                crate::app::KernelSessionService::new(app)
+                    .destroy_agent_worker_execution_authorized(&agent, &|| {
+                        self.authorize_current_external_command()
+                    })
             })
             .await
             .map_err(|error| DaemonError::AgentWorkerCleanup {
@@ -806,6 +830,7 @@ impl KernelRuntimeState {
         }
         // The app and runtime share the agent store. Delete once, after worker
         // cleanup, through the owner that also clears prompt and run state.
+        self.authorize_current_external_command()?;
         let destroyed = self.owned.destroy_agent(agent_id, caller_user_id)?;
         for slice_ref in slice_refs {
             let slice = self.owned.slice_store.detach_agent(

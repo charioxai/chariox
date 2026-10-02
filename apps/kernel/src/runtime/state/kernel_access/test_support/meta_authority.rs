@@ -279,7 +279,7 @@ async fn kernel_access_revocation_drops_deferred_prompt_policy_reload() {
         prompt: "/meta task".into(),
         attachments: vec![],
     });
-    let scoped = state.with_prompt_command_authority(Some((&grant, &local)));
+    let scoped = state.with_external_command_authority(Some((&grant, &local)));
     assert_eq!(
         scoped
             .reload_agent_provider_for_policy(session.id(), agent.id(), "meta mode activation")
@@ -337,7 +337,7 @@ async fn kernel_access_revocation_blocks_prompt_policy_relaunch_at_app_wait() {
     });
     let probe = Arc::new(tokio::sync::Notify::new());
     state.observe_app_lock_wait_for_test(probe.clone());
-    let scoped = state.with_prompt_command_authority(Some((&grant, &local)));
+    let scoped = state.with_external_command_authority(Some((&grant, &local)));
     let held = app.lock().await;
     scoped.spawn_provider_relaunch(
         LaunchProviderRequest::new(session.id(), "dev-stub", "dev-stub", "default", "model")

@@ -30,7 +30,7 @@ impl KernelRuntimeState {
         {
             None
         } else {
-            self.prompt_command_authority.clone()
+            self.external_command_authority.clone()
         };
         let reason = pending
             .get(agent_id)
@@ -62,8 +62,8 @@ impl KernelRuntimeState {
                     .and_then(|pending| pending.authority.clone());
                 if let Some(authority) = authority {
                     if state
-                        .with_prompt_command_authority(Some(authority.as_request()))
-                        .authorize_current_prompt_command()
+                        .with_external_command_authority(Some(authority.as_request()))
+                        .authorize_current_external_command()
                         .is_err()
                     {
                         let mut queued = state.owned.pending_provider_reloads.write();
@@ -99,11 +99,11 @@ impl KernelRuntimeState {
                         pending.remove(&agent_id)
                     };
                     if let Some(pending) = pending {
-                        let authorized = state.with_prompt_command_authority(
+                        let authorized = state.with_external_command_authority(
                             pending
                                 .authority
                                 .as_ref()
-                                .map(PromptCommandAuthority::as_request),
+                                .map(ExternalCommandAuthority::as_request),
                         );
                         match authorized
                             .reload_agent_provider_if_idle_for_reason(

@@ -52,7 +52,7 @@ impl KernelRuntimeState {
                     }
                 }
             }
-            if let Err(error) = state.authorize_current_prompt_command() {
+            if let Err(error) = state.authorize_current_external_command() {
                 crate::logging::info_with_fields(
                     "daemon.provider",
                     "provider policy relaunch authority invalidated",
@@ -76,7 +76,7 @@ impl KernelRuntimeState {
             }
             let spawn_result = state
                 .with_app_side_effect(|app| {
-                    state.authorize_current_prompt_command()?;
+                    state.authorize_current_external_command()?;
                     crate::app::ProviderLaunchProcessRuntime::new(app)
                         .spawn_for_launch(&started.run)
                 })
@@ -89,7 +89,7 @@ impl KernelRuntimeState {
                 .owned
                 .provider_run_projection
                 .update(started.run.clone());
-            if let Err(error) = state.authorize_current_prompt_command() {
+            if let Err(error) = state.authorize_current_external_command() {
                 state.fail_provider_launch(&started, &error).await;
                 return;
             }
@@ -104,7 +104,7 @@ impl KernelRuntimeState {
             });
             match binding {
                 Ok(Ok(binding)) => {
-                    if let Err(error) = state.authorize_current_prompt_command() {
+                    if let Err(error) = state.authorize_current_external_command() {
                         state.fail_provider_launch(&started, &error).await;
                         return;
                     }
