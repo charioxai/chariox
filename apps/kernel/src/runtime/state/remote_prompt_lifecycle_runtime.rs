@@ -128,8 +128,20 @@ impl KernelRuntimeState {
         else {
             return Ok(None);
         };
-        self.finish_owned_prompt_submission_workflow_start(&mut submission)
-            .await?;
+        if let Err(error) = self
+            .finish_owned_prompt_submission_workflow_start(&mut submission)
+            .await
+        {
+            // The prompt is already active; settle it as a failed dispatch so
+            // the agent is not left holding a prompt the worker never got.
+            return match submission.remote_dispatch.take() {
+                Some(dispatch) => self
+                    .finish_remote_prompt_dispatch(dispatch, Err(error))
+                    .await
+                    .map(|()| None),
+                None => Err(error),
+            };
+        }
         self.spawn_remote_prompt_projection_drain_if_needed(&submission);
         if let Some(dispatch) = submission.remote_dispatch.take() {
             self.spawn_remote_prompt_dispatch(dispatch);
