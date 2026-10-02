@@ -96,6 +96,7 @@ run_test chariox-storage-actual hosted_deleting_an_installation_removes_its_stor
 # The committed start dropped the snapshot; no copy outlives the update.
 if find /var/lib/chariox-app-storage -name data-snapshot.ext4 | grep . ; then exit 1; fi
 run_test chariox-storage-actual hosted_readonly_code_views_match_verified_roots_in_kernel_namespace
+run_test chariox-storage-actual hosted_fresh_first_install_prepares_without_a_committed_generation
 run_test chariox-storage-actual hosted_prepared_worker_uses_only_enrolled_sources_and_reclaims_unstarted_domain
 run_test chariox-storage-crash hosted_crash_fixture_holds_lease_until_owner_is_killed > "$storage_scratch/evidence/crash-holder.log" 2>&1 &
 storage_waiter=$!

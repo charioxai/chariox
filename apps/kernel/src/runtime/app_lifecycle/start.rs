@@ -239,7 +239,11 @@ fn spawn(
         let committed = context
             .store
             .get_app_installation(binding.owner_id(), &binding.token().installation_id)
-            .map(|installation| installation.generation)
+            .map(|installation| {
+                installation
+                    .data_release()
+                    .map(|release| release.generation)
+            })
             .map_err(|_| LifecycleError::Preparation)?;
         let prepared = chariox_app_runtime::worker_process::PreparedWorker::prepare_linux(
             runtime,

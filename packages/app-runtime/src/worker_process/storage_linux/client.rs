@@ -32,13 +32,6 @@ pub(in crate::worker_process) struct Lease {
 #[derive(Serialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 enum Operation<'a> {
-    Acquire {
-        owner: &'a str,
-        installation: &'a str,
-        generation: u64,
-        cgroup_leaf: &'a str,
-        committed_generation: u64,
-    },
     Release {
         lease: &'a str,
     },
@@ -106,37 +99,29 @@ pub(in crate::worker_process) fn delete(owner: &str, installation: &str) -> Resu
 impl Lease {
     /// `committed_generation` is the installation's committed generation: a
     /// newer, staged generation starts on a copy the helper can roll back to.
+    /// `None` means this is a fresh installation with no committed release.
     pub fn acquire(
         owner: &str,
         installation: &str,
         generation: u64,
-        committed_generation: u64,
+        committed_generation: Option<u64>,
         cgroup_leaf: &str,
     ) -> Result<Self> {
         let uid = unsafe { libc::geteuid() };
         if uid == 0 {
             return Err(Error::Identity);
         }
-        let request = model::Request::Acquire {
-            owner: owner.into(),
-            installation: installation.into(),
+        let request = acquire_request(
+            owner,
+            installation,
             generation,
-            cgroup_leaf: cgroup_leaf.into(),
-            committed_generation: Some(committed_generation),
-        };
+            committed_generation,
+            cgroup_leaf,
+        );
         request.validate()?;
         let name = model::installation_name(owner, installation)?;
         let mut stream = connect(uid)?;
-        wire::send(
-            &mut stream,
-            &Operation::Acquire {
-                owner,
-                installation,
-                generation,
-                cgroup_leaf,
-                committed_generation,
-            },
-        )?;
+        wire::send(&mut stream, &request)?;
         let reply: Reply = wire::receive(&stream, 150)?;
         if reply.status != "acquired" || reply.code.is_some() {
             return Err(Error::RecoveryRequired);
@@ -317,4 +302,63 @@ fn verify(dir: &Dir, root: &model::Identity, capacity: u64, uid: u32) -> Result<
         return Err(Error::Identity);
     }
     Ok(stat.stx_mnt_id)
+}
+
+fn acquire_request(
+    owner: &str,
+    installation: &str,
+    generation: u64,
+    committed_generation: Option<u64>,
+    cgroup_leaf: &str,
+) -> model::Request {
+    model::Request::Acquire {
+        owner: owner.into(),
+        installation: installation.into(),
+        generation,
+        cgroup_leaf: cgroup_leaf.into(),
+        committed_generation,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn acquire_request_preserves_absent_and_committed_generations_on_the_wire() {
+        for committed in [None, Some(1), Some(2)] {
+            let request = acquire_request(
+                "owner",
+                "installation",
+                2,
+                committed,
+                "app-11111111111111111111111111111111",
+            );
+            request.validate().unwrap();
+            let wire = serde_json::to_value(&request).unwrap();
+            assert_eq!(wire["committed_generation"], serde_json::json!(committed));
+            let received: model::Request = serde_json::from_value(wire).unwrap();
+            received.validate().unwrap();
+            let model::Request::Acquire {
+                committed_generation,
+                ..
+            } = received
+            else {
+                panic!("expected acquire request");
+            };
+            assert_eq!(committed_generation, committed);
+        }
+        // Zero is still invalid: the caller must represent absence as None.
+        assert_eq!(
+            acquire_request(
+                "owner",
+                "installation",
+                1,
+                Some(0),
+                "app-11111111111111111111111111111111"
+            )
+            .validate(),
+            Err(Error::Invalid),
+        );
+    }
 }

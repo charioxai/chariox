@@ -53,7 +53,7 @@ impl Context {
             "hosted-owner",
             installation,
             generation,
-            committed,
+            Some(committed),
             &self.leaf,
         )
         .unwrap()
