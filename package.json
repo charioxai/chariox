@@ -12,7 +12,7 @@
     "lint": "pnpm -r --workspace-concurrency=1 run lint",
     "start:cli": "node scripts/start-cli.mjs",
     "test": "node --test scripts/*.test.mjs && pnpm run test:slice-provisioner && pnpm -r --workspace-concurrency=1 run test",
-    "test:slice-provisioner": "sh -c 'for file in apps/kernel/slice-linux-docker/provision-*.test.mjs apps/kernel/slice-linux-docker/slice-disk-quota*.test.mjs; do [ -f \"$file\" ] || exit 1; done; exec node --test --test-concurrency=1 apps/kernel/slice-linux-docker/provision-*.test.mjs apps/kernel/slice-linux-docker/slice-disk-quota*.test.mjs'",
+    "test:slice-provisioner": "sh -c 'for file in apps/kernel/slice-linux-docker/provision-*.test.mjs apps/kernel/slice-linux-docker/slice-disk-quota*.test.mjs apps/kernel/slice-linux-docker/managed-rootless-quota*.test.mjs; do [ -f \"$file\" ] || exit 1; done; exec node --test --test-concurrency=1 apps/kernel/slice-linux-docker/provision-*.test.mjs apps/kernel/slice-linux-docker/slice-disk-quota*.test.mjs apps/kernel/slice-linux-docker/managed-rootless-quota*.test.mjs'",
     "test:daemon": "RUST_MIN_STACK=16777216 RUST_TEST_THREADS=1 cargo test --manifest-path apps/kernel/Cargo.toml",
     "test:browser-controller-browser": "node --test --test-concurrency=1 apps/kernel/slice-linux-docker/docker/browser-controller.browser-test.mjs",
     "perf:drills": "node scripts/performance-drills.mjs",

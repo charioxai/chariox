@@ -31,9 +31,10 @@ function selectionGlobs(command) {
   const patterns = [
     `${sliceTestDirectory}/provision-*.test.mjs`,
     `${sliceTestDirectory}/slice-disk-quota*.test.mjs`,
+    `${sliceTestDirectory}/managed-rootless-quota*.test.mjs`,
   ]
   const expectedScript = `for file in ${patterns.join(" ")}; do [ -f \"$file\" ] || exit 1; done; exec node --test --test-concurrency=1 ${patterns.join(" ")}`
-  assert.equal(shellScript, expectedScript, "both test globs must be guarded before the sequential Node run")
+  assert.equal(shellScript, expectedScript, "all test globs must be guarded before the sequential Node run")
   assert.doesNotMatch(command, /--test-(?:skip|name)-pattern/)
   return patterns
 }
@@ -73,6 +74,7 @@ function makeSelectionFixture(t, quotaTests, { includeProvisioner = true } = {})
     scripts: { "test:slice-provisioner": selectionCommand() },
   }))
   if (includeProvisioner) addFixtureTest(testDirectory, "provision-existing.test.mjs")
+  addFixtureTest(testDirectory, "managed-rootless-quota-check.test.mjs")
   for (const quotaTest of quotaTests) addFixtureTest(testDirectory, quotaTest.filename, quotaTest)
   return { root, marker: join(root, "selection-marker") }
 }
@@ -106,9 +108,9 @@ test("slice provisioner selection covers its dynamic repository inventory once a
   const patterns = selectionGlobs(selectionCommand())
   const provisionPattern = `${sliceTestDirectory}/provision-*.test.mjs`
   const quotaPattern = `${sliceTestDirectory}/slice-disk-quota*.test.mjs`
-  assert.deepEqual(patterns, [provisionPattern, quotaPattern])
+  assert.deepEqual(patterns, [provisionPattern, quotaPattern, `${sliceTestDirectory}/managed-rootless-quota*.test.mjs`])
 
-  const selected = patterns.flatMap(expandOneLevelGlob)
+  const selected = patterns.flatMap(expandOneLevelGlob).sort()
   const directory = resolve(repositoryRoot, sliceTestDirectory)
   const testFiles = readdirSync(directory).filter((filename) => filename.endsWith(".test.mjs"))
   const provisionInventory = testFiles.filter((filename) => filename.startsWith("provision-"))
@@ -139,13 +141,14 @@ test("selection runs future quota-pattern files once and propagates a selected t
 
   assert.notEqual(result.status, 0, `a failing selected quota test must fail the package script\n${result.diagnostics}`)
   assert.match(output, /intentional selection failure/, result.diagnostics)
-  assert.match(output, /(?:#|ℹ)\s*tests 3\b/, result.diagnostics)
-  assert.match(output, /(?:#|ℹ)\s*pass 2\b/, result.diagnostics)
+  assert.match(output, /(?:#|ℹ)\s*tests 4\b/, result.diagnostics)
+  assert.match(output, /(?:#|ℹ)\s*pass 3\b/, result.diagnostics)
   assert.match(output, /(?:#|ℹ)\s*fail 1\b/, result.diagnostics)
   assert.match(output, /(?:#|ℹ)\s*skipped 0\b/, result.diagnostics)
   assert.deepEqual(
     readFileSync(fixture.marker, "utf8").trim().split("\n").sort(),
     [
+      "managed-rootless-quota-check.test.mjs",
       "provision-existing.test.mjs",
       "slice-disk-quota-current.test.mjs",
       "slice-disk-quota-future.test.mjs",
