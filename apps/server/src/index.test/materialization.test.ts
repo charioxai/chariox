@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs"
 import {
   acquireAgentAppReplica,
   appendCloudPublicationDeploymentLogs,
@@ -384,7 +385,7 @@ test("gateway materializes Agent App replica sessions from package config", asyn
 test("gateway remaps portable package workspace paths before local materialization", async () => {
   const root = await mkdtemp(join(tmpdir(), "chariox-server-portable-workspace-materialize-"))
   const sourceWorkspace = join(root, "source-workspace")
-  const runtimeWorkspace = `${root}.runtime-${process.pid}`
+  const runtimeWorkspace = existsSync("/workspace") ? "/workspace" : `${root}.runtime-${process.pid}`
   const requests: Record<string, unknown>[] = []
   try {
     await writeFile(join(root, "publication.json"), JSON.stringify({
