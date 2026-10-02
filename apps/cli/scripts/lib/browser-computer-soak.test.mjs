@@ -553,6 +553,7 @@ test("child environment is allowlisted and every evidence surface redacts secret
     DOCKER_HOST: "unix:///run/user/1000/docker.sock",
     CONTAINER_HOST: "unix:///run/user/1000/podman.sock",
     XDG_RUNTIME_DIR: "/run/user/1000",
+    CHARIOX_SOAK_SUPERVISOR_IDENTITY: '{"pid":1,"startedAtTicks":"100"}',
     GITHUB_TOKEN: "must-not-leak",
   }, {
     imageRef: "registry.example/chariox/slice:final",
@@ -562,6 +563,7 @@ test("child environment is allowlisted and every evidence surface redacts secret
   assert.equal(detached.DOCKER_HOST, "unix:///run/user/1000/docker.sock")
   assert.equal(detached.CONTAINER_HOST, "unix:///run/user/1000/podman.sock")
   assert.equal(detached.XDG_RUNTIME_DIR, "/run/user/1000")
+  assert.equal(detached.CHARIOX_SOAK_SUPERVISOR_IDENTITY, '{"pid":1,"startedAtTicks":"100"}')
   assert.equal(detached.GITHUB_TOKEN, undefined)
   const retained = redactEvidence({
     stdout: `token=${secret}`,

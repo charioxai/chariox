@@ -6,6 +6,7 @@ import http from "node:http"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
+import { includeSoakSupervisor, verifiedSoakSupervisor } from "./soak-supervisor.mjs"
 import { promisify } from "node:util"
 
 import {
@@ -507,7 +508,7 @@ async function resourceSnapshot(label, rootPids, diskPath) {
   const rows = stdout.split("\n").map(line => line.trim().split(/\s+/, 5)).filter(parts => parts.length === 5)
     .map(([pid, ppid, rss, cpu, command]) => ({ pid: Number(pid), ppid: Number(ppid), rssKb: Number(rss), cpuPercent: Number(cpu), command }))
   const ids = descendantIds(rows, rootPids)
-  const owned = rows.filter(row => ids.has(row.pid))
+  const owned = includeSoakSupervisor(rows, ids, await verifiedSoakSupervisor())
   const disk = await statfs(diskPath)
   return { label, at: new Date().toISOString(), host: { totalMemoryBytes: os.totalmem(), freeMemoryBytes: os.freemem(), loadAverage: os.loadavg() },
     disk: { path: diskPath, availableBytes: Number(disk.bavail) * Number(disk.bsize), totalBytes: Number(disk.blocks) * Number(disk.bsize) },

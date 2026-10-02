@@ -22,6 +22,7 @@ import {
 } from "./browser-computer-soak.mjs"
 
 import { startActiveSoakFixture, waitForFixtureMarker } from "./browser-computer-soak-fixture.mjs"
+import { includeSoakSupervisor, verifiedSoakSupervisor } from "./soak-supervisor.mjs"
 
 const execFileAsync = promisify(execFile)
 const schema = "chariox.browser_computer_soak.v1"
@@ -51,6 +52,7 @@ export function buildSanitizedChildEnvironment(base, additions = {}) {
 export function buildDetachedRunnerEnvironment(base, options) {
   return buildSanitizedChildEnvironment(base, {
     ...engineConnectionEnvironment(base),
+    CHARIOX_SOAK_SUPERVISOR_IDENTITY: base?.CHARIOX_SOAK_SUPERVISOR_IDENTITY,
     CHARIOX_SLICE_IMAGE: options.imageRef,
     CHARIOX_SLICE_IMAGE_SIGNATURE_KEY: options.imageSignatureKey,
     CHARIOX_CONTAINER_ENGINE: options.containerEngine,
@@ -971,6 +973,7 @@ async function captureOwnedIdentities(entries) {
 async function mergeSampledIdentities(existing, processes) {
   const identities = [...existing]
   for (const entry of processes) {
+    if (entry.scope === "supervisor") continue
     const identity = await processIdentity(entry.pid)
     if (identity && !identities.some((candidate) => processIdentityMatches(candidate, identity))) {
       identities.push({ name: `descendant:${entry.command}`, ...identity })
@@ -1350,7 +1353,9 @@ async function resourceSnapshot(label, rootPids, diskPath) {
     pid: Number(pid), ppid: Number(ppid), rssKb: Number(rss), cpuPercent: Number(cpu), command,
   })).filter((row) => Number.isSafeInteger(row.pid) && Number.isSafeInteger(row.ppid))
   const ownedIds = descendantIds(rows, rootPids)
-  const ownedRows = rows.filter((row) => ownedIds.has(row.pid))
+  const supervisor = await verifiedSoakSupervisor()
+  const ownedRows = includeSoakSupervisor(rows, ownedIds, supervisor)
+  if (supervisor) ownedIds.add(supervisor.pid)
   const disk = await import("node:fs/promises").then(({ statfs }) => statfs(diskPath))
   const openFiles = (await Promise.all([...ownedIds].map(async (pid) => {
     try { return (await readdir(`/proc/${pid}/fd`)).length } catch { return 0 }
