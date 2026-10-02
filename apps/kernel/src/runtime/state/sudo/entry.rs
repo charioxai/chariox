@@ -289,26 +289,7 @@ impl KernelRuntimeState {
             prompt.id(),
             &entry.entry_id,
         );
-        let admitted = {
-            let mut access = self.owned.sudo_turns.lock().expect("access state poisoned");
-            // Hold the grant writer through binding the running turn. Revoking
-            // its requester cannot race the final queued-to-running transition.
-            let grants = self
-                .owned
-                .kernel_access
-                .lock()
-                .expect("access state poisoned");
-            if !bound
-                || access.get(&entry.entry_id) != Some(entry)
-                || !policy::requester_grant_live(entry, &grants)
-            {
-                Err(error("sudo authorization revoked before dispatch"))
-            } else {
-                self.audit_sudo(&turn, "started").map(|()| {
-                    access.insert(entry.entry_id.clone(), turn.clone());
-                })
-            }
-        };
+        let admitted = self.admit_sudo_turn(entry, &turn, bound);
         if let Err(error) = admitted {
             if let Ok(Some(cancelled)) = self.owned.cancel_local_prompt_if_matches(
                 &turn.session_id,
@@ -323,6 +304,33 @@ impl KernelRuntimeState {
             return Err(error);
         }
         Ok(Some(submission))
+    }
+
+    pub(super) fn admit_sudo_turn(
+        &self,
+        entry: &KernelSudoTurn,
+        turn: &KernelSudoTurn,
+        bound: bool,
+    ) -> Result<(), DaemonError> {
+        // Grant writers may read sessions; interaction resolution holds a
+        // session writer before sudo_turns. Acquire grants before sudo_turns
+        // here to avoid the session -> sudo -> grants -> session cycle.
+        // Keep both writers through the queued-to-running transition.
+        let grants = self
+            .owned
+            .kernel_access
+            .lock()
+            .expect("access state poisoned");
+        let mut access = self.owned.sudo_turns.lock().expect("access state poisoned");
+        if !bound
+            || access.get(&entry.entry_id) != Some(entry)
+            || !policy::requester_grant_live(entry, &grants)
+        {
+            return Err(error("sudo authorization revoked before dispatch"));
+        }
+        self.audit_sudo(turn, "started")?;
+        access.insert(entry.entry_id.clone(), turn.clone());
+        Ok(())
     }
 }
 

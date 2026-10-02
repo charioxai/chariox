@@ -20,24 +20,13 @@ impl KernelRuntimeState {
             .get(grant_id)
             .cloned()
             .ok_or_else(|| error("grant revoked or expired"))?;
-        let session = self.owned.session_store.get_session(&session_id)?;
-        if session.owner_user_id() != grant.summary.owner_user_id {
-            return Err(error("only the session host can authorize sudo"));
-        }
         if request.prompt.trim().is_empty() {
             return Err(error("sudo request needs a prompt"));
         }
         // A private source attachment uses ordinary prompt admission. It does
         // not represent a terminal and is removed on success, refusal or drop.
-        let attachment = self.owned.attachment_store.attach(
-            &mut self.owned.session_store.write(),
-            crate::attachment::AttachRequest::for_user(
-                &session_id,
-                format!("external-sudo:{:016x}", rand::random::<u64>()),
-                crate::attachment::ClientCapabilityLevel::AutomationOnly,
-                &grant.summary.owner_user_id,
-            ),
-        )?;
+        let attachment =
+            self.attach_external_sudo_source(&session_id, &grant.summary.owner_user_id)?;
         let _attachment = ExternalSudoAttachment {
             state: self.clone(),
             id: attachment.id().into(),
@@ -59,6 +48,33 @@ impl KernelRuntimeState {
         Ok(LocalDaemonResponse::KernelSudoRequested {
             agent_id: request.agent_id,
         })
+    }
+
+    pub(super) fn attach_external_sudo_source(
+        &self,
+        session_id: &str,
+        owner: &str,
+    ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
+        // Attach ordinarily reopens ended sessions. External requests must never
+        // do that: check status and host ownership under the same writer used
+        // by attach, so session teardown cannot race this check.
+        let mut sessions = self.owned.session_store.write();
+        let session = sessions.get_session(session_id)?;
+        if session.status() == SessionStatus::Ended {
+            return Err(error("session has ended"));
+        }
+        if session.owner_user_id() != owner {
+            return Err(error("only the session host can authorize sudo"));
+        }
+        self.owned.attachment_store.attach(
+            &mut sessions,
+            crate::attachment::AttachRequest::for_user(
+                session_id,
+                format!("external-sudo:{:016x}", rand::random::<u64>()),
+                crate::attachment::ClientCapabilityLevel::AutomationOnly,
+                owner,
+            ),
+        )
     }
 
     pub(crate) fn sudo_entry_pending(&self, session_id: &str, entry_id: &str) -> bool {
