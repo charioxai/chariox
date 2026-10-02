@@ -72,7 +72,7 @@ test("parseSlashCommand parses the kernel notification center namespace", () => 
   ), true)
 })
 
-test("App slash commands keep their arguments verbatim and stay in the TUI's App handler", () => {
+test("App slash commands retain raw input and decode shell arguments in the TUI", () => {
   const input = "/app list --after install-1 --limit 10"
   const parsed = parseSlashCommand(input)!
   assert.deepEqual(parsed, { kind: "app", raw: input, args: ["list", "--after", "install-1", "--limit", "10"] })
@@ -84,7 +84,7 @@ test("App slash commands keep their arguments verbatim and stay in the TUI's App
   assert.deepEqual(parseSlashCommand(inboxTest), {
     kind: "app",
     raw: inboxTest,
-    args: ["inbox", "test", "todo", "mail", "occ-1", '{"step":"request","n":1}'],
+    args: ["inbox", "test", "todo", "mail", "occ-1", "{step:request,n:1}"],
   })
   for (const command of [
     input,
