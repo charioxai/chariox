@@ -2640,7 +2640,10 @@ Workflow trigger and deployment direction:
   controller commands recheck after relay discovery/enqueue and local blocking
   waits; browser mutations recheck execution-gate and action-admission waits
   before execution and home-state completion. Invalidated queued actions are
-  retired without execution.
+  retired without execution. Stale remote binding recovery retains authority
+  through the app lock and worker discovery, before lease/account/agent creation
+  or home binding persistence. Local controller jobs recheck under the supervisor
+  ownership lock; computer helpers recheck inside their blocking process queue.
   A Unix connection binds to its first approved or admitted grant and never
   switches authority. Session references resolve once to an authorized session
   ID before dispatch. A later approval on that socket creates a grant for

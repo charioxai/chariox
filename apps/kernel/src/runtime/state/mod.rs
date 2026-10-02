@@ -851,7 +851,7 @@ impl KernelRuntimeState {
         };
         self.spawn_deferred_workflow_remote_prompt_dispatches(dispatches);
         result
-|    }
+    }
 
     pub(crate) async fn with_app_side_effect_blocking<R, F>(
         &self,
@@ -862,7 +862,13 @@ impl KernelRuntimeState {
         R: Send + 'static,
     {
         let app = Arc::clone(&self.app);
+        #[cfg(test)]
+        let probe = self.app_lock_wait_probe.clone();
         let (result, dispatches) = tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            if let Some(probe) = probe {
+                probe.notify_one();
+            }
             let mut app = app.blocking_lock();
             let result = operation(&mut app);
             let dispatches = app.take_deferred_workflow_remote_prompt_dispatches();

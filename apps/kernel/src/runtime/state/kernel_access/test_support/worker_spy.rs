@@ -6,8 +6,8 @@ use crate::transport::{
 use chariox_relay::protocol::RelayEnvelope;
 use futures_util::{SinkExt, StreamExt};
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 use tokio::sync::Notify;
 use tokio::time::timeout;
@@ -21,6 +21,9 @@ pub(in crate::runtime::state) struct WorkerSpy {
     pub(in crate::runtime::state) release_discovery: Arc<Notify>,
     pub(in crate::runtime::state) setup_status:
         Arc<std::sync::Mutex<Option<crate::local::ProjectEnvironmentSetupStatus>>>,
+    pub(in crate::runtime::state) native_recovery: Arc<std::sync::atomic::AtomicBool>,
+    pub(in crate::runtime::state) native_launch_started: Arc<Notify>,
+    pub(in crate::runtime::state) release_native_launch: Arc<Notify>,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -42,6 +45,12 @@ impl WorkerSpy {
         let release_discovery = Arc::new(Notify::new());
         let started = discovery_started.clone();
         let released = release_discovery.clone();
+        let native_recovery = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_native_recovery = native_recovery.clone();
+        let native_launch_started = Arc::new(Notify::new());
+        let release_native_launch = Arc::new(Notify::new());
+        let launch_started = native_launch_started.clone();
+        let launch_released = release_native_launch.clone();
         let (shutdown, stopped) = tokio::sync::oneshot::channel();
         let thread = std::thread::spawn(move || {
             tokio::runtime::Runtime::new().unwrap().block_on(async move {
@@ -49,13 +58,14 @@ impl WorkerSpy {
                 let listener = tokio::net::TcpListener::from_std(listener).unwrap();
                 let mut home_agent = String::new();
                 let mut first_discovery = true;
+                let mut first_native_launch = true;
                 tokio::pin!(stopped);
                 loop {
                     let stream = tokio::select! { _ = &mut stopped => break, accepted = listener.accept() => accepted.unwrap().0 };
                     let mut socket = accept_async(stream).await.unwrap();
                     match receive(&mut socket).await {
                         RelayEnvelope::ClientMetadataRequest { request_id, .. } => {
-                            if pause_discovery && first_discovery {
+                            if pause_discovery && first_discovery && (!worker_native_recovery.load(Ordering::SeqCst) || counter.load(Ordering::SeqCst) > 0) {
                                 first_discovery = false;
                                 started.notify_one();
                                 released.notified().await;
@@ -71,6 +81,16 @@ impl WorkerSpy {
                             let decoded = relay_crypto::decrypt_payload_for_private_key(&worker.relay_private_key, &encrypted_request).unwrap();
                             let request: RelayPeerRequest = serde_json::from_slice(&decoded.plaintext).unwrap();
                             counter.fetch_add(1, Ordering::SeqCst);
+                            if matches!(&request, RelayPeerRequest::LaunchLeasedNativeProviderRun { leased_agent_id, .. } if leased_agent_id == "stale-agent") && worker_native_recovery.load(Ordering::SeqCst) {
+                                if first_native_launch {
+                                    first_native_launch = false;
+                                    launch_started.notify_one();
+                                    launch_released.notified().await;
+                                }
+                                send(&mut socket, RelayEnvelope::DaemonPeerResponse { request_id, from_daemon_id: worker_id.clone(), encrypted_response: None, error: Some(chariox_relay::protocol::RelayError { code: "execution_lease_not_found".into(), message: "fixture stale execution lease".into(), retryable: false }) }).await;
+                                let _ = socket.close(None).await;
+                                continue;
+                            }
                             let response = match request {
                                 RelayPeerRequest::DestroyLeasedAgent { leased_agent_id } => RelayPeerResponse::LeasedAgentDestroyed { leased_agent_id },
                                 RelayPeerRequest::DestroyExecutionLease { lease_id } => RelayPeerResponse::ExecutionLeaseDestroyed { lease_id },
@@ -109,6 +129,12 @@ impl WorkerSpy {
                                     RelayPeerResponse::LeasedProjectEnvironmentSetupCancelled { setup: crate::transport::relay_peer::RelayProjectEnvironmentSetupStatus { status, definition: None } }
                                 }
                                 RelayPeerRequest::RoomBrowserController { session_id, slice_id, command: crate::transport::room_browser_controller::RoomBrowserControllerCommand::Release } => RelayPeerResponse::RoomBrowserController { session_id, slice_id, result: crate::transport::room_browser_controller::RoomBrowserControllerResult::Process { snapshot: None } },
+                                RelayPeerRequest::LaunchLeasedNativeProviderRun { adapter_key, provider, account_profile, model, .. } => {
+                                    let launch = crate::provider::LaunchProviderRequest::new("worker-session", adapter_key, provider, account_profile, model).with_agent_id("worker-agent").with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+                                    let mut run = crate::provider::RuntimeProviderRun::new("recovered-worker-run", &launch, crate::provider::ProviderLaunchResult { endpoint_mode: crate::provider::AgentEndpointMode::Managed, process_label: "metadata-only".into(), pty_target: None, pty_program: None, pty_args: vec![], pty_env: Default::default(), pty_env_remove: vec![], working_directory: None, structured_endpoint: None });
+                                    run.mark_running();
+                                    RelayPeerResponse::LeasedNativeProviderRunLaunched { provider_run: run }
+                                }
                                 _ => panic!("unexpected worker request"),
                             };
                             send(&mut socket, RelayEnvelope::DaemonPeerResponse { request_id, from_daemon_id: worker_id.clone(), encrypted_response: Some(relay_crypto::encrypt_payload_for_peer(&worker.relay_private_key, &registration.public_key, &serde_json::to_vec(&response).unwrap()).unwrap()), error: None }).await;
@@ -126,6 +152,9 @@ impl WorkerSpy {
             discovery_started,
             release_discovery,
             setup_status,
+            native_recovery,
+            native_launch_started,
+            release_native_launch,
             shutdown: Some(shutdown),
             thread: Some(thread),
         }
@@ -135,6 +164,7 @@ impl WorkerSpy {
 impl Drop for WorkerSpy {
     fn drop(&mut self) {
         self.release_discovery.notify_one();
+        self.release_native_launch.notify_one();
         let _ = self.shutdown.take().unwrap().send(());
         let _ = self.thread.take().unwrap().join();
     }

@@ -22,6 +22,21 @@ impl ExternalCommandAuthority {
 }
 
 impl KernelRuntimeState {
+    pub(super) async fn refresh_remote_agent_binding_authorized(
+        &self,
+        agent_id: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.authorize_current_external_command()?;
+        let state = self.clone();
+        let agent_id = agent_id.to_owned();
+        self.with_app_side_effect_blocking(move |app| {
+            app.refresh_remote_agent_binding_authorized(&agent_id, &|| {
+                state.authorize_current_external_command()
+            })
+        })
+        .await
+    }
+
     pub(super) async fn with_authorized_app_side_effect<R>(
         &self,
         operation: impl FnOnce(&mut crate::DaemonApp) -> Result<R, DaemonError>,

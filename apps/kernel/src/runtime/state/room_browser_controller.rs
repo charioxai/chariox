@@ -457,6 +457,15 @@ async fn execute_local(
     command: Command,
 ) -> Result<Response, DaemonError> {
     state.authorize_current_external_command()?;
+    let controller_authorizer = state.clone();
+    let processes = processes.with_authorizer(Arc::new(move || {
+        controller_authorizer
+            .authorize_current_external_command()
+            .map_err(|error| error.to_string())
+    }));
+    let input_authorizer = state.clone();
+    let authorize_input: Arc<dyn Fn() -> Result<(), DaemonError> + Send + Sync> =
+        Arc::new(move || input_authorizer.authorize_current_external_command());
     let command = match command {
         Command::ComputerInput {
             action_id,
@@ -485,7 +494,7 @@ async fn execute_local(
             ) {
                 execution.withhold_capture().await;
             }
-            let cancellation = execution.cancellation();
+            let cancellation = execution.cancellation().with_authorizer(authorize_input.clone());
             let input_result = match action {
                 crate::transport::room_browser_controller::RoomComputerInputAction::PointerMove {
                     x,
@@ -596,7 +605,9 @@ async fn execute_local(
                     "environment_clipboard_invalid_authority_context",
                 ));
             }
-            let content = super::tool_dispatch::run_room_clipboard_read().await?;
+            let content =
+                super::tool_dispatch::run_room_clipboard_read_authorized(Some(authorize_input))
+                    .await?;
             return Ok(Response::ComputerClipboard { content });
         }
         command => command,
