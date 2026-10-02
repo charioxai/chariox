@@ -243,7 +243,7 @@ export function assertFinalDetachPrerequisites(options, provenance) {
 export function attributableNetworkDelta(baseline, current, attribution) {
   if (baseline?.attribution?.exclusive !== true || attribution?.exclusive !== true
     || baseline.attribution.namespace !== attribution.namespace) {
-    throw new Error(`attributable network accounting unavailable${attribution?.foreignPids?.length ? `; foreign namespace PIDs: ${attribution.foreignPids.join(",")}` : ""}`)
+    throw new Error(`attributable network accounting unavailable${attribution?.foreignPids?.length ? `; foreign namespace PIDs: ${attribution.foreignPids.join(",")}` : ""}${attribution?.unreadablePids?.length ? `; unreadable PIDs: ${attribution.unreadablePids.join(",")}` : ""}${attribution?.mismatchedOwnedPids?.length ? `; mismatched owned PIDs: ${attribution.mismatchedOwnedPids.join(",")}` : ""}`)
   }
   const difference = current?.totalBytes - baseline?.totalBytes
   if (!Number.isFinite(difference) || difference < 0) throw new Error("owned network counters regressed or are invalid")
@@ -996,7 +996,7 @@ export async function processIdentity(pid, {
     if (!/^\d+$/.test(startedAtTicks ?? "") || !Number.isSafeInteger(processGroupId) || typeof executable !== "string") return null
     return { pid, startedAtTicks, executable, processGroupId }
   } catch (error) {
-    if (error?.code === "ENOENT") return null
+    if (error?.code === "ENOENT" || error?.code === "ESRCH") return null
     throw error
   }
 }
