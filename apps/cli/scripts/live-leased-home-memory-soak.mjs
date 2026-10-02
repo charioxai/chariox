@@ -188,7 +188,7 @@ try {
       }
     }
     const viewer = await new Kernel(base + 20).open()
-    const attachment = first(await viewer.send({ AttachToSession: { session_id: session, client_id: "soak-tui", capability_level: "FullTerminal" } }), "id")
+    const attachment = first(await viewer.send({ AttachToSession: { session_id: session, client_id: `soak-tui-${index}`, capability_level: "FullTerminal" } }), "id")
     await viewer.subscribe(session, attachment)
     sessions.push({ session, agent: spawned.AgentSpawned.agent.id, viewer, attachment })
   }
@@ -234,7 +234,7 @@ try {
   // A run without RSS samples or accepted prompts measured nothing.
   pumpDurations.sort((a, b) => a - b)
   const percentile = (p) => Math.round(pumpDurations[Math.min(pumpDurations.length - 1, Math.floor(p * pumpDurations.length))] ?? 0)
-  report = { terminal_pump_errors: pumpErrors, terminal_pump_roundtrip_ms: { count: pumpDurations.length, p50: percentile(0.50), p95: percentile(0.95), max: Math.round(pumpDurations.at(-1) ?? 0) }, agents, idle_sessions: idleSessions, minutes, accepted_prompts: prompts, max_rss_mb: maxObservedMb, limit_mb: maxRssMb, samples, ok: measured.length > 0 && prompts > 0 && maxObservedMb <= maxRssMb }
+  report = { terminal_pump_errors: pumpErrors, terminal_pump_roundtrip_ms: { count: pumpDurations.length, p50: percentile(0.50), p95: percentile(0.95), max: Math.round(pumpDurations.at(-1) ?? 0) }, agents, idle_sessions: idleSessions, minutes, accepted_prompts: prompts, max_rss_mb: maxObservedMb, limit_mb: maxRssMb, samples, ok: measured.length > 0 && prompts > 0 && pumpDurations.length > 0 && pumpErrors === 0 && maxObservedMb <= maxRssMb }
 } finally {
   for (const child of children.reverse()) {
     try {
