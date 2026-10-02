@@ -76,11 +76,14 @@ failure in an earlier one.
    functional gates pass. Build reproducible submissions for every relevant
    public browser-use and computer-use benchmark, compare Chariox with the
    published leaders under equivalent conditions, profile failures, and
-   optimize without weakening correctness. The product goal is unambiguous:
-   Chariox must rank first on every relevant public benchmark, not merely beat
-   its own baseline. When a benchmark tests a capability Chariox claims to
-   support, it belongs in the campaign unless its rules make a fair Chariox
-   submission impossible. Record and justify any exclusion.
+   optimize without weakening correctness. Under the owner decision of
+   2026-10-02 (MP-08 / MP-10, WP-12), round 1 requires one complete, valid,
+   passing run on every included public benchmark, regardless of ranking.
+   Round 2 pursues verified first place under comparable conditions. Neither
+   round blocks closure or merge of Browser, Computer, or Path-1 work
+   (MP-01 through MP-11). When a benchmark tests a claimed Chariox capability,
+   include it unless its rules make a fair submission impossible; record and
+   justify any exclusion.
 
 The complete local flow must prove that one Room agent launches through the
 normal kernel and provider adapter path, drives the exact browser shown in the
@@ -1298,6 +1301,15 @@ This milestone starts only after Milestone 9 and every local and remote
 functional gate pass. Freeze a functionally accepted reference build before
 collecting benchmark baselines. Performance work must preserve that build's
 correctness, security, recovery, compatibility, and cleanup behavior.
+Inventory and runner design may proceed as research before those gates; scored
+campaigns and optimization must wait.
+
+MP-08 / MP-10, WP-12 owner decision (2026-10-02): run this milestone in two
+rounds. Round 1 exits with one complete, valid, passing run on every included
+public benchmark, regardless of ranking. Round 2 optimizes toward verified
+first place. Neither round is a prerequisite for closing or merging Browser,
+Computer control, or Path-1 VMs (MP-01 through MP-11). Functional, security,
+review, resource, and cleanup acceptance requirements remain mandatory.
 
 Deliverables:
 
@@ -1314,18 +1326,24 @@ Deliverables:
 4. Build reproducible Chariox runners that use the production kernel,
    Browser Controller, Computer path, and official provider harnesses. Do not
    add benchmark-only authority or tool behavior.
-5. Run the frozen functionally accepted build first. Retain raw task results,
-   traces, failures, costs, latency, and machine resource data.
+5. Round 1: run the frozen functionally accepted build once across the complete
+   official evaluation set and required seeds/repetitions for every included
+   benchmark. Require valid harness execution, scoring, evidence, and cleanup;
+   retain unsuccessful task outcomes rather than omit them. Retain raw task
+   results, traces, failures, costs, latency, and machine resource data. A smoke
+   test, subset, or invalid run does not satisfy this exit. Ranking is not a
+   round-1 gate.
 6. Classify every failure as perception, element grounding, planning, action,
    navigation, browser state, desktop input, concurrency, recovery, provider,
    environment, or benchmark infrastructure.
-7. Optimize the shared product implementation. After every optimization,
+7. Round 2: optimize the shared product implementation. After every optimization,
    rerun the affected functional and regression gates before accepting its
    score.
 8. Submit under the public benchmark rules and verify the published result.
-9. Repeat until Chariox ranks first on every relevant public benchmark. Track
-   leaderboard changes and reopen optimization work when another system takes
-   the lead before the release cutoff.
+9. Round 2: pursue verified first place on every included public benchmark.
+   Track leaderboard changes and comparable conditions at the campaign cutoff.
+   This optimization objective cannot reopen or block an accepted MP-01 through
+   MP-11 functional milestone solely because of ranking.
 
 Benchmark evidence must distinguish official public scores from local
 reproductions. Never claim first place from an incomparable model, environment,
@@ -1333,7 +1351,10 @@ task subset, private fork, or locally modified scoring rule.
 
 ### Milestone 11: rollout and noVNC removal
 
-After all functional, benchmark, and resource gates pass:
+After the applicable functional, security, resource, and cleanup gates pass:
+
+MP-08 / MP-10: benchmark rounds run separately and do not block this functional
+rollout, its merge, or MP-01 through MP-11 closure (owner decision 2026-10-02).
 
 1. Enable Selkies for internal and staging users behind a server-controlled
    capability flag.
@@ -1926,10 +1947,12 @@ CHA-16 is complete only when:
   automatic Project environment setup, default and user-selected repository
   roots, bounded lifetime, cost, every mandatory managed shutdown trigger, and
   residue-free deletion before Browser and Computer feature work resumes
-- Chariox has a verified first-place public result on every relevant maintained
-  browser-use and computer-use benchmark, with all inclusions and exclusions
-  recorded
-- benchmark-driven optimizations preserve every local and remote functional,
+- MP-08 / MP-10, WP-12 benchmark round 1 separately requires one complete,
+  valid, passing run on every included public benchmark, regardless of ranking;
+  round 2 pursues verified first place under comparable rules. Inclusions and
+  exclusions are recorded. Neither benchmark round blocks Browser, Computer,
+  or Path-1 closure or merge (MP-01 through MP-11; owner decision 2026-10-02).
+- any benchmark-driven optimization preserves every local and remote functional,
   security, resiliency, compatibility, and cleanup gate
 - resource, scale, and soak gates pass on local and managed infrastructure
 - adjacent Chariox regression matrix passes
