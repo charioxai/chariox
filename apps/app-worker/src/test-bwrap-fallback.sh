@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Takes the source/build scratch created by build-app-bwrap.sh.
+# Takes the source/build scratch created by build-bwrap.sh.
 set -euo pipefail
 repo=$(cd -- "$(dirname -- "$0")/../../.." && pwd)
 scratch=$1
