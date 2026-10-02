@@ -13,7 +13,7 @@ export async function verifiedSoakSupervisor({
     throw new Error("soak supervisor requires its exact container PID 1 reaper identity")
   }
   for (const [kind, executable, argv] of [
-    ["reaper", "/sbin/docker-init", "/sbin/docker-init\0--\0/usr/local/bin/node\0/pilot/supervisor.mjs\0"],
+    ["reaper", "/usr/sbin/docker-init", "/sbin/docker-init\0--\0/usr/local/bin/node\0/pilot/supervisor.mjs\0"],
     ["supervisor", "/usr/local/bin/node", "/usr/local/bin/node\0/pilot/supervisor.mjs\0"],
   ]) {
     const value = expected[kind]

@@ -4,7 +4,7 @@ import test from "node:test"
 import { includeSoakSupervisor, verifiedSoakSupervisor } from "./soak-supervisor.mjs"
 import { networkNamespaceAttribution } from "./browser-computer-soak-runtime.mjs"
 
-const expected = { supervisor: { pid: 7, startedAtTicks: "101", executable: "/usr/local/bin/node", processGroupId: 7 }, reaper: { pid: 1, startedAtTicks: "100", executable: "/sbin/docker-init", processGroupId: 1 } }
+const expected = { supervisor: { pid: 7, startedAtTicks: "101", executable: "/usr/local/bin/node", processGroupId: 7 }, reaper: { pid: 1, startedAtTicks: "100", executable: "/usr/sbin/docker-init", processGroupId: 1 } }
 function dependencies(overrides = {}) {
   return {
     identity: JSON.stringify(expected), currentPid: 42,
@@ -16,7 +16,7 @@ function dependencies(overrides = {}) {
       }
       return candidate.endsWith("/cmdline") ? `${reaper ? "/sbin/docker-init\0--\0" : ""}/usr/local/bin/node\0/pilot/supervisor.mjs\0` : "0::/docker/owned\n"
     },
-    link: async candidate => candidate.endsWith("/exe") ? candidate.includes("/1/") ? "/sbin/docker-init" : "/usr/local/bin/node" : "owned-namespace",
+    link: async candidate => candidate.endsWith("/exe") ? candidate.includes("/1/") ? "/usr/sbin/docker-init" : "/usr/local/bin/node" : "owned-namespace",
     ...overrides,
   }
 }
