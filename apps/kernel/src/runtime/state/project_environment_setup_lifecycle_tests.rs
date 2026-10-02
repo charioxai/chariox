@@ -5518,7 +5518,10 @@ fn spawn_external_worker_fixture_with_withheld_retry(
 }
 
 #[cfg(unix)]
-#[expect(clippy::too_many_arguments, reason = "Names independent relay identity, failure and ordering controls for this fixture.")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Names independent relay identity, failure and ordering controls for this fixture."
+)]
 async fn run_external_worker_fixture(
     relay_url: String,
     registration: DaemonRegistration,

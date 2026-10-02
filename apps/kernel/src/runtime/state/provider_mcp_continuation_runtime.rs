@@ -118,12 +118,7 @@ impl KernelRuntimeState {
             self.remember_pending_provider_catalog_reload(session.id(), agent.id());
             return;
         };
-        self.remember_pending_mcp_continuation(
-            session.id(),
-            agent.id(),
-            name,
-            prompt.prompt(),
-        );
+        self.remember_pending_mcp_continuation(session.id(), agent.id(), name, prompt.prompt());
     }
 
     pub(super) async fn activate_agent_mcp_grants_if_idle(
@@ -164,7 +159,7 @@ impl KernelRuntimeState {
             PendingMcpContinuation {
                 session_id: session_id.to_string(),
                 agent_id: agent_id.to_string(),
-                
+
                 mcp_name: mcp_name.to_string(),
                 previous_prompt: previous_prompt.to_string(),
             },

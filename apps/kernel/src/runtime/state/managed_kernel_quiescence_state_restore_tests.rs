@@ -123,7 +123,7 @@ fn restore(
         store.clone(),
         "kernel-1".into(),
         Arc::clone(mutation_lock),
-        )
+    )
 }
 
 fn current_idle(
@@ -132,10 +132,7 @@ fn current_idle(
     transitions.current_observation_with_sequence(0)
 }
 
-fn assert_restore_fails_closed(
-    store: &DurableKernelStateStore,
-    mutation_lock: &Arc<Mutex<()>>,
-) {
+fn assert_restore_fails_closed(store: &DurableKernelStateStore, mutation_lock: &Arc<Mutex<()>>) {
     let error = match restore(store, mutation_lock) {
         Ok(_) => panic!("invalid persisted quiescence state must fail restore"),
         Err(error) => error,
@@ -237,8 +234,8 @@ fn legacy_restore_prunes_large_tombstones_and_preserves_replay_floor_after_resta
     );
     drop(first_gate);
 
-    let gate = restore(&store, &mutation_lock)
-        .expect("restore the persisted bounded state after restart");
+    let gate =
+        restore(&store, &mutation_lock).expect("restore the persisted bounded state after restart");
 
     gate.apply_release(
         &replayed_challenge,

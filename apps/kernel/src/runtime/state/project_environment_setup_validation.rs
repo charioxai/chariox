@@ -698,7 +698,10 @@ fn worker_validation_environment_allowed(name: &str, removed: &BTreeSet<String>)
         && !name.starts_with("CHARIOX_")
 }
 
-#[expect(clippy::too_many_arguments, reason = "Keeps subprocess handles, authority, cancellation and recovery hooks explicit at this boundary.")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keeps subprocess handles, authority, cancellation and recovery hooks explicit at this boundary."
+)]
 pub(super) fn run_worker_validation_command_with_recovery(
     command_text: &str,
     workspace_root: &Path,
@@ -726,7 +729,10 @@ pub(super) fn run_worker_validation_command_with_recovery(
     )
 }
 
-#[expect(clippy::too_many_arguments, reason = "Keeps subprocess handles, authority, cancellation and recovery hooks explicit at this boundary.")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keeps subprocess handles, authority, cancellation and recovery hooks explicit at this boundary."
+)]
 pub(super) fn run_worker_validation_command_with_hook(
     command_text: &str,
     workspace_root: &Path,
@@ -758,7 +764,10 @@ pub(super) fn run_worker_validation_command_with_hook(
     )
 }
 
-#[expect(clippy::too_many_arguments, reason = "Keeps subprocess handles, authority, cancellation and recovery hooks explicit at this boundary.")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keeps subprocess handles, authority, cancellation and recovery hooks explicit at this boundary."
+)]
 pub(super) fn run_worker_validation_command_with_persistence_hook(
     command_text: &str,
     workspace_root: &Path,
@@ -796,7 +805,10 @@ pub(super) fn run_worker_validation_command_with_persistence_hook(
     )
 }
 
-#[expect(clippy::too_many_arguments, reason = "Keeps subprocess handles, authority, cancellation and recovery hooks explicit at this boundary.")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keeps subprocess handles, authority, cancellation and recovery hooks explicit at this boundary."
+)]
 pub(super) fn run_worker_validation_command_with_output_timeout(
     command_text: &str,
     workspace_root: &Path,
@@ -1127,7 +1139,10 @@ fn finish_unstarted_lease(
 }
 
 #[cfg(target_os = "linux")]
-#[expect(clippy::too_many_arguments, reason = "Keeps subprocess handles, authority, cancellation and recovery hooks explicit at this boundary.")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keeps subprocess handles, authority, cancellation and recovery hooks explicit at this boundary."
+)]
 fn abort_gated_child(
     child: &mut std::process::Child,
     gate_stdin: Option<std::process::ChildStdin>,
@@ -1157,7 +1172,10 @@ fn abort_gated_child(
 }
 
 #[cfg(target_os = "linux")]
-#[expect(clippy::too_many_arguments, reason = "Keeps subprocess handles, authority, cancellation and recovery hooks explicit at this boundary.")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keeps subprocess handles, authority, cancellation and recovery hooks explicit at this boundary."
+)]
 fn abort_gated_child_with_readers(
     child: &mut std::process::Child,
     gate_stdin: Option<std::process::ChildStdin>,
@@ -1220,7 +1238,10 @@ fn abort_gated_child_with_readers(
 }
 
 #[cfg(target_os = "linux")]
-#[expect(clippy::too_many_arguments, reason = "Keeps subprocess handles, authority, cancellation and recovery hooks explicit at this boundary.")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keeps subprocess handles, authority, cancellation and recovery hooks explicit at this boundary."
+)]
 fn terminate_gated_child(
     child: &mut std::process::Child,
     identity: &ValidationProcessIdentity,

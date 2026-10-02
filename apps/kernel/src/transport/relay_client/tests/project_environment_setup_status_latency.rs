@@ -1272,7 +1272,10 @@ fn spawn_missing_then_withheld_replay_worker(
     )
 }
 
-#[expect(clippy::too_many_arguments, reason = "Names independent relay identity, failure and ordering controls for this fixture.")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Names independent relay identity, failure and ordering controls for this fixture."
+)]
 async fn run_missing_then_withheld_replay_worker(
     relay_url: String,
     registration: DaemonRegistration,
@@ -1734,7 +1737,10 @@ fn spawn_withheld_status_worker(
     )
 }
 
-#[expect(clippy::too_many_arguments, reason = "Names independent relay identity, failure and ordering controls for this fixture.")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Names independent relay identity, failure and ordering controls for this fixture."
+)]
 async fn run_withheld_status_worker(
     relay_url: String,
     registration: DaemonRegistration,
@@ -1971,7 +1977,10 @@ async fn run_withheld_status_worker(
     }
 }
 
-#[expect(clippy::too_many_arguments, reason = "Names independent relay identity, failure and ordering controls for this fixture.")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Names independent relay identity, failure and ordering controls for this fixture."
+)]
 fn fixture_setup_target_resolution(
     worker_private_key: &str,
     home_public_key: &str,
@@ -2013,7 +2022,10 @@ fn fixture_setup_target_resolution(
     )
 }
 
-#[expect(clippy::too_many_arguments, reason = "Names independent relay identity, failure and ordering controls for this fixture.")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Names independent relay identity, failure and ordering controls for this fixture."
+)]
 fn fixture_setup_definition_acknowledgment(
     worker_private_key: &str,
     home_public_key: &str,

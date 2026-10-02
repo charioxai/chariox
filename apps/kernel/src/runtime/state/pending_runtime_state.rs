@@ -7,7 +7,7 @@ use tokio::sync::oneshot;
 pub(super) struct PendingMcpContinuation {
     pub(super) session_id: String,
     pub(super) agent_id: String,
-    
+
     pub(super) mcp_name: String,
     pub(super) previous_prompt: String,
 }

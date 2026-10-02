@@ -531,7 +531,10 @@ impl PromptQueueItem {
             .is_ok()
     }
 
-    #[expect(clippy::too_many_arguments, reason = "Keeps the existing session, worker and lease binding fields explicit without a second protocol representation.")]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keeps the existing session, worker and lease binding fields explicit without a second protocol representation."
+    )]
     pub(crate) fn mark_remote_steer_outcome_uncertain(
         &self,
         reservation: u64,

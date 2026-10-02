@@ -532,7 +532,10 @@ impl BrowserControllerProcessStore {
         )
     }
 
-    #[expect(clippy::too_many_arguments, reason = "Binds the document, mutation identity, cancellation and result mapping in one admission.")]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Binds the document, mutation identity, cancellation and result mapping in one admission."
+    )]
     pub(super) fn perform_cancellable_tab_mutation(
         &self,
         session_id: &str,

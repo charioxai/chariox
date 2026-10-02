@@ -114,7 +114,7 @@ pub(crate) struct ManagedKernelQuiescenceGate {
     store: DurableKernelStateStore,
     kernel_id: String,
     mutation_lock: Arc<Mutex<()>>,
-    
+
     admission_lock: Mutex<()>,
     inner: Mutex<GateInner>,
 }
@@ -128,7 +128,7 @@ impl ManagedKernelQuiescenceGate {
         store: DurableKernelStateStore,
         kernel_id: String,
         mutation_lock: Arc<Mutex<()>>,
-        ) -> Result<Arc<Self>, DaemonError> {
+    ) -> Result<Arc<Self>, DaemonError> {
         let persisted = store
             .load_subject_events_by_kind(&kernel_id, QUIESCENCE_EVENT_KIND, 1)?
             .into_iter()
@@ -156,7 +156,7 @@ impl ManagedKernelQuiescenceGate {
             store,
             kernel_id,
             mutation_lock,
-            
+
             admission_lock: Mutex::new(()),
             inner: Mutex::new(GateInner {
                 state: persisted,
@@ -178,7 +178,7 @@ impl ManagedKernelQuiescenceGate {
             store,
             kernel_id: kernel_id.clone(),
             mutation_lock,
-            
+
             admission_lock: Mutex::new(()),
             inner: Mutex::new(GateInner {
                 state: PersistedQuiescenceState {
@@ -995,7 +995,7 @@ mod tests {
             store.clone(),
             "kernel-1".into(),
             Arc::clone(&mutation_lock),
-            )
+        )
         .expect("restore empty admission fence");
         (path, store, transitions, gate, mutation_lock)
     }
@@ -1111,12 +1111,9 @@ mod tests {
             "stopped keeps admission closed"
         );
         drop(gate);
-        let gate = ManagedKernelQuiescenceGate::restore(
-            store.clone(),
-            "kernel-1".into(),
-            mutation_lock,
-            )
-        .expect("restore stopped receipt and retained fence");
+        let gate =
+            ManagedKernelQuiescenceGate::restore(store.clone(), "kernel-1".into(), mutation_lock)
+                .expect("restore stopped receipt and retained fence");
         assert!(
             gate.admission_guard().is_err(),
             "restart cannot clear a stopped fence"
@@ -1209,12 +1206,9 @@ mod tests {
             .expect("delayed reserve for canceled challenge stays busy"));
 
         drop(gate);
-        let restored = ManagedKernelQuiescenceGate::restore(
-            store.clone(),
-            "kernel-1".into(),
-            mutation_lock,
-            )
-        .expect("restore durable cancellation receipt");
+        let restored =
+            ManagedKernelQuiescenceGate::restore(store.clone(), "kernel-1".into(), mutation_lock)
+                .expect("restore durable cancellation receipt");
         assert!(
             restored.admission_guard().is_ok(),
             "restart keeps matching fence released"
@@ -1273,12 +1267,9 @@ mod tests {
             .expect("reserve current idle"));
         drop(gate);
 
-        let restored = ManagedKernelQuiescenceGate::restore(
-            store.clone(),
-            "kernel-1".into(),
-            mutation_lock,
-            )
-        .expect("restore persisted fence");
+        let restored =
+            ManagedKernelQuiescenceGate::restore(store.clone(), "kernel-1".into(), mutation_lock)
+                .expect("restore persisted fence");
         assert!(restored.admission_guard().is_err());
         assert!(restored
             .reserve_if_current(challenge.clone(), || current_idle(&transitions))
@@ -1326,12 +1317,9 @@ mod tests {
             "tombstone must not alter open admission"
         );
         drop(gate);
-        let gate = ManagedKernelQuiescenceGate::restore(
-            store.clone(),
-            "kernel-1".into(),
-            mutation_lock,
-            )
-        .expect("restore canceled challenge tombstone");
+        let gate =
+            ManagedKernelQuiescenceGate::restore(store.clone(), "kernel-1".into(), mutation_lock)
+                .expect("restore canceled challenge tombstone");
         gate.apply_release(
             &canceled,
             ManagedKernelQuiescenceOutcome::KeepRunning,
