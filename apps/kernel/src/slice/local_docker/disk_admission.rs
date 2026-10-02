@@ -349,7 +349,14 @@ fn acquire_disk_admission_lock() -> Result<DiskAdmissionLock, DaemonError> {
 
 #[cfg(unix)]
 fn disk_admission_lock_path() -> PathBuf {
-    super::admission_lock::path("disk")
+    #[cfg(test)]
+    {
+        std::env::temp_dir().join("chariox-docker-disk-admission.lock")
+    }
+    #[cfg(not(test))]
+    {
+        super::admission_lock::path("disk")
+    }
 }
 
 #[cfg(windows)]
@@ -358,7 +365,16 @@ fn acquire_disk_admission_lock() -> Result<DiskAdmissionLock, DaemonError> {
     use windows_sys::Win32::Foundation::{CloseHandle, WAIT_ABANDONED, WAIT_OBJECT_0};
     use windows_sys::Win32::System::Threading::{CreateMutexW, WaitForSingleObject, INFINITE};
 
+    #[cfg(not(test))]
     let name = windows_disk_admission_lock_name_wide();
+    #[cfg(test)]
+    let name: Vec<u16> = format!(
+        "Local\\CharioxDockerDiskAdmissionTest-{}",
+        std::process::id()
+    )
+    .encode_utf16()
+    .chain(std::iter::once(0))
+    .collect();
     let handle = unsafe { CreateMutexW(ptr::null(), 0, name.as_ptr()) };
     if handle.is_null() {
         return Err(disk_measurement_error(&format!(
@@ -503,6 +519,7 @@ mod tests {
 
     #[test]
     fn concurrent_slice_waiter_does_not_enter_quiescence_before_admission() {
+        crate::test_support::isolated_env_test!();
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::{mpsc, Arc};
         use std::time::Duration;
