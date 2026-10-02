@@ -71,17 +71,18 @@ impl AgentPromptCommandService {
         service
     }
 
+    fn request_authority(&self) -> Option<(&str, &crate::local::LocalDaemonRequest)> {
+        self.external_authority
+            .as_ref()
+            .map(|(id, request)| (id.as_str(), request))
+    }
+
     pub(crate) async fn submit_prepared_prompt(
         &self,
         prepared: KernelPreparedPromptSubmission,
     ) -> Result<KernelPromptSubmission, DaemonError> {
         self.state
-            .submit_prepared_prompt_with_external_authority(
-                prepared,
-                self.external_authority
-                    .as_ref()
-                    .map(|(id, request)| (id.as_str(), request)),
-            )
+            .submit_prepared_prompt_with_external_authority(prepared, self.request_authority())
             .await
     }
 
@@ -102,7 +103,12 @@ impl AgentPromptCommandService {
         attachment_id: &str,
     ) -> Result<KernelPromptCancellation, DaemonError> {
         self.state
-            .cancel_agent_prompt(session_id, target_agent_id, attachment_id)
+            .cancel_agent_prompt_with_external_authority(
+                session_id,
+                target_agent_id,
+                attachment_id,
+                self.request_authority(),
+            )
             .await
     }
 
@@ -114,7 +120,13 @@ impl AgentPromptCommandService {
         prompt_id: &str,
     ) -> Result<KernelQueuedPromptSteer, DaemonError> {
         self.state
-            .steer_queued_prompt(session_id, target_agent_id, attachment_id, prompt_id)
+            .steer_queued_prompt_with_external_authority(
+                session_id,
+                target_agent_id,
+                attachment_id,
+                prompt_id,
+                self.request_authority(),
+            )
             .await
     }
 
@@ -156,7 +168,12 @@ impl AgentPromptCommandService {
         next_queued_prompt: Option<PromptQueueItem>,
     ) -> Result<PromptCompletion, DaemonError> {
         self.state
-            .complete_agent_prompt(session_id, target_agent_id, next_queued_prompt.as_ref())
+            .complete_agent_prompt_with_external_authority(
+                session_id,
+                target_agent_id,
+                next_queued_prompt.as_ref(),
+                self.request_authority(),
+            )
             .await
     }
 

@@ -258,3 +258,5 @@ async fn kernel_access_revocation_refuses_a_cold_prompt_waiting_for_app_lock() {
         .get_run_for_agent(session.id(), agent.id())
         .is_some());
 }
+
+mod remote_controls;

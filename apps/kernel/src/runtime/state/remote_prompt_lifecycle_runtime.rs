@@ -11,7 +11,9 @@ impl KernelRuntimeState {
         session_id: &str,
         target_agent_id: &str,
         attachment_id: &str,
+        authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
     ) -> Result<Option<crate::app::KernelPromptCancellation>, DaemonError> {
+        self.authorize_prompt_command(authority)?;
         let owned = &self.owned;
         if owned
             .agent_store
@@ -103,7 +105,7 @@ impl KernelRuntimeState {
                 cancellation_intent,
                 &mut cancellation_claim,
             )
-            .await;
+|            .await;
         if cancellation_claim.release_or_restart() {
             let state = self.clone();
             let session_id = session_id.to_string();
@@ -174,7 +176,7 @@ impl KernelRuntimeState {
                 )?;
                 if let Err(error) = self
                     .send_remote_agent_prompt_cancellation_with_claim(
-                        session_id,
+|                        session_id,
                         target_agent_id,
                         &attachment_id,
                         &active_prompt,
@@ -471,6 +473,7 @@ impl KernelRuntimeState {
         target_agent_id: &str,
         owned_provider_run_id: Option<String>,
         next_queued_prompt: Option<&crate::session::PromptQueueItem>,
+        authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
     ) -> Result<Option<crate::session::PromptCompletion>, DaemonError> {
         let owned = &self.owned;
         let Some(remote_execution) = owned
@@ -483,6 +486,7 @@ impl KernelRuntimeState {
         };
         let completion_response = self
             .with_app_side_effect(|app| {
+                self.authorize_prompt_command(authority)?;
                 let relay_config = app.relay_config_for_remote_execution(&remote_execution);
                 app.block_on_relay_future(
                     crate::transport::relay_client::send_peer_request_via_temporary_connection(
@@ -592,6 +596,7 @@ impl KernelRuntimeState {
                     });
                 }
             };
+        self.authorize_prompt_command(authority)?;
         let completion = owned.complete_remote_prompt_owner_with_termination(
             session_id,
             target_agent_id,
