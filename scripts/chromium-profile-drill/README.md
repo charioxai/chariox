@@ -72,3 +72,30 @@ Candidate j retains that consolidation; this fixture validates the production
 launcher, profile persistence and guarded initial-home restore. It does not
 claim to exercise that deleted adapter. No provider account is used.
 Scratch stays private (`0700`) before stopped-home archival.
+
+The browser and sandbox probe always run as `slice`. This fixture is not an owned kernel Room or protected rootless
+topology-7 qualification. The result explicitly records both exclusions.
+
+Set `RUNNER_TEMP` to your private scratch parent outside the checkout,
+`EXPECTED_REVISION` to the exact checked-out commit, and `GITHUB_OUTPUT` to a
+regular task-owned output file. Then run preparation,
+Docker image build, and `drill.mjs run` in that order as in the workflow. Admit
+heavy commands through `slot-run`. Copy the scratch evidence to your task's
+evidence directory, run `drill.mjs cleanup` if interrupted, and remove only
+that scratch directory. Cleanup never prunes daemon-wide resources.
+
+## Recorded hosted result
+
+[Run 34171378772](https://github.com/charioxai/chariox/actions/runs/34171378772)
+passed on 2026-09-07 at `12ffd1f5156625ecd82d2c88d1ef31451273abb2`, using
+Chromium `147.0.7727.137-1~deb12u1` and Node `22.23.2`. Initial, restored and
+empty browsers passed with 3, 4 and 3 inspected renderers. All restricted PID
+and network namespace-link counts were zero, so this result includes direct
+namespace-inode checks; it did not use the diagnostic-only network path.
+Authentication, visible cookies, localStorage, IndexedDB and the saved tab
+survived the stop/archive/restore/relaunch. Server-revocation and empty-profile
+negatives passed, and owned-resource cleanup succeeded.
+
+The retained result explicitly says `fullKernelMigrationValidated=false` and
+`googleAuthenticationValidated=false`. It is evidence for this deterministic
+production-launcher fixture, not completion of the remaining release gates.
