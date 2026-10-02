@@ -2567,6 +2567,8 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
             )
             .await
     });
+    // Other pending operations may redispatch as the worker reconnects. The
+    // no-redispatch assertion belongs to the operation whose Cancel is gated.
     let get_release = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             match worker_request_rx.recv().await {
@@ -2576,7 +2578,9 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
                 }) if operation_id == cancel_during_missing_status_operation_id => {
                     break release;
                 }
-                Some(TestPeerRequestObservation::StartProjectEnvironmentSetup { operation_id }) => {
+                Some(TestPeerRequestObservation::StartProjectEnvironmentSetup { operation_id })
+                    if operation_id == cancel_during_missing_status_operation_id =>
+                {
                     panic!(
                         "unexpected worker setup start before cancellation intent: {operation_id}"
                     )
@@ -2614,7 +2618,9 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
                 }) if operation_id == cancel_during_missing_status_operation_id => {
                     break release;
                 }
-                Some(TestPeerRequestObservation::StartProjectEnvironmentSetup { operation_id }) => {
+                Some(TestPeerRequestObservation::StartProjectEnvironmentSetup { operation_id })
+                    if operation_id == cancel_during_missing_status_operation_id =>
+                {
                     panic!(
                     "worker setup was redispatched before cancellation response: {operation_id}"
                 )
@@ -2654,8 +2660,10 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         if let TestPeerRequestObservation::StartProjectEnvironmentSetup { operation_id } =
             observation
         {
-            redispatched_start = Some(operation_id);
-            break;
+            if operation_id == cancel_during_missing_status_operation_id {
+                redispatched_start = Some(operation_id);
+                break;
+            }
         }
     }
     assert_eq!(
