@@ -1,5 +1,7 @@
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -101,6 +103,11 @@ impl ShellCommandService {
                 message: error.to_string(),
             })?;
 
+        // Drain both pipes while the child runs: waiting first can block the
+        // child on a full stdout or stderr pipe until the timeout expires.
+        let stdout_reader = drain_output(child.stdout.take().expect("stdout is piped"));
+        let stderr_reader = drain_output(child.stderr.take().expect("stderr is piped"));
+
         let timeout = Duration::from_millis(request.timeout_ms);
         let status =
             child
@@ -124,13 +131,13 @@ impl ShellCommandService {
             }
         };
 
-        let output = child
-            .wait_with_output()
-            .map_err(|error| DaemonError::ShellCommandFailed {
-                session_id: request.session_id.clone(),
-                command: request.command.clone(),
-                message: error.to_string(),
-            })?;
+        let read_error = |error: io::Error| DaemonError::ShellCommandFailed {
+            session_id: request.session_id.clone(),
+            command: request.command.clone(),
+            message: error.to_string(),
+        };
+        let stdout = join_output(stdout_reader).map_err(read_error)?;
+        let stderr = join_output(stderr_reader).map_err(read_error)?;
 
         Ok(RunShellCommandResult {
             session_id: request.session_id,
@@ -138,10 +145,24 @@ impl ShellCommandService {
             args: request.args,
             working_directory: Some(working_directory),
             exit_code: status.code().unwrap_or(-1),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            stdout: String::from_utf8_lossy(&stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&stderr).into_owned(),
         })
     }
+}
+
+fn drain_output(mut pipe: impl Read + Send + 'static) -> JoinHandle<io::Result<Vec<u8>>> {
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        pipe.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    })
+}
+
+fn join_output(reader: JoinHandle<io::Result<Vec<u8>>>) -> io::Result<Vec<u8>> {
+    reader
+        .join()
+        .map_err(|_| io::Error::other("shell output reader panicked"))?
 }
 
 fn resolve_working_directory(request: &RunShellCommandRequest) -> Result<PathBuf, DaemonError> {
@@ -205,6 +226,29 @@ mod tests {
         assert_eq!(result.exit_code, 0);
         assert_eq!(result.stdout, "hello");
         assert!(result.stderr.is_empty());
+    }
+
+    #[test]
+    fn drains_large_stdout_and_stderr_before_waiting_for_exit() {
+        let result = ShellCommandService::new()
+            .run(
+                RunShellCommandRequest::new(
+                    "session-large-output",
+                    "attachment-large-output",
+                    "/bin/sh",
+                    vec![
+                        "-c".into(),
+                        "head -c 262144 /dev/zero; head -c 262144 /dev/zero >&2".into(),
+                    ],
+                    std::env::current_dir().expect("cwd should exist"),
+                    None,
+                )
+                .with_timeout_ms(2000),
+            )
+            .expect("output larger than pipe capacity must not time out");
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.stdout.as_bytes(), vec![0; 262144]);
+        assert_eq!(result.stderr.as_bytes(), vec![0; 262144]);
     }
 
     #[test]
