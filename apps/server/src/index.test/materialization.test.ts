@@ -383,6 +383,7 @@ test("gateway materializes Agent App replica sessions from package config", asyn
 
 test("gateway remaps portable package workspace paths before local materialization", async () => {
   const root = await mkdtemp(join(tmpdir(), "chariox-server-portable-workspace-materialize-"))
+  const sourceWorkspace = join(root, "source-workspace")
   const runtimeWorkspace = `${root}.runtime-${process.pid}`
   const requests: Record<string, unknown>[] = []
   try {
@@ -406,8 +407,8 @@ test("gateway remaps portable package workspace paths before local materializati
       schema_version: 1,
       source_session: {
         id: "session-1",
-        workspace_id: "/workspace",
-        worktree_id: "/workspace",
+        workspace_id: sourceWorkspace,
+        worktree_id: sourceWorkspace,
       },
       workflow: {
         id: "workflow-1",
@@ -425,8 +426,8 @@ test("gateway remaps portable package workspace paths before local materializati
         alias: null,
         provider: "claude",
         model: "claude-sonnet-4-6",
-        workspace_id: "/workspace",
-        worktree_id: "/workspace",
+        workspace_id: sourceWorkspace,
+        worktree_id: sourceWorkspace,
         state: "Idle",
         is_processing: false,
         grid_row: 0,
