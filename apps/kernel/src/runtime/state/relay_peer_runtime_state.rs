@@ -678,8 +678,7 @@ impl KernelRuntimeState {
                     return Err(DaemonError::LocalTransport {
                         operation: "launch remote provider without credential",
                         message: format!(
-                            "{}: the worker must relaunch the selected Claude profile",
-                            REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE,
+                            "{REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE}: the worker must relaunch the selected Claude profile",
                         ),
                     });
                 }

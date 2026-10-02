@@ -322,8 +322,7 @@ mod tests {
                  export CHARIOX_MANAGED_PROVIDER_TOPOLOGY=shared_host\n\
                  export CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY=/profile/builder-key\n\
                  export LD_PRELOAD=/profile/hostile.so\n\
-                 export PATH='{}'\n",
-                expected_path
+                 export PATH='{expected_path}'\n"
             ),
         )
         .expect("login profile should be written");

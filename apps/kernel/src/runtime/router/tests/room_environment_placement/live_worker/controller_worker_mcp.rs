@@ -894,10 +894,7 @@ async fn check_room_browser_on_environment_worker_serves_remote_agent_and_web_vi
                             | crate::session::PromptStatus::Running
                     )
                 }),
-            "the leased worker prompt must remain active after its Room browser call; prompt={:?}, provider_run_state={:?}, lifecycle={}",
-            worker_prompt,
-            run_state,
-            after_open_lifecycle
+            "the leased worker prompt must remain active after its Room browser call; prompt={worker_prompt:?}, provider_run_state={run_state:?}, lifecycle={after_open_lifecycle}"
         );
         assert_eq!(
             run_state,
@@ -1118,12 +1115,7 @@ async fn check_room_browser_on_environment_worker_serves_remote_agent_and_web_vi
                     }
                 };
                 panic!(
-                    "leased agent reads the same Tab after navigation: {error}; after_open_prompt={:?}, after_open_provider_run={:?}, after_open_lifecycle={}, after_failed_status_prompt={:?}, after_failed_status_provider_run={:?}",
-                    worker_prompt,
-                    run_state,
-                    after_open_lifecycle,
-                    prompt,
-                    run_state
+                    "leased agent reads the same Tab after navigation: {error}; after_open_prompt={worker_prompt:?}, after_open_provider_run={run_state:?}, after_open_lifecycle={after_open_lifecycle}, after_failed_status_prompt={prompt:?}, after_failed_status_provider_run={run_state:?}"
                 );
             }
         };
