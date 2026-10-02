@@ -13,6 +13,9 @@ use chariox_relay::protocol::ClientTarget;
 
 use super::RemoteLeaseRuntime;
 
+#[cfg(test)]
+mod test_pause;
+
 const REMOTE_COMPLETION_HARVEST_RESPONSE_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(60);
 
@@ -53,6 +56,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
         pump_output: bool,
         replay_settled_completion: bool,
     ) -> Result<Option<(String, RelayPeerEvent)>, DaemonError> {
+        #[cfg(test)]
+        if test_pause::is_paused(self.app, leased_agent_id) {
+            return Ok(None);
+        }
         let leased_agent = self
             .app
             .leased_agents

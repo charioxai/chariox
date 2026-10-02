@@ -1577,6 +1577,14 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
                     .is_none());
             }
         }
+        let _projection_pause = if fail_queued_prompt_reply {
+            Some(
+                RemoteLeaseRuntime::new(&mut worker_app_guard)
+                    .hold_leased_runtime_projection_for_test(&leased_agent_id),
+            )
+        } else {
+            None
+        };
         if fail_queued_prompt_reply {
             assert!(
                 relay_reply_is_waiting,

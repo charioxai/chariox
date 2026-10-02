@@ -194,6 +194,8 @@ pub struct DaemonApp {
         BTreeMap<(String, remote_lease::LeaseCallerBinding), usize>,
     completed_leased_agent_deletions: VecDeque<String>,
     completed_execution_lease_deletions: VecDeque<String>,
+    #[cfg(test)]
+    leased_runtime_projection_pauses: BTreeMap<String, std::sync::Weak<()>>,
     leased_agent_cleanup_phases: BTreeMap<String, remote_lease::LeasedAgentCleanupPhase>,
     #[cfg(test)]
     leased_agent_cleanup_failures: BTreeMap<String, remote_lease::LeasedAgentCleanupPhase>,
@@ -399,6 +401,8 @@ impl DaemonApp {
             pending_leased_agent_authorizations: BTreeMap::new(),
             completed_leased_agent_deletions: VecDeque::new(),
             completed_execution_lease_deletions: VecDeque::new(),
+            #[cfg(test)]
+            leased_runtime_projection_pauses: BTreeMap::new(),
             leased_agent_cleanup_phases: BTreeMap::new(),
             #[cfg(test)]
             leased_agent_cleanup_failures: BTreeMap::new(),
