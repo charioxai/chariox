@@ -127,6 +127,7 @@ test("workflow capabilities survive app and command action composition", async (
 
   const handlers = createCliCommandActionComposition({
     ...workflowActions,
+    lastViewedAppHostOperationId: () => "0123456789abcdef0123456789abcdef",
     appHostTerminal: { copy: async (text: string) => { clipboard.push(text) }, openLink: async () => false },
     client,
     options: { clientId: "cli-1", accountProfile: "default", model: "default", effort: "", provider: "opencode" },

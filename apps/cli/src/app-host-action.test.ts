@@ -55,7 +55,7 @@ test("no-ID acceptance resolves only a sole trusted host interaction in the atta
   assert.deepEqual(ids, [operation])
   let sent = 0
   const command = { kind: "app" as const, raw: "/app host accept", args: ["host", "accept"] }
-  const deps = { currentAppSessionId: () => "s", currentAppHostOperationIds: () => ids,
+  const deps = { currentAppSessionId: () => "s", currentAppHostOperationIds: () => ids, lastViewedAppHostOperationId: () => operation,
     sendAppRequest: async (request: Record<string, unknown>) => { sent++; assert.deepEqual(request, { AcceptAppHostAction: { session_id: "s", operation_id: operation } }); return { AppHostActionAccepted: { operation_id: operation, action: { kind: "clipboard_write", text: "copy" } } } },
     appHostTerminal: { copy: async () => {}, openLink: async () => assert.fail() }, appendNotice: () => {}, flashFooter: () => assert.fail() }
   await handleAppSlashCommand(deps, command)
@@ -63,6 +63,9 @@ test("no-ID acceptance resolves only a sole trusted host interaction in the atta
     await assert.rejects(handleAppSlashCommand({ ...deps, currentAppHostOperationIds: () => candidates }, command), /pending/)
   }
   await assert.rejects(handleAppSlashCommand({ ...deps, currentAppSessionId: () => undefined }, command), /Attach/)
+  for (const viewed of [undefined, "expired-offer"]) {
+    await assert.rejects(handleAppSlashCommand({ ...deps, lastViewedAppHostOperationId: () => viewed }, command), /review the App host offer/)
+  }
   assert.equal(sent, 1)
 })
 

@@ -2376,7 +2376,9 @@ a failed host action or lost reply requires a new App request.
 
 The accepting terminal performs the action on its own machine. TUI users type
 `/app host accept` after closing the approval panel selects the sole pending
-host offer in the attached session. Multiple offers require
+host offer in the attached session only when it matches the last offer displayed
+in that terminal's approval panel. Unviewed/replaced offers require re-opening
+the panel or an explicit ID. Multiple offers require
 `/app host accept OPERATION`. Copying uses the renderer-backed OSC 52/native
 clipboard helper and always shows the escaped text as a visible fallback
 because OSC 52 has no acknowledgement; link opening

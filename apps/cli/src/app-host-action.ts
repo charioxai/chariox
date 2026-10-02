@@ -1,6 +1,6 @@
 import { acceptAppHostActionRequest } from "@chariox/kernel-client/ipc-requests"
 import { copyTextToClipboard } from "./clipboard.js"
-import { kernelApprovals } from "./kernel-approval-controller.js"
+import { appHostOperationId, kernelApprovals } from "./kernel-approval-controller.js"
 import type { RuntimeSession } from "./cli-types.js"
 import { openExternalUrl } from "./external-url.js"
 
@@ -15,8 +15,8 @@ export function createAppHostTerminal(renderer: { copyToClipboardOSC52(text: str
 
 export function appHostOperationIds(session: RuntimeSession): string[] {
   return kernelApprovals(session).flatMap(interaction => {
-    const operation = interaction.kernel_operation_id?.match(/^host_action:(.+)$/)?.[1]
-    return operation && interaction.id === `app_host_${operation}` ? [operation] : []
+    const operation = appHostOperationId(interaction)
+    return operation ? [operation] : []
   })
 }
 

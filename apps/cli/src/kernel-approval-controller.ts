@@ -31,6 +31,11 @@ export function kernelApprovals(session: RuntimeSession): RuntimeInteraction[] {
   ).sort((a, b) => a.requested_at_ms - b.requested_at_ms || a.id.localeCompare(b.id))
 }
 
+export function appHostOperationId(interaction: RuntimeInteraction): string | undefined {
+  const operation = interaction.kernel_operation_id?.match(/^host_action:(.+)$/)?.[1]
+  return operation && interaction.id === `app_host_${operation}` ? operation : undefined
+}
+
 export function createKernelApprovalController(deps: {
   getSession(): RuntimeSession
   connected(): boolean
@@ -51,13 +56,22 @@ export function createKernelApprovalController(deps: {
   let error: string | null = null
   let disposed = false
   let claimedInputTurn = false
+  let lastDisplayedHost: { sessionId: string; operation: string; identity: string } | null = null
   const view = (): KernelApprovalView => {
     const items = kernelApprovals(deps.getSession())
     index = Math.min(index, Math.max(0, items.length - 1))
     return { open, count: items.length, index, interaction: items[index] ?? null,
       selected, pending: pending !== null, connected: deps.connected(), error }
   }
-  const render = () => { if (!disposed) deps.onView(view()) }
+  const render = () => {
+    if (disposed) return
+    const current = view()
+    deps.onView(current)
+    if (current.open) {
+      const operation = current.interaction && appHostOperationId(current.interaction)
+      lastDisplayedHost = operation ? { sessionId, operation, identity: JSON.stringify(current.interaction) } : null
+    }
+  }
   const close = () => {
     if (!open) return
     open = false
@@ -68,6 +82,7 @@ export function createKernelApprovalController(deps: {
   const sync = () => {
     const session = deps.getSession()
     if (sessionId !== session.id) {
+      lastDisplayedHost = null
       sessionId = session.id
       epoch += 1
       pending = null
@@ -121,6 +136,13 @@ export function createKernelApprovalController(deps: {
   }
   return {
     sync, view, show, close, choose,
+    lastViewedAppHostOperationId: (): string | undefined => {
+      const session = deps.getSession()
+      const displayed = lastDisplayedHost
+      if (disposed || !displayed || session.id !== displayed.sessionId) return undefined
+      const current = kernelApprovals(session).find(item => appHostOperationId(item) === displayed.operation)
+      return current && JSON.stringify(current) === displayed.identity ? displayed.operation : undefined
+    },
     isOpen: () => open,
     ownsInput: () => open || claimedInputTurn,
     dispose() { disposed = true; epoch += 1; close() },

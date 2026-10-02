@@ -192,6 +192,7 @@ type AnyFn = (...args: any[]) => any
 
 export type CliCommandActionCompositionDeps = {
   appHostTerminal?: AppHostTerminal
+  lastViewedAppHostOperationId?: () => string | undefined
   appFileInstaller?: AppFileInstaller
   appDevLoop?: AppDevLoop
   appPublisherEnrollment?: AppPublisherEnrollment
@@ -487,6 +488,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     ...(deps.appDevLoop ? { appDevLoop: deps.appDevLoop } : {}),
     ...(deps.appPublisherEnrollment ? { appPublisherEnrollment: deps.appPublisherEnrollment } : {}),
     ...(deps.appHostTerminal ? { appHostTerminal: deps.appHostTerminal } : {}),
+    ...(deps.lastViewedAppHostOperationId ? { lastViewedAppHostOperationId: deps.lastViewedAppHostOperationId } : {}),
     currentAppHostOperationIds: () => isAttached() ? appHostOperationIds(sessionState()) : [],
     currentAppSessionId: () => isAttached() ? sessionState().id : undefined,
     appendCloudNotice,
