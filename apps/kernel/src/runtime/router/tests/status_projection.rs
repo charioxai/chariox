@@ -101,6 +101,24 @@ async fn daemon_health_projection_reports_session_and_agent_mailboxes_inner() {
         .await
         .expect("capability command should run in the test worktree");
 
+    let removed_directory = worktree.path().join("removed-capability-directory");
+    std::fs::create_dir(&removed_directory).expect("failure fixture directory should exist");
+    std::fs::remove_dir(&removed_directory).expect("failure fixture directory should be removed");
+    let failing_request = LocalDaemonRequest::RunShellCommand(RunShellCapabilityRequest {
+        session_id: session_id.clone(),
+        attachment_id: attachment.id().to_string(),
+        command: "/bin/true".to_string(),
+        args: Vec::new(),
+        working_directory: Some(removed_directory),
+        timeout_ms: Some(1_000),
+    });
+    let failing_command =
+        KernelCommand::from_local_request("cmd-capability-failure", None, None, &failing_request);
+    router
+        .dispatch(failing_command, failing_request)
+        .await
+        .expect_err("capability command should fail in a removed working directory");
+
     let projection = router.daemon_health_projection(0).await;
     assert!(projection
         .session_command_lanes
@@ -134,9 +152,9 @@ async fn daemon_health_projection_reports_session_and_agent_mailboxes_inner() {
         .is_empty());
     assert_eq!(projection.capability_executor.max_concurrent_jobs, 64);
     assert_eq!(projection.capability_executor.available_permits, 64);
-    assert_eq!(projection.capability_executor.submitted_jobs, 1);
+    assert_eq!(projection.capability_executor.submitted_jobs, 2);
     assert_eq!(projection.capability_executor.completed_jobs, 1);
-    assert_eq!(projection.capability_executor.failed_jobs, 0);
+    assert_eq!(projection.capability_executor.failed_jobs, 1);
     assert_eq!(projection.capability_executor.rejected_jobs, 0);
     assert!(!projection.provider_catalog.cached);
 }
