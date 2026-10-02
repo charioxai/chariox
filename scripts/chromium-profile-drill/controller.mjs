@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { copyFileSync, mkdirSync, readFileSync, realpathSync, statfsSync, statSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { chmodSync, copyFileSync, mkdirSync, readFileSync, realpathSync, statfsSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { checked, docker, loadOwner } from "./resources.mjs";
 import { repository } from "./prepare.mjs";
@@ -34,11 +34,17 @@ export function manifestFromLock(lock) {
     + dependencies.map(name => `${name} = { version = "=${pins[name]}"${feature(name)} }\n`).join("");
 }
 
-function identity() {
-  if (drillEnvironment() === "github-hosted") {
-    assert.ok(process.getuid() > 0 && process.getgid() > 0, "fixture coordinator must run as the runner user");
+export function controllerIdentity(environment, uid, gid, env = process.env) {
+  if (environment === "builder" && uid === 0) {
+    uid = Number(env.CHARIOX_CHROMIUM_DRILL_UID);
+    gid = Number(env.CHARIOX_CHROMIUM_DRILL_GID);
   }
-  return { uid: process.getuid(), gid: process.getgid() };
+  assert.ok(Number.isSafeInteger(uid) && uid > 0 && Number.isSafeInteger(gid) && gid > 0,
+    "controller build and tests require an owned non-root uid/gid");
+  return { uid, gid };
+}
+function identity() {
+  return controllerIdentity(drillEnvironment(), process.getuid(), process.getgid());
 }
 function unit(name, properties, command, args, timeout) {
   return checked("sudo", ["--non-interactive", "systemd-run", "--quiet", "--wait", "--pipe", "--collect", `--unit=${name}`,
@@ -70,8 +76,24 @@ export function build(scratch) {
   writeFileSync(join(harness, "lib.rs"), "mod browser_controller;\n");
   // Keep the cargo executable name: resolving its rustup symlink would change
   // argv[0] and select the rustup CLI instead of the cargo proxy.
-  const cargo = resolve(checked("which", ["cargo"]));
-  const env = ["-i", `HOME=${process.env.HOME}`, `PATH=${process.env.PATH}`, `CARGO_TARGET_DIR=${target}`,
+  const builder = owner.executionEnvironment === "builder";
+  const cargo = resolve(builder
+    ? process.env.CHARIOX_CHROMIUM_DRILL_CARGO || assert.fail("builder requires a public, non-root-readable Rust 1.88 toolchain")
+    : checked("which", ["cargo"]));
+  const toolchain = builder ? checked(join(dirname(cargo), "rustc"), ["--version"]) : checked("rustc", ["--version"]);
+  assert.match(toolchain, /^rustc 1\.88\.0 /);
+  const home = builder ? join(harness, "home") : process.env.HOME;
+  if (builder) {
+    mkdirSync(home, { mode: 0o700 });
+    if (process.getuid() === 0) {
+      // Grant traversal only through this owned scratch, and ownership only
+      // over the new harness. Never expose the coordinator's home or accounts.
+      chmodSync(scratch, 0o711);
+      checked("chown", ["--recursive", `${uid}:${gid}`, harness]);
+    }
+  }
+  const env = ["-i", `HOME=${home}`, `PATH=${builder ? dirname(cargo) + ":/usr/bin:/bin" : process.env.PATH}`, `CARGO_TARGET_DIR=${target}`,
+    ...(builder ? [`CARGO_HOME=${join(home, ".cargo")}`] : []),
     "CARGO_BUILD_JOBS=1", "CARGO_INCREMENTAL=0", "CARGO_PROFILE_DEV_DEBUG=0", "CARGO_PROFILE_TEST_DEBUG=0"];
   // The copied workspace lock retains existing transitive selections. Cargo
   // adds this isolated package and removes unrelated entries; record that exact
@@ -91,7 +113,7 @@ export function build(scratch) {
   const record = { revision: owner.revision, inputs, workspaceLockDigest: digest(lock),
     harnessLockDigest: digest(readFileSync(join(harness, "Cargo.lock"))),
     binaryDigest: binaryDigest(executable), executable,
-    toolchain: checked("rustc", ["--version"]), executionEnvironment: owner.executionEnvironment, coordinatorUid: uid, unitTests: 11, hostedTestExecuted: false };
+    toolchain, executionEnvironment: owner.executionEnvironment, coordinatorUid: process.getuid(), testUid: uid, testGid: gid, unitTests: 11, hostedTestExecuted: false };
   writeFileSync(join(harness, "build.json"), JSON.stringify(record));
   writeFileSync(join(scratch, "evidence/controller-inputs.json"), JSON.stringify(record, null, 2));
 }
@@ -108,6 +130,8 @@ export function runController(scratch, container) {
   const harness = join(scratch, "controller");
   const record = JSON.parse(readFileSync(join(harness, "build.json")));
   assert.equal(record.revision, owner.revision);
+  assert.equal(record.testUid, uid);
+  assert.equal(record.testGid, gid);
   assert.deepEqual(treeInputs(harness), record.inputs);
   const executable = realpathSync(record.executable);
   assert.ok(executable.startsWith(`${realpathSync(join(harness, "target"))}/debug/deps/`));
@@ -125,7 +149,7 @@ export function runController(scratch, container) {
   assert.ok(line);
   return { ...JSON.parse(line.split("browser_controller_acceptance=")[1]), sourceRevision: owner.revision,
     sourceDigest: digest(JSON.stringify(record.inputs)), memoryMaxBytes: 256 * 1024 ** 2, tasksMax: 32,
-    runtimeMaxSeconds: 30, chromiumNamespaceOnly: true };
+    runtimeMaxSeconds: 30, controllerUid: uid, controllerGid: gid, chromiumNamespaceOnly: true };
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   assert.equal(process.argv[2], "build");

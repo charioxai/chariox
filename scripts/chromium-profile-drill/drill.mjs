@@ -49,13 +49,14 @@ function profile(id, action, name, target = "") {
   return result;
 }
 
-function fallback(id, name) {
+function fallback(id, name, fragment) {
+  assert.equal(profile(id, "absent", `${name}-target-absent`, fragment).targetAbsent, true);
   // Disable only this owned fixture's CDP URL helper to exercise the actual
   // production same-profile launch fallback; always restore the packaged bytes.
   execute(id, ["mv", "/opt/chariox-slice/browser-cdp.mjs", "/opt/chariox-slice/browser-cdp.mjs.disabled"], 5, "root");
   try {
-    execute(id, ["bash", "/opt/chariox-slice/slice-screen.sh", "open-url", "http://127.0.0.1:8765/app.html#fallback"], 30);
-    profile(id, "verify", name, "fallback");
+    execute(id, ["bash", "/opt/chariox-slice/slice-screen.sh", "open-url", `http://127.0.0.1:8765/app.html#${fragment}`], 30);
+    profile(id, "verify", name, fragment);
   } finally {
     execute(id, ["mv", "/opt/chariox-slice/browser-cdp.mjs.disabled", "/opt/chariox-slice/browser-cdp.mjs"], 5, "root");
   }
@@ -72,7 +73,7 @@ try {
   writeFileSync(join(evidence, "versions.txt"), execute(first, ["bash", "-lc", "node --version; chromium --version; dpkg-query -W chromium chromium-sandbox; uname -r"]));
   profile(first, "seed", "seed");
   profile(first, "verify", "initial-storage");
-  fallback(first, "initial-fallback-storage");
+  fallback(first, "initial-fallback-storage", "fallback-initial");
   execute(first, ["bash", "/opt/chariox-slice/slice-screen.sh", "stop"], 90);
   assert.equal(execute(first, ["bash", "-lc", "pgrep -af '/usr/lib/chromium/chromium' | grep -v pgrep | grep -v defunct || true"]), "");
   // The archive contains the whole stopped home, including Local State,
@@ -91,7 +92,7 @@ try {
   writeFileSync(join(scratch, "bin/docker"), `#!/usr/bin/env bash\nset -euo pipefail\nif [[ "$1" == create ]]; then shift; exec /usr/bin/docker create --network none --memory 512m --memory-swap 512m --cpus 1 --pids-limit 128 --label '${label}' "$@"; fi\nif [[ "$1" == volume && "$2" == create ]]; then shift 2; exec /usr/bin/docker volume create --label '${label}' "$@"; fi\nexec /usr/bin/docker "$@"\n`);
   chmodSync(join(scratch, "bin/docker"), 0o700);
   const provisioner = readFileSync(join(source, "provision-linux-docker-slice.sh"));
-  assert.equal(createHash("sha256").update(provisioner).digest("hex"), owner.inputs["provision-linux-docker-slice.sh"]);
+  assert.equal(createHash("sha256").update(restoreScript(provisioner.toString("utf8"))).digest("hex"), owner.inputs["restore-script"]);
   checked("bash", ["-c", restoreScript(provisioner.toString("utf8"))], { timeout: 360000, env: {
     PATH: `${join(scratch, "bin")}:${process.env.PATH}`, HOME: join(scratch, "home"), TMPDIR: join(scratch, "tmp"),
     CHARIOX_SLICE_NAME: `chariox-chromium-${owner.id}`, CHARIOX_SLICE_HOME_VOLUME: restoredVolume,
@@ -106,7 +107,7 @@ try {
   startBrowser(restored, "restored-sandbox");
   const restoredState = profile(restored, "verify", "restored-storage");
   assert.equal(restoredState.sessionTabRestored, true, "the production launcher did not restore the saved fixture tab");
-  fallback(restored, "restored-fallback-storage");
+  fallback(restored, "restored-fallback-storage", "fallback-restored");
   profile(restored, "revoked", "server-revocation-negative");
   execute(restored, ["bash", "/opt/chariox-slice/slice-screen.sh", "stop"], 90);
   docker(["stop", "--time", "10", restored]);

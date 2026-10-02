@@ -7,7 +7,8 @@ local contract tests.
 The fixture image uses the production slice's immutable Node base, CA bundle,
 Debian snapshot, UID/GID 1001, and exact `slice-screen.sh`, `browser-cdp.mjs`, `tint2rc` and seccomp bytes.
 `inputs.lock.json` pins those production bytes; intentional production changes
-require updating the pins. Preparation fails if launcher, hashes, image, CA,
+require updating the pins. The restore pin covers only the extracted production
+functions consumed by the adapter, so unrelated provisioner edits do not invalidate it. Preparation fails if launcher, hashes, image, CA,
 apt setup or fixture package selections drift. The retained
 `chromium-sandbox-probe.mjs` is packaged only under `/opt/chariox-drill` as a
 test-only diagnostic, with a separate hash in the evidence manifest. Production
@@ -24,7 +25,8 @@ archives the whole home as tar.zst, removes the original container, invokes the
 production initial-home restore functions used by `restore-state` into a fresh volume, then starts a
 fresh browser and verifies the exact data and restored fixture tab. It also
 disables only the fixture CDP URL helper to verify the production URL fallback
-keeps the same authenticated profile, before and after restoration. Independent
+keeps the same authenticated profile, before and after restoration. Each phase uses a distinct URL fragment and must
+observe that target absent before launch and present afterwards. Independent
 negative checks revoke the fixture session on the server and use an empty
 profile; neither may pass the successful authentication/storage check.
 The probe requires observed renderer PID nesting, UID/capability lockdown and
@@ -67,8 +69,15 @@ set those variables to impersonate hosted CI. Preparation and resource ownership
 checks persist and require the same environment label throughout the run.
 Invoke the builder controller build through the installed `slot-run` admission
 helper before its systemd deadline starts. The build retains the hosted systemd resource limits and Rust 1.88.0 baseline.
-The coordinator may be root on the builder; the browser and sandbox probe always
-run as `slice`. This fixture is not an owned kernel Room or protected rootless
+The coordinator may be root on the builder, but compilation and all Rust tests
+always run as an owned non-root UID/GID. A root coordinator must set
+`CHARIOX_CHROMIUM_DRILL_UID` and `CHARIOX_CHROMIUM_DRILL_GID`. Builder
+invocations must set `CHARIOX_CHROMIUM_DRILL_CARGO` (the `bin/cargo` of a public, readable Rust
+1.88.0 toolchain, not a root-only rustup proxy). Hold that private identity for
+the whole drill, for example with a task-owned DynamicUser lease. Use a scratch
+parent that permits this UID to traverse it; only the new harness is chowned,
+and the builder uses a fresh private Cargo home with no coordinator account data.
+The browser and sandbox probe always run as `slice`. This fixture is not an owned kernel Room or protected rootless
 topology-7 qualification. The result explicitly records both exclusions.
 
 Set `RUNNER_TEMP` to your private scratch parent outside the checkout,

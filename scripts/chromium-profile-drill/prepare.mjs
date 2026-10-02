@@ -4,12 +4,13 @@ import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rea
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { restoreScript } from "./restore.mjs";
 import { drillEnvironment } from "./environment.mjs";
 
 export const repository = fileURLToPath(new URL("../../", import.meta.url));
 export const source = join(repository, "apps/kernel/slice-linux-docker");
 export const fixtureSource = dirname(fileURLToPath(import.meta.url));
-const productionFiles = ["docker/slice-screen.sh", "docker/browser-cdp.mjs", "docker/tint2rc", "chromium-seccomp.json", "provision-linux-docker-slice.sh"];
+const productionFiles = ["docker/slice-screen.sh", "docker/browser-cdp.mjs", "docker/tint2rc", "chromium-seccomp.json"];
 const digest = bytes => createHash("sha256").update(bytes).digest("hex");
 export function verifyInputs({ sourceRoot = source, fixtureRoot = fixtureSource } = {}) {
   const production = readFileSync(join(sourceRoot, "docker/Dockerfile"), "utf8");
@@ -38,11 +39,12 @@ export function verifyInputs({ sourceRoot = source, fixtureRoot = fixtureSource 
       && line.endsWith(`apps/kernel/slice-linux-docker/docker/${name} /opt/chariox-slice/${name}`)), `production image omits ${name}`);
   }
   const pins = JSON.parse(readFileSync(join(fixtureRoot, "inputs.lock.json")));
-  assert.deepEqual(Object.keys(pins).sort(), [...productionFiles].sort());
+  assert.deepEqual(Object.keys(pins).sort(), [...productionFiles, "restore-script"].sort());
   for (const name of productionFiles) {
     assert.match(pins[name], /^[a-f0-9]{64}$/);
     assert.equal(digest(readFileSync(join(sourceRoot, name))), pins[name], `production input hash drifted: ${name}`);
   }
+  assert.equal(digest(restoreScript(readFileSync(join(sourceRoot, "provision-linux-docker-slice.sh"), "utf8"))), pins["restore-script"], "production restore input hash drifted");
   return pins;
 }
 
