@@ -7,6 +7,32 @@ use std::path::Path;
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 
+struct ShellDrillScratch(std::path::PathBuf);
+
+impl ShellDrillScratch {
+    fn new() -> Self {
+        // macOS TMPDIR can make a normal test-worktree socket path exceed
+        // sockaddr_un.sun_path. A canonical /tmp child stays short on both OSes.
+        let root = std::fs::canonicalize("/tmp").unwrap().join(format!(
+            "chariox-sudo-{}-{:016x}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        Self(root)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for ShellDrillScratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 async fn file(path: &Path) -> String {
     tokio::time::timeout(Duration::from_secs(15), async {
         loop {
@@ -266,7 +292,7 @@ fn sudo_shell_cli_child() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sudo_shell_live_throwaway_kernel_cli_loses_authority_after_yield() {
-    let scratch = crate::test_support::TestWorktree::new("sudo-shell-live");
+    let scratch = ShellDrillScratch::new();
     let scratch_root = scratch.path();
     let executable = std::env::current_exe().unwrap();
     let cli = std::env::var("CHARIOX_SUDO_SHELL_CLI").ok();
