@@ -28,6 +28,7 @@ fn public_session_state_preserves_failed_settlement_termination_after_late_compl
             .expect("synthetic provider account should be authenticated");
         }
     });
+    harness.launch_workflow_test_provider(session.id(), agent.id());
     let attachment = match harness
         .dispatch(LocalDaemonRequest::AttachToSession(
             AttachToSessionRequest {
