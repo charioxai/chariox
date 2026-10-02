@@ -1,4 +1,6 @@
 // Ordinary Node/FD3 integration only: these tests do not establish containment.
+// Include the pure native receipt parser tests in the platform-independent suite.
+import './linux-native-contract.test.mjs';
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { spawn } from 'node:child_process';

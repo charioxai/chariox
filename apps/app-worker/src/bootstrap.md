@@ -91,7 +91,8 @@ Codes are 130 invalid configuration, 131 import/registration/readiness failure,
 
 `node --test --test-concurrency=1 apps/app-worker/tests/bootstrap.test.mjs`
 uses ordinary Node processes and real inherited FD3 streams. It proves bootstrap
-registration, framing, dispatch, bounded errors, shutdown flushing and teardown;
+registration, framing, dispatch, bounded errors, shutdown flushing and teardown,
+and includes the platform-independent Linux native receipt parser tests;
 it does not prove native confinement or embedded Node compatibility. The native
 CI workflow separately runs Linux containment and then the development macOS
 Seatbelt probe. Signed/hardened macOS validation remains required, including the

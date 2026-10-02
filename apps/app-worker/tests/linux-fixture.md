@@ -4,7 +4,10 @@
 runtime build. It compiles the production C launcher and a test-only libc
 runtime, plus bundled bubblewrap, on a disposable Ubuntu 24.04 x64 runner.
 No Node source, libnode build, Docker image or local Docker execution is needed.
-Node only coordinates the test from outside the App boundary.
+Node only coordinates the test from outside the App boundary. The third
+negative control directly launches the test-only weakened worker without
+bubblewrap, still inside the service cgroup and private mount namespace;
+see [the three-control contract](linux-native-contract.md).
 
 `sandbox.lock.json` pins the official bubblewrap 0.12.0 release archive, byte
 size and SHA-256. This release fixes an absolute-symlink escape during sandbox
@@ -26,9 +29,9 @@ An AppArmor exception permits user namespaces only for the exact owned bundled
 bubblewrap executable on that disposable VM. No global AppArmor switch or userns
 sysctl is disabled. The profile is removed after the fixture. The coordinator
 clears supplementary groups and drops to the runner UID/GID before executing
-bubblewrap. No root-directory handle enters the worker. FD31 carries only a
-deliberate fixture sentinel, so the production native descriptor filter is
-tested independently of the coordinator's filtering.
+bubblewrap or the direct weakened control. No root-directory handle enters the
+worker. FD31 carries only a deliberate fixture sentinel, so the production
+native descriptor filter is tested independently of the coordinator's filtering.
 
 Bubblewrap unshares user, mount, PID, network, IPC, UTS and cgroup namespaces;
 disables further user namespaces; drops capabilities; starts a new session;
@@ -56,8 +59,9 @@ delivery, pthread create/join, bidirectional FD3 traffic, and denied host paths,
 escaped watches, executable private mappings, raw network, fork, exec and
 foreign signals/resource changes. A data mount deliberately missing `noexec`
 must be rejected before readiness. A separately linked test-only weakened
-policy must be detected by the same hostile native probe. Installed Apps cannot
-choose that binary, policy, bootstrap or fixture mode.
+policy must be detected by the same hostile native probe, both with bubblewrap
+and in the direct control that also removes namespaces and read-only mounts.
+Installed Apps cannot choose that binary, policy, bootstrap or fixture mode.
 
 On success the workflow uploads `native-linux.json` with the exact commit,
 binary hashes, bubblewrap provenance, observed OS/kernel/compiler, namespace
