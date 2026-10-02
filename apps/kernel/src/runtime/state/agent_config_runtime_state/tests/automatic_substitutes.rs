@@ -27,7 +27,9 @@ async fn claude_stop_failure_hook_advances_queued_workflow_on_substitute_once() 
 
 async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
     let (runtime, session_id, agent_id, profile_id, _worktree) =
-        runtime_with_substitutes(&["opencode/deepseek-v4-pro"], true).await;
+        runtime_with_substitutes("dev-stub", &["opencode/deepseek-v4-pro"], true).await;
+    // MP-08/MP-10: exercise queue settlement through the deterministic runtime
+    // adapter; native account selection is covered by the tests below.
     let starter_provider = if claude_hook {
         "claude-headless"
     } else {
@@ -341,7 +343,7 @@ async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
     );
     let replacement_run = &live_runs[0];
     assert_ne!(replacement_run.id(), run.id());
-    assert_eq!(replacement_run.adapter_key(), "opencode");
+    assert_eq!(replacement_run.adapter_key(), "dev-stub");
     assert_eq!(replacement_run.model(), "opencode/deepseek-v4-pro");
     assert_eq!(
         active.durable_delivery_provider_run_id(),
@@ -466,6 +468,7 @@ async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
 }
 
 async fn runtime_with_substitutes(
+    substitute_provider: &str,
     models: &[&str],
     reset_in_future: bool,
 ) -> (
@@ -569,7 +572,7 @@ async fn runtime_with_substitutes(
             .add_agent_substitute(
                 &agent_id,
                 crate::agent::AgentSubstituteProfile::new(
-                    "opencode",
+                    substitute_provider,
                     model,
                     Some("high".to_string()),
                 )
@@ -583,6 +586,7 @@ async fn runtime_with_substitutes(
 #[tokio::test]
 async fn automatic_substitution_skips_exhausted_go_but_preserves_zen_on_same_account() {
     let (runtime, session_id, agent_id, profile_id, _worktree) = runtime_with_substitutes(
+        "opencode",
         &["opencode-go/deepseek-v4-pro", "opencode/deepseek-v4-pro"],
         true,
     )
@@ -617,6 +621,7 @@ async fn automatic_substitution_skips_exhausted_go_but_preserves_zen_on_same_acc
 #[tokio::test]
 async fn automatic_substitution_exhausted_chain_leaves_starter_unchanged() {
     let (runtime, session_id, agent_id, _, _worktree) = runtime_with_substitutes(
+        "opencode",
         &[
             "opencode-go/deepseek-v4-pro",
             "opencode-go/deepseek-v4-flash",
@@ -640,6 +645,7 @@ async fn automatic_substitution_exhausted_chain_leaves_starter_unchanged() {
 #[tokio::test]
 async fn automatic_substitution_does_not_skip_a_passed_reset() {
     let (runtime, session_id, agent_id, _, _worktree) = runtime_with_substitutes(
+        "opencode",
         &["opencode-go/deepseek-v4-pro", "opencode/deepseek-v4-pro"],
         false,
     )
@@ -662,6 +668,7 @@ async fn automatic_substitution_does_not_skip_a_passed_reset() {
 #[tokio::test]
 async fn automatic_substitution_skips_multiple_exhausted_entries_after_active_index() {
     let (runtime, session_id, agent_id, _, _worktree) = runtime_with_substitutes(
+        "opencode",
         &[
             "opencode-go/deepseek-v4-pro",
             "opencode-go/deepseek-v4-flash",
@@ -730,7 +737,7 @@ async fn automatic_substitution_skips_a_missing_account_and_reaches_the_next_can
             .add_agent_substitute(
                 &agent_id,
                 crate::agent::AgentSubstituteProfile::new(
-                    "opencode",
+                    substitute_provider,
                     model,
                     Some("high".to_string()),
                 )
