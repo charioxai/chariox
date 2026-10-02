@@ -231,19 +231,20 @@ impl KernelRuntimeState {
                     }
                 });
                 let (session, agent, _cleanup) = review_identity.as_ref().expect("review identity");
-                additions = self.review_project_environment(
-                    &session,
-                    &agent,
-                    &mut state,
-                    &mut discovery_input,
-                    &roots,
-                    &workspace_environment,
-                    project.name(),
-                    target_name,
-                    code,
-                    vault.as_ref(),
-                )
-                .await?;
+                additions = self
+                    .review_project_environment(
+                        &session,
+                        &agent,
+                        &mut state,
+                        &mut discovery_input,
+                        &roots,
+                        &workspace_environment,
+                        project.name(),
+                        target_name,
+                        code,
+                        vault.as_ref(),
+                    )
+                    .await?;
             } else {
                 let review = ProjectEnvironmentReview::build(
                     &state,

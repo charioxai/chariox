@@ -74,7 +74,10 @@ pub(crate) async fn forward_selkies_stream(
         // Only fixed, kernel-authored reasons may enter logs. Adapter stderr
         // and all unexpected transport errors remain private.
         let reason = match error {
-            DaemonError::LocalTransport { operation: "private Selkies stream" | "encrypted display stream", message } => match message.as_str() {
+            DaemonError::LocalTransport {
+                operation: "private Selkies stream" | "encrypted display stream",
+                message,
+            } => match message.as_str() {
                 "display consumer stopped reading" => "consumer_timeout",
                 "display consumer disconnected" => "consumer_disconnected",
                 "private stream ended" => "adapter_eof",
@@ -93,7 +96,8 @@ pub(crate) async fn forward_selkies_stream(
         };
         if reason != "lease_closed" {
             crate::logging::warn_with_fields(
-                "display.forwarder", "Selkies forwarder stopped",
+                "display.forwarder",
+                "Selkies forwarder stopped",
                 serde_json::json!({"reason": reason}),
             );
         }

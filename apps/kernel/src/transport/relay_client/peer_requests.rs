@@ -4,14 +4,14 @@ use std::sync::Arc;
 
 use base64::Engine;
 use chariox_relay::protocol::{
-    EncryptedRelayPayload, RelayCallerIdentity, RelayError, canonical_peer_daemon_id,
+    canonical_peer_daemon_id, EncryptedRelayPayload, RelayCallerIdentity, RelayError,
 };
 use tokio::sync::RwLock;
 
 use crate::runtime::router::CommandRouter;
 use crate::transport::relay_crypto;
 use crate::transport::relay_peer::{
-    RELAY_PEER_PROTOCOL_VERSION, RelayPeerRequest, RelayPeerResponse,
+    RelayPeerRequest, RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION,
 };
 
 use super::daemon_requests::RelayRequestOutcome;
@@ -2360,17 +2360,17 @@ mod tests {
     use crate::error::DaemonError;
     use crate::managed_bootstrap::{ConfirmedManagedKernelRegistration, ManagedKernelContextPlan};
     use crate::managed_context::development::{
-        DevelopmentContextExportRequest, DevelopmentRepositoryRole, DevelopmentRepositorySelection,
-        export_development_context,
+        export_development_context, DevelopmentContextExportRequest, DevelopmentRepositoryRole,
+        DevelopmentRepositorySelection,
     };
     use crate::managed_context::kernel::{
         KernelContextCompatibility, KernelContextPayload, KernelContextSnapshot,
     };
     use crate::managed_context::package::{
+        apply_managed_context_package, export_managed_context_package,
         ManagedContextPackageApplicationRequest, ManagedContextPackageBinding,
         ManagedContextPackageDevelopment, ManagedContextPackageExportRequest,
         ManagedContextPackageKernel, ManagedContextPackageProviderAccounts,
-        apply_managed_context_package, export_managed_context_package,
     };
 
     #[test]
@@ -2427,8 +2427,8 @@ mod tests {
     use crate::managed_context::package::ManagedContextPlanBinding;
     use crate::runtime::terminal_pairings::public_key_thumbprint;
     use crate::secret::{
-        VaultUnlockLease, export_transferred_vault_snapshot, lock_chariox_encrypted_vault,
-        unlock_chariox_encrypted_vault,
+        export_transferred_vault_snapshot, lock_chariox_encrypted_vault,
+        unlock_chariox_encrypted_vault, VaultUnlockLease,
     };
     use crate::transport::relay_peer::{
         RelayManagedContextCapability, RelayManagedContextChunk, RelayManagedContextTransferPhase,
@@ -3980,31 +3980,29 @@ mod tests {
                 .expect("authorization read timeout");
             let mut request = Vec::new();
             let mut chunk = [0_u8; 4096];
-            let (header_end, content_length) =
-                loop {
-                    let read = stream.read(&mut chunk).expect("read authorization request");
-                    assert!(read > 0, "authorization request ended before its body");
-                    request.extend_from_slice(&chunk[..read]);
-                    let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n")
-                    else {
-                        continue;
-                    };
-                    let headers = String::from_utf8_lossy(&request[..header_end]);
-                    assert!(headers.starts_with(
-                        "POST /v1/managed-kernels/git-credential-enrollment/authorize "
-                    ));
-                    let content_length = headers
-                        .lines()
-                        .find_map(|line| {
-                            line.to_ascii_lowercase()
-                                .strip_prefix("content-length:")
-                                .and_then(|value| value.trim().parse::<usize>().ok())
-                        })
-                        .expect("authorization content length");
-                    if request.len() >= header_end + 4 + content_length {
-                        break (header_end, content_length);
-                    }
+            let (header_end, content_length) = loop {
+                let read = stream.read(&mut chunk).expect("read authorization request");
+                assert!(read > 0, "authorization request ended before its body");
+                request.extend_from_slice(&chunk[..read]);
+                let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n")
+                else {
+                    continue;
                 };
+                let headers = String::from_utf8_lossy(&request[..header_end]);
+                assert!(headers
+                    .starts_with("POST /v1/managed-kernels/git-credential-enrollment/authorize "));
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .and_then(|value| value.trim().parse::<usize>().ok())
+                    })
+                    .expect("authorization content length");
+                if request.len() >= header_end + 4 + content_length {
+                    break (header_end, content_length);
+                }
+            };
             let body = serde_json::from_slice::<serde_json::Value>(
                 &request[header_end + 4..header_end + 4 + content_length],
             )

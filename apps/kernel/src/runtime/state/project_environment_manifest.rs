@@ -371,12 +371,10 @@ mod tests {
             session_id: session.id().into(),
             agent_id: agent.id().into(),
         };
-        assert!(
-            runtime
-                .start_project_environment_adjustment(request.clone(), "another-user")
-                .await
-                .is_err()
-        );
+        assert!(runtime
+            .start_project_environment_adjustment(request.clone(), "another-user")
+            .await
+            .is_err());
         runtime
             .owned
             .agent_store
@@ -396,12 +394,10 @@ mod tests {
                 },
             )
             .unwrap();
-        assert!(
-            runtime
-                .start_project_environment_adjustment(request.clone(), "user-1")
-                .await
-                .is_err()
-        );
+        assert!(runtime
+            .start_project_environment_adjustment(request.clone(), "user-1")
+            .await
+            .is_err());
 
         let context = crate::transport::relay_peer::RemoteNativeInteractionContext {
             home_session_id: session.id().into(),
@@ -426,28 +422,24 @@ mod tests {
                 secret_looking: false,
             });
         store.save(&selected).unwrap();
-        assert!(
-            runtime
-                .fetch_project_private_file(
-                    "other-worker",
-                    context.clone(),
-                    session.workspace_id().into(),
-                    "notes.md".into()
-                )
-                .await
-                .is_err()
-        );
-        assert!(
-            runtime
-                .fetch_project_private_file(
-                    "synthetic-worker",
-                    context.clone(),
-                    session.workspace_id().into(),
-                    "../notes.md".into()
-                )
-                .await
-                .is_err()
-        );
+        assert!(runtime
+            .fetch_project_private_file(
+                "other-worker",
+                context.clone(),
+                session.workspace_id().into(),
+                "notes.md".into()
+            )
+            .await
+            .is_err());
+        assert!(runtime
+            .fetch_project_private_file(
+                "synthetic-worker",
+                context.clone(),
+                session.workspace_id().into(),
+                "../notes.md".into()
+            )
+            .await
+            .is_err());
         let bytes = runtime
             .fetch_project_private_file(
                 "synthetic-worker",
@@ -471,45 +463,39 @@ mod tests {
         );
         selected.manifest.private_files[0].secret_looking = true;
         store.save(&selected).unwrap();
-        assert!(
-            runtime
-                .fetch_project_private_file(
-                    "synthetic-worker",
-                    context.clone(),
-                    session.workspace_id().into(),
-                    "notes.md".into()
-                )
-                .await
-                .is_err()
-        );
+        assert!(runtime
+            .fetch_project_private_file(
+                "synthetic-worker",
+                context.clone(),
+                session.workspace_id().into(),
+                "notes.md".into()
+            )
+            .await
+            .is_err());
         selected.manifest.private_files[0].secret_looking = false;
         #[cfg(unix)]
         {
             std::fs::remove_file(workspace.join("notes.md")).unwrap();
             std::os::unix::fs::symlink("/etc/passwd", workspace.join("notes.md")).unwrap();
             store.save(&selected).unwrap();
-            assert!(
-                runtime
-                    .fetch_project_private_file(
-                        "synthetic-worker",
-                        context,
-                        session.workspace_id().into(),
-                        "notes.md".into()
-                    )
-                    .await
-                    .is_err()
-            );
+            assert!(runtime
+                .fetch_project_private_file(
+                    "synthetic-worker",
+                    context,
+                    session.workspace_id().into(),
+                    "notes.md".into()
+                )
+                .await
+                .is_err());
         }
         store.save(&state).unwrap();
         assert_eq!(store.load(session.project_id()).unwrap().unwrap(), state);
-        assert!(
-            runtime
-                .session_snapshot(session.id())
-                .await
-                .unwrap()
-                .active_interactions()
-                .is_empty()
-        );
+        assert!(runtime
+            .session_snapshot(session.id())
+            .await
+            .unwrap()
+            .active_interactions()
+            .is_empty());
         runtime
             .owned
             .agent_store
@@ -549,12 +535,10 @@ mod tests {
             assert!(Instant::now() < deadline);
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
-        assert!(
-            serde_json::to_value(&interaction)
-                .unwrap()
-                .get("project_environment_review")
-                .is_some()
-        );
+        assert!(serde_json::to_value(&interaction)
+            .unwrap()
+            .get("project_environment_review")
+            .is_some());
         assert!(store.try_lock(session.project_id()).is_err());
         runtime
             .resolve_runtime_interaction(session.id(), interaction.id(), "skip", None)
@@ -574,14 +558,12 @@ mod tests {
             assert!(Instant::now() < deadline);
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        assert!(
-            store
-                .load(session.project_id())
-                .unwrap()
-                .unwrap()
-                .reported_missing
-                .contains(&(session.workspace_id().into(), "OPTIONAL_INPUT".into()))
-        );
+        assert!(store
+            .load(session.project_id())
+            .unwrap()
+            .unwrap()
+            .reported_missing
+            .contains(&(session.workspace_id().into(), "OPTIONAL_INPUT".into())));
         runtime
             .delete_session_ref(session.id(), None)
             .await

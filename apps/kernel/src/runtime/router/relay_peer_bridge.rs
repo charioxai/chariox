@@ -507,17 +507,27 @@ impl CommandRouter {
     }
 
     pub(crate) async fn relay_export_project_environment(
-        &self, context: crate::transport::relay_peer::RemoteSkillSyncContext, interactive: bool, target_name: String,
+        &self,
+        context: crate::transport::relay_peer::RemoteSkillSyncContext,
+        interactive: bool,
+        target_name: String,
         target: Option<crate::transport::relay_peer::ProjectEnvironmentExportTarget>,
     ) -> Result<crate::transport::relay_peer::RelayPeerResponse, DaemonError> {
-        self.runtime_state.export_leased_project_environment(context, interactive, target_name, target).await
+        self.runtime_state
+            .export_leased_project_environment(context, interactive, target_name, target)
+            .await
     }
 
     pub(crate) async fn relay_fetch_project_private_file(
-        &self, worker_id: &str, context: crate::transport::relay_peer::RemoteNativeInteractionContext,
-        workspace_id: String, path: String,
+        &self,
+        worker_id: &str,
+        context: crate::transport::relay_peer::RemoteNativeInteractionContext,
+        workspace_id: String,
+        path: String,
     ) -> Result<crate::transport::relay_peer::RelayManagedContextChunk, DaemonError> {
-        self.runtime_state.fetch_project_private_file(worker_id, context, workspace_id, path).await
+        self.runtime_state
+            .fetch_project_private_file(worker_id, context, workspace_id, path)
+            .await
     }
 
     pub(crate) async fn relay_read_project_environment(
@@ -525,14 +535,29 @@ impl CommandRouter {
         context: crate::transport::relay_peer::RemoteSkillSyncContext,
         adjust: bool,
     ) -> Result<crate::transport::relay_peer::RelayPeerResponse, DaemonError> {
-        self.runtime_state.read_leased_project_environment(context, adjust).await
+        self.runtime_state
+            .read_leased_project_environment(context, adjust)
+            .await
     }
 
-    pub(crate) async fn relay_use_project_environment(&self, context: crate::transport::relay_peer::RemoteSkillSyncContext, project_id: String) -> Result<bool, DaemonError> {
-        self.runtime_state.use_leased_project_environment(context, project_id).await
+    pub(crate) async fn relay_use_project_environment(
+        &self,
+        context: crate::transport::relay_peer::RemoteSkillSyncContext,
+        project_id: String,
+    ) -> Result<bool, DaemonError> {
+        self.runtime_state
+            .use_leased_project_environment(context, project_id)
+            .await
     }
-    pub(crate) async fn relay_read_leased_project_file(&self, context: crate::transport::relay_peer::RemoteSkillSyncContext, workspace_id: String, path: String) -> Result<crate::transport::relay_peer::RelayManagedContextChunk, DaemonError> {
-        self.runtime_state.read_leased_project_private_file(context, workspace_id, path).await
+    pub(crate) async fn relay_read_leased_project_file(
+        &self,
+        context: crate::transport::relay_peer::RemoteSkillSyncContext,
+        workspace_id: String,
+        path: String,
+    ) -> Result<crate::transport::relay_peer::RelayManagedContextChunk, DaemonError> {
+        self.runtime_state
+            .read_leased_project_private_file(context, workspace_id, path)
+            .await
     }
     pub(crate) async fn relay_install_project_environment(
         &self,
@@ -542,7 +567,12 @@ impl CommandRouter {
         workspace_directories: std::collections::BTreeMap<String, String>,
     ) -> Result<String, DaemonError> {
         self.runtime_state
-            .install_leased_project_environment(context, source_kernel_id, layer, workspace_directories)
+            .install_leased_project_environment(
+                context,
+                source_kernel_id,
+                layer,
+                workspace_directories,
+            )
             .await
     }
 
@@ -884,7 +914,8 @@ impl CommandRouter {
         context: crate::transport::relay_peer::RemoteNativeInteractionContext,
         interaction: crate::session::RuntimeInteraction,
     ) -> Result<crate::provider::ProviderNativeInteractionResolution, DaemonError> {
-        self.runtime_state.authorize_forwarded_interaction(worker_id, &context)?;
+        self.runtime_state
+            .authorize_forwarded_interaction(worker_id, &context)?;
         forward_relay_native_interaction(&self.runtime_state, context, interaction).await
     }
 }

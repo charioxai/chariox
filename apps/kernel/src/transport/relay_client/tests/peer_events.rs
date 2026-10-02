@@ -259,12 +259,23 @@ async fn forwarded_native_interactions_resolve_back_to_worker_over_temporary_con
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace-home", "worktree-home"))
             .expect("home session should be created");
-        app.agents.bind_remote_execution(agent.id(), crate::agent::RemoteAgentBinding {
-            worker_kernel_id: "daemon-worker".into(), worker_machine_id: "machine-worker".into(),
-            execution_lease_id: "lease-test".into(), leased_agent_id: "leased-agent-test".into(),
-            active_worker_provider_run_id: Some("provider-run-test".into()), relay_url: None, relay_token: None,
-            relay_peer_protocol_version: Some(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION),
-        }).unwrap();
+        app.agents
+            .bind_remote_execution(
+                agent.id(),
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: "daemon-worker".into(),
+                    worker_machine_id: "machine-worker".into(),
+                    execution_lease_id: "lease-test".into(),
+                    leased_agent_id: "leased-agent-test".into(),
+                    active_worker_provider_run_id: Some("provider-run-test".into()),
+                    relay_url: None,
+                    relay_token: None,
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
+                },
+            )
+            .unwrap();
         (session.id().to_string(), agent.id().to_string())
     };
     let interaction = crate::session::RuntimeInteraction::new(

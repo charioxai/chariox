@@ -121,7 +121,8 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         }
         LocalDaemonRequest::AdjustProjectEnvironment(request) => {
             LocalRequestMetadata::new("project.environment.adjust", Interactive)
-                .session(&request.session_id).agent(&request.agent_id)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
         }
         LocalDaemonRequest::StartProjectEnvironmentSetup(request) => {
             LocalRequestMetadata::new("project.environment_setup.start", Normal)

@@ -177,9 +177,13 @@ pub fn flip_project_environment_item(
 ) -> Result<(), DaemonError> {
     let fail = super::resolver::environment_error;
     if file {
-        if state.manifest.entries.iter().any(|entry| entry.kind == ProjectEnvironmentEntryKind::ConfigFile
-            && project_environment_item_id(&entry.workspace_id, &entry.name) == id) {
-            return Err(fail("referenced configuration uses the sealed environment layer"));
+        if state.manifest.entries.iter().any(|entry| {
+            entry.kind == ProjectEnvironmentEntryKind::ConfigFile
+                && project_environment_item_id(&entry.workspace_id, &entry.name) == id
+        }) {
+            return Err(fail(
+                "referenced configuration uses the sealed environment layer",
+            ));
         }
         let decision = state
             .manifest

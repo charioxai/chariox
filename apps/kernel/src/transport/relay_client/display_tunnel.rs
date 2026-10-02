@@ -154,7 +154,8 @@ async fn handle_display_tunnel_websocket(
     };
     if let (true, Err(error)) = (selkies, &result) {
         crate::logging::warn_with_fields(
-            "display.proxy", "Selkies proxy stopped",
+            "display.proxy",
+            "Selkies proxy stopped",
             serde_json::json!({"code": error.code, "stream_id": stream_id}),
         );
     }

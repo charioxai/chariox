@@ -1251,7 +1251,9 @@ async fn healthy_display_viewer_drains_bursts_without_false_backpressure() {
     let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "worker-burst");
     let (display_tx, mut display_rx) = mpsc::channel(16);
     registry.write().await.insert_pending_display_stream(
-        "burst-stream".to_string(), daemon_key.clone(), display_tx,
+        "burst-stream".to_string(),
+        daemon_key.clone(),
+        display_tx,
     );
     let consumer = tokio::spawn(async move {
         let mut packets = Vec::new();
@@ -1263,14 +1265,39 @@ async fn healthy_display_viewer_drains_bursts_without_false_backpressure() {
     let (daemon_tx, mut daemon_rx) = mpsc::channel(2);
     for index in 0..64 {
         try_forward_display_stream_event(
-            &registry, &daemon_tx, &daemon_key, "burst-stream",
-            DisplayStreamEvent::Chunk { data: index.to_string(), message_kind: Some("binary".to_string()) },
-        ).await;
+            &registry,
+            &daemon_tx,
+            &daemon_key,
+            "burst-stream",
+            DisplayStreamEvent::Chunk {
+                data: index.to_string(),
+                message_kind: Some("binary".to_string()),
+            },
+        )
+        .await;
     }
-    assert!(registry.read().await.display_stream_sender_for_daemon("burst-stream", &daemon_key).is_some(),
-        "ready viewer was closed before its receiver could run");
-    assert!(daemon_rx.try_recv().is_err(), "healthy viewer must not trigger an overload close");
-    registry.write().await.remove_pending_display_stream("burst-stream");
-    let packets = tokio::time::timeout(Duration::from_secs(1), consumer).await.unwrap().unwrap();
-    assert_eq!(packets, (0..64).map(|index| index.to_string()).collect::<Vec<_>>());
+    assert!(
+        registry
+            .read()
+            .await
+            .display_stream_sender_for_daemon("burst-stream", &daemon_key)
+            .is_some(),
+        "ready viewer was closed before its receiver could run"
+    );
+    assert!(
+        daemon_rx.try_recv().is_err(),
+        "healthy viewer must not trigger an overload close"
+    );
+    registry
+        .write()
+        .await
+        .remove_pending_display_stream("burst-stream");
+    let packets = tokio::time::timeout(Duration::from_secs(1), consumer)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        packets,
+        (0..64).map(|index| index.to_string()).collect::<Vec<_>>()
+    );
 }

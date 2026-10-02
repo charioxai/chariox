@@ -9,7 +9,8 @@ use crate::managed_context::development::{
     export_development_context, import_development_context_with_publication,
     recover_pruned_development_context_publication_for_cleanup,
     recover_pruned_mutable_development_context_publication, DevelopmentContextExportRequest,
-    DevelopmentContextImportRequest, DevelopmentRepositoryRole, DevelopmentRepositorySelection, DevelopmentSourceRepositoryBinding,
+    DevelopmentContextImportRequest, DevelopmentRepositoryRole, DevelopmentRepositorySelection,
+    DevelopmentSourceRepositoryBinding,
 };
 use crate::managed_context::package::ManagedContextDevelopmentSelection;
 
@@ -154,7 +155,11 @@ impl KernelRuntimeState {
             return Ok(slice.clone());
         }
         let publication_parent = slice_development_storage_root(slice)?;
-        let resolved = if slice.development_publication.is_some() {None} else {Some(self.slice_repository_selections(slice)?)};
+        let resolved = if slice.development_publication.is_some() {
+            None
+        } else {
+            Some(self.slice_repository_selections(slice)?)
+        };
         let publication = match slice.development.as_ref().expect("checked development") {
             ManagedContextDevelopmentSelection::Empty => empty_development::materialize(
                 &publication_parent,
@@ -164,8 +169,12 @@ impl KernelRuntimeState {
                 project_id,
                 repositories,
             } => materialize_slice_development_publication_with_access(
-                &publication_parent, project_id, repositories, slice.development_publication.as_ref(),
-                update_managed_publication_access, resolved,
+                &publication_parent,
+                project_id,
+                repositories,
+                slice.development_publication.as_ref(),
+                update_managed_publication_access,
+                resolved,
             )?,
         };
         if slice
@@ -277,7 +286,10 @@ fn materialize_slice_development_publication_with_access(
             let archive_path = scratch_root.join("development.tar.gz");
             let resolved = match resolved_source {
                 Some(resolved) => resolved,
-                None => repositories.iter().map(crate::managed_context::outbound_service::resolve_repository_selection).collect::<Result<Vec<_>, _>>()?,
+                None => repositories
+                    .iter()
+                    .map(crate::managed_context::outbound_service::resolve_repository_selection)
+                    .collect::<Result<Vec<_>, _>>()?,
             };
             let exported = export_development_context(DevelopmentContextExportRequest {
                 project_id: project_id.to_string(),

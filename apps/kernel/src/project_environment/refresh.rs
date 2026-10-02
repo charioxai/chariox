@@ -91,7 +91,8 @@ pub fn prepare_project_environment_export(
             });
     }
     let reported_missing = previous
-        .as_ref().map(|state| state.reported_missing.clone())
+        .as_ref()
+        .map(|state| state.reported_missing.clone())
         .unwrap_or_default();
     let newly_missing = resolved
         .unresolved

@@ -290,18 +290,14 @@ mod tests {
                 "MP-08 / MP-10 / MP-11 activation fixture",
             )
             .unwrap();
-        assert!(
-            prepared
-                .provider_credential_env
-                .iter()
-                .any(|(name, value)| name == "APP_LABEL" && value == "activation-fixture")
-        );
-        assert!(
-            prepared
-                .provider_credential_env
-                .iter()
-                .any(|(name, value)| name == "SHELL_ONLY_SECRET" && value == "synthetic-only")
-        );
+        assert!(prepared
+            .provider_credential_env
+            .iter()
+            .any(|(name, value)| name == "APP_LABEL" && value == "activation-fixture"));
+        assert!(prepared
+            .provider_credential_env
+            .iter()
+            .any(|(name, value)| name == "SHELL_ONLY_SECRET" && value == "synthetic-only"));
         assert!(!format!("{prepared:?}").contains("synthetic-only"));
     }
 

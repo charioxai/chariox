@@ -857,11 +857,20 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     .to_string(),
             });
         }
-        self.leased_project_target(leased_agent_id, home_session_id, home_agent_id, workspace_id)
+        self.leased_project_target(
+            leased_agent_id,
+            home_session_id,
+            home_agent_id,
+            workspace_id,
+        )
     }
 
     pub(crate) fn leased_project_target(
-        &self, leased_agent_id: &str, home_session_id: &str, home_agent_id: &str, workspace_id: Option<&str>,
+        &self,
+        leased_agent_id: &str,
+        home_session_id: &str,
+        home_agent_id: &str,
+        workspace_id: Option<&str>,
     ) -> Result<LeasedProjectEnvironmentSetupTarget, DaemonError> {
         let leased_agent = self
             .app

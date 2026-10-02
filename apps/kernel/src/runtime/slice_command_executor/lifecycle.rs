@@ -588,18 +588,23 @@ async fn execute_start_slice_request_with_relaunch_manifests(
         ) = &initial_record.development
         {
             if initial_record.source_slice_ref.is_some() {
-                runtime_state.refresh_slice_source_environment(&initial_record, request.interactive).await?;
+                runtime_state
+                    .refresh_slice_source_environment(&initial_record, request.interactive)
+                    .await?;
             } else {
-            let selections = repositories.iter().map(crate::managed_context::outbound_service::resolve_repository_selection).collect::<Result<Vec<_>, _>>()?;
-            // MP-08: Discovery/review happens before the shared M28 private overlay is copied.
-            let _prepared = runtime_state
-                .refresh_project_environment_state(
-                    project_id,
-                    &selections,
-                    request.interactive,
-                    &initial_record.name,
-                )
-                .await?;
+                let selections = repositories
+                    .iter()
+                    .map(crate::managed_context::outbound_service::resolve_repository_selection)
+                    .collect::<Result<Vec<_>, _>>()?;
+                // MP-08: Discovery/review happens before the shared M28 private overlay is copied.
+                let _prepared = runtime_state
+                    .refresh_project_environment_state(
+                        project_id,
+                        &selections,
+                        request.interactive,
+                        &initial_record.name,
+                    )
+                    .await?;
             }
         }
     }

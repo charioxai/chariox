@@ -267,10 +267,21 @@ impl KernelRuntimeOwnedState {
         Ok(request)
     }
 
-    fn attach_project_environment(&self, request: crate::provider::LaunchProviderRequest) -> Result<crate::provider::LaunchProviderRequest, DaemonError> {
+    fn attach_project_environment(
+        &self,
+        request: crate::provider::LaunchProviderRequest,
+    ) -> Result<crate::provider::LaunchProviderRequest, DaemonError> {
         let session = self.session_store.get_session(&request.session_id)?;
-        let agent = request.agent_id.as_deref().and_then(|id| self.agent_store.get_agent(id).ok());
-        crate::project_environment::attach_project_provider_environment(&self.config_projection.snapshot(), &session, agent.as_ref(), request)
+        let agent = request
+            .agent_id
+            .as_deref()
+            .and_then(|id| self.agent_store.get_agent(id).ok());
+        crate::project_environment::attach_project_provider_environment(
+            &self.config_projection.snapshot(),
+            &session,
+            agent.as_ref(),
+            request,
+        )
     }
 
     fn attach_provider_account_credentials(

@@ -903,8 +903,15 @@ pub enum RelayPeerRequest {
         workspace_id: String,
         path: String,
     },
-    UseLeasedProjectEnvironment { context: RemoteSkillSyncContext, project_id: String },
-    ReadLeasedProjectPrivateFile { context: RemoteSkillSyncContext, workspace_id: String, path: String },
+    UseLeasedProjectEnvironment {
+        context: RemoteSkillSyncContext,
+        project_id: String,
+    },
+    ReadLeasedProjectPrivateFile {
+        context: RemoteSkillSyncContext,
+        workspace_id: String,
+        path: String,
+    },
     ReadLeasedProjectEnvironment {
         context: RemoteSkillSyncContext,
         adjust: bool,
@@ -1163,12 +1170,16 @@ pub enum RelayPeerResponse {
         evidence: crate::project_environment::ProjectEnvironmentEvidence,
         layer: Option<crate::managed_context::development::DevelopmentProjectEnvironment>,
     },
-    ProjectPrivateFile { bytes: RelayManagedContextChunk },
+    ProjectPrivateFile {
+        bytes: RelayManagedContextChunk,
+    },
     LeasedProjectEnvironment {
         manifest: Option<crate::project_environment::ProjectEnvironmentManifest>,
         adjustment_started: bool,
     },
-    LeasedProjectEnvironmentUsed { exists: bool },
+    LeasedProjectEnvironmentUsed {
+        exists: bool,
+    },
     LeasedProjectEnvironmentInstalled {
         project_id: String,
     },
@@ -1900,13 +1911,34 @@ mod project_environment_adjustment_shapes {
     fn mp08_mp10_mp11_worker_environment_shapes_are_protocol_66() {
         use sha2::{Digest, Sha256};
         assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 66);
-        let request = RelayPeerRequest::ReadLeasedProjectEnvironment {context: RemoteSkillSyncContext {
-            home_kernel_id: "home".into(), home_session_id: "session".into(), home_agent_id: "agent".into(), leased_agent_id: "lease-agent".into(),
-        }, adjust: true};
-        assert_eq!(serde_json::to_value(&request).unwrap(), serde_json::json!({"kind":"read_leased_project_environment","context":{"home_kernel_id":"home","home_session_id":"session","home_agent_id":"agent","leased_agent_id":"lease-agent"},"adjust":true}));
-        assert_eq!(format!("{:x}", Sha256::digest(serde_json::to_vec(&request).unwrap())), "5363ab1fa44a01c413bb812af342afff37dcbadfc647e44ab3f3740cd8598254");
-        let response = RelayPeerResponse::LeasedProjectEnvironment {manifest: None, adjustment_started: true};
-        assert_eq!(serde_json::to_value(response).unwrap(), serde_json::json!({"kind":"leased_project_environment","manifest":null,"adjustment_started":true}));
+        let request = RelayPeerRequest::ReadLeasedProjectEnvironment {
+            context: RemoteSkillSyncContext {
+                home_kernel_id: "home".into(),
+                home_session_id: "session".into(),
+                home_agent_id: "agent".into(),
+                leased_agent_id: "lease-agent".into(),
+            },
+            adjust: true,
+        };
+        assert_eq!(
+            serde_json::to_value(&request).unwrap(),
+            serde_json::json!({"kind":"read_leased_project_environment","context":{"home_kernel_id":"home","home_session_id":"session","home_agent_id":"agent","leased_agent_id":"lease-agent"},"adjust":true})
+        );
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&request).unwrap())
+            ),
+            "5363ab1fa44a01c413bb812af342afff37dcbadfc647e44ab3f3740cd8598254"
+        );
+        let response = RelayPeerResponse::LeasedProjectEnvironment {
+            manifest: None,
+            adjustment_started: true,
+        };
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            serde_json::json!({"kind":"leased_project_environment","manifest":null,"adjustment_started":true})
+        );
     }
 }
 
@@ -1921,23 +1953,50 @@ mod project_environment_export_shapes {
         let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
         let roundtrip = serde_json::to_value(request).unwrap();
         assert_eq!(roundtrip, value);
-        assert_eq!(format!("{:x}", Sha256::digest(serde_json::to_vec(&roundtrip).unwrap())), "bf8f113b4f7daf9a8d832eb1ffe5cd11f37e7037849b1bdfa032c8ce1599c99b");
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&roundtrip).unwrap())
+            ),
+            "bf8f113b4f7daf9a8d832eb1ffe5cd11f37e7037849b1bdfa032c8ce1599c99b"
+        );
         let value: serde_json::Value = serde_json::from_str(r#"{"kind":"read_leased_project_private_file","context":{"home_kernel_id":"home","home_session_id":"session","home_agent_id":"agent","leased_agent_id":"leased-agent"},"workspace_id":"/workspace/app","path":"notes.md"}"#).unwrap();
         let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
         let roundtrip = serde_json::to_value(request).unwrap();
         assert_eq!(roundtrip, value);
-        assert_eq!(format!("{:x}", Sha256::digest(serde_json::to_vec(&roundtrip).unwrap())), "48488ef87272c7cd031a3e2bb67fed41d4485c2f079ec451d93a4fb59ea9dfb1");
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&roundtrip).unwrap())
+            ),
+            "48488ef87272c7cd031a3e2bb67fed41d4485c2f079ec451d93a4fb59ea9dfb1"
+        );
         let value: serde_json::Value = serde_json::from_str(r#"{"kind":"use_leased_project_environment","context":{"home_kernel_id":"home","home_session_id":"session","home_agent_id":"agent","leased_agent_id":"leased-agent"},"project_id":"project"}"#).unwrap();
         let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
         let roundtrip = serde_json::to_value(request).unwrap();
         assert_eq!(roundtrip, value);
-        assert_eq!(format!("{:x}", Sha256::digest(serde_json::to_vec(&roundtrip).unwrap())), "22f264441bb3be136c64a83c873a36f7e06cbe4c94e402e3d81116b9e57bb283");
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&roundtrip).unwrap())
+            ),
+            "22f264441bb3be136c64a83c873a36f7e06cbe4c94e402e3d81116b9e57bb283"
+        );
         let value: serde_json::Value = serde_json::from_str(r#"{"kind":"fetch_project_private_file","context":{"home_session_id":"session","home_agent_id":"agent","leased_agent_id":"leased-agent","worker_provider_run_id":"environment-adjustment"},"workspace_id":"/workspace/app","path":"notes.md"}"#).unwrap();
         let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
         let roundtrip = serde_json::to_value(request).unwrap();
         assert_eq!(roundtrip, value);
-        assert_eq!(format!("{:x}", Sha256::digest(serde_json::to_vec(&roundtrip).unwrap())), "1188d57291152a1dbd2a207426157c32823590a1b8686e6164555dc0c00dae47");
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&roundtrip).unwrap())
+            ),
+            "1188d57291152a1dbd2a207426157c32823590a1b8686e6164555dc0c00dae47"
+        );
         let response = RelayPeerResponse::LeasedProjectEnvironmentUsed { exists: true };
-        assert_eq!(serde_json::to_value(response).unwrap(), serde_json::json!({"kind":"leased_project_environment_used","exists":true}));
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            serde_json::json!({"kind":"leased_project_environment_used","exists":true})
+        );
     }
 }

@@ -291,7 +291,11 @@ impl ProjectEnvironmentStore {
     pub(crate) fn try_lock(&self, project: &str) -> Result<ProjectEnvironmentLock, DaemonError> {
         self.acquire_lock(project, true)
     }
-    fn acquire_lock(&self, project: &str, nonblocking: bool) -> Result<ProjectEnvironmentLock, DaemonError> {
+    fn acquire_lock(
+        &self,
+        project: &str,
+        nonblocking: bool,
+    ) -> Result<ProjectEnvironmentLock, DaemonError> {
         fs::create_dir_all(&self.root)
             .map_err(|_| environment_error("environment manifest directory unavailable"))?;
         #[cfg(unix)]
@@ -323,8 +327,9 @@ impl ProjectEnvironmentStore {
             ));
         }
         if nonblocking {
-            fs2::FileExt::try_lock_exclusive(&file)
-                .map_err(|_| environment_error("Project environment already has an active export or adjustment"))?;
+            fs2::FileExt::try_lock_exclusive(&file).map_err(|_| {
+                environment_error("Project environment already has an active export or adjustment")
+            })?;
         } else {
             fs2::FileExt::lock_exclusive(&file)
                 .map_err(|_| environment_error("environment refresh lock failed"))?;

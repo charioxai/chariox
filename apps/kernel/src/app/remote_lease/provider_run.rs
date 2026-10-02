@@ -3,8 +3,8 @@ use crate::execution_lease::LeasedAgent;
 use crate::provider::LaunchProviderRequest;
 use crate::transport::relay_peer::RequiredRemoteMcp;
 
-use super::RemoteLeaseRuntime;
 use super::mcp_availability::provider_run_mcp_set_matches;
+use super::RemoteLeaseRuntime;
 
 pub(crate) enum LeasedProviderRunMatch {
     Ready(String),
