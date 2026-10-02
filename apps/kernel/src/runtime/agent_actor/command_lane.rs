@@ -199,7 +199,15 @@ pub(super) async fn run_agent_command_lane(
             .transpose();
         let result = match authorization {
             Err(error) => Err(error),
-            Ok(_) => executor.execute(envelope.command).await,
+            Ok(_) => {
+                let executor = match envelope.external_grant_id {
+                    Some(id) => {
+                        executor.with_external_authority(id, envelope.command.local_request())
+                    }
+                    None => executor.clone(),
+                };
+                executor.execute(envelope.command).await
+            }
         };
         log_lane_completed(
             &envelope.telemetry,

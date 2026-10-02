@@ -139,3 +139,122 @@ async fn kernel_access_revocation_refuses_an_already_queued_agent_mutation() {
     consumer.abort();
     let _ = consumer.await;
 }
+
+#[tokio::test]
+async fn kernel_access_revocation_refuses_a_cold_prompt_waiting_for_app_lock() {
+    let worktree = TestWorktree::new("access-cold-prompt");
+    let mut daemon = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let (session, _) = crate::app::KernelSessionService::new(&mut daemon)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let agent = crate::app::KernelSessionService::new(&mut daemon)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub"))
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut daemon)
+        .attach(AttachRequest::new(
+            session.id(),
+            "cold-holder",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let projection = daemon.session_state_projection_store();
+    let agent_projection = daemon.agent_runtime_projection_store();
+    let prompts = daemon.prompt_state_owner();
+    let app = Arc::new(Mutex::new(daemon));
+    let state = owned_runtime_state(&app).await;
+    let grant = state.insert_access_grant_for_test(session.id());
+    let runtime = AgentRuntime::new(
+        state.clone(),
+        ProviderRunOperationLanes::default(),
+        FocusedAgentProjection::default(),
+        projection,
+        agent_projection,
+        prompts,
+        Default::default(),
+    );
+    let request = SubmitPromptRequest {
+        session_id: session.id().into(),
+        attachment_id: attachment.id().into(),
+        target_agent_id: Some(agent.id().into()),
+        prompt: "revoked cold prompt".into(),
+        attachments: vec![],
+    };
+    let local_request = LocalDaemonRequest::SubmitPrompt(request.clone());
+    let mut command =
+        KernelCommand::from_local_request("external-cold-submit", None, None, &local_request);
+    command.caller.connection_class = Some(KernelConnectionClass::ExternalAgent);
+    command.caller.caller_id = grant.clone();
+    let (tx, rx) = mpsc::channel(super::super::AGENT_COMMAND_QUEUE_LIMIT);
+    runtime
+        .lanes
+        .lock()
+        .await
+        .insert(agent.id().into(), tx.clone());
+    let executor = AgentRuntimeCommandExecutor::new(
+        runtime
+            .store
+            .prompt_command_service(runtime.provider_runtime_lanes.clone()),
+        runtime.session_projection.clone(),
+        runtime.agent_runtime_projection.clone(),
+        runtime.prompt_id_allocator.clone(),
+    );
+    let locked_app = app.lock().await;
+    let submission = runtime.dispatch_prompt_submit(&command, request.clone());
+    tokio::pin!(submission);
+    assert!(futures_util::poll!(&mut submission).is_pending());
+    assert_eq!(tx.capacity(), super::super::AGENT_COMMAND_QUEUE_LIMIT - 1);
+    let lane = run_agent_command_lane(executor, state.clone(), agent.id().into(), rx);
+    tokio::pin!(lane);
+    // Polling the lane consumes the command, passes authorization and reaches
+    // the app mutex. There is no scheduling delay or timer in this interleaving.
+    assert!(futures_util::poll!(&mut lane).is_pending());
+    assert_eq!(tx.capacity(), super::super::AGENT_COMMAND_QUEUE_LIMIT);
+    state
+        .revoke_kernel_access(None, Some(&grant), "explicit_revoke")
+        .unwrap();
+    drop(locked_app);
+    let result = timeout(Duration::from_secs(2), async {
+        tokio::select! { result = &mut submission => result, _ = &mut lane => panic!("lane closed") }
+    }).await.unwrap();
+    let snapshot = state.session_snapshot(session.id()).await.unwrap();
+    assert!(
+        snapshot.active_prompt_for_agent(agent.id()).is_none(),
+        "revoked prompt was admitted"
+    );
+    assert!(snapshot
+        .queued_prompts_for_agent(agent.id())
+        .map(|prompts| prompts.is_empty())
+        .unwrap_or(true));
+    assert!(
+        app.lock()
+            .await
+            .providers()
+            .get_run_for_agent(session.id(), agent.id())
+            .is_none(),
+        "revoked prompt launched a provider"
+    );
+    let error = result.unwrap_err();
+    assert!(
+        error.to_string().contains("grant revoked or expired"),
+        "{error}"
+    );
+
+    // The same cold launch remains available to the ordinary terminal caller.
+    let terminal =
+        KernelCommand::from_local_request("terminal-cold-submit", None, None, &local_request);
+    let terminal_submission = runtime.dispatch_prompt_submit(&terminal, request);
+    tokio::pin!(terminal_submission);
+    let response = timeout(Duration::from_secs(2), async {
+        tokio::select! { result = &mut terminal_submission => result, _ = &mut lane => panic!("lane closed") }
+    }).await.unwrap().unwrap();
+    assert!(matches!(
+        response,
+        LocalDaemonResponse::PromptSubmitted { .. }
+    ));
+    assert!(app
+        .lock()
+        .await
+        .providers()
+        .get_run_for_agent(session.id(), agent.id())
+        .is_some());
+}
