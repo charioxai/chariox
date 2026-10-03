@@ -296,7 +296,6 @@ impl KernelRuntimeState {
         let Ok(Ok(AppWakeOutcome::Due(due))) = due else {
             return false;
         };
-        let (due, mut records) = cadence.split(due, now_ms, std::time::Instant::now());
         let Ok((deliver, planned, at_live_limit)) = self
             .plan_app_delivery(due, now_ms, |wake| {
                 (wake.owner_id.clone(), wake.installation_id.clone())
@@ -305,6 +304,11 @@ impl KernelRuntimeState {
         else {
             return false;
         };
+        let (deliver, mut records) = cadence.split(
+            deliver,
+            crate::session::unix_epoch_ms(),
+            std::time::Instant::now(),
+        );
         records.extend(
             planned
                 .into_iter()
