@@ -4,8 +4,14 @@
 //! A successful handshake is not proof of OS confinement. The launcher must
 //! establish confinement before executing any App code.
 
-#[cfg(all(feature = "test-fixtures", not(debug_assertions)))]
-compile_error!("test-fixtures is test-only and must not be enabled in production release builds");
+/// Production binary entry points evaluate this in a const context. Checking
+/// there permits release-mode tests to use the shared library's fixture feature
+/// without allowing it into the executables built by release/packaging scripts.
+#[doc(hidden)]
+pub const fn assert_production_build() {
+    #[cfg(feature = "test-fixtures")]
+    panic!("test-fixtures is test-only and must not be enabled in production release builds");
+}
 
 pub mod app_catalog;
 pub mod app_inbox;
