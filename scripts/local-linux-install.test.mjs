@@ -32,11 +32,12 @@ async function harness() {
   const runtime = join(base, "runtime")
   const state = join(base, "state")
   for (const dir of [bin, pkg, runtime, state, join(root, "sys/fs/cgroup"), join(root, "sys/module/apparmor/parameters"),
-    join(root, "sys/kernel/security/apparmor"), join(root, "var/lib/systemd/linger")]) {
+    join(root, "sys/kernel/security/apparmor"), join(root, "proc/sys/kernel"), join(root, "var/lib/systemd/linger")]) {
     await mkdir(dir, { recursive: true })
   }
   await writeFile(join(root, "sys/fs/cgroup/cgroup.controllers"), "cpu memory pids\n")
   await writeFile(join(root, "sys/module/apparmor/parameters/enabled"), "Y\n")
+  await writeFile(join(root, "proc/sys/kernel/apparmor_restrict_unprivileged_userns"), "1\n")
   await writeFile(join(root, "sys/kernel/security/apparmor/profiles"), "")
   const passwd = Object.entries(users).map(([name, uid]) => `${name}:x:${uid}:${groups[name]}::/home/${name}:/bin/bash`)
   await script(join(bin, "id"), `#!/bin/sh
@@ -347,6 +348,27 @@ test("interrupted helper publication resumes activation even with identical inpu
     await h.reset("systemctl")
     assert.equal(h.install(["bob"]).status, 0)
     assert.doesNotMatch(await h.log("systemctl"), /^restart /m)
+  } finally {
+    await rm(h.base, { recursive: true, force: true })
+  }
+})
+
+test("AppArmor without unprivileged userns restriction does not load an ABI 4 exception", { skip: !linux }, async () => {
+  const h = await harness()
+  try {
+    await rm(p(h, "proc/sys/kernel/apparmor_restrict_unprivileged_userns"))
+    // Bookworm's AppArmor 3 parser cannot compile the ABI 4 userns profile.
+    await script(join(h.bin, "apparmor_parser"), `#!/bin/sh
+ echo "$*" >> "$HARNESS_STATE/apparmor"
+ echo "Could not open abi/4.0" >&2
+ exit 1
+`)
+    const result = h.install(["alice"])
+    assert.equal(result.status, 0, result.out)
+    assert.equal(await h.log("apparmor"), "")
+    assert.equal(existsSync(p(h, "etc/apparmor.d/chariox-app-bwrap")), false)
+    assert.match(await h.log("loginctl"), /^enable-linger alice$/m)
+    assert.match(await h.log("systemctl"), /^start chariox-app-storage\.service$/m)
   } finally {
     await rm(h.base, { recursive: true, force: true })
   }

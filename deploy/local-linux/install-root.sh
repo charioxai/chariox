@@ -18,7 +18,7 @@
 #      cgroup of the systemd --user unit chariox-kernel.service
 #      (.../user@UID.service/app.slice/chariox-kernel.service/apps) and the kernel
 #      database ~/.chariox/state/kernel.db. Other owners are kept;
-#   4. loads the AppArmor profile chariox-app-bwrap when AppArmor is enabled. It
+#   4. loads chariox-app-bwrap when AppArmor exposes the userns restriction. It
 #      lets only an installed runtime's bundled bubblewrap create user namespaces,
 #      which Ubuntu 23.10 and later restrict;
 #   5. enables lingering, so the user's systemd manager, which delegates the
@@ -307,13 +307,15 @@ install_all() {
   enrollment install "${owner_specs[@]}" || status=$?
   case "$status" in 0) restart=1 ;; 10) ;; *) die "enrollment failed" ;; esac
 
-  # 4. AppArmor.
-  if [[ -r $R/sys/module/apparmor/parameters/enabled && "$(cat "$R/sys/module/apparmor/parameters/enabled")" == Y ]]; then
+  # 4. Only kernels exposing the AppArmor userns restriction need the ABI 4
+  # exception. Bookworm has neither that restriction nor an ABI 4 parser.
+  if [[ -r $R/sys/module/apparmor/parameters/enabled && "$(cat "$R/sys/module/apparmor/parameters/enabled")" == Y &&
+        -e $R/proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
     if put "$here/chariox-app-bwrap.apparmor" "$PROFILE" 0644 || ! profile_loaded; then
       act "load AppArmor profile chariox-app-bwrap" apparmor_parser -r "$PROFILE"
     fi
   else
-    say "AppArmor is not enabled; no profile needed"
+    say "AppArmor user namespace restriction is unavailable; no profile needed"
   fi
 
   # 5. Lingering.
