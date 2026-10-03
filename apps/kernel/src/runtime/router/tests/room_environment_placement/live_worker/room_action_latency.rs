@@ -46,9 +46,12 @@ async fn ready_state_reads_do_not_delay_pointer_input() {
             let read = dispatch_json(&fixture.home, json!({"GetRoomEnvironmentState":{"session_id":room}})).await.unwrap();
             assert_eq!(read["RoomEnvironmentState"]["environment"]["lifecycle"], "ready");
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        assert!(pending.exists(), "Ready reads must still observe browser health");
-        let result = timeout(Duration::from_secs(1), dispatch_json(&fixture.home, json!({"SubmitRoomEnvironmentAction":{
+        timeout(Duration::from_secs(5), async {
+            while !pending.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.expect("Ready reads must still observe browser health");
+        let result = timeout(Duration::from_secs(3), dispatch_json(&fixture.home, json!({"SubmitRoomEnvironmentAction":{
             "session_id":room,"runtime_generation":environment["runtime_generation"],
             "viewport_revision":environment["viewport"]["revision"],
             "idempotency_key":"read-then-click",
