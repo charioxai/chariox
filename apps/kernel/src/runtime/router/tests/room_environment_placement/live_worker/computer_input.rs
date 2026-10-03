@@ -327,6 +327,7 @@ async fn cancels_worker_computer_input_over_the_relay_before_takeover() {
 // MP-08 / MP-11: the worker owns capture exclusion for its physical display.
 #[test]
 fn efix5_computer_secret_withholds_screenshots_and_ocr_during_input() {
+    crate::test_support::isolated_env_test!();
     run_test(withholds_capture_during_secret_input);
 }
 
@@ -349,10 +350,21 @@ async fn withholds_capture_during_secret_input() {
     let captures = worker_state.root.join("capture-called");
     let fixture = worker_state.root.join("safe.png");
     std::fs::write(&fixture, b"\x89PNG\r\n\x1a\nsafe-fixture").unwrap();
-    std::fs::write(&script, format!(
-        "#!/bin/sh\nset -eu\ncase \"$1\" in\ncomputer-secret-paste-stdin) cat >/dev/null; touch '{}'; sleep 1 ;;\nscreenshot) touch '{}'; cp '{}' \"$2\" ;;\nocr) touch '{}'; printf safe ;;\nesac\n",
-        started.display(), captures.display(), fixture.display(), captures.display(),
-    )).unwrap();
+    std::fs::write(&script, format!(r#"#!/bin/sh
+set -eu
+case "$1" in
+computer-secret-paste-stdin) cat >/dev/null; touch '{}'; sleep 1 ;;
+protected-*)
+  python3 -c 'import json,sys; p=json.load(sys.stdin); assert not p["unknown"]; assert p["values"] == ["synthetic"]; assert p["targets"][0]["kind"] == "native"; assert p["targets"][0]["target"]["focus_window"] == 101'
+  touch '{}'
+  case "$1" in
+    protected-screenshot) cp '{}' "$2" ;;
+    protected-ocr) printf safe ;;
+    protected-find-text) printf null ;;
+  esac ;;
+*) exit 2 ;;
+esac
+"#, started.display(), captures.display(), fixture.display())).unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -389,61 +401,60 @@ async fn withholds_capture_during_secret_input() {
         })
         .await
         .unwrap();
-        let screenshot = worker
-            .relay_capture_room_screenshot(
-                "home-kernel",
-                &home.relay_public_key,
-                "room-1",
-                "slice-1",
-            )
-            .await;
-        let ocr = worker
-            .relay_observe_room_computer(
-                "home-kernel",
-                &home.relay_public_key,
-                "room-1",
-                "slice-1",
-                crate::transport::relay_peer::RemoteRoomComputerObservationCall::Ocr {
-                    artifact_id: None,
-                },
-            )
-            .await;
-        let frame_text = worker
-            .relay_observe_room_computer(
-                "home-kernel",
-                &home.relay_public_key,
-                "room-1",
-                "slice-1",
-                crate::transport::relay_peer::RemoteRoomComputerObservationCall::FindText {
-                    query: "synthetic".into(),
-                    artifact_id: None,
-                },
-            )
-            .await;
+        let screenshot = worker.relay_capture_room_screenshot(
+            "home-kernel",
+            &home.relay_public_key,
+            "room-1",
+            "slice-1",
+        );
+        let ocr = worker.relay_observe_room_computer(
+            "home-kernel",
+            &home.relay_public_key,
+            "room-1",
+            "slice-1",
+            crate::transport::relay_peer::RemoteRoomComputerObservationCall::Ocr {
+                artifact_id: None,
+            },
+        );
+        let frame_text = worker.relay_observe_room_computer(
+            "home-kernel",
+            &home.relay_public_key,
+            "room-1",
+            "slice-1",
+            crate::transport::relay_peer::RemoteRoomComputerObservationCall::FindText {
+                query: "synthetic".into(),
+                artifact_id: None,
+            },
+        );
+        let during_input = async {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert!(
+                !captures.exists(),
+                "capture reached the display helper during insertion"
+            );
+        };
+        let (screenshot, ocr, frame_text, ()) =
+            tokio::join!(screenshot, ocr, frame_text, during_input);
         (screenshot, ocr, frame_text)
     };
     let (input_result, (screenshot, ocr, frame_text)) = tokio::join!(input, observe);
-    let captured_during_input = captures.exists();
     let resumed = worker
         .relay_capture_room_screenshot("home-kernel", &home.relay_public_key, "room-1", "slice-1")
         .await;
     std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL");
     input_result.expect("secret input should settle");
-    for message in [
-        screenshot.unwrap_err().to_string(),
-        ocr.unwrap_err().to_string(),
-        frame_text.unwrap_err().to_string(),
-    ] {
-        assert!(
-            message.contains(
-                "agent screen capture withheld while computer credential input is running"
-            ),
-            "{message}"
-        );
-    }
+    // The observation barrier releases only after insertion. Every resumed
+    // capture uses the protected helper and its registered native mask policy.
+    screenshot.expect("fresh protected screenshot resumes after insertion");
+    assert!(ocr.expect("protected OCR resumes after insertion").ok);
     assert!(
-        !captured_during_input,
-        "capture reached the display helper during insertion"
+        frame_text
+            .expect("protected text lookup resumes after insertion")
+            .ok
+    );
+    assert!(
+        captures.exists(),
+        "protected capture should resume autonomously"
     );
     resumed.expect("capture resumes after insertion");
 }
