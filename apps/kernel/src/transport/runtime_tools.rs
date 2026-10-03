@@ -7,6 +7,7 @@ mod extension_tools;
 mod meta_tool_args;
 mod meta_tool_names;
 mod meta_tool_specs;
+mod permission_prompt_tool;
 mod recall_tools;
 mod slice_tools;
 mod validation;
@@ -18,6 +19,7 @@ pub use extension_tools::*;
 pub use meta_tool_args::*;
 pub use meta_tool_names::canonical_meta_tool_name;
 pub use meta_tool_specs::meta_runtime_tool_specs;
+pub use permission_prompt_tool::*;
 pub use recall_tools::*;
 pub use slice_tools::{canonical_slice_tool_name, slice_runtime_tool_specs};
 pub use validation::{validate_json_output_schema, validate_workflow_handoff_schema};
@@ -39,17 +41,6 @@ pub const WORKFLOW_CONSOLE_WRITE_TOOL: &str = "workflow_console_write";
 pub const WORKFLOW_CONSOLE_CLEAR_TOOL: &str = "workflow_console_clear";
 pub const AGENT_APP_ACTION_TOOL: &str = "agent_app_action";
 pub const AGENT_APP_ACTION_TOOL_QUALIFIED: &str = "chariox.agent_app_action";
-pub const REPLY_TO_EVENT_TOOL: &str = "reply_to_event";
-pub const REPLY_TO_EVENT_TOOL_QUALIFIED: &str = "chariox.reply_to_event";
-pub const EVENT_CONTEXT_TOOL: &str = "event_context";
-pub const EVENT_CONTEXT_TOOL_QUALIFIED: &str = "chariox.event_context";
-/// Invoke an explicitly provider-declared action for the current event.
-///
-/// This is deliberately one generic, event-scoped tool rather than one tool
-/// per provider method. The AEGS remains the authority for the supported
-/// action IDs, scopes, target binding, and input validation.
-pub const EVENT_ACTION_TOOL: &str = "event_action";
-pub const EVENT_ACTION_TOOL_QUALIFIED: &str = "chariox.event_action";
 pub const LIST_EXTENSIONS_TOOL: &str = "chariox.list_extensions";
 pub const REQUEST_EXTENSION_TOOL: &str = "chariox.request_extension";
 pub const REGISTER_MCP_TOOL: &str = "chariox.register_mcp";
@@ -78,6 +69,7 @@ pub const MANAGE_CREDENTIAL_VAULT_TOOL: &str = "chariox.manage_credential_vault"
 pub const MANAGE_CREDENTIAL_VAULT_TOOL_ALIAS: &str = "manage_credential_vault";
 pub const REQUEST_POPUP_TOOL: &str = "chariox.request_popup";
 pub const REQUEST_POPUP_TOOL_ALIAS: &str = "request_popup";
+pub const PERMISSION_PROMPT_TOOL: &str = "chariox.permission_prompt";
 pub const LIST_SESSION_AGENTS_TOOL: &str = "chariox.list_session_agents";
 pub const GET_SESSION_AGENT_TOOL: &str = "chariox.get_session_agent";
 pub const SEND_AGENT_MESSAGE_TOOL: &str = "chariox.send_agent_message";

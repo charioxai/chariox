@@ -87,8 +87,16 @@ impl<'a> KernelSessionService<'a> {
 
     pub(crate) fn create_session(
         &mut self,
-        request: CreateSessionRequest,
+        mut request: CreateSessionRequest,
     ) -> Result<(RuntimeSession, AgentInstance), DaemonError> {
+        let mut defaults = request.agent_defaults.take().unwrap_or_default();
+        defaults.provider = crate::account_profile::resolve_placeholder_provider(
+            self.app.config(),
+            &self.app.provider_account_profile_registry(),
+            &request.owner_user_id,
+            &defaults.provider,
+        );
+        request.agent_defaults = Some(defaults);
         let session =
             SessionStateOwner::new(self.app.session_state_store()).create_session(request)?;
         let defaults = session.agent_defaults();
@@ -159,21 +167,35 @@ impl<'a> KernelSessionService<'a> {
         }
         let session_store = self.app.session_state_store();
         let mut sessions = session_store.write();
+        let reopens = sessions
+            .get_session(&session_id)?
+            .attach_creates_default_agent();
         let attachment = self.app.attachments.attach(&mut sessions, request)?;
         drop(sessions);
 
-        // Create default agent if session has no agents (e.g., after session was ended and reattached).
-        // Parked/active sessions that were never ended will retain their existing agents.
-        let session_agents = self.app.agents.get_session_agents(&session_id);
-        if session_agents.is_empty() {
-            let worktree_id = self
-                .app
-                .sessions()
-                .get_session(&session_id)?
-                .worktree_id()
-                .to_string();
-            let agent_request =
-                CreateAgentRequest::new(&session_id, "default").with_worktree(worktree_id);
+        if reopens && self.app.agents.get_session_agents(&session_id).is_empty() {
+            // The session's own defaults, with a real provider for the
+            // placeholder, as for a new session's first agent.
+            let session = self.app.sessions().get_session(&session_id)?.clone();
+            let defaults = session.agent_defaults();
+            let provider = crate::account_profile::resolve_placeholder_provider(
+                self.app.config(),
+                &self.app.provider_account_profile_registry(),
+                session.owner_user_id(),
+                &defaults.provider,
+            );
+            let mut agent_request = CreateAgentRequest::new(&session_id, &provider)
+                .with_owner_user_id(session.owner_user_id().to_string())
+                .with_worktree(session.worktree_id().to_string());
+            if let Some(model) = defaults.model.as_deref() {
+                agent_request = agent_request.with_model(model.to_string());
+            }
+            if let Some(effort) = defaults.effort.as_deref() {
+                agent_request = agent_request.with_effort(effort.to_string());
+            }
+            if let Some(account_profile) = defaults.account_profile.as_deref() {
+                agent_request = agent_request.with_account_profile(account_profile.to_string());
+            }
             let session_store = self.app.session_state_store();
             let mut sessions = session_store.write();
             let _agent = self.app.agents.create_agent(agent_request, &mut sessions)?;
@@ -183,7 +205,7 @@ impl<'a> KernelSessionService<'a> {
                 "created default agent for session",
                 serde_json::json!({
                     "session_id": session_id,
-                    "reason": "session had no agents (possibly after being ended and reattached)",
+                    "reason": "an ended session reopened with no agents",
                 }),
             );
         }

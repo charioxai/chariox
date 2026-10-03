@@ -236,6 +236,10 @@ pub struct AegsProviderResource {
     pub name: String,
     pub kind: String,
     pub connection_scope: String,
+    /// The event filter that narrows a binding to this resource, when other
+    /// resources share its connection scope (Slack channels in a workspace).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

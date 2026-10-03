@@ -1,5 +1,5 @@
 import path from "node:path"
-import { mkdir, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdir, rm, writeFile } from "node:fs/promises"
 import { setTimeout as sleep } from "node:timers/promises"
 
 import { LocalIpcClient } from "../../dist/ipc.js"
@@ -100,10 +100,11 @@ export async function waitForProviderRunMcpGrant(client, providerRunId, mcpName,
 }
 
 async function createNativeDrillMcpServer(workspace, name) {
-  const scriptDir = path.join(workspace, ".chariox", "native-tui-drill")
+  const scriptDir = path.join(workspace, ".chariox", "mcps", name)
   const scriptPath = path.join(scriptDir, `${name}.mjs`)
   await mkdir(scriptDir, { recursive: true })
   await writeFile(scriptPath, [
+    "#!/usr/bin/env node",
     "let buffer = Buffer.alloc(0)",
     "function write(message) {",
     "  const body = Buffer.from(JSON.stringify(message), 'utf8')",
@@ -152,6 +153,7 @@ async function createNativeDrillMcpServer(workspace, name) {
     "  }",
     "})",
   ].join("\n"), "utf8")
+  await chmod(scriptPath, 0o755)
   return scriptPath
 }
 
@@ -160,8 +162,8 @@ function nativeDrillMcpConfig(name, command) {
     name,
     transport: {
       type: "stdio",
-      command: "node",
-      args: [command],
+      command,
+      args: [],
     },
     enabled: true,
     required: true,

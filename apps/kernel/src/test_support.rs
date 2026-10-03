@@ -6,6 +6,23 @@ use crate::{DaemonApp, DaemonConfig, DaemonError};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod environment;
+mod runtime_mcp;
+pub(crate) use environment::{environment_test_isolated, isolate_environment_test};
+pub(crate) use runtime_mcp::TestRuntimeMcp;
+
+/// Run ambient-environment fixtures outside the parallel test process. A mutex
+/// around writers cannot protect unlocked readers or children inheriting env.
+/// Place this first in any test that mutates env or calls an env-mutating fixture.
+macro_rules! isolated_env_test {
+    () => {
+        if $crate::test_support::isolate_environment_test() {
+            return;
+        }
+    };
+}
+pub(crate) use isolated_env_test;
+
 static TEST_WORKTREE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// A real, disposable working directory for provider-launch fixtures.
@@ -43,6 +60,53 @@ impl Drop for TestWorktree {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.path);
     }
+}
+
+/// Serves the kernel's runtime MCP endpoint on an ephemeral port for the rest
+/// of the test process and points `config` at it.
+///
+/// A real OpenCode launch waits until its `chariox` MCP server reports
+/// connected. Without a listener on the configured port, those tests only pass
+/// when another test happens to serve the fixed default port. The server runs
+/// on its own thread and throwaway kernel, because provider launches block the
+/// caller's runtime while it holds the app lock.
+pub(crate) fn serve_runtime_mcp(config: &mut DaemonConfig) {
+    let listener =
+        std::net::TcpListener::bind("127.0.0.1:0").expect("runtime MCP listener should bind");
+    listener
+        .set_nonblocking(true)
+        .expect("runtime MCP listener should be non-blocking");
+    config.runtime_mcp_port = listener
+        .local_addr()
+        .expect("runtime MCP listener should expose an address")
+        .port();
+    std::thread::Builder::new()
+        .name("test-runtime-mcp".to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(move || {
+            // Boot before entering the runtime: bootstrap may drive its own.
+            let app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+                .expect("runtime MCP kernel should boot");
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime MCP test runtime should start")
+                .block_on(async move {
+                    let router = std::sync::Arc::new(
+                        crate::runtime::router::CommandRouter::with_interactive_capacity(
+                            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+                            16,
+                        ),
+                    );
+                    let listener = tokio::net::TcpListener::from_std(listener)
+                        .expect("runtime MCP listener should register");
+                    let _ = crate::transport::mcp_server::run_mcp_http_server_on_listener(
+                        router, listener,
+                    )
+                    .await;
+                });
+        })
+        .expect("runtime MCP test server thread should spawn");
 }
 
 /// Synthetic runtime fixtures must not discover the developer's real provider credentials.

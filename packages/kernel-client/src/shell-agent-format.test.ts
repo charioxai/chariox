@@ -12,7 +12,6 @@ test("formatAgentSubstituteSummary shows the selected account via a public label
   const agent = makeAgent({
     id: "agent-1",
     agent_ref: "agent-1",
-    active_substitute_index: 1,
     substitutes: [
       { provider: "codex", model: "gpt-5.4" },
       { provider: "codex", model: "gpt-5.4", variant: "high", account_profile: "codex-work-internal" },
@@ -23,7 +22,7 @@ test("formatAgentSubstituteSummary shows the selected account via a public label
     provider === "codex" && accountProfile === "codex-work-internal" ? "Work" : null)
 
   assert.match(rendered, /- 0: codex\/gpt-5\.4\n/)
-  assert.match(rendered, /\* 1: codex\/gpt-5\.4\/high · account Work/)
+  assert.match(rendered, /- 1: codex\/gpt-5\.4\/high · account Work/)
   assert.doesNotMatch(rendered, /codex-work-internal/)
 })
 

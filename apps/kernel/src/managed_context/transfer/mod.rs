@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
 
+mod cleanup;
 mod model;
 mod policy;
 mod storage;
@@ -18,8 +19,8 @@ pub(crate) use model::{
     ReadyManagedContextImport,
 };
 use policy::{
-    authorize_entry, current_time_ms, prune_expired, random_identifier, sha256_bytes, status,
-    transfer_error, validate_arm_request, validate_persisted_state, validate_sha256,
+    authorize_entry, current_time_ms, random_identifier, sha256_bytes, status, transfer_error,
+    validate_arm_request, validate_persisted_state, validate_sha256,
 };
 use storage::{
     create_or_validate_empty_archive, ensure_private_directory, open_private_archive,
@@ -189,7 +190,7 @@ impl ManagedContextTransferStore {
             store.migrate_legacy_state(recovery)?;
         }
         validate_persisted_state(&store.lock_state())?;
-        store.cleanup_failed_transfers()?;
+        store.cleanup_failed_transfers();
         store.prune_expired_transfers(current_time_ms())?;
         store.cleanup_interrupted_import_staging()?;
         store.cleanup_consumed_archives()?;
@@ -222,6 +223,11 @@ impl ManagedContextTransferStore {
             .iter()
             .find(|(_, entry)| entry.plan.context_id == request.plan.context_id)
         {
+            if entry.phase == ManagedContextTransferPhase::Failed {
+                return Err(transfer_error(
+                    "failed managed context transfer authorization cannot be reused",
+                ));
+            }
             if entry.plan == request.plan
                 && entry.target_environment_id == request.target_environment_id
                 && entry.target_kernel_id == request.target_kernel_id
@@ -780,7 +786,7 @@ impl ManagedContextTransferStore {
                     entry.phase,
                     ManagedContextTransferPhase::Importing | ManagedContextTransferPhase::Failed
                 ) {
-                    crate::managed_context::development::cleanup_development_context_publication(
+                    crate::managed_context::development::cleanup_legacy_development_context_publication(
                         &entry.destination_root,
                         &transfer_id,
                     )?;
@@ -952,70 +958,6 @@ impl ManagedContextTransferStore {
             if entry.phase == ManagedContextTransferPhase::Consumed {
                 self.cleanup_transfer_artifacts(transfer_id)?;
             }
-        }
-        Ok(())
-    }
-
-    fn cleanup_failed_transfers(&self) -> Result<(), DaemonError> {
-        let failed = {
-            let state = self.lock_state();
-            state
-                .entries
-                .iter()
-                .filter(|(_, entry)| entry.phase == ManagedContextTransferPhase::Failed)
-                .map(|(transfer_id, entry)| (transfer_id.clone(), entry.destination_root.clone()))
-                .collect::<Vec<_>>()
-        };
-        for (transfer_id, destination_root) in failed {
-            crate::managed_context::development::cleanup_development_context_publication_staging(
-                &destination_root,
-                &transfer_id,
-            )?;
-            crate::managed_context::development::cleanup_development_context_publication(
-                &destination_root,
-                &transfer_id,
-            )?;
-            self.cleanup_transfer_artifacts(&transfer_id)?;
-        }
-        Ok(())
-    }
-
-    fn prune_expired_transfers(&self, now_ms: u64) -> Result<(), DaemonError> {
-        let mut state = self.lock_state();
-        let state_before_prune = state.clone();
-        let expired = prune_expired(&mut state, now_ms);
-        if expired.is_empty() {
-            return Ok(());
-        }
-        for expired_id in expired {
-            if let Some(entry) = state_before_prune.entries.get(&expired_id) {
-                if entry.phase == ManagedContextTransferPhase::Failed {
-                    if let Err(error) = crate::managed_context::development::cleanup_development_context_publication_staging(
-                        &entry.destination_root,
-                        &expired_id,
-                    ) {
-                        *state = state_before_prune;
-                        return Err(error);
-                    }
-                    if let Err(error) =
-                        crate::managed_context::development::cleanup_development_context_publication(
-                            &entry.destination_root,
-                            &expired_id,
-                        )
-                    {
-                        *state = state_before_prune;
-                        return Err(error);
-                    }
-                }
-            }
-            if let Err(error) = self.cleanup_transfer_artifacts(&expired_id) {
-                *state = state_before_prune;
-                return Err(error);
-            }
-        }
-        if let Err(error) = self.persist_locked(&state) {
-            *state = state_before_prune;
-            return Err(error);
         }
         Ok(())
     }

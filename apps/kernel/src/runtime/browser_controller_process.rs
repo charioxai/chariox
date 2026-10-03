@@ -2,16 +2,18 @@ use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use wait_timeout::ChildExt;
 
+#[cfg(test)]
+use super::browser_controller_action::BrowserDialogAction;
 use super::browser_controller_action::{
     validate_browser_action_timeout, BrowserControllerActionResult, BrowserControllerDialogResult,
-    BrowserDialogAction, BrowserLocatorAction,
+    BrowserLocatorAction,
 };
 use super::browser_controller_compatibility::{
     normalize_browser_navigation_url, BrowserCompatibilityWait,
@@ -22,20 +24,29 @@ use super::browser_controller_file_transfer::{
     BrowserControllerDownloadCancellationResult, BrowserControllerDownloadsResult,
     BrowserControllerUploadResult, BrowserDownloadCancellation, BrowserUploadFiles,
 };
-use super::browser_controller_history::{BrowserControllerHistoryResult, BrowserHistoryAction};
+use super::browser_controller_history::BrowserControllerHistoryResult;
 use super::browser_controller_permission::{
     BrowserControllerPermissionResult, BrowserPermissionName, BrowserPermissionSetting,
 };
 use super::browser_controller_snapshot::BrowserControllerStructuredSnapshot;
-use super::browser_controller_tab::{BrowserControllerTabResult, BrowserTabAction};
+use super::browser_controller_tab::BrowserControllerTabResult;
 use crate::session::CanonicalViewport;
 
 mod cancellation;
 mod configuration_cancellation;
 mod lifecycle_cancellation;
+mod pending_action;
+mod pending_mutation;
+mod pending_responses;
+mod reconciliation;
+use self::pending_mutation::BrowserTabMutationLanes;
 pub(crate) use configuration_cancellation::BrowserConfiguration;
 #[cfg(test)]
+mod action_concurrency_tests;
+#[cfg(test)]
 mod import_cancellation_tests;
+#[cfg(test)]
+mod tab_mutation_concurrency_tests;
 #[cfg(test)]
 mod upload_cancellation_tests;
 
@@ -125,32 +136,12 @@ pub(crate) trait BrowserControllerProcessBackend {
     fn reconcile_browser(
         &mut self,
         _viewport: &CanonicalViewport,
+        _browser_bar_visible: bool,
     ) -> Result<BrowserControllerBrowserSnapshot, String> {
         Err("browser controller backend does not support browser reconciliation".to_string())
     }
-    fn capture_browser_snapshot(
-        &mut self,
-        _target_id: &str,
-        _document_id: &str,
-    ) -> Result<BrowserControllerStructuredSnapshot, String> {
-        Err("browser controller backend does not support structured snapshots".to_string())
-    }
-    fn manage_browser_tab(
-        &mut self,
-        _target_id: &str,
-        _document_id: &str,
-        _action: BrowserTabAction,
-    ) -> Result<BrowserControllerTabResult, String> {
-        Err("browser controller backend does not support tab lifecycle operations".to_string())
-    }
-    fn navigate_browser_history(
-        &mut self,
-        _target_id: &str,
-        _document_id: &str,
-        _action: BrowserHistoryAction,
-    ) -> Result<BrowserControllerHistoryResult, String> {
-        Err("browser controller backend does not support history navigation".to_string())
-    }
+
+    #[cfg(test)]
     fn perform_browser_action(
         &mut self,
         _target_id: &str,
@@ -161,23 +152,8 @@ pub(crate) trait BrowserControllerProcessBackend {
     ) -> Result<BrowserControllerActionResult, String> {
         Err("browser controller backend does not support locator actions".to_string())
     }
-    fn navigate_browser(
-        &mut self,
-        _target_id: &str,
-        _document_id: &str,
-        _url: &str,
-    ) -> Result<BrowserControllerNavigationResult, String> {
-        Err("browser controller backend does not support navigation".to_string())
-    }
-    fn wait_for_browser(
-        &mut self,
-        _target_id: &str,
-        _document_id: &str,
-        _wait: &BrowserCompatibilityWait,
-        _timeout_ms: u64,
-    ) -> Result<BrowserControllerCompatibilityWaitResult, String> {
-        Err("browser controller backend does not support compatibility waits".to_string())
-    }
+
+    #[cfg(test)]
     fn handle_browser_dialog(
         &mut self,
         _target_id: &str,
@@ -199,15 +175,6 @@ pub(crate) trait BrowserControllerProcessBackend {
     ) -> Result<BrowserControllerDownloadCancellationResult, String> {
         Err("browser controller backend does not support download cancellation".to_string())
     }
-    fn upload_browser_files(
-        &mut self,
-        _target_id: &str,
-        _document_id: &str,
-        _node_ref: &str,
-        _files: &BrowserUploadFiles,
-    ) -> Result<BrowserControllerUploadResult, String> {
-        Err("browser controller backend does not support uploads".to_string())
-    }
     fn set_browser_permission(
         &mut self,
         _target_id: &str,
@@ -216,6 +183,12 @@ pub(crate) trait BrowserControllerProcessBackend {
         _setting: BrowserPermissionSetting,
     ) -> Result<BrowserControllerPermissionResult, String> {
         Err("browser controller backend does not support permissions".to_string())
+    }
+    fn app_view(
+        &mut self,
+        _request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
+    ) -> Result<serde_json::Value, String> {
+        Err("browser controller backend does not support App views".to_string())
     }
     fn poll_browser_events(
         &mut self,
@@ -314,9 +287,13 @@ impl BrowserControllerProcessStdioBackend {
             "browser controller did not expose stderr".to_string()
         })?;
         let (responses_tx, responses) = mpsc::channel();
+        let pending_responses = pending_responses::PendingResponses::default();
+        let reader_pending_responses = pending_responses.clone();
         if let Err(error) = std::thread::Builder::new()
             .name("chariox-browser-controller-reader".to_string())
-            .spawn(move || read_controller_responses(stdout, responses_tx))
+            .spawn(move || {
+                read_controller_responses(stdout, responses_tx, reader_pending_responses)
+            })
         {
             kill_child(&mut child);
             return Err(format!(
@@ -333,9 +310,10 @@ impl BrowserControllerProcessStdioBackend {
                 }
             });
         self.process = Some(BrowserControllerChild {
-            child,
-            stdin,
+            child: Arc::new(Mutex::new(child)),
+            stdin: Arc::new(Mutex::new(stdin)),
             responses,
+            pending_responses,
         });
         Ok(())
     }
@@ -356,6 +334,10 @@ impl BrowserControllerProcessStdioBackend {
                     .and_then(serde_json::Value::as_u64)
                     .unwrap_or(0),
             ))
+        } else if method == "browser.reconcile" {
+            // Physical display verification includes bounded streamer readback
+            // and rollback. Do not kill its controller during that cleanup.
+            self.timeout.max(Duration::from_secs(45))
         } else {
             self.timeout
         };
@@ -395,8 +377,12 @@ impl BrowserControllerProcessStdioBackend {
             .process
             .as_mut()
             .ok_or_else(|| "browser controller is not running".to_string())?;
+        let mut stdin = process
+            .stdin
+            .lock()
+            .map_err(|_| "controller stdin lock poisoned")?;
         serde_json::to_writer(
-            &mut process.stdin,
+            &mut *stdin,
             &BrowserControllerRpcRequest {
                 id: request_id,
                 method,
@@ -404,11 +390,11 @@ impl BrowserControllerProcessStdioBackend {
             },
         )
         .map_err(|error| format!("failed to encode browser controller request: {error}"))?;
-        process
-            .stdin
+        stdin
             .write_all(b"\n")
-            .and_then(|()| process.stdin.flush())
+            .and_then(|()| stdin.flush())
             .map_err(|error| format!("failed to send browser controller `{method}`: {error}"))?;
+        drop(stdin);
         let started = Instant::now();
         let mut cancellation_sent = false;
         let mut cancellation_request_id = None;
@@ -422,17 +408,20 @@ impl BrowserControllerProcessStdioBackend {
             {
                 let cancel_id = self.next_request_id;
                 self.next_request_id = self.next_request_id.saturating_add(1);
+                let mut stdin = process
+                    .stdin
+                    .lock()
+                    .map_err(|_| "controller stdin lock poisoned")?;
                 serde_json::to_writer(
-                    &mut process.stdin,
+                    &mut *stdin,
                     &serde_json::json!({
                         "id":cancel_id,"method":"browser.cancel","params":{"request_id":request_id}
                     }),
                 )
                 .map_err(|error| error.to_string())?;
-                process
-                    .stdin
+                stdin
                     .write_all(b"\n")
-                    .and_then(|()| process.stdin.flush())
+                    .and_then(|()| stdin.flush())
                     .map_err(|error| error.to_string())?;
                 cancellation_sent = true;
                 cancellation_request_id = Some(cancel_id);
@@ -443,7 +432,12 @@ impl BrowserControllerProcessStdioBackend {
                     // A timeout is not proof that physical input stopped. Kill
                     // and reap the only process capable of sending more input
                     // before confirming cancellation to the home kernel.
-                    kill_child(&mut process.child);
+                    kill_child(
+                        &mut process
+                            .child
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner()),
+                    );
                     signal.confirm_fence();
                     return Ok(BrowserControllerRpcResponse {
                         id: Some(request_id),
@@ -521,7 +515,13 @@ impl BrowserControllerProcessStdioBackend {
         let process_id = self
             .process
             .as_ref()
-            .map(|process| process.child.id())
+            .map(|process| {
+                process
+                    .child
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .id()
+            })
             .ok_or_else(|| "browser controller is not running".to_string())?;
         let response = self.request("health", serde_json::json!({}))?;
         let health = response.into_result::<BrowserControllerCommandHealth>("health")?;
@@ -535,15 +535,32 @@ impl BrowserControllerProcessStdioBackend {
         Ok(health)
     }
 
+    fn begin_snapshot_read(
+        &mut self,
+        target_id: &str,
+        document_id: &str,
+    ) -> Result<pending_responses::PendingResponse<BrowserControllerRpcResponse>, String> {
+        self.begin_observation_request(
+            "browser.snapshot",
+            serde_json::json!({
+                "target_id": target_id, "document_id": document_id,
+            }),
+        )
+    }
+
     fn take_exited_process(&mut self) -> Result<Option<u32>, String> {
         let Some(process) = self.process.as_mut() else {
             return Ok(None);
         };
-        let process_id = process.child.id();
-        let status = process
+        let mut child = process
             .child
+            .lock()
+            .map_err(|_| "controller child lock poisoned")?;
+        let process_id = child.id();
+        let status = child
             .try_wait()
             .map_err(|error| format!("failed to inspect browser controller: {error}"))?;
+        drop(child);
         if status.is_some() {
             self.process.take();
             return Ok(Some(process_id));
@@ -559,6 +576,13 @@ struct BrowserControllerRpcRequest<'a, P> {
     params: &'a P,
 }
 
+/// How a controller error names its code in the error text, which reaches
+/// the home kernel unchanged through the relay; a caller that classifies
+/// controller errors (a Room start's retry) matches this marker.
+pub(crate) fn controller_error_marker(code: &str) -> String {
+    format!("failed with {code}:")
+}
+
 impl BrowserControllerRpcResponse {
     fn into_result<T: DeserializeOwned>(self, method: &str) -> Result<T, String> {
         if !self.ok {
@@ -567,8 +591,9 @@ impl BrowserControllerRpcResponse {
                 message: "browser controller returned an unspecified error".to_string(),
             });
             return Err(format!(
-                "browser controller `{method}` failed with {}: {}",
-                error.code, error.message
+                "browser controller `{method}` {} {}",
+                controller_error_marker(&error.code),
+                error.message
             ));
         }
         let result = self
@@ -629,8 +654,13 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         match self.health_request() {
             Ok(health) => Ok(health),
             Err(error) => {
-                if let Some(mut process) = self.process.take() {
-                    kill_child(&mut process.child);
+                if let Some(process) = self.process.take() {
+                    kill_child(
+                        &mut process
+                            .child
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner()),
+                    );
                 }
                 Err(error)
             }
@@ -642,11 +672,22 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
             return Ok(());
         }
         let shutdown_requested = self.request("shutdown", serde_json::json!({})).is_ok();
-        if let Some(mut process) = self.process.take() {
+        if let Some(process) = self.process.take() {
             if shutdown_requested {
-                terminate_child(&mut process.child, self.timeout);
+                terminate_child(
+                    &mut process
+                        .child
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner()),
+                    self.timeout,
+                );
             } else {
-                kill_child(&mut process.child);
+                kill_child(
+                    &mut process
+                        .child
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner()),
+                );
             }
         }
         Ok(())
@@ -655,18 +696,11 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
     fn reconcile_browser(
         &mut self,
         viewport: &CanonicalViewport,
+        browser_bar_visible: bool,
     ) -> Result<BrowserControllerBrowserSnapshot, String> {
         let response = self.request(
             "browser.reconcile",
-            serde_json::json!({
-                "viewport": {
-                    "css_width": viewport.css_width,
-                    "css_height": viewport.css_height,
-                    "device_scale_factor": viewport.device_scale_factor,
-                    "desktop_pixel_width": viewport.desktop_pixel_width,
-                    "desktop_pixel_height": viewport.desktop_pixel_height,
-                }
-            }),
+            browser_reconcile_params(viewport, browser_bar_visible),
         )?;
         let snapshot =
             response.into_result::<BrowserControllerBrowserSnapshot>("browser.reconcile")?;
@@ -674,62 +708,7 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         Ok(snapshot)
     }
 
-    fn capture_browser_snapshot(
-        &mut self,
-        target_id: &str,
-        document_id: &str,
-    ) -> Result<BrowserControllerStructuredSnapshot, String> {
-        let response = self.request(
-            "browser.snapshot",
-            serde_json::json!({
-                "target_id": target_id,
-                "document_id": document_id,
-            }),
-        )?;
-        let snapshot =
-            response.into_result::<BrowserControllerStructuredSnapshot>("browser.snapshot")?;
-        snapshot.validate(target_id, document_id)?;
-        Ok(snapshot)
-    }
-
-    fn manage_browser_tab(
-        &mut self,
-        target_id: &str,
-        document_id: &str,
-        action: BrowserTabAction,
-    ) -> Result<BrowserControllerTabResult, String> {
-        let response = self.request(
-            "browser.tab",
-            serde_json::json!({
-                "target_id": target_id,
-                "document_id": document_id,
-                "action": action.as_str(),
-            }),
-        )?;
-        let result = response.into_result::<BrowserControllerTabResult>("browser.tab")?;
-        result.validate(target_id, document_id, action)?;
-        Ok(result)
-    }
-
-    fn navigate_browser_history(
-        &mut self,
-        target_id: &str,
-        document_id: &str,
-        action: BrowserHistoryAction,
-    ) -> Result<BrowserControllerHistoryResult, String> {
-        let response = self.request(
-            "browser.history",
-            serde_json::json!({
-                "target_id": target_id,
-                "document_id": document_id,
-                "action": action.as_str(),
-            }),
-        )?;
-        let result = response.into_result::<BrowserControllerHistoryResult>("browser.history")?;
-        result.validate(target_id, action)?;
-        Ok(result)
-    }
-
+    #[cfg(test)]
     fn perform_browser_action(
         &mut self,
         target_id: &str,
@@ -755,51 +734,7 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         Ok(result)
     }
 
-    fn navigate_browser(
-        &mut self,
-        target_id: &str,
-        document_id: &str,
-        url: &str,
-    ) -> Result<BrowserControllerNavigationResult, String> {
-        let url = normalize_browser_navigation_url(url)?;
-        let response = self.request(
-            "browser.navigate",
-            serde_json::json!({
-                "target_id": target_id,
-                "document_id": document_id,
-                "url": url,
-            }),
-        )?;
-        let result =
-            response.into_result::<BrowserControllerNavigationResult>("browser.navigate")?;
-        result.validate(target_id, &url)?;
-        Ok(result)
-    }
-
-    fn wait_for_browser(
-        &mut self,
-        target_id: &str,
-        document_id: &str,
-        wait: &BrowserCompatibilityWait,
-        timeout_ms: u64,
-    ) -> Result<BrowserControllerCompatibilityWaitResult, String> {
-        wait.validate(timeout_ms)?;
-        let response = self.request(
-            "browser.wait",
-            serde_json::json!({
-                "target_id": target_id,
-                "document_id": document_id,
-                "kind": wait.kind(),
-                "selector": wait.selector(),
-                "timeout_ms": timeout_ms,
-            }),
-        )?;
-        let result =
-            response.into_result::<BrowserControllerCompatibilityWaitResult>("browser.wait")?;
-        result.validate(target_id, document_id, wait)?;
-        Ok(result)
-    }
-
+    #[cfg(test)]
     fn handle_browser_dialog(
         &mut self,
         target_id: &str,
@@ -854,28 +789,6 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         Ok(result)
     }
 
-    fn upload_browser_files(
-        &mut self,
-        target_id: &str,
-        document_id: &str,
-        node_ref: &str,
-        files: &BrowserUploadFiles,
-    ) -> Result<BrowserControllerUploadResult, String> {
-        let controller_paths = files.controller_paths();
-        let response = self.request(
-            "browser.upload",
-            serde_json::json!({
-                "target_id": target_id,
-                "document_id": document_id,
-                "node_ref": node_ref,
-                "file_paths": controller_paths,
-            }),
-        )?;
-        let result = response.into_result::<BrowserControllerUploadResult>("browser.upload")?;
-        result.validate(target_id, document_id, controller_paths.len())?;
-        Ok(result)
-    }
-
     fn set_browser_permission(
         &mut self,
         target_id: &str,
@@ -896,6 +809,16 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
             response.into_result::<BrowserControllerPermissionResult>("browser.permission")?;
         result.validate(target_id, document_id, permission, setting)?;
         Ok(result)
+    }
+
+    fn app_view(
+        &mut self,
+        request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
+    ) -> Result<serde_json::Value, String> {
+        let method = request.method();
+        let timeout = self.timeout;
+        self.request_serializable(method, &request.params(), timeout)?
+            .into_result(method)
     }
 
     fn poll_browser_events(
@@ -1037,9 +960,10 @@ impl Drop for BrowserControllerProcessStdioBackend {
 }
 
 struct BrowserControllerChild {
-    child: Child,
-    stdin: ChildStdin,
+    child: Arc<Mutex<Child>>,
+    stdin: Arc<Mutex<ChildStdin>>,
     responses: mpsc::Receiver<Result<BrowserControllerRpcResponse, String>>,
+    pending_responses: pending_responses::PendingResponses<BrowserControllerRpcResponse>,
 }
 
 #[derive(Deserialize)]
@@ -1136,6 +1060,7 @@ struct BrowserControllerRpcError {
 fn read_controller_responses(
     stdout: ChildStdout,
     responses: mpsc::Sender<Result<BrowserControllerRpcResponse, String>>,
+    pending_responses: pending_responses::PendingResponses<BrowserControllerRpcResponse>,
 ) {
     for line in BufReader::new(stdout).lines() {
         let response = line
@@ -1144,10 +1069,27 @@ fn read_controller_responses(
                 serde_json::from_str::<BrowserControllerRpcResponse>(&line)
                     .map_err(|error| format!("browser controller returned invalid JSON: {error}"))
             });
+        let response = match response {
+            Ok(response) => {
+                if let Some(id) = response.id {
+                    match pending_responses.route(id, response) {
+                        Some(response) => Ok(response),
+                        None => continue,
+                    }
+                } else {
+                    Ok(response)
+                }
+            }
+            Err(error) => {
+                pending_responses.fail_all(&error);
+                Err(error)
+            }
+        };
         if responses.send(response).is_err() {
-            return;
+            break;
         }
     }
+    pending_responses.fail_all_on_exit();
 }
 
 fn terminate_child(child: &mut Child, timeout: Duration) {
@@ -1168,10 +1110,33 @@ fn kill_child(child: &mut Child) {
     let _ = child.wait();
 }
 
+/// `browser.reconcile` parameters for both the barrier and observation paths.
+fn browser_reconcile_params(
+    viewport: &CanonicalViewport,
+    browser_bar_visible: bool,
+) -> serde_json::Value {
+    serde_json::json!({
+        "viewport": {
+            "css_width": viewport.css_width,
+            "css_height": viewport.css_height,
+            "device_scale_factor": viewport.device_scale_factor,
+            "desktop_pixel_width": viewport.desktop_pixel_width,
+            "desktop_pixel_height": viewport.desktop_pixel_height,
+        },
+        "browser_bar_visible": browser_bar_visible,
+        // App pages lay out left of the trusted conversation panel.
+        "app_panel_css_width": viewport.app_panel_css_width(),
+    })
+}
+
 pub(crate) struct BrowserControllerProcessSupervisor<B> {
     backend: B,
     snapshot: BrowserControllerProcessSnapshot,
     recovery_pending: bool,
+    reconciled_viewport: Option<CanonicalViewport>,
+    /// Window mode of the last barrier reconcile. Toggling the browser bar
+    /// changes every window, so it cannot take the observation path.
+    reconciled_browser_bar_visible: bool,
 }
 
 type StdioOwnership = BrowserControllerProcessOwnership<BrowserControllerProcessStdioBackend>;
@@ -1229,46 +1194,14 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
         &mut self,
         session_id: &str,
         viewport: &CanonicalViewport,
+        browser_bar_visible: bool,
     ) -> Result<BrowserControllerReconciliation, String> {
         self.require_lease(session_id)?;
-        self.supervisor.reconcile_browser(viewport)
-    }
-
-    pub(crate) fn capture_browser_snapshot(
-        &mut self,
-        session_id: &str,
-        target_id: &str,
-        document_id: &str,
-    ) -> Result<BrowserControllerStructuredSnapshot, String> {
-        self.require_lease(session_id)?;
         self.supervisor
-            .capture_browser_snapshot(target_id, document_id)
+            .reconcile_browser(viewport, browser_bar_visible)
     }
 
-    pub(crate) fn manage_browser_tab(
-        &mut self,
-        session_id: &str,
-        target_id: &str,
-        document_id: &str,
-        action: BrowserTabAction,
-    ) -> Result<BrowserControllerTabResult, String> {
-        self.require_lease(session_id)?;
-        self.supervisor
-            .manage_browser_tab(target_id, document_id, action)
-    }
-
-    pub(crate) fn navigate_browser_history(
-        &mut self,
-        session_id: &str,
-        target_id: &str,
-        document_id: &str,
-        action: BrowserHistoryAction,
-    ) -> Result<BrowserControllerHistoryResult, String> {
-        self.require_lease(session_id)?;
-        self.supervisor
-            .navigate_browser_history(target_id, document_id, action)
-    }
-
+    #[cfg(test)]
     pub(crate) fn perform_browser_action(
         &mut self,
         session_id: &str,
@@ -1283,31 +1216,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
             .perform_browser_action(target_id, document_id, node_ref, action, timeout_ms)
     }
 
-    pub(crate) fn navigate_browser(
-        &mut self,
-        session_id: &str,
-        target_id: &str,
-        document_id: &str,
-        url: &str,
-    ) -> Result<BrowserControllerNavigationResult, String> {
-        self.require_lease(session_id)?;
-        self.supervisor
-            .navigate_browser(target_id, document_id, url)
-    }
-
-    pub(crate) fn wait_for_browser(
-        &mut self,
-        session_id: &str,
-        target_id: &str,
-        document_id: &str,
-        wait: &BrowserCompatibilityWait,
-        timeout_ms: u64,
-    ) -> Result<BrowserControllerCompatibilityWaitResult, String> {
-        self.require_lease(session_id)?;
-        self.supervisor
-            .wait_for_browser(target_id, document_id, wait, timeout_ms)
-    }
-
+    #[cfg(test)]
     pub(crate) fn handle_browser_dialog(
         &mut self,
         session_id: &str,
@@ -1340,19 +1249,6 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
         self.supervisor.cancel_browser_download(cancellation)
     }
 
-    pub(crate) fn upload_browser_files(
-        &mut self,
-        session_id: &str,
-        target_id: &str,
-        document_id: &str,
-        node_ref: &str,
-        files: &BrowserUploadFiles,
-    ) -> Result<BrowserControllerUploadResult, String> {
-        self.require_lease(session_id)?;
-        self.supervisor
-            .upload_browser_files(target_id, document_id, node_ref, files)
-    }
-
     pub(crate) fn set_browser_permission(
         &mut self,
         session_id: &str,
@@ -1364,6 +1260,22 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
         self.require_lease(session_id)?;
         self.supervisor
             .set_browser_permission(target_id, document_id, permission, setting)
+    }
+
+    pub(crate) fn app_view(
+        &mut self,
+        session_id: &str,
+        request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
+    ) -> Result<serde_json::Value, String> {
+        self.require_lease(session_id).map_err(|_| {
+            match self.owner_session_id.as_deref() {
+                Some(owner) if owner != session_id => format!(
+                    "This browser Environment belongs to Room {owner}, not Room {session_id}. Attach to that Room and use /app open <installation-id>, then /room view; or bind a separate Environment to this Room with /room bind <slice>."
+                ),
+                _ => "This Room's browser Environment is not started. Use /room start, then retry /app open <installation-id>.".to_owned(),
+            }
+        })?;
+        self.supervisor.app_view(request)
     }
 
     pub(crate) fn poll_browser_events(
@@ -1436,9 +1348,12 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
 pub(crate) struct BrowserControllerProcessStore {
     ownership: Option<Arc<Mutex<StdioOwnership>>>,
     executions: cancellation::BrowserActionExecutions,
+    tab_mutation_barrier: Arc<RwLock<()>>,
+    tab_mutation_lanes: BrowserTabMutationLanes,
 }
 
 impl BrowserControllerProcessStore {
+    #[cfg(test)]
     pub(crate) fn new(command: impl Into<PathBuf>, args: Vec<String>, timeout: Duration) -> Self {
         Self {
             ownership: Some(Arc::new(Mutex::new(
@@ -1486,6 +1401,10 @@ impl BrowserControllerProcessStore {
         &self,
         session_id: &str,
     ) -> Result<Option<BrowserControllerProcessSnapshot>, String> {
+        if let Some(snapshot) = self.acquire_busy_lease(session_id)? {
+            return Ok(Some(snapshot));
+        }
+        let _barrier = self.lock_global_tab_mutation_barrier()?;
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
@@ -1499,6 +1418,7 @@ impl BrowserControllerProcessStore {
         &self,
         session_id: &str,
     ) -> Result<Option<BrowserControllerProcessSnapshot>, String> {
+        let _barrier = self.lock_global_tab_mutation_barrier()?;
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
@@ -1512,14 +1432,9 @@ impl BrowserControllerProcessStore {
         &self,
         session_id: &str,
         viewport: &CanonicalViewport,
+        browser_bar_visible: bool,
     ) -> Result<Option<BrowserControllerReconciliation>, String> {
-        let Some(ownership) = &self.ownership else {
-            return Ok(None);
-        };
-        let mut ownership = ownership
-            .lock()
-            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
-        ownership.reconcile_browser(session_id, viewport).map(Some)
+        self.reconcile_browser_observation(session_id, viewport, browser_bar_visible)
     }
 
     pub(crate) fn capture_browser_snapshot(
@@ -1531,14 +1446,45 @@ impl BrowserControllerProcessStore {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
-        let mut ownership = ownership
-            .lock()
-            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
-        ownership
-            .capture_browser_snapshot(session_id, target_id, document_id)
-            .map(Some)
+        let (pending, timeout) = {
+            let mut ownership = ownership
+                .lock()
+                .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+            ownership.require_lease(session_id)?;
+            let supervisor = &mut ownership.supervisor;
+            // A health RPC is a controller barrier. While controller responses
+            // are in flight, inspect process liveness without queuing it.
+            // Recovery still requires reconciliation before fresh references.
+            let responses_pending = supervisor
+                .backend
+                .process
+                .as_ref()
+                .map(|process| process.pending_responses.is_empty().map(|empty| !empty))
+                .transpose()?
+                .unwrap_or(false);
+            let exited = supervisor.backend.take_exited_process()?.is_some();
+            if !responses_pending || exited {
+                supervisor.ensure_started_without_transparent_restart()?;
+            } else if supervisor.recovery_pending
+                || supervisor.snapshot.state != BrowserControllerProcessState::Ready
+            {
+                return Err(CONTROLLER_RESTARTED_BEFORE_OPERATION.to_string());
+            }
+            let pending = supervisor
+                .backend
+                .begin_snapshot_read(target_id, document_id)?;
+            (pending, supervisor.backend.timeout)
+        };
+        // Keep the Room lease check and stdin dispatch atomic, but never hold
+        // ownership while waiting for a snapshot response.
+        let snapshot = pending
+            .wait(timeout)?
+            .into_result::<BrowserControllerStructuredSnapshot>("browser.snapshot")?;
+        snapshot.validate(target_id, document_id)?;
+        Ok(Some(snapshot))
     }
 
+    #[cfg(test)]
     pub(crate) fn perform_browser_action(
         &self,
         session_id: &str,
@@ -1574,17 +1520,10 @@ impl BrowserControllerProcessStore {
         wait: &BrowserCompatibilityWait,
         timeout_ms: u64,
     ) -> Result<Option<BrowserControllerCompatibilityWaitResult>, String> {
-        let Some(ownership) = &self.ownership else {
-            return Ok(None);
-        };
-        let mut ownership = ownership
-            .lock()
-            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
-        ownership
-            .wait_for_browser(session_id, target_id, document_id, wait, timeout_ms)
-            .map(Some)
+        self.wait_for_browser_observation(session_id, target_id, document_id, wait, timeout_ms)
     }
 
+    #[cfg(test)]
     pub(crate) fn handle_browser_dialog(
         &self,
         session_id: &str,
@@ -1619,6 +1558,20 @@ impl BrowserControllerProcessStore {
             .map(Some)
     }
 
+    pub(crate) fn app_view(
+        &self,
+        session_id: &str,
+        request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let Some(ownership) = &self.ownership else {
+            return Ok(None);
+        };
+        let mut ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        ownership.app_view(session_id, request).map(Some)
+    }
+
     pub(crate) fn poll_browser_events(
         &self,
         session_id: &str,
@@ -1637,47 +1590,13 @@ impl BrowserControllerProcessStore {
             .map(Some)
     }
 
-    pub(crate) fn import_browser_cookies(
-        &self,
-        session_id: &str,
-        binding: &crate::transport::room_browser_controller::RoomBrowserImportBinding,
-        browser_generation: u64,
-        target_id: &str,
-        document_id: &str,
-        source_store_id: &str,
-        domains: &[String],
-        partition_sites: &[String],
-        overwrite: bool,
-        payload: &crate::runtime::browser_import_payload::BrowserImportPayload,
-    ) -> Result<Option<BrowserCookieImportOutcome>, String> {
-        let Some(ownership) = &self.ownership else {
-            return Ok(None);
-        };
-        let mut ownership = ownership
-            .lock()
-            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
-        ownership
-            .import_browser_cookies(
-                session_id,
-                binding,
-                browser_generation,
-                target_id,
-                document_id,
-                source_store_id,
-                domains,
-                partition_sites,
-                overwrite,
-                payload,
-            )
-            .map(Some)
-    }
-
     pub(crate) fn recover_browser_cookie_import(
         &self,
         session_id: &str,
         binding: &crate::transport::room_browser_controller::RoomBrowserImportBinding,
         target_id: &str,
     ) -> Result<Option<()>, String> {
+        let _barrier = self.lock_global_tab_mutation_barrier()?;
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
@@ -1690,6 +1609,7 @@ impl BrowserControllerProcessStore {
     }
 
     pub(crate) fn shutdown(&self) -> Result<Option<BrowserControllerProcessSnapshot>, String> {
+        let _barrier = self.lock_global_tab_mutation_barrier()?;
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
@@ -1722,6 +1642,8 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
                 restart_count: 0,
             },
             recovery_pending: false,
+            reconciled_viewport: None,
+            reconciled_browser_bar_visible: false,
         }
     }
 
@@ -1771,6 +1693,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
             return Ok(&self.snapshot);
         }
         self.backend.stop()?;
+        self.reconciled_viewport = None;
         self.snapshot.state = BrowserControllerProcessState::Stopped;
         self.snapshot.process_id = None;
         self.snapshot.diagnostic_code = None;
@@ -1780,45 +1703,19 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
     fn reconcile_browser(
         &mut self,
         viewport: &CanonicalViewport,
+        browser_bar_visible: bool,
     ) -> Result<BrowserControllerReconciliation, String> {
         let process = self.ensure_started()?.clone();
-        let browser = self.backend.reconcile_browser(viewport)?;
+        let browser = self
+            .backend
+            .reconcile_browser(viewport, browser_bar_visible)?;
         self.recovery_pending = false;
+        self.reconciled_viewport = Some(viewport.clone());
+        self.reconciled_browser_bar_visible = browser_bar_visible;
         Ok(BrowserControllerReconciliation { process, browser })
     }
 
-    fn capture_browser_snapshot(
-        &mut self,
-        target_id: &str,
-        document_id: &str,
-    ) -> Result<BrowserControllerStructuredSnapshot, String> {
-        self.ensure_started_without_transparent_restart()?;
-        self.backend
-            .capture_browser_snapshot(target_id, document_id)
-    }
-
-    fn manage_browser_tab(
-        &mut self,
-        target_id: &str,
-        document_id: &str,
-        action: BrowserTabAction,
-    ) -> Result<BrowserControllerTabResult, String> {
-        self.ensure_started_without_transparent_restart()?;
-        self.backend
-            .manage_browser_tab(target_id, document_id, action)
-    }
-
-    fn navigate_browser_history(
-        &mut self,
-        target_id: &str,
-        document_id: &str,
-        action: BrowserHistoryAction,
-    ) -> Result<BrowserControllerHistoryResult, String> {
-        self.ensure_started_without_transparent_restart()?;
-        self.backend
-            .navigate_browser_history(target_id, document_id, action)
-    }
-
+    #[cfg(test)]
     fn perform_browser_action(
         &mut self,
         target_id: &str,
@@ -1832,28 +1729,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
             .perform_browser_action(target_id, document_id, node_ref, action, timeout_ms)
     }
 
-    fn navigate_browser(
-        &mut self,
-        target_id: &str,
-        document_id: &str,
-        url: &str,
-    ) -> Result<BrowserControllerNavigationResult, String> {
-        self.ensure_started_without_transparent_restart()?;
-        self.backend.navigate_browser(target_id, document_id, url)
-    }
-
-    fn wait_for_browser(
-        &mut self,
-        target_id: &str,
-        document_id: &str,
-        wait: &BrowserCompatibilityWait,
-        timeout_ms: u64,
-    ) -> Result<BrowserControllerCompatibilityWaitResult, String> {
-        self.ensure_started_without_transparent_restart()?;
-        self.backend
-            .wait_for_browser(target_id, document_id, wait, timeout_ms)
-    }
-
+    #[cfg(test)]
     fn handle_browser_dialog(
         &mut self,
         target_id: &str,
@@ -1883,18 +1759,6 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         self.backend.cancel_browser_download(cancellation)
     }
 
-    fn upload_browser_files(
-        &mut self,
-        target_id: &str,
-        document_id: &str,
-        node_ref: &str,
-        files: &BrowserUploadFiles,
-    ) -> Result<BrowserControllerUploadResult, String> {
-        self.ensure_started_without_transparent_restart()?;
-        self.backend
-            .upload_browser_files(target_id, document_id, node_ref, files)
-    }
-
     fn set_browser_permission(
         &mut self,
         target_id: &str,
@@ -1905,6 +1769,14 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         self.ensure_started_without_transparent_restart()?;
         self.backend
             .set_browser_permission(target_id, document_id, permission, setting)
+    }
+
+    fn app_view(
+        &mut self,
+        request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
+    ) -> Result<serde_json::Value, String> {
+        self.ensure_started_without_transparent_restart()?;
+        self.backend.app_view(request)
     }
 
     fn poll_browser_events(
@@ -1995,6 +1867,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         self.snapshot.runtime_generation = self.snapshot.runtime_generation.saturating_add(1);
         self.snapshot.restart_count = self.snapshot.restart_count.saturating_add(1);
         self.recovery_pending = true;
+        self.reconciled_viewport = None;
         self.snapshot.process_id = None;
         self.start()
     }
@@ -2015,16 +1888,16 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
 mod tests {
     use std::collections::VecDeque;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use super::{
         BrowserControllerBrowserSnapshot, BrowserControllerProcessBackend,
-        BrowserControllerProcessHealth, BrowserControllerProcessState,
-        BrowserControllerProcessStdioBackend, BrowserControllerProcessStore,
-        BrowserControllerProcessSupervisor, CONTROLLER_RESTARTED_BEFORE_OPERATION,
+        BrowserControllerProcessHealth, BrowserControllerProcessOwnership,
+        BrowserControllerProcessState, BrowserControllerProcessStdioBackend,
+        BrowserControllerProcessStore, BrowserControllerProcessSupervisor,
+        CONTROLLER_RESTARTED_BEFORE_OPERATION,
     };
     use crate::runtime::browser_controller_action::{BrowserDialogAction, BrowserLocatorAction};
     use crate::session::CanonicalViewport;
@@ -2251,6 +2124,40 @@ mod tests {
     }
 
     #[test]
+    fn app_open_reports_the_environment_owner_and_how_to_view_it() {
+        let mut ownership = BrowserControllerProcessOwnership::new(FakeBackend::default());
+        ownership.owner_session_id = Some("room-1".to_owned());
+        ownership.leased = true;
+        let error = ownership
+            .app_view(
+                "room-2",
+                &crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Calls,
+            )
+            .unwrap_err();
+        assert!(error.contains("belongs to Room room-1, not Room room-2"));
+        assert!(error.contains("/app open <installation-id>"));
+        assert!(error.contains("/room view"));
+        assert_eq!(ownership.owner_session_id.as_deref(), Some("room-1"));
+        assert!(
+            ownership.leased,
+            "failed open must leave the owner's browser alone"
+        );
+    }
+
+    #[test]
+    fn app_open_in_an_unstarted_environment_explains_how_to_start_it() {
+        let mut ownership = BrowserControllerProcessOwnership::new(FakeBackend::default());
+        let error = ownership
+            .app_view(
+                "room-1",
+                &crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Calls,
+            )
+            .unwrap_err();
+        assert!(error.contains("not started"));
+        assert!(error.contains("/room start"));
+    }
+
+    #[test]
     fn physical_browser_binding_survives_release_and_shutdown() {
         let tool = TestTool::new(responsive_controller_script());
         let store = BrowserControllerProcessStore::new(
@@ -2365,11 +2272,19 @@ mod tests {
                 std::process::id()
             ));
             fs::create_dir_all(&root).expect("create test tool root");
+            let source = root.join("controller-tool.source");
+            fs::write(&source, script).expect("write test tool source");
+            // Install the executable from a child process: a writable fd held
+            // by this multi-threaded test process could leak into another
+            // test's fork and make exec fail with ETXTBSY.
             let path = root.join("controller-tool.sh");
-            fs::write(&path, script).expect("write test tool");
-            let mut permissions = fs::metadata(&path).expect("tool metadata").permissions();
-            permissions.set_mode(0o700);
-            fs::set_permissions(&path, permissions).expect("make test tool executable");
+            let installed = std::process::Command::new("install")
+                .args(["-m", "700"])
+                .arg(&source)
+                .arg(&path)
+                .status()
+                .expect("run install for test tool");
+            assert!(installed.success(), "install test tool: {installed}");
             Self { root, path }
         }
 
@@ -2446,10 +2361,10 @@ mod tests {
         );
         let viewport = CanonicalViewport::new(1280, 720, 1, 1280, 720).unwrap();
 
-        assert!(store.reconcile_browser("room-1", &viewport).is_err());
+        assert!(store.reconcile_browser("room-1", &viewport, false).is_err());
         store.acquire("room-1").expect("Room acquires controller");
         let reconciliation = store
-            .reconcile_browser("room-1", &viewport)
+            .reconcile_browser("room-1", &viewport, false)
             .expect("browser reconciles")
             .expect("controller is enabled");
 
@@ -2501,6 +2416,75 @@ mod tests {
                 .expect("resource inventory response shape parses");
             assert!(snapshot.validate(&viewport).is_err());
         }
+    }
+
+    #[test]
+    fn room_snapshot_reads_overlap_and_match_out_of_order_responses() {
+        // Neither snapshot can finish until the controller receives both.
+        // Reply in reverse order to catch a shared response receiver as well
+        // as an ownership lock held across the first RPC.
+        let tool = TestTool::new(
+            r#"#!/bin/sh
+set -eu
+first_id=
+snapshot() {
+  printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"target_id":"%s","document_id":"loader-a","snapshot_revision":1,"accessibility_nodes":[],"dom_nodes":[]}}\n' "$1" "$2"
+}
+while IFS= read -r request; do
+  id=${request#*:}
+  id=${id%%,*}
+  case "$request" in
+    *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
+    *'"method":"browser.snapshot"'*)
+      if [ -z "$first_id" ]; then
+        first_id=$id
+        touch "$1"
+      else
+        snapshot "$id" target-second
+        snapshot "$first_id" target-first
+      fi ;;
+    *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id"; exit 0 ;;
+  esac
+done
+"#,
+        );
+        let started = tool.root.join("first-snapshot-started");
+        let store = BrowserControllerProcessStore::new(
+            tool.path(),
+            vec![started.display().to_string()],
+            Duration::from_secs(3),
+        );
+        store.acquire("room-1").expect("acquire controller");
+        let first_store = store.clone();
+        let first = std::thread::spawn(move || {
+            first_store.capture_browser_snapshot("room-1", "target-first", "loader-a")
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !started.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(started.exists(), "first snapshot must reach the controller");
+        let second_store = store.clone();
+        let second = std::thread::spawn(move || {
+            second_store.capture_browser_snapshot("room-1", "target-second", "loader-a")
+        });
+        let first = first.join().expect("first reader joins");
+        let second = second.join().expect("second reader joins");
+        store.release("room-1").expect("release controller");
+        assert_eq!(
+            first
+                .expect("first snapshot must overlap")
+                .unwrap()
+                .target_id,
+            "target-first"
+        );
+        assert_eq!(
+            second
+                .expect("second response must match")
+                .unwrap()
+                .target_id,
+            "target-second"
+        );
     }
 
     #[test]
@@ -2600,7 +2584,9 @@ mod tests {
 
     #[test]
     fn stdio_backend_reports_early_exit_without_claiming_ready() {
-        let tool = TestTool::new("#!/bin/sh\nexit 9\n");
+        // MP-08/MP-10: exit after consuming health so the fixture exercises
+        // response EOF, rather than racing the request write with a broken pipe.
+        let tool = TestTool::new("#!/bin/sh\nIFS= read -r request\nexit 9\n");
         let mut backend = BrowserControllerProcessStdioBackend::new(
             tool.path(),
             Vec::new(),
@@ -2609,7 +2595,10 @@ mod tests {
 
         let error = backend.start().expect_err("early exit must fail");
 
-        assert!(error.contains("exited during `health`"));
+        assert!(
+            error.contains("exited during `health`"),
+            "unexpected early-exit diagnostic: {error}"
+        );
     }
 
     #[test]
@@ -2647,7 +2636,7 @@ mod tests {
         let started = std::time::Instant::now();
         let error = backend.start().expect_err("health request must time out");
 
-        assert!(error.contains("timed out"));
+        assert!(error.contains("timed out"), "{error}");
         assert!(started.elapsed() < Duration::from_secs(2));
         assert_eq!(
             backend

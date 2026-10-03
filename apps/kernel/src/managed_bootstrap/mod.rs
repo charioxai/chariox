@@ -1,6 +1,8 @@
 mod cloud;
 mod context_plan;
+mod data_volume_observation;
 mod freshness;
+mod provider_path;
 mod release;
 mod state;
 mod supervisor;
@@ -25,7 +27,7 @@ use cloud::{
 };
 pub use context_plan::ManagedKernelContextPlan;
 use freshness::{
-    capture_freshness_evidence, capture_old_generation_runtime_identity_report,
+    capture_freshness_evidence_with_volume, capture_old_generation_runtime_identity_report,
     validate_freshness_evidence, ManagedKernelFreshnessEvidence,
     ManagedKernelRuntimeIdentityReport,
 };
@@ -34,6 +36,7 @@ use state::{
     default_managed_bootstrap_receipt_path, remove_envelope, trusted_builder_public_key_path,
     valid_identifier, valid_secret, BootstrapConfig, BootstrapEnvelope, BootstrapReceipt,
     BootstrapReceiptDocument, BootstrapReceiptStatus, ManagedBootstrapEnvelope,
+    ManagedBootstrapGrantBinding,
 };
 
 const MIN_PREPARE_RETRY_DELAY: Duration = Duration::from_secs(1);
@@ -47,6 +50,10 @@ pub(crate) const PATH1_SHARED_HOST_SELECTOR_ENVS: &[&str] = &[
     "CHARIOX_MANAGED_PROVIDER_BWRAP",
     "CHARIOX_MANAGED_SLICE_SERVICE_ROOT",
     "CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT",
+];
+/// Parent values are always discarded. The supervisor restores only the
+/// derived slice root and its broker-owned kernel lease after this scrub.
+pub(crate) const PATH1_KERNEL_SLICE_BROKER_ENVS: &[&str] = &[
     "CHARIOX_SLICE_ROOT",
     "CHARIOX_SLICE_DOCKER_BROKER_SOCKET",
     "CHARIOX_SLICE_DOCKER_BROKER_FD",
@@ -102,6 +109,13 @@ pub(crate) fn managed_repository_root_from_env() -> Result<std::path::PathBuf, D
         ));
     }
     Ok(std::path::PathBuf::from(normalized))
+}
+
+/// Re-apply the bootstrap's fixed managed roots after resolving path aliases.
+pub(crate) fn canonical_managed_repository_root_is_protected(root: &std::path::Path) -> bool {
+    root.to_str()
+        .map(state::overlaps_protected_managed_root)
+        .unwrap_or(true)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,6 +196,21 @@ pub fn run_from_env() -> Result<(), DaemonError> {
 
 pub(crate) fn confirmed_managed_kernel_registration_from_env(
 ) -> Result<Option<ConfirmedManagedKernelRegistration>, DaemonError> {
+    confirmed_managed_kernel_registration_with_receipt_fallback(
+        default_managed_bootstrap_receipt_path(),
+    )
+}
+
+fn confirmed_managed_kernel_registration_with_receipt_fallback(
+    default_receipt_path: std::path::PathBuf,
+) -> Result<Option<ConfirmedManagedKernelRegistration>, DaemonError> {
+    // MP-08: a co-resident managed receipt must not select an ordinary kernel.
+    // Explicit managed configuration retains the fail-closed bootstrap checks.
+    if std::env::var_os(MANAGED_PROVIDER_TOPOLOGY_ENV).is_none()
+        && std::env::var_os("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT").is_none()
+    {
+        return Ok(None);
+    }
     let Some(_) = std::env::var_os("CHARIOX_HOME")
         .filter(|value| !value.is_empty())
         .map(std::path::PathBuf::from)
@@ -191,7 +220,7 @@ pub(crate) fn confirmed_managed_kernel_registration_from_env(
     let receipt_path = std::env::var_os("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT")
         .filter(|value| !value.is_empty())
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(default_managed_bootstrap_receipt_path);
+        .unwrap_or(default_receipt_path);
     if !receipt_path.exists() {
         return Ok(None);
     }
@@ -293,6 +322,16 @@ fn prepare_managed_kernel(
     } else {
         None
     };
+    prepare_managed_kernel_with_documents(config, cloud, now, receipt, envelope)
+}
+
+fn prepare_managed_kernel_with_documents(
+    config: &BootstrapConfig,
+    cloud: &impl BootstrapCloudClient,
+    now: DateTime<Utc>,
+    receipt: Option<BootstrapReceipt>,
+    envelope: Option<ManagedBootstrapEnvelope>,
+) -> Result<PreparedManagedKernel, DaemonError> {
     if state::disposable_worker_release_override_path(&config.receipt_path)?.exists() {
         return Err(bootstrap_error(
             "disposable worker release override has no matching worker receipt",
@@ -321,19 +360,8 @@ fn prepare_managed_kernel(
     let confirmation = match (receipt, envelope) {
         (Some(receipt), envelope) => {
             if let Some(value) = envelope.as_ref() {
-                let envelope_repository_root = value.managed_repository_root()?;
-                let receipt_repository_root = receipt.managed_repository_root()?;
-                if value.environment_id != receipt.environment_id
-                    || value.runtime_release_digest != receipt.runtime_release_digest
-                    || envelope_repository_root != receipt_repository_root
-                    || value.provider_rebuild_action_id.is_some()
-                        && receipt.provider_rebuild_action_id.as_deref()
-                            != value.provider_rebuild_action_id.as_deref()
-                {
-                    return Err(bootstrap_error(
-                        "managed bootstrap envelope conflicts with its receipt",
-                    ));
-                }
+                validate_envelope_receipt_compatibility(value, &receipt)?;
+                reconcile_legacy_confirmed_grant_binding(config, cloud, value, &receipt)?;
             }
             resume_registration(config, envelope.as_ref(), receipt, &identity, &release)?
         }
@@ -350,6 +378,131 @@ fn prepare_managed_kernel(
         release,
         confirmation,
     })
+}
+
+#[cfg(test)]
+fn prepare_managed_kernel_with_documents_for_test(
+    config: &BootstrapConfig,
+    cloud: &impl BootstrapCloudClient,
+    now: DateTime<Utc>,
+    receipt: BootstrapReceipt,
+    envelope: ManagedBootstrapEnvelope,
+) -> Result<PreparedManagedKernel, DaemonError> {
+    prepare_managed_kernel_with_documents(config, cloud, now, Some(receipt), Some(envelope))
+}
+
+fn reconcile_legacy_confirmed_grant_binding(
+    config: &BootstrapConfig,
+    cloud: &impl BootstrapCloudClient,
+    envelope: &ManagedBootstrapEnvelope,
+    receipt: &BootstrapReceipt,
+) -> Result<(), DaemonError> {
+    if receipt.status != BootstrapReceiptStatus::Confirmed
+        || envelope.schema_version != 3
+        || config.envelope_path != std::path::Path::new(state::PROTECTED_MANAGED_BOOTSTRAP_PATH)
+    {
+        return Ok(());
+    }
+    if ManagedBootstrapGrantBinding::read_for_receipt(&config.receipt_path)?.is_some() {
+        return Ok(());
+    }
+
+    let profile = load_managed_cloud_relay_profile()
+        .ok_or_else(|| bootstrap_error("managed Cloud profile is missing after exchange"))?;
+    validate_profile(&profile, receipt)?;
+    let (expected_data_volume_serial, expected_data_volume_size_gb) =
+        expected_data_volume_identity(envelope)?.ok_or_else(|| {
+            bootstrap_error("Path-1 grant reconciliation requires a protected data-volume identity")
+        })?;
+    let repository_root = receipt.managed_repository_root()?;
+    let response = cloud.reconcile_managed_bootstrap_grant(
+        &normalized_api_url(&envelope.cloud_api_url),
+        &cloud::ReconcileManagedBootstrapGrantRequestV1 {
+            protocol_version: 1,
+            token: envelope.token.clone(),
+            machine_credential: profile
+                .machine_credential
+                .clone()
+                .ok_or_else(|| bootstrap_error("managed machine credential is missing"))?,
+            environment_id: receipt.environment_id.clone(),
+            machine_id: receipt.machine_id.clone(),
+            kernel_id: receipt.kernel_id.clone(),
+            generation: receipt.generation,
+            runtime_release_digest: receipt.runtime_release_digest.clone(),
+            managed_repository_root: repository_root.clone(),
+            expected_data_volume_serial: expected_data_volume_serial.to_string(),
+            expected_data_volume_size_gb,
+            relay_public_key: receipt.relay_public_key.clone(),
+        },
+    )?;
+
+    validate_reconciled_grant_response(
+        &response,
+        receipt,
+        &repository_root,
+        expected_data_volume_serial,
+        expected_data_volume_size_gb,
+    )?;
+
+    ManagedBootstrapGrantBinding::for_receipt(envelope, receipt)
+        .persist_for_receipt(&config.receipt_path)
+}
+
+fn validate_reconciled_grant_response(
+    response: &cloud::ReconcileManagedBootstrapGrantResponseV1,
+    receipt: &BootstrapReceipt,
+    expected_repository_root: &str,
+    expected_data_volume_serial: &str,
+    expected_data_volume_size_gb: u32,
+) -> Result<(), DaemonError> {
+    let expected_operation_kind = if receipt.generation == 1 {
+        "CREATE"
+    } else {
+        "REIMAGE"
+    };
+    if response.protocol_version != 1
+        || !response.reconciled
+        || !valid_identifier(&response.grant_id)
+        || !valid_identifier(&response.operation_id)
+        || response.operation_kind != expected_operation_kind
+        || response.environment_id != receipt.environment_id
+        || response.machine_id != receipt.machine_id
+        || response.kernel_id != receipt.kernel_id
+        || response.generation != receipt.generation
+        || response.runtime_release_digest != receipt.runtime_release_digest
+        || response.managed_repository_root != expected_repository_root
+        || response.data_volume_serial != expected_data_volume_serial
+        || response.data_volume_size_gb != expected_data_volume_size_gb
+    {
+        return Err(bootstrap_error(
+            "Cloud could not authoritatively reconcile the retained managed bootstrap grant",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_envelope_receipt_compatibility(
+    envelope: &ManagedBootstrapEnvelope,
+    receipt: &BootstrapReceipt,
+) -> Result<(), DaemonError> {
+    let envelope_repository_root = envelope.managed_repository_root()?;
+    let receipt_repository_root = receipt.managed_repository_root()?;
+    // The envelope names the provisioned release. A confirmed machine may since
+    // have been updated in place; its installed release is verified against the
+    // receipt instead.
+    if envelope.environment_id != receipt.environment_id
+        || receipt.status == BootstrapReceiptStatus::Exchanged
+            && envelope.runtime_release_digest != receipt.runtime_release_digest
+        || envelope_repository_root != receipt_repository_root
+        || receipt.status == BootstrapReceiptStatus::Exchanged
+            && receipt.provider_rebuild_action_id.as_deref()
+                != envelope.provider_rebuild_action_id.as_deref()
+    {
+        return Err(bootstrap_error(
+            "managed bootstrap envelope conflicts with its receipt",
+        ));
+    }
+    Ok(())
 }
 
 fn legacy_worker_error() -> DaemonError {
@@ -369,7 +522,7 @@ fn begin_registration(
             "managed bootstrap token expired before exchange",
         ));
     }
-    let freshness_evidence = capture_rebuild_freshness_evidence(config, release, envelope)?;
+    persist_or_validate_grant_binding(config, envelope, identity)?;
     let exchanged = cloud.exchange(
         &normalized_api_url(&envelope.cloud_api_url),
         &ExchangeRequest {
@@ -381,7 +534,7 @@ fn begin_registration(
             runtime_release_digest: envelope.runtime_release_digest.clone(),
         },
     )?;
-    validate_exchange_response(envelope, identity, &exchanged)?;
+    let generation = validate_exchange_response(envelope, identity, &exchanged)?;
     let managed_repository_root = envelope.managed_repository_root()?;
     let profile = persisted_profile(exchanged.cloud_relay);
     persist_managed_cloud_relay_profile(profile.clone())?;
@@ -391,16 +544,23 @@ fn begin_registration(
         environment_id: envelope.environment_id.clone(),
         machine_id: identity.machine_id.clone(),
         kernel_id: identity.kernel_id.clone(),
-        generation: exchanged.generation,
+        generation,
         relay_public_key: identity.relay_public_key.clone(),
         runtime_release_digest: envelope.runtime_release_digest.clone(),
-        managed_repository_root: (envelope.schema_version == 2).then_some(managed_repository_root),
+        managed_repository_root: matches!(envelope.schema_version, 2 | 3)
+            .then_some(managed_repository_root),
         confirmed_at: None,
         context_plan: Some(exchanged.context_plan),
         provider_rebuild_action_id: envelope.provider_rebuild_action_id.clone(),
-        freshness_evidence,
+        freshness_evidence: None,
     };
     receipt.persist(&config.receipt_path)?;
+    // The pending sidecar was durably written before exchange. Persist the
+    // exchanged receipt before completing it, so a crash here resumes from
+    // that receipt instead of treating a completed binding as permission to
+    // exchange the envelope again.
+    bind_grant_to_receipt(config, envelope, &receipt)?;
+    let receipt = ensure_rebuild_freshness_evidence(config, Some(envelope), receipt, release)?;
     Ok(Some(PendingConfirmation {
         envelope: envelope.clone(),
         receipt,
@@ -419,11 +579,24 @@ fn resume_registration(
     let profile = load_managed_cloud_relay_profile()
         .ok_or_else(|| bootstrap_error("managed Cloud profile is missing after exchange"))?;
     validate_profile(&profile, &receipt)?;
-    let receipt = ensure_rebuild_freshness_evidence(config, envelope, receipt, release)?;
     match receipt.status {
         BootstrapReceiptStatus::Confirmed => {
-            if config.envelope_path.exists() {
-                remove_envelope(&config.envelope_path)?;
+            if let Some(envelope) = envelope {
+                if envelope.schema_version >= 3 {
+                    match ManagedBootstrapGrantBinding::read_for_receipt(&config.receipt_path)? {
+                        Some(_) => {
+                            validate_receipt_envelope_grant_binding(config, envelope, &receipt)?;
+                            remove_bound_envelope(config, envelope)?;
+                        }
+                        None => {
+                            return Err(bootstrap_error(
+                                "managed bootstrap receipt and envelope have no durable grant binding; their relationship is ambiguous",
+                            ));
+                        }
+                    }
+                }
+                // Legacy shared-host envelopes are also left untouched after a
+                // Cloud ACK if the process stopped before envelope removal.
             }
             Ok(None)
         }
@@ -431,6 +604,9 @@ fn resume_registration(
             let envelope = envelope.ok_or_else(|| {
                 bootstrap_error("managed bootstrap envelope is required to resume confirmation")
             })?;
+            validate_receipt_envelope_grant_binding(config, envelope, &receipt)?;
+            let receipt =
+                ensure_rebuild_freshness_evidence(config, Some(envelope), receipt, release)?;
             Ok(Some(PendingConfirmation {
                 envelope: envelope.clone(),
                 receipt,
@@ -466,38 +642,39 @@ fn confirm_registration(
     mut receipt: BootstrapReceipt,
     profile: &PersistedCloudRelayProfile,
 ) -> Result<(), DaemonError> {
-    let freshness_evidence = match receipt.provider_rebuild_action_id.as_deref() {
-        Some(_action_id) => {
-            let evidence = receipt
-                .freshness_evidence
-                .as_ref()
-                .ok_or_else(|| bootstrap_error("managed reimage freshness evidence is missing"))?;
-            validate_freshness_evidence(evidence, &receipt.runtime_release_digest)?;
-            let verified = verify_release_evidence(
-                &config.manifest_path,
-                &config.signature_path,
-                &config.public_key_path,
-                &receipt.runtime_release_digest,
-                &config.kernel_binary,
-                trusted_builder_public_key_path()?.as_deref(),
-            )?;
-            if evidence.runtime_source_commit != verified.source_commit
-                || evidence.runtime_source_tree != verified.source_tree
-            {
-                return Err(bootstrap_error(
-                    "managed reimage source identity does not match the signed release",
-                ));
-            }
-            Some(evidence.clone())
+    validate_receipt_envelope_grant_binding(config, envelope, &receipt)?;
+    let freshness_required = receipt.provider_rebuild_action_id.is_some()
+        || receipt.schema_version == 3 && receipt.generation > 1;
+    let freshness_evidence = if freshness_required {
+        let evidence = receipt
+            .freshness_evidence
+            .as_ref()
+            .ok_or_else(|| bootstrap_error("managed reimage freshness evidence is missing"))?;
+        validate_freshness_evidence(evidence, &receipt.runtime_release_digest)?;
+        validate_rebuild_volume_evidence(config, Some(envelope), evidence)?;
+        let verified = verify_release_evidence(
+            &config.manifest_path,
+            &config.signature_path,
+            &config.public_key_path,
+            &receipt.runtime_release_digest,
+            &config.kernel_binary,
+            trusted_builder_public_key_path()?.as_deref(),
+        )?;
+        if evidence.runtime_source_commit != verified.source_commit
+            || evidence.runtime_source_tree != verified.source_tree
+        {
+            return Err(bootstrap_error(
+                "managed reimage source identity does not match the signed release",
+            ));
         }
-        None => {
-            if receipt.freshness_evidence.is_some() {
-                return Err(bootstrap_error(
-                    "managed freshness evidence has no rebuild action binding",
-                ));
-            }
-            None
+        Some(evidence.clone())
+    } else {
+        if receipt.freshness_evidence.is_some() {
+            return Err(bootstrap_error(
+                "managed freshness evidence has no rebuild operation binding",
+            ));
         }
+        None
     };
     let confirmed = cloud.confirm(
         &normalized_api_url(&envelope.cloud_api_url),
@@ -531,7 +708,7 @@ fn confirm_registration(
     receipt.provider_rebuild_action_id = None;
     receipt.freshness_evidence = None;
     receipt.persist(&config.receipt_path)?;
-    remove_envelope(&config.envelope_path)
+    remove_bound_envelope(config, envelope)
 }
 
 fn report_pre_reimage_runtime_identity(
@@ -677,23 +854,60 @@ fn validate_pre_reimage_observation_binding<'a>(
     Ok(profile)
 }
 
-fn capture_rebuild_freshness_evidence(
-    config: &BootstrapConfig,
-    release: &VerifiedRelease,
+fn expected_data_volume_identity(
     envelope: &ManagedBootstrapEnvelope,
-) -> Result<Option<ManagedKernelFreshnessEvidence>, DaemonError> {
-    let Some(_action_id) = envelope.provider_rebuild_action_id.as_deref() else {
-        return Ok(None);
-    };
-    let verified = verify_release_evidence(
-        &config.manifest_path,
-        &config.signature_path,
-        &config.public_key_path,
-        &release.digest,
-        &config.kernel_binary,
-        trusted_builder_public_key_path()?.as_deref(),
-    )?;
-    Ok(Some(capture_freshness_evidence(config, &verified)?))
+) -> Result<Option<(&str, u32)>, DaemonError> {
+    match (
+        envelope.schema_version,
+        envelope.expected_data_volume_serial.as_deref(),
+        envelope.expected_data_volume_size_gb,
+    ) {
+        (3, Some(serial), Some(size_gb)) => Ok(Some((serial, size_gb))),
+        (1 | 2, None, None) => Ok(None),
+        _ => Err(bootstrap_error(
+            "managed protected data-volume identity is incomplete",
+        )),
+    }
+}
+
+fn validate_rebuild_volume_evidence(
+    config: &BootstrapConfig,
+    envelope: Option<&ManagedBootstrapEnvelope>,
+    evidence: &ManagedKernelFreshnessEvidence,
+) -> Result<(), DaemonError> {
+    let path1 = config.envelope_path.as_path()
+        == std::path::Path::new(state::PROTECTED_MANAGED_BOOTSTRAP_PATH);
+    if path1 {
+        if evidence.schema_version != Some(3) {
+            return Err(bootstrap_error(
+                "Path-1 reimage freshness evidence is missing its admitted data-volume identity",
+            ));
+        }
+        if let Some(envelope) = envelope {
+            let Some((expected_serial, expected_size_gb)) =
+                expected_data_volume_identity(envelope)?
+            else {
+                return Err(bootstrap_error(
+                    "Path-1 freshness evidence has no protected data-volume expectation",
+                ));
+            };
+            if evidence.data_volume_serial.as_deref() != Some(expected_serial)
+                || evidence.data_volume_size_gb != Some(expected_size_gb)
+            {
+                return Err(bootstrap_error(
+                    "Path-1 freshness evidence does not match its protected data-volume identity",
+                ));
+            }
+        }
+    } else if evidence.schema_version.is_some()
+        || evidence.data_volume_serial.is_some()
+        || evidence.data_volume_size_gb.is_some()
+    {
+        return Err(bootstrap_error(
+            "shared-host freshness evidence contains Path-1 storage identity",
+        ));
+    }
+    Ok(())
 }
 
 fn ensure_rebuild_freshness_evidence(
@@ -714,15 +928,25 @@ fn ensure_rebuild_freshness_evidence(
         ));
     }
     let action_id = envelope_action_id.or(receipt.provider_rebuild_action_id.as_deref());
-    let Some(action_id) = action_id else {
+    let generation_bound_path1_rebuild = receipt.schema_version == 3 && receipt.generation > 1;
+    if action_id.is_none()
+        && generation_bound_path1_rebuild
+        && receipt.status == BootstrapReceiptStatus::Confirmed
+        && receipt.freshness_evidence.is_none()
+    {
+        return Ok(receipt);
+    }
+    if action_id.is_none() && !generation_bound_path1_rebuild {
         if receipt.freshness_evidence.is_some() {
             return Err(bootstrap_error(
                 "managed freshness evidence is not bound to a rebuild operation",
             ));
         }
         return Ok(receipt);
-    };
-    receipt.provider_rebuild_action_id = Some(action_id.to_string());
+    }
+    if let Some(action_id) = action_id {
+        receipt.provider_rebuild_action_id = Some(action_id.to_string());
+    }
     let verified = verify_release_evidence(
         &config.manifest_path,
         &config.signature_path,
@@ -736,6 +960,7 @@ fn ensure_rebuild_freshness_evidence(
             bootstrap_error("managed confirmed reimage freshness evidence is missing")
         })?;
         validate_freshness_evidence(evidence, &verified.digest)?;
+        validate_rebuild_volume_evidence(config, envelope, evidence)?;
         if evidence.runtime_source_commit != verified.source_commit
             || evidence.runtime_source_tree != verified.source_tree
         {
@@ -745,12 +970,18 @@ fn ensure_rebuild_freshness_evidence(
         }
         return Ok(receipt);
     }
-    if envelope_action_id.is_none() {
+    if envelope_action_id.is_none() && !generation_bound_path1_rebuild {
         return Err(bootstrap_error(
             "managed reimage confirmation envelope is missing",
         ));
     }
-    receipt.freshness_evidence = Some(capture_freshness_evidence(config, &verified)?);
+    let expected_data_volume = envelope
+        .map(expected_data_volume_identity)
+        .transpose()?
+        .flatten();
+    let evidence = capture_freshness_evidence_with_volume(config, &verified, expected_data_volume)?;
+    validate_rebuild_volume_evidence(config, envelope, &evidence)?;
+    receipt.freshness_evidence = Some(evidence);
     receipt.persist(&config.receipt_path)?;
     Ok(receipt)
 }
@@ -759,14 +990,23 @@ fn validate_exchange_response(
     envelope: &ManagedBootstrapEnvelope,
     identity: &ManagedRuntimeIdentity,
     response: &cloud::ExchangeResponse,
-) -> Result<(), DaemonError> {
+) -> Result<u64, DaemonError> {
+    let generation = match response.generation {
+        Some(generation) => generation,
+        None if envelope.schema_version < 3 => 1,
+        None => {
+            return Err(bootstrap_error(
+                "Path-1 exchange response is missing the Cloud generation",
+            ))
+        }
+    };
     let response_repository_root = state::managed_repository_root_for_schema(
         envelope.schema_version,
         response.managed_repository_root.as_deref(),
     )?;
     if response.environment_id != envelope.environment_id
         || response.kernel_id != identity.kernel_id
-        || !(1..=i32::MAX as u64).contains(&response.generation)
+        || !(1..=i32::MAX as u64).contains(&generation)
         || response.runtime_release_digest != envelope.runtime_release_digest
         || response.cloud_relay.machine_id != identity.machine_id
         || normalized_api_url(&response.cloud_relay.api_url)
@@ -793,7 +1033,7 @@ fn validate_exchange_response(
             "Cloud bootstrap response does not match the local identity",
         ));
     }
-    Ok(())
+    Ok(generation)
 }
 
 fn validate_receipt_identity(
@@ -809,6 +1049,134 @@ fn validate_receipt_identity(
         ));
     }
     Ok(())
+}
+
+fn persist_or_validate_grant_binding(
+    config: &BootstrapConfig,
+    envelope: &ManagedBootstrapEnvelope,
+    identity: &ManagedRuntimeIdentity,
+) -> Result<(), DaemonError> {
+    if envelope.schema_version < 3 {
+        return Ok(());
+    }
+    let expected = ManagedBootstrapGrantBinding::pending_exchange(
+        envelope,
+        &identity.machine_id,
+        &identity.kernel_id,
+        &identity.relay_public_key,
+    );
+    match ManagedBootstrapGrantBinding::read_for_receipt(&config.receipt_path)? {
+        Some(existing)
+            if existing.grant_binding_digest == expected.grant_binding_digest
+                && existing.exchange_identity_digest == expected.exchange_identity_digest
+                && existing.generation.is_none()
+                && existing.receipt_binding_digest.is_none() =>
+        {
+            Ok(())
+        }
+        Some(existing)
+            if existing.grant_binding_digest == expected.grant_binding_digest
+                && existing.exchange_identity_digest == expected.exchange_identity_digest =>
+        {
+            Err(bootstrap_error(
+                "completed managed bootstrap grant binding has no matching durable receipt",
+            ))
+        }
+        Some(_) => Err(bootstrap_error(
+            "managed bootstrap grant binding conflicts with the present envelope",
+        )),
+        None => expected.persist_for_receipt(&config.receipt_path),
+    }
+}
+
+fn bind_grant_to_receipt(
+    config: &BootstrapConfig,
+    envelope: &ManagedBootstrapEnvelope,
+    receipt: &BootstrapReceipt,
+) -> Result<(), DaemonError> {
+    if envelope.schema_version < 3 {
+        return Ok(());
+    }
+    let expected = ManagedBootstrapGrantBinding::for_receipt(envelope, receipt);
+    match ManagedBootstrapGrantBinding::read_for_receipt(&config.receipt_path)? {
+        Some(existing)
+            if existing.grant_binding_digest == expected.grant_binding_digest
+                && existing.exchange_identity_digest == expected.exchange_identity_digest
+                && (existing.generation.is_none() && existing.receipt_binding_digest.is_none()
+                    || existing.generation == expected.generation
+                        && existing.receipt_binding_digest == expected.receipt_binding_digest) =>
+        {
+            expected.persist_for_receipt(&config.receipt_path)
+        }
+        Some(_) => Err(bootstrap_error(
+            "managed bootstrap grant binding conflicts with its exchanged receipt",
+        )),
+        None => Err(bootstrap_error(
+            "managed bootstrap grant binding is missing before receipt persistence",
+        )),
+    }
+}
+
+fn validate_receipt_envelope_grant_binding(
+    config: &BootstrapConfig,
+    envelope: &ManagedBootstrapEnvelope,
+    receipt: &BootstrapReceipt,
+) -> Result<(), DaemonError> {
+    if envelope.schema_version < 3 {
+        return Ok(());
+    }
+    let expected = ManagedBootstrapGrantBinding::for_receipt(envelope, receipt);
+    match ManagedBootstrapGrantBinding::read_for_receipt(&config.receipt_path)? {
+        Some(binding) if binding == expected => Ok(()),
+        // A schema 1 binding of this exact receipt predates in-place updates;
+        // rebind it by identity.
+        Some(binding)
+            if binding == ManagedBootstrapGrantBinding::legacy_for_receipt(envelope, receipt) =>
+        {
+            expected.persist_for_receipt(&config.receipt_path)
+        }
+        Some(binding)
+            if receipt.status == BootstrapReceiptStatus::Exchanged
+                && binding.grant_binding_digest == expected.grant_binding_digest
+                && binding.exchange_identity_digest == expected.exchange_identity_digest
+                && binding.generation.is_none()
+                && binding.receipt_binding_digest.is_none() =>
+        {
+            // Exchange receipt persistence precedes sidecar completion. If
+            // restart lands in that interval, the exact pending envelope
+            // digest and durable receipt are enough to complete the binding
+            // without another Cloud exchange.
+            expected.persist_for_receipt(&config.receipt_path)
+        }
+        Some(_) => Err(bootstrap_error(
+            "managed bootstrap grant binding does not match its present envelope",
+        )),
+        None => Err(bootstrap_error(
+            "managed bootstrap receipt and envelope have no durable grant binding; their relationship is ambiguous",
+        )),
+    }
+}
+
+fn remove_bound_envelope(
+    config: &BootstrapConfig,
+    expected: &ManagedBootstrapEnvelope,
+) -> Result<(), DaemonError> {
+    if config.envelope_path == std::path::Path::new(state::PROTECTED_MANAGED_BOOTSTRAP_PATH) {
+        return Ok(());
+    }
+    if !config.envelope_path.exists() {
+        return Ok(());
+    }
+    let current = match BootstrapEnvelope::read(&config.envelope_path)? {
+        BootstrapEnvelope::ManagedEnvironment(value) => value,
+        BootstrapEnvelope::DisposableWorker(_) => return Err(legacy_worker_error()),
+    };
+    if current.grant_binding_digest() != expected.grant_binding_digest() {
+        return Err(bootstrap_error(
+            "managed bootstrap envelope changed before its grant was removed",
+        ));
+    }
+    remove_envelope(&config.envelope_path)
 }
 
 fn validate_profile(

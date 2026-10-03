@@ -36,3 +36,11 @@ test("repeated samples deduplicate notices and fail rather than exceed the evide
   assert.equal(evidence.summary().bytes, Buffer.byteLength(text))
   assert.throws(() => evidence.observe({ local: [{ id: 100, text: text + "x".repeat(1024) }], remote: [] }), /bound/)
 })
+
+// MP-08/MP-10: restarting a TUI changes attachment and permits reused local notice IDs.
+test("a new TUI attachment does not inherit the old notice ID baseline", () => {
+  const evidence = createRoomDrillTuiEvidence(["old"], [])
+  evidence.observe({ local: [], remote: [], localAttachmentId: "attachment-one" })
+  evidence.observe({ local: [{ id: "old", text }], remote: [], localAttachmentId: "attachment-two" })
+  assert.equal(evidence.find("local", action)?.text, text)
+})

@@ -1,3 +1,5 @@
+import type { NativeInteractionOrigin } from "./kernel-types-runtime.js"
+
 import type { PromptAttachmentPart } from "./kernel-types.js"
 
 export const DEPLOYMENT_CREDENTIAL_ENROLLMENT_SERVICE_SUBJECT_PREFIX = "deployment-credential-enrollment:"
@@ -293,11 +295,20 @@ export function getTerminalCommandCatalogRequest() {
   return { GetTerminalCommandCatalog: null }
 }
 
+/** Protocol 392: the Chariox passkey for a `requires_passkey` choice, and an
+ * optional window (1 to 15 minutes) in which the owner's critical approvals
+ * need no passkey. */
+export type InteractionPasskeyProof = {
+  passkey: string
+  rememberMinutes?: number | null
+}
+
 export function respondToInteractionRequest(
   sessionId: string,
   interactionId: string,
   choiceId: string,
   customReply?: string | null,
+  proof?: InteractionPasskeyProof | null,
 ) {
   return {
     RespondToInteraction: {
@@ -305,6 +316,10 @@ export function respondToInteractionRequest(
       interaction_id: interactionId,
       choice_id: choiceId,
       custom_reply: customReply ?? null,
+      ...(proof ? {
+        passkey: proof.passkey,
+        ...(proof.rememberMinutes ? { passkey_remember_minutes: proof.rememberMinutes } : {}),
+      } : {}),
     },
   }
 }
@@ -351,16 +366,20 @@ export function requestCredentialEnrollmentInteractionRequest(
   }
 }
 
+export const nativeProviderInteractionMinimumProtocolVersion = 405
+
 export function requestNativeProviderInteractionRequest(
   sessionId: string,
   agentId: string,
   interactionId: string,
   title: string | null,
   message: string,
+  origin: NativeInteractionOrigin,
   timeoutSec = 300,
 ) {
   return {
-    RequestNativeProviderInteraction: {
+    RequestNativeProviderTurnInteraction: {
+      origin,
       session_id: sessionId,
       agent_id: agentId,
       interaction_id: interactionId,

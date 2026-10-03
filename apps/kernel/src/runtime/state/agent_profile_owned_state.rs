@@ -76,33 +76,11 @@ impl KernelRuntimeOwnedState {
             agent_id,
             "update agent profile",
         )?;
-        // While a substitute is active, profile edits retarget the stored
-        // primary snapshot; unspecified fields resolve against that snapshot,
-        // not the running substitute.
-        let editing_substituted_primary = agent.active_substitute_index().is_some();
-        let base_provider = if editing_substituted_primary {
-            agent.primary_provider()
-        } else {
-            agent.provider()
-        };
-        let base_model = if editing_substituted_primary {
-            agent.primary_model()
-        } else {
-            agent.model()
-        };
-        let base_effort = if editing_substituted_primary {
-            agent.primary_effort()
-        } else {
-            agent.effort()
-        };
-        let base_account_profile = if editing_substituted_primary {
-            agent.primary_account_profile().unwrap_or("default")
-        } else {
-            agent.provider_account_profile()
-        };
-        let target_provider = provider.as_deref().unwrap_or(base_provider).to_string();
-        let target_model = model.as_deref().or(base_model).map(str::to_string);
-        let requested_account_profile = account_profile.as_deref().unwrap_or(base_account_profile);
+        let target_provider = provider.as_deref().unwrap_or(agent.provider()).to_string();
+        let target_model = model.as_deref().or(agent.model()).map(str::to_string);
+        let requested_account_profile = account_profile
+            .as_deref()
+            .unwrap_or(agent.provider_account_profile());
         let target_account_profile = if crate::provider::canonical_provider_family(&target_provider)
             .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
         {
@@ -123,32 +101,8 @@ impl KernelRuntimeOwnedState {
         };
         let target_effort = match effort.as_ref() {
             Some(value) => value.as_deref(),
-            None => base_effort,
+            None => agent.effort(),
         };
-        if editing_substituted_primary {
-            // The running substitute is left untouched and returning to
-            // primary lands on the edited values.
-            let primary_changed = target_provider != agent.primary_provider()
-                || target_model.as_deref() != agent.primary_model()
-                || target_account_profile != agent.primary_account_profile().unwrap_or("default")
-                || target_effort != agent.primary_effort();
-            let agent = if primary_changed {
-                self.agent_store.set_agent_primary_profile_snapshot(
-                    agent_id,
-                    &target_provider,
-                    target_model,
-                    target_effort.map(str::to_string),
-                    Some(target_account_profile),
-                )?
-            } else {
-                agent
-            };
-            return Ok(owned::OwnedAgentProfileUpdate {
-                agent,
-                terminated_run_ids: Vec::new(),
-                remote_update: None,
-            });
-        }
         let provider_model_or_account_changed = target_provider != agent.provider()
             || target_model.as_deref() != agent.model()
             || target_account_profile != agent.provider_account_profile();
@@ -325,7 +279,7 @@ impl KernelRuntimeOwnedState {
         agent_id: &str,
         caller_user_id: &str,
         action: crate::local::AgentSubstituteAction,
-    ) -> Result<(crate::agent::AgentInstance, Option<String>), DaemonError> {
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let agent = self.agent_store.get_agent(agent_id)?;
         if agent.session_id() != session_id {
             return Err(DaemonError::AgentNotInSession {
@@ -334,8 +288,7 @@ impl KernelRuntimeOwnedState {
             });
         }
         self.ensure_agent_owner(agent_id, caller_user_id, "update agent substitutes")?;
-        let retired_run = self.prepare_agent_substitute_transition(&agent, &action)?;
-        let updated = match action {
+        match action {
             crate::local::AgentSubstituteAction::Add {
                 provider,
                 model,
@@ -456,18 +409,6 @@ impl KernelRuntimeOwnedState {
             crate::local::AgentSubstituteAction::SetTimeout { timeout_ms } => self
                 .agent_store
                 .set_agent_substitution_timeout(agent_id, timeout_ms),
-            crate::local::AgentSubstituteAction::Activate { index, reason } => self
-                .agent_store
-                .activate_agent_substitute(
-                    agent_id,
-                    index,
-                    reason.unwrap_or_else(|| "manual".to_string()),
-                )
-                .map(|(agent, _profile)| agent),
-            crate::local::AgentSubstituteAction::Primary {} => {
-                self.agent_store.deactivate_agent_substitute(agent_id)
-            }
-        }?;
-        Ok((updated, retired_run))
+        }
     }
 }

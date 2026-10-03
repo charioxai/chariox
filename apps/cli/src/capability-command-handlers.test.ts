@@ -4,10 +4,21 @@ import test from "node:test"
 import type { AgentInstance } from "./cli-types.js"
 import { parseSlashCommand } from "./commands.js"
 import {
+  handleCredentialSlashCommand,
   handleExtensionSlashCommand,
   handleMcpSlashCommand,
+  VAULT_FOLDED_PASSPHRASE_HINT,
   type CapabilityCommandHandlerDeps,
 } from "./capability-command-handlers.js"
+
+test("App bindings use the existing slash grant path without a second remote confirmation", async () => {
+  const harness = capabilityHarness(agent({ remote: true }))
+  await handleExtensionSlashCommand(harness.deps, parseSlashCommand("/extension grant app agent-1 installed") as Extract<ReturnType<typeof parseSlashCommand>, { kind: "extension" }>)
+  await handleExtensionSlashCommand(harness.deps, parseSlashCommand("/extension grant app agent-1 installed --credential secret") as Extract<ReturnType<typeof parseSlashCommand>, { kind: "extension" }>)
+  assert.deepEqual(harness.grants, ["app:agent-1:installed"])
+  assert.deepEqual(harness.notices, [])
+  assert.deepEqual(harness.footers, ["info:bound App installed to agent-1", "error:App bindings take only an installation ID"])
+})
 
 test("extension slash command confirms active home-proxy grants before exposing home execution", async () => {
   const remote = agent({ remote: true })
@@ -114,6 +125,31 @@ test("mcp slash command confirms active home-proxy shorthand grants", async () =
   assert.deepEqual(harness.footers, ["error:confirmation required for home-proxy grant"])
 })
 
+test("a rejected vault passphrase adds the one-line recovery hint and still fails", async () => {
+  const command = parseSlashCommand("/credential vault manage") as Extract<ReturnType<typeof parseSlashCommand>, { kind: "credential" }>
+  for (const message of [
+    "failed to unlock Chariox vault; passphrase may be incorrect or the vault is corrupted",
+    "the current Chariox vault passphrase is incorrect; the passphrase is unchanged",
+  ]) {
+    const harness = capabilityHarness(agent())
+    harness.deps.manageCredentialVault = async () => { throw new Error(message) }
+    await assert.rejects(handleCredentialSlashCommand(harness.deps, command), { message })
+    assert.deepEqual(harness.notices, [VAULT_FOLDED_PASSPHRASE_HINT])
+  }
+  const cancelled = capabilityHarness(agent())
+  cancelled.deps.manageCredentialVault = async () => { throw new Error("Chariox vault unlock was cancelled") }
+  await assert.rejects(handleCredentialSlashCommand(cancelled.deps, command))
+  assert.deepEqual(cancelled.notices, [])
+  assert.match(VAULT_FOLDED_PASSPHRASE_HINT, /lower case and without spaces.*Change passphrase/)
+})
+
+test("a vault passphrase change reports its own outcome", async () => {
+  const harness = capabilityHarness(agent())
+  harness.deps.manageCredentialVault = async () => ({ action: "passphrase_changed", status: { unlocked: true } })
+  await handleCredentialSlashCommand(harness.deps, parseSlashCommand("/credential vault manage") as Extract<ReturnType<typeof parseSlashCommand>, { kind: "credential" }>)
+  assert.deepEqual(harness.footers, ["info:vault passphrase changed"])
+})
+
 function capabilityHarness(agent: AgentInstance, options: {
   readonly auditEvents?: Record<string, unknown>[]
   readonly retriedAgent?: AgentInstance
@@ -124,6 +160,7 @@ function capabilityHarness(agent: AgentInstance, options: {
   const auditRequests: Array<{ agentRef: string; limit: number | null | undefined }> = []
   let syncRetries = 0
   const deps: CapabilityCommandHandlerDeps = {
+    grantAgentApp: async (agentRef, name) => { grants.push(`app:${agentRef}:${name}`); return agent },
     appendNotice: (message) => notices.push(message),
     flashFooter: (message, tone) => footers.push(`${tone}:${message}`),
     resolveSessionAgent: (reference) => reference === agent.agent_ref || reference === agent.id

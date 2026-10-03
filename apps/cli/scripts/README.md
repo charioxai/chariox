@@ -169,7 +169,7 @@ without opening SSH or starting kernels.
 
 ## Workspace live sync Identity
 
-Workspace live sync drills coordinate only while the provider run remains in the same repo/branch/head identity captured by the kernel. If a drill or concurrent developer action changes that identity mid-run, `workspace_identity_changed` is a valid failure mode. Restart the drill from a stable workspace identity rather than treating that rejection as a file-edit collision.
+Workspace live sync drills coordinate only while the provider run remains in the same repo/branch/worktree identity captured by the kernel; commits on that branch keep it. If a drill or concurrent developer action changes that identity mid-run, `workspace_identity_changed` is a valid failure mode. Restart the drill from a stable workspace identity rather than treating that rejection as a file-edit collision.
 
 ## Multi-User Workflow Drill
 

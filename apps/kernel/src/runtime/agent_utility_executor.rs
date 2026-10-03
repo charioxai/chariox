@@ -318,7 +318,7 @@ fn agent_utility_operation(kind: &AgentUtilityKind) -> &'static str {
     }
 }
 
-async fn run_provider_utility_prompt(
+pub(crate) async fn run_provider_utility_prompt(
     runtime_state: &KernelRuntimeState,
     provider_run: RuntimeProviderRun,
     prompt: AgentUtilityPromptParts,
@@ -364,9 +364,9 @@ async fn run_provider_utility_prompt(
     })?
 }
 
-struct AgentUtilityPromptParts {
-    visible_user_prompt: String,
-    hidden_system_context: String,
+pub(crate) struct AgentUtilityPromptParts {
+    pub(crate) visible_user_prompt: String,
+    pub(crate) hidden_system_context: String,
 }
 
 impl From<crate::runtime::workspace_commit_message_utility::WorkspaceCommitMessageUtilityPrompt>

@@ -1,5 +1,7 @@
 use super::*;
 
+mod app_bindings;
+
 impl KernelRuntimeState {
     pub(crate) async fn grant_agent_extension(
         &self,
@@ -7,7 +9,17 @@ impl KernelRuntimeState {
         grant: crate::extension::ExtensionGrant,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let previous_grants = self
+            .owned
+            .agent_store
+            .get_agent(agent_ref)
+            .or_else(|_| self.owned.agent_store.get_agent_by_ref(agent_ref))?
+            .extension_grants()
+            .to_vec();
         match grant.kind {
+            crate::extension::ExtensionKind::App => {
+                self.grant_agent_app(agent_ref, grant, caller_user_id).await
+            }
             crate::extension::ExtensionKind::Mcp => {
                 self.grant_agent_mcp(agent_ref, grant.name, caller_user_id)
                     .await
@@ -47,6 +59,9 @@ impl KernelRuntimeState {
                     agent.session_id(),
                     agent.id(),
                 )?;
+                if previous_grants.as_slice() != agent.extension_grants() {
+                    self.remember_runtime_catalog_continuation(&agent, "runtime tool catalog");
+                }
                 Ok(agent)
             }
             crate::extension::ExtensionKind::Connector => {
@@ -80,6 +95,9 @@ impl KernelRuntimeState {
                     agent.session_id(),
                     agent.id(),
                 )?;
+                if previous_grants.as_slice() != agent.extension_grants() {
+                    self.remember_runtime_catalog_continuation(&agent, "runtime tool catalog");
+                }
                 Ok(agent)
             }
         }
@@ -126,7 +144,9 @@ impl KernelRuntimeState {
                         reserved.extend(connector.allowed_operation_tool_names(max_safety));
                     }
                 }
-                crate::extension::ExtensionKind::Mcp | crate::extension::ExtensionKind::Skill => {}
+                crate::extension::ExtensionKind::Mcp
+                | crate::extension::ExtensionKind::Skill
+                | crate::extension::ExtensionKind::App => {}
             }
         }
         let proposed_names = match proposed.kind {
@@ -142,9 +162,9 @@ impl KernelRuntimeState {
                     crate::connector::ConnectorSafety::parse(proposed.max_safety.as_deref())?;
                 connector.allowed_operation_tool_names(max_safety)
             }
-            crate::extension::ExtensionKind::Mcp | crate::extension::ExtensionKind::Skill => {
-                Vec::new()
-            }
+            crate::extension::ExtensionKind::Mcp
+            | crate::extension::ExtensionKind::Skill
+            | crate::extension::ExtensionKind::App => Vec::new(),
         };
         for name in proposed_names {
             if reserved.contains(&name) {
@@ -165,7 +185,17 @@ impl KernelRuntimeState {
         name: &str,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let previous_grants = self
+            .owned
+            .agent_store
+            .get_agent(agent_ref)
+            .or_else(|_| self.owned.agent_store.get_agent_by_ref(agent_ref))?
+            .extension_grants()
+            .to_vec();
         match kind {
+            crate::extension::ExtensionKind::App => {
+                self.revoke_agent_app(agent_ref, name, caller_user_id).await
+            }
             crate::extension::ExtensionKind::Mcp => {
                 self.revoke_agent_mcp(agent_ref, name, caller_user_id).await
             }
@@ -203,6 +233,9 @@ impl KernelRuntimeState {
                     agent.session_id(),
                     agent.id(),
                 )?;
+                if previous_grants.as_slice() != agent.extension_grants() {
+                    self.remember_runtime_catalog_continuation(&agent, "runtime tool catalog");
+                }
                 Ok(agent)
             }
             crate::extension::ExtensionKind::Connector => {
@@ -235,6 +268,9 @@ impl KernelRuntimeState {
                     agent.session_id(),
                     agent.id(),
                 )?;
+                if previous_grants.as_slice() != agent.extension_grants() {
+                    self.remember_runtime_catalog_continuation(&agent, "runtime tool catalog");
+                }
                 Ok(agent)
             }
         }
@@ -367,7 +403,7 @@ impl KernelRuntimeState {
         Ok(agent)
     }
 
-    async fn sync_remote_extension_manifest_for_agent(
+    pub(super) async fn sync_remote_extension_manifest_for_agent(
         &self,
         agent: &crate::agent::AgentInstance,
         caller_user_id: Option<&str>,
@@ -387,9 +423,26 @@ impl KernelRuntimeState {
         caller_user_id: Option<&str>,
         pending_revoke_intent: Option<bool>,
     ) -> Result<(), DaemonError> {
-        let Some(remote_execution) = agent.remote_execution().cloned() else {
-            return Ok(());
+        let agent_id = agent.id().to_string();
+        let (_sync_lane, current_agent, remote_execution) = loop {
+            let current = self.owned.agent_store.get_agent(&agent_id)?;
+            let Some(remote_execution) = current.remote_execution().cloned() else {
+                return Ok(());
+            };
+            let leased_agent_id = remote_execution.leased_agent_id.clone();
+            let sync_lane = self.leased_agent_operations.lock(&leased_agent_id).await;
+            let current = self.owned.agent_store.get_agent(&agent_id)?;
+            let Some(current_remote_execution) = current.remote_execution().cloned() else {
+                drop(sync_lane);
+                return Ok(());
+            };
+            if current_remote_execution.leased_agent_id != leased_agent_id {
+                drop(sync_lane);
+                continue;
+            }
+            break (sync_lane, current, current_remote_execution);
         };
+        let agent = &current_agent;
         let manifest = self.remote_extension_manifest_for_agent(agent)?;
         let manifest_hash = manifest.manifest_hash();
         let tool_count = manifest.tools.len();
@@ -413,18 +466,31 @@ impl KernelRuntimeState {
         ) {
             config.apply_missing_remote_relay_override(relay_url, relay_token);
         }
-        let response = crate::transport::relay_client::send_peer_request_via_temporary_connection(
-            &config,
-            ClientTarget {
-                daemon_id: Some(remote_execution.worker_kernel_id.clone()),
-                daemon_alias: None,
-            },
-            RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
-                leased_agent_id: remote_execution.leased_agent_id,
-                remote_extension_manifest: manifest,
-            },
-        )
-        .await;
+        let target = ClientTarget {
+            daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+            daemon_alias: None,
+        };
+        let request = RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
+            leased_agent_id: remote_execution.leased_agent_id,
+            remote_extension_manifest: manifest,
+        };
+        let response = match self.connected_relay_state_for_config(&config).await {
+            Some(relay_state) => {
+                crate::transport::relay_client::send_peer_request_via_connected_relay(
+                    &config,
+                    &relay_state,
+                    target,
+                    request,
+                )
+                .await
+            }
+            None => {
+                crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                    &config, target, request,
+                )
+                .await
+            }
+        };
         let response = match response {
             Ok(response) => response,
             Err(error) => {
@@ -1039,63 +1105,13 @@ impl KernelRuntimeState {
                 agent_id: agent_id.to_string(),
             });
         }
-        if original.remote_execution().is_some() {
-            if let Some(target) =
-                super::remote_agent_profile_runtime::substitute_target(&original, &action)?
-            {
-                if !super::remote_agent_profile_runtime::same_execution_profile(&original, &target)
-                {
-                    return self
-                        .update_remote_agent_substitute(original, action, target)
-                        .await;
-                }
-            }
-        }
-        let profile_transition = if original.remote_execution().is_some() {
-            Some(
-                self.owned
-                    .prompt_state_owner
-                    .claim_agent_profile_list_edit(
-                        &self.owned.session_store.get_session(session_id)?,
-                        agent_id,
-                    )?,
-            )
-        } else {
-            None
-        };
-        let result = async {
-            let (agent, retired_run) = self.owned.update_agent_substitutes(
-                session_id,
-                agent_id,
-                caller_user_id,
-                action,
-            )?;
-            if let Some(provider_run_id) = retired_run {
-                let (_, process_key) = self
-                    .with_app_side_effect(|app| {
-                        crate::app::ProviderLaunchProcessRuntime::new(app)
-                            .remove_run(&provider_run_id)
-                    })
-                    .await
-                    .unwrap_or((false, None));
-                self.owned
-                    .remove_provider_process_tracking_for_run(&provider_run_id, process_key);
-            }
-            self.append_agent_durable_event("agent.updated", &agent, None)
-                .await?;
-            self.invalidate_workflow_copies_after_source_agent_change(session_id, agent_id)?;
-            Ok(agent)
-        }
-        .await;
-        if let Some(claim) = profile_transition {
-            let finish = self
-                .finish_remote_agent_profile_transition(session_id, agent_id, claim)
-                .await;
-            if result.is_ok() {
-                finish?;
-            }
-        }
-        result
+        let agent =
+            self.owned
+                .update_agent_substitutes(session_id, agent_id, caller_user_id, action)?;
+        self.append_agent_durable_event("agent.updated", &agent, None)
+            .await?;
+        self.invalidate_workflow_copies_after_source_agent_change(session_id, agent_id)?;
+        Ok(agent)
     }
 
     pub(crate) async fn ensure_agent_owner(

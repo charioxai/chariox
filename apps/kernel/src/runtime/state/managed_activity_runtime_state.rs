@@ -13,10 +13,18 @@ pub(super) struct ManagedActivityLockProbe {
 }
 
 impl KernelRuntimeState {
+    #[cfg(test)]
+    pub(crate) fn managed_activity_record_call_count_for_test(&self) -> u64 {
+        self.owned
+            .managed_activity_record_calls
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     pub(crate) fn managed_activity_change_sequence(&self) -> u64 {
         self.owned.runtime_projection_changes.sequence()
     }
 
+    #[cfg(test)]
     pub(crate) fn managed_activity_snapshot(&self) -> (u64, u8) {
         let _mutation = self
             .owned
@@ -49,9 +57,17 @@ impl KernelRuntimeState {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn managed_activity_report_snapshot(
         &self,
     ) -> Result<(u64, super::ManagedActivityObservation), crate::error::DaemonError> {
+        self.managed_activity_report_snapshot_with_transition()
+            .map(|(sequence, observation, _)| (sequence, observation))
+    }
+
+    pub(crate) fn managed_activity_report_snapshot_with_transition(
+        &self,
+    ) -> Result<(u64, super::ManagedActivityObservation, u64), crate::error::DaemonError> {
         let _mutation = self
             .owned
             .managed_activity_mutation_lock
@@ -63,10 +79,12 @@ impl KernelRuntimeState {
             match self
                 .owned
                 .managed_activity_transitions
-                .current_observation(running_agent_count)
+                .current_observation_with_sequence(running_agent_count)
             {
-                Ok(observation) if sequence == self.managed_activity_change_sequence() => {
-                    return Ok((sequence, observation));
+                Ok((transition_sequence, observation))
+                    if sequence == self.managed_activity_change_sequence() =>
+                {
+                    return Ok((sequence, observation, transition_sequence));
                 }
                 Ok(_) => {}
                 Err(_) if sequence != self.managed_activity_change_sequence() => {}
@@ -79,15 +97,15 @@ impl KernelRuntimeState {
         &self,
         mut sequence: u64,
         observation: super::ManagedActivityObservation,
-    ) -> Result<(u64, super::ManagedActivityObservation), crate::error::DaemonError> {
+    ) -> Result<(u64, super::ManagedActivityObservation, u64), crate::error::DaemonError> {
         loop {
             let latest_sequence = self.managed_activity_change_sequence();
             if latest_sequence != sequence {
-                let (latest_sequence, latest_observation) =
-                    self.managed_activity_report_snapshot()?;
+                let (latest_sequence, latest_observation, local_transition_sequence) =
+                    self.managed_activity_report_snapshot_with_transition()?;
                 sequence = latest_sequence;
                 if latest_observation != observation {
-                    return Ok((sequence, latest_observation));
+                    return Ok((sequence, latest_observation, local_transition_sequence));
                 }
             }
             self.owned
@@ -97,6 +115,7 @@ impl KernelRuntimeState {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn managed_running_agent_count(&self) -> u8 {
         let _mutation = self
             .owned
@@ -152,7 +171,7 @@ impl KernelRuntimeState {
 }
 
 impl KernelRuntimeOwnedState {
-    fn managed_running_agent_count_unlocked(&self) -> u8 {
+    pub(super) fn managed_running_agent_count_unlocked(&self) -> u8 {
         let active_turn_count = self.active_turns.snapshot().len();
         let sessions = self
             .session_store
@@ -199,7 +218,23 @@ impl KernelRuntimeOwnedState {
         }
     }
 
+    pub(super) fn begin_managed_activity_admission(
+        &self,
+    ) -> Result<Option<super::ManagedKernelAdmissionGuard<'_>>, crate::error::DaemonError> {
+        self.managed_kernel_quiescence
+            .as_ref()
+            .map(|gate| gate.admission_guard())
+            .transpose()
+    }
+
     fn record_managed_activity_transition_unlocked(&self) {
+        self.record_managed_activity_transition_at_unlocked(None);
+    }
+
+    fn record_managed_activity_transition_at_unlocked(&self, observed_at_ms: Option<u64>) {
+        #[cfg(test)]
+        self.managed_activity_record_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if !self.managed_activity_transitions.is_enabled() {
             return;
         }
@@ -228,7 +263,7 @@ impl KernelRuntimeOwnedState {
                 (
                     self.runtime_projection_changes.sequence(),
                     self.managed_running_agent_count_unlocked(),
-                    crate::session::unix_epoch_ms(),
+                    observed_at_ms.unwrap_or_else(crate::session::unix_epoch_ms),
                 )
             })
         {
@@ -253,6 +288,18 @@ impl ManagedActivityMutation<'_> {
     // Consuming the guard prevents a later mutation from overtaking this capture.
     pub(super) fn record(self) {
         self.state.record_managed_activity_transition_unlocked();
+    }
+
+    pub(super) fn record_prompt_finish_at(self, observed_at_ms: Option<u64>) {
+        // A delayed completion may predate another turn that finished while
+        // this one kept the aggregate busy. Include all cleared turns, even
+        // provider-less turns removed by agent/session cleanup.
+        let aggregate_finished_at_ms = self
+            .state
+            .managed_activity_transitions
+            .record_prompt_finish(observed_at_ms.unwrap_or_else(crate::session::unix_epoch_ms));
+        self.state
+            .record_managed_activity_transition_at_unlocked(Some(aggregate_finished_at_ms));
     }
 }
 
@@ -380,8 +427,8 @@ mod tests {
         runtime
             .ensure_managed_activity_tracking("kernel-projection-churn")
             .expect("managed activity tracking should activate");
-        let (sequence, observation) = runtime
-            .managed_activity_report_snapshot()
+        let (sequence, observation, initial_transition_sequence) = runtime
+            .managed_activity_report_snapshot_with_transition()
             .expect("initial activity should be durable");
         assert_eq!(observation.running_agent_count, 0);
 
@@ -405,11 +452,13 @@ mod tests {
             ));
         runtime.record_managed_activity_transition_for_test();
         runtime.owned.runtime_projection_changes.record_change();
-        let (_, latest) = tokio::time::timeout(std::time::Duration::from_secs(1), wait)
-            .await
-            .expect("real activity transition should wake")
-            .expect("activity transition should remain readable");
+        let (_, latest, latest_transition_sequence) =
+            tokio::time::timeout(std::time::Duration::from_secs(1), wait)
+                .await
+                .expect("real activity transition should wake")
+                .expect("activity transition should remain readable");
         assert_eq!(latest.running_agent_count, 1);
+        assert!(latest_transition_sequence > initial_transition_sequence);
     }
 
     #[tokio::test]
@@ -421,8 +470,8 @@ mod tests {
         runtime
             .ensure_managed_activity_tracking("kernel-rapid-wait")
             .expect("managed activity tracking should activate");
-        let (sequence, initial_idle) = runtime
-            .managed_activity_report_snapshot()
+        let (sequence, initial_idle, initial_transition_sequence) = runtime
+            .managed_activity_report_snapshot_with_transition()
             .expect("initial idle activity should be durable");
 
         std::thread::sleep(std::time::Duration::from_millis(2));
@@ -438,7 +487,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(2));
         runtime.clear_prompt_activity_for_managed_activity_test("provider-run-1");
 
-        let (_, later_idle) = tokio::time::timeout(
+        let (_, later_idle, later_transition_sequence) = tokio::time::timeout(
             std::time::Duration::from_secs(1),
             runtime.wait_for_managed_activity_transition_after(sequence, initial_idle),
         )
@@ -447,6 +496,7 @@ mod tests {
         .expect("later idle observation should remain readable");
         assert_eq!(later_idle.running_agent_count, 0);
         assert!(later_idle.changed_at_ms > initial_idle.changed_at_ms);
+        assert!(later_transition_sequence > initial_transition_sequence);
     }
 
     #[tokio::test]
@@ -500,11 +550,7 @@ mod tests {
             idle_acquired_rx.recv_timeout(std::time::Duration::from_millis(50)),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout)
         ));
-        assert!(runtime
-            .owned
-            .active_turns
-            .get("provider-run-1")
-            .is_some());
+        assert!(runtime.owned.active_turns.get("provider-run-1").is_some());
 
         release_busy_tx
             .send(())

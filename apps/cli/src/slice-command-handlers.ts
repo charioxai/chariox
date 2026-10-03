@@ -1,16 +1,23 @@
 import type {
   SliceBackupRecord,
+  SliceDisplayEndpoint,
   SliceLogEntry,
   SliceRecord,
   SliceSavedStateRecord,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
+import { createRelayKeypair } from "@chariox/kernel-client/browser-relay-crypto"
 import {
   DEFAULT_HEADED_SLICE_DISPLAY_BACKEND,
   getRoomEnvironmentSliceRequest,
 } from "@chariox/kernel-client/ipc-requests"
 import type { RoomEnvironmentSliceResponse } from "@chariox/kernel-client/kernel-types"
 import { scopedSliceViewerTarget } from "@chariox/kernel-client/slice-screen-viewer"
+import {
+  evaluateSliceViewerAvailability,
+  validateRoomBoundSliceIdentity,
+  type SliceViewerAvailability,
+} from "./slice-viewer-availability.js"
 import {
   formatSliceProviderAuthActionResult,
   formatSliceProviderLogin,
@@ -969,10 +976,13 @@ async function openSliceScreen(
   }
   const resolvedRef = await explicitOrFocusedSliceRef(deps, sliceRef)
   const slice = await deps.getSlice(resolvedRef)
-  const endpoint = slice.display_endpoint?.kind === "selkies"
-    ? null
-    : await deps.getSliceDisplayEndpoint(resolvedRef)
-  if (!endpoint || endpoint.kind === "selkies") {
+  const preflight = evaluateSliceViewerAvailability(slice)
+  if (preflight.state !== "check_required" && preflight.state !== "available") {
+    deps.flashFooter(preflight.message, "error")
+    return
+  }
+
+  if (slice.display_endpoint?.kind === "selkies") {
     if (!deps.isAttached?.()) {
       deps.flashFooter("Selkies slice screen requires an active Room session, attachment, and focused agent", "error")
       return
@@ -992,6 +1002,10 @@ async function openSliceScreen(
       deps.flashFooter("Selkies slice screen requires an active Room session, attachment, and focused agent", "error")
       return
     }
+    if (deps.isRelayConnection?.() && !await deps.createViewerPublicKey?.()) {
+      deps.flashFooter("remote slice viewing requires this CLI's paired key-bound relay identity; issue a bound token with /relay cloud client-token", "error")
+      return
+    }
     const response = await deps.sendRoomEnvironmentRequest<RoomEnvironmentSliceResponse>(
       getRoomEnvironmentSliceRequest(sessionId),
     )
@@ -1009,6 +1023,41 @@ async function openSliceScreen(
       deps.flashFooter(scoped.error, "error")
       return
     }
+    const binding = response.RoomEnvironmentSlice.binding
+    if (!binding) {
+      deps.flashFooter("Room Environment has no bound slice to view", "error")
+      return
+    }
+    const identityError = validateRoomBoundSliceIdentity(sessionId, binding, slice)
+    if (identityError) {
+      deps.flashFooter(identityError, "error")
+      return
+    }
+    let endpoint: SliceDisplayEndpoint
+    try {
+      const pairedPublicKey = await deps.createViewerPublicKey?.()
+      if (deps.isRelayConnection?.() && !pairedPublicKey) {
+        deps.flashFooter("remote slice viewing requires this CLI's paired key-bound relay identity; issue a bound token with /relay cloud client-token", "error")
+        return
+      }
+      const viewerPublicKey = pairedPublicKey ?? (await createRelayKeypair()).publicKeyBase64
+      endpoint = await deps.getSliceDisplayEndpoint(slice.id, {
+        sessionId,
+        attachmentId,
+        viewerPublicKey,
+      })
+    } catch (error) {
+      const availability = evaluateSliceViewerAvailability(slice, { error })
+      deps.flashFooter(sliceDisplayEndpointFailureMessage(availability, slice.id), "error")
+      return
+    }
+    const availability = evaluateSliceViewerAvailability(slice, { endpoint })
+    if (availability.state !== "available") {
+      deps.flashFooter(availability.state === "check_required"
+        ? `could not check display endpoint for slice ${slice.id}`
+        : availability.message, "error")
+      return
+    }
     const opened = await deps.openRoomViewer?.(scoped.target)
     if (!opened) {
       deps.flashFooter("Chariox Cloud Web View is not configured; run /cloud link first", "error")
@@ -1021,9 +1070,40 @@ async function openSliceScreen(
     ].join("\n"))
     return
   }
+
+  let endpoint: SliceDisplayEndpoint
+  try {
+    endpoint = await deps.getSliceDisplayEndpoint(resolvedRef)
+  } catch (error) {
+    const availability = evaluateSliceViewerAvailability(slice, { error })
+    deps.flashFooter(sliceDisplayEndpointFailureMessage(availability, slice.id), "error")
+    return
+  }
+  const availability = evaluateSliceViewerAvailability(slice, { endpoint })
+  if (availability.state !== "available") {
+    deps.flashFooter(availability.state === "check_required"
+      ? `could not check display endpoint for slice ${slice.id}`
+      : availability.message, "error")
+    return
+  }
   deps.appendNotice(endpoint.url)
   const opened = await deps.openExternalUrl?.(endpoint.url)
   deps.flashFooter(`${opened ? "opened" : "screen"} ${endpoint.url}`, "info")
+}
+
+function sliceDisplayEndpointFailureMessage(
+  availability: SliceViewerAvailability,
+  sliceId: string,
+): string {
+  switch (availability.state) {
+    case "unavailable":
+    case "error":
+      return availability.message
+    case "check_required":
+      return `could not check display endpoint for slice ${sliceId}`
+    case "available":
+      throw new Error(`slice ${sliceId} display endpoint request failed after reporting an available display`)
+  }
 }
 
 async function importSliceAuth(

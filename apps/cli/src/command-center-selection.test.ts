@@ -6,6 +6,7 @@ import {
   commandCenterCompletionText,
   commandCenterExecutionCommand,
   nextCommandCenterIndex,
+  promptAddsArgumentsToCommandCenterItem,
   shouldBypassCommandCenterSubmitSelection,
   shouldSubmitExactCommandCenterMatch,
 } from "./command-center-selection.js"
@@ -116,6 +117,30 @@ test("command center exact submit matching submits leaf commands but not parent 
   }, "/workflow"), false)
 
   assert.equal(shouldSubmitExactCommandCenterMatch(commandItem, "/agent list"), true)
+})
+
+test("command center treats a command followed by arguments as the typed command", () => {
+  const dev: CommandCenterItem = {
+    id: "app-dev",
+    label: "dev",
+    description: "Pack an App source directory",
+    kind: "command",
+    value: "/app dev ",
+  }
+  assert.equal(promptAddsArgumentsToCommandCenterItem(dev, "/app dev stop"), true)
+  assert.equal(promptAddsArgumentsToCommandCenterItem(dev, '/app dev "./My App" --key k'), true)
+  assert.equal(promptAddsArgumentsToCommandCenterItem(dev, "/app dev "), false)
+  assert.equal(promptAddsArgumentsToCommandCenterItem(dev, "/app dev   "), false)
+  assert.equal(promptAddsArgumentsToCommandCenterItem(dev, "/app dev"), false)
+  assert.equal(promptAddsArgumentsToCommandCenterItem(dev, "/app devs"), false)
+  // A command without a trailing space takes arguments after a space.
+  assert.equal(promptAddsArgumentsToCommandCenterItem(commandItem, "/agent list --all"), true)
+  assert.equal(promptAddsArgumentsToCommandCenterItem(commandItem, "/agent listing"), false)
+  assert.equal(promptAddsArgumentsToCommandCenterItem(commandItem, "/agent list"), false)
+  assert.equal(shouldSubmitExactCommandCenterMatch(commandItem, "/agent list --all"), true)
+  // Groups and suggestions keep completing.
+  assert.equal(promptAddsArgumentsToCommandCenterItem({ ...dev, kind: "group" }, "/app dev stop"), false)
+  assert.equal(promptAddsArgumentsToCommandCenterItem({ ...dev, kind: "model" }, "/app dev stop"), false)
 })
 
 test("command center submit selection bypasses session alias prompts", () => {

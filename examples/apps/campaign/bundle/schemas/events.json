@@ -1,0 +1,14 @@
+{
+  "events": [
+    {
+      "name": "campaign_changed",
+      "schemaVersion": 1,
+      "direction": "incoming",
+      "payloadSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    }
+  ]
+}

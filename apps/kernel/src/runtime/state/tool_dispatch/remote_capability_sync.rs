@@ -1,4 +1,5 @@
 use chariox_relay::protocol::ClientTarget;
+use std::future::Future;
 
 use crate::error::DaemonError;
 use crate::runtime::state::KernelRuntimeState;
@@ -152,6 +153,30 @@ impl KernelRuntimeState {
         &self,
         agent: &crate::agent::AgentInstance,
     ) -> Result<crate::extension::RemoteExtensionManifest, DaemonError> {
+        let mut manifest = self.remote_extension_manifest_without_apps_for_agent(agent)?;
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        if agent.remote_execution().is_some() {
+            let occupied = manifest
+                .tools
+                .iter()
+                .map(|tool| tool.tool_name.clone())
+                .collect();
+            manifest.tools.extend(
+                self.app_control()
+                    .app_extension_tools_for_agent(agent, &occupied)
+                    .map_err(|error| DaemonError::LocalTransport {
+                        operation: "remote App tool catalog",
+                        message: error.to_string(),
+                    })?,
+            );
+        }
+        Ok(manifest)
+    }
+
+    pub(super) fn remote_extension_manifest_without_apps_for_agent(
+        &self,
+        agent: &crate::agent::AgentInstance,
+    ) -> Result<crate::extension::RemoteExtensionManifest, DaemonError> {
         if agent.remote_execution().is_none() {
             return Ok(crate::extension::RemoteExtensionManifest::default());
         }
@@ -248,27 +273,55 @@ impl KernelRuntimeState {
             }
         }
 
-        Ok(crate::extension::RemoteExtensionManifest { tools })
+        let room_browser_available = self
+            .owned
+            .slice_store
+            .environment_slice(agent.session_id())
+            .is_some();
+        Ok(crate::extension::RemoteExtensionManifest {
+            tools,
+            room_browser_available,
+        })
     }
 
-    pub(in crate::runtime::state) fn remote_prompt_mcp_capabilities_for_agent(
+    pub(in crate::runtime::state) async fn with_current_remote_extension_manifest<
+        T,
+        Operation,
+        OperationFuture,
+    >(
         &self,
-        agent: &crate::agent::AgentInstance,
-    ) -> Result<
-        (
-            Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
+        agent_id: &str,
+        expected_leased_agent_id: &str,
+        operation: Operation,
+    ) -> Result<T, DaemonError>
+    where
+        Operation: FnOnce(
+            crate::agent::AgentInstance,
+            crate::agent::RemoteAgentBinding,
             crate::extension::RemoteExtensionManifest,
-        ),
-        DaemonError,
-    > {
-        let manifest = self.remote_extension_manifest_for_agent(agent)?;
-        if self.remote_agent_has_native_provider_run(agent) {
-            return Ok((
-                self.required_remote_mcps_for_native_provider_launch(agent)?,
-                manifest.without_mcp_tools(),
-            ));
+        ) -> OperationFuture,
+        OperationFuture: Future<Output = Result<T, DaemonError>>,
+    {
+        // The operation runs inside the leased-agent ordering lane. Connected-relay callers
+        // return after enqueueing their request and await the response waiter only after this
+        // method returns, so manifest sync can proceed while the worker handles the request.
+        let _lease_operation = self
+            .leased_agent_operations
+            .lock(expected_leased_agent_id)
+            .await;
+        let agent = self.owned.agent_store.get_agent(agent_id)?;
+        let Some(remote_execution) = agent.remote_execution().cloned() else {
+            return Err(DaemonError::LeasedAgentNotFound {
+                leased_agent_id: expected_leased_agent_id.to_string(),
+            });
+        };
+        if remote_execution.leased_agent_id != expected_leased_agent_id {
+            return Err(DaemonError::LeasedAgentNotFound {
+                leased_agent_id: expected_leased_agent_id.to_string(),
+            });
         }
-        Ok((self.required_remote_mcps_for_agent(agent)?, manifest))
+        let manifest = self.remote_extension_manifest_for_agent(&agent)?;
+        operation(agent, remote_execution, manifest).await
     }
 
     pub(in crate::runtime::state) fn remote_agent_has_native_provider_run(

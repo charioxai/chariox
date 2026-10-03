@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
@@ -138,6 +138,7 @@ impl CharioxEncryptedCredentialVaultStore {
 
 impl CredentialVaultStore for CharioxEncryptedCredentialVaultStore {
     fn get_secret(&self, service: &str, key: &str) -> Result<String, DaemonError> {
+        let _read = vault_read_lock()?;
         let vault_key = unlocked_vault_key(&self.path)?;
         let plaintext = read_vault_plaintext(&self.path, vault_key.as_ref())?;
         plaintext
@@ -149,6 +150,7 @@ impl CredentialVaultStore for CharioxEncryptedCredentialVaultStore {
     }
 
     fn set_secret(&self, service: &str, key: &str, value: &str) -> Result<(), DaemonError> {
+        let _write = vault_write_lock()?;
         let vault_key = unlocked_vault_key(&self.path)?;
         let mut plaintext = if self.path.exists() {
             read_vault_plaintext(&self.path, vault_key.as_ref())?
@@ -169,6 +171,7 @@ impl CredentialVaultStore for CharioxEncryptedCredentialVaultStore {
     }
 
     fn delete_secret(&self, service: &str, key: &str) -> Result<(), DaemonError> {
+        let _write = vault_write_lock()?;
         let vault_key = unlocked_vault_key(&self.path)?;
         let mut plaintext = if self.path.exists() {
             read_vault_plaintext(&self.path, vault_key.as_ref())?
@@ -259,6 +262,9 @@ pub fn unlock_chariox_encrypted_vault(
         VaultUnlockLease::TtlMinutes(minutes) => Some(now_ms + minutes.saturating_mul(60_000)),
         VaultUnlockLease::KernelShutdown => None,
     };
+    // Read, verify and remember the key under the write lock, so a concurrent
+    // passphrase change cannot leave this unlock holding the replaced key.
+    let _write = vault_write_lock()?;
     let key = if path.exists() {
         let file = read_vault_file(&path)?;
         let key = derive_key(passphrase, &file.kdf)?;
@@ -281,6 +287,95 @@ pub fn unlock_chariox_encrypted_vault(
     })
 }
 
+/// A commitment to the vault key, pinned by the kernel for critical approvals:
+/// the vault's KDF parameters and a hash of the derived key, never the key.
+/// Verifying a passkey against it needs no vault file, so a later change of
+/// the configured vault path or of the file itself cannot redirect it.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VaultPasskeyVerifier {
+    kdf: VaultKdfConfig,
+    key_check: String,
+}
+
+impl VaultPasskeyVerifier {
+    fn for_key(kdf: VaultKdfConfig, key: &[u8]) -> Self {
+        Self {
+            kdf,
+            key_check: passkey_key_check(key),
+        }
+    }
+
+    /// From the vault file at `path` when `passphrase` opens it.
+    pub fn from_passphrase(path: &Path, passphrase: &str) -> Result<Option<Self>, DaemonError> {
+        let file = read_vault_file(&normalize_vault_path(path.to_path_buf()))?;
+        if passphrase.is_empty() {
+            return Ok(None);
+        }
+        let key = derive_key(passphrase, &file.kdf)?;
+        Ok(decrypt_vault_payload(&file, key.as_ref())
+            .is_ok()
+            .then(|| Self::for_key(file.kdf, key.as_ref())))
+    }
+
+    /// From the kernel's unlocked key for the vault at `path`, if unlocked.
+    pub fn from_unlocked(path: &Path) -> Result<Option<Self>, DaemonError> {
+        let path = normalize_vault_path(path.to_path_buf());
+        let _read = vault_read_lock()?;
+        let Ok(key) = unlocked_vault_key(&path) else {
+            return Ok(None);
+        };
+        let file = read_vault_file(&path)?;
+        Ok(decrypt_vault_payload(&file, key.as_ref())
+            .is_ok()
+            .then(|| Self::for_key(file.kdf, key.as_ref())))
+    }
+
+    /// Whether the vault file at `path` was last re-keyed for this verifier:
+    /// it carries the verifier's KDF parameters and salt, which only that
+    /// passphrase change wrote. An error means the file could not be
+    /// inspected, so the answer is unknown. Settles a change that stopped
+    /// before its pin was recorded; it never verifies a passkey.
+    pub fn matches_vault_file(&self, path: &Path) -> Result<bool, DaemonError> {
+        Ok(read_vault_file(&normalize_vault_path(path.to_path_buf()))?.kdf == self.kdf)
+    }
+
+    /// Whether `passphrase` derives the pinned key.
+    pub fn verify(&self, passphrase: &str) -> Result<bool, DaemonError> {
+        if passphrase.is_empty() {
+            return Ok(false);
+        }
+        let key = derive_key(passphrase, &self.kdf)?;
+        let check = passkey_key_check(key.as_ref());
+        Ok(check.len() == self.key_check.len()
+            && check
+                .bytes()
+                .zip(self.key_check.bytes())
+                .fold(0_u8, |diff, (a, b)| diff | (a ^ b))
+                == 0)
+    }
+}
+
+fn passkey_key_check(key: &[u8]) -> String {
+    sha256_hex(&[b"chariox critical approval passkey v1\0".as_slice(), key].concat())
+}
+
+/// A locked vault with a light KDF, for tests that verify its passphrase.
+#[cfg(test)]
+pub(crate) fn create_chariox_encrypted_vault_for_test(
+    path: &Path,
+    passphrase: &str,
+) -> Result<(), DaemonError> {
+    let kdf = VaultKdfProfile {
+        memory_kib: 1024,
+        iterations: 1,
+        parallelism: 1,
+    }
+    .new_kdf_config();
+    let key = derive_key(passphrase, &kdf)?;
+    write_vault_file(path, key.as_ref(), &VaultPlaintext::default(), kdf)
+}
+
 pub fn lock_chariox_encrypted_vault(path: impl AsRef<Path>) -> Result<(), DaemonError> {
     let path = normalize_vault_path(path.as_ref().to_path_buf());
     unlocked_vaults()
@@ -288,6 +383,95 @@ pub fn lock_chariox_encrypted_vault(path: impl AsRef<Path>) -> Result<(), Daemon
         .map_err(|error| secret_error(format!("Chariox vault unlock state poisoned: {error}")))?
         .remove(&path);
     Ok(())
+}
+
+/// Changes the passphrase of an encrypted Vault.
+///
+/// The current passphrase must decrypt the Vault: it is checked exactly, with
+/// no case folding or other fallback, and `Ok(None)` means it did not, with
+/// nothing changed. The contents are re-encrypted under a key derived from
+/// the new passphrase, with the Vault's KDF parameters and a fresh salt, and
+/// written atomically. `before_write` first receives the new key's passkey
+/// verifier; an error from it leaves the Vault unchanged. An unlocked Vault
+/// stays unlocked, now under the new key, with its expiry unchanged, also when
+/// the write fails after the new file is in place. A Vault
+/// transferred from another kernel keeps its passphrase: its stored key
+/// envelope would no longer open it.
+pub fn change_chariox_encrypted_vault_passphrase(
+    path: impl AsRef<Path>,
+    current_passphrase: &str,
+    new_passphrase: &str,
+    before_write: impl FnOnce(&VaultPasskeyVerifier) -> Result<(), DaemonError>,
+) -> Result<Option<CharioxVaultUnlockStatus>, DaemonError> {
+    let path = normalize_vault_path(path.as_ref().to_path_buf());
+    validate_passphrase(current_passphrase)?;
+    validate_passphrase(new_passphrase)?;
+    if has_transferred_vault_key_envelope(&path)? {
+        return Err(secret_error(
+            "this Chariox vault was transferred from another kernel; change its passphrase there"
+                .to_string(),
+        ));
+    }
+    let _write = vault_write_lock()?;
+    if !path.exists() {
+        return Err(secret_error(
+            "there is no Chariox vault yet; unlocking it the first time sets its passphrase"
+                .to_string(),
+        ));
+    }
+    let file = read_vault_file(&path)?;
+    let current_key = derive_key(current_passphrase, &file.kdf)?;
+    let Ok(plaintext) = decrypt_vault_payload(&file, current_key.as_ref()) else {
+        return Ok(None);
+    };
+    let kdf = VaultKdfConfig {
+        salt: base64_encode(&random_bytes::<SALT_LEN>()),
+        ..file.kdf
+    };
+    let new_key = derive_key(new_passphrase, &kdf)?;
+    before_write(&VaultPasskeyVerifier::for_key(
+        kdf.clone(),
+        new_key.as_ref(),
+    ))?;
+    let written = write_vault_file(&path, new_key.as_ref(), &plaintext, kdf.clone());
+    // A write can fail after its rename, at the directory sync. The new file
+    // is in use all the same, so the unlocked key follows it. If the file
+    // cannot be read, the vault locks rather than keep a key that may not fit.
+    if written.is_err() {
+        match read_vault_file(&path) {
+            Ok(file) if file.kdf == kdf => {}
+            Ok(_) => return written.map(|()| None),
+            Err(_) => {
+                lock_chariox_encrypted_vault(&path)?;
+                return written.map(|()| None);
+            }
+        }
+    }
+    let mut unlocked = unlocked_vaults()
+        .lock()
+        .map_err(|error| secret_error(format!("Chariox vault unlock state poisoned: {error}")))?;
+    let now_ms = crate::session::unix_epoch_ms();
+    let expires_at_ms = match unlocked.get_mut(&path) {
+        Some(vault) if !vault.is_expired(now_ms) => {
+            vault.key = new_key;
+            Some(vault.expires_at_ms)
+        }
+        Some(_) => {
+            unlocked.remove(&path);
+            None
+        }
+        None => None,
+    };
+    written.map_err(|error| {
+        secret_error(format!(
+            "the Chariox vault passphrase was changed, but the change may not survive a crash: {error}"
+        ))
+    })?;
+    Ok(Some(CharioxVaultUnlockStatus {
+        path,
+        unlocked: expires_at_ms.is_some(),
+        expires_at_ms: expires_at_ms.flatten(),
+    }))
 }
 
 pub fn extend_chariox_encrypted_vault(
@@ -357,6 +541,7 @@ pub fn export_transferred_vault_snapshot(
     validate_transfer_binding(source_kernel_id, "source kernel id")?;
     validate_transfer_binding(target_kernel_id, "target kernel id")?;
     let path = normalize_vault_path(path.as_ref().to_path_buf());
+    let _read = vault_read_lock()?;
     let vault_bytes = read_bounded_regular_file(&path, MAX_TRANSFERRED_VAULT_BYTES)?;
     let vault_file = serde_json::from_slice::<EncryptedVaultFile>(&vault_bytes)
         .map_err(|error| secret_error(format!("failed to parse Chariox vault: {error}")))?;
@@ -815,6 +1000,24 @@ fn write_vault_file(
     })?;
     sync_vault_parent_dir(path)?;
     Ok(())
+}
+
+/// Makes the last replacement of the vault file at `path` durable, by syncing
+/// its directory as every vault write does.
+pub fn sync_chariox_encrypted_vault(path: impl AsRef<Path>) -> Result<(), DaemonError> {
+    sync_vault_parent_dir(&normalize_vault_path(path.as_ref().to_path_buf()))
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_NEXT_DIR_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Makes this thread's next vault directory sync fail; a vault write then
+/// fails after its rename.
+#[cfg(test)]
+pub(crate) fn fail_next_vault_dir_sync_for_test() {
+    FAIL_NEXT_DIR_SYNC.with(|fail| fail.set(true));
 }
 
 fn decrypt_vault_payload(
@@ -1323,6 +1526,12 @@ fn vault_temp_path(path: &Path) -> PathBuf {
 }
 
 fn sync_vault_parent_dir(path: &Path) -> Result<(), DaemonError> {
+    #[cfg(test)]
+    if FAIL_NEXT_DIR_SYNC.with(std::cell::Cell::take) {
+        return Err(secret_error(
+            "failed to sync Chariox vault directory (test)".to_string(),
+        ));
+    }
     let Some(parent) = path.parent() else {
         return Ok(());
     };
@@ -1398,6 +1607,57 @@ fn process_memory_vault() -> &'static Mutex<BTreeMap<(String, String), Zeroizing
     VAULT.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
+/// Orders every use of a Vault file in this process. A read that pairs the
+/// cached key with the file shares it; a write, an unlock and a passphrase
+/// change hold it alone. So no read pairs a key with a file re-keyed under
+/// another, and nothing written or unlocked under the old key lands after a
+/// passphrase change.
+static VAULT_FILE_LOCK: RwLock<()> = RwLock::new(());
+
+fn vault_read_lock() -> Result<RwLockReadGuard<'static, ()>, DaemonError> {
+    VAULT_FILE_LOCK
+        .read()
+        .map_err(|error| secret_error(format!("Chariox vault file lock poisoned: {error}")))
+}
+
+fn vault_write_lock() -> Result<RwLockWriteGuard<'static, ()>, DaemonError> {
+    VAULT_FILE_LOCK
+        .write()
+        .map_err(|error| secret_error(format!("Chariox vault file lock poisoned: {error}")))
+}
+
+fn has_transferred_vault_key_envelope(path: &Path) -> Result<bool, DaemonError> {
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return Ok(false);
+    };
+    let prefix = format!("{file_name}.managed-context-key-");
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let entries = match fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(secret_error(format!(
+                "failed to inspect the Chariox vault directory: {error}"
+            )))
+        }
+    };
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            secret_error(format!(
+                "failed to inspect the Chariox vault directory: {error}"
+            ))
+        })?;
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".json"))
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn unlocked_vaults() -> &'static Mutex<BTreeMap<PathBuf, UnlockedVault>> {
     static VAULTS: OnceLock<Mutex<BTreeMap<PathBuf, UnlockedVault>>> = OnceLock::new();
     VAULTS.get_or_init(|| Mutex::new(BTreeMap::new()))
@@ -1442,7 +1702,7 @@ struct EncryptedVaultFile {
     ciphertext: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct VaultKdfConfig {
     algorithm: String,
@@ -1621,6 +1881,252 @@ mod tests {
                 .expect("secret should read after unlock"),
             "secret-value"
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn passphrase_change_re_encrypts_and_never_accepts_a_folded_passphrase() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-vault-passphrase-change-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let path = root.join("vault.json");
+        let store = test_store(path.clone());
+        // The passphrase a case-folding terminal stored for "Mixed Case!@#".
+        let folded = "mixedcase!@#";
+        let intended = "Mixed Case!@# \u{c9}\u{1D11E}";
+        create_chariox_encrypted_vault_for_test(&path, folded).expect("vault should create");
+        unlock_chariox_encrypted_vault(&path, folded, VaultUnlockLease::KernelShutdown)
+            .expect("vault should unlock");
+        store
+            .set_secret("chariox-test", "token", "secret-value")
+            .expect("secret should store");
+        let kdf_before = read_vault_file(&path).expect("vault should read").kdf;
+
+        let wrong =
+            change_chariox_encrypted_vault_passphrase(&path, "Mixed Case!@#", intended, |_| {
+                panic!("a refused change writes nothing")
+            })
+            .expect("a wrong current passphrase is an answer, not an error");
+        assert!(
+            wrong.is_none(),
+            "the unfolded passphrase is not the current one"
+        );
+        assert_eq!(
+            read_vault_file(&path).expect("vault should read").kdf,
+            kdf_before
+        );
+
+        // A failing hook (the pin journal) leaves the vault as it was.
+        let stopped = change_chariox_encrypted_vault_passphrase(&path, folded, intended, |_| {
+            Err(secret_error("journal unavailable".to_string()))
+        });
+        assert!(stopped.is_err());
+        assert_eq!(
+            read_vault_file(&path).expect("vault should read").kdf,
+            kdf_before
+        );
+
+        let mut next = None;
+        let status =
+            change_chariox_encrypted_vault_passphrase(&path, folded, intended, |verifier| {
+                next = Some(verifier.clone());
+                Ok(())
+            })
+            .expect("the change should apply")
+            .expect("the current passphrase should allow the change");
+        assert!(status.unlocked, "an unlocked vault stays unlocked");
+        assert_eq!(status.expires_at_ms, None);
+        let next = next.expect("the hook sees the new key's verifier");
+        assert!(next.verify(intended).expect("verify"));
+        assert!(!next.verify(folded).expect("verify"));
+        assert!(
+            next.matches_vault_file(&path).expect("vault should read"),
+            "the file carries the new salt"
+        );
+        let kdf_after = read_vault_file(&path).expect("vault should read").kdf;
+        assert_ne!(kdf_after.salt, kdf_before.salt);
+        assert_eq!(
+            (
+                kdf_after.memory_kib,
+                kdf_after.iterations,
+                kdf_after.parallelism
+            ),
+            (
+                kdf_before.memory_kib,
+                kdf_before.iterations,
+                kdf_before.parallelism
+            ),
+            "the KDF parameters are kept"
+        );
+        assert_eq!(
+            store
+                .get_secret("chariox-test", "token")
+                .expect("the unlocked vault reads under the new key"),
+            "secret-value"
+        );
+        store
+            .set_secret("chariox-test", "second", "after-change")
+            .expect("a write after the change uses the new key");
+        assert!(
+            next.matches_vault_file(&path).expect("vault should read"),
+            "a secret write keeps the salt"
+        );
+
+        lock_chariox_encrypted_vault(&path).expect("vault should lock");
+        for rejected in [folded, "mixed case!@# \u{e9}\u{1D11E}"] {
+            assert!(
+                unlock_chariox_encrypted_vault(&path, rejected, VaultUnlockLease::KernelShutdown)
+                    .is_err(),
+                "{rejected:?} must not unlock the vault"
+            );
+        }
+        unlock_chariox_encrypted_vault(&path, intended, VaultUnlockLease::KernelShutdown)
+            .expect("the new passphrase unlocks the vault exactly as typed");
+        assert_eq!(
+            store
+                .get_secret("chariox-test", "token")
+                .expect("secret should survive the change"),
+            "secret-value"
+        );
+        assert_eq!(
+            store
+                .get_secret("chariox-test", "second")
+                .expect("the post-change write should read back"),
+            "after-change"
+        );
+        lock_chariox_encrypted_vault(&path).expect("vault should lock");
+
+        let locked =
+            change_chariox_encrypted_vault_passphrase(&path, intended, "Another One", |_| Ok(()))
+                .expect("the change should apply")
+                .expect("a locked vault can change with its current passphrase");
+        assert!(!locked.unlocked, "a locked vault stays locked");
+        assert!(
+            !next.matches_vault_file(&path).expect("vault should read"),
+            "a later change writes another salt"
+        );
+        unlock_chariox_encrypted_vault(&path, "Another One", VaultUnlockLease::KernelShutdown)
+            .expect("the second change applies");
+        lock_chariox_encrypted_vault(&path).expect("vault should lock");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_change_whose_write_fails_after_the_rename_keeps_the_vault_usable() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-vault-passphrase-sync-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let path = root.join("vault.json");
+        let store = test_store(path.clone());
+        create_chariox_encrypted_vault_for_test(&path, "old").expect("vault should create");
+        unlock_chariox_encrypted_vault(&path, "old", VaultUnlockLease::KernelShutdown)
+            .expect("vault should unlock");
+        store
+            .set_secret("chariox-test", "token", "secret-value")
+            .expect("secret should store");
+
+        fail_next_vault_dir_sync_for_test();
+        let error = change_chariox_encrypted_vault_passphrase(&path, "old", "new", |_| Ok(()))
+            .expect_err("the failed directory sync is reported");
+        assert!(error.to_string().contains("was changed"), "{error}");
+        // The new file is in place, and the unlocked key follows it.
+        assert!(
+            chariox_encrypted_vault_status(&path)
+                .expect("status")
+                .unlocked
+        );
+        assert_eq!(
+            store
+                .get_secret("chariox-test", "token")
+                .expect("the vault reads under the new key"),
+            "secret-value"
+        );
+        lock_chariox_encrypted_vault(&path).expect("vault should lock");
+        unlock_chariox_encrypted_vault(&path, "new", VaultUnlockLease::KernelShutdown)
+            .expect("the new passphrase unlocks");
+        lock_chariox_encrypted_vault(&path).expect("vault should lock");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn secret_reads_overlapping_passphrase_changes_never_fail() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-vault-passphrase-readers-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let path = root.join("vault.json");
+        create_chariox_encrypted_vault_for_test(&path, "first").expect("vault should create");
+        unlock_chariox_encrypted_vault(&path, "first", VaultUnlockLease::KernelShutdown)
+            .expect("vault should unlock");
+        test_store(path.clone())
+            .set_secret("chariox-test", "token", "secret-value")
+            .expect("secret should store");
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let readers = (0..4)
+            .map(|_| {
+                let store = test_store(path.clone());
+                let done = Arc::clone(&done);
+                std::thread::spawn(move || {
+                    let mut reads = 0_u32;
+                    while !done.load(std::sync::atomic::Ordering::Relaxed) || reads == 0 {
+                        assert_eq!(
+                            store
+                                .get_secret("chariox-test", "token")
+                                .expect("a read overlapping a change still decrypts"),
+                            "secret-value"
+                        );
+                        reads += 1;
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for (current, new) in [("first", "second"), ("second", "first")].repeat(5) {
+            change_chariox_encrypted_vault_passphrase(&path, current, new, |_| Ok(()))
+                .expect("the change should apply")
+                .expect("the current passphrase should allow the change");
+        }
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        for reader in readers {
+            reader.join().expect("no read failed");
+        }
+        lock_chariox_encrypted_vault(&path).expect("vault should lock");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn passphrase_change_refuses_a_missing_or_transferred_vault() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-vault-passphrase-refusals-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let path = root.join("vault.json");
+        let missing = change_chariox_encrypted_vault_passphrase(&path, "old", "new", |_| Ok(()))
+            .expect_err("there is no vault to change");
+        assert!(missing.to_string().contains("no Chariox vault yet"));
+        assert!(!path.exists(), "a refused change creates nothing");
+
+        create_chariox_encrypted_vault_for_test(&path, "old").expect("vault should create");
+        assert!(change_chariox_encrypted_vault_passphrase(&path, "old", "", |_| Ok(())).is_err());
+        fs::write(
+            transferred_vault_envelope_path(&path, "target-kernel"),
+            b"{}",
+        )
+        .expect("envelope marker should write");
+        let transferred =
+            change_chariox_encrypted_vault_passphrase(&path, "old", "new", |_| Ok(()))
+                .expect_err("a transferred vault keeps its passphrase");
+        assert!(transferred
+            .to_string()
+            .contains("transferred from another kernel"));
+        unlock_chariox_encrypted_vault(&path, "old", VaultUnlockLease::KernelShutdown)
+            .expect("the refused vault still opens with its passphrase");
+        lock_chariox_encrypted_vault(&path).expect("vault should lock");
         let _ = fs::remove_dir_all(root);
     }
 

@@ -30,6 +30,7 @@ fn external_provider_filters_normalize_provider_ids() {
 
 #[test]
 fn claude_roots_include_the_config_dir_used_by_the_claude_process() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let temp = temp_dir("claude-config-discovery-root");
     let config_root = temp.path().join("config");
@@ -65,6 +66,7 @@ fn claude_roots_include_the_config_dir_used_by_the_claude_process() {
 
 #[test]
 fn claude_recovery_uses_the_configured_transcript_without_merging_fallback_roots() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let temp = temp_dir("claude-config-recovery-root");
     let config_root = temp.path().join("config");

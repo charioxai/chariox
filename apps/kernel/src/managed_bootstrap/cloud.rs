@@ -26,17 +26,13 @@ pub(super) struct ExchangeRequest {
 pub(super) struct ExchangeResponse {
     pub(super) environment_id: String,
     pub(super) kernel_id: String,
-    #[serde(default = "initial_managed_environment_generation")]
-    pub(super) generation: u64,
+    #[serde(default)]
+    pub(super) generation: Option<u64>,
     pub(super) runtime_release_digest: String,
     #[serde(default)]
     pub(super) managed_repository_root: Option<String>,
     pub(super) context_plan: ManagedKernelContextPlan,
     pub(super) cloud_relay: ManagedCloudRelayProfile,
-}
-
-fn initial_managed_environment_generation() -> u64 {
-    1
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,6 +83,41 @@ pub(super) struct ConfirmResponse {
     pub(super) managed_repository_root: Option<String>,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ReconcileManagedBootstrapGrantRequestV1 {
+    pub(super) protocol_version: u32,
+    pub(super) token: String,
+    pub(super) machine_credential: String,
+    pub(super) environment_id: String,
+    pub(super) machine_id: String,
+    pub(super) kernel_id: String,
+    pub(super) generation: u64,
+    pub(super) runtime_release_digest: String,
+    pub(super) managed_repository_root: String,
+    pub(super) expected_data_volume_serial: String,
+    pub(super) expected_data_volume_size_gb: u32,
+    pub(super) relay_public_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct ReconcileManagedBootstrapGrantResponseV1 {
+    pub(super) protocol_version: u32,
+    pub(super) reconciled: bool,
+    pub(super) grant_id: String,
+    pub(super) operation_id: String,
+    pub(super) operation_kind: String,
+    pub(super) environment_id: String,
+    pub(super) machine_id: String,
+    pub(super) kernel_id: String,
+    pub(super) generation: u64,
+    pub(super) runtime_release_digest: String,
+    pub(super) managed_repository_root: String,
+    pub(super) data_volume_serial: String,
+    pub(super) data_volume_size_gb: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct RuntimeIdentityReportResponse {
@@ -107,6 +138,15 @@ pub(super) trait BootstrapCloudClient {
         api_url: &str,
         request: &ConfirmRequest,
     ) -> Result<ConfirmResponse, DaemonError>;
+    fn reconcile_managed_bootstrap_grant(
+        &self,
+        _api_url: &str,
+        _request: &ReconcileManagedBootstrapGrantRequestV1,
+    ) -> Result<ReconcileManagedBootstrapGrantResponseV1, DaemonError> {
+        Err(cloud_error(
+            "managed bootstrap grant reconciliation is unsupported by this Cloud client",
+        ))
+    }
     fn report_runtime_identity(
         &self,
         api_url: &str,
@@ -143,6 +183,14 @@ impl BootstrapCloudClient for HttpBootstrapCloudClient {
         request: &ConfirmRequest,
     ) -> Result<ConfirmResponse, DaemonError> {
         self.post_managed(api_url, "/v1/managed-kernels/bootstrap/confirm", request)
+    }
+
+    fn reconcile_managed_bootstrap_grant(
+        &self,
+        api_url: &str,
+        request: &ReconcileManagedBootstrapGrantRequestV1,
+    ) -> Result<ReconcileManagedBootstrapGrantResponseV1, DaemonError> {
+        self.post_managed(api_url, "/v1/managed-kernels/bootstrap/reconcile", request)
     }
 
     fn report_runtime_identity(
@@ -238,6 +286,7 @@ mod tests {
     #[test]
     fn confirm_and_pre_reimage_report_wires_match_cloud_contract() {
         let evidence = ManagedKernelFreshnessEvidence {
+            schema_version: None,
             linux_boot_id: "01234567-89ab-cdef-0123-456789abcdef".to_string(),
             os_machine_id: "a".repeat(32),
             runtime_release_digest: format!("sha256:{}", "b".repeat(64)),
@@ -248,6 +297,8 @@ mod tests {
                 old_processes_absent: true,
                 old_state_absent: true,
             },
+            data_volume_serial: None,
+            data_volume_size_gb: None,
         };
         let confirm = ConfirmRequest {
             token: format!("mkboot_{}", "t".repeat(40)),

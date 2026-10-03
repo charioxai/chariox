@@ -10,6 +10,11 @@ impl KernelRuntimeOwnedState {
     ) -> Result<(), DaemonError> {
         match request {
             LocalDaemonRequest::CreateWorkflow(_) | LocalDaemonRequest::ListWorkflows(_) => Ok(()),
+            // A generated workflow belongs to a person's own agent.
+            LocalDaemonRequest::CreateAgentWorkflow(_) => Err(DaemonError::LocalTransport {
+                operation: "workflow.create_from_agent",
+                message: "metaagents cannot generate workflows from agents".to_string(),
+            }),
             LocalDaemonRequest::ListWorkflowRuns(request) => {
                 if let Some(workflow_ref) = request.workflow_ref.as_deref() {
                     self.ensure_workflow_controlled_by_metaagent(

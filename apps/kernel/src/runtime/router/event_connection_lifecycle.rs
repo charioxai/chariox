@@ -6,13 +6,8 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio::time::{Duration, MissedTickBehavior};
 
 use crate::error::DaemonError;
-use crate::local::{
-    ListEventConnectionDependenciesRequest, LocalDaemonRequest, LocalDaemonResponse,
-    RemoveEventConnectionRequest, SetWorkflowEventBindingStatusRequest,
-};
-use crate::runtime::command::KernelCommand;
+use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::runtime::event_catalog_control::execute_event_catalog_request_with_client;
-use crate::session::WorkflowEventBindingStatus;
 
 use super::CommandRouter;
 
@@ -211,70 +206,5 @@ impl CommandRouter {
                 }
             }
         }
-    }
-
-    pub(super) async fn remove_event_connection(
-        &self,
-        command: &KernelCommand,
-        caller_user_id: &str,
-        request: RemoveEventConnectionRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let dependencies = execute_event_catalog_request_with_client(
-            &self.runtime_state,
-            &self.config_projection,
-            &self.aegs_management_http_client,
-            caller_user_id,
-            LocalDaemonRequest::ListEventConnectionDependencies(
-                ListEventConnectionDependenciesRequest {
-                    connection_id: request.connection_id.clone(),
-                },
-            ),
-        )
-        .await?;
-        let LocalDaemonResponse::EventConnectionDependencies { dependencies, .. } = dependencies
-        else {
-            return Err(DaemonError::LocalTransport {
-                operation: "remove event connection",
-                message: "kernel returned an unexpected dependency response".to_string(),
-            });
-        };
-
-        if request.confirm {
-            for dependency in dependencies
-                .iter()
-                .filter(|dependency| dependency.status != WorkflowEventBindingStatus::Tombstoned)
-            {
-                let deactivate_request = LocalDaemonRequest::SetWorkflowEventBindingStatus(
-                    SetWorkflowEventBindingStatusRequest {
-                        session_id: dependency.session_id.clone(),
-                        binding_id: dependency.binding_id.clone(),
-                        status: WorkflowEventBindingStatus::Tombstoned,
-                    },
-                );
-                let deactivate_command = KernelCommand::from_local_request_with_caller(
-                    format!(
-                        "{}:event-connection-remove:{}",
-                        command.command_id, dependency.binding_id
-                    ),
-                    command.source.clone(),
-                    command.caller.clone(),
-                    Some(command.correlation_id.clone()),
-                    Some(command.command_id.clone()),
-                    &deactivate_request,
-                );
-                self.workflow_runtime
-                    .dispatch_workflow_command(deactivate_command, deactivate_request)
-                    .await?;
-            }
-        }
-
-        execute_event_catalog_request_with_client(
-            &self.runtime_state,
-            &self.config_projection,
-            &self.aegs_management_http_client,
-            caller_user_id,
-            LocalDaemonRequest::RemoveEventConnection(request),
-        )
-        .await
     }
 }

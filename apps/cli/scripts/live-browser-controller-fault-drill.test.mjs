@@ -56,6 +56,21 @@ test("controller fault drill rejects repository-local reports", async () => {
   )
 })
 
+test("composed fault drills reuse the configured Cargo target", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-controller-fault-target-"))
+  const reportPath = path.join(root, "report.json")
+  const target = path.join(root, "shared-target")
+  try {
+    await execFile(process.execPath, [scriptPath, "--dry-run", "--report", reportPath], {
+      env: { ...process.env, CARGO_TARGET_DIR: target },
+    })
+    const report = JSON.parse(await readFile(reportPath, "utf8"))
+    assert.equal(report.command.env.CARGO_TARGET_DIR, target)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("controller fault drill interrupted during its resource probe never starts Cargo", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "chariox-controller-fault-interrupt-"))
   const bin = path.join(root, "bin")

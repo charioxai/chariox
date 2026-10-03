@@ -29,7 +29,7 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-ReadWritePaths=/var/lib/chariox-docker /var/lib/chariox-slice-share /run/chariox-docker
+ReadWritePaths=/var/lib/chariox-docker /var/lib/chariox-slice-disk-quota /var/lib/chariox-slice-share /run/chariox-docker
 UMask=0007
 
 [Install]

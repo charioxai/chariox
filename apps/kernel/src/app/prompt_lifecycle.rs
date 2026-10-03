@@ -56,27 +56,6 @@ impl<'a> RemoteWorkflowTurnContextResolver<'a> {
                     "workflow node run `{workflow_node_run_id}` has no prepared turn envelope"
                 ),
             })?;
-        let (event_reply_enabled, event_context_enabled, event_actions_enabled) = workflow_run
-            .publication_invocation()
-            .filter(|invocation| invocation.transport == "event")
-            .and_then(|invocation| {
-                let binding_id = invocation.hook_id.as_deref()?;
-                let session = self.app.sessions().get_session(session_id).ok()?;
-                let binding = session.workflow_event_binding(binding_id)?;
-                let reply_enabled =
-                    matches!(binding.reply_mode.as_deref(), Some("thread" | "channel"));
-                let context_enabled = binding.active()
-                    && invocation
-                        .input
-                        .get("reply_context")
-                        .is_some_and(|context| !context.is_null());
-                Some((
-                    reply_enabled,
-                    context_enabled,
-                    !binding.action_ids.is_empty(),
-                ))
-            })
-            .unwrap_or((false, false, false));
         Ok(RemoteWorkflowTurnContext {
             home_kernel_id: self.app.config().daemon_id.clone(),
             home_session_id: session_id.to_string(),
@@ -84,9 +63,6 @@ impl<'a> RemoteWorkflowTurnContextResolver<'a> {
             workflow_run_id: workflow_run.id().to_string(),
             workflow_node_run_id: workflow_node_run_id.to_string(),
             delivery_token,
-            event_reply_enabled,
-            event_context_enabled,
-            event_actions_enabled,
         })
     }
 }
@@ -100,6 +76,10 @@ impl<'a> ProviderPromptDispatcher<'a> {
         Self { app }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keeps the existing session, worker and lease binding fields explicit without a second protocol representation."
+    )]
     pub(crate) fn dispatch_prompt_to_provider(
         &mut self,
         session_id: &str,
@@ -140,6 +120,11 @@ impl<'a> ProviderPromptDispatcher<'a> {
                 agent_id: "provider run has no agent".to_string(),
             })?
             .to_string();
+        let hidden_with_failed_requests = self
+            .app
+            .agents
+            .hidden_context_with_failed_requests(&agent_id, hidden_system_context);
+        let hidden_system_context = hidden_with_failed_requests.as_str();
         self.app.mark_active_prompt_delivery(
             session_id,
             &agent_id,
@@ -182,7 +167,7 @@ impl<'a> ProviderPromptDispatcher<'a> {
             self.app.providers.enqueue_structured_prompt_submit(
                 session_id.to_string(),
                 provider_run_id.to_string(),
-                agent_id,
+                agent_id.clone(),
                 prompt_id.to_string(),
                 prompt_id,
                 &provider_run,
@@ -254,7 +239,27 @@ impl<'a> ProviderPromptDispatcher<'a> {
             Some(provider_run_id.to_string()),
             provider_run.provider_session_id().map(str::to_string),
         )?;
+        self.consume_failed_requests(&agent_id, prompt_id);
         Ok(())
+    }
+
+    /// The provider accepted the turn that carried the failed-request note.
+    fn consume_failed_requests(&self, agent_id: &str, prompt_id: &str) {
+        if let Err(error) = self.app.agents.consume_failed_requests_durably(
+            &self.app.durable_state_store(),
+            agent_id,
+            prompt_id,
+        ) {
+            crate::logging::warn_with_fields(
+                "daemon.prompt_delivery",
+                "failed to clear the delivered failed request note",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "prompt_id": prompt_id,
+                    "error": error.to_string(),
+                }),
+            );
+        }
     }
 }
 
@@ -297,6 +302,7 @@ pub(crate) struct KernelPromptOwnerSubmission {
     pub(crate) outcome: PromptSubmissionOutcome,
 }
 
+#[derive(Clone)]
 pub(crate) struct KernelPromptDispatch {
     pub(crate) session_id: String,
     pub(crate) provider_run_id: String,
@@ -314,6 +320,7 @@ pub(crate) struct KernelPromptDispatch {
     pub(crate) steering: bool,
 }
 
+#[derive(Clone)]
 pub(crate) struct KernelRemotePromptDispatch {
     pub(crate) session_id: String,
     pub(crate) agent_id: String,
@@ -332,6 +339,11 @@ pub(crate) struct KernelRemotePromptDispatch {
     pub(crate) external_provider_session_id: Option<String>,
     pub(crate) external_provider_turn_id: Option<String>,
     pub(crate) workflow_context: Option<RemoteWorkflowTurnContext>,
+}
+
+/// Queued prompt delivery behavior that must occur only after worker ACK.
+pub(crate) struct KernelRemotePromptDispatchIntent {
+    pub(crate) dispatch: KernelRemotePromptDispatch,
 }
 
 pub(crate) struct KernelPromptCancellation {
@@ -364,6 +376,16 @@ pub(crate) struct KernelPromptAbortDispatch {
 }
 
 impl DaemonApp {
+    /// Hand a compatibility-created remote prompt to the runtime's existing
+    /// post-app-lock dispatch drain. The runtime owns the single relay send.
+    pub(crate) fn defer_remote_prompt_dispatch_after_app_side_effect(
+        &mut self,
+        dispatch: KernelRemotePromptDispatch,
+    ) {
+        self.pending_workflow_remote_prompt_dispatches
+            .push(dispatch);
+    }
+
     #[doc(hidden)]
     pub fn submit_prompt(
         &mut self,
@@ -412,6 +434,58 @@ impl DaemonApp {
         let acknowledgement = match result {
             Ok(acknowledgement) => acknowledgement,
             Err(error) => {
+                let session = self.sessions.get_session(&session_id)?;
+                let Some(_settlement_claim) = self
+                    .prompt_state_owner
+                    .try_claim_active_prompt_delivery_settlement(
+                        &session,
+                        &agent_id,
+                        &prompt_id,
+                        &provider_run_id,
+                    )
+                else {
+                    return Err(error);
+                };
+                if let Some(failed_prompt) = self
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, &agent_id)
+                {
+                    let adapter = self
+                        .providers
+                        .get_run(&provider_run_id)
+                        .map(|run| run.adapter_key().to_string())
+                        .unwrap_or_default();
+                    let reason = crate::agent::failed_request_reason(
+                        &adapter,
+                        &format!("Provider prompt dispatch failed: {error}"),
+                    );
+                    if let Err(record_error) = self.agents.record_failed_request_durably(
+                        &self.durable_state_store(),
+                        &agent_id,
+                        crate::agent::FailedRequest::new(
+                            failed_prompt.id(),
+                            failed_prompt.prompt(),
+                            reason.clone(),
+                        ),
+                    ) {
+                        crate::logging::warn_with_fields(
+                            "daemon.prompt_delivery",
+                            "failed to record the failed request note",
+                            serde_json::json!({
+                                "session_id": session_id, "agent_id": agent_id, "prompt_id": prompt_id, "error": record_error.to_string(),
+                            }),
+                        );
+                    }
+                    self.fan_out_output_for_agent(
+                        &session_id,
+                        &provider_run_id,
+                        Some(&agent_id),
+                        crate::terminal::TerminalOutputKind::ProviderError,
+                        None,
+                        self.attachments.list_session_attachment_ids(&session_id),
+                        crate::agent::failed_request_notice(&reason).as_bytes(),
+                    );
+                }
                 crate::app::KernelAgentService::new(self).cancel_active_after_prompt_start_failure(
                     &session_id,
                     &agent_id,
@@ -441,17 +515,20 @@ impl DaemonApp {
             return Ok(());
         };
         let run = self.providers.get_run(&provider_run_id)?;
-        self.agents.set_agent_runtime_profile_durably(
-            &self.durable_state,
-            &agent_id,
-            run.provider(),
-            Some(run.model().to_string()),
-            run.variant().map(str::to_string),
-            Some(run.account_profile().to_string()),
-            acknowledgement.resume_state.clone(),
-            Some(run.id()),
-            Some("prompt_delivery_acknowledged"),
-        )?;
+        // A substitute run reruns one turn; it never becomes the agent's profile.
+        if run.turn_substitute().is_none() {
+            self.agents.set_agent_runtime_profile_durably(
+                &self.durable_state,
+                &agent_id,
+                run.provider(),
+                Some(run.model().to_string()),
+                run.variant().map(str::to_string),
+                Some(run.account_profile().to_string()),
+                acknowledgement.resume_state.clone(),
+                Some(run.id()),
+                Some("prompt_delivery_acknowledged"),
+            )?;
+        }
         let run = self
             .providers
             .apply_prompt_submit_acknowledgement(&provider_run_id, &acknowledgement)?;
@@ -463,6 +540,11 @@ impl DaemonApp {
             crate::session::DurablePromptDeliveryPhase::Delivered,
             Some(provider_run_id),
             run.provider_session_id().map(str::to_string),
+        )?;
+        self.agents.consume_failed_requests_durably(
+            &self.durable_state_store(),
+            &agent_id,
+            &prompt_id,
         )?;
         let active = self.prompt_owner_active_prompt_for_agent(&session_id, &agent_id)?;
         if let Some(active) = active {
@@ -485,60 +567,6 @@ impl DaemonApp {
             }
         }
         Ok(())
-    }
-
-    pub(crate) fn finish_kernel_remote_prompt_dispatch(
-        &mut self,
-        dispatch: KernelRemotePromptDispatch,
-        result: Result<String, DaemonError>,
-    ) -> Result<(), DaemonError> {
-        match result {
-            Ok(remote_provider_run_id) => {
-                let _ = self
-                    .agents
-                    .set_remote_execution_active_worker_provider_run_id(
-                        &dispatch.agent_id,
-                        Some(remote_provider_run_id.clone()),
-                    )?;
-                self.echo_prompt_to_other_attachments(
-                    &dispatch.session_id,
-                    &remote_provider_run_id,
-                    &dispatch.prompt_id,
-                    &dispatch.source_attachment_id,
-                    &dispatch.prompt,
-                    &dispatch.attachments,
-                );
-                self.mark_active_prompt_delivery(
-                    &dispatch.session_id,
-                    &dispatch.agent_id,
-                    &dispatch.prompt_id,
-                    crate::session::DurablePromptDeliveryPhase::Delivered,
-                    Some(remote_provider_run_id),
-                    None,
-                )?;
-                Ok(())
-            }
-            Err(error) => {
-                let _ = self
-                    .agents
-                    .set_remote_execution_active_worker_provider_run_id(&dispatch.agent_id, None);
-                let _ = self.prompt_owner_cancel_active_prompt_only(
-                    &dispatch.session_id,
-                    &dispatch.agent_id,
-                );
-                let _ = crate::app::KernelSessionReadService::new(self)
-                    .session_snapshot(&dispatch.session_id);
-                self.record_notice_for_agent(
-                    &dispatch.session_id,
-                    None,
-                    Some(&dispatch.agent_id),
-                    self.attachments
-                        .list_session_attachment_ids(&dispatch.session_id),
-                    format!("Remote prompt dispatch failed after acknowledgement: {error}"),
-                );
-                Err(error)
-            }
-        }
     }
 
     #[doc(hidden)]
@@ -714,7 +742,11 @@ impl DaemonApp {
         )
     }
 
-    pub(crate) fn advance_next_queued_prompt_remote(
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keeps the existing session, worker and lease binding fields explicit without a second protocol representation."
+    )]
+    pub(crate) fn advance_next_queued_prompt_remote_with_workflow_dispatch(
         &mut self,
         session_id: &str,
         agent_id: &str,
@@ -722,16 +754,18 @@ impl DaemonApp {
         leased_agent_id: &str,
         relay_url: Option<&str>,
         relay_token: Option<&str>,
+        expected_next: Option<&crate::session::PromptQueueItem>,
     ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
-        crate::app::KernelAgentService::new(self).advance_next_queued_prompt_remote(
-            session_id,
-            agent_id,
-            worker_kernel_id,
-            leased_agent_id,
-            relay_url,
-            relay_token,
-            None,
-        )
+        crate::app::KernelAgentService::new(self)
+            .advance_next_queued_prompt_remote_with_workflow_dispatch(
+                session_id,
+                agent_id,
+                worker_kernel_id,
+                leased_agent_id,
+                relay_url,
+                relay_token,
+                expected_next,
+            )
     }
 
     pub(crate) fn serialize_remote_prompt_attachments(

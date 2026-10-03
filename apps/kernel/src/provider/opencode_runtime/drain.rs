@@ -9,8 +9,9 @@ use super::permission::handle_permission_request;
 use super::snapshot::{
     collect_new_completed_assistant_messages, latest_assistant_usage_tokens,
     opencode_message_completes_active_prompt, opencode_messages_active_prompt_failure,
-    opencode_messages_complete_active_prompt, opencode_messages_have_empty_active_assistant,
-    record_snapshot_message_metadata, render_snapshot_output_chunks,
+    opencode_messages_complete_active_prompt, opencode_messages_have_active_user_without_assistant,
+    opencode_messages_have_empty_active_assistant, record_snapshot_message_metadata,
+    render_snapshot_output_chunks,
 };
 use super::state::OpenCodeEventDrainResult;
 use super::transcript::{
@@ -163,6 +164,31 @@ pub(in crate::provider) fn drain_opencode_events(
                 message,
             }) => {
                 if session_id == state.session_id {
+                    // SSE session errors have no prompt id. After reuse, a delayed
+                    // error may belong to the cancelled turn. Current-message
+                    // evidence can settle it immediately; otherwise idle polling
+                    // must establish a stalled follow-up before closing the turn.
+                    let message = if state.session_errors_require_prompt_match {
+                        let client = OpenCodeClient::new(provider_run_id, &state.base_url)?;
+                        let Some(current_error) =
+                            client
+                                .messages(&state.session_id)
+                                .ok()
+                                .and_then(|messages| {
+                                    opencode_messages_active_prompt_failure(
+                                        state,
+                                        &messages,
+                                        drain_active_user_message_id.as_deref(),
+                                    )
+                                })
+                        else {
+                            state.note_unmatched_session_error(message);
+                            continue;
+                        };
+                        current_error
+                    } else {
+                        message
+                    };
                     record_terminal_failure(
                         state,
                         message,
@@ -180,6 +206,12 @@ pub(in crate::provider) fn drain_opencode_events(
             Ok(OpenCodeEvent::SessionStatus { session_id, status }) => {
                 if session_id == state.session_id {
                     let kind = &status.kind;
+                    if kind != "idle" {
+                        let _ = state.unmatched_session_error_after_idle_grace(
+                            false,
+                            OPENCODE_EMPTY_IDLE_ASSISTANT_GRACE,
+                        );
+                    }
                     if state.last_status.as_ref() != Some(&status) {
                         state.last_status = Some(status.clone());
                         chunks.push(OpenCodeOutputChunk {
@@ -344,6 +376,7 @@ pub(in crate::provider) fn drain_opencode_events(
         }
     }
 
+    let mut current_user_without_assistant_is_idle = false;
     if state.active_user_message_id.is_some() && !prompt_completed {
         let client = OpenCodeClient::new(provider_run_id, &state.base_url)?;
         if let Ok(status) = client.session_status(&state.session_id) {
@@ -383,6 +416,8 @@ pub(in crate::provider) fn drain_opencode_events(
                         resolved_usage_tokens_total = Some(total_tokens);
                     }
                     record_snapshot_message_metadata(state, &messages);
+                    current_user_without_assistant_is_idle =
+                        opencode_messages_have_active_user_without_assistant(state, &messages);
                     chunks.extend(
                         render_snapshot_output_chunks(
                             state,
@@ -448,6 +483,26 @@ pub(in crate::provider) fn drain_opencode_events(
                 }
             }
         }
+    }
+
+    if let Some(message) = state.unmatched_session_error_after_idle_grace(
+        current_user_without_assistant_is_idle && !prompt_completed,
+        OPENCODE_EMPTY_IDLE_ASSISTANT_GRACE,
+    ) {
+        // The event itself remains uncorrelated. A continuously idle current
+        // user with no assistant is the evidence that this accepted turn stalled.
+        record_terminal_failure(
+            state,
+            format!("OpenCode stayed idle without creating an assistant response after a session error: {message}"),
+            &mut chunks,
+            &mut completions,
+            &mut notices,
+            &mut terminal_failure,
+            &mut explicit_provider_error,
+            false,
+            &mut prompt_completed,
+            drain_active_user_message_id.as_deref(),
+        );
     }
 
     Ok(OpenCodeEventDrainResult {

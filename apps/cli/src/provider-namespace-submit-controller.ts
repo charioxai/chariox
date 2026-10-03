@@ -22,6 +22,7 @@ import {
 } from "./prompt-runtime-api.js"
 import type { TranscriptPromptMetadata } from "@chariox/kernel-client/transcript-entry-state"
 import type { SubmittedPromptUiSnapshot } from "./prompt-submission-ui-controller.js"
+import { NO_FOCUS_AGENT_MESSAGE } from "./cli-runtime-tuning.js"
 
 export type ProviderNamespaceSubmitControllerDeps = {
   getFocusedProvider: () => BackendProviderId | null
@@ -106,6 +107,10 @@ export function createProviderNamespaceSubmitController(
         if (!attachment) {
           deps.flashFooter("No session attached.", "error")
           deps.clearPromptText()
+          return true
+        }
+        if (!targetAgentId && !focusedAgentId) {
+          deps.flashFooter(NO_FOCUS_AGENT_MESSAGE, "error")
           return true
         }
         submissionUi = deps.beginSubmittedPromptUi(rawPrompt)

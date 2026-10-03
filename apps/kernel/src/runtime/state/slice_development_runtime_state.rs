@@ -9,7 +9,8 @@ use crate::managed_context::development::{
     export_development_context, import_development_context_with_publication,
     recover_pruned_development_context_publication_for_cleanup,
     recover_pruned_mutable_development_context_publication, DevelopmentContextExportRequest,
-    DevelopmentContextImportRequest, DevelopmentRepositoryRole, DevelopmentSourceRepositoryBinding,
+    DevelopmentContextImportRequest, DevelopmentRepositoryRole, DevelopmentRepositorySelection,
+    DevelopmentSourceRepositoryBinding,
 };
 use crate::managed_context::package::ManagedContextDevelopmentSelection;
 
@@ -40,21 +41,41 @@ impl KernelRuntimeState {
         session: &crate::session::RuntimeSession,
         worktree_id: &str,
     ) -> Result<ManagedContextDevelopmentSelection, DaemonError> {
-        let project = self.owned.session_store.get_project(session.project_id())?;
+        self.slice_development_selection_for_project(
+            session.project_id(),
+            Some(session.workspace_id()),
+            Some(worktree_id),
+        )
+        .map(|(selection, _, _)| selection)
+    }
+
+    /// A slice developing `workspace_id` (default: the Project's primary
+    /// Workspace) of a Project on this kernel, with the Project's other
+    /// Workspaces as supporting repositories. Returns the selection and the
+    /// chosen workspace and worktree.
+    pub(crate) fn slice_development_selection_for_project(
+        &self,
+        project_id: &str,
+        workspace_id: Option<&str>,
+        worktree_id: Option<&str>,
+    ) -> Result<(ManagedContextDevelopmentSelection, String, String), DaemonError> {
+        let project = self.owned.session_store.get_project(project_id)?;
+        let workspace_id = workspace_id.unwrap_or(project.workspace_id()).to_string();
+        let worktree_id = worktree_id.unwrap_or(&workspace_id).to_string();
         let mut repositories = Vec::with_capacity(project.workspace_ids().len());
         repositories.push(DevelopmentSourceRepositoryBinding {
             role: DevelopmentRepositoryRole::Primary,
-            workspace_id: session.workspace_id().to_string(),
-            worktree_id: Some(worktree_id.to_string()),
+            workspace_id: workspace_id.clone(),
+            worktree_id: Some(worktree_id.clone()),
         });
         repositories.extend(
             project
                 .workspace_ids()
                 .iter()
-                .filter(|workspace_id| workspace_id.as_str() != session.workspace_id())
-                .map(|workspace_id| DevelopmentSourceRepositoryBinding {
+                .filter(|workspace| **workspace != workspace_id)
+                .map(|workspace| DevelopmentSourceRepositoryBinding {
                     role: DevelopmentRepositoryRole::Supporting,
-                    workspace_id: workspace_id.clone(),
+                    workspace_id: workspace.clone(),
                     worktree_id: None,
                 }),
         );
@@ -65,10 +86,11 @@ impl KernelRuntimeState {
         self.validate_slice_development_selection(
             Some(&selection),
             &crate::slice::SliceBackendKind::LocalDocker,
-            Some(session.workspace_id()),
-            Some(worktree_id),
+            Some(&workspace_id),
+            Some(&worktree_id),
+            None,
         )?;
-        Ok(selection)
+        Ok((selection, workspace_id, worktree_id))
     }
 
     pub(crate) fn validate_slice_development_selection(
@@ -77,7 +99,11 @@ impl KernelRuntimeState {
         backend: &crate::slice::SliceBackendKind,
         workspace_id: Option<&str>,
         worktree_id: Option<&str>,
+        source_slice_ref: Option<&str>,
     ) -> Result<(), DaemonError> {
+        if let Some(source_ref) = source_slice_ref {
+            self.validate_source_slice_export(source_ref, development)?;
+        }
         let Some(ManagedContextDevelopmentSelection::SourceProject {
             project_id,
             repositories,
@@ -112,7 +138,9 @@ impl KernelRuntimeState {
                     repository.workspace_id
                 )));
             }
-            crate::managed_context::outbound_service::resolve_repository_selection(repository)?;
+            if source_slice_ref.is_none() {
+                crate::managed_context::outbound_service::resolve_repository_selection(repository)?;
+            }
         }
         Ok(())
     }
@@ -127,6 +155,11 @@ impl KernelRuntimeState {
             return Ok(slice.clone());
         }
         let publication_parent = slice_development_storage_root(slice)?;
+        let resolved = if slice.development_publication.is_some() {
+            None
+        } else {
+            Some(self.slice_repository_selections(slice)?)
+        };
         let publication = match slice.development.as_ref().expect("checked development") {
             ManagedContextDevelopmentSelection::Empty => empty_development::materialize(
                 &publication_parent,
@@ -135,11 +168,13 @@ impl KernelRuntimeState {
             ManagedContextDevelopmentSelection::SourceProject {
                 project_id,
                 repositories,
-            } => materialize_slice_development_publication(
+            } => materialize_slice_development_publication_with_access(
                 &publication_parent,
                 project_id,
                 repositories,
                 slice.development_publication.as_ref(),
+                update_managed_publication_access,
+                resolved,
             )?,
         };
         if slice
@@ -186,21 +221,6 @@ impl KernelRuntimeState {
     }
 }
 
-fn materialize_slice_development_publication(
-    publication_parent: &Path,
-    project_id: &str,
-    repositories: &[DevelopmentSourceRepositoryBinding],
-    expected_publication: Option<&crate::slice::SliceDevelopmentPublication>,
-) -> Result<crate::slice::SliceDevelopmentPublication, DaemonError> {
-    materialize_slice_development_publication_with_access(
-        publication_parent,
-        project_id,
-        repositories,
-        expected_publication,
-        update_managed_publication_access,
-    )
-}
-
 fn materialize_slice_development_publication_with_access(
     publication_parent: &Path,
     project_id: &str,
@@ -211,6 +231,7 @@ fn materialize_slice_development_publication_with_access(
         &Path,
         &crate::slice::SliceDevelopmentPublication,
     ) -> Result<(), DaemonError>,
+    resolved_source: Option<Vec<DevelopmentRepositorySelection>>,
 ) -> Result<crate::slice::SliceDevelopmentPublication, DaemonError> {
     let access_action = if expected_publication.is_some() {
         "verify"
@@ -247,10 +268,13 @@ fn materialize_slice_development_publication_with_access(
             ensure_private_real_directory(&scratch_root)?;
             let scratch_cleanup = SliceDevelopmentScratchCleanup(scratch_root.clone());
             let archive_path = scratch_root.join("development.tar.gz");
-            let resolved = repositories
-                .iter()
-                .map(crate::managed_context::outbound_service::resolve_repository_selection)
-                .collect::<Result<Vec<_>, _>>()?;
+            let resolved = match resolved_source {
+                Some(resolved) => resolved,
+                None => repositories
+                    .iter()
+                    .map(crate::managed_context::outbound_service::resolve_repository_selection)
+                    .collect::<Result<Vec<_>, _>>()?,
+            };
             let exported = export_development_context(DevelopmentContextExportRequest {
                 project_id: project_id.to_string(),
                 repositories: resolved,
@@ -650,7 +674,7 @@ mod tests {
             fs::write(
                 &helper,
                 format!(
-                    "#!/bin/sh\nprintf '%s %s\\n' \"$1\" \"$(stat -c %a -- \"$2\")\" >> '{}'\n",
+                    "#!/bin/sh\nmode=$(stat -c %a -- \"$2\" 2>/dev/null || stat -f %Lp -- \"$2\")\nprintf '%s %s\\n' \"$1\" \"$mode\" >> '{}'\n",
                     helper_log.display()
                 ),
             )
@@ -688,6 +712,7 @@ mod tests {
             &repositories,
             None,
             &update_access,
+            None,
         )
         .expect("materialize slice Project");
         assert!(!stale_scratch.exists());
@@ -740,6 +765,7 @@ mod tests {
             &repositories,
             Some(&publication),
             &update_access,
+            None,
         )
         .expect("recover slice Project after restart");
         assert_eq!(recovered, publication);
@@ -786,6 +812,7 @@ mod tests {
                 "kernel-1",
                 "machine-1",
                 crate::slice::CreateSliceInput {
+                    source_slice_ref: None,
                     name: "project-slice".to_string(),
                     backend: crate::slice::SliceBackendKind::SshDocker,
                     os: "linux".to_string(),

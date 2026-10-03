@@ -438,24 +438,9 @@ pub(super) fn abort_opencode_session(
                 } else if idle_since
                     .is_some_and(|since| since.elapsed() >= OPENCODE_ABORT_SETTLEMENT_QUIET_PERIOD)
                 {
-                    let allow_native_writes =
-                        opencode_workspace_live_sync_native_writes_allowed(run);
-                    let session_permission = if run.read_only_discovery() {
-                        Some(opencode_read_only_permission_rules())
-                    } else if run.requires_workspace_live_sync() {
-                        Some(opencode_workspace_live_sync_permission_rules(
-                            allow_native_writes,
-                            run.permission_level(),
-                        ))
-                    } else {
-                        Some(opencode_permission_rules(run.permission_level()))
-                    };
-                    let session_id = client.create_session_with_retry(
-                        session_permission,
-                        OPENCODE_SESSION_CREATE_TIMEOUT,
-                        OPENCODE_SESSION_CREATE_RETRY_INTERVAL,
-                    )?;
-                    state.switch_session_after_abort(session_id);
+                    // Abort settles the turn, not the provider conversation. Drain late
+                    // cancellation events and baseline its messages before admitting a follow-up.
+                    state.settle_aborted_turn(&snapshot.messages);
                     return Ok(());
                 }
                 std::thread::sleep(OPENCODE_ABORT_SETTLEMENT_POLL_INTERVAL);
@@ -483,6 +468,10 @@ pub(super) fn abort_opencode_session(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "opencode_binding_permission_tests.rs"]
+mod permission_tests;
 
 #[cfg(test)]
 mod tests {
@@ -940,6 +929,99 @@ mod tests {
         assert_eq!(selection.variant.as_deref(), Some("medium"));
     }
 
+    #[test]
+    fn cancelled_opencode_turn_preserves_session_for_follow_up() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let mut paths = Vec::new();
+            loop {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut request = Vec::new();
+                loop {
+                    let mut buf = [0; 4096];
+                    let size = stream.read(&mut buf).unwrap();
+                    assert!(size > 0);
+                    request.extend_from_slice(&buf[..size]);
+                    let text = String::from_utf8_lossy(&request);
+                    let Some((headers, body)) = text.split_once("\r\n\r\n") else {
+                        continue;
+                    };
+                    let length = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.to_lowercase()
+                                .strip_prefix("content-length: ")
+                                .map(str::to_string)
+                        })
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .unwrap_or(0);
+                    if body.len() >= length {
+                        break;
+                    }
+                }
+                let text = String::from_utf8_lossy(&request);
+                let path = text.lines().next().unwrap().to_string();
+                let response = if path.contains("/prompt_async ") {
+                    ""
+                } else if path.starts_with("POST /session ") {
+                    r#"{"id":"session-new"}"#
+                } else if path.contains("/session/status ") {
+                    "{}"
+                } else if path.contains("/abort ") {
+                    "true"
+                } else if path.contains("/message ") {
+                    "[]"
+                } else {
+                    "{}"
+                };
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
+                let done = path.contains("/prompt_async ");
+                paths.push(path);
+                if done {
+                    return paths;
+                }
+            }
+        });
+        let run = test_run_with_endpoint(
+            LaunchProviderRequest::new("room", "opencode", "opencode", "default", "default"),
+            false,
+            &endpoint,
+        );
+        let mut state = OpenCodeRuntimeState::new(
+            endpoint,
+            "session-original".to_string(),
+            OpenCodeEventSubscription::for_tests(mpsc::channel().1),
+        );
+        state.note_prompt_submitted("user-cancelled".to_string());
+        super::abort_opencode_session(&run, &mut state).unwrap();
+        submit_opencode_prompt(
+            &run,
+            &mut state,
+            &crate::prompt_assembly::PromptEnvelope::new(
+                "continue",
+                "updated context",
+                Vec::new(),
+                crate::prompt_assembly::PromptManifest::current(),
+            ),
+        )
+        .unwrap();
+        let paths = server.join().unwrap();
+        assert_eq!(
+            state.session_id(),
+            "session-original",
+            "user cancellation must preserve the conversation"
+        );
+        assert!(!paths.iter().any(|path| path.starts_with("POST /session ")));
+        assert!(paths
+            .last()
+            .unwrap()
+            .contains("/session/session-original/prompt_async "));
+    }
+
     fn prompt_request_server() -> (String, thread::JoinHandle<serde_json::Value>) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("test listener should bind");
         let port = listener
@@ -947,7 +1029,7 @@ mod tests {
             .expect("test listener should expose a local address")
             .port();
         let handle = thread::spawn(move || {
-            for request_index in 0..2 {
+            for request_index in 0..3 {
                 let (mut stream, _) = listener.accept().expect("client should connect");
                 stream
                     .set_read_timeout(Some(Duration::from_secs(1)))
@@ -972,6 +1054,13 @@ mod tests {
                 }
                 let request_text = String::from_utf8_lossy(&request).into_owned();
                 if request_index == 0 {
+                    assert!(request_text.starts_with("PATCH /session/opencode-session-1 "));
+                    stream
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                        .expect("server should acknowledge session permission update");
+                    continue;
+                }
+                if request_index == 1 {
                     let response =
                         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]";
                     stream
@@ -999,7 +1088,7 @@ mod tests {
         test_run_with_endpoint(request, fenced, "http://127.0.0.1:1")
     }
 
-    fn test_run_with_endpoint(
+    pub(super) fn test_run_with_endpoint(
         request: LaunchProviderRequest,
         fenced: bool,
         endpoint: &str,
@@ -1034,6 +1123,20 @@ pub(super) fn submit_opencode_prompt(
     state: &mut OpenCodeRuntimeState,
     envelope: &crate::prompt_assembly::PromptEnvelope,
 ) -> Result<(), DaemonError> {
+    // A resumed native session can still carry an earlier permission policy.
+    // Sync it before execution while preserving the session and transcript.
+    let permission = if run.read_only_discovery() {
+        opencode_read_only_permission_rules()
+    } else if run.requires_workspace_live_sync() {
+        opencode_workspace_live_sync_permission_rules(
+            opencode_workspace_live_sync_native_writes_allowed(run),
+            run.permission_level(),
+        )
+    } else {
+        opencode_permission_rules(run.permission_level())
+    };
+    OpenCodeClient::new(run.id(), state.base_url())?
+        .update_session_permissions(state.session_id(), permission)?;
     submit_opencode_prompt_with_policy(
         run,
         state,
@@ -1087,7 +1190,9 @@ pub(crate) fn run_opencode_utility_prompt(
     let client = OpenCodeClient::new(run.id(), &base_url)?;
     client.wait_until_healthy(Duration::from_secs(30))?;
     let allow_native_writes = opencode_workspace_live_sync_native_writes_allowed(run);
-    let session_permission = if policy.is_read_only_discovery() {
+    let session_permission = if policy.is_metadata_only() {
+        Some(serde_json::json!([{ "permission": "*", "pattern": "*", "action": "deny" }]))
+    } else if policy.is_read_only_discovery() {
         Some(opencode_read_only_permission_rules())
     } else if run.requires_workspace_live_sync() {
         Some(opencode_workspace_live_sync_permission_rules(
@@ -1208,44 +1313,28 @@ fn resolve_initial_selection(
     run: &RuntimeProviderRun,
     client: &OpenCodeClient,
 ) -> Result<OpenCodeRunSelection, DaemonError> {
-    if run.model() != "default" && run.variant().is_some() {
-        crate::logging::debug_with_fields(
-            "daemon.provider.opencode",
-            "skipped configured defaults lookup for explicit model and variant",
-            serde_json::json!({
-                "provider_run_id": run.id(),
-                "requested_model": run.model(),
-                "requested_variant": run.variant(),
-            }),
-        );
-        return Ok(OpenCodeRunSelection::default());
-    }
-
-    let resolved = client.configured_defaults()?;
-    crate::logging::debug_with_fields(
-        "daemon.provider.opencode",
-        "checked opencode configured defaults",
-        serde_json::json!({
-            "provider_run_id": run.id(),
-            "requested_model": run.model(),
-            "requested_variant": run.variant(),
-            "selected_agent": resolved.selected_agent,
-            "agent_model": resolved.agent_model,
-            "agent_variant": resolved.agent_variant,
-            "top_level_model": resolved.top_level_model,
-            "resolved_model": resolved.model,
-            "resolved_variant": resolved.variant,
-        }),
-    );
-
-    Ok(OpenCodeRunSelection {
-        model: (run.model() == "default")
-            .then_some(resolved.model)
-            .flatten(),
-        variant: run
-            .variant()
-            .is_none()
-            .then_some(resolved.variant)
-            .flatten(),
-    })
+    let resolved = if run.model() != "default" && run.variant().is_some() {
+        OpenCodeConfiguredDefaults::default()
+    } else {
+        client.configured_defaults()?
+    };
+    let requested_model = if run.model() == "default" {
+        resolved.model.as_deref()
+    } else {
+        Some(run.model())
+    };
+    let model = client.validated_model(requested_model)?;
+    // A configured variant belongs to its configured model, not any explicit selection.
+    let variant = run
+        .variant()
+        .is_none()
+        .then(|| {
+            if run.model() == "default" || resolved.model.as_deref() == model.as_deref() {
+                resolved.variant
+            } else {
+                None
+            }
+        })
+        .flatten();
+    Ok(OpenCodeRunSelection { model, variant })
 }

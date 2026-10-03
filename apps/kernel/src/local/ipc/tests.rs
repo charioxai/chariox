@@ -12,8 +12,8 @@ use crate::attachment::ClientCapabilityLevel;
 use crate::config::PersistedCloudRelayProfile;
 use crate::local::api::{
     AddWorkflowEdgeRequest, AddWorkflowNodeRequest, CancelWorkflowRunRequest,
-    CreateWorkflowEndpointRequest, CreateWorkflowRequest, GetKernelResourceTelemetryRequest,
-    GetWorkflowRunRequest, InvokeWorkflowEndpointRequest, ListWorkflowRunsRequest,
+    CreateWorkflowEndpointRequest, CreateWorkflowRequest, GetWorkflowRunRequest,
+    InvokeWorkflowEndpointRequest, ListWorkflowRunsRequest,
 };
 use crate::local::{
     AttachToSessionRequest, CompletePromptRequest, LaunchProviderRunRequest,
@@ -28,6 +28,114 @@ use super::{
 };
 
 static LOCAL_IPC_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+#[test]
+fn guarded_unix_oversized_admission_returns_bounded_error_then_eof() {
+    run_local_ipc_async_test("guarded-oversize", 2, || async {
+        use tokio::io::AsyncReadExt;
+        let mut config = DaemonConfig::for_tests();
+        config.daemon_alias = Some("x".repeat(super::MAX_IPC_FRAME_BYTES));
+        let socket_path = config.local_socket_path.clone();
+        let app = Arc::new(TokioMutex::new(DaemonApp::bootstrap(config).unwrap()));
+        let (tx, rx) = oneshot::channel::<()>();
+        let server = tokio::spawn(super::run_local_ipc_server_with_shared_app(app, async {
+            let _ = rx.await;
+        }));
+        wait_for_socket(&socket_path).await;
+        let mut stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
+        super::write_open_async_frame(&mut stream, br#"{"GuardedControlSession":{"version":1}}"#)
+            .await
+            .unwrap();
+        let bytes = super::read_async_frame(&mut stream).await.unwrap();
+        assert!(bytes.len() < 1024);
+        let result: Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(result["response"].is_null());
+        assert_eq!(
+            result["error"],
+            "local payload exceeded ipc frame limit; request a smaller payload"
+        );
+        assert_eq!(stream.read(&mut [0_u8; 1]).await.unwrap(), 0);
+        tx.send(()).unwrap();
+        server.await.unwrap().unwrap();
+    });
+}
+
+#[test]
+fn guarded_unix_session_dispatches_one_command_and_preserves_legacy_eof() {
+    run_local_ipc_async_test("guarded-unix-session", 2, || async {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let config = DaemonConfig::for_tests();
+        let socket_path = config.local_socket_path.clone();
+        let app = Arc::new(TokioMutex::new(DaemonApp::bootstrap(config).unwrap()));
+        let (tx, rx) = oneshot::channel::<()>();
+        let server = tokio::spawn(super::run_local_ipc_server_with_shared_app(app, async {
+            let _ = rx.await;
+        }));
+        wait_for_socket(&socket_path).await;
+        let mut stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
+        let frame = super::encode_frame(br#"{"GuardedControlSession":{"version":1}}"#).unwrap();
+        for byte in frame {
+            stream.write_all(&[byte]).await.unwrap();
+        }
+        let admission: Value =
+            serde_json::from_slice(&super::read_async_frame(&mut stream).await.unwrap()).unwrap();
+        assert_eq!(admission["session"]["version"], 1);
+        assert!(admission["response"]["RelayStatus"]["status"]["capabilities"].is_array());
+        // This reaches ordinary dispatch and returns its not-found error, not a transport rejection.
+        let command =
+            br#"{"KeepManagedEnvironmentRunning":{"environmentId":"missing-session-test"}}"#;
+        super::write_open_async_frame(&mut stream, command)
+            .await
+            .unwrap();
+        let result: Value =
+            serde_json::from_slice(&super::read_async_frame(&mut stream).await.unwrap()).unwrap();
+        assert!(result["error"].as_str().is_some());
+        assert!(!result["error"]
+            .as_str()
+            .unwrap()
+            .contains("session accepts"));
+        assert_eq!(stream.read(&mut [0_u8; 1]).await.unwrap(), 0);
+        let mut legacy = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
+        super::write_open_async_frame(&mut legacy, br#"{"RelayStatus":null}"#)
+            .await
+            .unwrap();
+        let _: Value =
+            serde_json::from_slice(&super::read_async_frame(&mut legacy).await.unwrap()).unwrap();
+        assert_eq!(legacy.read(&mut [0_u8; 1]).await.unwrap(), 0);
+        let mut incompatible = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
+        super::write_open_async_frame(
+            &mut incompatible,
+            br#"{"GuardedControlSession":{"version":2}}"#,
+        )
+        .await
+        .unwrap();
+        let rejected: Value =
+            serde_json::from_slice(&super::read_async_frame(&mut incompatible).await.unwrap())
+                .unwrap();
+        assert!(rejected["error"]
+            .as_str()
+            .unwrap()
+            .contains("unsupported session version"));
+        assert_eq!(incompatible.read(&mut [0_u8; 1]).await.unwrap(), 0);
+        let mut invalid = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
+        super::write_open_async_frame(&mut invalid, br#"{"GuardedControlSession":{"version":1}}"#)
+            .await
+            .unwrap();
+        super::read_async_frame(&mut invalid).await.unwrap();
+        super::write_open_async_frame(&mut invalid, br#"{"RelayStatus":null}"#)
+            .await
+            .unwrap();
+        let rejected: Value =
+            serde_json::from_slice(&super::read_async_frame(&mut invalid).await.unwrap()).unwrap();
+        assert!(rejected["error"]
+            .as_str()
+            .unwrap()
+            .contains("session accepts exactly one guarded"));
+        assert_eq!(invalid.read(&mut [0_u8; 1]).await.unwrap(), 0);
+        tx.send(()).unwrap();
+        server.await.unwrap().unwrap();
+    });
+}
 const LOCAL_IPC_TEST_RUNTIME_THREAD_STACK_SIZE: usize = 64 * 1024 * 1024;
 
 fn local_ipc_test_guard() -> MutexGuard<'static, ()> {
@@ -109,6 +217,7 @@ fn local_ipc_round_trip_exercises_session_and_terminal_flow() {
         "local-ipc-round-trip-exercises-session-and-terminal-flow",
         2,
         || async {
+            let worktree = crate::test_support::TestWorktree::new("workspace-ipc");
             let config = DaemonConfig::for_tests();
             let socket_path = config.local_socket_path.clone();
             let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -128,7 +237,7 @@ fn local_ipc_round_trip_exercises_session_and_terminal_flow() {
             let client = LocalIpcClient::new(socket_path.clone());
             let session = match client
                 .send(&LocalDaemonRequest::CreateSession(
-                    CreateSessionRequest::new("workspace-ipc", "."),
+                    worktree.session_request(),
                 ))
                 .expect("session create should succeed")
             {
@@ -187,6 +296,8 @@ fn local_ipc_round_trip_exercises_session_and_terminal_flow() {
     );
 }
 
+// Kernel resource telemetry reads /proc; other platforms report it as unsupported.
+#[cfg(target_os = "linux")]
 #[test]
 fn local_ipc_resource_telemetry_round_trip_returns_complete_kernel_snapshot() {
     run_local_ipc_async_test("local-ipc-resource-telemetry-round-trip", 2, || async {
@@ -210,7 +321,7 @@ fn local_ipc_resource_telemetry_round_trip_returns_complete_kernel_snapshot() {
         let client = LocalIpcClient::new(socket_path.clone());
         let response = client
             .send(&LocalDaemonRequest::GetKernelResourceTelemetry(
-                GetKernelResourceTelemetryRequest,
+                crate::local::api::GetKernelResourceTelemetryRequest,
             ))
             .expect("kernel resource telemetry should round-trip over local IPC");
         let LocalDaemonResponse::KernelResourceTelemetry { snapshot } = response else {
@@ -236,7 +347,7 @@ fn local_ipc_resource_telemetry_round_trip_returns_complete_kernel_snapshot() {
         assert!(snapshot.logs.bytes <= snapshot.disk.total_bytes);
         let second = client
             .send(&LocalDaemonRequest::GetKernelResourceTelemetry(
-                GetKernelResourceTelemetryRequest,
+                crate::local::api::GetKernelResourceTelemetryRequest,
             ))
             .expect("second kernel resource telemetry request should succeed");
         let LocalDaemonResponse::KernelResourceTelemetry { snapshot: second } = second else {
@@ -258,6 +369,7 @@ fn local_ipc_uses_linked_cloud_user_for_session_creation() {
         "local-ipc-uses-linked-cloud-user-for-session-creation",
         2,
         || async {
+            let worktree = crate::test_support::TestWorktree::new("workspace-ipc-cloud");
             let mut config = DaemonConfig::for_tests();
             config.cloud_relay = Some(PersistedCloudRelayProfile {
                 api_url: "https://cloud.example.test".to_string(),
@@ -292,7 +404,7 @@ fn local_ipc_uses_linked_cloud_user_for_session_creation() {
             let client = LocalIpcClient::new(socket_path.clone());
             let response = client
                 .send(&LocalDaemonRequest::CreateSession(
-                    CreateSessionRequest::new("workspace-ipc-cloud", "."),
+                    worktree.session_request(),
                 ))
                 .expect("session create should succeed");
             let session = match response {
@@ -458,6 +570,7 @@ fn malformed_request_does_not_block_followup_request() {
         "malformed-request-does-not-block-followup-request",
         2,
         || async {
+            let worktree = crate::test_support::TestWorktree::new("workspace-ipc-followup");
             let config = DaemonConfig::for_tests();
             let socket_path = config.local_socket_path.clone();
             let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -492,7 +605,7 @@ fn malformed_request_does_not_block_followup_request() {
             let client = LocalIpcClient::new(socket_path.clone());
             let response = client
                 .send(&LocalDaemonRequest::CreateSession(
-                    CreateSessionRequest::new("workspace-ipc-followup", "."),
+                    worktree.session_request(),
                 ))
                 .expect("followup request should still succeed");
             match response {
@@ -515,6 +628,7 @@ fn local_ipc_round_trip_exercises_workflow_run_lifecycle() {
         "local-ipc-round-trip-exercises-workflow-run-lifecycle",
         2,
         || async {
+            let worktree = crate::test_support::TestWorktree::new("workspace-ipc-workflow");
             let config = DaemonConfig::for_tests();
             let socket_path = config.local_socket_path.clone();
             let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -534,7 +648,7 @@ fn local_ipc_round_trip_exercises_workflow_run_lifecycle() {
             let client = LocalIpcClient::new(socket_path.clone());
             let session = match client
                 .send(&LocalDaemonRequest::CreateSession(
-                    CreateSessionRequest::new("workspace-ipc-workflow", "."),
+                    worktree.session_request(),
                 ))
                 .expect("session create should succeed")
             {
@@ -749,6 +863,7 @@ fn local_ipc_round_trip_routes_downstream_workflow_nodes() {
         "local-ipc-round-trip-routes-downstream-workflow-nodes",
         2,
         || async {
+            let worktree = crate::test_support::TestWorktree::new("workspace-ipc-workflow-chain");
             let config = DaemonConfig::for_tests();
             let socket_path = config.local_socket_path.clone();
             let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -768,7 +883,7 @@ fn local_ipc_round_trip_routes_downstream_workflow_nodes() {
             let client = LocalIpcClient::new(socket_path.clone());
             let session = match client
                 .send(&LocalDaemonRequest::CreateSession(
-                    CreateSessionRequest::new("workspace-ipc-workflow-chain", "."),
+                    worktree.session_request(),
                 ))
                 .expect("session create should succeed")
             {
@@ -1099,4 +1214,22 @@ async fn wait_for_output(client: &LocalIpcClient, session_id: &str, attachment_i
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+}
+
+#[test]
+fn app_upload_maximum_chunk_fits_the_existing_local_transport_frame() {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let bytes = vec![7_u8; chariox_app_runtime::package_upload::MAX_UPLOAD_CHUNK_BYTES];
+    let request = crate::local::LocalDaemonRequest::PutAppPackageUploadChunk(
+        crate::local::PutAppPackageUploadChunkRequest {
+            handle: format!("upload_{}", "a".repeat(64)),
+            offset: 0,
+            data_base64: STANDARD.encode(&bytes),
+            chunk_sha256: format!("sha256:{:064x}", 1),
+        },
+    );
+    let payload = serde_json::to_vec(&request).unwrap();
+    let frame = super::encode_frame(&payload).unwrap();
+    assert_eq!(frame.len(), payload.len() + 4);
+    assert!(payload.len() < super::MAX_IPC_FRAME_BYTES);
 }

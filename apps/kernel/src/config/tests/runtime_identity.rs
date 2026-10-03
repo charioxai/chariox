@@ -50,6 +50,7 @@ fn generated_runtime_identity_has_expected_prefixes() {
 
 #[test]
 fn runtime_identity_is_stable_per_host_port() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let temp_home = std::env::temp_dir().join(format!(
         "chariox-config-identity-test-{}",
@@ -94,7 +95,283 @@ fn runtime_identity_is_stable_per_host_port() {
 }
 
 #[test]
+fn protected_room_restart_preserves_retained_identity_and_validates_slice_binding() {
+    let _guard = crate::env_lock::lock();
+    let directory = env::temp_dir().join(format!(
+        "chariox-protected-identity-config-{}",
+        generate_identity_suffix()
+    ));
+    fs::create_dir(&directory).expect("create isolated synthetic identity fixture");
+    struct Restore(
+        Vec<(&'static str, Option<std::ffi::OsString>)>,
+        std::path::PathBuf,
+    );
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            for (name, value) in self.0.drain(..) {
+                unsafe { restore_env_var(name, value) };
+            }
+            let _ = fs::remove_dir_all(&self.1);
+        }
+    }
+    let names = [
+        "HOME",
+        "CHARIOX_HOME",
+        "CHARIOX_SLICE_PRIVATE_ROOT",
+        "CHARIOX_KERNEL_HOST",
+        "CHARIOX_KERNEL_PORT",
+        "CHARIOX_DAEMON_ID",
+        "CHARIOX_MACHINE_ID",
+        "CHARIOX_DAEMON_ALIAS",
+        "CHARIOX_MACHINE_ALIAS",
+        "CHARIOX_SLICE_ID",
+        "CHARIOX_ROOM_ENVIRONMENT_HOME_KERNEL_ID",
+        "CHARIOX_ROOM_ENVIRONMENT_HOME_PUBLIC_KEY",
+        "CHARIOX_ROOM_ENVIRONMENT_SESSION_ID",
+        "CHARIOX_ROOM_ENVIRONMENT_SLICE_ID",
+        "CHARIOX_RELAY_URL",
+        "CHARIOX_RELAY_TOKEN",
+        "CHARIOX_CLOUD_RELAY_CONFIG_JSON",
+    ];
+    let _restore = Restore(
+        names
+            .into_iter()
+            .map(|name| (name, env::var_os(name)))
+            .collect(),
+        directory.clone(),
+    );
+    let public = relay_crypto::public_key_from_private_key_base64(
+        &relay_crypto::generate_private_key_base64(),
+    )
+    .unwrap();
+    let foreign_public = relay_crypto::public_key_from_private_key_base64(
+        &relay_crypto::generate_private_key_base64(),
+    )
+    .unwrap();
+    unsafe {
+        env::remove_var("CHARIOX_RELAY_URL");
+        env::remove_var("CHARIOX_RELAY_TOKEN");
+        env::remove_var("CHARIOX_CLOUD_RELAY_CONFIG_JSON");
+        env::set_var("HOME", &directory);
+        env::set_var("CHARIOX_HOME", &directory);
+        env::set_var(
+            "CHARIOX_SLICE_PRIVATE_ROOT",
+            "/var/lib/chariox/slice-private",
+        );
+        env::set_var("CHARIOX_KERNEL_HOST", "127.0.0.1");
+        env::set_var("CHARIOX_KERNEL_PORT", "43119");
+        env::set_var("CHARIOX_DAEMON_ID", "foreign-kernel");
+        env::set_var("CHARIOX_MACHINE_ID", "slice:synthetic-slice");
+        env::set_var("CHARIOX_SLICE_ID", "synthetic-slice");
+        env::set_var("CHARIOX_ROOM_ENVIRONMENT_HOME_KERNEL_ID", "synthetic-home");
+        env::set_var("CHARIOX_ROOM_ENVIRONMENT_HOME_PUBLIC_KEY", public.clone());
+        env::set_var("CHARIOX_ROOM_ENVIRONMENT_SESSION_ID", "synthetic-room");
+        env::set_var("CHARIOX_ROOM_ENVIRONMENT_SLICE_ID", "synthetic-slice");
+        env::set_var("CHARIOX_DAEMON_ALIAS", "display-only-kernel");
+        env::set_var("CHARIOX_MACHINE_ALIAS", "display-only-machine");
+    }
+    let registry = DaemonConfig::default_kernel_registry_path();
+    fs::create_dir_all(registry.parent().unwrap()).unwrap();
+    let sentinel = serde_json::to_vec(&serde_json::json!({"version": 1, "machine_id": "retained-machine",
+        "kernels": {"127.0.0.1:43119": {"kernel_id": "retained-kernel", "host": "127.0.0.1", "port": 43119,
+            "relay_public_key": "synthetic-public", "relay_private_key": "synthetic-private-sentinel"}}})).unwrap();
+    fs::write(&registry, &sentinel).unwrap();
+    // Exercise the same environment composition used by load_from_env twice.
+    // Only private identity loading is substituted; no runtime keys are created.
+    let load = || {
+        DaemonConfig::load_from_env_with_identity_loader(|host, port| {
+            assert_eq!((host, port), ("127.0.0.1", 43119));
+            assert!(fs::read(&registry).unwrap() == sentinel);
+            RuntimeIdentity {
+                daemon_id: "retained-kernel".to_string(),
+                machine_id: "retained-machine".to_string(),
+                machine_alias: None,
+                daemon_alias: None,
+                relay_public_key: "synthetic-public".to_string(),
+                relay_private_key: "synthetic-private-sentinel".to_string(),
+            }
+        })
+    };
+    let first = load();
+    let restarted = load();
+    assert_eq!(first.daemon_id, "retained-kernel");
+    assert_eq!(restarted.daemon_id, "retained-kernel");
+    assert_eq!(first.host_machine_id, "retained-machine");
+    assert_eq!(restarted.host_machine_id, "retained-machine");
+    assert!(fs::read(&registry).unwrap() == sentinel);
+    for config in [&first, &restarted] {
+        let binding = config.room_environment_worker_binding.as_ref().unwrap();
+        config
+            .validate()
+            .expect("retained Room worker must pass the boot config gate");
+        let key = public.clone();
+        assert!(binding.permits("synthetic-home", &key, "synthetic-room", "synthetic-slice"));
+        assert!(!binding.permits("foreign-home", &key, "synthetic-room", "synthetic-slice"));
+        assert!(!binding.permits(
+            "synthetic-home",
+            &foreign_public.clone(),
+            "synthetic-room",
+            "synthetic-slice"
+        ));
+        assert!(!binding.permits("synthetic-home", &key, "foreign-room", "synthetic-slice"));
+        assert!(!binding.permits("synthetic-home", &key, "synthetic-room", "foreign-slice"));
+    }
+    for slice in [None, Some("foreign-slice"), Some(" synthetic-slice ")] {
+        unsafe {
+            restore_env_var("CHARIOX_SLICE_ID", slice.map(Into::into));
+        }
+        // Validation and cloning use the captured boot scope, not ambient env.
+        restarted
+            .clone()
+            .validate()
+            .expect("loaded binding must remain stable");
+        assert!(matches!(
+            load().validate(),
+            Err(crate::error::DaemonError::InvalidConfig {
+                field: "room_environment_worker_binding",
+                ..
+            })
+        ));
+    }
+    unsafe {
+        env::remove_var("CHARIOX_SLICE_PRIVATE_ROOT");
+    }
+    restarted
+        .validate()
+        .expect("protected mode was captured at boot");
+    let legacy = load();
+    legacy
+        .validate()
+        .expect("legacy provisioned machine alias must still boot");
+    let binding = legacy.room_environment_worker_binding.as_ref().unwrap();
+    assert!(binding
+        .validate(&legacy.daemon_id, &restarted.host_machine_id)
+        .is_err());
+    assert!(binding
+        .validate(&legacy.daemon_id, "slice:synthetic-slice")
+        .is_ok());
+    assert!(binding
+        .validate(&legacy.daemon_id, "slice:foreign-slice")
+        .is_err());
+}
+
+#[test]
+fn protected_slice_announces_its_canonical_worker_ref_with_retained_keys() {
+    use sha2::{Digest, Sha256};
+    let _guard = crate::env_lock::lock();
+    let directory = env::temp_dir().join(format!(
+        "chariox-protected-worker-ref-{}",
+        generate_identity_suffix()
+    ));
+    fs::create_dir(&directory).expect("create isolated synthetic identity fixture");
+    struct Restore(
+        Vec<(&'static str, Option<std::ffi::OsString>)>,
+        std::path::PathBuf,
+    );
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            for (name, value) in self.0.drain(..) {
+                unsafe { restore_env_var(name, value) };
+            }
+            let _ = fs::remove_dir_all(&self.1);
+        }
+    }
+    let names = [
+        "HOME",
+        "CHARIOX_HOME",
+        "CHARIOX_SLICE_PRIVATE_ROOT",
+        "CHARIOX_KERNEL_HOST",
+        "CHARIOX_KERNEL_PORT",
+        "CHARIOX_DAEMON_ID",
+        "CHARIOX_MACHINE_ID",
+        "CHARIOX_SLICE_OWNER_MACHINE_ID",
+        "CHARIOX_SLICE_ID",
+        "CHARIOX_ROOM_ENVIRONMENT_HOME_KERNEL_ID",
+        "CHARIOX_ROOM_ENVIRONMENT_HOME_PUBLIC_KEY",
+        "CHARIOX_ROOM_ENVIRONMENT_SESSION_ID",
+        "CHARIOX_ROOM_ENVIRONMENT_SLICE_ID",
+        "CHARIOX_RELAY_URL",
+        "CHARIOX_RELAY_TOKEN",
+        "CHARIOX_CLOUD_RELAY_CONFIG_JSON",
+    ];
+    let _restore = Restore(
+        names
+            .into_iter()
+            .map(|name| (name, env::var_os(name)))
+            .collect(),
+        directory.clone(),
+    );
+    let worker_ref_for = |machine: &str| {
+        format!(
+            "slice:{:x}:{}",
+            Sha256::digest(machine.as_bytes()),
+            "0".repeat(64)
+        )
+    };
+    let worker_ref = worker_ref_for("synthetic-owner-machine");
+    unsafe {
+        for name in [
+            "CHARIOX_RELAY_URL",
+            "CHARIOX_RELAY_TOKEN",
+            "CHARIOX_CLOUD_RELAY_CONFIG_JSON",
+            "CHARIOX_SLICE_ID",
+            "CHARIOX_ROOM_ENVIRONMENT_HOME_KERNEL_ID",
+            "CHARIOX_ROOM_ENVIRONMENT_HOME_PUBLIC_KEY",
+            "CHARIOX_ROOM_ENVIRONMENT_SESSION_ID",
+            "CHARIOX_ROOM_ENVIRONMENT_SLICE_ID",
+        ] {
+            env::remove_var(name);
+        }
+        env::set_var("HOME", &directory);
+        env::set_var("CHARIOX_HOME", &directory);
+        env::set_var(
+            "CHARIOX_SLICE_PRIVATE_ROOT",
+            "/var/lib/chariox/slice-private",
+        );
+        env::set_var("CHARIOX_KERNEL_HOST", "127.0.0.1");
+        env::set_var("CHARIOX_KERNEL_PORT", "43119");
+        env::set_var("CHARIOX_MACHINE_ID", "slice:synthetic-slice");
+        env::set_var("CHARIOX_SLICE_OWNER_MACHINE_ID", "synthetic-owner-machine");
+        env::set_var("CHARIOX_DAEMON_ID", &worker_ref);
+    }
+    let load = || {
+        DaemonConfig::load_from_env_with_identity_loader(|_, _| RuntimeIdentity {
+            daemon_id: "retained-kernel".to_string(),
+            machine_id: "retained-machine".to_string(),
+            machine_alias: None,
+            daemon_alias: None,
+            relay_public_key: "synthetic-public".to_string(),
+            relay_private_key: "synthetic-private-sentinel".to_string(),
+        })
+    };
+    // The home discovers the worker by its canonical per-creation ref; the
+    // retained keys and machine identity stay authoritative.
+    let config = load();
+    assert_eq!(config.daemon_id, worker_ref);
+    assert_eq!(config.host_machine_id, "retained-machine");
+    assert_eq!(config.relay_public_key, "synthetic-public");
+    // No other ambient value can rename the retained kernel.
+    for foreign in [
+        "foreign-kernel".to_string(),
+        "slice:synthetic-slice".to_string(),
+        worker_ref_for("foreign-owner-machine"),
+    ] {
+        unsafe { env::set_var("CHARIOX_DAEMON_ID", &foreign) };
+        assert_eq!(load().daemon_id, "retained-kernel", "{foreign}");
+    }
+    unsafe {
+        env::set_var("CHARIOX_DAEMON_ID", &worker_ref);
+        env::remove_var("CHARIOX_SLICE_OWNER_MACHINE_ID");
+    }
+    assert_eq!(load().daemon_id, "retained-kernel");
+    // Unprotected workers keep using the provisioned id as before.
+    unsafe { env::remove_var("CHARIOX_SLICE_PRIVATE_ROOT") };
+    assert_eq!(load().daemon_id, worker_ref);
+}
+
+#[test]
 fn chariox_home_owns_config_identity_state_and_runtime_paths() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let temp_home = std::env::temp_dir().join(format!(
         "chariox-explicit-home-test-{}",
@@ -133,6 +410,7 @@ fn chariox_home_owns_config_identity_state_and_runtime_paths() {
 
 #[test]
 fn relay_peer_public_key_claim_survives_restart_and_rejects_rebinding() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let temp_home = std::env::temp_dir().join(format!(
         "chariox-relay-peer-key-test-{}",
@@ -201,6 +479,7 @@ fn renamed_vault_backend_deserializes_to_the_only_supported_encrypted_backend() 
 
 #[test]
 fn env_relay_config_takes_precedence_over_persisted_cloud_relay_profile() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let temp_home = std::env::temp_dir().join(format!(
         "chariox-config-relay-env-test-{}",
@@ -300,6 +579,7 @@ fn relay_url_uses_cloud_profile_tolerates_spacing_and_trailing_slashes() {
 
 #[test]
 fn env_cloud_profile_can_accompany_env_relay_config_for_worker_refresh() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let temp_home = std::env::temp_dir().join(format!(
         "chariox-config-env-cloud-relay-test-{}",
@@ -364,6 +644,7 @@ fn env_cloud_profile_can_accompany_env_relay_config_for_worker_refresh() {
 
 #[test]
 fn managed_slice_owner_public_key_loads_from_runtime_environment() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let temp_home = std::env::temp_dir().join(format!(
         "chariox-config-slice-owner-key-test-{}",
@@ -404,7 +685,9 @@ fn managed_slice_owner_public_key_loads_from_runtime_environment() {
 
 #[test]
 fn load_from_env_imports_cli_cloud_profile_for_kernel_startup() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
+    std::env::remove_var("CHARIOX_HOME");
     let temp_home = std::env::temp_dir().join(format!(
         "chariox-config-cli-cloud-import-test-{}",
         generate_identity_suffix()
@@ -417,6 +700,7 @@ fn load_from_env_imports_cli_cloud_profile_for_kernel_startup() {
     let old_cloud_relay_config = env::var_os("CHARIOX_CLOUD_RELAY_CONFIG_JSON");
     unsafe {
         env::set_var("HOME", &temp_home);
+        env::set_var("CHARIOX_HOME", temp_home.join(".chariox"));
         env::remove_var("XDG_CONFIG_HOME");
         env::remove_var("XDG_STATE_HOME");
         env::remove_var("CHARIOX_RELAY_URL");
@@ -477,7 +761,9 @@ fn load_from_env_imports_cli_cloud_profile_for_kernel_startup() {
 
 #[test]
 fn persisted_daemon_cloud_profile_takes_precedence_over_cli_profile() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
+    std::env::remove_var("CHARIOX_HOME");
     let temp_home = std::env::temp_dir().join(format!(
         "chariox-config-daemon-cloud-precedence-test-{}",
         generate_identity_suffix()
@@ -490,6 +776,7 @@ fn persisted_daemon_cloud_profile_takes_precedence_over_cli_profile() {
     let old_cloud_relay_config = env::var_os("CHARIOX_CLOUD_RELAY_CONFIG_JSON");
     unsafe {
         env::set_var("HOME", &temp_home);
+        env::set_var("CHARIOX_HOME", temp_home.join(".chariox"));
         env::remove_var("XDG_CONFIG_HOME");
         env::remove_var("XDG_STATE_HOME");
         env::remove_var("CHARIOX_RELAY_URL");

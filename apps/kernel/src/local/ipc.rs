@@ -193,7 +193,16 @@ async fn handle_connection(
         }
     };
 
-    let envelope = match serde_json::from_slice::<LocalDaemonRequest>(&request_bytes) {
+    let request = serde_json::from_slice::<LocalDaemonRequest>(&request_bytes);
+    if request.is_err()
+        && serde_json::from_slice::<serde_json::Value>(&request_bytes)
+            .ok()
+            .is_some_and(|value| value.get("GuardedControlSession").is_some())
+    {
+        return guarded_session::handle(&router, &command_sequence, &mut stream, &request_bytes)
+            .await;
+    }
+    let envelope = match request {
         Ok(request) => {
             let response = dispatch_local_ipc_request(&router, &command_sequence, request).await;
             match response {
@@ -423,17 +432,7 @@ async fn write_async_frame(
     stream: &mut tokio::net::UnixStream,
     payload: &[u8],
 ) -> Result<(), DaemonError> {
-    let frame = encode_frame(payload)?;
-    timeout(IPC_IO_TIMEOUT, stream.write_all(&frame))
-        .await
-        .map_err(|_| DaemonError::LocalTransport {
-            operation: "write local response frame",
-            message: "timed out".to_string(),
-        })?
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "write local response frame",
-            message: error.to_string(),
-        })?;
+    write_open_async_frame(stream, payload).await?;
     timeout(IPC_IO_TIMEOUT, stream.shutdown())
         .await
         .map_err(|_| DaemonError::LocalTransport {
@@ -445,6 +444,25 @@ async fn write_async_frame(
             message: error.to_string(),
         })
 }
+
+async fn write_open_async_frame(
+    stream: &mut tokio::net::UnixStream,
+    payload: &[u8],
+) -> Result<(), DaemonError> {
+    let frame = encode_frame(payload)?;
+    timeout(IPC_IO_TIMEOUT, stream.write_all(&frame))
+        .await
+        .map_err(|_| DaemonError::LocalTransport {
+            operation: "write local response frame",
+            message: "timed out".to_string(),
+        })?
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "write local response frame",
+            message: error.to_string(),
+        })
+}
+
+mod guarded_session;
 
 fn ensure_frame_size(payload_len: usize) -> Result<(), DaemonError> {
     if payload_len > MAX_IPC_FRAME_BYTES {

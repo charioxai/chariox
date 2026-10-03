@@ -13,6 +13,7 @@ struct BlockedWorkflowClaimRetry {
 
 impl KernelRuntimeOwnedState {
     pub(super) fn workflow_retry_blocked_claims(&self) -> WorkflowPromptDispatches {
+        self.reconcile_completed_workflow_write_claims();
         let mut dispatches = WorkflowPromptDispatches::default();
         for retry in self.collect_blocked_workflow_claim_retries() {
             if let Some(prepared) = self.retry_blocked_workflow_claim(retry) {
@@ -24,22 +25,21 @@ impl KernelRuntimeOwnedState {
     }
 
     fn workflow_retry_queued_prompts_waiting_for_claims(&self) -> WorkflowPromptDispatches {
-        let mut dispatches = WorkflowPromptDispatches::default();
-        for session in self
-            .session_store
-            .list_non_ended_sessions_including_hidden()
-        {
+        // Release the session read guard before dispatch can mutate session state.
+        let mut candidates = Vec::new();
+        let sessions = self.session_store.read();
+        for session in sessions.non_ended_session_refs() {
             for agent in self.agent_store.get_session_agents(session.id()) {
                 if self
                     .prompt_state_owner
-                    .active_prompt_for_agent(&session, agent.id())
+                    .active_prompt_for_agent(session, agent.id())
                     .is_some()
                 {
                     continue;
                 }
                 let Some(next_prompt) = self
                     .prompt_state_owner
-                    .peek_next_queued_prompt(&session, agent.id())
+                    .peek_next_queued_prompt(session, agent.id())
                 else {
                     continue;
                 };
@@ -53,23 +53,29 @@ impl KernelRuntimeOwnedState {
                 else {
                     continue;
                 };
-                match self.advance_next_queued_prompt_dispatch(
-                    session.id(),
-                    agent.id(),
-                    provider_run.id(),
-                ) {
-                    Ok(Some(dispatch)) => dispatches.local.push(dispatch),
-                    Ok(None) => {}
-                    Err(error) => self.record_notice(
-                        session.id(),
-                        Some(provider_run.id()),
-                        self.attachment_store
-                            .list_session_attachment_ids(session.id()),
-                        format!(
-                            "Queued workflow prompt remained pending after workspace release: {error}"
-                        ),
+                candidates.push((
+                    session.id().to_string(),
+                    agent.id().to_string(),
+                    provider_run.id().to_string(),
+                ));
+            }
+        }
+        drop(sessions);
+        let mut dispatches = WorkflowPromptDispatches::default();
+        for (session_id, agent_id, provider_run_id) in candidates {
+            match self.advance_next_queued_prompt_dispatch(&session_id, &agent_id, &provider_run_id)
+            {
+                Ok(Some(dispatch)) => dispatches.local.push(dispatch),
+                Ok(None) => {}
+                Err(error) => self.record_notice(
+                    &session_id,
+                    Some(&provider_run_id),
+                    self.attachment_store
+                        .list_session_attachment_ids(&session_id),
+                    format!(
+                        "Queued workflow prompt remained pending after workspace release: {error}"
                     ),
-                }
+                ),
             }
         }
         dispatches
@@ -77,10 +83,8 @@ impl KernelRuntimeOwnedState {
 
     fn collect_blocked_workflow_claim_retries(&self) -> Vec<BlockedWorkflowClaimRetry> {
         let mut retries = Vec::new();
-        for session in self
-            .session_store
-            .list_non_ended_sessions_including_hidden()
-        {
+        let sessions = self.session_store.read();
+        for session in sessions.non_ended_session_refs() {
             for workflow_run in session.workflow_runs() {
                 for node_run in workflow_run.node_runs() {
                     if node_run.status()
@@ -113,6 +117,18 @@ impl KernelRuntimeOwnedState {
         &self,
         retry: BlockedWorkflowClaimRetry,
     ) -> Option<WorkflowPromptDispatches> {
+        match self.workflow_retry_durable_entry(
+            &retry.session_id,
+            &retry.workflow_run_id,
+            &retry.workflow_node_run_id,
+        ) {
+            Ok(Some(dispatches)) => return Some(dispatches),
+            Ok(None) => {} // Existing downstream-node path below.
+            Err(error) => {
+                self.record_blocked_workflow_claim_retry_error(&retry, error);
+                return None;
+            }
+        }
         let claim_id = self.workflow_dispatch_claim_id(
             &retry.session_id,
             &retry.workflow_run_id,

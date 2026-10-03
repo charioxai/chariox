@@ -7,7 +7,8 @@ use crate::session::{RuntimeSession, SessionService, SessionStatus};
 
 use super::{
     calculate_agent_layout, generate_agent_ref, recalculate_positions, AgentInstance, AgentState,
-    AgentStore, AgentSubstituteProfile, CreateAgentRequest, GridPosition, RemoteAgentBinding,
+    AgentStore, AgentSubstituteProfile, CreateAgentRequest, FailedRequest, GridPosition,
+    RemoteAgentBinding,
 };
 
 #[derive(Debug, Clone)]
@@ -136,7 +137,9 @@ impl AgentService {
             created_agents.push(agent);
         }
 
-        let focused_agent_id = created_agents.last().map(|agent| agent.id().to_string());
+        let focused_agent_id = new_agent_focus_target(&created_agents)
+            .map(|agent| agent.id().to_string())
+            .or_else(|| session.focused_agent_id().map(str::to_string));
         let created_agents = self.store.insert_session_batch_and_apply_layout(
             session.id(),
             created_agents,
@@ -616,6 +619,21 @@ impl AgentService {
         Ok(agent.clone())
     }
 
+    pub(crate) fn set_agent_failed_requests(
+        &mut self,
+        agent_id: &str,
+        failed_requests: Vec<FailedRequest>,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        agent.set_failed_requests(failed_requests);
+        Ok(agent.clone())
+    }
+
     pub fn set_agent_runtime_profile_with_account_profile(
         &mut self,
         agent_id: &str,
@@ -636,13 +654,6 @@ impl AgentService {
         agent.set_effort(effort);
         if account_profile.is_some() {
             agent.set_account_profile(account_profile);
-        }
-        if agent.active_substitute_index().is_none() {
-            agent.set_primary_profile(
-                provider.to_string(),
-                agent.model().map(str::to_string),
-                agent.effort().map(str::to_string),
-            );
         }
         agent.set_provider_resume_state(resume_state);
         Ok(agent.clone())
@@ -729,29 +740,6 @@ impl AgentService {
         if let Some(effort) = effort {
             agent.set_effort(effort);
         }
-        agent.set_primary_profile(
-            agent.provider().to_string(),
-            agent.model().map(str::to_string),
-            agent.effort().map(str::to_string),
-        );
-        Ok(agent.clone())
-    }
-
-    pub fn set_agent_primary_profile_snapshot(
-        &mut self,
-        agent_id: &str,
-        provider: &str,
-        model: Option<String>,
-        effort: Option<String>,
-        account_profile: Option<String>,
-    ) -> Result<AgentInstance, DaemonError> {
-        let agent = self
-            .store
-            .get_mut(agent_id)
-            .ok_or_else(|| DaemonError::AgentNotFound {
-                agent_id: agent_id.to_string(),
-            })?;
-        agent.set_primary_profile_snapshot(provider, model, effort, account_profile);
         Ok(agent.clone())
     }
 
@@ -871,41 +859,6 @@ impl AgentService {
                 agent_id: agent_id.to_string(),
             })?;
         agent.set_substitution_timeout_ms(timeout_ms);
-        Ok(agent.clone())
-    }
-
-    pub fn activate_agent_substitute(
-        &mut self,
-        agent_id: &str,
-        index: usize,
-        reason: impl Into<String>,
-    ) -> Result<(AgentInstance, AgentSubstituteProfile), DaemonError> {
-        let agent = self
-            .store
-            .get_mut(agent_id)
-            .ok_or_else(|| DaemonError::AgentNotFound {
-                agent_id: agent_id.to_string(),
-            })?;
-        let profile = agent.activate_substitute(index, reason).ok_or_else(|| {
-            DaemonError::LocalTransport {
-                operation: "activate agent substitute",
-                message: format!("agent `{agent_id}` has no substitute at index {index}"),
-            }
-        })?;
-        Ok((agent.clone(), profile))
-    }
-
-    pub fn deactivate_agent_substitute(
-        &mut self,
-        agent_id: &str,
-    ) -> Result<AgentInstance, DaemonError> {
-        let agent = self
-            .store
-            .get_mut(agent_id)
-            .ok_or_else(|| DaemonError::AgentNotFound {
-                agent_id: agent_id.to_string(),
-            })?;
-        agent.deactivate_substitute();
         Ok(agent.clone())
     }
 
@@ -1050,6 +1003,7 @@ impl AgentService {
                 agent_id: agent_ref.to_string(),
             })?;
         agent.grant_extension(grant);
+        crate::transport::mcp_server::catalog_changed();
         Ok(agent.clone())
     }
 
@@ -1107,6 +1061,7 @@ impl AgentService {
                 agent_id: agent_ref.to_string(),
             })?;
         agent.revoke_extension(kind, name);
+        crate::transport::mcp_server::catalog_changed();
         Ok(agent.clone())
     }
 
@@ -1174,6 +1129,16 @@ impl Default for AgentService {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// The new agent that takes the session focus: a person's last new agent.
+/// Only a person moves the focus, so an agent created on a metaagent's behalf
+/// (a meta-mode spawn, or workflow code for a metaagent) never takes it.
+pub(crate) fn new_agent_focus_target(agents: &[AgentInstance]) -> Option<&AgentInstance> {
+    agents
+        .iter()
+        .rev()
+        .find(|agent| agent.controlled_by_metaagent_id().is_none())
 }
 
 #[cfg(test)]
@@ -1345,6 +1310,75 @@ mod workflow_copy_alias_tests {
                 .id(),
             source.id()
         );
+    }
+
+    #[test]
+    fn an_agent_a_metaagent_spawns_does_not_take_the_session_focus() {
+        let mut service = AgentService::new();
+        let mut sessions = SessionService::new(&DaemonConfig::for_tests());
+        let session = sessions
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let focused = |sessions: &SessionService| {
+            sessions
+                .get_session(session.id())
+                .expect("session should remain")
+                .focused_agent_id()
+                .map(str::to_string)
+        };
+        let person_agent = service
+            .create_agent(
+                CreateAgentRequest::new(session.id(), "codex"),
+                &mut sessions,
+            )
+            .expect("a person's agent should be created");
+        assert_eq!(focused(&sessions), Some(person_agent.id().to_string()));
+
+        // A meta-mode agent spawns a helper: the person's focus stays.
+        let helper = service
+            .create_agent(
+                CreateAgentRequest::new(session.id(), "codex")
+                    .with_controlled_by_metaagent_id(person_agent.id()),
+                &mut sessions,
+            )
+            .expect("the metaagent's agent should be created");
+        assert_eq!(focused(&sessions), Some(person_agent.id().to_string()));
+        assert_ne!(
+            service
+                .get_agent(helper.id())
+                .expect("helper should exist")
+                .state(),
+            AgentState::Focused
+        );
+
+        // A batch mixing both focuses the person's agent, whatever its order.
+        let batch = service
+            .create_agents(
+                vec![
+                    CreateAgentRequest::new(session.id(), "codex"),
+                    CreateAgentRequest::new(session.id(), "codex")
+                        .with_controlled_by_metaagent_id(person_agent.id()),
+                ],
+                &mut sessions,
+            )
+            .expect("a mixed batch should be created");
+        assert_eq!(
+            new_agent_focus_target(&batch).map(|agent| agent.id()),
+            Some(batch[0].id())
+        );
+        assert_eq!(focused(&sessions), Some(batch[0].id().to_string()));
+        // A metaagent-only batch (as a worker-backed spawn returns it) has no
+        // focus target: the session keeps its focus.
+        assert!(new_agent_focus_target(&batch[1..]).is_none());
+
+        // A person's spawn still takes the focus.
+        let next = service
+            .create_agent(
+                CreateAgentRequest::new(session.id(), "codex"),
+                &mut sessions,
+            )
+            .expect("a person's second agent should be created");
+        assert_eq!(focused(&sessions), Some(next.id().to_string()));
     }
 
     #[test]

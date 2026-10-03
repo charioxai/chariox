@@ -281,11 +281,11 @@ pub struct AgentPromptScheduleCollection {
 pub struct SessionService {
     store: SessionStore,
     room_environments: RoomEnvironmentRegistry,
+    room_environment_durable_state: Option<crate::durable_state::DurableKernelStateStore>,
     projects: BTreeMap<String, RuntimeProject>,
     ephemeral_session_ids: BTreeSet<String>,
     host_machine_id: String,
     host_daemon_id: String,
-    event_environment_id: String,
     prompt_id_allocator: PromptIdAllocator,
     next_workflow_number: u64,
     next_workflow_schema_number: u64,
@@ -296,7 +296,6 @@ pub struct SessionService {
     next_workflow_message_number: u64,
     next_workflow_watchdog_number: u64,
     next_workflow_publication_number: u64,
-    next_workflow_event_binding_number: u64,
     next_workflow_prompt_queue_number: u64,
     next_workflow_queued_prompt_number: u64,
     next_agent_prompt_schedule_number: u64,
@@ -307,9 +306,12 @@ pub struct SessionService {
 }
 
 mod core;
+mod durable_queue;
+pub(crate) use durable_queue::{PreparedWorkflowQueueRun, WorkflowQueueRun};
 mod helpers;
 mod launches;
 mod prompt_schedules;
+mod room_environment_durability;
 mod room_environments;
 mod sessions;
 #[cfg(test)]

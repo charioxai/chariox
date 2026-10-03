@@ -10,7 +10,7 @@ pub use super::queued_metaagent_task::QueuedMetaagentTask;
 pub use super::runtime_interactions::{
     RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle,
     RuntimeInteractionCustomChoice, RuntimeInteractionInputKind, RuntimeInteractionKind,
-    RuntimeInteractionLevel,
+    RuntimeInteractionLevel, RuntimeInteractionSubject, RuntimeProviderLogin,
 };
 pub use super::runtime_session::{RuntimeSession, SessionCollaborationAgentCounts};
 pub use super::runtime_worktrees::{RuntimeWorktreeAssignment, WorktreeIsolationMode};
@@ -24,8 +24,8 @@ pub use super::workflow_canvas::{
     WorkflowCanvasLayout, WorkflowCanvasLayoutPatch, WorkflowCanvasPoint,
 };
 pub use super::workflow_definition::{
-    WorkflowCodeSourceBinding, WorkflowCodeSourceOrigin, WorkflowDefinition,
-    WorkflowSchemaDefinition,
+    WorkflowCodeSourceBinding, WorkflowCodeSourceOrigin, WorkflowDefinition, WorkflowOrigin,
+    WorkflowOriginReason, WorkflowOriginSurface, WorkflowSchemaDefinition,
 };
 pub use super::workflow_diagnostics::{
     WorkflowConsole, WorkflowConsoleEntry, WorkflowFailureEvent, WorkflowFailureKind,

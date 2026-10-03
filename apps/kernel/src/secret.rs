@@ -21,13 +21,18 @@ mod vault;
 pub(crate) use vault::remove_installed_transferred_vault;
 use vault::vault_store_for_config;
 pub use vault::{
-    chariox_encrypted_vault_status, clear_all_chariox_encrypted_vault_unlocks,
-    export_transferred_vault_snapshot, extend_chariox_encrypted_vault,
-    install_transferred_vault_snapshot, is_chariox_vault_locked_error,
-    lock_chariox_encrypted_vault, restore_transferred_vault_unlock, unlock_chariox_encrypted_vault,
+    change_chariox_encrypted_vault_passphrase, chariox_encrypted_vault_status,
+    clear_all_chariox_encrypted_vault_unlocks, export_transferred_vault_snapshot,
+    extend_chariox_encrypted_vault, install_transferred_vault_snapshot,
+    is_chariox_vault_locked_error, lock_chariox_encrypted_vault, restore_transferred_vault_unlock,
+    sync_chariox_encrypted_vault, unlock_chariox_encrypted_vault,
     validate_installed_transferred_vault, validate_transferred_vault_snapshot_for_export,
     CharioxVaultUnlockStatus, CredentialVaultStore, TransferredVaultSnapshot,
-    TransferredVaultSourceBinding, VaultUnlockLease,
+    TransferredVaultSourceBinding, VaultPasskeyVerifier, VaultUnlockLease,
+};
+#[cfg(test)]
+pub(crate) use vault::{
+    create_chariox_encrypted_vault_for_test, fail_next_vault_dir_sync_for_test,
 };
 
 #[cfg(test)]
@@ -919,3 +924,10 @@ fn secret_error(operation: &'static str, message: String) -> DaemonError {
 
 #[cfg(test)]
 mod tests;
+
+/// MP-08: Kernel-only scoped Project resolution; no client receives the store or values.
+pub(crate) fn project_environment_vault(
+    config: &crate::config::DaemonConfig,
+) -> Result<Arc<dyn CredentialVaultStore>, DaemonError> {
+    vault_store_for_config(&config.user_config.credential_vault)
+}

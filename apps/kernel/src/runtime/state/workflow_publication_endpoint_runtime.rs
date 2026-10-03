@@ -25,7 +25,7 @@ pub(crate) fn restore_durable_workflow_publication_tunnels(
     now_ms: u64,
 ) -> usize {
     let mut restored = 0;
-    for session in sessions.durable_sessions() {
+    for session in sessions.durable_session_refs() {
         for publication in session.workflow_publications() {
             let Some(target) = durable_publication_tunnel_target(publication, now_ms) else {
                 continue;

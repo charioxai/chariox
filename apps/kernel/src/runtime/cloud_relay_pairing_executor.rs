@@ -3,7 +3,7 @@ use crate::local::{
     LocalDaemonResponse, PairCloudRelayClientRequest, PairCloudRelayMachineRequest,
 };
 use crate::runtime::cloud_api_client::{
-    cloud_profile_from_persisted, post_cloud_json, CloudPairingTokenResponse,
+    cloud_profile_from_persisted, post_cloud_json, request_account_pairing_token,
 };
 use crate::runtime::cloud_relay_profile_store::{
     persist_cloud_profile, required_cloud_relay_profile,
@@ -19,28 +19,17 @@ pub(crate) async fn execute_pair_cloud_relay_client_request(
     request: PairCloudRelayClientRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let mut profile = required_cloud_relay_profile(config_projection)?;
-    let pairing: CloudPairingTokenResponse = post_cloud_json(
-        profile.api_url.clone(),
-        "/pairing-tokens",
-        serde_json::json!({
-            "accountId": profile.account_id,
-            "createdByUserId": profile.user_id,
-            "subjectKind": "client",
-        }),
-    )
-    .await?;
-    post_cloud_json::<serde_json::Value>(
-        profile.api_url.clone(),
-        "/clients/pair",
-        serde_json::json!({
-            "accountId": profile.account_id,
-            "token": pairing.token,
-            "clientId": request.client_id,
-            "userId": profile.user_id,
-            "alias": request.alias,
-        }),
-    )
-    .await?;
+    let pairing = request_account_pairing_token(&profile, "client").await?;
+    let mut body = serde_json::json!({
+        "accountId": profile.account_id,
+        "token": pairing.token,
+        "clientId": request.client_id,
+        "userId": profile.user_id,
+    });
+    if let Some(alias) = request.alias.as_deref() {
+        body["alias"] = serde_json::Value::String(alias.to_string());
+    }
+    post_cloud_json::<serde_json::Value>(profile.api_url.clone(), "/clients/pair", body).await?;
     profile.client_id = Some(request.client_id);
     if request.alias.is_some() {
         profile.client_alias = request.alias;
@@ -58,33 +47,22 @@ pub(crate) async fn execute_pair_cloud_relay_machine_request(
     request: PairCloudRelayMachineRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let mut profile = required_cloud_relay_profile(config_projection)?;
-    let pairing: CloudPairingTokenResponse = post_cloud_json(
-        profile.api_url.clone(),
-        "/pairing-tokens",
-        serde_json::json!({
-            "accountId": profile.account_id,
-            "createdByUserId": profile.user_id,
-            "subjectKind": "machine",
-        }),
-    )
-    .await?;
-    post_cloud_json::<serde_json::Value>(
-        profile.api_url.clone(),
-        "/machines/pair",
-        serde_json::json!({
-            "accountId": profile.account_id,
-            "token": pairing.token,
-            "machineId": request.machine_id,
-            "userId": profile.user_id,
-            "alias": request.alias,
-            "runtimeProfile": machine_runtime_profile_payload(
-                config_projection,
-                provider_catalog_projection,
-                runtime_state.provider_account_profile_registry(),
-            ).await,
-        }),
-    )
-    .await?;
+    let pairing = request_account_pairing_token(&profile, "machine").await?;
+    let mut body = serde_json::json!({
+        "accountId": profile.account_id,
+        "token": pairing.token,
+        "machineId": request.machine_id,
+        "userId": profile.user_id,
+        "runtimeProfile": machine_runtime_profile_payload(
+            config_projection,
+            provider_catalog_projection,
+            runtime_state.provider_account_profile_registry(),
+        ).await,
+    });
+    if let Some(alias) = request.alias.as_deref() {
+        body["alias"] = serde_json::Value::String(alias.to_string());
+    }
+    post_cloud_json::<serde_json::Value>(profile.api_url.clone(), "/machines/pair", body).await?;
     profile.machine_id = Some(request.machine_id);
     if request.alias.is_some() {
         profile.machine_alias = request.alias;

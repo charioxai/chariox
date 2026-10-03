@@ -494,6 +494,7 @@ impl CommandRouter {
                 .or_else(|| metaagent.worktree_id().map(str::to_string))
                 .unwrap_or_else(|| session.worktree_id().to_string());
             let create_request = LocalDaemonRequest::CreateSlice(CreateSliceRequest {
+                source_slice_ref: None,
                 name: metaagent_spawn_slice_name(spawn.alias.as_deref()),
                 backend: crate::slice::SliceBackendKind::LocalDocker,
                 os: "linux".to_string(),
@@ -532,6 +533,7 @@ impl CommandRouter {
             };
             let start_request = LocalDaemonRequest::StartSlice(SliceRefRequest {
                 slice_ref: slice.id.clone(),
+                interactive: false,
             });
             let start_response = match Box::pin(self.dispatch(
                 meta_kernel_command(provider_run, metaagent, &start_request),
@@ -641,6 +643,28 @@ impl CommandRouter {
                     &tokens[1..],
                     &agents,
                 )
+            }
+            "extension" | "extensions"
+                if matches!(tokens.get(1).map(String::as_str), Some("grant" | "revoke"))
+                    && tokens.get(2).map(String::as_str) == Some("app") =>
+            {
+                let agents = self.runtime_state.session_agents(session.id());
+                let request = meta_app_binding_request(session, metaagent, &tokens[1..], &agents)?;
+                if let LocalDaemonRequest::GrantAgentExtension(grant) = &request {
+                    if !self
+                        .runtime_state
+                        .authorize_agent_app_binding(
+                            session.id(),
+                            metaagent.id(),
+                            &grant.agent_ref,
+                            &grant.name,
+                        )
+                        .await?
+                    {
+                        return Err(meta_command_error("App binding was not approved"));
+                    }
+                }
+                Ok(request)
             }
             "extension" | "extensions" => meta_extension_import_request(session, &tokens[1..]),
             "credential" | "credentials" => {

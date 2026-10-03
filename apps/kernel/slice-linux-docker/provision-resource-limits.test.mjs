@@ -37,15 +37,31 @@ test("a reused slice starts its runtime with the current disk reserve", async ()
 const fs = require("node:fs");
 const args = process.argv.slice(2);
 fs.appendFileSync(process.env.CHARIOX_TEST_DOCKER_LOG, JSON.stringify(args) + "\\n");
-if (args[0] === "info") process.exit(0);
+if (args[0] === "info") { console.log("engine-fixture"); process.exit(0); }
 if (args[0] === "container" && args[1] === "inspect") { console.log("fixture-image"); process.exit(0); }
 if (args[0] === "image" && args[1] === "inspect") { console.log("fixture-image"); process.exit(0); }
+if (args[0] === "inspect" && !args.includes("--format") && !args.includes("-f")) {
+  console.log(JSON.stringify([{
+    Id: "a".repeat(64), Image: "fixture-image", Created: "fixture-created",
+    State: { Running: true, Paused: false, Restarting: false, Status: "running", Pid: 123, StartedAt: "fixture-started", FinishedAt: "" },
+    HostConfig: { PidMode: "" }, Config: { Env: ["HOME=/home/slice"], Labels: {
+      "io.chariox.slice.id": process.env.CHARIOX_SLICE_ID,
+      "io.chariox.slice.owner-kernel-id": process.env.CHARIOX_SLICE_OWNER_KERNEL_ID,
+      "io.chariox.slice.owner-machine-id": process.env.CHARIOX_SLICE_OWNER_MACHINE_ID,
+    } },
+  }]));
+  process.exit(0);
+}
 if (args[0] === "inspect") {
   const format = args[args.indexOf("--format") + 1] || args[args.indexOf("-f") + 1] || "";
   console.log(format.includes("HostConfig.Ulimits") ? "8192:8192" : "true");
   process.exit(0);
 }
 if (args[0] === "ps") { console.log("chariox-download-reserve-fixture"); process.exit(0); }
+if (args[0] === "exec" && args.includes("python3")) {
+  console.log(JSON.stringify({ disposition: "clear", profileProcessCount: 0 }));
+  process.exit(0);
+}
 if (args[0] === "exec" && args.includes("df")) {
   console.log("Filesystem 1024-blocks Used Available Capacity Mounted on");
   console.log("fixture 10000000 1 9999999 1% /");
@@ -67,6 +83,9 @@ throw new Error("unexpected Docker call: " + args[0]);
         CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: `sha256:${"a".repeat(64)}`,
         CHARIOX_SLICE_BUILD_IMAGE: "never",
         CHARIOX_SLICE_NAME: "chariox-download-reserve-fixture",
+        CHARIOX_SLICE_ID: "slice-fixture",
+        CHARIOX_SLICE_OWNER_KERNEL_ID: "kernel-fixture",
+        CHARIOX_SLICE_OWNER_MACHINE_ID: "machine-fixture",
         CHARIOX_SLICE_MIN_FREE_MB: "777",
       },
     })
@@ -110,10 +129,35 @@ test("nested provider namespaces can use a host-installed AppArmor profile", asy
   assert.match(source, /--cap-add SYS_PTRACE/)
   assert.match(source, /--security-opt apparmor="\$SLICE_APPARMOR_PROFILE"/)
   assert.match(image, /chmod 4755 \/usr\/bin\/bwrap/)
-  assert.match(launcher, /\/usr\/bin\/bwrap --seccomp 3/)
+  // MP-02/MP-08/MP-10: launch must use the no-new-privs mode admitted by the probe,
+  // including on rootful Docker where setuid bwrap can fail at the sysctl write.
+  assert.match(launcher, /exec \/usr\/bin\/setpriv --no-new-privs \/usr\/bin\/bwrap --seccomp 3 "\$@"/)
+  assert.doesNotMatch(launcher, /\/proc\/self\/uid_map/)
+  // The compatibility probe must exercise the same unprivileged launch mode.
+  assert.match(source, /setpriv --no-new-privs\s*\\\s*bwrap[\s\S]*--disable-userns/)
   assert.match(seccomp, /SCMP_SYS\(unshare\)/)
   assert.match(seccomp, /SCMP_SYS\(clone3\)/)
   assert.match(runtimeSource, /CHARIOX_MANAGED_PROVIDER_BWRAP="\/usr\/local\/libexec\/chariox\/managed-provider-bwrap"/)
   assert.match(profile, /profile chariox-slice-provider flags=\(unconfined\)/)
   assert.match(profile, /^\s*userns,\s*$/m)
+})
+
+test("protected default provider accounts stay in the private root, outside the shared provider HOME", async () => {
+  const runtimeSource = await readFile(runtime, "utf8")
+
+  assert.match(runtimeSource, /DEFAULT_PROVIDER_ROOT="\$CHARIOX_SLICE_PRIVATE_ROOT\/provider-default"/)
+  assert.match(runtimeSource, /CODEX_HOME="\$DEFAULT_PROVIDER_ROOT\/codex" CLAUDE_CONFIG_DIR="\$DEFAULT_PROVIDER_ROOT\/claude"/)
+  assert.doesNotMatch(runtimeSource, /(?:CODEX_HOME|CLAUDE_CONFIG_DIR)="\$PROVIDER_HOME/)
+  assert.match(runtimeSource, /screen -dmS chariox-slice-kernel env \\\n\s+"\$\{default_provider_env\[@\]\}"/)
+})
+
+test("the isolation probe runs on its own kernel and the slice kernel starts without probe env", async () => {
+  const source = await readFile(runtime, "utf8")
+  const probeStart = source.match(/^  start_slice_kernel \\\n((?:    .*\n)+)/m)?.[1] ?? ""
+  assert.match(probeStart, /CHARIOX_ACCEPT_REMOTE_LEASES=0/)
+  assert.match(probeStart, /CHARIOX_CODEX_BIN="\$ROOT\/managed-provider-isolation-probe-wrapper\.sh"/)
+  // Probe overrides come after the defaults so they win in env(1).
+  assert.match(source, /CHARIOX_ACCEPT_REMOTE_LEASES=1 \\\n    "\$@" \\\n    "\$ROOT\/bin\/chariox-kernel"/)
+  assert.match(source, /pkill -TERM -f "codex\[\^ \]\* app-server"/)
+  assert.match(source, /\nfi\nstart_slice_kernel\n/)
 })

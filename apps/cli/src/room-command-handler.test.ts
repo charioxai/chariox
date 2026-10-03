@@ -4,7 +4,7 @@ import test from "node:test"
 import type { RoomEnvironmentAction, RoomEnvironmentSnapshot } from "@chariox/kernel-client/kernel-types"
 
 import { parseSlashCommand } from "./commands.js"
-import { handleRoomSlashCommand } from "./room-command-handler.js"
+import { handleRoomSlashCommand, type RoomCommandHandlerDeps } from "./room-command-handler.js"
 
 test("/room status reads and renders the attached Room environment", async () => {
   const requests: unknown[] = []
@@ -17,13 +17,19 @@ test("/room status reads and renders the attached Room environment", async () =>
     sessionId: () => "session-1",
     send: async <TResponse>(request: unknown) => {
       requests.push(request)
-      return { RoomEnvironmentState: { environment: roomEnvironment() } } as TResponse
+      if (hasVariant(request, "GetRoomEnvironmentState")) {
+        return serializePublicResponse({ RoomEnvironmentState: { environment: roomEnvironment() } }) as TResponse
+      }
+      return serializePublicResponse({ RoomEnvironmentSlice: { binding: null } }) as TResponse
     },
     appendNotice: (notice) => notices.push(notice),
     flashFooter: () => undefined,
   }, command)
 
-  assert.deepEqual(requests, [{ GetRoomEnvironmentState: { session_id: "session-1" } }])
+  assert.deepEqual(requests, [
+    { GetRoomEnvironmentState: { session_id: "session-1" } },
+    { GetRoomEnvironmentSlice: { session_id: "session-1" } },
+  ])
   assert.deepEqual(notices, [[
     "Room environment environment-1",
     "lifecycle=ready generation=2 cursor=4",
@@ -33,7 +39,82 @@ test("/room status reads and renders the attached Room environment", async () =>
     "actors=Mara (agent,present), Miguel (human,present)",
     "input=desktop:Mara",
     "last_action=none",
+    "viewer=unavailable Room Environment has no bound slice; bind a headed slice with /room bind <slice-ref>",
   ].join("\n")])
+})
+
+test("/room read prints the focused Tab as an indented outline", async () => {
+  const requests: unknown[] = []
+  const notices: string[] = []
+  const command = parseSlashCommand("/room read")
+  assert.equal(command?.kind, "room")
+
+  await handleRoomSlashCommand({
+    isAttached: () => true,
+    sessionId: () => "session-1",
+    send: async <TResponse>(request: unknown) => {
+      requests.push(request)
+      if (typeof request === "object" && request && "GetRoomEnvironmentState" in request) {
+        return { RoomEnvironmentState: { environment: roomEnvironment() } } as TResponse
+      }
+      return { RoomEnvironmentTabAccessibility: { accessibility: {
+        session_id: "session-1",
+        tab_id: "tab-1",
+        document_revision: 7,
+        truncated: false,
+        nodes: [
+          { element_ref: "e1", role: "RootWebArea", name: "Docs" },
+          { element_ref: "e2", parent_ref: "e1", role: "textbox", name: "Title", value: "Plan", focused: true },
+          { element_ref: "e3", parent_ref: "e1", role: "button", name: "Save", disabled: true },
+          { element_ref: "e4", parent_ref: "e1", role: "checkbox", name: "Published", states: ["checked"] },
+        ],
+      } } } as TResponse
+    },
+    appendNotice: (notice) => notices.push(notice),
+    flashFooter: () => undefined,
+  }, command!)
+
+  assert.deepEqual(requests[1], { GetRoomEnvironmentTabAccessibility: { session_id: "session-1", tab_id: "tab-1" } })
+  assert.deepEqual(notices, [[
+    "Page outline of Docs (tab tab-1, revision 7):",
+    'RootWebArea "Docs"',
+    '  textbox "Title" = "Plan" [focused]',
+    '  button "Save" [disabled]',
+    '  checkbox "Published" [checked]',
+  ].join("\n")])
+})
+
+test("/room bar shows or hides the Room browser bar and says which", async () => {
+  const requests: unknown[] = []
+  const notices: string[] = []
+  const errors: string[] = []
+  const deps = (visible: boolean) => ({
+    isAttached: () => true,
+    sessionId: () => "session-1",
+    send: async <TResponse>(request: unknown) => {
+      requests.push(request)
+      return { RoomEnvironmentUpdated: { environment: { ...roomEnvironment(), browser_bar_visible: visible } } } as TResponse
+    },
+    appendNotice: (notice: string) => notices.push(notice),
+    flashFooter: (message: string) => errors.push(message),
+  })
+  for (const [visible, raw] of [
+    [true, "/room bar show"],
+    [false, "/room bar hide"],
+    [false, "/room bar"],
+    [false, "/room bar maybe"],
+  ] as const) {
+    const command = parseSlashCommand(raw)
+    assert(command?.kind === "room")
+    await handleRoomSlashCommand(deps(visible), command)
+  }
+  assert.deepEqual(requests, [
+    { SetRoomBrowserBar: { session_id: "session-1", visible: true } },
+    { SetRoomBrowserBar: { session_id: "session-1", visible: false } },
+  ])
+  assert.match(notices[0]!, /^Room browser bar shown: ordinary Tabs keep Chromium's tab strip and address bar\n/)
+  assert.match(notices[1]!, /^Room browser bar hidden: ordinary Tabs cover the Room screen, like App views\n/)
+  assert.deepEqual(errors, ["usage: /room bar show|hide", "usage: /room bar show|hide"])
 })
 
 test("/room actions renders bounded browser and computer history with a continuation cursor", async () => {
@@ -254,6 +335,358 @@ test("/room browser preserves explicit stable tabs for forward and reload", asyn
   ])
 })
 
+test("/room status projects the selected headless slice as unavailable from public responses", async () => {
+  const requests: unknown[] = []
+  const notices: string[] = []
+  const command = parseSlashCommand("/room status")
+  assert.equal(command?.kind, "room")
+  const responses = {
+    state: serializePublicResponse({ RoomEnvironmentState: { environment: roomEnvironment() } }),
+    binding: serializePublicResponse({
+      RoomEnvironmentSlice: {
+        binding: {
+          session_id: "session-1",
+          slice_id: "slice-headless",
+          owner_kernel_id: "kernel-home",
+          worker_kernel_ref: "worker-headless",
+        },
+      },
+    }),
+    slice: serializePublicResponse({
+      Slice: {
+        slice: {
+          id: "slice-headless",
+          name: "automation",
+          owner_kernel_id: "kernel-home",
+          owner_machine_id: "machine-home",
+          backend: "ssh_docker",
+          os: "linux",
+          display_mode: "headless",
+          status: "running",
+          workspace_mount: null,
+          worker_kernel_ref: "worker-headless",
+          worker_kernel_id: "kernel-worker",
+          worker_machine_id: "machine-worker",
+          relay_endpoint: null,
+          local_docker_ports: null,
+          providers: [],
+          provider_auth: [],
+          created_at_ms: 1,
+          updated_at_ms: 2,
+        },
+      },
+    }),
+  }
+
+  await handleRoomSlashCommand({
+    isAttached: () => true,
+    sessionId: () => "session-1",
+    send: async <TResponse>(request: unknown) => {
+      requests.push(request)
+      if (hasVariant(request, "GetRoomEnvironmentState")) return responses.state as TResponse
+      if (hasVariant(request, "GetRoomEnvironmentSlice")) return responses.binding as TResponse
+      if (hasVariant(request, "GetSlice")) return responses.slice as TResponse
+      throw new Error(`unexpected request: ${JSON.stringify(request)}`)
+    },
+    appendNotice: (notice) => notices.push(notice),
+    flashFooter: () => undefined,
+  }, command)
+
+  assert.deepEqual(requests, [
+    { GetRoomEnvironmentState: { session_id: "session-1" } },
+    { GetRoomEnvironmentSlice: { session_id: "session-1" } },
+    { GetSlice: { slice_ref: "slice-headless" } },
+  ])
+  assert.match(notices[0] ?? "", /Room environment environment-1/)
+  assert.match(notices[0] ?? "", /viewer=unavailable .*slice-headless.*headless/i)
+  assert.doesNotMatch(notices[0] ?? "", /wss?:\/\//)
+})
+
+test("/room view does not open Cloud for a headless Room-bound slice", async () => {
+  const requests: unknown[] = []
+  const viewerTargets: unknown[] = []
+  const flashes: string[] = []
+  const command = parseSlashCommand("/room view")
+  assert.equal(command?.kind, "room")
+  const responses = {
+    binding: serializePublicResponse({
+      RoomEnvironmentSlice: {
+        binding: {
+          session_id: "session-1",
+          slice_id: "slice-headless",
+          owner_kernel_id: "kernel-home",
+          worker_kernel_ref: "worker-headless",
+        },
+      },
+    }),
+    slice: serializePublicResponse({
+      Slice: {
+        slice: {
+          id: "slice-headless",
+          name: "automation",
+          owner_kernel_id: "kernel-home",
+          owner_machine_id: "machine-home",
+          backend: "ssh_docker",
+          os: "linux",
+          display_mode: "headless",
+          status: "running",
+          workspace_mount: null,
+          worker_kernel_ref: "worker-headless",
+          worker_kernel_id: "kernel-worker",
+          worker_machine_id: "machine-worker",
+          relay_endpoint: null,
+          local_docker_ports: null,
+          providers: [],
+          provider_auth: [],
+          created_at_ms: 1,
+          updated_at_ms: 2,
+        },
+      },
+    }),
+  }
+
+  await handleRoomSlashCommand({
+    isAttached: () => true,
+    attachmentId: () => "attachment-1",
+    sessionId: () => "session-1",
+    focusedAgentId: () => "agent-1",
+    send: async <TResponse>(request: unknown) => {
+      requests.push(request)
+      if (hasVariant(request, "GetRoomEnvironmentSlice")) return responses.binding as TResponse
+      if (hasVariant(request, "GetSlice")) return responses.slice as TResponse
+      throw new Error(`unexpected request: ${JSON.stringify(request)}`)
+    },
+    openViewer: async (target) => {
+      viewerTargets.push(target)
+      return { url: "https://cloud.test/view", opened: true }
+    },
+    appendNotice: () => undefined,
+    flashFooter: (message) => flashes.push(message),
+  }, command)
+
+  assert.deepEqual(requests, [
+    { GetRoomEnvironmentSlice: { session_id: "session-1" } },
+    { GetSlice: { slice_ref: "slice-headless" } },
+  ])
+  assert.deepEqual(viewerTargets, [])
+  assert.match(flashes[0] ?? "", /slice-headless.*headless/i)
+  assert.match(flashes[0] ?? "", /headed|graphical/i)
+})
+
+test("/room view reports stale or offline endpoint errors before opening Cloud", async () => {
+  const requests: unknown[] = []
+  const viewerTargets: unknown[] = []
+  const flashes: string[] = []
+  const command = parseSlashCommand("/room view")
+  assert.equal(command?.kind, "room")
+  const responses = {
+    binding: serializePublicResponse({
+      RoomEnvironmentSlice: {
+        binding: {
+          session_id: "session-1",
+          slice_id: "slice-headed",
+          owner_kernel_id: "kernel-home",
+          worker_kernel_ref: "worker-headed",
+        },
+      },
+    }),
+    slice: serializePublicResponse({
+      Slice: {
+        slice: {
+          id: "slice-headed",
+          name: "desktop",
+          owner_kernel_id: "kernel-home",
+          owner_machine_id: "machine-home",
+          backend: "ssh_docker",
+          os: "linux",
+          display_mode: "headed",
+          status: "running",
+          workspace_mount: null,
+          worker_kernel_ref: "worker-headed",
+          worker_kernel_id: "kernel-worker",
+          worker_machine_id: "machine-worker",
+          relay_endpoint: null,
+          local_docker_ports: null,
+          providers: [],
+          provider_auth: [],
+          display_endpoint: {
+            slice_id: "slice-headed",
+            kind: "selkies",
+            url: "http://127.0.0.1:45500/",
+            access: "local",
+            expires_at_ms: null,
+            capabilities: ["view", "websocket", "h264", "software_encoding"],
+            stream_protocol: null,
+            stream_id: null,
+            peer_public_key: null,
+          },
+          created_at_ms: 1,
+          updated_at_ms: 2,
+        },
+      },
+    }),
+  }
+
+  await handleRoomSlashCommand({
+    isAttached: () => true,
+    attachmentId: () => "attachment-1",
+    sessionId: () => "session-1",
+    focusedAgentId: () => "agent-1",
+    createViewerPublicKey: async () => "public-viewer-key",
+    send: async <TResponse>(request: unknown) => {
+      requests.push(request)
+      if (hasVariant(request, "GetRoomEnvironmentSlice")) return responses.binding as TResponse
+      if (hasVariant(request, "GetSlice")) return responses.slice as TResponse
+      if (hasVariant(request, "GetSliceDisplayEndpoint")) {
+        throw new Error("worker is offline or stale; relay peer is not connected")
+      }
+      throw new Error(`unexpected request: ${JSON.stringify(request)}`)
+    },
+    openViewer: async (target) => {
+      viewerTargets.push(target)
+      return { url: "https://cloud.test/view", opened: true }
+    },
+    appendNotice: () => undefined,
+    flashFooter: (message) => flashes.push(message),
+  }, command)
+
+  assert.deepEqual(requests, [
+    { GetRoomEnvironmentSlice: { session_id: "session-1" } },
+    { GetSlice: { slice_ref: "slice-headed" } },
+    {
+      GetSliceDisplayEndpoint: {
+        slice_ref: "slice-headed",
+        session_id: "session-1",
+        attachment_id: "attachment-1",
+        viewer_public_key: "public-viewer-key",
+      },
+    },
+  ])
+  assert.deepEqual(viewerTargets, [])
+  assert.match(flashes[0] ?? "", /offline|stale/i)
+  assert.match(flashes[0] ?? "", /worker is offline or stale/)
+  assert.doesNotMatch(JSON.stringify(flashes), /127\.0\.0\.1|public-viewer-key/)
+})
+
+test("repeated /room status does not register disposable Selkies streams", async () => {
+  const requests: unknown[] = []
+  const notices: string[] = []
+  const command = parseSlashCommand("/room status")
+  assert.equal(command?.kind, "room")
+  const responses = {
+    state: serializePublicResponse({ RoomEnvironmentState: { environment: roomEnvironment() } }),
+    binding: serializePublicResponse({
+      RoomEnvironmentSlice: {
+        binding: {
+          session_id: "session-1",
+          slice_id: "slice-headed",
+          owner_kernel_id: "kernel-home",
+          worker_kernel_ref: "worker-headed",
+        },
+      },
+    }),
+    slice: serializePublicResponse({
+      Slice: {
+        slice: {
+          id: "slice-headed",
+          name: "desktop",
+          owner_kernel_id: "kernel-home",
+          owner_machine_id: "machine-home",
+          backend: "ssh_docker",
+          os: "linux",
+          display_mode: "headed",
+          status: "running",
+          workspace_mount: null,
+          worker_kernel_ref: "worker-headed",
+          worker_kernel_id: "kernel-worker",
+          worker_machine_id: "machine-worker",
+          relay_endpoint: null,
+          local_docker_ports: null,
+          providers: [],
+          provider_auth: [],
+          display_endpoint: {
+            slice_id: "slice-headed",
+            kind: "selkies",
+            url: "http://127.0.0.1:45500/",
+            access: "local",
+            expires_at_ms: null,
+            capabilities: ["view", "websocket", "h264", "software_encoding"],
+            stream_protocol: null,
+            stream_id: null,
+            peer_public_key: null,
+          },
+          created_at_ms: 1,
+          updated_at_ms: 2,
+        },
+      },
+    }),
+  }
+
+  const deps: RoomCommandHandlerDeps = {
+    isAttached: () => true,
+    sessionId: () => "session-1",
+    send: async <TResponse>(request: unknown) => {
+      requests.push(request)
+      if (hasVariant(request, "GetRoomEnvironmentState")) return responses.state as TResponse
+      if (hasVariant(request, "GetRoomEnvironmentSlice")) return responses.binding as TResponse
+      if (hasVariant(request, "GetSlice")) return responses.slice as TResponse
+      if (hasVariant(request, "GetSliceDisplayEndpoint")) {
+        throw new Error("status must not open a Selkies stream")
+      }
+      throw new Error(`unexpected request: ${JSON.stringify(request)}`)
+    },
+    appendNotice: (notice) => notices.push(notice),
+    flashFooter: () => undefined,
+  }
+  await handleRoomSlashCommand(deps, command)
+  await handleRoomSlashCommand(deps, command)
+
+  const expectedRequests = [
+    "GetRoomEnvironmentState",
+    "GetRoomEnvironmentSlice",
+    "GetSlice",
+  ]
+  assert.deepEqual(
+    requests.map((request) => Object.keys(request as object)[0]),
+    [...expectedRequests, ...expectedRequests],
+  )
+  assert.equal(notices.length, 2)
+  for (const notice of notices) {
+    assert.match(notice, /Room environment environment-1/)
+    assert.match(notice, /viewer=not checked display=selkies; use \/room view to open/)
+    assert.doesNotMatch(notice, /127\.0\.0\.1|viewer-public-key/)
+  }
+})
+
+test("/room status keeps the snapshot and reports stale binding reads without leaking transport details", async () => {
+  const notices: string[] = []
+  const command = parseSlashCommand("/room status")
+  assert.equal(command?.kind, "room")
+
+  await handleRoomSlashCommand({
+    isAttached: () => true,
+    sessionId: () => "session-1",
+    send: async <TResponse>(request: unknown) => {
+      if (hasVariant(request, "GetRoomEnvironmentState")) {
+        return serializePublicResponse({
+          RoomEnvironmentState: { environment: roomEnvironment() },
+        }) as TResponse
+      }
+      if (hasVariant(request, "GetRoomEnvironmentSlice")) {
+        throw new Error("relay peer is offline at wss://relay.example/kernel?token=private Bearer credential")
+      }
+      throw new Error(`unexpected request: ${JSON.stringify(request)}`)
+    },
+    appendNotice: (notice) => notices.push(notice),
+    flashFooter: () => undefined,
+  }, command)
+
+  assert.match(notices[0] ?? "", /Room environment environment-1/)
+  assert.match(notices[0] ?? "", /viewer=error .*stale or offline/i)
+  assert.match(notices[0] ?? "", /check the worker and relay/)
+  assert.doesNotMatch(notices[0] ?? "", /relay\.example|private|credential/)
+})
+
 test("/room browser activates and closes stable tabs through authenticated Room authority", async () => {
   const environment = roomEnvironment()
   const tabTwo = {
@@ -415,6 +848,7 @@ test("/room reports exact protocol minimums for unsupported Room capabilities", 
     { command: "/room takeover", variant: "RequestRoomEnvironmentInputTakeover", capability: "Room input takeover", minimum: 272 },
     { command: "/room release", variant: "ReleaseRoomEnvironmentInput", capability: "Room input release", minimum: 273 },
     { command: "/room cancel action-1", variant: "CancelRoomEnvironmentAction", capability: "Room action cancellation", minimum: 277 },
+    { command: "/room bar show", variant: "SetRoomBrowserBar", capability: "Room browser bar", minimum: 379 },
   ] as const
 
   for (const scenario of scenarios) {
@@ -694,7 +1128,7 @@ test("/room lifecycle commands reject invalid arguments without reaching the ker
   assert.deepEqual(flashes, [
     "usage: /room start [WIDTHxHEIGHT] [SCALE]",
     "usage: /room start [WIDTHxHEIGHT] [SCALE]",
-    "usage: /room status|bind SLICE|actions [LIMIT] [BEFORE_SEQUENCE]|start [WIDTHxHEIGHT] [SCALE]|stop|retry|reconnect|view|screenshot|browser back|forward|reload|close [TAB_ID]|activate TAB_ID|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown",
+    "usage: /room status|read [TAB_ID]|bind SLICE|actions [LIMIT] [BEFORE_SEQUENCE]|start [WIDTHxHEIGHT] [SCALE]|stop|retry|reconnect|view|screenshot|browser back|forward|reload|close [TAB_ID]|activate TAB_ID|bar show|hide|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown",
   ])
 })
 
@@ -971,25 +1405,83 @@ test("/room view opens the focused agent's bound Environment in Chariox Cloud", 
   const requests: unknown[] = []
   const viewerTargets: unknown[] = []
   const notices: string[] = []
+  const responses = {
+    binding: serializePublicResponse({
+      RoomEnvironmentSlice: {
+        binding: {
+          session_id: "session-1",
+          slice_id: "slice-1",
+          owner_kernel_id: "kernel-home",
+          worker_kernel_ref: "kernel-worker",
+        },
+      },
+    }),
+    slice: serializePublicResponse({
+      Slice: {
+        slice: {
+          id: "slice-1",
+          name: "desktop",
+          owner_kernel_id: "kernel-home",
+          owner_machine_id: "machine-home",
+          backend: "ssh_docker",
+          os: "linux",
+          display_mode: "headed",
+          status: "running",
+          workspace_mount: null,
+          worker_kernel_ref: "kernel-worker",
+          worker_kernel_id: "kernel-worker-id",
+          worker_machine_id: "machine-worker",
+          relay_endpoint: null,
+          local_docker_ports: null,
+          providers: [],
+          provider_auth: [],
+          display_endpoint: {
+            slice_id: "slice-1",
+            kind: "selkies",
+            url: "http://127.0.0.1:45500/",
+            access: "local",
+            expires_at_ms: null,
+            capabilities: ["view", "websocket", "h264", "software_encoding"],
+            stream_protocol: null,
+            stream_id: null,
+            peer_public_key: null,
+          },
+          created_at_ms: 1,
+          updated_at_ms: 2,
+        },
+      },
+    }),
+    endpoint: serializePublicResponse({
+      SliceDisplayEndpoint: {
+        endpoint: {
+          slice_id: "slice-1",
+          kind: "selkies",
+          url: "wss://relay.example/display/display-1/stream",
+          access: "tunnel",
+          expires_at_ms: 60000,
+          capabilities: ["view", "websocket", "h264", "encrypted"],
+          stream_protocol: "chariox-display-v1",
+          stream_id: "display-1",
+          peer_public_key: "worker-public-key",
+        },
+      },
+    }),
+  }
   const command = parseSlashCommand("/room view")
   assert.equal(command?.kind, "room")
 
   await handleRoomSlashCommand({
     isAttached: () => true,
+    attachmentId: () => "attachment-1",
     sessionId: () => "session-1",
     focusedAgentId: () => "agent-1",
+    createViewerPublicKey: async () => "viewer-public-key",
     send: async <TResponse>(request: unknown) => {
       requests.push(request)
-      return {
-        RoomEnvironmentSlice: {
-          binding: {
-            session_id: "session-1",
-            slice_id: "slice-1",
-            owner_kernel_id: "kernel-home",
-            worker_kernel_ref: "kernel-worker",
-          },
-        },
-      } as TResponse
+      if (hasVariant(request, "GetRoomEnvironmentSlice")) return responses.binding as TResponse
+      if (hasVariant(request, "GetSlice")) return responses.slice as TResponse
+      if (hasVariant(request, "GetSliceDisplayEndpoint")) return responses.endpoint as TResponse
+      throw new Error(`unexpected request: ${JSON.stringify(request)}`)
     },
     openViewer: async (target) => {
       viewerTargets.push(target)
@@ -1004,6 +1496,15 @@ test("/room view opens the focused agent's bound Environment in Chariox Cloud", 
 
   assert.deepEqual(requests, [
     { GetRoomEnvironmentSlice: { session_id: "session-1" } },
+    { GetSlice: { slice_ref: "slice-1" } },
+    {
+      GetSliceDisplayEndpoint: {
+        slice_ref: "slice-1",
+        session_id: "session-1",
+        attachment_id: "attachment-1",
+        viewer_public_key: "viewer-public-key",
+      },
+    },
   ])
   assert.deepEqual(viewerTargets, [{
     sessionId: "session-1",
@@ -1022,37 +1523,113 @@ test("/room view reports missing focus, slice, and Cloud configuration", async (
   assert.equal(command?.kind, "room")
   const common = {
     isAttached: () => true,
+    attachmentId: () => "attachment-1",
     sessionId: () => "session-1",
     send: async <TResponse>(request: unknown) => {
       requests.push(request)
-      return { RoomEnvironmentSlice: { binding: null } } as TResponse
+      if (hasVariant(request, "GetRoomEnvironmentSlice")) {
+        return serializePublicResponse({
+          RoomEnvironmentSlice: {
+            binding: {
+              session_id: "session-1",
+              slice_id: "slice-1",
+              owner_kernel_id: "kernel-home",
+              worker_kernel_ref: "kernel-worker",
+            },
+          },
+        }) as TResponse
+      }
+      if (hasVariant(request, "GetSlice")) {
+        return serializePublicResponse({
+          Slice: {
+            slice: {
+              id: "slice-1",
+              name: "desktop",
+              owner_kernel_id: "kernel-home",
+              owner_machine_id: "machine-home",
+              backend: "ssh_docker",
+              os: "linux",
+              display_mode: "headed",
+              status: "running",
+              workspace_mount: null,
+              worker_kernel_ref: "kernel-worker",
+              worker_kernel_id: "kernel-worker-id",
+              worker_machine_id: "machine-worker",
+              relay_endpoint: null,
+              local_docker_ports: null,
+              providers: [],
+              provider_auth: [],
+              display_endpoint: {
+                slice_id: "slice-1",
+                kind: "selkies",
+                url: "http://127.0.0.1:45500/",
+                access: "local",
+                expires_at_ms: null,
+                capabilities: ["view", "websocket", "h264", "software_encoding"],
+                stream_protocol: null,
+                stream_id: null,
+                peer_public_key: null,
+              },
+              created_at_ms: 1,
+              updated_at_ms: 2,
+            },
+          },
+        }) as TResponse
+      }
+      if (hasVariant(request, "GetSliceDisplayEndpoint")) {
+        return serializePublicResponse({
+          SliceDisplayEndpoint: {
+            endpoint: {
+              slice_id: "slice-1",
+              kind: "selkies",
+              url: "wss://relay.example/display/display-1/stream",
+              access: "tunnel",
+              expires_at_ms: 60000,
+              capabilities: ["view", "websocket", "h264", "encrypted"],
+              stream_protocol: "chariox-display-v1",
+              stream_id: "display-1",
+              peer_public_key: "worker-public-key",
+            },
+          },
+        }) as TResponse
+      }
+      throw new Error(`unexpected request: ${JSON.stringify(request)}`)
     },
+    createViewerPublicKey: async () => "viewer-public-key",
     appendNotice: () => undefined,
     flashFooter: (message: string) => flashes.push(message),
   }
 
   await handleRoomSlashCommand({ ...common, focusedAgentId: () => null }, command)
-  await handleRoomSlashCommand({ ...common, focusedAgentId: () => "agent-1" }, command)
   await handleRoomSlashCommand({
     ...common,
     focusedAgentId: () => "agent-1",
     send: async <TResponse>(request: unknown) => {
       requests.push(request)
-      return {
-        RoomEnvironmentSlice: {
-          binding: { session_id: "session-1", slice_id: "slice-1" },
-        },
-      } as TResponse
+      return serializePublicResponse({ RoomEnvironmentSlice: { binding: null } }) as TResponse
     },
+  }, command)
+  await handleRoomSlashCommand({
+    ...common,
+    focusedAgentId: () => "agent-1",
   }, command)
 
   assert.deepEqual(requests, [
     { GetRoomEnvironmentSlice: { session_id: "session-1" } },
     { GetRoomEnvironmentSlice: { session_id: "session-1" } },
+    { GetSlice: { slice_ref: "slice-1" } },
+    {
+      GetSliceDisplayEndpoint: {
+        slice_ref: "slice-1",
+        session_id: "session-1",
+        attachment_id: "attachment-1",
+        viewer_public_key: "viewer-public-key",
+      },
+    },
   ])
   assert.deepEqual(flashes, [
     "focus an agent before opening the Room Environment",
-    "Room Environment has no bound slice to view",
+    "Room Environment has no bound slice; bind a headed slice with /room bind <slice-ref>",
     "Chariox Cloud Web View is not configured; run /cloud link first",
   ])
 })
@@ -1210,4 +1787,14 @@ function roomAction(overrides: Partial<RoomEnvironmentAction> = {}): RoomEnviron
     outcome: { status: "completed" },
     ...overrides,
   }
+}
+
+function serializePublicResponse(response: unknown): Record<string, unknown> {
+  return JSON.parse(JSON.stringify(response)) as Record<string, unknown>
+}
+
+function hasVariant(request: unknown, variant: string): boolean {
+  return request !== null
+    && typeof request === "object"
+    && Object.prototype.hasOwnProperty.call(request, variant)
 }

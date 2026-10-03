@@ -173,6 +173,10 @@ impl<'a> KernelSessionService<'a> {
         grant: &ExtensionGrant,
     ) -> Result<(), DaemonError> {
         let result = match &grant.kind {
+            ExtensionKind::App => Err(DaemonError::LocalTransport {
+                operation: "workflow_code.apply",
+                message: "Bind the installed App to the workflow agent through extension grant; inline App bindings are not supported yet".into(),
+            }),
             ExtensionKind::Mcp => crate::runtime::capability_registry::ensure_mcp_exists(
                 Some(workspace_id),
                 &grant.name,

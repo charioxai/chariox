@@ -10,6 +10,7 @@ use crate::local::{
     ImportSliceProviderAuthRequest, LocalDaemonRequest, LocalDaemonResponse,
     RemoveSliceProviderAuthRequest, StartSliceProviderLoginRequest,
 };
+use crate::managed_context::package::ManagedContextDevelopmentSelection;
 use crate::runtime::command::KernelCaller;
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
@@ -51,11 +52,25 @@ pub(crate) async fn execute_slice_request(
             execute_list_slices_request(runtime_state, request).await
         }
         LocalDaemonRequest::CreateSlice(request) => {
-            execute_create_slice_request(
-                runtime_state,
-                managed_slice_create_request(request, managed_kernel_registration),
-            )
-            .await
+            let mut request = request;
+            match inherited_slice_development(&request, managed_kernel_registration) {
+                InheritedSliceDevelopment::None => {}
+                InheritedSliceDevelopment::Plan(development) => {
+                    request.development = Some(development)
+                }
+                InheritedSliceDevelopment::ImportedProject(project_id) => {
+                    let (development, workspace_id, worktree_id) = runtime_state
+                        .slice_development_selection_for_project(
+                            &project_id,
+                            request.workspace_id.as_deref(),
+                            request.worktree_id.as_deref(),
+                        )?;
+                    request.workspace_id = Some(workspace_id);
+                    request.worktree_id = Some(worktree_id);
+                    request.development = Some(development);
+                }
+            }
+            execute_create_slice_request(runtime_state, request).await
         }
         LocalDaemonRequest::GetSlice(request) => {
             execute_get_slice_request(runtime_state, request).await
@@ -154,18 +169,34 @@ pub(crate) async fn execute_slice_request(
     }
 }
 
-fn managed_slice_create_request(
-    mut request: crate::local::CreateSliceRequest,
+/// The development a managed kernel's client slice inherits from its context
+/// plan. A source-project plan names the source kernel's Workspaces, so the
+/// slice instead develops this kernel's imported copy of that Project.
+enum InheritedSliceDevelopment {
+    None,
+    Plan(ManagedContextDevelopmentSelection),
+    ImportedProject(String),
+}
+
+fn inherited_slice_development(
+    request: &crate::local::CreateSliceRequest,
     registration: Option<&crate::managed_bootstrap::ConfirmedManagedKernelRegistration>,
-) -> crate::local::CreateSliceRequest {
-    if request.backend == crate::slice::SliceBackendKind::LocalDocker
-        && request.development.is_none()
+) -> InheritedSliceDevelopment {
+    if request.backend != crate::slice::SliceBackendKind::LocalDocker
+        || request.development.is_some()
     {
-        request.development = registration
-            .and_then(|registration| registration.context_plan.as_ref())
-            .map(|plan| plan.package_binding().development);
+        return InheritedSliceDevelopment::None;
     }
-    request
+    match registration
+        .and_then(|registration| registration.context_plan.as_ref())
+        .map(|plan| plan.package_binding().development)
+    {
+        None => InheritedSliceDevelopment::None,
+        Some(ManagedContextDevelopmentSelection::SourceProject { project_id, .. }) => {
+            InheritedSliceDevelopment::ImportedProject(project_id)
+        }
+        Some(development) => InheritedSliceDevelopment::Plan(development),
+    }
 }
 
 fn managed_slice_should_inherit_git_credentials(
@@ -509,10 +540,10 @@ fn resolve_local_docker_provider_account(
 mod tests {
     use super::*;
     use crate::managed_bootstrap::{ConfirmedManagedKernelRegistration, ManagedKernelContextPlan};
-    use crate::managed_context::package::ManagedContextDevelopmentSelection;
 
     fn create_request() -> crate::local::CreateSliceRequest {
         crate::local::CreateSliceRequest {
+            source_slice_ref: None,
             name: "browser-work".to_string(),
             backend: crate::slice::SliceBackendKind::LocalDocker,
             os: "linux".to_string(),
@@ -540,27 +571,43 @@ mod tests {
     }
 
     #[test]
-    fn client_slice_create_inherits_the_managed_development_plan() {
-        let request = managed_slice_create_request(create_request(), Some(&empty_registration()));
+    fn a_source_project_plan_defers_to_the_imported_project() {
+        let registration = ConfirmedManagedKernelRegistration {
+            context_plan: Some(ManagedKernelContextPlan::source_project_for_tests(
+                "context-1",
+                "realm-1",
+                "source-kernel",
+                "thumbprint",
+                "project-1",
+            )),
+            ..empty_registration()
+        };
+        assert!(matches!(
+            inherited_slice_development(&create_request(), Some(&registration)),
+            InheritedSliceDevelopment::ImportedProject(project) if project == "project-1"
+        ));
+    }
 
-        assert_eq!(
-            request.development,
-            Some(ManagedContextDevelopmentSelection::Empty)
-        );
+    #[test]
+    fn client_slice_create_inherits_the_managed_development_plan() {
+        assert!(matches!(
+            inherited_slice_development(&create_request(), Some(&empty_registration())),
+            InheritedSliceDevelopment::Plan(ManagedContextDevelopmentSelection::Empty)
+        ));
     }
 
     #[test]
     fn ordinary_and_explicit_slice_development_are_not_rewritten() {
-        let ordinary = managed_slice_create_request(create_request(), None);
-        assert_eq!(ordinary.development, None);
-
+        assert!(matches!(
+            inherited_slice_development(&create_request(), None),
+            InheritedSliceDevelopment::None
+        ));
         let mut explicit = create_request();
         explicit.development = Some(ManagedContextDevelopmentSelection::Empty);
-        let explicit = managed_slice_create_request(explicit, Some(&empty_registration()));
-        assert_eq!(
-            explicit.development,
-            Some(ManagedContextDevelopmentSelection::Empty)
-        );
+        assert!(matches!(
+            inherited_slice_development(&explicit, Some(&empty_registration())),
+            InheritedSliceDevelopment::None
+        ));
     }
 
     #[test]

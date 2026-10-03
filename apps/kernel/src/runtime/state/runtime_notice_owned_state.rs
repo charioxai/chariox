@@ -3,6 +3,25 @@
 use super::*;
 
 impl KernelRuntimeOwnedState {
+    /// Tell every attached session once when kernel storage fills, has space
+    /// again, or stops saving, so the owner sees why changes are refused. With
+    /// no session attached the change waits for one.
+    pub(super) fn announce_durable_writer_condition(&self) {
+        let sessions = self.attachment_store.list_attached_session_ids();
+        if sessions.is_empty() {
+            return;
+        }
+        let Some(condition) = self.durable_state_store.take_writer_condition_change() else {
+            return;
+        };
+        for session_id in sessions {
+            let recipients = self
+                .attachment_store
+                .list_session_attachment_ids(&session_id);
+            self.record_notice(&session_id, None, recipients, condition.notice());
+        }
+    }
+
     pub(super) fn record_notice(
         &self,
         session_id: &str,

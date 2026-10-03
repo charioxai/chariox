@@ -18,8 +18,8 @@ fn browser_import_peer_contract_is_private_redacted_bounded_and_versioned() {
     use crate::transport::room_browser_controller::RoomBrowserControllerResult;
     use zeroize::Zeroizing;
 
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 343);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 57);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 410);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 69);
     let generated_value = format!("generated-{}", crate::session::unix_epoch_ms());
     let payload_json = serde_json::json!([{"name":"session","value":generated_value}]).to_string();
     let command = RoomBrowserControllerCommand::ImportCookies {
@@ -94,8 +94,8 @@ fn browser_history_peer_contract_is_document_bound_and_versioned() {
     };
     use crate::transport::room_browser_controller::RoomBrowserControllerResult;
 
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 343);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 57);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 410);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 69);
     let command = RoomBrowserControllerCommand::History {
         execution_id: "00000000000000000000000000000001".into(),
         target_id: "target-a".into(),
@@ -136,8 +136,8 @@ fn download_cancellation_peer_contract_is_versioned_and_does_not_require_a_live_
         BrowserControllerDownloadCancellationResult, BrowserDownloadCancellation,
     };
     use crate::transport::room_browser_controller::RoomBrowserControllerResult;
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 343);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 57);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 410);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 69);
     let command = RoomBrowserControllerCommand::CancelDownload {
         cancellation: BrowserDownloadCancellation::new(2, "download-a".into()).unwrap(),
     };
@@ -169,7 +169,7 @@ fn download_cancellation_peer_contract_is_versioned_and_does_not_require_a_live_
 
 #[test]
 fn room_screenshot_peer_protocol_is_bounded_and_versioned() {
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 57);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 69);
 
     let request = RelayPeerRequest::ReadRoomScreenshotChunk {
         session_id: "session-1".to_string(),
@@ -211,7 +211,7 @@ fn room_screenshot_peer_protocol_is_bounded_and_versioned() {
 
 #[test]
 fn room_computer_observation_peer_protocol_is_typed_redacted_and_versioned() {
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 57);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 69);
     let request = RelayPeerRequest::ObserveRoomComputer {
         session_id: "room-1".to_string(),
         slice_id: "slice-1".to_string(),
@@ -303,8 +303,8 @@ fn room_computer_observation_peer_protocol_is_typed_redacted_and_versioned() {
 
 #[test]
 fn room_controller_protocol_shapes_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 343);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 57);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 410);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 69);
     for (command, wire_command) in [
         (
             RoomBrowserControllerCommand::Action {
@@ -531,6 +531,9 @@ fn room_controller_protocol_shapes_are_versioned() {
                 desktop_pixel_height: 800,
                 action: RoomComputerInputAction::SecretText {
                     input: RoomComputerSecretInput::new("computer-secret-fixture".into()),
+                    expected_target: crate::transport::room_browser_controller::RoomComputerSecretTarget {
+                        focus_window:101,active_window:100,geometry:[20,30,200,40],window_geometry:[0,0,800,600],
+                    },
                 },
             },
             serde_json::json!({
@@ -541,7 +544,8 @@ fn room_controller_protocol_shapes_are_versioned() {
                 "viewport_revision":9,
                 "desktop_pixel_width":1280,
                 "desktop_pixel_height":800,
-                "action":{"kind":"secret_text","input":"computer-secret-fixture"}
+                "action":{"kind":"secret_text","input":"computer-secret-fixture","expected_target":{
+                    "focus_window":101,"active_window":100,"geometry":[20,30,200,40],"window_geometry":[0,0,800,600]}}
             }),
         ),
         (
@@ -676,12 +680,24 @@ fn room_controller_protocol_shapes_are_versioned() {
         (
             RoomBrowserControllerCommand::Reconcile {
                 viewport: crate::session::CanonicalViewport::new(1280, 800, 1, 1280, 800).unwrap(),
+                browser_bar_visible: false,
             },
             serde_json::json!({"kind":"reconcile","viewport":{
                 "css_width":1280,"css_height":800,"device_scale_factor":1,
                 "desktop_pixel_width":1280,"desktop_pixel_height":800,
                 "revision":1,"last_actor_id":null
             }}),
+        ),
+        (
+            RoomBrowserControllerCommand::Reconcile {
+                viewport: crate::session::CanonicalViewport::new(1280, 800, 1, 1280, 800).unwrap(),
+                browser_bar_visible: true,
+            },
+            serde_json::json!({"kind":"reconcile","viewport":{
+                "css_width":1280,"css_height":800,"device_scale_factor":1,
+                "desktop_pixel_width":1280,"desktop_pixel_height":800,
+                "revision":1,"last_actor_id":null
+            },"browser_bar_visible":true}),
         ),
     ] {
         let request = RelayPeerRequest::RoomBrowserController {
@@ -923,6 +939,12 @@ fn computer_secret_and_keyboard_input_debug_output_is_redacted() {
         desktop_pixel_height: 800,
         action: RoomComputerInputAction::SecretText {
             input: RoomComputerSecretInput::new("must-not-appear-in-debug".into()),
+            expected_target: crate::transport::room_browser_controller::RoomComputerSecretTarget {
+                focus_window: 101,
+                active_window: 100,
+                geometry: [20, 30, 200, 40],
+                window_geometry: [0, 0, 800, 600],
+            },
         },
     };
 
@@ -943,4 +965,55 @@ fn computer_secret_and_keyboard_input_debug_output_is_redacted() {
         assert!(debug.contains("[redacted computer keyboard input]"));
         assert!(!debug.contains("must-not-appear"));
     }
+}
+
+// MP-08 / MP-11: legacy unbound secret input must fail closed.
+#[test]
+fn efix5_computer_secret_input_requires_an_approved_display_target() {
+    let unbound = serde_json::json!({"kind":"secret_text", "input":"synthetic"});
+    assert!(
+        serde_json::from_value::<RoomComputerInputAction>(unbound).is_err(),
+        "unbound secret input bypasses the approved display target"
+    );
+}
+
+// MP-08 / MP-11: exact required-target wire and hash, including peer focus query.
+#[test]
+fn computer_secret_target_protocol_374_peer_67_is_hashed() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 410);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 69);
+    let wire = serde_json::json!({"kind":"secret_text", "input":"synthetic",
+        "expected_target":{"focus_window":101,"active_window":100,
+            "geometry":[20,30,200,40],"window_geometry":[0,0,800,600]}});
+    let action: RoomComputerInputAction = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(action).unwrap(), wire);
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
+        "b422afc5077351e61189f252fb35b458e8293a6672d03ca784aa51d644c3f530"
+    );
+    assert_eq!(
+        serde_json::to_value(RoomBrowserControllerCommand::ComputerSecretTarget).unwrap(),
+        serde_json::json!({"kind":"computer_secret_target"})
+    );
+    let result = crate::transport::room_browser_controller::RoomBrowserControllerResult::ComputerSecretTarget {
+        target:serde_json::from_value(wire["expected_target"].clone()).unwrap(),
+    };
+    let result_wire =
+        serde_json::json!({"kind":"computer_secret_target","target":wire["expected_target"]});
+    assert_eq!(serde_json::to_value(&result).unwrap(), result_wire);
+    assert_eq!(
+        serde_json::from_value::<
+            crate::transport::room_browser_controller::RoomBrowserControllerResult,
+        >(result_wire.clone())
+        .unwrap(),
+        result
+    );
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&result_wire).unwrap())
+        ),
+        "d15bc20375584abc3a797667ea308d85b6da0e1153b135f6406c6db34ccff111"
+    );
 }

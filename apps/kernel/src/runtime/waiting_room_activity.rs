@@ -105,6 +105,7 @@ pub(crate) fn waiting_room_session_activity_summary(
         .filter(|agent| agent.remote_execution().is_some())
         .filter_map(home_proxy_extension_activity);
     WaitingRoomSessionActivitySummary {
+        pending_interaction_count: session.active_interactions().len(),
         agent_count: session.agents().len(),
         working_agent_count,
         active_prompt_count,
@@ -303,6 +304,28 @@ mod tests {
         serde_json::from_value(serialized).expect("session with active prompt should deserialize")
     }
 
+    #[test]
+    fn mp08_mp10_mp11_unattached_utility_review_is_visible_without_provider_work() {
+        let mut session = session_with_agents(vec![agent("agent-1", AgentState::Idle, false)]);
+        session.add_active_interaction(crate::session::RuntimeInteraction::new(
+            "review",
+            "agent-1",
+            crate::session::RuntimeInteractionKind::Choice,
+            crate::session::RuntimeInteractionLevel::Info,
+            Some("Ready to move Project".into()),
+            "Review Project setup",
+            vec![],
+            None,
+            None,
+            None,
+        ));
+        let summary =
+            waiting_room_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID);
+        assert_eq!(session.attachment_ids().len(), 0);
+        assert_eq!(summary.pending_interaction_count, 1);
+        assert_eq!(summary.active_prompt_count, 0);
+        assert_eq!(summary.working_agent_count, 0);
+    }
     #[test]
     fn agent_activity_ignores_legacy_working_processing_state() {
         let idle = agent("idle", AgentState::Idle, false);

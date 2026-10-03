@@ -5,6 +5,8 @@ import type {
 } from "./kernel-types-session.js"
 
 export type RelayStatus = {
+  runtime_process_identity?: { pid: number; linux_boot_id: string; start_time_ticks: string } | null
+  capabilities?: string[]
   configured: boolean
   connected: boolean
   relay_url?: string | null
@@ -126,6 +128,7 @@ export type RemoteMachineRecord = {
 }
 
 export type SliceRecord = {
+  source_slice_ref?: string | null
   id: string
   name: string
   owner_kernel_id: string
@@ -312,6 +315,12 @@ export type TerminalPairingLinkRecord = {
   terminal_type: TerminalType
   issued_at_ms: number
   expires_at_ms: number
+}
+
+export type TerminalPairingLinkJoined = {
+  terminal: TerminalRecord
+  pairing: PairingJoinRecord
+  relay_token?: string | null
 }
 
 export type RelayKernelPresence = {

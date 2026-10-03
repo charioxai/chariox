@@ -199,3 +199,22 @@ test("recordPromptAreaEntry reports shared history record failures", async () =>
 
   assert.match(failure instanceof Error ? failure.message : String(failure), /record failed/)
 })
+
+test("App install paths remain in terminal history without a shared kernel history request", async () => {
+  const path = '/app install "/terminal/private/local App.cxapp"'
+  let entries: readonly string[] = []
+  const local: unknown[] = []
+  const controller = createPromptInputHistoryController({
+    getCurrentSessionId: () => "session-1", getAttachmentId: () => "attachment-1",
+    getEntries: () => entries, setEntries: next => { entries = next },
+    resetNavigation: () => {}, clearDraftPersistQueue: () => {},
+    persistPromptState: async (_session, next) => { local.push(next) },
+    recordPromptInputHistory: async () => { assert.fail("local path sent to kernel history") },
+    onSharedHistoryPersistFailed: assert.fail, onPromptEchoPersistFailed: assert.fail,
+    onPromptStatePersistFailed: assert.fail, onRecordSharedHistoryFailed: assert.fail,
+  })
+  controller.recordPromptAreaEntry("session-1", path)
+  await Promise.resolve()
+  assert.deepEqual(entries, [path])
+  assert.deepEqual(local, [{ promptHistory: [path], promptDraft: "" }])
+})

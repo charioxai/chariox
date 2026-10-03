@@ -21,7 +21,7 @@ async def lifecycle(environment, action):
         sys.executable, str(ROOT / "slice-selkies.py"), action, env=environment,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
-    output, error = await asyncio.wait_for(process.communicate(), 30)
+    output, error = await asyncio.wait_for(process.communicate(), 90 if action == "start" else 30)
     assert process.returncode == 0, (action, error.decode())
     return json.loads(output)
 

@@ -290,7 +290,7 @@ impl ProviderProcessService {
 
     pub(crate) fn restore_run_snapshot_after_restart_failure(
         &mut self,
-        snapshot: RuntimeProviderRun,
+        mut snapshot: RuntimeProviderRun,
     ) -> Result<RuntimeProviderRun, DaemonError> {
         let current = self.get_run(snapshot.id())?;
         if current.state() != ProviderRunState::Running {
@@ -300,6 +300,7 @@ impl ProviderProcessService {
                 operation: "restore provider after restart failure",
             });
         }
+        snapshot.advance_manifest_revision_after_snapshot_restore(&current);
         self.runs
             .insert(snapshot.id().to_string(), snapshot.clone());
         Ok(snapshot)
@@ -498,7 +499,34 @@ impl ProviderProcessService {
     ) -> Result<RuntimeProviderRun, DaemonError> {
         let run = self.get_run_mut(run_id)?;
         run.set_remote_extension_manifest(manifest);
+        crate::transport::mcp_server::catalog_changed();
         Ok(run.clone())
+    }
+
+    pub(super) fn observe_runtime_tool_catalog(
+        &mut self,
+        run_id: &str,
+        expected_hash: &str,
+    ) -> Result<Option<RuntimeProviderRun>, DaemonError> {
+        let run = self.get_run_mut(run_id)?;
+        Ok(run
+            .observe_remote_extension_catalog(expected_hash)
+            .then(|| run.clone()))
+    }
+
+    pub(super) fn compare_update_run_remote_extension_manifest(
+        &mut self,
+        run_id: &str,
+        expected_revision: u64,
+        manifest: crate::extension::RemoteExtensionManifest,
+    ) -> Result<Option<RuntimeProviderRun>, DaemonError> {
+        let run = self.get_run_mut(run_id)?;
+        if run.remote_extension_manifest_revision() != expected_revision {
+            return Ok(None);
+        }
+        run.set_remote_extension_manifest(manifest);
+        crate::transport::mcp_server::catalog_changed();
+        Ok(Some(run.clone()))
     }
 
     pub(super) fn enable_workflow_tools(

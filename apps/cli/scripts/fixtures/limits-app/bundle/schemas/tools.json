@@ -1,0 +1,86 @@
+{
+ "tools": [
+  {
+   "name": "hang",
+   "description": "A call that never settles and ignores its abort signal.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "arm_startup_hang",
+   "description": "Make the next startup lifecycle callback never settle (once).",
+   "inputSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "arm_shutdown_hang",
+   "description": "Make the next shutdown lifecycle callback never settle.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "wasm_grow",
+   "description": "Grow one WebAssembly memory to mb, touching every page.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "mb": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4096
+     },
+     "step_mb": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 64
+     }
+    },
+    "required": [
+     "mb"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "threads",
+   "description": "Start worker threads that each hold a touched Buffer.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 256
+     },
+     "mb_each": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 256
+     }
+    },
+    "required": [
+     "count"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "status",
+   "description": "Report what this process holds.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+   }
+  }
+ ]
+}

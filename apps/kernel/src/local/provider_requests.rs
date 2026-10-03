@@ -119,6 +119,11 @@ impl DaemonApp {
             Ok::<bool, DaemonError>(relay_state.read().await.connected())
         })?;
         Ok(RelayStatus {
+            runtime_process_identity: crate::runtime::kernel_process_identity::current(),
+            capabilities: crate::local::RUNTIME_CONTROL_CAPABILITIES
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
             configured: self.config().relay_url.is_some() && self.config().relay_token.is_some(),
             connected,
             relay_url: self.config().relay_url.clone(),

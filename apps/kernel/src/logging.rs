@@ -522,6 +522,7 @@ mod tests {
 
     #[test]
     fn default_log_root_uses_chariox_home_instead_of_the_workspace() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let home = temp_log_dir("home");
         let previous_log_dir = std::env::var_os("CHARIOX_LOG_DIR");

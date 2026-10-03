@@ -103,6 +103,7 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
   const tempRoot = path.join(os.tmpdir(), `chariox-claude-native-${process.pid}-${Date.now()}`)
   const eventsFile = path.join(tempRoot, "events.jsonl")
   const contextFile = path.join(tempRoot, "hidden-context.txt")
+  const originFile = path.join(tempRoot, "approval-origin.json")
   const contextResponseDir = path.join(tempRoot, "hook-context-responses")
   const attachmentContextDir = path.join(tempRoot, "attachments")
   const settingsPath = path.join(tempRoot, "settings.json")
@@ -179,6 +180,7 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
         ...process.env,
         CHARIOX_CLAUDE_NATIVE_EVENTS: eventsFile,
         CHARIOX_CLAUDE_NATIVE_CONTEXT: contextFile,
+        CHARIOX_CLAUDE_NATIVE_ORIGIN: originFile,
         CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES: contextResponseDir,
         CHARIOX_CLAUDE_NATIVE_HOOK_BRIDGE_URL: permissionBridge.url,
       },
@@ -194,6 +196,7 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
       providerRunId: run.id,
       eventsFile,
       contextFile,
+      originFile,
       attachmentContextDir,
       hookContextResponseDir: contextResponseDir,
       workspace,

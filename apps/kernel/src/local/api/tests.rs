@@ -53,7 +53,7 @@ use super::{
     PushWorkspaceBranchRequest, QueryRecallRequest, ReadDirectoryTreeCapabilityRequest,
     ReadFileCapabilityRequest, ReadRoomEnvironmentClipboardRequest,
     ReleaseRoomEnvironmentInputRequest, RemoteMachineTrustStatus, RemoveWorkflowEdgeRequest,
-    RemoveWorkflowNodeRequest, RenameProjectRequest, RequestNativeProviderInteractionRequest,
+    RemoveWorkflowNodeRequest, RenameProjectRequest, RequestNativeProviderTurnInteractionRequest,
     RequestRoomEnvironmentInputTakeoverRequest, ResolveKernelClientConnectionRequest,
     ResolveSessionRequest, ResolveWorkflowRequest, RespondToInteractionRequest,
     RestoreProjectRequest, ResumeWorkflowRunRequest, RetryRoomEnvironmentRequest,
@@ -83,6 +83,7 @@ mod provider_prompt_runtime;
 mod remote_inventory;
 mod room_environment;
 mod session_control;
+mod session_worktree_paths;
 mod terminal_output;
 mod waiting_room_projection;
 mod workflow_definition_control;

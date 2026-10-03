@@ -14,7 +14,10 @@ fn local_request_api_runs_shell_command_capability_inner() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", worktree_root.display().to_string()),
+            CreateSessionRequest::new(
+                worktree_root.display().to_string(),
+                worktree_root.display().to_string(),
+            ),
         ))
         .expect("session create should succeed")
     {
@@ -71,7 +74,10 @@ fn local_request_api_rejects_shell_command_for_unauthorized_attachment_inner() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", worktree_root.display().to_string()),
+            CreateSessionRequest::new(
+                worktree_root.display().to_string(),
+                worktree_root.display().to_string(),
+            ),
         ))
         .expect("session create should succeed")
     {
@@ -129,7 +135,10 @@ fn local_request_api_rejects_file_capability_for_unauthorized_attachment_inner()
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", worktree_root.display().to_string()),
+            CreateSessionRequest::new(
+                worktree_root.display().to_string(),
+                worktree_root.display().to_string(),
+            ),
         ))
         .expect("session create should succeed")
     {
@@ -189,7 +198,10 @@ fn local_request_api_reads_directory_tree_file_and_git_status_inner() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", worktree_root.display().to_string()),
+            CreateSessionRequest::new(
+                worktree_root.display().to_string(),
+                worktree_root.display().to_string(),
+            ),
         ))
         .expect("session create should succeed")
     {
@@ -275,6 +287,7 @@ fn local_request_api_reads_directory_tree_file_and_git_status_inner() {
 
 #[test]
 fn local_request_api_inspects_workspace_git_overview() {
+    crate::test_support::isolated_env_test!();
     run_workspace_capability_test(
         "local_request_api_inspects_workspace_git_overview",
         local_request_api_inspects_workspace_git_overview_inner,
@@ -333,6 +346,7 @@ fn local_request_api_inspects_workspace_git_overview_inner() {
 
 #[test]
 fn local_request_api_lists_workspace_repo_files() {
+    crate::test_support::isolated_env_test!();
     run_workspace_capability_test(
         "local_request_api_lists_workspace_repo_files",
         local_request_api_lists_workspace_repo_files_inner,
@@ -439,6 +453,7 @@ fn local_request_api_lists_workspace_repo_files_inner() {
 
 #[test]
 fn local_request_api_reads_workspace_file_content() {
+    crate::test_support::isolated_env_test!();
     run_workspace_capability_test(
         "local_request_api_reads_workspace_file_content",
         local_request_api_reads_workspace_file_content_inner,

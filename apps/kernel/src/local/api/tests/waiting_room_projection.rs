@@ -111,7 +111,7 @@ fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
         assert_eq!(session.agents.len(), 1);
         assert_eq!(session.agents[0].id, agent.id());
         assert_eq!(session.agents[0].agent_ref, agent.agent_ref());
-        assert_eq!(session.agents[0].provider, agent.primary_provider());
+        assert_eq!(session.agents[0].provider, agent.provider());
         assert_eq!(session.agents[0].worktree_id, session.worktree_id);
         assert_eq!(session.agents[0].last_prompt_sent_at_ms, None);
         assert!(session.workflows.is_empty());
@@ -599,6 +599,7 @@ fn terminal_pairing_link_adds_terminal_to_waiting_room_inventory() {
                     terminal_id: None,
                     terminal_type: None,
                     alias: Some("browser paired".to_string()),
+                    public_key_thumbprint: None,
                 },
             ))
             .expect("terminal pairing link should redeem")

@@ -2,6 +2,8 @@
 """Private slice-owned Selkies lifecycle. No Room or input authority lives here."""
 
 import fcntl
+import http.client
+import importlib.resources
 import json
 import os
 from pathlib import Path
@@ -95,7 +97,7 @@ def healthy(record):
     try:
         with urllib.request.urlopen(endpoint(record) + "/api/health", timeout=1) as response:
             return response.status == 200 and response.read(16) == b"OK"
-    except (urllib.error.URLError, TimeoutError, OSError):
+    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError):
         return False
 
 
@@ -148,8 +150,9 @@ def start(directory, *, port=None, display=None):
 
     token = secrets.token_urlsafe(32)
     environment = {**os.environ, "DISPLAY": display, "SELKIES_MASTER_TOKEN": token}
-    command = [
-        os.environ.get("CHARIOX_SLICE_SELKIES_BIN", "/opt/chariox-selkies/bin/selkies"),
+    override = os.environ.get("CHARIOX_SLICE_SELKIES_BIN")
+    command = ([override] if override and override != "/opt/chariox-selkies/bin/selkies"
+               else ["/opt/chariox-selkies/bin/python", str(Path(__file__).with_name("selkies-capture.py"))]) + [
         "--addr=127.0.0.1", f"--port={port}", "--mode=websockets",
         "--encoder=h264enc", "--use-cpu=true|locked", "--framerate=30",
         "--enable-https=false", "--enable-basic-auth=false",
@@ -159,6 +162,14 @@ def start(directory, *, port=None, display=None):
         "--command-enabled=false|locked", "--file-transfers=none",
         "--enable-clipboard=false",
     ]
+    # Serve the installed frontend directly. Selkies otherwise copies the whole
+    # package to a temporary directory before opening its health endpoint.
+    try:
+        frontend = importlib.resources.files("selkies.selkies_web")
+        if isinstance(frontend, Path) and (frontend / "index.html").is_file():
+            command.append(f"--web-root={frontend}")
+    except ModuleNotFoundError:
+        pass
     log_descriptor = os.open(directory / "streamer.log", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     child = None
     try:
@@ -169,7 +180,9 @@ def start(directory, *, port=None, display=None):
         record = {**process_record(process), "port": port,
                   "display": display, "master_token": token}
         write_state(directory, record)
-        deadline = time.monotonic() + 15
+        # Cold disks and CPU-only guests can still be importing Selkies after
+        # 15 seconds. Keep readiness bounded without killing a healthy startup.
+        deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             if child.poll() is not None:
                 raise RuntimeError(f"Selkies exited with {child.returncode}; inspect {directory / 'streamer.log'}")
@@ -185,7 +198,7 @@ def start(directory, *, port=None, display=None):
                         raise RuntimeError("Selkies rejected its private control credential")
                 return public_status(record)
             time.sleep(0.1)
-        raise RuntimeError("Selkies did not become healthy within 15 seconds")
+        raise RuntimeError("Selkies did not become healthy within 60 seconds")
     except BaseException:
         if child is not None:
             if child.poll() is None:

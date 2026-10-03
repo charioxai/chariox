@@ -1,0 +1,12 @@
+[Unit]
+Description=Provision host-wide Chariox Docker admission lock inodes
+DefaultDependencies=no
+After=local-fs.target
+Before=basic.target chariox-managed-bootstrap.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/libexec/chariox-docker-admission-locks
+
+[Install]
+WantedBy=basic.target

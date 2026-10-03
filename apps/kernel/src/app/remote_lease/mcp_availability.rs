@@ -237,7 +237,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             || std::env::var_os("CHARIOX_CAPABILITY_ISOLATION_ROOT")
                 .filter(|value| !value.is_empty())
                 .is_none()
-            || !worker_is_home_managed_slice()
+            || crate::slice::slice_worker_id_for_config(self.app.config()).is_none()
         {
             return Ok(());
         }
@@ -338,8 +338,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
     }
 }
 
-fn worker_is_home_managed_slice() -> bool {
-    std::env::var("CHARIOX_SLICE_MACHINE_ID")
-        .ok()
-        .is_some_and(|machine_id| machine_id.starts_with("slice:"))
-}
+#[cfg(test)]
+#[path = "mcp_availability/hosted_worker_tests.rs"]
+mod hosted_worker_tests;

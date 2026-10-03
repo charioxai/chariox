@@ -32,6 +32,9 @@ pub(crate) fn ensure_codex_account_endpoint(
     account_profile: &str,
     environment: BTreeMap<String, String>,
 ) -> Result<String, DaemonError> {
+    // Launch planning also takes the environment lock. Acquire it before the
+    // endpoint map, matching callers that hold it through daemon shutdown.
+    let _environment = crate::env_lock::lock();
     let key = format!("{owner_user_id}\0{account_profile}");
     let endpoints = CODEX_ACCOUNT_ENDPOINTS.get_or_init(|| Mutex::new(BTreeMap::new()));
     let mut endpoints = endpoints
@@ -74,7 +77,7 @@ pub(crate) fn ensure_codex_account_endpoint(
     command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
     for name in crate::account_profile::provider_auth_env_vars("codex") {
         command.env_remove(name);
     }
@@ -84,6 +87,8 @@ pub(crate) fn ensure_codex_account_endpoint(
             message: format!("failed to start profile-specific Codex app-server: {error}"),
         }
     })?;
+    let diagnostic =
+        super::super::startup_diagnostic::ProviderStartupDiagnostic::capture(&mut child);
     let deadline = Instant::now() + CODEX_ENDPOINT_STARTUP_TIMEOUT;
     loop {
         if codex_endpoint_is_healthy(&endpoint) {
@@ -105,7 +110,10 @@ pub(crate) fn ensure_codex_account_endpoint(
         {
             return Err(DaemonError::LocalTransport {
                 operation: "ensure_codex_account_endpoint",
-                message: format!("profile-specific Codex app-server exited early: {status}"),
+                message: format!(
+                    "profile-specific Codex app-server exited early: {status}; {}",
+                    diagnostic.summary()
+                ),
             });
         }
         if Instant::now() >= deadline {
@@ -113,7 +121,10 @@ pub(crate) fn ensure_codex_account_endpoint(
             let _ = child.wait();
             return Err(DaemonError::LocalTransport {
                 operation: "ensure_codex_account_endpoint",
-                message: "timed out waiting for profile-specific Codex app-server".to_string(),
+                message: format!(
+                    "timed out waiting for profile-specific Codex app-server; {}",
+                    diagnostic.summary()
+                ),
             });
         }
         sleep(Duration::from_millis(100));

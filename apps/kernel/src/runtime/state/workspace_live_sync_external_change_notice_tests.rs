@@ -584,9 +584,7 @@ fn workspace_live_sync_ignore_initializes_from_gitignore() {
         "test_workspace_live_sync_ignore",
     )
     .expect("ordinary file should not be ignored");
-    let initialized = std::fs::read_to_string(root.join(".charioxignore"))
-        .expect(".charioxignore should initialize from .gitignore");
-    assert_eq!(initialized, "ignored/\n*.secret\n");
+    assert!(!root.join(".charioxignore").exists());
     assert!(workspace_live_sync_reject_ignored_path(
         &root,
         &PathBuf::from("ignored/file.txt"),
@@ -618,9 +616,7 @@ fn workspace_live_sync_ignore_initializes_empty_without_gitignore() {
         "test_workspace_live_sync_empty_ignore",
     )
     .expect("ordinary file should not be ignored");
-    let initialized = std::fs::read_to_string(root.join(".charioxignore"))
-        .expect(".charioxignore should initialize without .gitignore");
-    assert_eq!(initialized, "");
+    assert!(!root.join(".charioxignore").exists());
     workspace_live_sync_reject_ignored_path(
         &root,
         &PathBuf::from("nested/token.secret"),

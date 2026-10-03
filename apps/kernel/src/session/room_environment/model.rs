@@ -55,6 +55,87 @@ impl CanonicalViewport {
             last_actor_id: None,
         })
     }
+
+    /// CSS width of the default panel at the right of an App view: at most a
+    /// third of the page. App pages lay out in the rest.
+    pub fn app_panel_css_width(&self) -> u32 {
+        APP_PANEL_CSS_WIDTH.min(self.css_width / 3)
+    }
+
+    /// The App page's CSS size and the panel beside it in desktop pixels.
+    /// A size is at most half the page; minimized, the panel is a bar at the
+    /// bottom and the page keeps the rest.
+    pub(crate) fn app_layout(
+        &self,
+        layout: AppPanelLayout,
+        agent_id: Option<String>,
+    ) -> ((u32, u32), Option<EnvironmentAppPanel>) {
+        let (width, height, scale) = (self.css_width, self.css_height, self.device_scale_factor);
+        let Some(placement) = layout.placement else {
+            return ((width, height), None);
+        };
+        let panel = |x: u32, y: u32, w: u32, h: u32| EnvironmentAppPanel {
+            x: x.saturating_mul(scale),
+            y: y.saturating_mul(scale),
+            width: w.saturating_mul(scale),
+            height: h.saturating_mul(scale),
+            agent_id: agent_id.clone(),
+            placement,
+            minimized: layout.minimized,
+        };
+        if layout.minimized {
+            let bar = MINIMIZED_CSS_HEIGHT.min(height / 4);
+            return (
+                (width, height - bar),
+                Some(panel(0, height - bar, width, bar)),
+            );
+        }
+        match placement {
+            AppPanelPlacement::Right => {
+                let size = layout
+                    .size
+                    .map_or(self.app_panel_css_width(), |size| size.min(width / 2));
+                (
+                    (width - size, height),
+                    Some(panel(width - size, 0, size, height)),
+                )
+            }
+            AppPanelPlacement::Bottom => {
+                let size = layout
+                    .size
+                    .map_or(BOTTOM_PANEL_CSS_HEIGHT.min(height / 3), |size| {
+                        size.min(height / 2)
+                    });
+                (
+                    (width, height - size),
+                    Some(panel(0, height - size, width, size)),
+                )
+            }
+        }
+    }
+}
+
+const APP_PANEL_CSS_WIDTH: u32 = 380;
+const BOTTOM_PANEL_CSS_HEIGHT: u32 = 260;
+const MINIMIZED_CSS_HEIGHT: u32 = 32;
+
+/// Where the agent panel sits beside one App view: the user's choice, else the
+/// App's runtime request, else its manifest default (right).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AppPanelLayout {
+    /// None: the App shows no panel.
+    pub placement: Option<AppPanelPlacement>,
+    /// CSS pixels: the width at the right or the height at the bottom.
+    pub size: Option<u32>,
+    pub minimized: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppPanelPlacement {
+    #[default]
+    Right,
+    Bottom,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,6 +274,10 @@ pub struct RoomEnvironmentSnapshot {
     pub input_ownership: Vec<InputOwnership>,
     #[serde(default)]
     pub pending_input_takeovers: Vec<PendingInputTakeover>,
+    /// Ordinary Tabs show the browser bar (maximized windows) instead of
+    /// covering the desktop like App views (fullscreen, the default).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub browser_bar_visible: bool,
     pub event_cursor: u64,
 }
 
@@ -217,6 +302,35 @@ pub struct EnvironmentTab {
     pub title: String,
     pub document_revision: u64,
     pub focused: bool,
+    /// Set on an App view Tab. Absent on every other Tab.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<EnvironmentTabApp>,
+}
+
+/// An App view Tab: its installation and the area beside the App page where
+/// the trusted terminal draws the private conversation panel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentTabApp {
+    pub installation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub panel: Option<EnvironmentAppPanel>,
+}
+
+/// Desktop pixels of the canonical viewport (the App's window is fullscreen and
+/// its page is smaller). The panel shows the session's focus agent, following
+/// every focus change; the App never sees it. Minimized, it is a bar at the
+/// bottom that the user can restore.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentAppPanel {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub placement: AppPanelPlacement,
+    #[serde(default)]
+    pub minimized: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -236,6 +350,7 @@ pub(crate) struct EnvironmentTabRuntimeBinding {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnvironmentError {
+    DurableStateUnavailable,
     BrowserImportRecoveryRequired,
     BrowserImportRecoveryStateUnavailable,
     InvalidViewport,
@@ -349,6 +464,7 @@ pub enum EnvironmentError {
 impl EnvironmentError {
     pub fn code(&self) -> &'static str {
         match self {
+            Self::DurableStateUnavailable => "environment_durable_state_unavailable",
             Self::BrowserImportRecoveryRequired => "environment_browser_import_recovery_required",
             Self::BrowserImportRecoveryStateUnavailable => {
                 "environment_browser_import_recovery_state_unavailable"

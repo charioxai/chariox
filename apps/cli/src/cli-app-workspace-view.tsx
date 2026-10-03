@@ -60,6 +60,9 @@ export type CliAppWorkspaceViewProps = {
   assignStatusIndicatorBox: (value: any) => void
   assignFooterSummaryBox: (value: any) => void
   assignDialogOverlayBox: (value: any) => void
+  assignKernelApprovalBanner: (value: any) => void
+  assignKernelApprovalBox: (value: any) => void
+  kernelApprovalOwnsInput: () => boolean
   handlePromptKeyDown: WorkspaceLayoutProps["onPromptKeyDown"]
   handlePromptContentChange: () => void
   focusedAgentInteraction: () => unknown
@@ -101,6 +104,8 @@ export function CliAppWorkspaceView(props: CliAppWorkspaceViewProps) {
       promptAreaBackground={props.promptAreaBackground}
       promptKeyBindings={PROMPT_KEYBINDINGS}
       onRootMouseUp={props.retainPromptFocus}
+      onKernelApprovalBoxRef={props.assignKernelApprovalBox}
+      onKernelApprovalBannerRef={props.assignKernelApprovalBanner}
       onResponseSurfaceMouseUp={props.handlePromptSelectionSurfaceMouseUp}
       onFooterMouseUp={props.handlePromptSelectionSurfaceMouseUp}
       onResponseLayoutBoxRef={(value) => {
@@ -196,6 +201,7 @@ export function CliAppWorkspaceView(props: CliAppWorkspaceViewProps) {
       onPromptKeyDown={props.handlePromptKeyDown}
       onPromptContentChange={props.handlePromptContentChange}
       onPromptSubmit={() => {
+        if (props.kernelApprovalOwnsInput()) return
         if (props.focusedAgentInteraction()) {
           void props.submitFocusedInteractionChoice()
           return

@@ -22,7 +22,10 @@ fn local_request_api_applies_workflow_code_extensions_to_generated_agents() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new(workspace_root.display().to_string(), "worktree-extension"),
+            CreateSessionRequest::new(
+                workspace_root.display().to_string(),
+                workspace_root.display().to_string(),
+            ),
         ))
         .expect("session create should succeed")
     {
@@ -132,7 +135,7 @@ def test_run():
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new(
                 workspace_root.display().to_string(),
-                "worktree-script-extension",
+                workspace_root.display().to_string(),
             ),
         ))
         .expect("session create should succeed")
@@ -251,7 +254,10 @@ fn local_request_api_applies_workflow_code_queues_and_watchdogs() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new(workspace_root.display().to_string(), "worktree-queues"),
+            CreateSessionRequest::new(
+                workspace_root.display().to_string(),
+                workspace_root.display().to_string(),
+            ),
         ))
         .expect("session create should succeed")
     {
@@ -373,7 +379,7 @@ fn local_request_api_workflow_code_validate_checks_target_provider_rebindings() 
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-workflow-code", "worktree-workflow-code"),
+            harness.fixture_session_request("workspace-workflow-code"),
         ))
         .expect("session create should succeed")
     {

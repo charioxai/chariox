@@ -433,6 +433,7 @@ test("M2 validates local and transferred uploads while rejecting remote, missing
     filePaths: [filePath],
     uploadRoots: ["/uploads"],
     fileSystem,
+    stageUploads: async ({ files }) => ({ files, markExposed() {}, async discard() {} }),
   });
 
   const local = await upload("/uploads/local.txt");

@@ -47,7 +47,12 @@ impl Default for StartupTrustBridge {
 
 impl StartupTrustBridge {
     fn wait_for_interaction(&self) -> RuntimeInteraction {
+        self.wait_for_interaction_with_pump(|| {})
+    }
+
+    fn wait_for_interaction_with_pump(&self, mut pump: impl FnMut()) -> RuntimeInteraction {
         for _ in 0..500 {
+            pump();
             if let Some(interaction) = self
                 .interactions
                 .lock()
@@ -416,6 +421,83 @@ fn yolo_hook_permission_uses_kernel_policy_when_claude_reports_auto() {
             .expect("permission interaction recorder should not be poisoned")
             .is_empty(),
         "the provider-reported mode must not override the kernel-owned yolo policy"
+    );
+    assert!(!claude_native_marker(&context_file)
+        .as_deref()
+        .is_some_and(|marker| marker.starts_with("permission:")));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn hook_permission_without_an_interaction_bridge_releases_the_waiting_hook() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    let root = std::env::temp_dir().join(format!(
+        "chariox-claude-permission-passthrough-test-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let context_file = root.join("hidden-context.txt");
+    fs::write(&context_file, "").expect("context file should be created");
+    let context_file = context_file.display().to_string();
+    let request = crate::provider::LaunchProviderRequest::new(
+        "session-ask-hook",
+        "claude",
+        "claude",
+        "default",
+        "claude-opus",
+    )
+    .with_agent_id("agent-ask-hook")
+    .with_permission_level(crate::provider::AgentPermissionLevel::Required);
+    let run = RuntimeProviderRun::new(
+        "provider-run-ask-hook",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "test-claude-ask-hook-permission".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::from([(
+                "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
+                context_file.clone(),
+            )]),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    let event = serde_json::json!({
+        "hook_event_name": "PermissionRequest",
+        "hook_context_request_id": "request-no-bridge",
+        "permission_mode": "default",
+        "tool_name": "Bash",
+        "tool_input": { "command": "true" },
+    });
+
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .resolve_permission_event(
+            "session-ask-hook",
+            run.id(),
+            "agent-ask-hook",
+            &context_file,
+            &run,
+            None,
+            &event,
+        )
+        .expect("an unbridged permission should resolve");
+
+    let response: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(root.join("permission-responses/request-no-bridge.json"))
+            .expect("the waiting hook should get an immediate response"),
+    )
+    .expect("the response should be valid JSON");
+    assert_eq!(
+        response,
+        serde_json::json!({}),
+        "no decision: Claude asks itself"
     );
     assert!(!claude_native_marker(&context_file)
         .as_deref()
@@ -1749,15 +1831,16 @@ fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
         std::sync::Arc::new(bridge.clone());
     app.providers()
         .set_native_interaction_bridge(bridge_ref.clone());
-    crate::app::provider_output::ProviderOutputPump::new(&mut app)
-        .pump_provider_output(crate::app::provider_output::ProviderOutputPumpRequest {
-            session_id: session.id(),
-            provider_run_id: run.id(),
-            recipient_attachment_ids: vec![attachment.id().to_string()],
-            initial_liveness_already_checked: false,
-        })
-        .expect("trust prompt should be projected by the normal output pump");
-    let interaction = bridge.wait_for_interaction();
+    let interaction = bridge.wait_for_interaction_with_pump(|| {
+        crate::app::provider_output::ProviderOutputPump::new(&mut app)
+            .pump_provider_output(crate::app::provider_output::ProviderOutputPumpRequest {
+                session_id: session.id(),
+                provider_run_id: run.id(),
+                recipient_attachment_ids: vec![attachment.id().to_string()],
+                initial_liveness_already_checked: false,
+            })
+            .expect("trust prompt should be projected by the normal output pump");
+    });
     assert_eq!(interaction.default_on_timeout(), Some("deny"));
     bridge.resolve_default_no();
     let mut settled = false;
@@ -2637,4 +2720,239 @@ fn claude_headless_bypass_selection_marker_is_distinct_from_prompt_state() {
     assert!(!claude_headless_bypass_selection_pending(&context_file));
 
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn queued_claude_failed_request_note_reaches_hook_context_and_waits_for_acceptance() {
+    let worktree = crate::test_support::TestWorktree::new("claude-queued-failed-note");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "failed-note-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-failed-note-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let context_file = root.join("hidden-context.txt");
+    let events_file = root.join("events.jsonl");
+    fs::write(&context_file, "").unwrap();
+    fs::write(&events_file, "").unwrap();
+    let mut run = startup_readiness_run(
+        session.id(),
+        agent.id(),
+        "failed-note-claude-run",
+        &context_file,
+        &events_file,
+        "cat >/dev/null".to_string(),
+    );
+    run.mark_running();
+    let mut ready_run = serde_json::to_value(&run).unwrap();
+    ready_run["started_at_ms"] = serde_json::json!(unix_epoch_ms().saturating_sub(5_000));
+    run = serde_json::from_value(ready_run).unwrap();
+    app.pty.spawn_for_run(&run).unwrap();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .unwrap();
+    let prompt = match app
+        .record_native_prompt_started_with_attachments(
+            session.id(),
+            attachment.id(),
+            attachment.id(),
+            agent.id(),
+            "next queued request",
+            Vec::new(),
+        )
+        .unwrap()
+    {
+        crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+        other => panic!("unexpected prompt: {other:?}"),
+    };
+    app.agents
+        .record_failed_request_durably(
+            &app.durable_state_store(),
+            agent.id(),
+            crate::agent::FailedRequest::new(
+                "earlier-failure",
+                "earlier request",
+                "rejected".to_string(),
+            ),
+        )
+        .unwrap();
+    let context_path = context_file.display().to_string();
+    write_claude_native_marker(&context_path, &format!("post-stop-ready:{}", prompt.id()));
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process(session.id(), run.id(), &run, None)
+        .unwrap();
+    let hidden = fs::read_to_string(&context_file).unwrap();
+    assert!(
+        hidden.contains("Your previous request (\"earlier request\") failed"),
+        "{hidden}"
+    );
+    assert_eq!(
+        app.agents
+            .get_agent(agent.id())
+            .unwrap()
+            .failed_requests()
+            .len(),
+        1,
+        "writing hook context does not prove provider acceptance"
+    );
+    crate::app::prompt_lifecycle::ProviderPromptDispatcher::new(&mut app)
+        .dispatch_prompt_to_provider(
+            session.id(),
+            run.id(),
+            prompt.id(),
+            attachment.id(),
+            prompt.prompt(),
+            prompt.hidden_system_context(),
+            prompt.attachments(),
+        )
+        .unwrap();
+    assert_eq!(
+        app.agents
+            .get_agent(agent.id())
+            .unwrap()
+            .failed_requests()
+            .len(),
+        1,
+        "app dispatch must retain context until the hook accepts it"
+    );
+    write_claude_native_marker(&context_path, &format!("injected:{}", prompt.id()));
+    fs::write(
+        &events_file,
+        serde_json::json!({
+            "hook_event_name": "UserPromptSubmit", "prompt": prompt.prompt(),
+        })
+        .to_string(),
+    )
+    .unwrap();
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process(session.id(), run.id(), &run, None)
+        .unwrap();
+    assert!(app
+        .agents
+        .get_agent(agent.id())
+        .unwrap()
+        .failed_requests()
+        .is_empty());
+    assert!(
+        claude_native_marker(&context_path).as_deref()
+            == Some(format!("accepted:{}", prompt.id()).as_str())
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[derive(Clone)]
+struct RefusedPermissionBridge;
+impl ProviderNativeInteractionBridge for RefusedPermissionBridge {
+    fn request_blocking(
+        &self,
+        _session_id: &str,
+        _interaction: RuntimeInteraction,
+    ) -> Result<crate::provider::ProviderNativeInteractionResolution, DaemonError> {
+        Ok(crate::provider::ProviderNativeInteractionResolution {
+            status: "timed_out".into(),
+            choice_id: None,
+            reply: None,
+        })
+    }
+}
+
+#[test]
+fn approval_lifetime_refused_claude_dialog_receives_deny_while_displayed() {
+    for startup in [false, true] {
+        let worktree = crate::test_support::TestWorktree::new("refused-claude-dialog");
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(worktree.session_request())
+            .unwrap();
+        let context = worktree.path().join("hidden-context.txt");
+        let events = worktree.path().join("events.jsonl");
+        fs::write(&context, "").unwrap();
+        fs::write(&events, "").unwrap();
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "claude",
+            "claude-headless",
+            "default",
+            "claude-sonnet",
+        )
+        .with_agent_id(agent.id())
+        .with_client_interface(crate::provider::ProviderClientInterface::NativeTui)
+        .with_permission_level(crate::provider::AgentPermissionLevel::Required);
+        let run = RuntimeProviderRun::new(
+            "refused-run",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "recorded-claude-dialog".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::from([
+                    (
+                        "CHARIOX_CLAUDE_NATIVE_CONTEXT".into(),
+                        context.display().to_string(),
+                    ),
+                    (
+                        "CHARIOX_CLAUDE_NATIVE_EVENTS".into(),
+                        events.display().to_string(),
+                    ),
+                ]),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        let context = context.display().to_string();
+        let mut native = ProviderOutputClaudeNativeBridge::new(&mut app);
+        if startup {
+            native
+                .request_claude_workspace_trust(
+                    session.id(),
+                    run.id(),
+                    &run,
+                    &context,
+                    std::sync::Arc::new(RefusedPermissionBridge),
+                )
+                .unwrap();
+        } else {
+            native
+                .process_terminal_output(
+                    session.id(),
+                    run.id(),
+                    &run,
+                    Some(std::sync::Arc::new(RefusedPermissionBridge)),
+                    "Bash command\necho test\nDo you want to proceed?\n1. Yes\n3. No",
+                )
+                .unwrap();
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let inputs = take_claude_permission_inputs(&context);
+            if !inputs.is_empty() {
+                assert_eq!(
+                    inputs,
+                    vec![vec![0x03]],
+                    "a refused displayed dialog must receive Deny"
+                );
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "refused dialog was left unanswered"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
 }

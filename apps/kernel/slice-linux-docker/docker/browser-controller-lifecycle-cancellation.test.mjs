@@ -6,7 +6,7 @@ import { BrowserControllerStdioServer, handleBrowserControllerRequest } from "./
 import { BrowserCdpClient } from "./browser-controller-cdp.mjs";
 
 const cases = [
-  ["browser.tab", { action: "activate" }, "Target.activateTarget", "Target.getTargets"],
+  ["browser.tab", { action: "activate" }, "Page.bringToFront", "Target.getTargets"],
   ["browser.tab", { action: "close" }, "Target.closeTarget", "Target.getTargets"],
   ["browser.navigate", { url: "https://example.test/next" }, "Page.navigate", "Page.getFrameTree"],
   ["browser.history", { action: "back" }, "Page.navigateToHistoryEntry", "Page.getNavigationHistory"],
@@ -54,9 +54,11 @@ for (const [method, args, mutation, preparation] of cases) {
           }
           switch (command) {
             case "Target.getTargets": return { targetInfos: closed ? [] : [{ type: "page", targetId: "page", url: entries[currentIndex].url, title: "Fixture" }] };
+            case "Target.createTarget": return { targetId: "blank" };
             case "Target.attachToTarget": return { sessionId: "cdp" };
             case "Page.getFrameTree": return { frameTree: { frame: { id: "main", loaderId: document, url: entries[currentIndex].url } } };
             case "Page.getNavigationHistory": return { currentIndex, entries };
+            case "Page.createIsolatedWorld": return { executionContextId: 7 };
             case "Runtime.evaluate": return { result: { value: true } };
             case "Target.setDiscoverTargets": case "Target.setAutoAttach": case "Target.detachFromTarget":
             case "Page.enable": case "Page.setLifecycleEventsEnabled": case "Runtime.enable":

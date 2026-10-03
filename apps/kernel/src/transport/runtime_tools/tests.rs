@@ -81,32 +81,16 @@ mod workspace_live_sync_tests {
     }
 
     #[test]
-    fn ordinary_workflow_specs_omit_opt_in_event_reply_tool() {
-        let specs = workflow_runtime_tool_specs_without_event_reply();
-        assert!(!specs
-            .iter()
-            .any(|spec| spec.name == REPLY_TO_EVENT_TOOL_QUALIFIED));
-        assert!(!specs
-            .iter()
-            .any(|spec| spec.name == EVENT_CONTEXT_TOOL_QUALIFIED));
-        assert!(!specs
-            .iter()
-            .any(|spec| spec.name == EVENT_ACTION_TOOL_QUALIFIED));
-        assert_eq!(
-            workflow_reply_to_event_tool_spec().name,
-            REPLY_TO_EVENT_TOOL_QUALIFIED
-        );
+    fn workflow_specs_have_no_event_tools() {
+        let specs = workflow_runtime_tool_specs();
+        assert!(!specs.iter().any(|spec| spec.name.contains("event_")));
         assert_eq!(
             canonical_workflow_tool_name("mcp__chariox__event_context"),
-            Some(EVENT_CONTEXT_TOOL)
-        );
-        assert_eq!(
-            workflow_event_action_tool_spec().name,
-            EVENT_ACTION_TOOL_QUALIFIED
+            None
         );
         assert_eq!(
             canonical_workflow_tool_name("mcp__chariox__event_action"),
-            Some(EVENT_ACTION_TOOL)
+            None
         );
     }
 
@@ -908,5 +892,22 @@ mod workspace_live_sync_tests {
         )
         .expect("workflow handoff schema-ref validation should still pass");
         let _ = std::fs::remove_file(path);
+    }
+}
+
+// MP-08/MP-10/MP-11: the provider contract must match the kernel approval boundary.
+#[test]
+fn computer_credential_description_matches_target_bound_approval() {
+    let specs = credential_runtime_tool_specs();
+    for name in [
+        PASTE_SECRET_TO_COMPUTER_TOOL,
+        PASTE_SECRET_TO_COMPUTER_TOOL_ALIAS,
+    ] {
+        let spec = specs.iter().find(|spec| spec.name == name).unwrap();
+        assert!(spec.description.contains("unmasked"));
+        assert!(spec
+            .description
+            .contains("exact focused window and control"));
+        assert!(!spec.description.contains("Use only when"));
     }
 }

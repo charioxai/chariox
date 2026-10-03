@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Focused tests for the private Selkies lifecycle."""
 
+import http.client
 import importlib.util
+import importlib.resources
+import socketserver
+import threading
 import os
 from pathlib import Path
 import tempfile
@@ -29,6 +33,68 @@ class FakeProcess:
 
 
 class SelkiesStopTests(unittest.TestCase):
+    def test_cold_start_serves_installed_frontend_without_copying_it(self):
+        # Selkies copies its packaged frontend before opening the health port
+        # unless web-root points at the already-installed files. Cold VM disks
+        # can make that copy exceed our readiness deadline.
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            frontend = root / "frontend"
+            frontend.mkdir()
+            (frontend / "index.html").write_text("installed frontend")
+            child = mock.Mock(pid=os.getpid())
+            child.poll.return_value = None
+            launched = []
+
+            def spawn(command, **kwargs):
+                launched.extend(command)
+                return child
+
+            def ready(_record):
+                return f"--web-root={frontend}" in launched
+
+            with mock.patch.object(importlib.resources, "files", return_value=frontend), \
+                 mock.patch.object(LIFECYCLE.subprocess, "Popen", side_effect=spawn), \
+                 mock.patch.object(LIFECYCLE, "healthy", side_effect=ready), \
+                 mock.patch.object(LIFECYCLE.time, "monotonic", side_effect=range(0, 100, 5)), \
+                 mock.patch.object(LIFECYCLE.time, "sleep"), \
+                 mock.patch.object(LIFECYCLE.urllib.request, "urlopen") as request:
+                request.return_value.__enter__.return_value.status = 200
+                result = LIFECYCLE.start(root, port=6080, display=":99")
+
+            self.assertTrue(result["available"])
+            self.assertEqual((frontend / "index.html").read_text(), "installed frontend")
+
+    def test_cold_start_allows_readiness_after_fifteen_seconds(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            child = mock.Mock(pid=os.getpid())
+            child.poll.return_value = None
+            with mock.patch.object(LIFECYCLE.subprocess, "Popen", return_value=child), \
+                 mock.patch.object(LIFECYCLE, "healthy", side_effect=[False, True, True]), \
+                 mock.patch.object(LIFECYCLE.time, "monotonic", side_effect=[0, 10, 20]), \
+                 mock.patch.object(LIFECYCLE.time, "sleep"), \
+                 mock.patch.object(LIFECYCLE.urllib.request, "urlopen") as request:
+                request.return_value.__enter__.return_value.status = 200
+                result = LIFECYCLE.start(Path(scratch), port=6080, display=":99")
+
+            self.assertTrue(result["available"])
+            child.terminate.assert_not_called()
+
+    def test_cold_start_deadline_still_terminates_unhealthy_streamer(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            child = mock.Mock(pid=os.getpid())
+            child.poll.return_value = None
+            with mock.patch.object(LIFECYCLE.subprocess, "Popen", return_value=child), \
+                 mock.patch.object(LIFECYCLE, "healthy", return_value=False), \
+                 mock.patch.object(LIFECYCLE.time, "monotonic", side_effect=[0, 10, 60]), \
+                 mock.patch.object(LIFECYCLE.time, "sleep"):
+                with self.assertRaisesRegex(RuntimeError, "within 60 seconds"):
+                    LIFECYCLE.start(root, port=6080, display=":99")
+
+            child.terminate.assert_called_once()
+            self.assertFalse((root / "process.json").exists())
+
     def test_new_records_use_stable_identity_and_ignore_timestamp_for_generation(self):
         record = LIFECYCLE.process_record(LIFECYCLE.psutil.Process())
         self.assertIsNotNone(LIFECYCLE.owned_process(record))
@@ -101,6 +167,61 @@ class SelkiesStopTests(unittest.TestCase):
             self.assertTrue(process.terminated)
             self.assertTrue(process.killed)
             self.assertFalse((directory / "process.json").exists())
+
+
+class SelkiesHealthTests(unittest.TestCase):
+    # MP-08/MP-10: startup HTTP framing can be incomplete before the streamer is ready.
+    def test_malformed_and_incomplete_http_responses_are_not_yet_healthy(self):
+        for error in [http.client.BadStatusLine("GET /api/health HTTP/1.1\r\n"),
+                      http.client.IncompleteRead(b"O", 1),
+                      http.client.RemoteDisconnected("not ready")]:
+            with self.subTest(error=type(error).__name__), mock.patch.object(
+                    LIFECYCLE, "owned_process", return_value=object()), mock.patch.object(
+                    LIFECYCLE.urllib.request, "urlopen", side_effect=error):
+                self.assertFalse(LIFECYCLE.healthy({"port": 6080}))
+
+    def test_real_http_probe_recovers_after_a_malformed_startup_response(self):
+        class StartupHandler(socketserver.BaseRequestHandler):
+            attempts = 0
+
+            def handle(self):
+                request = self.request.recv(4096)
+                type(self).attempts += 1
+                if self.attempts == 1:
+                    self.request.sendall(request.split(b"\r\n", 1)[0] + b"\r\n")
+                else:
+                    self.request.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+
+        with socketserver.TCPServer(("127.0.0.1", 0), StartupHandler) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                with mock.patch.object(LIFECYCLE, "owned_process", return_value=object()):
+                    record = {"port": server.server_address[1]}
+                    self.assertFalse(LIFECYCLE.healthy(record))
+                    self.assertTrue(LIFECYCLE.healthy(record))
+            finally:
+                server.shutdown()
+                thread.join()
+
+    def test_health_requires_the_owned_process_and_exact_ok_body(self):
+        with mock.patch.object(LIFECYCLE, "owned_process", return_value=None), mock.patch.object(
+                LIFECYCLE.urllib.request, "urlopen") as request:
+            self.assertFalse(LIFECYCLE.healthy({"port": 6080}))
+            request.assert_not_called()
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.status = 200
+        response.read.return_value = b"NOT READY"
+        with mock.patch.object(LIFECYCLE, "owned_process", return_value=object()), mock.patch.object(
+                LIFECYCLE.urllib.request, "urlopen", return_value=response):
+            self.assertFalse(LIFECYCLE.healthy({"port": 6080}))
+
+    def test_unrelated_programming_errors_still_fail(self):
+        with mock.patch.object(LIFECYCLE, "owned_process", return_value=object()), mock.patch.object(
+                LIFECYCLE.urllib.request, "urlopen", side_effect=ValueError("invalid probe")):
+            with self.assertRaises(ValueError):
+                LIFECYCLE.healthy({"port": 6080})
 
 
 if __name__ == "__main__":
