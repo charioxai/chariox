@@ -1785,9 +1785,7 @@ async fn slice_pending_backup_restore_acknowledgement_survives_crash_and_broker_
 
     // Restart with the broker repaired: reconciliation acknowledges, and the
     // next restore starts and commits.
-    let app = Arc::new(Mutex::new(
-        restart_after_owner_exit(&config).await,
-    ));
+    let app = Arc::new(Mutex::new(restart_after_owner_exit(&config).await));
     let router = CommandRouter::with_interactive_capacity(
         Arc::clone(&app),
         crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
