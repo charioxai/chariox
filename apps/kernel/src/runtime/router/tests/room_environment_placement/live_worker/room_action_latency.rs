@@ -139,6 +139,12 @@ async fn slice_state_reads_reacquire_lost_controller_lease() {
                 .lifecycle
                 != crate::session::EnvironmentLifecycle::Degraded
             {
+                dispatch_json(
+                    &fixture.home,
+                    json!({"GetRoomEnvironmentState":{"session_id":room}}),
+                )
+                .await
+                .unwrap();
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
@@ -255,6 +261,12 @@ async fn state_read_degrades_when_slice_relay_disconnects() {
                 .lifecycle
                 != crate::session::EnvironmentLifecycle::Degraded
             {
+                dispatch_json(
+                    &fixture.home,
+                    json!({"GetRoomEnvironmentState":{"session_id":room}}),
+                )
+                .await
+                .unwrap();
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })

@@ -365,3 +365,56 @@ async fn ready_state_read_recovers_pending_import() {
         Lifecycle::Ready
     );
 }
+
+#[tokio::test]
+async fn browser_health_receipts_classify_routes_and_keep_transient_failures_inconclusive() {
+    use crate::error::DaemonError;
+    let relay = |code: &str, message: &str| DaemonError::RelayTransport {
+        operation: "read relay peer response",
+        code: code.into(),
+        message: message.into(),
+        retryable: true,
+    };
+    let local = |message: &str| DaemonError::LocalTransport {
+        operation: "browser_controller.route",
+        message: message.into(),
+    };
+    for (error, lost) in [
+        (relay("target_not_connected", "worker offline"), true),
+        (relay("target_disconnected", "worker disconnected"), true),
+        (relay("target_not_allowed", "target denied"), true),
+        (
+            relay(
+                "transport_error",
+                "browser_controller_scope_denied: wrong Room",
+            ),
+            true,
+        ),
+        (local("browser_controller_scope_denied: wrong Room"), true),
+        (relay("transport_error", "temporary transport error"), false),
+        (local("controller_busy: foreground command pending"), false),
+        (local("request timed out"), false),
+    ] {
+        let (state, room, _tool, _) = fixture().await;
+        let before = state.room_environment_snapshot(&room).unwrap();
+        // This is the same receipt consumer called by refresh after real relay
+        // delivery. Typed errors cannot be produced by the local stdio tool.
+        state.observe_room_browser_health_receipt(&room, before.runtime_generation, Err(error));
+        let after = state.room_environment_snapshot(&room).unwrap();
+        if lost {
+            assert_eq!(after.lifecycle, Lifecycle::Degraded);
+            let controller = after
+                .health
+                .iter()
+                .find(|h| h.component == Component::BrowserController)
+                .unwrap();
+            assert_eq!(controller.state, Health::Unavailable);
+            assert_eq!(
+                controller.diagnostic_code.as_deref(),
+                Some("browser_controller_unreachable")
+            );
+        } else {
+            assert_eq!(after, before, "transient receipts must remain inconclusive");
+        }
+    }
+}

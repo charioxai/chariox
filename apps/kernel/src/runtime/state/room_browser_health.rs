@@ -112,6 +112,15 @@ impl KernelRuntimeState {
         else {
             return;
         };
+        self.observe_room_browser_health_receipt(session_id, generation, result);
+    }
+
+    pub(crate) fn observe_room_browser_health_receipt(
+        &self,
+        session_id: &str,
+        generation: u64,
+        result: Result<Response, crate::error::DaemonError>,
+    ) {
         let diagnostic = match result {
             Ok(Response::Reconciled {
                 reconciliation: Some(_),
@@ -177,10 +186,10 @@ impl KernelRuntimeState {
         } else {
             EnvironmentComponent::Browser
         };
-        let Some(browser) = snapshot.health.iter().find(|h| h.component == component) else {
+        let Some(current) = snapshot.health.iter().find(|h| h.component == component) else {
             return;
         };
-        if browser.state == state && browser.diagnostic_code.as_deref() == diagnostic {
+        if current.state == state && current.diagnostic_code.as_deref() == diagnostic {
             return;
         }
         let Ok(updated) = sessions

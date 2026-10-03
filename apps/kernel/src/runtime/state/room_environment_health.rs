@@ -59,8 +59,8 @@ impl KernelRuntimeState {
                 // shared admission, in-flight ownership and generation fence.
                 // Its receipt never projects tabs: a foreground mutation may
                 // have committed while this observation crossed the worker route.
-                // Timeouts/route errors remain inconclusive; positive debugger
-                // loss degrades the Room through the normal health owner.
+                // Busy/timeouts remain inconclusive; positive browser or
+                // controller/route loss degrades the Room through the health owner.
                 state
                     .refresh_room_browser_health(&room, environment.runtime_generation)
                     .await;
