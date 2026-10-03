@@ -452,3 +452,5 @@ fn remote_cancel_reconciles_a_prompt_the_worker_never_started() {
         fixture.shutdown().await;
     });
 }
+
+mod leased_popup;
