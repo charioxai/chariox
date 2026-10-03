@@ -4,6 +4,7 @@
 //! owner through the same catalog, validation and durable path as agent calls.
 use super::KernelRuntimeState;
 use crate::{
+    error::DaemonError,
     local::{AppRequestErrorCode, LocalDaemonRequest, LocalDaemonResponse},
     runtime::{
         app_operation_budget::AppOperationBudget,
@@ -87,7 +88,7 @@ impl KernelRuntimeState {
         let opened: BrowserAppViewOpened = self
             .app_view_command(session_id, request)
             .await
-            .ok_or(AppRequestErrorCode::Conflict)?;
+            .map_err(|_| AppRequestErrorCode::Conflict)?;
         let views = self.app_control().views().clone();
         if views.register(
             session_id,
@@ -138,7 +139,7 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         request: BrowserAppViewRequest,
-    ) -> Option<T> {
+    ) -> Result<T, DaemonError> {
         let open = matches!(request, BrowserAppViewRequest::Open { .. });
         let respond = matches!(request, BrowserAppViewRequest::Respond { .. });
         let deadline = tokio::time::Instant::now() + OPEN_WAIT;
@@ -156,8 +157,20 @@ impl KernelRuntimeState {
             {
                 Ok(Response::AppView {
                     result: Some(value),
-                }) => return serde_json::from_value(value).ok(),
-                Ok(_) => return None,
+                }) => {
+                    return serde_json::from_value(value).map_err(|error| {
+                        DaemonError::LocalTransport {
+                            operation: "app_view.controller",
+                            message: error.to_string(),
+                        }
+                    })
+                }
+                Ok(_) => {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "app_view.controller",
+                        message: "Room returned no App view response".into(),
+                    })
+                }
                 Err(error)
                     if (open
                         && tokio::time::Instant::now() < deadline
@@ -168,7 +181,7 @@ impl KernelRuntimeState {
                 }
                 Err(error) => {
                     tracing::debug!(%error, "App view controller command failed");
-                    return None;
+                    return Err(error);
                 }
             }
         }
@@ -192,25 +205,32 @@ impl KernelRuntimeState {
                 if let Some(binding) = views.next_cold_start_attempt(&session_id) {
                     match self.restore_cold_app_view(&session_id, &binding).await {
                         Ok(())
-                        | Err(AppRequestErrorCode::NotFound | AppRequestErrorCode::LimitExceeded) => {
-                            views.finish_cold_start_view(&session_id, &binding)
+                        | Err(ColdAppRestoreError::Failed(
+                            AppRequestErrorCode::NotFound | AppRequestErrorCode::LimitExceeded,
+                        )) => views.finish_cold_start_view(&session_id, &binding),
+                        Err(ColdAppRestoreError::Busy) => {}
+                        Err(ColdAppRestoreError::Failed(_)) => {
+                            views.fail_cold_start_view(&session_id, &binding);
                         }
-                        Err(_) => {}
                     }
                 }
                 // Poll registered targets after every attempt, even if another
                 // restore failed. Their bindings already carry call authority.
             }
             let polled_up_to = views.registrations(&session_id);
-            let Some(batch) = self
+            let polled = self
                 .app_view_command::<BrowserAppViewCalls>(&session_id, BrowserAppViewRequest::Calls)
-                .await
-            else {
-                failures += 1;
-                if failures >= MAX_POLL_FAILURES {
-                    views.forget_session(&session_id);
+                .await;
+            let batch = match polled {
+                Ok(batch) => batch,
+                Err(error) if crate::runtime::app_views::slice_busy(&error.to_string()) => continue,
+                Err(_) => {
+                    failures += 1;
+                    if failures >= MAX_POLL_FAILURES {
+                        views.forget_session(&session_id);
+                    }
+                    continue;
                 }
-                continue;
             };
             failures = 0;
             if let Some(open) = &batch.open_targets {
@@ -267,7 +287,13 @@ impl KernelRuntimeState {
         &self,
         session: &str,
         binding: &AppViewBinding,
-    ) -> Result<(), AppRequestErrorCode> {
+    ) -> Result<(), ColdAppRestoreError> {
+        // Acquire before reading assets: a Running slice can still be held by
+        // slice.start while its attached agents relaunch. Admission refusals
+        // are downtime, and spend neither restore nor polling failure budgets.
+        self.ensure_browser_controller_process_started(session)
+            .await
+            .map_err(cold_restore_error)?;
         let store = self.owned.durable_state_store.clone();
         let (owner, installation) = (binding.owner.clone(), binding.installation.clone());
         let view =
@@ -283,12 +309,6 @@ impl KernelRuntimeState {
                 })?;
         let generation = view.generation;
         let (entry, assets) = view_assets(view);
-        // The worker kernel restarted with the slice. Reacquire its normal
-        // Room controller before sending App commands; home metadata may still
-        // be ready while that worker has no controller lease yet.
-        self.ensure_browser_controller_process_started(session)
-            .await
-            .map_err(|_| AppRequestErrorCode::Conflict)?;
         let opened: BrowserAppViewOpened = self
             .app_view_command(
                 session,
@@ -300,7 +320,7 @@ impl KernelRuntimeState {
                 },
             )
             .await
-            .ok_or(AppRequestErrorCode::Conflict)?;
+            .map_err(cold_restore_error)?;
         self.app_control().views().register(
             session,
             &opened.target_id,
@@ -322,7 +342,7 @@ impl KernelRuntimeState {
             self.app_control()
                 .views()
                 .forget_installation(&binding.owner, &binding.installation);
-            return Err(AppRequestErrorCode::NotFound);
+            return Err(AppRequestErrorCode::NotFound.into());
         }
         let _ = self.reconcile_browser_controller_environment(session).await;
         Ok(())
@@ -469,7 +489,7 @@ impl KernelRuntimeState {
             },
         );
         let (entry, assets) = view_assets(view);
-        let reloaded: Option<Value> = self
+        let reloaded: Result<Value, _> = self
             .app_view_command(
                 session_id,
                 BrowserAppViewRequest::Reload {
@@ -479,7 +499,7 @@ impl KernelRuntimeState {
                 },
             )
             .await;
-        if reloaded.is_none() {
+        if reloaded.is_err() {
             views.unbind(session_id, target_id);
             return Err(unbound());
         }
@@ -691,3 +711,27 @@ fn view_assets(
         .collect();
     (view.entry, assets)
 }
+
+// Private recovery outcomes; no serialized App or transport contract changes.
+enum ColdAppRestoreError {
+    Busy,
+    Failed(AppRequestErrorCode),
+}
+
+impl From<AppRequestErrorCode> for ColdAppRestoreError {
+    fn from(code: AppRequestErrorCode) -> Self {
+        Self::Failed(code)
+    }
+}
+
+fn cold_restore_error(error: DaemonError) -> ColdAppRestoreError {
+    if crate::runtime::app_views::slice_busy(&error.to_string()) {
+        ColdAppRestoreError::Busy
+    } else {
+        ColdAppRestoreError::Failed(AppRequestErrorCode::Conflict)
+    }
+}
+
+#[cfg(test)]
+#[path = "app_view_cold_start_tests.rs"]
+mod cold_start_tests;
