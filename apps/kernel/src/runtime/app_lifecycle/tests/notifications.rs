@@ -2,7 +2,7 @@ use super::*;
 use chariox_app_runtime::worker_process::test_fixture::Mode;
 use serde_json::{json, Value};
 
-fn setup(
+pub(super) fn setup(
     mode: Mode,
 ) -> (
     Scratch,

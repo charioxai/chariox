@@ -307,7 +307,7 @@ impl AppLifecycleService {
     }
     /// Stop an idle worker while keeping its restart intent. Its verified
     /// catalog stays dormant so tools remain discoverable; the next tool call
-    /// or wake starts it on demand. Nothing durable changes. `still_idle` is
+    /// or wake starts it on demand. Suspension is persisted before stopping. `still_idle` is
     /// re-evaluated under the operation guard, so use that arrived after
     /// candidate selection keeps the worker running; callers also treat an App
     /// with undelivered events as busy, because delivery needs a live lease.

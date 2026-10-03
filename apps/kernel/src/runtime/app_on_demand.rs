@@ -269,6 +269,7 @@ mod on_demand_tests {
             attempt: "attempt".into(),
             phase,
             desired_running,
+            dormant: false,
             failure: None,
             updated_ms: 1,
             failures: 0,
