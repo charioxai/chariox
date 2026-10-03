@@ -156,6 +156,12 @@ impl ProviderRunProjectionStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(current) = runs.get(run.id()) {
+            // Destruction can finish before an in-flight worker snapshot arrives.
+            // A provider run's ended state is terminal, including home projections.
+            if current.state() == ProviderRunState::Ended && run.state() != ProviderRunState::Ended
+            {
+                return current.clone();
+            }
             if run.state() == ProviderRunState::Starting
                 && current.state() != ProviderRunState::Starting
             {
