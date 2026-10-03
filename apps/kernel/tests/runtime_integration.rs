@@ -12,8 +12,8 @@ use chariox_kernel::local::{
 use chariox_kernel::provider::{LaunchProviderRequest, ProviderRunState};
 use chariox_kernel::runtime_transport::run_kernel_websocket_server_on_listener;
 use chariox_kernel::session::{
-    CreateSessionRequest, PromptSubmissionOutcome, SessionAgentDefaults, SessionStatus,
-    WorkflowNodeRunStatus, WorkflowRun, WorkflowRunStatus,
+    PromptSubmissionOutcome, SessionAgentDefaults, SessionStatus, WorkflowNodeRunStatus,
+    WorkflowRun, WorkflowRunStatus,
 };
 use chariox_kernel::{DaemonApp, DaemonConfig};
 use tokio::sync::{oneshot, Mutex as TokioMutex};
@@ -75,8 +75,9 @@ fn attachments_can_queue_prompts_and_receive_queue_notifications() {
     let workspace = ExecutionWorkspace::new();
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = app
-        .sessions_mut()
+    // Phase 1: the session is created with its default agent, which holds focus;
+    // attaching a client creates no agent.
+    let (session, _default_agent) = app
         .create_session(workspace.session_request())
         .expect("session should be created");
     let first = app
@@ -146,8 +147,9 @@ fn detaching_attachment_preserves_queued_prompts_and_promotes_via_remaining_atta
     let workspace = ExecutionWorkspace::new();
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = app
-        .sessions_mut()
+    // Phase 1: the session is created with its default agent, which holds focus;
+    // attaching a client creates no agent.
+    let (session, _default_agent) = app
         .create_session(workspace.session_request())
         .expect("session should be created");
     let first = app
@@ -236,8 +238,9 @@ fn completing_a_prompt_without_provider_completion_still_emits_a_terminal_comple
     let workspace = ExecutionWorkspace::new();
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = app
-        .sessions_mut()
+    // Phase 1: the session is created with its default agent, which holds focus;
+    // attaching a client creates no agent.
+    let (session, _default_agent) = app
         .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
@@ -426,8 +429,9 @@ fn provider_run_switching_parks_previous_run_and_records_terminal_input() {
     let workspace = ExecutionWorkspace::new();
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = app
-        .sessions_mut()
+    // Phase 1: the session is created with its default agent, which holds focus;
+    // attaching a client creates no agent.
+    let (session, _default_agent) = app
         .create_session(workspace.session_request())
         .expect("session should be created");
     let source = app
@@ -634,8 +638,9 @@ fn prompt_queue_advances_after_provider_output_goes_idle() {
     let workspace = ExecutionWorkspace::new();
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = app
-        .sessions_mut()
+    // Phase 1: the session is created with its default agent, which holds focus;
+    // attaching a client creates no agent.
+    let (session, _default_agent) = app
         .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
@@ -810,6 +815,9 @@ fn create_session_persists_and_reuses_provider_launch_defaults_from_user_config(
         "chariox-provider-launch-defaults-test-{}.toml",
         std::process::id()
     ));
+    // Phase 1 sessions need real absolute workspace and worktree directories.
+    let first_workspace = ExecutionWorkspace::new();
+    let second_workspace = ExecutionWorkspace::new();
     let mut config = DaemonConfig::for_tests();
     config.user_config_path = path.clone();
     let app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
@@ -832,7 +840,8 @@ fn create_session_persists_and_reuses_provider_launch_defaults_from_user_config(
 
     let first_agent = match client
         .send(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-provider-defaults", "worktree-provider-defaults")
+            first_workspace
+                .session_request()
                 .with_agent_defaults(SessionAgentDefaults {
                     provider: "codex".to_string(),
                     model: Some("gpt-5.1".to_string()),
@@ -864,10 +873,7 @@ fn create_session_persists_and_reuses_provider_launch_defaults_from_user_config(
 
     let second_agent = match client
         .send(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new(
-                "workspace-provider-defaults-2",
-                "worktree-provider-defaults-2",
-            ),
+            second_workspace.session_request(),
         ))
         .expect("second session create should succeed")
     {

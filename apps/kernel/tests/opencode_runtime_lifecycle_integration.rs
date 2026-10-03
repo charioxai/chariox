@@ -99,8 +99,9 @@ fn clearing_runtime_during_slow_opencode_submit_does_not_restore_state() {
 
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = app
-        .sessions_mut()
+    // Phase 1: the session is created with its default agent, which holds focus;
+    // attaching a client creates no agent.
+    let (session, _default_agent) = app
         .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
@@ -159,8 +160,9 @@ fn clearing_runtime_during_slow_opencode_abort_does_not_restore_state() {
 
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = app
-        .sessions_mut()
+    // Phase 1: the session is created with its default agent, which holds focus;
+    // attaching a client creates no agent.
+    let (session, _default_agent) = app
         .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
@@ -217,8 +219,9 @@ fn clearing_runtime_during_slow_opencode_output_poll_does_not_restore_state() {
 
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = app
-        .sessions_mut()
+    // Phase 1: the session is created with its default agent, which holds focus;
+    // attaching a client creates no agent.
+    let (session, _default_agent) = app
         .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
@@ -293,8 +296,9 @@ fn session_error_completes_the_active_prompt_and_advances_the_queue() {
 
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = app
-        .sessions_mut()
+    // Phase 1: the session is created with its default agent, which holds focus;
+    // attaching a client creates no agent.
+    let (session, _default_agent) = app
         .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
@@ -400,8 +404,9 @@ fn cancelling_active_opencode_prompt_waits_for_provider_confirmation_before_adva
 
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = app
-        .sessions_mut()
+    // Phase 1: the session is created with its default agent, which holds focus;
+    // attaching a client creates no agent.
+    let (session, _default_agent) = app
         .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
@@ -495,8 +500,9 @@ fn cancelling_active_opencode_prompt_without_queue_clears_the_active_prompt() {
 
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = app
-        .sessions_mut()
+    // Phase 1: the session is created with its default agent, which holds focus;
+    // attaching a client creates no agent.
+    let (session, _default_agent) = app
         .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
