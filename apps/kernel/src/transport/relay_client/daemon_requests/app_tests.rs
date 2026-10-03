@@ -906,7 +906,6 @@ async fn app_quarantine_status_survives_the_relay_boundary_and_explicit_start_cl
 }
 
 #[test]
-#[test]
 fn full_receipt_journal_uninstalls_and_fences_replayed_generation() {
     std::thread::Builder::new()
         .stack_size(32 * 1024 * 1024)

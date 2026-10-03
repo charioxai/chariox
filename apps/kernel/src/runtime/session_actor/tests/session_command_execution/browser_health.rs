@@ -225,33 +225,47 @@ async fn room_browser_health_probe_shares_controller_routes_and_yields_to_slice_
     let slice = slices
         .bind_environment(&room, &slice.id, 2, |_| Ok(()))
         .unwrap();
+    let slice = slices
+        .set_status(&slice.id, crate::slice::SliceStatus::Running, 3)
+        .unwrap();
     let command =
         crate::transport::room_browser_controller::RoomBrowserControllerCommand::Reconcile {
             viewport: state.room_environment_snapshot(&room).unwrap().viewport,
         };
     let probe = state
-        .room_browser_controller_route_guard(&room, &slice, &command, true)
+        .admit_room_browser_controller_route(&room, &slice.id, &command, true, None)
+        .await
         .unwrap();
     assert!(
-        probe.is_none(),
+        probe.1.is_none(),
         "background health must never own the exclusive operation slot"
     );
     let foreground = state
-        .room_browser_controller_route_guard(&room, &slice, &command, false)
+        .admit_room_browser_controller_route(
+            &room,
+            &slice.id,
+            &command,
+            false,
+            Some(tokio::time::Instant::now()),
+        )
+        .await
         .unwrap();
     assert!(
-        foreground.is_some(),
+        foreground.1.is_some(),
         "a foreground command must remain admissible during a probe"
     );
     assert!(state
-        .room_browser_controller_route_guard(&room, &slice, &command, true)
+        .admit_room_browser_controller_route(&room, &slice.id, &command, true, None)
+        .await
         .unwrap()
+        .1
         .is_none());
     drop(foreground);
     let lifecycle = slices.try_begin_operation(&slice.id, "slice.stop").unwrap();
     assert!(
         state
-            .room_browser_controller_route_guard(&room, &slice, &command, true)
+            .admit_room_browser_controller_route(&room, &slice.id, &command, true, None)
+            .await
             .is_err(),
         "health must yield to actual slice lifecycle authority"
     );

@@ -349,14 +349,7 @@ fn acquire_disk_admission_lock() -> Result<DiskAdmissionLock, DaemonError> {
 
 #[cfg(unix)]
 fn disk_admission_lock_path() -> PathBuf {
-    #[cfg(test)]
-    {
-        std::env::temp_dir().join("chariox-docker-disk-admission.lock")
-    }
-    #[cfg(not(test))]
-    {
-        super::admission_lock::path("disk")
-    }
+    super::admission_lock::path("disk")
 }
 
 #[cfg(windows)]

@@ -63,7 +63,9 @@ impl AppWakePump {
     pub(crate) fn try_begin(&self, now_ms: u64) -> Option<WakePass> {
         let mut state = lock(&self.0);
         let clock_corrected = state.last_ms.saturating_sub(now_ms) >= MIN_INTERVAL_MS;
-        if state.busy || (!clock_corrected && now_ms.saturating_sub(state.last_ms) < MIN_INTERVAL_MS) {
+        if state.busy
+            || (!clock_corrected && now_ms.saturating_sub(state.last_ms) < MIN_INTERVAL_MS)
+        {
             return None;
         }
         state.busy = true;

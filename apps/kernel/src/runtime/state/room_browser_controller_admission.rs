@@ -3,7 +3,7 @@ use crate::slice::{SliceEnvironmentUseGuard, SliceRecord, SliceStatus};
 use crate::transport::room_browser_controller::RoomBrowserControllerCommand as Command;
 
 impl KernelRuntimeState {
-    pub(super) async fn admit_room_browser_controller_route(
+    pub(crate) async fn admit_room_browser_controller_route(
         &self,
         session_id: &str,
         slice_id: &str,

@@ -911,15 +911,6 @@ fn an_idle_stop_keeps_a_worker_whose_wake_was_admitted_after_its_idle_check() {
 }
 
 fn assert_call_waits_at_start_checkpoint(checkpoint: StartCheckpoint) {
-}
-
-#[test]
-fn full_receipt_journal_stops_and_reaps_a_live_worker() {
-    use crate::local::{
-        AppRequestErrorCode, AppWorkerAction, ControlAppWorkerRequest, LocalDaemonRequest,
-        LocalDaemonResponse,
-    };
-    use crate::runtime::command::KernelCommand;
     let scratch = Scratch::new();
     let runtime = runtime();
     let store = scratch.store();
@@ -938,9 +929,6 @@ fn full_receipt_journal_stops_and_reaps_a_live_worker() {
                 .recv_timeout(Duration::from_secs(5));
         }
     }));
-}
-
-#[test]
     control
         .lifecycle()
         .start_active_blocking("alice", "installed", runtime.handle().clone())
@@ -1034,9 +1022,24 @@ fn callable_readiness_refuses_terminal_start_failure() {
 }
 mod admission;
 mod snapshot_restore;
-}
 
 #[test]
+fn full_receipt_journal_stops_and_reaps_a_live_worker() {
+    use crate::local::{
+        AppRequestErrorCode, AppWorkerAction, ControlAppWorkerRequest, LocalDaemonRequest,
+        LocalDaemonResponse,
+    };
+    use crate::runtime::command::KernelCommand;
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let store = scratch.store();
+    fixture_event_catalog(&store);
+    stage(&store);
+    let (control, observations) = make_control(&store, Arc::new(NativeFixture::compile().unwrap()));
+    control
+        .lifecycle()
+        .start_active_blocking("alice", "installed", runtime.handle().clone())
+        .unwrap();
     wait(|| control.active_app_lease("alice", "installed").is_some());
     let old = control.active_app_lease("alice", "installed").unwrap();
     let restart = LocalDaemonRequest::ControlAppWorker(ControlAppWorkerRequest {
