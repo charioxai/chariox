@@ -6,9 +6,8 @@ use std::time::{Duration, Instant};
 
 use super::{
     cancellation, kill_child, pending_responses, BrowserControllerProcessOwnership,
-    BrowserControllerProcessState, BrowserControllerProcessStdioBackend,
-    BrowserControllerProcessStore, BrowserControllerRpcError, BrowserControllerRpcRequest,
-    BrowserControllerRpcResponse, CONTROLLER_RESTARTED_BEFORE_OPERATION,
+    BrowserControllerProcessStdioBackend, BrowserControllerProcessStore, BrowserControllerRpcError,
+    BrowserControllerRpcRequest, BrowserControllerRpcResponse,
 };
 
 pub(super) struct PendingBrowserMutation {
@@ -214,21 +213,7 @@ impl BrowserControllerProcessOwnership<BrowserControllerProcessStdioBackend> {
     ) -> Result<PendingBrowserMutation, String> {
         self.require_lease(session_id)?;
         let supervisor = &mut self.supervisor;
-        let responses_pending = supervisor
-            .backend
-            .process
-            .as_ref()
-            .map(|process| process.pending_responses.is_empty().map(|empty| !empty))
-            .transpose()?
-            .unwrap_or(false);
-        let exited = supervisor.backend.take_exited_process()?.is_some();
-        if !responses_pending || exited {
-            supervisor.ensure_started_without_transparent_restart()?;
-        } else if supervisor.recovery_pending
-            || supervisor.snapshot.state != BrowserControllerProcessState::Ready
-        {
-            return Err(CONTROLLER_RESTARTED_BEFORE_OPERATION.into());
-        }
+        supervisor.prepare_unlocked_request()?;
         supervisor
             .backend
             .begin_cancellable_mutation(method, params, signal)
