@@ -44,7 +44,8 @@ async function publishWebEvidence(){
  await mkdir(webEvidence,{recursive:true,mode:0o700})
  // Never follow a staged symlink, even if the viewer could still change the directory.
  for(const name of staged){
-  const handle=await open(path.join(webStaging,name),fsConstants.O_RDONLY|fsConstants.O_NOFOLLOW).catch(()=>null)
+  // O_NONBLOCK: a staged FIFO must not block the drill; the isFile check skips it.
+  const handle=await open(path.join(webStaging,name),fsConstants.O_RDONLY|fsConstants.O_NOFOLLOW|fsConstants.O_NONBLOCK).catch(()=>null)
   if(!handle)continue
   try{if((await handle.stat()).isFile())await writeFile(path.join(webEvidence,name),await handle.readFile(),{mode:0o600})}finally{await handle.close()}
  }
@@ -242,7 +243,8 @@ try{
   // (an ordinary umask-022 checkout). A viewer that exits before reporting is fatal at once.
   await wait(async()=>{const error=await readFile(`${webRoot}/web-error.json`,'utf8').catch(()=>null);if(error){const e=Error(JSON.parse(error).message);e.fatal=true;throw e}
    const ready=JSON.parse(await readFile(`${webRoot}/web-ready.json`,'utf8').catch(()=>'null'));if(ready)return ready
-   const state=(await docker(['inspect','--format','{{.State.Status}} {{.State.ExitCode}}',webContainer]).catch(()=>'')).trim()
+   // A direct probe keeps these frequent polls out of commands.jsonl.
+   const state=await exec('docker',['inspect','--format','{{.State.Status}} {{.State.ExitCode}}',webContainer],{env:{...process.env,DOCKER_HOST:'unix:///var/run/docker.sock',DOCKER_CONFIG:`${root}/docker-config`}}).then(r=>r.stdout.trim(),()=>'')
    if(state.startsWith('exited')||state.startsWith('dead')){const logs=await cmd('sh',['-c','docker logs --tail 40 "$1" 2>&1','drill',webContainer]).catch(e=>e.message);const e=Error(`Web viewer stopped before it was ready (${state}): ${String(logs).slice(-1500)}`);e.fatal=true;throw e}
    return null},'two Web viewers',120000)
   await write('concurrent',{room:await roomSnapshot(),worker:await observeWorker(),web:JSON.parse(await readFile(`${webRoot}/web-ready.json`,'utf8')),tuis:await Promise.all([...activeTuis.values()].map(t=>readAutomationSnapshot(t.automationSocket)))})
