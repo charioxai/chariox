@@ -215,10 +215,9 @@ test("a refused limit change cannot rebind the home or consume project IDs", () 
   const f = fixture()
   reserve(f.allocator)
   const before = structuredClone(f.getState())
-  f.backend.projectUsageBytes = () => undefined
   assert.throws(() => f.allocator.handle({protocolVersion: 1, operation: "reserve",
     identity: {...identity, homeVolumeName: `${identity.containerName}-home-g${"e".repeat(32)}`},
-    limits: {...limits, persistentHomeBytes: limits.persistentHomeBytes * 2}}), /usage could not be read back/)
+    limits: {...limits, persistentHomeBytes: f.actual.homeUsed / 2}}), /existing persistent-home data exceeds/)
   assert.deepEqual(f.getState(), before)
   assert.deepEqual(f.calls, [])
 })
