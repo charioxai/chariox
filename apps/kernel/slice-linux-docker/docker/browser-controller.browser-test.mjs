@@ -585,6 +585,41 @@ test("password step form controls cannot shadow native submit methods", async ()
   });
 });
 
+for (const failure of ["script-exception", "missing-value-setter"]) {
+  test(`password step ${failure} reports its safe failure category`, async () => {
+    await withPasswordStep(async (url) => {
+      await withController(async ({ page, request }) => {
+        await page.goto(url);
+        await page.getByLabel('Enter your password').evaluate((input, failure) => {
+          if (failure === 'script-exception') {
+            input.focus = () => { throw new Error('local-password-canary'); };
+          } else {
+            const prototype = HTMLInputElement.prototype;
+            const getter = Object.getOwnPropertyDescriptor(prototype, 'value').get;
+            Object.defineProperty(prototype, 'value', { get: getter, set: undefined, configurable: true });
+          }
+        }, failure);
+        const target = (await request("browser.reconcile", { viewport })).result.tabs[0];
+        const snapshot = await request("browser.snapshot", target);
+        const node = snapshot.result.accessibility_nodes.find((node) => node.role === "textbox" && node.name.trim() === "Enter your password");
+        const result = await request("browser.action", {
+          ...target, node_ref: node.node_ref,
+          action: { kind: "fill", text: "local-password-canary", expected_document_url: url, submit: false },
+        });
+        assert.equal(result.ok, false);
+        if (failure === 'script-exception') {
+          assert.equal(result.error.code, 'browser_secret_input_exception');
+        } else {
+          assert.equal(result.error.code, 'browser_action_failed');
+          assert.match(result.error.message, /native value setter/);
+        }
+        assert.equal(JSON.stringify(result).includes('local-password-canary'), false);
+        assert.equal(await page.getByLabel('Enter your password').inputValue(), '');
+      });
+    });
+  });
+}
+
 async function withPasswordStep(run) {
   const server = createServer((request, response) => {
     response.writeHead(200, { "content-type": "text/html" });

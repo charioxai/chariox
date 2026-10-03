@@ -524,11 +524,23 @@ async function secureFillElement(connection, sessionId, objectId, action) {
         { reason: outcome.reason },
       );
     }
+    if (response?.exceptionDetails) {
+      throw new BrowserActionError(
+        "browser_secret_input_exception",
+        "browser secret insertion script raised an exception; rediscover the password field before retrying",
+      );
+    }
+    if (outcome?.reason === "value_setter_unavailable") {
+      throw new BrowserActionError(
+        "browser_action_failed",
+        "browser password field has no native value setter",
+      );
+    }
     throw new BrowserActionError(
       "browser_action_failed",
       "browser secret target could not receive secure input",
       // Do not expose exception text: page code can include the inserted secret.
-      { reason: response?.exceptionDetails ? "secure_fill_exception" : "secure_fill_failed" },
+      { reason: "secure_fill_failed" },
     );
   }
 }
