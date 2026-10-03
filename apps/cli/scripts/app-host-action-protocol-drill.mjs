@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Focused protocol-400 drill; no live kernel, provider, credentials or desktop.
+// Focused protocol-409 drill; no live kernel, provider, credentials or desktop.
 // Build kernel-client and CLI first. Rust commands always enter builder slot-run.
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
@@ -30,7 +30,7 @@ for (const [name, command, args] of checks) {
     env: { ...process.env, RUST_MIN_STACK: process.env.RUST_MIN_STACK ?? "16777216", RUST_TEST_THREADS: "1" } });
   writeFileSync(path.join(evidence, `${name}.log`), `${result.stdout ?? ""}${result.stderr ?? ""}${result.error ?? ""}`);
   results.push({ name, command: [command, ...args], exitCode: result.status });
-  writeFileSync(path.join(evidence, "results.json"), JSON.stringify({ protocol: 400, scope: "worker SDK, kernel interaction, shared client, trusted TUI, Room bridge; no live web or OS clipboard proof", results }, null, 2));
+  writeFileSync(path.join(evidence, "results.json"), JSON.stringify({ protocol: 409, scope: "worker SDK, kernel interaction, shared client, trusted TUI, Room bridge; no live web or OS clipboard proof", results }, null, 2));
   console.log(`${name}: ${result.status === 0 ? "PASS" : "FAIL"}`);
   if (result.status !== 0) process.exit(1);
 }

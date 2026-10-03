@@ -1,4 +1,4 @@
-//! Protocol 368: a client's export of a workflow publication is a deployment
+//! Protocol 377: a client's export of a workflow publication is a deployment
 //! release's preparation. Each owner export packages the plan read from the
 //! owner's current App set, so a new release follows App updates while an
 //! existing release keeps the plan it was exported with.

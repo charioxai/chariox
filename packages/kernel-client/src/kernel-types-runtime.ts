@@ -146,7 +146,7 @@ export type RuntimeInteractionChoice = {
   label: string
   reply: string
   style?: "primary" | "secondary" | "danger" | null
-  /** Protocol 383: answering with this choice needs the Chariox passkey. */
+  /** Protocol 392: answering with this choice needs the Chariox passkey. */
   requires_passkey?: boolean
 }
 
@@ -348,7 +348,7 @@ export type AgentInstance = {
   } | null
   extension_grants?: ExtensionGrant[]
   remote_extension_manifest_sync?: RemoteExtensionManifestSyncStatus | null
-  /** Tried in order, each for one turn whose provider failed (protocol 388). */
+  /** Tried in order, each for one turn whose provider failed (protocol 397). */
   substitutes?: AgentSubstituteProfile[]
   substitution_timeout_ms?: number | null
   visible_in_freeform?: boolean

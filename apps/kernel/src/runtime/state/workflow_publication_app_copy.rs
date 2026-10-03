@@ -113,7 +113,7 @@ impl KernelRuntimeState {
                 .await?;
             return Ok(None);
         }
-        // Protocol 368: the release's own plan, so a rollback restores its Apps.
+        // Protocol 377: the release's own plan, so a rollback restores its Apps.
         let plan = publication
             .release_app_plan(package_digest)
             .ok_or_else(|| {

@@ -1,4 +1,4 @@
-Protocol 401 exposes `RestoreAppDataSnapshot { installation_id,
+Protocol 410 exposes `RestoreAppDataSnapshot { installation_id,
 expected_generation, snapshot_id }` through the shared kernel command path.
 The authenticated owner supplies a saved snapshot identity returned by
 `files.snapshot`, never a filesystem path, structured payload or authority.

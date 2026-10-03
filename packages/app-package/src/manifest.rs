@@ -61,7 +61,7 @@ pub enum RuntimeEngine {
 pub struct Ui {
     pub entry: String,
     /// Where Chariox draws the private agent panel beside this App's view by
-    /// default (kernel protocol 371). Omitted: at the right. The page can ask
+    /// default (kernel protocol 380). Omitted: at the right. The page can ask
     /// for another placement at runtime; the user's own choice wins.
     #[serde(
         default,
@@ -72,7 +72,7 @@ pub struct Ui {
 }
 
 /// First kernel protocol that reads `ui.agentPanel`.
-pub const AGENT_PANEL_PROTOCOL: u32 = 371;
+pub const AGENT_PANEL_PROTOCOL: u32 = 380;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -225,7 +225,7 @@ impl Manifest {
             };
             if !size_ok || self.min_kernel_protocol < AGENT_PANEL_PROTOCOL {
                 return Err(invalid(
-                    "ui.agentPanel needs minKernelProtocol 371 and a size of 120 to 1200 CSS pixels (none takes no size)",
+                    "ui.agentPanel needs minKernelProtocol 380 and a size of 120 to 1200 CSS pixels (none takes no size)",
                 ));
             }
         }

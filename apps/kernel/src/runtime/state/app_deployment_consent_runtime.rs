@@ -106,7 +106,7 @@ impl KernelRuntimeState {
             },
             None => None,
         };
-        // Protocol 368: the plan the next release packages, from the owner's
+        // Protocol 377: the plan the next release packages, from the owner's
         // current App set.
         let current = match self
             .read_publication_app_plan(&publication, &snapshot, &owner)
@@ -215,7 +215,7 @@ impl KernelRuntimeState {
                 Err(AppRequestErrorCode::Conflict)
             };
         }
-        // Protocol 368: exactly the plan this release was exported with; a
+        // Protocol 377: exactly the plan this release was exported with; a
         // release exported while the publication used no App has none.
         let plan = publication
             .release_app_plan(&request.package_digest)
@@ -301,7 +301,7 @@ impl KernelRuntimeState {
                 ..consent
             });
         }
-        // Protocol 368: a release with exactly the App releases the owner
+        // Protocol 377: a release with exactly the App releases the owner
         // already approved for this deployment is approved without asking
         // again; its install window starts now.
         let store = self.owned.durable_state_store.clone();

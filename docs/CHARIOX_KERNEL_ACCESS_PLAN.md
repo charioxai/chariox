@@ -58,7 +58,7 @@ PR #618 (open at the time of writing) makes the kernel websocket refuse any upgr
 
 ### 1.3 Phase 1: the passkey for critical approvals
 
-Phase 1 (protocol 383, implemented in a separate PR) requires the Chariox passkey to approve a critical action: P1.15 human validation, kernel-owned critical effects, and the App validation approval raised by `apps/kernel/src/runtime/state/app_validation_pump_runtime.rs`.
+Phase 1 (protocol 392, implemented in a separate PR) requires the Chariox passkey to approve a critical action: P1.15 human validation, kernel-owned critical effects, and the App validation approval raised by `apps/kernel/src/runtime/state/app_validation_pump_runtime.rs`.
 
 | Aspect | Phase 1 behavior |
 |---|---|

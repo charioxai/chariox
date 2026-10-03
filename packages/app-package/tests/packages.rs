@@ -346,9 +346,9 @@ fn an_agent_panel_placement_is_a_bounded_signed_default() {
             ErrorCode::InvalidManifest,
         );
     }
-    // An older kernel cannot read the field: the App must require 371.
+    // An older kernel cannot read the field: the App must require 380.
     let mut value = with_panel(json!({"placement":"right"}));
-    value["minKernelProtocol"] = 370.into();
+    value["minKernelProtocol"] = 379.into();
     assert_code(&raw_package(value, files()), ErrorCode::InvalidManifest);
 }
 

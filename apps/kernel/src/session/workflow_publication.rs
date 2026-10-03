@@ -168,22 +168,22 @@ pub struct WorkflowPublicationDefinition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     runtime_materialization: Option<WorkflowPublicationRuntimeMaterialization>,
     /// The App plan (`chariox.publication-apps.v1`) of the owner's latest
-    /// deployment export (protocol 366; per release since 368).
+    /// deployment export (protocol 366; per release since 377).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     apps: Option<Value>,
-    /// Protocol 368: each exported release's App plan by package digest, the
+    /// Protocol 377: each exported release's App plan by package digest, the
     /// newest last. Bind, recovery and rollback use the release's own plan.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     release_app_plans: Vec<ReleaseAppPlan>,
-    /// The single plan a publication prepared before protocol 368 pinned for
+    /// The single plan a publication prepared before protocol 377 pinned for
     /// all its releases, kept for them once releases record their own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pre_release_app_plan: Option<Value>,
-    /// Releases whose plans were pruned: they never fall back to the pre-368
+    /// Releases whose plans were pruned: they never fall back to the pre-377
     /// plan (the newest last, bounded).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pruned_release_digests: Vec<String>,
-    /// Protocol 369: each exported release's inputs digest by package digest
+    /// Protocol 378: each exported release's inputs digest by package digest
     /// (the newest last). A bind or recovery verifies the release against it,
     /// so the kernel's own templates in the package can change with upgrades.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -196,7 +196,7 @@ pub struct WorkflowPublicationDefinition {
 /// Rollback reaches this many past releases' App plans (the bound release's
 /// is always kept).
 const MAX_RELEASE_APP_PLANS: usize = 16;
-/// Pruned release digests remembered so they never take the pre-368 plan.
+/// Pruned release digests remembered so they never take the pre-377 plan.
 const MAX_PRUNED_RELEASE_DIGESTS: usize = 256;
 
 /// Releases whose inputs digests are kept (the bound release's always is);
@@ -553,7 +553,7 @@ impl WorkflowPublicationDefinition {
     }
 
     /// Whether the release with this package digest was exported while the
-    /// publication used no App: releases record their plans (368), this one
+    /// publication used no App: releases record their plans (377), this one
     /// recorded none, is not among the last pruned digests and predates no
     /// pinned plan. A digest the kernel never recorded also matches; its bind
     /// re-exports without Apps and the digest check refuses it.
@@ -632,7 +632,7 @@ impl WorkflowPublicationDefinition {
     }
 
     /// The inputs digest recorded for the release with this package digest;
-    /// none for a release exported before protocol 369 or pruned since.
+    /// none for a release exported before protocol 378 or pruned since.
     pub fn release_inputs_digest(&self, package_digest: &str) -> Option<&str> {
         self.release_inputs
             .iter()
@@ -641,7 +641,7 @@ impl WorkflowPublicationDefinition {
     }
 
     /// The App plan of the release with this package digest. A release
-    /// exported before protocol 368 uses the publication's single plan of
+    /// exported before protocol 377 uses the publication's single plan of
     /// then (the bind's digest check rejects any other); a release whose plan
     /// was pruned has none.
     pub fn release_app_plan(&self, package_digest: &str) -> Option<&Value> {
@@ -852,10 +852,10 @@ mod release_app_plan_tests {
     }
 
     #[test]
-    fn a_release_exported_before_368_keeps_the_single_plan_after_new_releases_record_theirs() {
+    fn a_release_exported_before_377_keeps_the_single_plan_after_new_releases_record_theirs() {
         let mut publication = publication();
         let pinned = serde_json::json!({"apps": [{"version": "1.0.0"}]});
-        // A publication prepared before protocol 368: one plan, no releases.
+        // A publication prepared before protocol 377: one plan, no releases.
         publication.use_apps(pinned.clone());
         assert_eq!(publication.release_app_plan("sha256:old"), Some(&pinned));
         let newer = serde_json::json!({"apps": [{"version": "1.1.0"}]});
@@ -882,14 +882,14 @@ mod release_app_plan_tests {
         assert_eq!(
             publication.release_app_plan("sha256:old"),
             Some(&pinned),
-            "a pre-368 release keeps its plan"
+            "a pre-377 release keeps its plan"
         );
         assert!(publication
             .release_app_plans
             .iter()
             .any(|release| release.package_digest
                 == format!("sha256:later-{}", MAX_RELEASE_APP_PLANS + 3)));
-        // A publication first prepared at 368 has no such fallback.
+        // A publication first prepared at 377 has no such fallback.
         let mut fresh = self::publication();
         fresh.record_release_app_plan("sha256:new", newer.clone());
         assert_eq!(fresh.release_app_plan("sha256:other"), None);

@@ -103,7 +103,7 @@ fn approve(harness: &LocalRouterTestHarness, deployed: &Deployed, release: &str)
         response => panic!("unexpected response: {response:?}"),
     };
     let asked = request();
-    // Protocol 368: App releases approved before are not asked about again.
+    // Protocol 377: App releases approved before are not asked about again.
     if asked.status == crate::local::DeploymentAppsConsentStatus::Approved {
         return;
     }
@@ -780,7 +780,7 @@ fn a_release_with_an_older_data_schema_than_the_copy_fails_closed() {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// Protocol 368: a release whose App has a newer data schema updates the copy
+/// Protocol 377: a release whose App has a newer data schema updates the copy
 /// in place (the update migrates its data); only an older schema fails closed.
 #[test]
 fn a_release_with_a_newer_data_schema_updates_the_copy() {
@@ -854,7 +854,7 @@ fn binding_another_release_re_applies_its_plan_on_the_same_copy() {
     });
     let first = ensure(&harness, &deployed).unwrap().unwrap();
     // Another release needs its own consent; with the same App releases it
-    // is approved without asking again (protocol 368).
+    // is approved without asking again (protocol 377).
     let refused = ensure_release(&harness, &deployed, "release-2").expect_err("no consent");
     assert!(refused.to_string().contains("approve"), "{refused}");
     approve(&harness, &deployed, "release-2");

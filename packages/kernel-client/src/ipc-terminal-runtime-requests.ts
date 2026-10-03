@@ -295,7 +295,7 @@ export function getTerminalCommandCatalogRequest() {
   return { GetTerminalCommandCatalog: null }
 }
 
-/** Protocol 383: the Chariox passkey for a `requires_passkey` choice, and an
+/** Protocol 392: the Chariox passkey for a `requires_passkey` choice, and an
  * optional window (1 to 15 minutes) in which the owner's critical approvals
  * need no passkey. */
 export type InteractionPasskeyProof = {
@@ -366,7 +366,7 @@ export function requestCredentialEnrollmentInteractionRequest(
   }
 }
 
-export const nativeProviderInteractionMinimumProtocolVersion = 396
+export const nativeProviderInteractionMinimumProtocolVersion = 405
 
 export function requestNativeProviderInteractionRequest(
   sessionId: string,

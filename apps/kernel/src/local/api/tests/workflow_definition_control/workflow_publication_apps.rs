@@ -1,4 +1,4 @@
-//! Protocol 366/368: App-bound workflow publications carry each release's App plan.
+//! Protocol 366/377: App-bound workflow publications carry each release's App plan.
 use super::*;
 use crate::local::{
     ConfigureAppAutomationRequest, GetWorkflowPublicationRequest, GrantAgentExtensionRequest,
@@ -174,7 +174,7 @@ fn an_app_granted_to_a_workflow_agent_is_packaged_per_release() {
     let contract = package_json_file(&files, "deployment-contract.json");
     assert_eq!(contract["capabilities"]["apps"], apps["apps"]);
     assert!(contract_schema().is_valid(&contract));
-    // Protocol 368: the plan is recorded as this release's.
+    // Protocol 377: the plan is recorded as this release's.
     let get = || match harness
         .dispatch(LocalDaemonRequest::GetWorkflowPublication(
             GetWorkflowPublicationRequest {
@@ -220,7 +220,7 @@ fn an_app_granted_to_a_workflow_agent_is_packaged_per_release() {
     };
     assert_eq!(rebound(&digest), Ok(()));
     assert_eq!(rebound(&next), Ok(()));
-    // Each export recorded its release's inputs digest (protocol 369).
+    // Each export recorded its release's inputs digest (protocol 378).
     assert!(get().release_inputs_digest(&digest).is_some());
     assert_ne!(
         get().release_inputs_digest(&digest),
@@ -580,7 +580,7 @@ fn only_a_successful_export_records_and_persists_the_app_plan() {
 }
 
 /// Protocol 367: one prompt asks the owner to deploy with the release's Apps;
-/// since 368 the same App releases are not asked about again.
+/// since 377 the same App releases are not asked about again.
 #[test]
 fn preparing_deployment_apps_asks_once_and_records_the_answer() {
     use crate::local::{DeploymentAppsConsent, DeploymentAppsConsentStatus};
@@ -685,7 +685,7 @@ fn preparing_deployment_apps_asks_once_and_records_the_answer() {
     answer(&approved.interaction_id, "approve");
     assert_eq!(settled("consent-2"), DeploymentAppsConsentStatus::Approved);
 
-    // Protocol 368: the same App releases for this deployment are approved
+    // Protocol 377: the same App releases for this deployment are approved
     // without asking again.
     assert_eq!(
         consent("consent-3").status,

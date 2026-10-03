@@ -2,7 +2,7 @@
 //! offer is shown to its owner as a trusted kernel prompt. The owner answers
 //! from a terminal with `GrantAppFile` (the chosen files' bytes) or
 //! `SaveAppFileExport` (taking the offered copy), or declines; App code, an
-//! App view or an agent cannot answer. Protocol 385: the owner revokes
+//! App view or an agent cannot answer. Protocol 394: the owner revokes
 //! requests and grants the App has not used (`RevokeAppFileGrants`).
 use super::KernelRuntimeState;
 use crate::durable_state::app_file_exports::{FileExport, FileExportCommand, FileExportReply};

@@ -374,7 +374,7 @@ impl DurableKernelStateStore {
             .optional())
     }
 
-    /// Protocol 368: whether the owner already approved deploying this
+    /// Protocol 377: whether the owner already approved deploying this
     /// deployment with exactly these App releases (for any of its releases).
     pub(crate) fn deployment_apps_approved_before(
         &self,

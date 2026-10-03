@@ -30,7 +30,7 @@ pub enum LocalDaemonResponse {
     DeploymentAppsConsent { consent: DeploymentAppsConsent, },
     AppFileGranted { operation_id: String, files: u32, },
     AppFileExport { operation_id: String, name: String, contents_base64: String, },
-    /// Protocol 385: file requests ended (`requests`) and granted files the
+    /// Protocol 394: file requests ended (`requests`) and granted files the
     /// App had not imported (`files`).
     AppFileGrantsRevoked { installation_id: String, requests: u32, files: u32, },
     AppHostActionAccepted { operation_id: String, action: AppHostAction, },

@@ -53,7 +53,7 @@ export type AppPackageUploadSummary = {
 
 export type AppInstallOperationSummary = {
   request_id: string
-  /** Protocol 372: `queued` is approved and waiting to start, usually for a free App worker slot. */
+  /** Protocol 381: `queued` is approved and waiting to start, usually for a free App worker slot. */
   phase: "preparing" | "awaiting_approval" | "queued" | "starting" | "committed" | "cancelled" | "failed"
   installation_id: string | null
   /** Opaque decimal generation. Present only after verified staging. */
@@ -66,7 +66,7 @@ export type AppInstallOperationSummary = {
 /** Protocol 345 worker control. `dormant` workers start on their next use. */
 export type AppWorkerSummary = {
   installation_id: string
-  /** Protocol 398: quarantine requires an explicit start. */
+  /** Protocol 407: quarantine requires an explicit start. */
   phase: "not_started" | "starting" | "running" | "dormant" | "stopped" | "failed" | "quarantined"
   /** False after a user stop; on-demand use does not restart it. */
   enabled: boolean
@@ -132,7 +132,7 @@ export type DeploymentAppsPlan = Omit<WorkflowPublicationApps, "apps"> & {
 
 /** Protocol 367: `DeploymentAppsPreview` — the App plan a new release would
  * package (the owner's current App set); `plan` is null when the workflow uses
- * no App and `pinned` says a release was prepared. Protocol 368 adds
+ * no App and `pinned` says a release was prepared. Protocol 377 adds
  * `release_plan`, the plan of the release asked for by package digest. */
 export type DeploymentAppsPreview = {
   publication_id: string
@@ -141,13 +141,13 @@ export type DeploymentAppsPreview = {
   release_plan?: DeploymentAppsPlan | null
 }
 
-/** Protocol 400: the exact payload released only to the accepting terminal. */
+/** Protocol 409: the exact payload released only to the accepting terminal. */
 export type AppHostAction =
   | { kind: "clipboard_write"; text: string }
   | { kind: "open_link"; url: string }
 
 export type AppHostActionAccepted = { operation_id: string; action: AppHostAction }
-/** Protocol 401: owner-scoped restore result. Authority is never restored. */
+/** Protocol 410: owner-scoped restore result. Authority is never restored. */
 export interface AppDataSnapshotRestored {
   installation_id: string
   generation: string

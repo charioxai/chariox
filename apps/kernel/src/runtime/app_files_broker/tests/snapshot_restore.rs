@@ -1,4 +1,4 @@
-//! Focused protocol-401 ownership and crash drill using two private SQLite
+//! Focused protocol-410 ownership and crash drill using two private SQLite
 //! kernels and actual fixed-libc workers. It needs no host enrollment/service.
 use super::*;
 use crate::{

@@ -131,8 +131,8 @@ export function getAppSetRequest() {
   return { GetAppSet: {} }
 }
 
-/** Protocol 367/368: the Apps a new release of a workflow publication would deploy
- * with (the owner's current App set); with `packageDigest` (368) also the Apps
+/** Protocol 367/377: the Apps a new release of a workflow publication would deploy
+ * with (the owner's current App set); with `packageDigest` (377) also the Apps
  * that release was exported with. */
 export function previewDeploymentAppsRequest(sessionId: string, publicationRef: string, packageDigest?: string) {
   return { PreviewDeploymentApps: {
@@ -141,7 +141,7 @@ export function previewDeploymentAppsRequest(sessionId: string, publicationRef: 
 }
 
 /** Protocol 367: ask the owner once to deploy a workflow with the Apps of this
- * release's App plan; the same `requestId` polls the answer. Since 368 a
+ * release's App plan; the same `requestId` polls the answer. Since 377 a
  * release with the App releases the owner approved before is approved at once. */
 export function prepareDeploymentAppsRequest(options: {
   sessionId: string; requestId: string; publicationRef: string; deploymentId: string; releaseId: string; packageDigest: string
@@ -185,7 +185,7 @@ export function grantAppFileRequest(sessionId: string, operationId: string, file
 }
 
 /**
- * Protocol 385: the owner ends an installation's file requests and the grants
+ * Protocol 394: the owner ends an installation's file requests and the grants
  * its App has not imported: all of them, or one request's.
  */
 export function revokeAppFileGrantsRequest(installationId: string, operationId?: string) {
@@ -197,13 +197,13 @@ export function saveAppFileExportRequest(sessionId: string, operationId: string)
   return { SaveAppFileExport: { session_id: sessionId, operation_id: operationId } }
 }
 
-/** Protocol 400: take a copy/link offer once, after an explicit human gesture.
+/** Protocol 409: take a copy/link offer once, after an explicit human gesture.
  * Execute the returned payload in the accepting terminal, never in an App view. */
 export function acceptAppHostActionRequest(sessionId: string, operationId: string) {
   return { AcceptAppHostAction: { session_id: sessionId, operation_id: operationId } }
 }
 
-/** Protocol 401: restore one same-installation saved snapshot; leaves the App stopped. */
+/** Protocol 410: restore one same-installation saved snapshot; leaves the App stopped. */
 export function restoreAppDataSnapshotRequest(installationId: string, expectedGeneration: string, snapshotId: string) {
   return { RestoreAppDataSnapshot: { installation_id: installationId,
     expected_generation: expectedGeneration, snapshot_id: snapshotId } }

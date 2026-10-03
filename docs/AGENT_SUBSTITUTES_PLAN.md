@@ -28,7 +28,7 @@ TUI and shell use the same kernel requests:
 
 Shell equivalents omit the leading slash, for example `agent substitute add codex gpt-5.4 --variant medium`.
 
-## Runtime Policy (protocol 388)
+## Runtime Policy (protocol 397)
 
 Every provider failure of a turn reruns it on the next substitute:
 

@@ -244,9 +244,9 @@ impl KernelRuntimeState {
                 (owned.workflow_get_publication(request), None)
             }
             LocalDaemonRequest::ExportWorkflowPublicationPackage(request) => {
-                // Protocol 368: each owner export packages the owner's current
+                // Protocol 377: each owner export packages the owner's current
                 // App plan, recorded as that release's plan once it succeeds,
-                // with the release's inputs digest (369).
+                // with the release's inputs digest (378).
                 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
                 let apps = match self
                     .workflow_publication_apps_for_export(

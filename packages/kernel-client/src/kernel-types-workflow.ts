@@ -719,15 +719,15 @@ export type WorkflowPublicationDefinition = {
   creation_operation_key?: string | null
   creation_request_digest?: string | null
   runtime_materialization?: { key: string; agent_id_map: Record<string, string> }
-  /** The App plan of the owner's latest deployment export (368: per release). */
+  /** The App plan of the owner's latest deployment export (377: per release). */
   apps?: WorkflowPublicationApps
-  /** Protocol 368: each exported release's App plan by package digest, newest last. */
+  /** Protocol 377: each exported release's App plan by package digest, newest last. */
   release_app_plans?: { package_digest: string; plan: WorkflowPublicationApps }[]
-  /** A plan a publication pinned before 368, kept for its releases of then. */
+  /** A plan a publication pinned before 377, kept for its releases of then. */
   pre_release_app_plan?: WorkflowPublicationApps
   /** Releases whose plans were pruned; they have no App plan. */
   pruned_release_digests?: string[]
-  /** Protocol 369: each exported release's inputs digest by package digest, newest last. */
+  /** Protocol 378: each exported release's inputs digest by package digest, newest last. */
   release_inputs?: { package_digest: string; inputs_digest: string }[]
   status?: string | null
   open_url?: string | null

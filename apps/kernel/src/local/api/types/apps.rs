@@ -68,7 +68,7 @@ pub struct AppInstallOperationRequest {
 pub enum AppInstallOperationPhase {
     Preparing,
     AwaitingApproval,
-    /// Protocol 372: approved and waiting to start, usually for a free App
+    /// Protocol 381: approved and waiting to start, usually for a free App
     /// worker slot (at most four Apps run at once).
     Queued,
     Starting,
@@ -413,7 +413,7 @@ pub struct GrantAppFileRequest {
     pub files: Vec<AppFileContents>,
 }
 
-/// Protocol 385: the owner ends an installation's file requests and the
+/// Protocol 394: the owner ends an installation's file requests and the
 /// grants its App has not imported: all of them, or one request's
 /// (`operation_id`). The App reads them as `expired` and can no longer import
 /// them; files it already imported stay in its data.
@@ -465,7 +465,7 @@ pub struct OpenAppViewRequest {
     pub installation_id: String,
 }
 
-/// Protocol 371: the user's choice for an App's agent panel in this session:
+/// Protocol 380: the user's choice for an App's agent panel in this session:
 /// where it sits and whether it is minimized. It wins over the App's own
 /// placement; omitted fields keep their current value, and `reset` first
 /// drops the choice, handing the panel back to the App.
@@ -518,7 +518,7 @@ pub struct AppSetInstallation {
 pub struct PreviewDeploymentAppsRequest {
     pub session_id: String,
     pub publication_ref: String,
-    /// Protocol 368: also returns this release's recorded App plan.
+    /// Protocol 377: also returns this release's recorded App plan.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package_digest: Option<String>,
 }
@@ -585,7 +585,7 @@ pub struct AppAutomationSummary {
     pub status: AppAutomationStatus,
 }
 
-/// Protocol 400: a human accepts one pending clipboard/link request. The
+/// Protocol 409: a human accepts one pending clipboard/link request. The
 /// payload comes from the kernel, never from the accepting terminal.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -601,7 +601,7 @@ pub enum AppHostAction {
     OpenLink { url: String },
 }
 
-/// Protocol 401: owner-scoped restore of one saved same-generation snapshot.
+/// Protocol 410: owner-scoped restore of one saved same-generation snapshot.
 /// The worker is drained and left stopped. No authority comes from the copy.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -157,7 +157,7 @@ pub use workspace::*;
 /// App inbox routes and App automations. Connection dependencies
 /// (`EventConnectionDependency`), `attached_trigger_count` and the event
 /// delivery status count App routes and grants; `EventConnectionRemoved` loses
-/// `deactivated_bindings`. Relay peer protocol 58 drops the same flags.
+/// `deactivated_bindings`. Relay peer protocol 69 drops the same flags.
 /// Version 366 pins a workflow publication's App plan
 /// (`WorkflowPublicationDefinition.apps`, `chariox.publication-apps.v1`) at the
 /// first deployment preparation (a client `ExportWorkflowPublicationPackage`):
@@ -175,41 +175,41 @@ pub use workspace::*;
 /// before, is approved by the `kernel_deployment_consent:<interaction>`
 /// policy. Copy installations are tagged with their deployment: absent from
 /// `ListAppInstallations`, marked by `AppSetInstallation.deployment_id`.
-/// Version 368 makes App plans per release: each owner export packages the
+/// Version 377 makes App plans per release: each owner export packages the
 /// owner's current App set and records that plan by package digest
 /// (`WorkflowPublicationDefinition.release_app_plans`; `apps` is the latest).
 /// Bind, recovery and rollback use the release's own plan, and a release with
 /// exactly the App releases the owner approved before for the deployment is
 /// consented without asking again. `PreviewDeploymentApps.package_digest`
 /// also returns that release's plan (`DeploymentAppsPreview.release_plan`).
-/// Version 370 adds the Room browser bar: `SetRoomBrowserBar` and the
+/// Version 379 adds the Room browser bar: `SetRoomBrowserBar` and the
 /// snapshot's `browser_bar_visible` (a change emits `TabsChanged`).
-/// Version 371 lets Apps place their agent panel (`ui.agentPanel`,
+/// Version 380 lets Apps place their agent panel (`ui.agentPanel`,
 /// `chariox.panel` from the page) and the user move or minimize it
 /// (`SetAppViewPanel`); `EnvironmentAppPanel` carries `placement` and
 /// `minimized`, and an App that shows no panel has none.
-/// Version 372 adds the install operation phase `queued`: approved and waiting
+/// Version 381 adds the install operation phase `queued`: approved and waiting
 /// to start (for example for a free App worker slot), which earlier kernels
 /// reported as `awaiting_approval`, then as `starting`.
-/// Version 384 adds `AgentInstance.failed_requests` (`{prompt_id, excerpt,
+/// Version 393 adds `AgentInstance.failed_requests` (`{prompt_id, excerpt,
 /// reason}`, omitted when empty): requests whose turn failed before completing
 /// are dropped. The failed turn gets a "Request not carried out" provider-error
 /// transcript entry, and the agent's next turn delivered to its provider
 /// carries a one-time hidden note not to act on them unless the user asks
 /// again; the field clears once a provider accepted that turn.
-/// Version 385 adds `RevokeAppFileGrants` (`AppFileGrantsRevoked`): the owner
+/// Version 394 adds `RevokeAppFileGrants` (`AppFileGrantsRevoked`): the owner
 /// ends an installation's file requests and the grants its App has not
 /// imported, all of them or one request's.
-/// Version 388 makes agent substitutes per-turn only: a turn that fails with a
+/// Version 397 makes agent substitutes per-turn only: a turn that fails with a
 /// provider error is rerun on the next substitute in order, and the next turn
 /// starts on the agent's configured profile again. `AgentSubstituteAction`
 /// loses `Activate` and `Primary`; `AgentInstance` loses `primary_provider`,
 /// `primary_model`, `primary_effort`, `primary_account_profile`,
 /// `active_substitute_index` and `last_substitution`. An agent persisted on a
 /// substitute loads on its primary profile.
-/// Version 396 binds native approvals to the originating turn and provider run.
-/// Version 398 exposes `AppWorkerPhase::Quarantined` after the supervisor's
+/// Version 405 binds native approvals to the originating turn and provider run.
+/// Version 407 exposes `AppWorkerPhase::Quarantined` after the supervisor's
 /// restart limit is exhausted. Recovery uses the existing explicit start action.
-/// Version 400 adds owner-mediated App clipboard and link acceptance.
-/// Version 401 adds owner-scoped named saved App data snapshot restore.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 401;
+/// Version 409 adds owner-mediated App clipboard and link acceptance.
+/// Version 410 adds owner-scoped named saved App data snapshot restore.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 410;

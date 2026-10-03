@@ -154,7 +154,7 @@ export class BrowserCdpClient {
       await Promise.all(
         writerTargets.map((target) => this.ensureWriterTargetSession(connection, target.targetId)),
       );
-      // A home kernel before protocol 370 sends no flag; a 370 worker behind it
+      // A home kernel before protocol 379 sends no flag; a 379 worker behind it
       // defaults it to hidden (fullscreen), the new default.
       if (typeof browserBarVisible === "boolean") {
         await applyBrowserBar(connection, pages, appTargets, browserBarVisible, this.browserBarApplied);

@@ -353,7 +353,7 @@ impl SessionService {
             .cloned())
     }
 
-    /// Protocols 368 and 369: records an exported release's inputs digest
+    /// Protocols 377 and 378: records an exported release's inputs digest
     /// and, for an App-bound publication, its App plan.
     pub(crate) fn record_workflow_publication_release(
         &mut self,

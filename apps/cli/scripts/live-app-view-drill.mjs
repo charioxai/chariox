@@ -11,10 +11,10 @@
 // Protocol 357: the App Tab's accessibility outline lists every node after its
 // parent. Opening the App again shows the same, single App Tab, navigated to a
 // new document whose title the Room shows once the view calls.
-// Protocol 370: the Room browser bar. An ordinary Tab's window is fullscreen
+// Protocol 379: the Room browser bar. An ordinary Tab's window is fullscreen
 // by default and maximized while the bar is shown; the App view's window stays
 // fullscreen either way.
-// Protocol 371: the App chooses its panel placement (right, bottom or none) and
+// Protocol 380: the App chooses its panel placement (right, bottom or none) and
 // the user's SetAppViewPanel choice wins; `reset` hands it back to the App.
 //
 // Runs against a live kernel with a Room bound to a local Docker slice and an
@@ -85,7 +85,7 @@ try {
     if (marked.panel.agent_id) await focus(marked.panel.agent_id)
   }
 
-  // Protocol 371: the App chooses the placement; the user's choice wins.
+  // Protocol 380: the App chooses the placement; the user's choice wins.
   const scale = viewport.device_scale_factor
   const setPanel = (layout) => evaluate(view.target_id, `window.chariox.panel.set(${JSON.stringify(layout)})`)
   const pageSize = async (width, height) => {

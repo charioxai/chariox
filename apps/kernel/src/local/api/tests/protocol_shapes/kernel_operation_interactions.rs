@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn kernel_operation_interaction_subject_is_versioned_and_uses_the_existing_reply() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 401);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 410);
     let interaction = crate::session::RuntimeInteraction::for_kernel_operation(
         "decision",
         "operation",
@@ -10,7 +10,7 @@ fn kernel_operation_interaction_subject_is_versioned_and_uses_the_existing_reply
         "Reviewed release",
         vec![
             crate::session::RuntimeInteractionChoice::new("deny", "Cancel", "deny", None),
-            // Protocol 383: a critical approval needs the passkey.
+            // Protocol 392: a critical approval needs the passkey.
             crate::session::RuntimeInteractionChoice::new("approve", "Approve", "allow", None)
                 .requiring_passkey(),
         ],

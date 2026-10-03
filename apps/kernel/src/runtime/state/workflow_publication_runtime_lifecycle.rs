@@ -1835,7 +1835,7 @@ pub(super) struct BoundReleaseDigests {
     inputs: String,
 }
 
-/// Protocol 368: a bound release's package, re-exported with that release's
+/// Protocol 377: a bound release's package, re-exported with that release's
 /// own App plan and never the owner's current App set, for its digest check.
 pub(super) fn bound_release_package_digests(
     runtime_state: &KernelRuntimeState,
@@ -1957,7 +1957,7 @@ fn publication_runtime_package_kernel_url(
         .then(|| kernel_url.to_string())
 }
 
-/// Protocol 369: a release with a recorded inputs digest verifies by its
+/// Protocol 378: a release with a recorded inputs digest verifies by its
 /// workflow-owned files, so a kernel upgrade that changes the package's
 /// templates keeps it bound; an older release needs its whole package digest.
 fn validate_bound_release(
@@ -2420,7 +2420,7 @@ mod tests {
             package: package.to_string(),
             inputs: inputs.to_string(),
         };
-        // Before protocol 369 a release verifies by its whole package digest.
+        // Before protocol 378 a release verifies by its whole package digest.
         assert!(validate_bound_release(
             &publication,
             "sha256:release",

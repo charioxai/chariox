@@ -203,7 +203,7 @@ impl KernelRuntimeOwnedState {
         })
     }
 
-    /// Protocols 368 and 369: records what a successful export packaged as
+    /// Protocols 377 and 378: records what a successful export packaged as
     /// the release with its package digest: the inputs digest of its files
     /// and, for an App-bound publication, the App plan.
     pub(super) fn record_workflow_publication_release(

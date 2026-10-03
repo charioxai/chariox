@@ -423,7 +423,7 @@ async fn without_substitutes_the_turn_fails_as_before() {
         .filter(|record| record.kind == crate::terminal::TerminalOutputKind::ProviderError)
         .map(|record| String::from_utf8_lossy(&record.bytes).into_owned())
         .collect::<Vec<_>>();
-    // The failed turn's request is dropped and marked as such (protocol 384).
+    // The failed turn's request is dropped and marked as such (protocol 393).
     let not_carried_out = crate::agent::failed_request_notice(
         &crate::agent::failed_request_reason("dev-stub", SERVER_OVERLOADED),
     );

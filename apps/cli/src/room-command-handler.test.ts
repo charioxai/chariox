@@ -489,7 +489,7 @@ test("/room reports exact protocol minimums for unsupported Room capabilities", 
     { command: "/room takeover", variant: "RequestRoomEnvironmentInputTakeover", capability: "Room input takeover", minimum: 272 },
     { command: "/room release", variant: "ReleaseRoomEnvironmentInput", capability: "Room input release", minimum: 273 },
     { command: "/room cancel action-1", variant: "CancelRoomEnvironmentAction", capability: "Room action cancellation", minimum: 277 },
-    { command: "/room bar show", variant: "SetRoomBrowserBar", capability: "Room browser bar", minimum: 370 },
+    { command: "/room bar show", variant: "SetRoomBrowserBar", capability: "Room browser bar", minimum: 379 },
   ] as const
 
   for (const scenario of scenarios) {

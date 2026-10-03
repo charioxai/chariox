@@ -50,7 +50,7 @@ fn owned_multigroup_launch_keeps_app_authority_empty() {
         public_key: VerifyingKey::from_bytes(&public).unwrap(),
     };
     let bytes = fs::read(root.join("package.cxapp")).unwrap();
-    let policy = VerificationPolicy::new(385, vec![publisher.clone()]);
+    let policy = VerificationPolicy::new(394, vec![publisher.clone()]);
     let package = verify(&bytes, &policy).unwrap();
     let database = root.join("kernel.db");
     let mut db = rusqlite::Connection::open(&database).unwrap();

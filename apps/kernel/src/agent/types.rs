@@ -804,7 +804,7 @@ impl<'de> Deserialize<'de> for AgentInstance {
 }
 
 /// Substitutes run only for the turn whose provider failed, so no agent stays
-/// on one. Before protocol 388 an agent could be persisted on a substitute with
+/// on one. Before protocol 397 an agent could be persisted on a substitute with
 /// its configured profile kept in `primary_*`; load such an agent on that
 /// primary profile and drop the retired fields. Its saved provider sessions
 /// were the substitute's, so the primary starts a new one.

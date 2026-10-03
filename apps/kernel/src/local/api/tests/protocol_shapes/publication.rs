@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 401);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 410);
 
     let create_request = LocalDaemonRequest::CreateWorkflowPublication(
         crate::local::CreateWorkflowPublicationRequest {
@@ -226,13 +226,13 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
             agent_id_map: BTreeMap::from([("agent-1".to_string(), "runtime-agent-1".to_string())]),
         },
     );
-    // Protocol 369: a release's inputs digest, recorded by its package digest.
+    // Protocol 378: a release's inputs digest, recorded by its package digest.
     publication.record_release_inputs(
         &format!("sha256:{}", "b".repeat(64)),
         &format!("sha256:{}", "c".repeat(64)),
     );
-    // Protocol 368: a release's App plan, recorded by its package digest,
-    // on a publication prepared before 368 (its single plan is kept).
+    // Protocol 377: a release's App plan, recorded by its package digest,
+    // on a publication prepared before 377 (its single plan is kept).
     publication.use_apps(serde_json::json!({"schema": "chariox.publication-apps.v1", "apps": []}));
     publication.record_release_app_plan(
         &format!("sha256:{}", "b".repeat(64)),
@@ -693,7 +693,7 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_publication_invocation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 401);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 410);
 
     let request =
         LocalDaemonRequest::InvokeWorkflowEndpoint(crate::local::InvokeWorkflowEndpointRequest {

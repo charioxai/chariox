@@ -1,4 +1,4 @@
-//! Protocol 383: approving a critical action (a kernel decision whose choice is
+//! Protocol 392: approving a critical action (a kernel decision whose choice is
 //! marked `requires_passkey`) needs the Chariox passkey, which is the encrypted
 //! vault's passphrase, or the owner's optional remember window. The vault is
 //! usually unlocked, so its unlock proves no human is present; the passkey is

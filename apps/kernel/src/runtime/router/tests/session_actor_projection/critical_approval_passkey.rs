@@ -1,4 +1,4 @@
-//! Protocol 383: a critical approval needs the Chariox passkey (the vault
+//! Protocol 392: a critical approval needs the Chariox passkey (the vault
 //! passphrase) or the owner's remember window; deny and routine decisions
 //! need neither, and agent or Meta answers stay refused.
 use super::*;

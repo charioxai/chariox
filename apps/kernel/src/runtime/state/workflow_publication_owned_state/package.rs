@@ -586,7 +586,7 @@ const KERNEL_TEMPLATED_PACKAGE_FILES: &[&str] = &[
     "public/styles.css",
 ];
 
-/// Protocol 369: the digest of a release's workflow-owned package files
+/// Protocol 378: the digest of a release's workflow-owned package files
 /// (its publication, snapshot, requirements, bindings, config, Apps, agent
 /// app assets and deployment contract), which a bind or recovery re-export
 /// must reproduce. The contract counts without the fields a kernel upgrade

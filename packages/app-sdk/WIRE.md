@@ -302,7 +302,7 @@ data, like `files.atomic_replace`, and spends it. It replies `{bytesWritten,
 name}`, where `name` is the file name the owner chose. The SDK's
 `host.pickFile` polls the status and resolves with `{grantIds}`.
 The owner can revoke the App's unanswered requests and unimported grants at
-any time (kernel protocol 385, `/app file revoke`): they then read `expired`,
+any time (kernel protocol 394, `/app file revoke`): they then read `expired`,
 and importing them fails `NOT_FOUND`. Files already imported stay.
 `files.export {path}` (same capability) copies one private regular file of at
 most 512 KiB. It follows no links. The kernel offers it to the owner in the
@@ -371,7 +371,7 @@ read a clipboard, or inspect the human's result. Taking an offer is one-shot;
 a failed local action requires a new request. A Room view has
 `chariox.host.writeClipboard(text)` and `chariox.host.openLink(url)` with the
 same pending result; its bridge invokes these same methods, never native
-clipboard/window APIs. Trusted clients require local daemon protocol 400 for
+clipboard/window APIs. Trusted clients require local daemon protocol 409 for
 `AcceptAppHostAction` / `AppHostActionAccepted`.
 
 ## Local kernel lifecycle notifications

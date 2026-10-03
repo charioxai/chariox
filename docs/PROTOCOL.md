@@ -180,7 +180,7 @@ Provider adapter hidden-context channels:
 - Live provider drills validate direct provider hidden-context channels in current supported harnesses. Prompt assembly changes that touch these channels must keep or update `pnpm --filter @chariox/cli run provider-context-injection:drill`.
 - End-to-end prompt assembly changes must also keep `pnpm --filter @chariox/cli run prompt-assembly:drill` passing. That drill edits a temporary `~/.chariox/prompts/runtime/base.md`, runs real Chariox provider turns for Codex/OpenCode/Claude, verifies the model sees the hidden registry token through the provider-native hidden channel on successive turns, and verifies Chariox user-prompt history does not contain the hidden token.
 
-Failed requests (protocol 384):
+Failed requests (protocol 393):
 
 - A turn that fails before completing (provider error, rate or usage limit, crash, or a dispatch the provider did not accept) is not retried: its request is dropped. A user cancel keeps its own semantics and adds nothing.
 - The failed turn gets a provider-error transcript entry, `Request not carried out: <reason>. It was dropped; send it again to retry.`, on every surface; provider rate, usage and billing limits read `usage limit reached`.
@@ -408,7 +408,7 @@ its acknowledgement. Workers settle failed leased turns locally without waiting
 for a home RPC. The existing runtime projection carries the terminal diagnostic
 and correlated, replayable completion. The home settles only the matching active
 turn and releases the failed workflow's workspace claim; queued work is preserved.
-Since protocol 388 a leased turn is not rerun on a substitute.
+Since protocol 397 a leased turn is not rerun on a substitute.
 Rejected profile acknowledgements preserve the queue. Delayed managed projections
 cannot re-establish a cleared worker-run binding after a profile change.
 
@@ -810,9 +810,9 @@ This section defines the logical contract for the Room-owned browser and graphic
 
 Protocol v295 adds stable Actor presentation colors, pointer presence in the Environment snapshot, the `PointersChanged` event, and membership-scoped `UpdateRoomEnvironmentPointer`. The request carries the runtime generation, viewport revision, and either desktop-pixel coordinates or null to clear the pointer. It never accepts an Actor identity. The session lane derives the human Actor from the authenticated caller. Clearing an absent pointer is idempotent and does not register Actor presence. Pointer presence creates no Action, reservation, takeover, or input ownership. The kernel clears stale pointers when an Actor disconnects, the viewport changes, the runtime is invalidated, or the Environment stops or fails. Consecutive pointer changes supersede one another in the bounded replay log while still advancing the event cursor. Motion therefore does not evict unrelated Room events, and clients that observed the prior cursor still receive a later change.
 
-Protocol v370 adds the Room browser bar. Ordinary Tabs' windows (every window without an App view) cover the desktop fullscreen by default, like App views, so the stream shows the same page the canonical viewport lays out for agents. Membership-scoped `SetRoomBrowserBar` (`{session_id, visible}`) shows the bar instead: those windows are maximized with Chromium's tab strip and address bar, and the bottom of a page taller than the remaining area is clipped for viewers (agents still see the canonical viewport). The session lane derives the human Actor; the change is refused while another Actor holds desktop input, like a viewport change. The snapshot carries `browser_bar_visible` (omitted while false), and a change emits `TabsChanged` (no new event kind, so existing clients' replay keeps working and refreshes the snapshot); the kernel passes the flag with every controller `browser.reconcile` (the worker `Reconcile` command's `browser_bar_visible`, omitted while false), so a restarted controller or a new window takes the current state. A worker controller older than the flag leaves windows as they are.
+Protocol v379 adds the Room browser bar. Ordinary Tabs' windows (every window without an App view) cover the desktop fullscreen by default, like App views, so the stream shows the same page the canonical viewport lays out for agents. Membership-scoped `SetRoomBrowserBar` (`{session_id, visible}`) shows the bar instead: those windows are maximized with Chromium's tab strip and address bar, and the bottom of a page taller than the remaining area is clipped for viewers (agents still see the canonical viewport). The session lane derives the human Actor; the change is refused while another Actor holds desktop input, like a viewport change. The snapshot carries `browser_bar_visible` (omitted while false), and a change emits `TabsChanged` (no new event kind, so existing clients' replay keeps working and refreshes the snapshot); the kernel passes the flag with every controller `browser.reconcile` (the worker `Reconcile` command's `browser_bar_visible`, omitted while false), so a restarted controller or a new window takes the current state. A worker controller older than the flag leaves windows as they are.
 
-Protocol v371 lets Apps place their agent panel. A manifest's `ui.agentPanel` (`{placement: right|bottom|none, size?}`, 120–1200 CSS px, `minKernelProtocol` ≥ 371) is the App's default; its page may ask for another through the bridge (`window.chariox.panel.set({placement, size?})` / `get()`, a `chariox.panel` view call the kernel answers with `{placement, minimized}`, never the App). Membership-scoped `SetAppViewPanel` (`{session_id, installation_id, placement?, minimized?, reset?}` → `AppViewPanelSet {installation_id, placement, minimized}`) records the user's choice for that App's views in the session; it wins over the App's, and `reset: true` first drops it, handing the panel back to the App. `EnvironmentAppPanel` carries `placement` (`right`/`bottom`) and `minimized` (a bar at the bottom); an App Tab with no panel has `app` without `panel`. The kernel sends each App page its CSS size beside the panel (`browser.app.open` `page`, `browser.app.layout {target_id, page}`); every change emits `TabsChanged`.
+Protocol v380 lets Apps place their agent panel. A manifest's `ui.agentPanel` (`{placement: right|bottom|none, size?}`, 120–1200 CSS px, `minKernelProtocol` ≥ 380) is the App's default; its page may ask for another through the bridge (`window.chariox.panel.set({placement, size?})` / `get()`, a `chariox.panel` view call the kernel answers with `{placement, minimized}`, never the App). Membership-scoped `SetAppViewPanel` (`{session_id, installation_id, placement?, minimized?, reset?}` → `AppViewPanelSet {installation_id, placement, minimized}`) records the user's choice for that App's views in the session; it wins over the App's, and `reset: true` first drops it, handing the panel back to the App. `EnvironmentAppPanel` carries `placement` (`right`/`bottom`) and `minimized` (a bar at the bottom); an App Tab with no panel has `app` without `panel`. The kernel sends each App page its CSS size beside the panel (`browser.app.open` `page`, `browser.app.layout {target_id, page}`); every change emits `TabsChanged`.
 
 Protocol v296 and relay peer protocol v32 add bounded Room Environment screenshot transfer for TUI clients. `CaptureRoomEnvironmentScreenshot` carries only the Room and attachment. The home kernel accepts local or remote clients, validates Room membership and attachment ownership, resolves the running bound slice, and asks that worker to capture the shared desktop. The worker independently validates the authenticated home kernel key and exact Room/slice provisioner binding. It stores the PNG as an operational-only artifact and returns only its opaque ID, SHA-256, size, media type, and safe display name. Worker paths never cross the relay and screenshot artifacts do not enter the archive outbox. `ReadRoomEnvironmentScreenshotChunk` repeats the caller, attachment, Room, slice, and artifact-scope checks for every offset and limits each response to 131072 bytes. Clients must enforce a total-size limit, require ordered nonempty chunks, verify the final SHA-256 and EOF position, and publish the file atomically on the client host.
 
@@ -1715,12 +1715,12 @@ Workflow trigger and deployment direction:
   turn for `chariox.send_agent_message`. A new home kernel rejects a v56 worker
   at peer binding before provider dispatch rather than failing on a missing
   tool field mid-turn. The local daemon shape and client minimums do not change.
-- relay peer protocol 58 (with local protocol 365) drops the workflow event
+- relay peer protocol 69 (with local protocol 365) drops the workflow event
   capability flags: `RemoteWorkflowTurnContext.event_context_enabled` /
   `event_actions_enabled` and the leased provider run's
-  `workflow_event_actions_enabled`. A v58 peer reads a v57 peer's extra fields
-  and ignores them; a v57 peer cannot decode a v58 provider run, so home and
-  worker must both run v58.
+  `workflow_event_actions_enabled`. A v69 peer reads a v57 peer's extra fields
+  and ignores them; a v57 peer cannot decode a v69 provider run, so home and
+  worker must both run v69.
 - protocol 288 adds `ListAppInstallations`, `GetAppInstallation` and
   `GetAppInstallationJournal` on the same local/relay terminal path. The kernel
   derives ownership from the authenticated caller; requests cannot name an owner
@@ -2128,7 +2128,7 @@ Workflow trigger and deployment direction:
   older package ignores both. Sessions and durable workflow state written by an
   older kernel load with their bindings ignored; peers that still send the
   removed turn-context fields are read with them ignored (relay peer
-  protocol 58).
+  protocol 69).
 - protocol 366: a workflow publication carries its App plan. The first
   successful `ExportWorkflowPublicationPackage` by the publication's owner (the
   deployment preparation) pins `WorkflowPublicationDefinition.apps`
@@ -2180,7 +2180,7 @@ Workflow trigger and deployment direction:
   (the pinned releases' are re-read from the release store and re-verified);
   `plan` is `null` when the workflow uses no App. Only the publication's owner
   may preview.
-- protocol 385: owner-side revoke of App file grants. `RevokeAppFileGrants
+- protocol 394: owner-side revoke of App file grants. `RevokeAppFileGrants
   {installation_id, operation_id?}` ends the caller's open file requests
   (`host.pick_file`, protocol 354) of that installation, or only the one named.
   An unanswered request's prompt closes; granted files the App has not
@@ -2192,7 +2192,7 @@ Workflow trigger and deployment direction:
   files it dropped. An `operation_id` that is not this installation's is
   `NotFound`; one that already ended ends nothing. Terminals: `/app file
   revoke INSTALLATION [OPERATION]`.
-- protocol 388: agent substitutes are per-turn only. When a provider fails a
+- protocol 397: agent substitutes are per-turn only. When a provider fails a
   turn — an error result, a structured error code (Codex `codexErrorInfo`,
   Claude `StopFailure`, OpenCode session errors), the provider process exiting
   mid-turn, or a provider timeout the kernel detects — the kernel reruns that
@@ -2210,7 +2210,7 @@ Workflow trigger and deployment direction:
   `last_substitution`. An agent persisted on a substitute by an older kernel
   loads on its primary profile. Remote (leased) agents are not rerun on a
   substitute.
-- protocol 398 adds `quarantined` to `AppWorker.phase` on the same local/relay
+- protocol 407 adds `quarantined` to `AppWorker.phase` on the same local/relay
   path. A failed worker exhausting the supervisor restart limit (four consecutive
   failures) reports `quarantined`; failures one through three remain `failed`
   during restart backoff. The original `failure` diagnostic is retained, and
@@ -2220,7 +2220,7 @@ Workflow trigger and deployment direction:
   The focused quarantine relay test covers the status boundary, durable
   explicit-start admission reset, and an unaffected neighbouring App; it does
   not dispatch the client-facing start request. Clients requiring this distinction
-  depend on protocol 398; other web/native minimums need not change.
+  depend on protocol 407; other web/native minimums need not change.
 - App-bound local deployments (P1.20, no request or response shape change): a
   bound `local_runtime` deployment of a publication with a pinned App plan
   runs as a pinned independent copy on the owner's kernel, not in the source
@@ -2267,7 +2267,7 @@ Workflow trigger and deployment direction:
   or bound to another deployment; the owner's routes resume. Events an
   automation accepted but could not deliver are recorded in the App's log.
   App data is never copied from the owner's installations.
-- protocol 368: App plans are per release, not pinned per publication. Every
+- protocol 377: App plans are per release, not pinned per publication. Every
   successful `ExportWorkflowPublicationPackage` by the owner (a new deployment
   release) reads the owner's current App set and packages that plan; the
   kernel records it by the export's package digest in
@@ -2277,7 +2277,7 @@ Workflow trigger and deployment direction:
   and a rollback (binding an earlier release) re-export with that release's
   recorded plan, so the package digest still verifies and each release runs
   with the App versions it was exported with; an App-bound release whose plan
-  is not recorded fails the bind (a publication prepared before 368 keeps its
+  is not recorded fails the bind (a publication prepared before 377 keeps its
   single plan for all releases). A copy is updated in place to the release's
   App release; a newer data schema migrates the copy's data as any App update
   does, and a release with an older schema than the copy fails closed.
@@ -2294,16 +2294,16 @@ Workflow trigger and deployment direction:
   is now the package format's protocol (367), not the exporting kernel's: the
   bind and recovery re-export a bound release and compare digests, so a kernel
   protocol bump must not change existing packages. It is raised only when a
-  package needs a newer kernel to run. A release exported before 368 keeps the
-  publication's single pre-368 plan after later releases record their own; a
-  368 release whose plan was pruned (more than 16 releases ago) has none, so
+  package needs a newer kernel to run. A release exported before 377 keeps the
+  publication's single pre-377 plan after later releases record their own; a
+  377 release whose plan was pruned (more than 16 releases ago) has none, so
   its bind fails with "no App plan recorded" and `PrepareDeploymentApps` and
   `PreviewDeploymentApps` refuse it. A publication that had Apps and uses none
   now (its last grant or feeding automation removed) packages and records an
   explicit empty plan (`apps: []`) for its next release, never the previous
   release's; a release whose plan names no App binds and runs from the source,
   with no copy and no Apps consent: `PrepareDeploymentApps` answers it `approved` at once, without a prompt or a stored consent. A release exported before the publication used any App (no plan recorded while later releases record theirs) is treated the same way.
-- protocol 369: every successful owner `ExportWorkflowPublicationPackage`
+- protocol 378: every successful owner `ExportWorkflowPublicationPackage`
   also records the release's inputs digest in
   `WorkflowPublicationDefinition.release_inputs` (`{package_digest,
   inputs_digest}`, newest last, the last 64 and the bound release's kept):
@@ -2319,15 +2319,15 @@ Workflow trigger and deployment direction:
   comparing inputs digests, so a kernel upgrade that changes those templates
   (for example the contract's `minimum_kernel_version`) keeps its deployments
   bound; any change to the workflow's own files still fails the bind. A release
-  without a record (exported before 369, or pruned) is verified by its whole
+  without a record (exported before 378, or pruned) is verified by its whole
   package digest, as before.
-- protocol 372: `AppInstallOperationStatus` phase `queued`. An install or
+- protocol 381: `AppInstallOperationStatus` phase `queued`. An install or
   update the owner (or kernel policy) approved stays `queued` until the kernel
   claims its start, usually while it waits for a free App worker slot (at most
   four Apps run at once); it is `starting` from the claim until it commits.
   Earlier kernels reported this wait as `awaiting_approval`, then as
   `starting`. Clients treat `queued` like any unfinished phase.
-- protocol 383: critical approvals need the Chariox passkey (the encrypted
+- protocol 392: critical approvals need the Chariox passkey (the encrypted
   vault's passphrase). A `RuntimeInteractionChoice` may carry
   `requires_passkey: true` (absent means false); only kernel-operation
   decisions set it (today the approve choice of an App's critical-action
@@ -2552,7 +2552,7 @@ Queue and turn direction:
 
 Detailed capability API baseline, Workspace Live Sync coordination, provider control operations, session/attachment semantics, workflow contracts, security semantics, compatibility rules, versioning strategy, and cross-platform terminal conformance now live in [PROTOCOL_CAPABILITY_SESSION_WORKFLOW.md](PROTOCOL_CAPABILITY_SESSION_WORKFLOW.md). Keep this main protocol document focused on scope, lanes, native provider behavior, envelope shape, current transport baseline, and command/workflow message direction.
 
-### Protocol 396: native approval origin
+### Protocol 405: native approval origin
 
 Native approval producers capture `NativeInteractionOrigin` before an asynchronous handoff.
 `RequestNativeProviderTurnInteraction.origin` is required; runtime interactions forwarded over
@@ -2563,7 +2563,7 @@ worker prompt still matches. The home kernel never substitutes its current promp
 Stale requests resolve as `timed_out` with no choice or reply, without applying timeout
 defaults or publishing an answerable approval. Pending approvals are withdrawn on turn,
 provider, agent, or session termination; all terminal projections receive the removal and
-withdrawal notice. The Claude native approval client requires protocol 396; display-only
+withdrawal notice. The Claude native approval client requires protocol 405; display-only
 clients require no new minimum.
 
 Managed Codex/OpenCode approvals retain the actor's original kernel prompt identity.
@@ -2574,8 +2574,8 @@ than borrowing the currently running turn (including legacy Codex approvals with
 
 `RequestNativeProviderTurnInteraction` and relay `forward_native_turn_interaction`
 replace the previous unbound request variants. Older kernels reject these unknown variants
-instead of silently ignoring origin fields; the native client reports a protocol-396 minimum.
-### Protocol 400: App clipboard copy-out and link opening
+instead of silently ignoring origin fields; the native client reports a protocol-405 minimum.
+### Protocol 409: App clipboard copy-out and link opening
 
 `host.clipboard_write {text}` and `host.open_link {url}` on the App worker SDK
 channel create a pending, owner/installation/generation-bound offer:
@@ -2628,4 +2628,4 @@ open a new tab with `noopener`, and show a visible fallback on failure. They
 must preserve browser user activation across kernel settlement (for example,
 show a fresh Copy/Open button after successful settlement). App iframe/Room gestures only create offers and never
 count as the human's acceptance. Clients exposing acceptance require protocol
-400; unrelated clients keep their existing minimum version.
+409; unrelated clients keep their existing minimum version.
