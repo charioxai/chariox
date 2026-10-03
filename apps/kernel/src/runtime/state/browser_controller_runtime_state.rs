@@ -96,7 +96,10 @@ impl KernelRuntimeState {
                 EnvironmentComponentHealthState::Unavailable,
                 Some("controller_start_failed"),
             );
-            let _ = self.transition_room_environment(session_id, EnvironmentLifecycle::Failed);
+            let _ = self.transition_room_environment(
+                session_id,
+                super::room_browser_start_failure::lifecycle_after_start_error(&error),
+            );
             return Err(error);
         }
         self.update_room_environment_component_health(
@@ -125,7 +128,10 @@ impl KernelRuntimeState {
                     EnvironmentComponentHealthState::Unavailable,
                     Some("browser_reconcile_failed"),
                 );
-                let _ = self.transition_room_environment(session_id, EnvironmentLifecycle::Failed);
+                let _ = self.transition_room_environment(
+                    session_id,
+                    super::room_browser_start_failure::lifecycle_after_start_error(&error),
+                );
                 Err(error)
             }
         }
