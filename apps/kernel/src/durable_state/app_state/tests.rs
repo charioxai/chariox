@@ -605,6 +605,7 @@ fn cancelled_work_waiting_in_the_writer_queue_never_starts_a_state_change() {
     store
         .writer
         .enqueue(DurableWriterRequest::AppState(Box::new(AppStateRequest {
+            wake_changed: store.app_wake_changed.clone(),
             owner: "alice".into(),
             catalog: Arc::clone(&catalog),
             operation: put(9),

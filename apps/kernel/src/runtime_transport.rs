@@ -665,6 +665,11 @@ where
             }
         }
     });
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    let app_wake_task = {
+        let runtime = router.runtime_state().clone();
+        tokio::spawn(async move { runtime.run_app_wake_scheduler().await })
+    };
     let mut durable_snapshot_task = durable_snapshot_scheduler.map(|scheduler| {
         tokio::spawn(scheduler.run(Duration::from_millis(DURABLE_SNAPSHOT_POLL_INTERVAL_MS)))
     });
@@ -687,6 +692,8 @@ where
             _ = &mut shutdown => {
                 drop(_restart_recovery_task);
                 pump_task.abort();
+                #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+                app_wake_task.abort();
                 if let Some(task) = durable_snapshot_task.take() {
                     task.abort();
                 }

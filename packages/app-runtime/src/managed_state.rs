@@ -11,7 +11,7 @@ pub use changes::{StateChanges, StateCheck, StateWrite};
 use rusqlite::{Connection, Transaction, TransactionBehavior};
 use serde_json::Value;
 pub use wakes::{
-    complete_wake, defer_wake, due_wakes, postpone_wake, DueWake, Wake, WakeChange,
+    complete_wake, defer_wake, due_wakes, next_wake_at_ms, postpone_wake, DueWake, Wake, WakeChange,
     WakeFailureOutcome, MAX_WAKES, MAX_WAKE_CHANGES,
 };
 

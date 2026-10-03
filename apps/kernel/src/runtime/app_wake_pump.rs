@@ -1,4 +1,4 @@
-//! Single-flight, throttled reservation for kernel-owned App wake delivery.
+//! Single-flight, throttled reservation for App inbox and idle maintenance.
 //! Periodic ticks are throttled; newly accepted work requests a pass at once.
 use std::sync::{Arc, Mutex};
 
