@@ -32,6 +32,10 @@ export async function handleWaitingRoomSlashCommand(
       deps.flashFooter("no active prompt", "info")
       clearHandledCommand(deps)
       return true
+    case "approvals":
+      deps.flashFooter("start or join a session to view approvals", "info")
+      clearHandledCommand(deps)
+      return true
     case "attachment":
       deps.flashFooter("attachments require an open session", "error")
       clearHandledCommand(deps)

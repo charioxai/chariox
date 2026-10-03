@@ -122,11 +122,15 @@ test("global dialog keys and duplicate raw bytes cannot reach agent or prompt sh
     requestExit: forbidden, requestPromptStop: forbidden, hasActiveTurnWork: () => true,
   })
   let rawKey = "return"
+  let rawCtrl = false
   const raw = createCliStdinKeyController({
-    parseKeypress: () => key(rawKey), kernelApprovalOwnsInput: h.controller.ownsInput,
+    parseKeypress: () => key(rawKey, { ctrl: rawCtrl }), kernelApprovalOwnsInput: h.controller.ownsInput,
     dialogOverlayOpen: () => false, handleSessionBrowserKey: forbidden,
   } as unknown as CliStdinKeyControllerDeps)
-  assert.equal(global.handleKey(key("f8")), true)
+  rawKey = "g"; rawCtrl = true
+  assert.equal(raw.handleData("\x07"), true) // Raw bytes never reach other shortcut handlers.
+  assert.equal(global.handleKey(key("g", { ctrl: true })), true)
+  rawCtrl = false
   for (const name of ["return", "tab", "1", "e", "c"]) {
     global.handleKey(key(name, { ctrl: true }))
     rawKey = name
@@ -292,4 +296,43 @@ test("no-ID host acceptance is bound to the offer displayed before dismissal", (
   assert.equal(h.controller.lastViewedAppHostOperationId(), undefined)
   h.setSession(session("session-1", [b]))
   assert.equal(h.controller.lastViewedAppHostOperationId(), undefined)
+})
+
+test("Ctrl+G and F8 explicitly open and dismiss approvals without accepting or changing the draft", () => {
+  for (const shortcut of [key("g", { ctrl: true }), key("f8")]) {
+    const h = harness()
+    assert.deepEqual(h.focus, [])
+    assert.equal(h.controller.handleKey(shortcut), true)
+    assert.equal(h.controller.isOpen(), true)
+    assert.equal(h.controller.view().selected, null)
+    assert.deepEqual(h.requests, [])
+    assert.equal(h.controller.handleKey({ ...shortcut, defaultPrevented: false, eventType: "repeat" }), true)
+    assert.equal(h.controller.isOpen(), true)
+    h.controller.handleKey({ ...shortcut, defaultPrevented: false })
+    assert.equal(h.controller.isOpen(), false)
+    assert.deepEqual(h.focus, ["blur", "restore"])
+    assert.deepEqual(h.requests, [])
+  }
+})
+
+test("approval shortcuts ignore modifiers, repeats and releases and empty queues", () => {
+  for (const event of [key("g"), key("g", { ctrl: true, alt: true }), key("g", { ctrl: true, shift: true }), key("t", { ctrl: true })]) {
+    assert.equal(harness().controller.handleKey(event), false)
+  }
+  for (const eventType of ["repeat", "release"]) {
+    const h = harness()
+    h.controller.handleKey(key("g", { ctrl: true, eventType }))
+    assert.equal(h.controller.isOpen(), false)
+  }
+  assert.equal(harness(session("session-1", [])).controller.handleKey(key("g", { ctrl: true })), false)
+})
+
+test("critical approvals anywhere in the queue are visible without stealing focus", () => {
+  const h = harness(session("session-1", [approvalFixture, {
+    ...approvalFixture, id: "critical", level: "critical", requested_at_ms: 2,
+    choices: [{ id: "allow", label: "Approve", reply: "allow", requires_passkey: true }],
+  }]))
+  assert.equal(h.controller.view().criticalCount, 1)
+  assert.equal(h.controller.view().interaction?.id, "approval-1")
+  assert.deepEqual(h.focus, [])
 })
