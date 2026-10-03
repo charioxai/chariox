@@ -322,3 +322,10 @@ the receipt's grant binding (schema 2) covers the machine's identity, not its
 release, so an updated machine starts normally. Cloud authorizes the target
 release and records it once the machine reports it; an update Cloud did not
 authorize leaves Cloud's release record unchanged.
+
+Managed upgrade enrolls App storage through the same root-owned enrollment path
+as installation, publishes the signed App helper/package/unit links, and starts
+the helper before the kernel. Rollback to a pre-Apps release disables the helper
+and removes only these release links. Enrollment and durable App storage remain
+intact; the rollback prints a notice that App storage is disabled until a later
+Apps upgrade. Conflicting host links or enrollment fail rather than being adopted.
