@@ -3254,9 +3254,7 @@ mod tests {
             }
         };
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("No permissions to create a new namespace")
-            || stderr.contains("Operation not permitted")
-        {
+        if bubblewrap_user_namespaces_unavailable(&stderr) {
             eprintln!(
                 "skipped managed home workspace collector bwrap probe: user namespaces are unavailable"
             );
@@ -3648,9 +3646,7 @@ mod tests {
             .output()
             .expect("managed runtime-home bwrap probe should start");
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("No permissions to create a new namespace")
-            || stderr.contains("Operation not permitted")
-        {
+        if bubblewrap_user_namespaces_unavailable(&stderr) {
             eprintln!(
                 "skipped managed {workspace_kind} runtime-home bwrap probe: user namespaces are unavailable"
             );
@@ -4008,9 +4004,7 @@ mod tests {
             }
         };
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("No permissions to create a new namespace")
-            || stderr.contains("Operation not permitted")
-        {
+        if bubblewrap_user_namespaces_unavailable(&stderr) {
             eprintln!("skipped managed bwrap selected-home probe: user namespaces are unavailable");
             let _ = std::fs::remove_dir_all(root);
             return;
@@ -4098,9 +4092,7 @@ mod tests {
             }
         };
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("No permissions to create a new namespace")
-            || stderr.contains("Operation not permitted")
-        {
+        if bubblewrap_user_namespaces_unavailable(&stderr) {
             eprintln!(
                 "skipped managed bwrap missing-anchor probe: user namespaces are unavailable"
             );
@@ -4275,9 +4267,7 @@ mod tests {
             }
         };
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("No permissions to create a new namespace")
-            || stderr.contains("Operation not permitted")
-        {
+        if bubblewrap_user_namespaces_unavailable(&stderr) {
             eprintln!(
                 "skipped managed bwrap runtime-home startup/Openbox probe: user namespaces are unavailable"
             );
@@ -4449,9 +4439,7 @@ mod tests {
             }
         };
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("No permissions to create a new namespace")
-            || stderr.contains("Operation not permitted")
-        {
+        if bubblewrap_user_namespaces_unavailable(&stderr) {
             eprintln!(
                 "skipped managed bwrap trusted-helper probe: user namespaces are unavailable"
             );
@@ -4739,6 +4727,28 @@ printf 'managed account environment probe passed\n'
                 .windows(2)
                 .any(|window| window == ["--unsetenv", MANAGED_PROVIDER_ISOLATION_MARKER_ENV]),
             "the isolation marker must survive the namespace scrub"
+        );
+
+        // MP-01/MP-03: keep the launch assertions above on restricted CI hosts.
+        // Probe namespace support separately so a bad account bind or child
+        // permission failure cannot be mistaken for a host restriction.
+        let namespace_probe = Command::new(BWRAP_PATH)
+            .args(["--unshare-user", "--ro-bind", "/", "/", "--", "/bin/true"])
+            .output()
+            .expect("Bubblewrap namespace capability probe should run");
+        let probe_stderr = String::from_utf8_lossy(&namespace_probe.stderr);
+        if !namespace_probe.status.success()
+            && bubblewrap_user_namespaces_unavailable(&probe_stderr)
+        {
+            eprintln!(
+                "skipped managed account namespace execution: user namespaces are unavailable; launch assertions passed: {}",
+                probe_stderr.trim()
+            );
+            return;
+        }
+        assert!(
+            namespace_probe.status.success(),
+            "Bubblewrap namespace capability probe failed: {probe_stderr}"
         );
 
         let output = command_from_provider_launch(launch)
@@ -5163,9 +5173,7 @@ printf 'managed account environment probe passed\n'
             }
         };
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("No permissions to create a new namespace")
-            || stderr.contains("Operation not permitted")
-        {
+        if bubblewrap_user_namespaces_unavailable(&stderr) {
             eprintln!(
                 "skipped managed bwrap slice-publication probe: user namespaces are unavailable"
             );
@@ -5740,8 +5748,7 @@ printf 'managed account environment probe passed\n'
             .expect("second bwrap sibling probe should finish");
         let namespace_unavailable = |output: &std::process::Output| {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            stderr.contains("No permissions to create a new namespace")
-                || stderr.contains("Operation not permitted")
+            bubblewrap_user_namespaces_unavailable(&stderr)
         };
         if namespace_unavailable(&first) || namespace_unavailable(&second) {
             eprintln!("skipped managed bwrap sibling probe: user namespaces are unavailable");
@@ -6127,6 +6134,26 @@ printf 'managed account environment probe passed\n'
         }
         let status = result.expect("ordinary account utility child should run");
         assert!(status.success(), "provider child environment checks failed");
+    }
+
+    // MP-01/MP-03: Debian/Ubuntu versions differ on the article in this error.
+    fn bubblewrap_user_namespaces_unavailable(stderr: &str) -> bool {
+        (stderr.contains("No permissions to create") && stderr.contains("namespace"))
+            || stderr.contains("Operation not permitted")
+    }
+
+    #[test]
+    fn bubblewrap_namespace_gate_recognizes_ubuntu_and_legacy_diagnostics() {
+        for message in [
+            "bwrap: No permissions to create new namespace, likely because the kernel does not allow non-privileged user namespaces.",
+            "bwrap: No permissions to create a new namespace",
+            "bwrap: Creating new namespace failed: Operation not permitted",
+        ] {
+            assert!(bubblewrap_user_namespaces_unavailable(message));
+        }
+        for message in ["", "bwrap: Can't bind mount account: Permission denied"] {
+            assert!(!bubblewrap_user_namespaces_unavailable(message));
+        }
     }
 
     fn restore_env(name: &str, previous: Option<std::ffi::OsString>) {
