@@ -117,6 +117,8 @@ impl FailingTurn {
                     .then_some(payload.active_prompt)
                     .flatten()
             })
+            // Same-turn retries keep the prompt ID. Match this substitute run
+            // so an earlier attempt cannot satisfy its dispatch admission.
             .find(|admission| {
                 admission.id() == prompt.id()
                     && admission.durable_delivery_phase()
