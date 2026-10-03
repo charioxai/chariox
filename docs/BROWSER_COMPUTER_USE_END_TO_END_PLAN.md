@@ -1263,6 +1263,15 @@ cannot shadow submission. Neither rejection nor script exceptions may return
 secret values or page-provided exception text. Local structural fixtures prove
 these controller cases; they do not establish live third-party authentication.
 
+MP-08/MP-10: `request_popup` accepts a single fixed acknowledgement choice for a
+blocking notice and rejects an empty fixed-choice list. Notices use the existing
+kernel-owned RuntimeInteraction and the same answer, reconnect, and timeout
+paths as choice questions. A notice never acknowledges itself merely because
+only one choice exists; only an explicitly configured timeout default may do so.
+Browser-use credential registrations require `injection.kind=browser`; `basic`
+means HTTP Basic authentication. Reject incompatible new metadata before any
+registry or Vault write, while preserving reads of legacy metadata for repair.
+
 ### Milestone 9: managed-machine deployment
 
 Linear: CHA-31, with CHA-17 through CHA-30 as prerequisites.

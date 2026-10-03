@@ -491,6 +491,7 @@ impl RuntimeSecretService {
         secret: &str,
         overwrite: bool,
     ) -> Result<VaultCredentialUpsertResult, DaemonError> {
+        crate::credential::validate_credential_registration(&credential)?;
         let vault_key = match &credential.source {
             UserCredentialSourceConfig::Vault { key } => key.trim().to_string(),
             UserCredentialSourceConfig::Env { .. } | UserCredentialSourceConfig::File { .. } => {

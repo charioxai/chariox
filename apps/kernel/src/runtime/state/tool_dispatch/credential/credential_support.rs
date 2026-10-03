@@ -96,7 +96,7 @@ pub(super) fn credential_from_runtime_input(
         injection: input.injection,
         metadata: None,
     };
-    crate::config::validate_credentials(std::slice::from_ref(&credential))?;
+    crate::credential::validate_credential_registration(&credential)?;
     Ok(credential)
 }
 

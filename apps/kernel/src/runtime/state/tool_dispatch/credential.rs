@@ -412,10 +412,10 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_request_popup",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                if args.choices.len() < 2 {
+                if args.choices.is_empty() {
                     return Err(DaemonError::LocalTransport {
                         operation: "runtime_tool_request_popup",
-                        message: "popup interactions require at least two choices".to_string(),
+                        message: "popup interactions require at least one choice".to_string(),
                     });
                 }
                 let choices = args
