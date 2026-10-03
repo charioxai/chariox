@@ -174,17 +174,12 @@ impl KernelRuntimeState {
         let mut state = store
             .load(project.id())?
             .ok_or_else(|| environment_failure("Project has no saved environment yet"))?;
-        let roots: BTreeMap<_, _> = project
-            .workspace_ids()
-            .iter()
-            .map(|workspace| {
-                let path = if workspace == session.workspace_id() {
-                    PathBuf::from(session.worktree_id())
-                } else {
-                    PathBuf::from(workspace)
-                };
-                (workspace.clone(), path)
-            })
+        let roots: BTreeMap<_, _> =
+            super::project_environment_workspaces::project_environment_repository_selections(
+                &project, &session,
+            )
+            .into_iter()
+            .map(|repository| (repository.workspace_id, repository.worktree_path))
             .collect();
         let names = roots
             .keys()

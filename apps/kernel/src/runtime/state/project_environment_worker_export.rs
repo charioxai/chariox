@@ -1,10 +1,8 @@
 //! MP-08 / MP-10 / MP-11: The exporting worker refreshes its own manifest and seals its own values.
 use super::project_environment_export::environment_failure;
+use super::project_environment_workspaces::project_environment_repository_selections;
 use super::*;
 use crate::app::RemoteLeaseRuntime;
-use crate::managed_context::development::{
-    DevelopmentRepositoryRole, DevelopmentRepositorySelection,
-};
 use crate::transport::relay_peer::{ProjectEnvironmentExportTarget, RemoteSkillSyncContext};
 impl KernelRuntimeState {
     pub(super) async fn export_remote_project_environment(
@@ -84,20 +82,7 @@ impl KernelRuntimeState {
             .session_store
             .get_session(&bound.backing_session_id)?;
         let project = self.owned.session_store.get_project(session.project_id())?;
-        let repositories: Vec<_> = project
-            .workspace_ids()
-            .iter()
-            .map(|workspace| DevelopmentRepositorySelection {
-                workspace_id: workspace.clone(),
-                worktree_id: Some(workspace.clone()),
-                worktree_path: PathBuf::from(workspace),
-                role: if workspace == session.workspace_id() {
-                    DevelopmentRepositoryRole::Primary
-                } else {
-                    DevelopmentRepositoryRole::Supporting
-                },
-            })
-            .collect();
+        let repositories = project_environment_repository_selections(&project, &session);
         let prepared = self
             .refresh_project_environment_state(
                 project.id(),
