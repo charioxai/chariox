@@ -1472,19 +1472,12 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
         })
         .await
         .is_ok();
-        let mut home_app_lock_available = false;
-        for _ in 0..20 {
-            if let Ok(guard) = app_home.try_lock() {
-                home_app_lock_available = true;
-                drop(guard);
-            }
-            sleep(Duration::from_millis(10)).await;
-        }
+        let home_app_guard = tokio::time::timeout(Duration::from_secs(2), app_home.lock())
+            .await
+            .ok();
+        let home_app_lock_available = home_app_guard.is_some();
         let mut queue_advance_deferred = false;
-        if relay_reply_is_waiting && home_app_lock_available {
-            let mut app = app_home
-                .try_lock()
-                .expect("home app lock should remain available during held worker reply");
+        if let Some(mut app) = home_app_guard.filter(|_| relay_reply_is_waiting) {
             let queue_head = app
                 .prompt_owner_peek_next_queued_prompt(&session_id, &remote_agent_id)
                 .expect("home queue head should load");
@@ -1640,25 +1633,37 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
                 rejection, "no_active_provider_run",
                 "the worker must return its validated terminal rejection code"
             );
-            let mut worker_queue_count = 0;
-            for _ in 0..80 {
-                worker_queue_count = {
+            // MP-08/MP-10: rejection advances home admission synchronously,
+            // but worker delivery runs in another task. Wait on its
+            // session changes instead of racing a two-second polling budget
+            // against provider replacement on a two-core runner.
+            let worker_sessions = app_worker
+                .lock()
+                .await
+                .session_state_projection_store()
+                .clone();
+            let worker_queue_count = tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    let sequence = worker_sessions.change_sequence();
                     let mut worker = app_worker.lock().await;
                     let leased_agent = RemoteLeaseRuntime::new(&mut worker)
                         .leased_agent_snapshot_for_test(&leased_agent_id)
                         .expect("worker leased agent should remain available");
-                    worker
+                    let count = worker
                         .prompt_owner_queued_prompt_count_for_agent(
                             &leased_agent.backing_session_id,
                             &leased_agent.backing_agent_id,
                         )
-                        .expect("worker prompt queue should load")
-                };
-                if worker_queue_count == 1 {
-                    break;
+                        .expect("worker prompt queue should load");
+                    if count != 0 {
+                        break count;
+                    }
+                    drop(worker);
+                    worker_sessions.wait_for_change_after(sequence).await;
                 }
-                sleep(Duration::from_millis(25)).await;
-            }
+            })
+            .await
+            .expect("ordinary worker admission must publish a session change");
             assert_eq!(
                 worker_queue_count, 1,
                 "the rejected steer must be admitted once as an ordinary worker prompt"
