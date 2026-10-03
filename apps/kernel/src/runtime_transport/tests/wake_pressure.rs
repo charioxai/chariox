@@ -26,12 +26,20 @@ async fn call(
     input: Value,
 ) -> Value {
     let lease = control.active_app_lease("alice", &id).unwrap();
+    let name = lease
+        .catalog()
+        .app_catalog()
+        .tools()
+        .find(|spec| spec.local_name == tool)
+        .unwrap()
+        .name
+        .clone();
     let slot = lease.reserve_call(Duration::from_secs(30)).unwrap();
     let admission = store.clone();
     let response = tokio::task::spawn_blocking(move || {
         admission.enqueue_app_tool(
             slot,
-            tool,
+            &name,
             input,
             CallerContext {
                 actor: Actor::Human("alice".into()),
