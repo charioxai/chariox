@@ -90,6 +90,13 @@ impl PeerLimits {
 #[derive(Clone)]
 pub struct BrokerCancellation(watch::Receiver<bool>);
 impl BrokerCancellation {
+    /// Host-owned cancellation signal for cross-crate readiness regression tests.
+    #[cfg(feature = "test-fixtures")]
+    pub fn fixture() -> (watch::Sender<bool>, Self) {
+        let (sender, receiver) = watch::channel(false);
+        (sender, Self(receiver))
+    }
+
     pub fn is_cancelled(&self) -> bool {
         // Losing the actor also withdraws authority to start queued work, even
         // when it could not publish an explicit cancellation before dropping.

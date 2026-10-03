@@ -28,9 +28,9 @@ mod drain;
 mod identity;
 mod residency;
 mod tools;
-struct Scratch(PathBuf);
+pub(super) struct Scratch(PathBuf);
 impl Scratch {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let path = PathBuf::from("/tmp").join(format!(
             "chariox-worker-owner-{:016x}",
             rand::random::<u64>()
@@ -38,7 +38,7 @@ impl Scratch {
         std::fs::create_dir(&path).unwrap();
         Self(path)
     }
-    fn store(&self) -> DurableKernelStateStore {
+    pub(super) fn store(&self) -> DurableKernelStateStore {
         DurableKernelStateStore::open_owned(self.0.join("kernel.sqlite")).unwrap()
     }
 }
@@ -47,7 +47,7 @@ impl Drop for Scratch {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
-fn runtime() -> Runtime {
+pub(super) fn runtime() -> Runtime {
     Builder::new_multi_thread()
         .worker_threads(1)
         .enable_io()
@@ -61,10 +61,12 @@ impl<F: Fn(BrokerRequest) -> BrokerFuture + Send + Sync + 'static> Broker for Ha
         (self.0)(request)
     }
 }
-fn broker(f: impl Fn(BrokerRequest) -> BrokerFuture + Send + Sync + 'static) -> Arc<dyn Broker> {
+pub(super) fn broker(
+    f: impl Fn(BrokerRequest) -> BrokerFuture + Send + Sync + 'static,
+) -> Arc<dyn Broker> {
     Arc::new(Handler(f))
 }
-fn start(
+pub(super) fn start(
     fixture: &NativeFixture,
     mode: Mode,
     runtime: &Runtime,

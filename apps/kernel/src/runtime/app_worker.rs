@@ -30,6 +30,8 @@ pub(crate) enum AppWorkerError {
     Identity,
     #[error("app_worker_busy")]
     Busy,
+    #[error("app_worker_cancelled")]
+    Cancelled,
     #[error("app_worker_deadline")]
     Deadline,
     #[error("app_worker_request_invalid")]

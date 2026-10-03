@@ -213,15 +213,9 @@ pub(super) fn register(
         + migrate_from.map_or(Duration::ZERO, |_| {
             Duration::from_millis(chariox_app_runtime::worker_process::MIGRATION_TIMEOUT_MS)
         });
-    let registered =
-        starting
-            .await_registered_blocking(registration)
-            .map_err(|error| match error {
-                crate::runtime::app_worker::AppWorkerError::Deadline => {
-                    LifecycleError::RegistrationDeadline
-                }
-                _ => LifecycleError::Registration,
-            })?;
+    let registered = starting
+        .await_registered_blocking(registration)
+        .map_err(registration_failure)?;
     if context.control.stopped() {
         return Err(LifecycleError::Stopped);
     }
@@ -486,5 +480,40 @@ fn preparation_failed<'a, E: std::fmt::Debug>(
             }),
         );
         LifecycleError::Preparation
+    }
+}
+
+fn registration_failure(error: crate::runtime::app_worker::AppWorkerError) -> LifecycleError {
+    use crate::runtime::app_worker::AppWorkerError;
+    match error {
+        AppWorkerError::Cancelled => LifecycleError::RegistrationCancelled,
+        AppWorkerError::Deadline => LifecycleError::RegistrationDeadline,
+        _ => LifecycleError::Registration,
+    }
+}
+
+#[cfg(test)]
+mod registration_failure_tests {
+    use super::*;
+    use crate::runtime::app_worker::AppWorkerError;
+
+    #[test]
+    fn cancelled_readiness_retains_its_cause() {
+        assert_eq!(
+            registration_failure(AppWorkerError::Cancelled).to_string(),
+            "app_lifecycle_registration_cancelled"
+        );
+    }
+
+    #[test]
+    fn expired_readiness_retains_its_deadline_cause() {
+        assert_eq!(
+            registration_failure(AppWorkerError::Deadline).to_string(),
+            "app_lifecycle_registration_deadline"
+        );
+        assert_eq!(
+            registration_failure(AppWorkerError::Invalid).to_string(),
+            "app_lifecycle_registration"
+        );
     }
 }
