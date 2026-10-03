@@ -89,6 +89,22 @@ async fn check_cleanup(fixture: &mut LiveWorker, finished: bool) {
     })
     .await
     .expect("leased turn projects a running worker run");
+    let remote: crate::agent::RemoteAgentBinding =
+        serde_json::from_value(spawned["AgentSpawned"]["agent"]["remote_execution"].clone())
+            .unwrap();
+    let worker_run_id = crate::provider::worker_provider_run_id_from_projected_leased_id(
+        &remote.leased_agent_id,
+        run.id(),
+    )
+    .unwrap();
+    let worker_snapshot = fixture
+        .worker
+        .app
+        .lock()
+        .await
+        .providers()
+        .get_run(&worker_run_id)
+        .expect("capture the real worker snapshot before destruction");
     if finished {
         dispatch_json(&fixture.home, json!({"CompletePrompt":{"session_id":room}}))
             .await
@@ -110,26 +126,29 @@ async fn check_cleanup(fixture: &mut LiveWorker, finished: bool) {
         json!({"GetProviderRun":{"provider_run_id":run.id()}}),
     )
     .await;
-    eprintln!(
-        "LEASED_RUN_AFTER_DESTROY {}",
-        json!({
-            "finished_before_destroy":finished, "provider_run_id":run.id(),
-            "focus_error":focus.as_ref().err().map(ToString::to_string),
-            "run_state":read.as_ref().ok().map(|read| &read["ProviderRun"]["provider_run"]["state"])
-        })
-    );
     focus
         .expect("cleanup must not resolve the destroyed leased run in the local provider registry");
     assert_eq!(
         read.unwrap()["ProviderRun"]["provider_run"]["state"],
         "Ended"
     );
-    // Deliver a captured pre-destroy snapshot after the worker acknowledgement.
+    // Replay through the same router entry point as a decrypted relay event.
+    // The destroyed agent must reject it before any routing/profile mutation.
     let late = fixture
         .home
-        .provider_run_projection
-        .update_remote_snapshot(run.clone());
-    assert_eq!(late.state(), crate::provider::ProviderRunState::Ended);
+        .relay_project_remote_runtime_projection(
+            &room,
+            agent,
+            &worker_run_id,
+            Some(worker_snapshot),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await
+        .expect_err("a deleted agent cannot accept a late worker projection");
+    assert!(matches!(late, DaemonError::AgentNotFound { .. }));
     let reread = dispatch_json(
         &fixture.home,
         json!({"GetProviderRun":{"provider_run_id":run.id()}}),

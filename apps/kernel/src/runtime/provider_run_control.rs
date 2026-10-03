@@ -61,7 +61,9 @@ pub(crate) fn projected_provider_run_response(
         return Ok(None);
     };
     ensure_provider_run_visible_to_user(&provider_run, caller_user_id)?;
-    if crate::provider::provider_run_refreshes_selection_on_read(&provider_run) {
+    if provider_run.state() != crate::provider::ProviderRunState::Ended
+        && crate::provider::provider_run_refreshes_selection_on_read(&provider_run)
+    {
         return Ok(None);
     }
     Ok(Some(LocalDaemonResponse::ProviderRun { provider_run }))
