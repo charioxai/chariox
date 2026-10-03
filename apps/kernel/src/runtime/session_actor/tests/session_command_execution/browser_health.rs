@@ -346,7 +346,7 @@ async fn ready_state_read_recovers_pending_import() {
         .durable_state_store
         .begin_browser_import_recovery(
             &environment.environment_id,
-            "ready-import-recovery",
+            "11111111111111111111111111111111",
             "local",
             &room,
         )
