@@ -8,7 +8,7 @@ import type { RuntimeInteraction, RuntimeSession } from "./cli-types.js"
 import { routeRawPastes } from "./raw-paste-routing.js"
 
 const view: KernelApprovalView = {
-  open: false, count: 1, index: 0, selected: null, pending: false, connected: true, error: null, passkey: null,
+  open: false, count: 1, criticalCount: 0, index: 0, selected: null, pending: false, connected: true, error: null, passkey: null,
   interaction: {
     id: "approval-1", kernel_operation_id: "install-1", kind: "permission", level: "warning",
     title: "Install Linear", message: "Allow this App to use the capabilities listed in the installation?",
@@ -28,7 +28,7 @@ test("global approvals render over a zero-agent workspace and preserve the sole 
     surface.render(view, { width: 80, height: 24 })
     await harness.renderOnce()
     let frame = harness.captureCharFrame()
-    assert.match(frame, /Chariox · 1 approval · F8/)
+    assert.match(frame, /Chariox · 1 approval · F8 or Ctrl\+G/)
     assert.doesNotMatch(frame, /Install Linear/)
     surface.render({ ...view, open: true }, { width: 80, height: 24 })
     await harness.renderOnce()
@@ -237,4 +237,85 @@ test("App clipboard and link offers show the payload, explicit typed acceptance 
       assert.doesNotMatch(frame, /› Decline/)
     }
   } finally { harness.renderer.destroy() }
+})
+
+for (const width of [80, 48]) {
+  for (const [name, count, criticalCount] of [["none", 0, 0], ["one", 1, 0], ["several", 3, 0], ["critical", 3, 1]] as const) {
+    test(`prompt approval banner renders ${name} at ${width} columns without covering the draft`, async () => {
+      const h = await createTestRenderer({ width, height: 24, useThread: false })
+      const layout = new BoxRenderable(h.renderer, { width, height: 24, flexDirection: "column" })
+      const response = new BoxRenderable(h.renderer, { flexGrow: 1 })
+      response.add(new TextRenderable(h.renderer, { content: "App workspace · no focus agent" }))
+      const banner = new BoxRenderable(h.renderer, { flexDirection: "column", flexShrink: 0 })
+      const prompt = new TextareaRenderable(h.renderer, { initialValue: "Prompt > draft kept\nsecond draft line", flexShrink: 0 })
+      layout.add(response)
+      layout.add(banner)
+      layout.add(prompt)
+      h.renderer.root.add(layout)
+      let opened = 0
+      const surface = createKernelApprovalRenderer(h.renderer, { show() { opened += 1 }, choose() {}, cycleRemember() {}, submitPasskey() {} })
+      surface.assignBanner(banner)
+      try {
+        prompt.focus()
+        surface.render({ ...view, count, criticalCount }, { width, height: 24 })
+        await h.renderOnce()
+        const frame = h.captureCharFrame()
+        assert.match(frame, /Prompt > draft kept *\n.*second draft line/)
+        assert.equal(prompt.focused, true)
+        assert.equal(opened, 0)
+        const lines = frame.split("\n").map(line => line.trimEnd())
+        const bannerStart = lines.findIndex(line => line.includes("Action needed"))
+        if (!count) {
+          assert.equal(bannerStart, -1)
+          assert.equal(banner.visible, false)
+        } else {
+          assert.match(frame, new RegExp(`${count} approval${count === 1 ? "" : "s"} waiting:`))
+          const bannerEnd = lines.findIndex(line => line.includes("Prompt >"))
+          assert.ok(bannerStart < bannerEnd)
+          const contents = lines.slice(bannerStart, bannerEnd).join("\n").replace(/\s+/g, " ")
+          assert.match(contents, /Open: F8 or Ctrl\+G or \/approvals/)
+          if (criticalCount) assert.match(contents, /Critical — passkey needed.*Open to review and approve with your passkey/)
+          else assert.doesNotMatch(contents, /passkey needed/)
+          await h.mockMouse.click(2, bannerStart, 0)
+          assert.equal(opened, 1)
+        }
+        if (process.env.APPROVAL_EVIDENCE_DIR && width === 80) {
+          const { writeFileSync } = await import("node:fs")
+          writeFileSync(`${process.env.APPROVAL_EVIDENCE_DIR}/after-${name}.txt`, frame)
+        }
+        surface.render({ ...view, count: 0, criticalCount: 0 }, { width, height: 24 })
+        await h.renderOnce()
+        assert.doesNotMatch(h.captureCharFrame(), /Action needed/)
+      } finally { h.renderer.destroy() }
+    })
+  }
+}
+
+test("OpenTUI Ctrl+G terminal bytes open approvals and preserve focused draft", async () => {
+  const h = await createTestRenderer({ width: 80, height: 24, useThread: false })
+  const prompt = new TextareaRenderable(h.renderer, { initialValue: "draft kept" })
+  h.renderer.root.add(prompt)
+  const controller = createKernelApprovalController({
+    getSession: () => ({ id: "session", agents: [], active_interactions: [view.interaction!] }) as unknown as RuntimeSession,
+    connected: () => true, onView() {}, scroll() {},
+    onOpen: () => prompt.blur(), onClose: () => prompt.focus(),
+    respond: async () => { assert.fail("shortcut approved an action") }, applySession() {},
+  })
+  h.renderer.keyInput.on("keypress", controller.handleKey)
+  try {
+    controller.sync()
+    prompt.focus()
+    h.mockInput.pressKey("g", { ctrl: true })
+    assert.equal(controller.isOpen(), true)
+    assert.equal(prompt.focused, false)
+    assert.equal(prompt.plainText, "draft kept")
+    h.mockInput.pressKey("g", { ctrl: true })
+    assert.equal(controller.isOpen(), false)
+    assert.equal(prompt.focused, true)
+    assert.equal(prompt.plainText, "draft kept")
+  } finally {
+    h.renderer.keyInput.off("keypress", controller.handleKey)
+    controller.dispose()
+    h.renderer.destroy()
+  }
 })

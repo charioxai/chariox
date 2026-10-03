@@ -47,6 +47,7 @@ export function createCliKernelApprovalComposition(deps: {
   onCleanup(() => controller.dispose())
   return {
     ...controller,
+    assignBanner(value: BoxRenderable) { surface.assignBanner(value); controller.sync() },
     assignBox(value: BoxRenderable) { surface.assign(value); controller.sync() },
   }
 }

@@ -21,6 +21,7 @@ export type SlashCommandSubmitControllerDeps = {
   formatError?: (error: unknown) => string
   onExit: () => Promise<unknown> | unknown
   onWaiting: () => Promise<unknown> | unknown
+  onApprovals?: () => unknown
   onStop: () => Promise<unknown> | unknown
   handleAttachmentCommand: (raw: string) => Promise<unknown> | unknown
   handleSessionCommand: (command: SlashCommand<"session">) => Promise<boolean> | boolean
@@ -108,7 +109,7 @@ export function createSlashCommandSubmitController(
       if (slashCommand && deps.isAttached()) {
         deps.recordPromptAreaHistoryEntry(deps.getSessionId(), rawPrompt)
       }
-      if (slashCommand && deps.handleSharedShellCommand) {
+      if (slashCommand && slashCommand.kind !== "approvals" && deps.handleSharedShellCommand) {
         try {
           if (await deps.handleSharedShellCommand(rawPrompt)) {
             clearHandledCommandUi(slashCommand)
@@ -120,13 +121,14 @@ export function createSlashCommandSubmitController(
           return slashCommand
         }
       }
-      const clearBeforeHandler = slashCommand?.kind === "exit"
+      const clearBeforeHandler = slashCommand?.kind === "exit" || slashCommand?.kind === "approvals"
       if (clearBeforeHandler) {
         clearHandledCommandUi(slashCommand)
       }
       const handledCommand = await executeSlashCommand(rawPrompt, {
         onExit: deps.onExit,
         onWaiting: deps.onWaiting,
+        onApprovals: () => deps.onApprovals?.(),
         onStop: deps.onStop,
         onAttachment: async (command) => {
           try {

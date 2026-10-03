@@ -912,6 +912,10 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     closeWorkflowNodeInstructionsEditor: workflowActions.closeWorkflowNodeInstructionsEditor,
     focusedAgentInteraction, interactionChoiceStore, renderAgentInteractions, handleHotkeysToggleShortcut,
     handleKernelApprovalKey: kernelApprovals.handleKey,
+    openKernelApprovals: () => {
+      if (kernelApprovals.view().count) kernelApprovals.show()
+      else flashFooter("No pending approvals", "info")
+    },
     kernelApprovalOwnsInput: kernelApprovals.ownsInput,
     dialogOverlayOpen, closeActiveDialogOverlay, activePrompt, handleCommandCenterKey,
     handleQueuedPromptKey: handleQueuedPromptStripKey,
@@ -1023,6 +1027,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       assignFooterSummaryBox={assignFooterSummaryBox}
       assignDialogOverlayBox={assignDialogOverlayBox}
       assignKernelApprovalBox={kernelApprovals.assignBox}
+      assignKernelApprovalBanner={kernelApprovals.assignBanner}
       kernelApprovalOwnsInput={kernelApprovals.ownsInput}
       handlePromptKeyDown={handlePromptKeyDown}
       handlePromptContentChange={handlePromptContentChange}
