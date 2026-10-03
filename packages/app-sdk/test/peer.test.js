@@ -22,12 +22,113 @@ test('pending limit rejects before sending and disconnect releases every request
   const peer = new AppPeer({ transport, generation, limits: { maxPending: 2 } });
   const first = peer.request('state.get', {});
   const second = peer.request('state.get', {});
-  await assert.rejects(peer.request('state.get', {}), { code: 'BUSY' });
+  await assert.rejects(peer.request('state.get', {}), { code: 'APP_BUSY', retryable: true,
+    cause: 'app_pending_capacity_full', retryAfterMs: 500,
+    message: 'app_pending_capacity_full; retry after 500 ms' });
   assert.equal(transport.sent.length, 2);
   const results = Promise.allSettled([first, second]);
   transport.disconnect();
   assert.deepEqual((await results).map((result) => result.reason.code), ['DISCONNECTED', 'DISCONNECTED']);
   assert.equal(transport.closed, true);
+});
+
+test('an 80-call framed backlog completes or returns retryable APP_BUSY with capacity metadata',
+  { timeout: 5000 }, async (t) => {
+    const stream = new TestStream();
+    const transport = streamTransport(stream);
+    const running = deferred();
+    let handled = 0;
+    const worker = new AppPeer({ transport, generation, handleRequest: async () => {
+      handled += 1;
+      await running.promise;
+      return 'complete';
+    } });
+    const callerTransport = fakeTransport();
+    const caller = new AppPeer({ transport: callerTransport, generation });
+    t.after(() => { running.resolve(); caller.close(); worker.close(); });
+    // The kernel's 64 pending slots can arrive together after a blocked worker
+    // resumes. Hold all replies while submitting the full 80-call burst.
+    const settled = Promise.allSettled(Array.from({ length: 80 }, () => caller.request('tools.invoke', {})));
+    assert.equal(callerTransport.sent.length, 64);
+    for (const message of callerTransport.sent) stream.push(encodeFrame(message));
+    await flush();
+    assert.equal(handled, 16, 'the SDK execution bound stays below the pending-call bound');
+    let read = 0;
+    const decoder = new FrameDecoder((message) => {
+      if (message.error) {
+        assert.deepEqual(Object.keys(message.error).sort(), ['code', 'message', 'retryable'], 'no wire fields added');
+      }
+      callerTransport.receive(message);
+    });
+    const drain = () => { while (read < stream.frames.length) decoder.push(stream.frames[read++]); };
+    drain();
+    running.resolve();
+    await flush();
+    drain();
+    const results = await settled;
+    const completed = results.filter((result) => result.status === 'fulfilled');
+    const errors = results.filter((result) => result.status === 'rejected').map((result) => result.reason);
+    assert.equal(completed.length, 16);
+    assert.equal(errors.length, 64);
+    for (const error of errors) {
+      assert.equal(error.code, 'APP_BUSY');
+      assert.equal(error.retryable, true);
+      assert.equal(error.retryAfterMs, 500);
+      assert.match(error.cause, /^app_(pending|handler)_capacity_full$/);
+      assert.equal(error.message, `${error.cause}; retry after 500 ms`);
+    }
+    assert.equal(errors.filter((error) => error.cause === 'app_handler_capacity_full').length, 48);
+    assert.equal(errors.filter((error) => error.cause === 'app_pending_capacity_full').length, 16);
+    assert.equal(stream.destroyed, false);
+    // Refusals ran no handler; both capacities recover, with no automatic retry.
+    assert.equal(callerTransport.sent.length, 64);
+    const next = caller.request('tools.invoke', {});
+    stream.push(encodeFrame(callerTransport.sent.at(-1)));
+    await flush();
+    drain();
+    assert.equal(await next, 'complete');
+    t.diagnostic(JSON.stringify({ calls: results.length, completed: completed.length, APP_BUSY: errors.length,
+      BUSY: 0, timeouts: 0, maxHandlers: 16, maxPending: 64, recovered: true }));
+  });
+
+test('the exact retryable kernel broker capacity refusal becomes SDK APP_BUSY', async () => {
+  const transport = fakeTransport();
+  const peer = new AppPeer({ transport, generation });
+  const pending = peer.request('state.get', {});
+  transport.receive(envelope({ kind: 'response', id: transport.sent[0].id,
+    error: { code: 'BUSY', message: 'Kernel App broker capacity is full', retryable: true } }));
+  await assert.rejects(pending, { code: 'APP_BUSY', retryable: true,
+    cause: 'app_broker_capacity_full', retryAfterMs: 500,
+    message: 'app_broker_capacity_full; retry after 500 ms' });
+  assert.equal(transport.sent.length, 1, 'no automatic retry');
+  const next = peer.request('state.get', {});
+  transport.receive(response(transport.sent[1].id, 'recovered'));
+  assert.equal(await next, 'recovered');
+  peer.close();
+});
+
+test('arbitrary or nonretryable remote busy errors keep their code/message without capacity metadata', async () => {
+  const transport = fakeTransport();
+  const peer = new AppPeer({ transport, generation });
+  for (const remote of [
+    { code: 'APP_BUSY', message: 'custom App refusal', retryable: true },
+    { code: 'BUSY', message: 'An App lifecycle handler is still running', retryable: true },
+    { code: 'BUSY', message: 'Kernel App broker capacity is full', retryable: false },
+    { code: 'BUSY', message: 'Kernel App broker capacity is full' },
+    { code: 'APP_BUSY', message: 'app_handler_capacity_full; retry after 500 ms', retryable: false },
+  ]) {
+    const pending = peer.request('state.get', {});
+    transport.receive(envelope({ kind: 'response', id: transport.sent.at(-1).id, error: remote }));
+    await assert.rejects(pending, (error) => {
+      assert.equal(error.code, remote.code);
+      assert.equal(error.message, remote.message);
+      assert.equal(error.retryable, remote.retryable === true);
+      assert.equal(error.cause, undefined);
+      assert.equal(error.retryAfterMs, undefined);
+      return true;
+    });
+  }
+  peer.close();
 });
 
 test('abort sends cancellation, frees outgoing capacity and ignores a late success', async () => {
@@ -70,7 +171,8 @@ test('a handler ignoring cancellation retains capacity; its late result cannot s
   assert.equal(context.signal.aborted, true);
   assert.equal(context.agent_id, 'agent-1');
   transport.receive(request('host-2', 'tools.invoke'));
-  assert.equal(transport.sent.at(-1).error.code, 'BUSY');
+  assert.deepEqual(transport.sent.at(-1).error, { code: 'APP_BUSY', retryable: true,
+    message: 'app_handler_capacity_full; retry after 500 ms' });
   running.resolve('late effect');
   await flush();
   assert.equal(transport.sent.filter((message) => message.id === 'host-1').length, 1);
