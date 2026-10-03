@@ -89,7 +89,7 @@ test("actual OpenTUI keyboard delivery isolates approval choices from the focuse
     connected: () => true, onView() {}, scroll() {},
     onOpen: () => prompt.blur(), onClose: () => prompt.focus(),
     respond: async (_session, _interaction, choice) => { requests.push(choice); return new Promise(() => {}) },
-    applySession() {},
+    applySession() {}, showPasskeyPrompt: () => false,
   })
   harness.renderer.keyInput.on("keypress", controller.handleKey)
   try {
@@ -226,35 +226,6 @@ for (const [platform, shortcutLabel] of shortcutCases) {
     }
   }
 }
-
-test("OpenTUI Ctrl+G terminal bytes open approvals and preserve focused draft", async () => {
-  const h = await createTestRenderer({ width: 80, height: 24, useThread: false })
-  const prompt = new TextareaRenderable(h.renderer, { initialValue: "draft kept" })
-  h.renderer.root.add(prompt)
-  const controller = createKernelApprovalController({
-    getSession: () => ({ id: "session", agents: [], active_interactions: [view.interaction!] }) as unknown as RuntimeSession,
-    connected: () => true, onView() {}, scroll() {},
-    onOpen: () => prompt.blur(), onClose: () => prompt.focus(),
-    respond: async () => { assert.fail("shortcut approved an action") }, applySession() {},
-  })
-  h.renderer.keyInput.on("keypress", controller.handleKey)
-  try {
-    controller.sync()
-    prompt.focus()
-    h.mockInput.pressKey("g", { ctrl: true })
-    assert.equal(controller.isOpen(), true)
-    assert.equal(prompt.focused, false)
-    assert.equal(prompt.plainText, "draft kept")
-    h.mockInput.pressKey("g", { ctrl: true })
-    assert.equal(controller.isOpen(), false)
-    assert.equal(prompt.focused, true)
-    assert.equal(prompt.plainText, "draft kept")
-  } finally {
-    h.renderer.keyInput.off("keypress", controller.handleKey)
-    controller.dispose()
-    h.renderer.destroy()
-  }
-})
 
 test("OpenTUI Ctrl+G terminal bytes open approvals and preserve focused draft", async () => {
   const h = await createTestRenderer({ width: 80, height: 24, useThread: false })
