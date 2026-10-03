@@ -27,6 +27,10 @@ struct RemoteQueueFixture {
 
 impl RemoteQueueFixture {
     async fn start(name: &str) -> Self {
+        Self::start_with_relay_timeout(name, 60_000).await
+    }
+
+    async fn start_with_relay_timeout(name: &str, relay_request_timeout_ms: u64) -> Self {
         let server = RelayServer::new(RelayConfig {
             host: "127.0.0.1".to_string(),
             port: 0,
@@ -56,6 +60,7 @@ impl RemoteQueueFixture {
         config_worker.relay_url = Some(relay_url.clone());
         config_worker.relay_token = Some("secret".to_string());
         config_worker.relay_heartbeat_ms = 50;
+        config_worker.relay_request_timeout_ms = relay_request_timeout_ms;
         config_worker.accept_remote_leases = true;
         let app_worker = Arc::new(Mutex::new(
             DaemonApp::bootstrap(config_worker.clone()).expect("worker daemon should bootstrap"),

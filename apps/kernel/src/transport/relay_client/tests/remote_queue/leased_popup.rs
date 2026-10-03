@@ -104,19 +104,30 @@ fn call_popup(
 }
 
 #[test]
+#[ignore = "wall-clock proof of two 65s holds; run explicitly with --ignored"]
 fn leased_popup_answers_once_after_sixty_seconds() {
     crate::test_support::isolated_env_test!();
-    run_async_with_large_test_stack("leased-popup-long", || async {
+    assert_answers_after_relay_default("leased-popup-long", 60_000, 65);
+}
+
+#[test]
+fn leased_popup_answers_once_after_relay_deadline() {
+    crate::test_support::isolated_env_test!();
+    assert_answers_after_relay_default("leased-popup-fast", 2_000, 5);
+}
+
+fn assert_answers_after_relay_default(name: &'static str, relay_timeout_ms: u64, hold_sec: u64) {
+    run_async_with_large_test_stack(name, move || async move {
         let _relay_guard = relay_client_test_guard().await;
         let _home = RelayTestHome::new();
-        let fixture = RemoteQueueFixture::start("leased-popup-long").await;
+        let fixture = RemoteQueueFixture::start_with_relay_timeout(name, relay_timeout_ms).await;
         let (router, token) = fixture.popup_caller().await;
-        // Both a declared 300s card and an indefinite card outlive the relay's 60s default.
+        // Both a declared 300s card and an indefinite card outlive the relay default.
         for deadline in [Some(300), None] {
             let call = call_popup(router.clone(), token.clone(), deadline, None);
             let popup = fixture.popup().await;
             let held = std::time::Instant::now();
-            sleep(Duration::from_secs(65)).await;
+            sleep(Duration::from_secs(hold_sec)).await;
             assert!(
                 !call.is_finished(),
                 "relay must still wait for the pending home card"

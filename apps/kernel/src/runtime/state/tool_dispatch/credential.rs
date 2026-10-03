@@ -521,7 +521,7 @@ impl KernelRuntimeState {
                     // for that outcome to return; an indefinite card has no relay cap.
                     let response_timeout = timeout_sec.map(|seconds| {
                         std::time::Duration::from_secs(seconds)
-                            .saturating_add(std::time::Duration::from_secs(15))
+                            .saturating_add(crate::runtime::native_interaction_bridge::REMOTE_NATIVE_INTERACTION_RESPONSE_BUFFER)
                     });
                     let response = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_optional_timeout(
                         &config,

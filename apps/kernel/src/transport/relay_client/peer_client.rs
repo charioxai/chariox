@@ -465,7 +465,7 @@ pub async fn send_peer_request_via_temporary_connection_with_timeout(
 }
 
 /// A human interaction without a deadline waits until its home card settles.
-/// Connection establishment still uses the configured transport timeout.
+/// Connection establishment is capped by the configured transport timeout.
 pub(crate) async fn send_peer_request_via_temporary_connection_with_optional_timeout(
     config: &crate::config::DaemonConfig,
     target: ClientTarget,
@@ -563,8 +563,10 @@ async fn send_peer_request_via_temporary_connection_with_timeout_inner(
     )?;
     #[cfg(test)]
     test_trace.record("registered_peer_connect_started", None);
-    let connect_timeout =
-        response_timeout.unwrap_or_else(|| Duration::from_millis(config.relay_request_timeout_ms));
+    let transport_timeout = Duration::from_millis(config.relay_request_timeout_ms);
+    let connect_timeout = response_timeout
+        .map(|deadline| deadline.min(transport_timeout))
+        .unwrap_or(transport_timeout);
     let (mut socket, _) = timeout(connect_timeout, connect_async(&relay_url))
         .await
         .map_err(|_| DaemonError::LocalTransport {
