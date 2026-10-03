@@ -31,11 +31,12 @@ async function harness() {
   const runtime = join(base, "runtime")
   const state = join(base, "state")
   for (const dir of [bin, pkg, runtime, state, join(root, "sys/fs/cgroup"), join(root, "sys/module/apparmor/parameters"),
-    join(root, "sys/kernel/security/apparmor"), join(root, "var/lib/systemd/linger")]) {
+    join(root, "sys/kernel/security/apparmor"), join(root, "proc/sys/kernel"), join(root, "var/lib/systemd/linger")]) {
     await mkdir(dir, { recursive: true })
   }
   await writeFile(join(root, "sys/fs/cgroup/cgroup.controllers"), "cpu memory pids\n")
   await writeFile(join(root, "sys/module/apparmor/parameters/enabled"), "Y\n")
+  await writeFile(join(root, "proc/sys/kernel/apparmor_restrict_unprivileged_userns"), "1\n")
   await writeFile(join(root, "sys/kernel/security/apparmor/profiles"), "")
   const passwd = Object.entries(users).map(([name, uid]) => `${name}:x:${uid}:${uid}::/home/${name}:/bin/bash`)
   await script(join(bin, "id"), `#!/bin/sh
@@ -107,7 +108,7 @@ printf '{"revision":1,"inventorySha256":"%s"}\\n' "$7" > "$CHARIOX_LOCAL_INSTALL
       "--runtime-key", KEY, "--runtime-digest", digest, ...extra], env)
   const log = async (name) => (existsSync(join(state, name)) ? readFile(join(state, name), "utf8") : "")
   const reset = (name) => rm(join(state, name), { force: true })
-  return { base, root, pkg, runtime, digest, run, install, log, reset }
+  return { base, root, bin, pkg, runtime, digest, run, install, log, reset }
 }
 
 const p = (h, path) => join(h.root, path)
@@ -259,4 +260,26 @@ test("local Linux kernel unit owns the delegated subtree the root install enroll
   assert.match(start, /chariox-kernel\.service\/supervisor \]\]/)
   assert.ok(start.indexOf('mkdir "$unit/apps"') < start.indexOf('exec "$1"'))
   assert.match(root, /user@\$uid\.service\/app\.slice\/chariox-kernel\.service\/apps:\$home\/\.chariox\/state\/kernel\.db/)
+})
+
+
+test("AppArmor without unprivileged userns restriction does not load an ABI 4 exception", { skip: !linux }, async () => {
+  const h = await harness()
+  try {
+    await rm(p(h, "proc/sys/kernel/apparmor_restrict_unprivileged_userns"))
+    // Bookworm's AppArmor 3 parser cannot compile the ABI 4 userns profile.
+    await script(join(h.bin, "apparmor_parser"), `#!/bin/sh
+ echo "$*" >> "$HARNESS_STATE/apparmor"
+ echo "Could not open abi/4.0" >&2
+ exit 1
+`)
+    const result = h.install(["alice"])
+    assert.equal(result.status, 0, result.out)
+    assert.equal(await h.log("apparmor"), "")
+    assert.equal(existsSync(p(h, "etc/apparmor.d/chariox-app-bwrap")), false)
+    assert.match(await h.log("loginctl"), /^enable-linger alice$/m)
+    assert.match(await h.log("systemctl"), /^start chariox-app-storage\.service$/m)
+  } finally {
+    await rm(h.base, { recursive: true, force: true })
+  }
 })
