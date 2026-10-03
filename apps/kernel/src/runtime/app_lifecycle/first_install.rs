@@ -31,9 +31,10 @@ impl AppLifecycleService {
                 if result == Err(LifecycleError::Notification) {
                     // A failed old-worker preparation refuses this precommit
                     // operation. Nothing has fenced or snapshotted App data.
-                    if let Err(error) = self.0.store.cancel_first_app_install(
+                    if let Err(error) = self.0.store.fail_app_install(
                         owner,
                         request_id,
+                        "app_lifecycle_notification",
                         AppOperationBudget::from_supervisor(|| false),
                     ) {
                         if error == InstallOperationError::CommitUnknown {

@@ -12,6 +12,12 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..")
+// The fixture must not inherit provider homes, credentials or live-kernel settings.
+const childBaseEnv = Object.fromEntries(
+  ["PATH", "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "RUST_LOG", "RUST_BACKTRACE", "RUST_MIN_STACK"]
+    .filter((key) => process.env[key] !== undefined)
+    .map((key) => [key, process.env[key]]),
+)
 const args = process.argv.slice(2)
 const argValue = (name) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : undefined }
 const argNumber = (name, fallback) => Number(argValue(name) ?? fallback)
@@ -104,8 +110,10 @@ function startKernel(name, port, base, relayToken, acceptLeases) {
     detached: process.platform !== "win32",
     stdio: "ignore",
     env: {
-      ...process.env,
+      ...childBaseEnv,
       HOME: home,
+      // Keep macOS Keychain lookups scoped to this disposable fixture.
+      CLAUDE_CONFIG_DIR: path.join(home, ".claude"),
       CHARIOX_HOME: path.join(home, "home"),
       CHARIOX_LOG_DIR: path.join(home, "logs"),
       CHARIOX_DAEMON_ID: `soak-${name}-${process.pid}`,
@@ -162,12 +170,12 @@ try {
   if (heaptrackWorker && !evidenceDir) throw new Error("--heaptrack-worker requires --evidence-dir")
   if (evidenceDir) mkdirSync(evidenceDir, { recursive: true })
   mkdirSync(path.join(root, "workspace"), { recursive: true })
-  spawnSync("git", ["init", "-q"], { cwd: path.join(root, "workspace") })
+  spawnSync("git", ["init", "-q"], { cwd: path.join(root, "workspace"), env: { ...childBaseEnv, HOME: root, XDG_CONFIG_HOME: path.join(root, "git-config") } })
   writeFileSync(path.join(root, "claude"), fakeClaude)
   chmodSync(path.join(root, "claude"), 0o700)
   const base = await freePort()
   const relayToken = randomUUID()
-  children.push(spawn(path.join(targetDir, "chariox-relay"), [], { detached: process.platform !== "win32", stdio: "ignore", env: { ...process.env, CHARIOX_RELAY_HOST: "127.0.0.1", CHARIOX_RELAY_PORT: String(base), CHARIOX_RELAY_TOKEN: relayToken } }))
+  children.push(spawn(path.join(targetDir, "chariox-relay"), [], { detached: process.platform !== "win32", stdio: "ignore", env: { ...childBaseEnv, HOME: path.join(root, "relay"), CHARIOX_HOME: path.join(root, "relay", "home"), CHARIOX_RELAY_HOST: "127.0.0.1", CHARIOX_RELAY_PORT: String(base), CHARIOX_RELAY_TOKEN: relayToken } }))
   await sleep(1_000)
   startKernel("worker", base + 10, base, relayToken, true)
   const home = startKernel("home", base + 20, base, relayToken, false)

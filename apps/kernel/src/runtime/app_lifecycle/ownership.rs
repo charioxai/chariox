@@ -18,6 +18,7 @@ impl Control {
             update: AtomicBool::new(false),
             manual: AtomicBool::new(false),
             manual_committed: AtomicBool::new(false),
+            retiring: AtomicBool::new(false),
             done: Mutex::new(false),
             wake: Condvar::new(),
             drain: Mutex::new(None),

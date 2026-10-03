@@ -90,17 +90,19 @@ impl AppLifecycleService {
                 } => *replace && entry.control.first_request.as_ref() != Some(request_id),
                 StartKind::Active { .. } => false,
             };
-            if !replacing {
+            let retiring =
+                entry.control.retiring.load(Ordering::Acquire) || entry.control.finished();
+            if !replacing && !retiring {
                 return Ok(StartDisposition::Existing {
                     attempt: entry.attempt.clone(),
                 });
             }
-            // A local update drains the old generation's owner under this
-            // installation's operation guard, so no other start interleaves.
+            // Join a retiring owner or drain a local update's old generation
+            // under this installation's guard, so no start interleaves.
             // It is not a user stop: a failed update restarts the old
             // generation on demand.
             drop(entries);
-            if !entry.control.finished() {
+            if replacing && !entry.control.finished() {
                 // Preparation precedes the worker drain and update fence.
                 match entry.control.notify("prepare_update", serde_json::json!({
                     "request_id": match &kind { StartKind::First { request_id, .. } => request_id, _ => unreachable!() },
@@ -109,7 +111,9 @@ impl AppLifecycleService {
                     Err(error) => return Err(error),
                 }
             }
-            entry.control.cancel_for_update();
+            if replacing {
+                entry.control.cancel_for_update();
+            }
             entry.join();
             entries = self
                 .0

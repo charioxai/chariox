@@ -272,7 +272,15 @@ fn refused_preparation(mode: Mode, timeout: bool) {
             .first_app_install_status("alice", "refused_update")
             .unwrap()
             .phase,
-        InstallPhase::Cancelled
+        InstallPhase::Failed
+    );
+    assert_eq!(
+        store
+            .first_app_install_status("alice", "refused_update")
+            .unwrap()
+            .failure
+            .as_deref(),
+        Some("app_lifecycle_notification")
     );
     let installation = store.get_app_installation("alice", &id).unwrap();
     assert_eq!(installation.generation, 1);
@@ -681,6 +689,89 @@ fn an_old_owner_exit_before_dispatch_does_not_cancel_an_approved_update() {
         names(&frames(&observations, 1)),
         ["startup", "configuration_change"]
     );
+    control.lifecycle().shutdown_blocking().unwrap();
+    assert!(all_reaped(&observations));
+}
+
+#[test]
+fn explicit_start_after_failure_waits_for_the_retiring_owner() {
+    let (_scratch, runtime, store, control, observations) = setup(Mode::LifecycleFailConfiguration);
+    let entry = control
+        .lifecycle()
+        .0
+        .entries
+        .lock()
+        .unwrap()
+        .get(&("alice".into(), "installed".into()))
+        .unwrap()
+        .clone();
+    let old = entry.control.clone();
+    let (paused, ready) = std::sync::mpsc::sync_channel(1);
+    let (release, resume) = std::sync::mpsc::sync_channel(1);
+    let resume = Mutex::new(resume);
+    *old.completion_checkpoint.lock().unwrap() = Some(Arc::new(move || {
+        let _ = paused.send(());
+        let _ = resume.lock().unwrap().recv();
+    }));
+    grant(&store, "fail-before-restart");
+    ready.recv_timeout(Duration::from_secs(6)).unwrap();
+    assert_eq!(
+        store
+            .app_worker_status("alice", "installed")
+            .unwrap()
+            .unwrap()
+            .phase,
+        WorkerPhase::Failed
+    );
+    assert!(observations.lock().unwrap()[0].was_reaped());
+    assert!(!old.finished());
+    control
+        .lifecycle()
+        .0
+        .fixture
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .lifecycle = Some(Mode::Lifecycle);
+    let service = control.lifecycle().clone();
+    let handle = runtime.handle().clone();
+    let (sent, received) = std::sync::mpsc::sync_channel(1);
+    let restarting = std::thread::spawn(move || {
+        sent.send(service.start_active_blocking("alice", "installed", handle))
+            .unwrap();
+    });
+    // Wait for either the buggy Existing reply or the replacement joining
+    // the retained thread. Completion stays blocked until this observation.
+    let until = Instant::now() + Duration::from_secs(6);
+    let mut early = None;
+    let mut reached = false;
+    while Instant::now() < until {
+        early = received.try_recv().ok();
+        let joining = match entry.thread.try_lock() {
+            Ok(thread) => thread.is_none(),
+            Err(std::sync::TryLockError::WouldBlock) => true,
+            Err(error) => panic!("{error}"),
+        };
+        if early.is_some() || joining {
+            reached = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    release.send(()).unwrap();
+    restarting.join().unwrap();
+    assert!(
+        reached,
+        "start neither returned nor joined the retiring owner"
+    );
+    let disposition = early.unwrap_or_else(|| received.recv().unwrap()).unwrap();
+    assert!(
+        matches!(disposition, StartDisposition::Starting { .. }),
+        "{disposition:?}"
+    );
+    wait(|| control.active_app_lease("alice", "installed").is_some());
+    assert_eq!(observations.lock().unwrap().len(), 2);
     control.lifecycle().shutdown_blocking().unwrap();
     assert!(all_reaped(&observations));
 }

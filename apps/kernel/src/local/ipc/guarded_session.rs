@@ -65,8 +65,12 @@ async fn run(
     stream: &mut tokio::net::UnixStream,
     bytes: &[u8],
 ) -> Result<(), DaemonError> {
-    let negotiation: Negotiation =
-        serde_json::from_slice(bytes).map_err(|_| invalid("invalid session negotiation"))?;
+    let negotiation: Negotiation = serde_json::from_slice(bytes).map_err(|error| {
+        invalid(&crate::transport::request_decode_error::message(
+            "invalid session negotiation",
+            &error,
+        ))
+    })?;
     if negotiation.session.version != 1 {
         return Err(invalid("unsupported session version"));
     }
@@ -89,8 +93,12 @@ async fn run(
     let bytes = serde_json::to_vec(&value).map_err(|_| invalid("encode session admission"))?;
     write_open_async_frame(stream, &bytes).await?;
     let bytes = read_async_frame(stream).await?;
-    let request: LocalDaemonRequest =
-        serde_json::from_slice(&bytes).map_err(|_| invalid("invalid guarded command"))?;
+    let request: LocalDaemonRequest = serde_json::from_slice(&bytes).map_err(|error| {
+        invalid(&crate::transport::request_decode_error::message(
+            "invalid guarded command",
+            &error,
+        ))
+    })?;
     if !matches!(
         &request,
         LocalDaemonRequest::CreateDisposableWorker(_)

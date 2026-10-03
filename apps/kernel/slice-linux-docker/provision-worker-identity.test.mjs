@@ -56,7 +56,9 @@ process.exit(0);
 test("the production kernel startup function uses canonical ID for normal and probe launches", async () => {
   const source = await readFile(runtime, "utf8");
   const startup = source.match(/^start_slice_kernel\(\) \{[\s\S]*?^\}/m)?.[0];
+  const readiness = source.match(/^wait_for_kernel_auth_consumption\(\) \{[\s\S]*?^\}/m)?.[0];
   assert.ok(startup);
+  assert.ok(readiness);
   const root = await mkdtemp(join(tmpdir(), "chariox-slice-kernel-identity-"));
   try {
     for (const probe of [false, true]) {
@@ -73,6 +75,7 @@ screen() {
  done
  rm -f "$KERNEL_LOCAL_AUTH_FILE"
 }
+${readiness}
 ${startup}
 start_slice_kernel ${probe ? "CHARIOX_ACCEPT_REMOTE_LEASES=0" : ""}
 `;

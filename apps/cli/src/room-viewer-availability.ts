@@ -11,7 +11,7 @@ import type {
   SliceRecord,
 } from "@chariox/kernel-client/kernel-types"
 
-import { sendWithProtocolMinimum } from "./protocol-minimum-diagnostic.js"
+import { KernelProtocolMinimumError, sendWithProtocolMinimum } from "./protocol-minimum-diagnostic.js"
 import {
   evaluateSliceViewerAvailability,
   isSliceViewerFailureStaleOrOffline,
@@ -53,7 +53,7 @@ export async function readRoomViewerAvailability(
       },
     )
   } catch (error) {
-    if (error instanceof Error && /requires kernel protocol \d+ or newer:/i.test(error.message)) {
+    if (error instanceof KernelProtocolMinimumError) {
       throw error
     }
     return {

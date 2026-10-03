@@ -3,6 +3,38 @@ use crate::durable_state::apps::AppRegistryMutation;
 use crate::local::{AppInstallationRequest, ListAppInstallationsRequest, LocalDaemonResponse};
 use chariox_app_runtime::installation::ReleaseMetadata;
 
+#[tokio::test]
+async fn request_decode_refusal_uses_existing_relay_message_field() {
+    let root = TestRoot::new();
+    let app = crate::DaemonApp::bootstrap(root.config()).unwrap();
+    let router =
+        CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 8);
+    let receiver =
+        relay_crypto::public_key_from_private_key_base64(&router.relay_private_key()).unwrap();
+    let sender = relay_crypto::generate_private_key_base64();
+    let cache = Arc::new(CommandResultCache::default());
+    for payload in [
+        br#"{"FutureRequest":{}}"#.as_slice(),
+        br#"{"AcceptAppHostAction":{"session_id":"s","operation_id":17}}"#.as_slice(),
+    ] {
+        let encrypted =
+            relay_crypto::encrypt_payload_for_peer(&sender, &receiver, payload).unwrap();
+        let outcome = handle_daemon_request(
+            &router,
+            &AtomicU64::new(1),
+            Some(caller("alice")),
+            encrypted,
+            &cache,
+        )
+        .await;
+        assert!(outcome.encrypted_response.is_none());
+        let error = outcome.error.unwrap();
+        assert_eq!(error.code, "invalid_request");
+        assert!(!error.retryable);
+        assert!(error.message.contains(&format!("This kernel (protocol {}) does not support this request; update the Chariox client or kernel so both match.", crate::local::LOCAL_DAEMON_PROTOCOL_VERSION)));
+    }
+}
+
 struct TestRoot(std::path::PathBuf);
 
 impl TestRoot {

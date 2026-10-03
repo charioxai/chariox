@@ -32,6 +32,7 @@ use super::browser_controller_snapshot::BrowserControllerStructuredSnapshot;
 use super::browser_controller_tab::BrowserControllerTabResult;
 use crate::session::CanonicalViewport;
 
+mod app_view_bridge;
 mod cancellation;
 mod configuration_cancellation;
 mod lifecycle_cancellation;
@@ -39,6 +40,7 @@ mod pending_action;
 mod pending_mutation;
 mod pending_responses;
 mod reconciliation;
+mod unlocked_request;
 use self::pending_mutation::BrowserTabMutationLanes;
 pub(crate) use configuration_cancellation::BrowserConfiguration;
 #[cfg(test)]
@@ -1262,11 +1264,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
             .set_browser_permission(target_id, document_id, permission, setting)
     }
 
-    pub(crate) fn app_view(
-        &mut self,
-        session_id: &str,
-        request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
-    ) -> Result<serde_json::Value, String> {
+    fn require_app_view_lease(&self, session_id: &str) -> Result<(), String> {
         self.require_lease(session_id).map_err(|_| {
             match self.owner_session_id.as_deref() {
                 Some(owner) if owner != session_id => format!(
@@ -1274,7 +1272,15 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
                 ),
                 _ => "This Room's browser Environment is not started. Use /room start, then retry /app open <installation-id>.".to_owned(),
             }
-        })?;
+        })
+    }
+
+    pub(crate) fn app_view(
+        &mut self,
+        session_id: &str,
+        request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
+    ) -> Result<serde_json::Value, String> {
+        self.require_app_view_lease(session_id)?;
         self.supervisor.app_view(request)
     }
 
@@ -1350,6 +1356,7 @@ pub(crate) struct BrowserControllerProcessStore {
     executions: cancellation::BrowserActionExecutions,
     tab_mutation_barrier: Arc<RwLock<()>>,
     tab_mutation_lanes: BrowserTabMutationLanes,
+    app_view_replies: Arc<Mutex<()>>,
 }
 
 impl BrowserControllerProcessStore {
@@ -1452,24 +1459,7 @@ impl BrowserControllerProcessStore {
                 .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
             ownership.require_lease(session_id)?;
             let supervisor = &mut ownership.supervisor;
-            // A health RPC is a controller barrier. While controller responses
-            // are in flight, inspect process liveness without queuing it.
-            // Recovery still requires reconciliation before fresh references.
-            let responses_pending = supervisor
-                .backend
-                .process
-                .as_ref()
-                .map(|process| process.pending_responses.is_empty().map(|empty| !empty))
-                .transpose()?
-                .unwrap_or(false);
-            let exited = supervisor.backend.take_exited_process()?.is_some();
-            if !responses_pending || exited {
-                supervisor.ensure_started_without_transparent_restart()?;
-            } else if supervisor.recovery_pending
-                || supervisor.snapshot.state != BrowserControllerProcessState::Ready
-            {
-                return Err(CONTROLLER_RESTARTED_BEFORE_OPERATION.to_string());
-            }
+            supervisor.prepare_unlocked_request()?;
             let pending = supervisor
                 .backend
                 .begin_snapshot_read(target_id, document_id)?;
@@ -1566,6 +1556,13 @@ impl BrowserControllerProcessStore {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
+        if matches!(
+            request,
+            super::browser_controller_app_view::BrowserAppViewRequest::Calls
+                | super::browser_controller_app_view::BrowserAppViewRequest::Respond { .. }
+        ) {
+            return self.app_view_bridge(session_id, request);
+        }
         let mut ownership = ownership
             .lock()
             .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
@@ -2254,13 +2251,13 @@ mod tests {
         store.shutdown().expect("clean up failed controller");
     }
 
-    struct TestTool {
-        root: PathBuf,
+    pub(super) struct TestTool {
+        pub(super) root: PathBuf,
         path: PathBuf,
     }
 
     impl TestTool {
-        fn new(script: &str) -> Self {
+        pub(super) fn new(script: &str) -> Self {
             static SEQUENCE: AtomicU64 = AtomicU64::new(0);
             let nonce = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -2288,7 +2285,7 @@ mod tests {
             Self { root, path }
         }
 
-        fn path(&self) -> &Path {
+        pub(super) fn path(&self) -> &Path {
             &self.path
         }
     }

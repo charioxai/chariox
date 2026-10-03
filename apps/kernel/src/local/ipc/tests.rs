@@ -30,6 +30,55 @@ use super::{
 static LOCAL_IPC_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
+fn request_decode_refusal_uses_legacy_unix_error_field_and_keeps_supported_requests() {
+    run_local_ipc_async_test("request-decode-refusal", 2, || async {
+        let config = DaemonConfig::for_tests();
+        let socket_path = config.local_socket_path.clone();
+        let app = Arc::new(TokioMutex::new(DaemonApp::bootstrap(config).unwrap()));
+        let (tx, rx) = oneshot::channel::<()>();
+        let server = tokio::spawn(super::run_local_ipc_server_with_shared_app(app, async {
+            let _ = rx.await;
+        }));
+        wait_for_socket(&socket_path).await;
+        for guarded in [false, true] {
+            for payload in [
+                br#"{"FutureRequest":{}}"#.as_slice(),
+                br#"{"AcceptAppHostAction":{"session_id":"s","operation_id":17}}"#.as_slice(),
+            ] {
+                let mut stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
+                if guarded {
+                    super::write_open_async_frame(
+                        &mut stream,
+                        br#"{"GuardedControlSession":{"version":1}}"#,
+                    )
+                    .await
+                    .unwrap();
+                    super::read_async_frame(&mut stream).await.unwrap();
+                }
+                super::write_open_async_frame(&mut stream, payload)
+                    .await
+                    .unwrap();
+                let result: Value =
+                    serde_json::from_slice(&super::read_async_frame(&mut stream).await.unwrap())
+                        .unwrap();
+                assert!(result["response"].is_null());
+                assert!(result["error"].as_str().unwrap().contains(&format!("This kernel (protocol {}) does not support this request; update the Chariox client or kernel so both match.", crate::local::LOCAL_DAEMON_PROTOCOL_VERSION)));
+            }
+        }
+        let mut stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
+        super::write_open_async_frame(&mut stream, br#"{"RelayStatus":null}"#)
+            .await
+            .unwrap();
+        let result: Value =
+            serde_json::from_slice(&super::read_async_frame(&mut stream).await.unwrap()).unwrap();
+        assert!(result["error"].is_null());
+        assert!(result["response"]["RelayStatus"].is_object());
+        tx.send(()).unwrap();
+        server.await.unwrap().unwrap();
+    });
+}
+
+#[test]
 fn guarded_unix_oversized_admission_returns_bounded_error_then_eof() {
     run_local_ipc_async_test("guarded-oversize", 2, || async {
         use tokio::io::AsyncReadExt;

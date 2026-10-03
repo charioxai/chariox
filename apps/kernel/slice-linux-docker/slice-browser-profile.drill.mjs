@@ -18,14 +18,18 @@ assert.ok(["seed", "restore"].includes(phase), "expected seed or restore");
 assert.equal(process.env.CHARIOX_DISPOSABLE_BROWSER_DRILL, "1", "disposable container required");
 const runtime = await mkdtemp(path.join(tmpdir(), "chariox-profile-drill-"));
 await mkdir(path.join(runtime, "logs"));
-// Copy the production helper closure, including browser lifetime/upload owners.
+// Copy the production helper closure, including browser lifetime/upload owners
+// and the Xorg dummy display configuration that slice images select by default.
+const runtimeFile = /\.(?:mjs|py|json|conf)$|^tint2rc$/;
 for (const name of await readdir(path.join(source, "docker"))) {
-  if (name.endsWith(".mjs") || name.endsWith(".py") || name.endsWith(".json") || name === "tint2rc") {
+  if (runtimeFile.test(name)) {
     await copyFile(path.join(source, "docker", name), path.join(runtime, name));
   }
 }
 
 const env = { ...process.env, CHARIOX_SLICE_ROOT: runtime, CHARIOX_SLICE_VIEWER_BACKEND: "novnc" };
+// The image selects the display server exactly as slice-screen.sh does.
+const displayServer = env.CHARIOX_SLICE_DISPLAY_SERVER || "Xvfb";
 // Exercise both ordinary configuration and an explicitly empty override.
 if (phase === "seed") delete env.CHARIOX_SLICE_CHROME_TRUSTED_INSECURE_ORIGINS;
 else env.CHARIOX_SLICE_CHROME_TRUSTED_INSECURE_ORIGINS = "";
@@ -98,7 +102,7 @@ try {
   await assertSandbox(restarted);
   let restartedSession = await openFixture(restarted, "/");
   await assertStorage(restarted, restartedSession, `${phase}-restart`);
-  const displayPid = (await exec("pgrep", ["-x", "Xvfb"])).stdout;
+  const displayPid = (await exec("pgrep", ["-x", displayServer])).stdout;
   for (const fault of ["closed", "killed"]) {
     // Seed each cold lifetime independently; graceful loss cannot contaminate
     // the crash check and masquerade as an archive-restoration failure.
@@ -123,7 +127,7 @@ try {
     restartedSession = await client.ensureTargetSession(restarted, target.targetId);
     await waitFor(() => evaluate(restarted, restartedSession, "document.readyState === 'complete'"));
     await assertStorage(restarted, restartedSession, `${phase}-cold-fallback-${fault}`);
-    assert.equal((await exec("pgrep", ["-x", "Xvfb"])).stdout, displayPid, "browser recovery must not restart the shared desktop");
+    assert.equal((await exec("pgrep", ["-x", displayServer])).stdout, displayPid, "browser recovery must not restart the shared desktop");
   }
   if (phase === "restore") {
     // Distinguish an external service revocation from lost browser data.

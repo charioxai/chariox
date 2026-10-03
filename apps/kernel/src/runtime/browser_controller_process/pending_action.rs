@@ -35,21 +35,7 @@ impl StdioOwnership {
             return Err("browser action cancelled before dispatch".into());
         }
         let supervisor = &mut self.supervisor;
-        let pending = supervisor
-            .backend
-            .process
-            .as_ref()
-            .map(|process| process.pending_responses.is_empty().map(|empty| !empty))
-            .transpose()?
-            .unwrap_or(false);
-        let exited = supervisor.backend.take_exited_process()?.is_some();
-        if !pending || exited {
-            supervisor.ensure_started_without_transparent_restart()?;
-        } else if supervisor.recovery_pending
-            || supervisor.snapshot.state != BrowserControllerProcessState::Ready
-        {
-            return Err(CONTROLLER_RESTARTED_BEFORE_OPERATION.into());
-        }
+        supervisor.prepare_unlocked_request()?;
         let backend = &mut supervisor.backend;
         let request_id = backend.next_request_id;
         let cancel_id = request_id

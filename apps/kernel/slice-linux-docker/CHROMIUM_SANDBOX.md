@@ -7,7 +7,8 @@ password-store selection, and shutdown uses the existing browser close helper.
 Desktop startup and URL fallback share `launch_chromium`, including the
 loopback CDP endpoint, resource-related flags and session restoration. An
 explicit URL-open action can recover an exited Chromium process only while the
-existing Xvfb display is alive. It cannot create or restart the shared desktop.
+existing display server (Xorg or Xvfb) is alive. It cannot create or restart the
+shared desktop.
 URL arguments follow the option terminator so they cannot become browser flags.
 The launcher does not use `--unsafely-treat-insecure-origin-as-secure` or expose
 an environment override for it; HTTP pages retain Chromium's normal security
@@ -56,8 +57,9 @@ node apps/kernel/slice-linux-docker/live-browser-profile-drill.mjs
 ```
 
 The driver never builds/downloads an image. The image needs Node 22, Chromium,
-Xvfb, Openbox, x11vnc, websockify/noVNC, xdotool, Python and zstd. Source must be
-visible to the Docker daemon for a read-only mount. This focused fixture uses
+the display server it selects (Xorg with the dummy driver, or Xvfb), Openbox,
+x11vnc, websockify/noVNC, xdotool, Python and zstd. Source must be visible to
+the Docker daemon for a read-only mount. This focused fixture uses
 the noVNC desktop backend only to exercise the shared Chromium lifecycle, not to
 validate or select the product's streaming backend.
 

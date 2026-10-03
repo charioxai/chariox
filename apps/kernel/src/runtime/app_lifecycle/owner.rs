@@ -41,6 +41,7 @@ impl Admitted {
 struct Completion(Arc<Control>);
 impl Drop for Completion {
     fn drop(&mut self) {
+        self.0.retiring.store(true, Ordering::Release);
         #[cfg(test)]
         if let Some(checkpoint) = self.0.completion_checkpoint.lock().unwrap().clone() {
             checkpoint();
@@ -153,6 +154,9 @@ pub(super) fn run(context: Context, live: OwnedSemaphorePermit) {
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         serve(&context, &mut admission)
     }));
+    // A failed row can be visible before this thread publishes completion.
+    // Starts must join this owner instead of treating its entry as live.
+    context.control.retiring.store(true, Ordering::Release);
     if let Ok(Err(LifecycleError::DiskSpace(space))) = &outcome {
         disk_space::notify(
             &context.store,
