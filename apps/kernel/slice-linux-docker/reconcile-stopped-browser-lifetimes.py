@@ -255,12 +255,15 @@ def reconcile(target, labels, docker=command):
     legacy_output, legacy_count = legacy_upload_proof(docker, before)
     if snapshot(docker, before["id"], labels) != before:
         raise RuntimeError("container generation changed during lifetime capture")
+    # The generated tar already carries numeric UID/GID 1001 and mode 0600.
+    # -a asks Docker to resolve Config.User and reassign archive ownership;
+    # named-user lookup fails on stopped containers with Docker 20.10.
     if entries:
-        docker("cp", "-a", "-", before["id"] + ":" + ROOT, data=output)
+        docker("cp", "-", before["id"] + ":" + ROOT, data=output)
     if legacy_output:
         # This complete snapshot replaces earlier proof only with all currently
         # retained unbound entries. Partial writes fail parsing, never reclaim.
-        docker("cp", "-a", "-", before["id"] + ":" + UPLOAD_ROOT, data=legacy_output)
+        docker("cp", "-", before["id"] + ":" + UPLOAD_ROOT, data=legacy_output)
     if snapshot(docker, before["id"], labels) != before:
         raise RuntimeError("container generation changed during proof delivery")
     return {**before, "retired": count, "legacyEntries": legacy_count}
