@@ -14,3 +14,8 @@ check_noexec() {
 check_noexec
 python3 "$installer" "$@"
 check_noexec
+if find /usr/lib/chariox/slice-local-dev -maxdepth 1 -type d \
+    -name 'chariox-local-broker-build-*' -print -quit | grep -q .; then
+  echo 'Buildx scratch remains after successful enrollment' >&2
+  exit 1
+fi
