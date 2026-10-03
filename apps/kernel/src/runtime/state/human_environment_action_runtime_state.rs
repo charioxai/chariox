@@ -30,7 +30,7 @@ impl KernelRuntimeState {
         request: SubmitRoomEnvironmentActionRequest,
         actor: EnvironmentActor,
     ) -> Result<(String, RoomEnvironmentSnapshot), DaemonError> {
-        let _execution_guard = self
+        let execution_guard = self
             .owned
             .environment_execution_gates
             .for_room(&request.session_id)
@@ -67,6 +67,31 @@ impl KernelRuntimeState {
             .map_err(human_action_environment_error)?;
         validate_human_action_freshness(&environment, &request, &input_action)
             .map_err(human_action_environment_error)?;
+        // Preserve existing receipts and validate authority before recovery.
+        // Reacquire the execution gate and recheck freshness afterwards: a
+        // recovery must not rewrite a client's approved generation or viewport.
+        drop(execution_guard);
+        self.recover_active_room_for_computer_input(&request.session_id)
+            .await?;
+        let _execution_guard = self
+            .owned
+            .environment_execution_gates
+            .for_room(&request.session_id)
+            .read_owned()
+            .await;
+        let environment = self
+            .room_environment_snapshot(&request.session_id)
+            .map_err(human_action_environment_error)?;
+        validate_human_action_authority(&environment, &actor.actor_id)
+            .and_then(|_| validate_human_action_freshness(&environment, &request, &input_action))
+            .map_err(human_action_environment_error)?;
+        action_request.targets = EnvironmentActionRequest::computer_mutation(
+            &actor.actor_id,
+            request.runtime_generation,
+            action_kind,
+            environment.focused_tab_id.as_deref(),
+        )
+        .targets;
         let (admission, environment) = self
             .submit_room_environment_action(&request.session_id, action_request)
             .map_err(human_action_environment_error)?;

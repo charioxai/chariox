@@ -33,6 +33,8 @@ impl KernelRuntimeState {
                 agent_id: agent_id.into(),
             });
         }
+        self.recover_active_room_for_computer_input(session_id)
+            .await?;
         let result = self
             .room_browser_controller_command(
                 session_id,

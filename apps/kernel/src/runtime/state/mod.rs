@@ -89,6 +89,9 @@ mod project_environment_worker_export;
 mod project_prompt_promotion;
 mod provider_output_deadline_store;
 mod provider_reload;
+mod room_computer_readiness;
+#[cfg(test)]
+mod room_computer_readiness_tests;
 use provider_output_deadline_store::ProviderOutputDeadlineStore;
 pub(crate) use provider_reload::*;
 mod browser_import_consent;
