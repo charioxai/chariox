@@ -4,6 +4,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::SystemTime;
 
+#[cfg(all(not(test), not(debug_assertions)))]
+const _: () = chariox_app_runtime::assert_production_build();
+
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 

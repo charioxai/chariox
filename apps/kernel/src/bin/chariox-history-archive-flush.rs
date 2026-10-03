@@ -9,6 +9,9 @@ use chariox_kernel::history_archive::{
     ArtifactArchiveExporter, HistoryArchiveClient, HistoryArchiveExporter,
 };
 
+#[cfg(all(not(test), not(debug_assertions)))]
+const _: () = chariox_app_runtime::assert_production_build();
+
 fn main() -> ExitCode {
     let _ = chariox_kernel::logging::init_process_logger("history-archive-flush");
     match run() {

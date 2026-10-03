@@ -169,21 +169,7 @@ impl BrowserControllerProcessStore {
             self.authorize()?;
             ownership.require_lease(session_id)?;
             let supervisor = &mut ownership.supervisor;
-            let pending = supervisor
-                .backend
-                .process
-                .as_ref()
-                .map(|process| process.pending_responses.is_empty().map(|empty| !empty))
-                .transpose()?
-                .unwrap_or(false);
-            let exited = supervisor.backend.take_exited_process()?.is_some();
-            if !pending || exited {
-                supervisor.ensure_started_without_transparent_restart()?;
-            } else if supervisor.recovery_pending
-                || supervisor.snapshot.state != BrowserControllerProcessState::Ready
-            {
-                return Err(CONTROLLER_RESTARTED_BEFORE_OPERATION.into());
-            }
+            supervisor.prepare_unlocked_request()?;
             (
                 supervisor.backend.begin_observation_request(
                     "browser.wait",

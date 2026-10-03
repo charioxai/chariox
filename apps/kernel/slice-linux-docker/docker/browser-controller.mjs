@@ -281,6 +281,13 @@ export class BrowserControllerStdioServer {
     await waitUntilIdle();
 
     function pump() {
+      // Bridge drains may wait for enqueue. They neither hold nor wait for a
+      // browser barrier: replies and lifecycle work must progress while idle.
+      for (let index = 0; index < waiting.length;) {
+        if (waiting[index].scheduling.kind === "bridge") {
+          void execute(waiting.splice(index, 1)[0], false);
+        } else index += 1;
+      }
       while (!activeBarrier) {
         // A queued resize may have changed the applied viewport since admission.
         for (const operation of waiting) {
@@ -368,7 +375,7 @@ export class BrowserControllerStdioServer {
         stopAction?.();
         queued -= 1;
         if (barrier) activeBarrier = false;
-        else {
+        else if (scheduling.kind !== "bridge") {
           activeOperations -= 1;
           if (scheduling.targetId) {
             const target = targetOperations.get(scheduling.targetId);
@@ -397,6 +404,7 @@ export class BrowserControllerStdioServer {
 
 function classifyScheduling(request, browser) {
   const method = request?.method;
+  if (["browser.app.calls", "browser.app.respond"].includes(method)) return { kind: "bridge" };
   if (method === "browser.reconcile" && browser?.canReconcileConcurrently?.(request.params?.viewport, {
     browserBarVisible: request.params?.browser_bar_visible,
     appPanelCssWidth: request.params?.app_panel_css_width,

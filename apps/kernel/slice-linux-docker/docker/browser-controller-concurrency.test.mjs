@@ -188,3 +188,36 @@ test("unchanged-viewport reconciliation does not block independent input", { tim
   await Promise.all([held, read, other]);
   assert.equal(completed, true, "MP-08/MP-10 read preflight blocked an independent target");
 });
+
+test("idle App drain and reply overlap a held global browser barrier", { timeout: 3000 }, async t => {
+  const started = deferred(), release = deferred(), drainStarted = deferred(), enqueue = deferred();
+  const server = startServer(t, {
+    async manageTab() { started.resolve(); await release.promise; return {}; },
+    appTabs: {
+      async takeCalls() { drainStarted.resolve(); await enqueue.promise; return { calls: [{ call_id: "idle" }] }; },
+      async respond() { return { delivered: true }; },
+    },
+  }, () => { release.resolve(); enqueue.resolve(); });
+  const barrier = server.request(1, "browser.tab", {});
+  await started.promise;
+  const drain = server.request(2, "browser.app.calls");
+  await drainStarted.promise;
+  assert.deepEqual((await server.request(3, "browser.app.respond", {})).result, { delivered: true });
+  enqueue.resolve();
+  assert.equal((await drain).result.calls[0].call_id, "idle");
+  release.resolve();
+  assert.equal((await barrier).ok, true);
+});
+
+test("an idle App drain does not block lifecycle barriers", { timeout: 3000 }, async t => {
+  const started = deferred(), enqueue = deferred();
+  const server = startServer(t, {
+    async manageTab() { return { closed: true }; },
+    appTabs: { async takeCalls() { started.resolve(); await enqueue.promise; return { calls: [] }; } },
+  }, () => enqueue.resolve());
+  const drain = server.request(1, "browser.app.calls");
+  await started.promise;
+  assert.deepEqual((await server.request(2, "browser.tab", {})).result, { closed: true });
+  enqueue.resolve();
+  assert.deepEqual((await drain).result.calls, []);
+});

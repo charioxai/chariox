@@ -1,3 +1,7 @@
+export const appHostActionMinimumProtocolVersion = 409
+export const appFileRevokeMinimumProtocolVersion = 394
+export const appDataSnapshotRestoreMinimumProtocolVersion = 410
+
 export function listAppInstallationsRequest(options: { after?: string; limit?: number } = {}) {
   return { ListAppInstallations: { after: options.after ?? null, limit: options.limit ?? null } }
 }

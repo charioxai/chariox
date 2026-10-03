@@ -176,6 +176,27 @@ cancelled inbound handler retains its concurrency slot until it actually ends;
 the supervisor must terminate a worker that ignores its execution budget. An
 infinite JavaScript loop cannot be contained by JavaScript timers.
 
+SDK peer capacity refusals use `APP_BUSY`, with `retryable: true`, a
+`retryAfterMs: 500` hint and a string `cause`: `app_handler_capacity_full`,
+`app_pending_capacity_full` or `app_broker_capacity_full`. The message also
+carries the cause and hint, for example
+`app_handler_capacity_full; retry after 500 ms`. The refused call never
+starts; callers may retry after the hint, but the SDK never retries automatically.
+The SDK keeps its default 16 executing handlers separate from the kernel's 64
+pending calls: pending transport capacity does not expand worker execution or
+resource budgets. Limits can be lowered, not raised.
+
+The worker wire remains `{code, message, retryable}`. The SDK reconstructs local
+cause/hint metadata for its exact capacity messages when receiving a response;
+the kernel's exact retryable `BUSY` / `Kernel App broker capacity is full`
+refusal is normalized locally to `APP_BUSY` with `app_broker_capacity_full`.
+Arbitrary App errors keep their own code and message; lifecycle overlap still
+uses `BUSY`. For those errors, inspect `retryable` before considering a retry.
+App view pages currently receive only `code` and `message`, so the cause and
+retry hint remain in the message;
+`retryable`, `cause` and `retryAfterMs` are SDK error properties, not new page or
+wire fields.
+
 SDK 0.5 adds the optional `health_check` lifecycle callback. The kernel runs it
 before first-install activation, with a maximum three-second budget. Use it for
 local checks of the loaded code and declared configuration; all kernel broker

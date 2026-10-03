@@ -582,3 +582,53 @@ test("view host helpers only queue the shared copy/link methods, never operate t
   ]);
   assert.equal(vm.runInContext("'readClipboard' in chariox.host", context), false);
 });
+
+test("an idle drain wakes on enqueue without advancing its fallback timer", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { tabs, connection } = await opened();
+  let batch;
+  const drain = tabs.takeCalls().then(result => { batch = result; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(tabs.callWaiters.size, 1);
+  t.mock.timers.tick(249);
+  assert.equal(batch, undefined);
+  await connection.emit({ method: "Runtime.bindingCalled", sessionId: "s1",
+    params: { name: "__charioxAppCall", payload: JSON.stringify({ id: "idle", method: "usage" }) } });
+  await drain;
+  assert.equal(batch.calls[0].call_id, "idle");
+  assert.equal(tabs.callWaiters.size, 0);
+  // A call queued between requests is drained immediately, without a lost wake.
+  await connection.emit({ method: "Runtime.bindingCalled", sessionId: "s1",
+    params: { name: "__charioxAppCall", payload: JSON.stringify({ id: "between", method: "usage" }) } });
+  assert.equal((await tabs.takeCalls()).calls[0].call_id, "between");
+});
+
+test("an empty drain times out at the fallback cadence and cleans its waiter", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { tabs } = await opened();
+  const drain = tabs.takeCalls();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(tabs.callWaiters.size, 1);
+  t.mock.timers.tick(250);
+  assert.deepEqual((await drain).calls, []);
+  assert.equal(tabs.callWaiters.size, 0);
+});
+
+test("navigation keeps the enqueue wait armed and target close cancels it", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { tabs, connection } = await opened();
+  const navigation = tabs.takeCalls();
+  await new Promise(resolve => setImmediate(resolve));
+  await navigated(connection, "doc-2");
+  assert.equal(tabs.callWaiters.size, 1);
+  await connection.emit({ method: "Runtime.bindingCalled", sessionId: "s1",
+    params: { name: "__charioxAppCall", payload: JSON.stringify({ id: "new-doc", method: "usage" }) } });
+  const batch = await navigation;
+  assert.equal(batch.documents.t1, "doc-2");
+  assert.equal(batch.calls[0].document_id, "doc-2");
+  const close = tabs.takeCalls();
+  await new Promise(resolve => setImmediate(resolve));
+  await connection.emit({ method: "Target.detachedFromTarget", params: { sessionId: "s1" } });
+  assert.deepEqual((await close).open_targets, []);
+  assert.equal(tabs.callWaiters.size, 0);
+});

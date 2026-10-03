@@ -114,7 +114,7 @@ impl<T> PendingResponse<T> {
     pub(super) fn wait(&self, timeout: Duration) -> Result<T, String> {
         self.receiver
             .recv_timeout(timeout)
-            .map_err(|error| format!("browser controller snapshot response unavailable: {error}"))?
+            .map_err(|error| format!("browser controller response unavailable: {error}"))?
     }
 }
 

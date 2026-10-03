@@ -98,7 +98,10 @@ pub(super) async fn handle_daemon_request(
                     encrypted_response: None,
                     error: Some(relay_error(
                         "invalid_request",
-                        &format!("invalid relay request payload: {error}"),
+                        &crate::transport::request_decode_error::message(
+                            "invalid relay request payload",
+                            &error,
+                        ),
                         false,
                     )),
                 };
