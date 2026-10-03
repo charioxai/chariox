@@ -337,7 +337,10 @@ fn log_startup_exit(
     error: AppWorkerError,
     installation: &str,
     generation: u64,
-    exit: Result<chariox_app_runtime::worker_process::WorkerExit, chariox_app_runtime::worker_process::WorkerError>,
+    exit: Result<
+        chariox_app_runtime::worker_process::WorkerExit,
+        chariox_app_runtime::worker_process::WorkerError,
+    >,
 ) {
     let fields = match exit {
         Ok(exit) => serde_json::json!({

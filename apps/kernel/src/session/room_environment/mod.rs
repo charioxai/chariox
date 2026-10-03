@@ -21,11 +21,11 @@ pub(crate) use elements::EnvironmentElementTarget;
 pub use event::{EnvironmentEvent, EnvironmentEventKind, EnvironmentReplay};
 pub use model::{
     agent_environment_actor_id, human_environment_actor_id, human_environment_actor_label,
-    CanonicalViewport, EnvironmentActor, EnvironmentActorColor, EnvironmentActorKind,
-    EnvironmentActorPresence, EnvironmentComponent, EnvironmentComponentHealth,
-    EnvironmentComponentHealthState, EnvironmentError, EnvironmentLifecycle, EnvironmentPointer,
-    AppPanelLayout, AppPanelPlacement, EnvironmentAppPanel, EnvironmentPointerPosition, EnvironmentTab, EnvironmentTabApp,
-    RoomEnvironmentSnapshot,
+    AppPanelLayout, AppPanelPlacement, CanonicalViewport, EnvironmentActor, EnvironmentActorColor,
+    EnvironmentActorKind, EnvironmentActorPresence, EnvironmentAppPanel, EnvironmentComponent,
+    EnvironmentComponentHealth, EnvironmentComponentHealthState, EnvironmentError,
+    EnvironmentLifecycle, EnvironmentPointer, EnvironmentPointerPosition, EnvironmentTab,
+    EnvironmentTabApp, RoomEnvironmentSnapshot,
 };
 pub(crate) use model::{EnvironmentTabObservation, EnvironmentTabRuntimeBinding};
 pub use ownership::{InputOwnership, PendingInputTakeover, TakeoverOutcome};

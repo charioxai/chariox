@@ -232,7 +232,10 @@ async fn room_browser_health_probe_shares_controller_routes_and_yields_to_slice_
     let command =
         crate::transport::room_browser_controller::RoomBrowserControllerCommand::Reconcile {
             viewport: state.room_environment_snapshot(&room).unwrap().viewport,
-            browser_bar_visible: state.room_environment_snapshot(&room).unwrap().browser_bar_visible,
+            browser_bar_visible: state
+                .room_environment_snapshot(&room)
+                .unwrap()
+                .browser_bar_visible,
         };
     let probe = state
         .admit_room_browser_controller_route(&room, &slice.id, &command, true, None)

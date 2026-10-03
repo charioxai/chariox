@@ -728,7 +728,10 @@ impl KernelRuntimeState {
             Err(_) => return Err(unavailable()),
         };
         if lease.catalog().generation() != binding.generation {
-            return Err(view_error("APP_VIEW_STALE", "The App was updated; reopen its view"));
+            return Err(view_error(
+                "APP_VIEW_STALE",
+                "The App was updated; reopen its view",
+            ));
         }
         if matches!(tool, "host.clipboard_write" | "host.open_link") {
             return crate::runtime::app_host_broker::AppHostBroker::new(

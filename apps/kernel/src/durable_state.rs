@@ -19,33 +19,33 @@ pub(crate) mod app_activation;
 pub(crate) mod app_active_release;
 pub(crate) mod app_automations;
 pub(crate) mod app_bindings;
+pub(crate) mod app_connections;
 pub(crate) mod app_event_delivery;
 pub(crate) mod app_event_maintenance;
-pub(crate) mod app_connections;
 pub(crate) mod app_file_exports;
-pub(crate) mod app_host_actions;
 pub(crate) mod app_file_grants;
-pub(crate) mod app_inbox;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_files;
+pub(crate) mod app_host_actions;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_http;
+pub(crate) mod app_inbox;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_installation_operations;
 pub(crate) mod app_installation_staging;
+pub(crate) mod app_logs;
 pub(crate) mod app_publisher_operations;
 pub(crate) mod app_publishers;
-pub(crate) mod app_snapshots;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_snapshot_restore;
+pub(crate) mod app_snapshots;
 pub(crate) mod app_state;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_tools;
-pub(crate) mod app_logs;
 pub(crate) mod app_validations;
+pub(crate) mod app_view_assets;
 pub(crate) mod app_wakes;
 pub(crate) mod app_worker_lifecycle;
-pub(crate) mod app_view_assets;
 pub(crate) mod apps;
 #[cfg(test)]
 mod apps_tests;

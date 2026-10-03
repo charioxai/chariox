@@ -279,15 +279,30 @@ fn saved_snapshot_restore_shared_router_authenticates_local_and_relay_owners() {
     let harness = crate::local::test_support::LocalRouterTestHarness::new();
     harness.with_app(|app| seed(&app.durable_state_store(), "bob", "todo-bob"));
     let request = LocalDaemonRequest::RestoreAppDataSnapshot(RestoreAppDataSnapshotRequest {
-        installation_id: "todo-bob".into(), expected_generation: "1".into(), snapshot_id: "snapshot-saved".into(),
+        installation_id: "todo-bob".into(),
+        expected_generation: "1".into(),
+        snapshot_id: "snapshot-saved".into(),
     });
     let foreign = harness.dispatch_as_user("alice", request.clone()).unwrap();
     assert_eq!(foreign, failed(AppRequestErrorCode::NotFound));
     let mut remote = KernelCaller::for_source(&KernelCommandSource::RelayClient);
     remote.user_id = Some("alice".into());
-    assert_eq!(harness.dispatch_with_caller(request.clone(), remote.clone()).unwrap(), foreign);
+    assert_eq!(
+        harness
+            .dispatch_with_caller(request.clone(), remote.clone())
+            .unwrap(),
+        foreign
+    );
     remote.user_id = None;
-    assert_eq!(harness.dispatch_with_caller(request.clone(), remote).unwrap(), failed(AppRequestErrorCode::Unauthorized));
+    assert_eq!(
+        harness
+            .dispatch_with_caller(request.clone(), remote)
+            .unwrap(),
+        failed(AppRequestErrorCode::Unauthorized)
+    );
     // Owned but inactive snapshots fail before worker/data mutation.
-    assert_eq!(harness.dispatch_as_user("bob", request).unwrap(), failed(AppRequestErrorCode::Conflict));
+    assert_eq!(
+        harness.dispatch_as_user("bob", request).unwrap(),
+        failed(AppRequestErrorCode::Conflict)
+    );
 }

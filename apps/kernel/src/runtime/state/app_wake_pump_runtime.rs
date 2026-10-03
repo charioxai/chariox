@@ -160,7 +160,6 @@ impl KernelRuntimeState {
         }
     }
 
-
     /// Coordinator wiring only: one bounded pass per reservation.
     pub(crate) fn schedule_app_maintenance_pump(&self) {
         self.begin_app_wake_pump(|pump, now_ms| pump.try_begin(now_ms));

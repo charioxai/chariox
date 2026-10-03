@@ -28,9 +28,15 @@ impl Database {
         ));
         fs::create_dir(&path).unwrap();
         let mut connection = Connection::open(path.join("kernel.sqlite")).unwrap();
-        PublisherTrustRegistry::new(&mut connection).initialize().unwrap();
-        InstallationRegistry::new(&mut connection).initialize().unwrap();
-        ManagedStateStore::new(&mut connection).initialize().unwrap();
+        PublisherTrustRegistry::new(&mut connection)
+            .initialize()
+            .unwrap();
+        InstallationRegistry::new(&mut connection)
+            .initialize()
+            .unwrap();
+        ManagedStateStore::new(&mut connection)
+            .initialize()
+            .unwrap();
         Self(path, connection)
     }
 }
@@ -53,8 +59,14 @@ fn package(version: &str, target: u32) -> (Vec<u8>, TrustedPublisher) {
     }))
     .unwrap();
     let mut files = BTreeMap::from([
-        ("runtime/main.js".to_string(), b"export default function register() {}".to_vec()),
-        ("ui/index.html".into(), b"<!doctype html><title>Todo</title>".to_vec()),
+        (
+            "runtime/main.js".to_string(),
+            b"export default function register() {}".to_vec(),
+        ),
+        (
+            "ui/index.html".into(),
+            b"<!doctype html><title>Todo</title>".to_vec(),
+        ),
         ("schemas/tools.json".into(), br#"{"tools":[]}"#.to_vec()),
     ]);
     if target > 0 {
@@ -62,8 +74,10 @@ fn package(version: &str, target: u32) -> (Vec<u8>, TrustedPublisher) {
             .map(|from| json!({"from":from,"to":from+1,"entry":format!("migrations/{:03}.js", from + 1)}))
             .collect();
         manifest.migrations = Some(
-            serde_json::from_value(json!({"directory":"migrations","targetVersion":target,"steps":steps}))
-                .unwrap(),
+            serde_json::from_value(
+                json!({"directory":"migrations","targetVersion":target,"steps":steps}),
+            )
+            .unwrap(),
         );
         for step in 1..=target {
             files.insert(
@@ -78,7 +92,10 @@ fn package(version: &str, target: u32) -> (Vec<u8>, TrustedPublisher) {
         key_id: "developer-1".into(),
         public_key: key.verifying_key(),
     };
-    (pack(&manifest, &files, &key, &Limits::default()).unwrap(), publisher)
+    (
+        pack(&manifest, &files, &key, &Limits::default()).unwrap(),
+        publisher,
+    )
 }
 
 fn trust(connection: &mut Connection, publisher: &TrustedPublisher) -> TrustedPublisherSnapshot {
@@ -91,7 +108,9 @@ fn trust(connection: &mut Connection, publisher: &TrustedPublisher) -> TrustedPu
             decision_id: "trust".into(),
             authority_ref: "kernel-confirmation".into(),
         };
-        publishers.enroll(OWNER, publisher, 0, &decision, 1).unwrap();
+        publishers
+            .enroll(OWNER, publisher, 0, &decision, 1)
+            .unwrap();
     }
     publishers
         .trusted_publisher(OWNER, &publisher.publisher_id, &publisher.key_id)
@@ -244,15 +263,35 @@ fn a_migrated_update_commits_the_new_schema_and_its_migrated_data() {
         write(&mut db.1, old, 0, "todos", json!([])),
         Err(StateError::Installation(InstallationError::AdmissionPaused))
     ));
-    assert_eq!(read(&mut db.1, update.generation, "todos"), Some(json!(["milk"])));
+    assert_eq!(
+        read(&mut db.1, update.generation, "todos"),
+        Some(json!(["milk"]))
+    );
     assert!(matches!(
         write(&mut db.1, update.generation, 2, "todos", json!([])),
         Err(StateError::SchemaMismatch)
     ));
-    write(&mut db.1, update.generation, 1, "todos", json!([{"title":"milk"}])).unwrap();
-    assert!(matches!(step(&mut db.1, update.generation, 2), Err(StateError::SchemaMismatch)));
+    write(
+        &mut db.1,
+        update.generation,
+        1,
+        "todos",
+        json!([{"title":"milk"}]),
+    )
+    .unwrap();
+    assert!(matches!(
+        step(&mut db.1, update.generation, 2),
+        Err(StateError::SchemaMismatch)
+    ));
     step(&mut db.1, update.generation, 1).unwrap();
-    write(&mut db.1, update.generation, 2, "todos", json!({"items":[{"title":"milk"}]})).unwrap();
+    write(
+        &mut db.1,
+        update.generation,
+        2,
+        "todos",
+        json!({"items":[{"title":"milk"}]}),
+    )
+    .unwrap();
     step(&mut db.1, update.generation, 2).unwrap();
     commit(&mut db.1, &update, &trust).unwrap();
     assert_eq!(schema(&mut db.1), 2);
@@ -260,7 +299,14 @@ fn a_migrated_update_commits_the_new_schema_and_its_migrated_data() {
         read(&mut db.1, update.generation, "todos"),
         Some(json!({"items":[{"title":"milk"}]}))
     );
-    write(&mut db.1, update.generation, 2, "todos", json!({"items":[]})).unwrap();
+    write(
+        &mut db.1,
+        update.generation,
+        2,
+        "todos",
+        json!({"items":[]}),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -284,9 +330,9 @@ fn a_commit_is_refused_until_every_step_is_reported() {
     let (update, trust) = updating(&mut db, 1);
     assert!(matches!(
         commit(&mut db.1, &update, &trust),
-        Err(VerifiedStageError::Installation(InstallationError::Invalid(
-            "data migration incomplete"
-        )))
+        Err(VerifiedStageError::Installation(
+            InstallationError::Invalid("data migration incomplete")
+        ))
     ));
     step(&mut db.1, update.generation, 1).unwrap();
     commit(&mut db.1, &update, &trust).unwrap();
@@ -301,9 +347,9 @@ fn data_is_never_migrated_down() {
     commit(&mut db.1, &update, &trust).unwrap();
     assert!(matches!(
         stage(&mut db.1, "1.0.1", 0, update.generation),
-        Err(VerifiedStageError::Installation(InstallationError::Invalid(
-            "data schema downgrade"
-        )))
+        Err(VerifiedStageError::Installation(
+            InstallationError::Invalid("data schema downgrade")
+        ))
     ));
 }
 
@@ -325,7 +371,14 @@ fn a_rewind_after_a_recorded_step_restarts_every_step_from_the_snapshot() {
     // A run recorded step 1, then wrote at schema 2 before it was stopped.
     write(&mut db.1, generation, 1, "todos", json!([{"title":"milk"}])).unwrap();
     step(&mut db.1, generation, 1).unwrap();
-    write(&mut db.1, generation, 2, "todos", json!({"items":"partial"})).unwrap();
+    write(
+        &mut db.1,
+        generation,
+        2,
+        "todos",
+        json!({"items":"partial"}),
+    )
+    .unwrap();
     // The restarted worker runs from the active schema over the snapshot.
     assert_eq!(rewind(&mut db.1, generation), Some(0));
     assert_eq!(
@@ -337,10 +390,20 @@ fn a_rewind_after_a_recorded_step_restarts_every_step_from_the_snapshot() {
         write(&mut db.1, generation, 2, "todos", json!([])),
         Err(StateError::SchemaMismatch)
     ));
-    assert!(matches!(step(&mut db.1, generation, 2), Err(StateError::SchemaMismatch)));
+    assert!(matches!(
+        step(&mut db.1, generation, 2),
+        Err(StateError::SchemaMismatch)
+    ));
     write(&mut db.1, generation, 1, "todos", json!([{"title":"milk"}])).unwrap();
     step(&mut db.1, generation, 1).unwrap();
-    write(&mut db.1, generation, 2, "todos", json!({"items":[{"title":"milk"}]})).unwrap();
+    write(
+        &mut db.1,
+        generation,
+        2,
+        "todos",
+        json!({"items":[{"title":"milk"}]}),
+    )
+    .unwrap();
     step(&mut db.1, generation, 2).unwrap();
     commit(&mut db.1, &update, &trust).unwrap();
     assert_eq!(schema(&mut db.1), 2);

@@ -225,49 +225,90 @@ impl SessionRuntimeStore {
             );
             // Preview validates the owner and revision without publishing a
             // new viewport or clearing pointers before physical application.
-            let preview = self.state.preview_update_room_environment_viewport_as_actor(
-                &request.session_id, actor.clone(), request.expected_revision, viewport.clone(),
-            ).map_err(|error| room_environment_control_error("environment.viewport.update", error))?;
-            let controlled = self.state.browser_controller_enabled_for_room(&request.session_id);
+            let preview = self
+                .state
+                .preview_update_room_environment_viewport_as_actor(
+                    &request.session_id,
+                    actor.clone(),
+                    request.expected_revision,
+                    viewport.clone(),
+                )
+                .map_err(|error| {
+                    room_environment_control_error("environment.viewport.update", error)
+                })?;
+            let controlled = self
+                .state
+                .browser_controller_enabled_for_room(&request.session_id);
             let reconciliation = if controlled {
-                match self.state.apply_browser_controller_viewport(&request.session_id, &preview).await {
+                match self
+                    .state
+                    .apply_browser_controller_viewport(&request.session_id, &preview)
+                    .await
+                {
                     Ok(reconciliation) => Some(reconciliation),
                     Err(error) => {
                         // Physical failures roll back locally; this also restores
                         // CDP metrics after a later browser-layout failure.
-                        let _ = self.state.restore_browser_controller_viewport(&request.session_id).await;
+                        let _ = self
+                            .state
+                            .restore_browser_controller_viewport(&request.session_id)
+                            .await;
                         return Err(error);
                     }
                 }
-            } else { None };
+            } else {
+                None
+            };
             if let Some(reconciliation) = reconciliation {
-                if let Err(error) = self.state.observe_browser_controller_reconciliation(
-                    &request.session_id, reconciliation,
-                ) {
-                    let _ = self.state.restore_browser_controller_viewport(&request.session_id).await;
+                if let Err(error) = self
+                    .state
+                    .observe_browser_controller_reconciliation(&request.session_id, reconciliation)
+                {
+                    let _ = self
+                        .state
+                        .restore_browser_controller_viewport(&request.session_id)
+                        .await;
                     return Err(error);
                 }
                 if let Err(error) = self.state.update_room_environment_component_health(
-                    &request.session_id, crate::session::EnvironmentComponent::Browser,
-                    crate::session::EnvironmentComponentHealthState::Ready, None,
+                    &request.session_id,
+                    crate::session::EnvironmentComponent::Browser,
+                    crate::session::EnvironmentComponentHealthState::Ready,
+                    None,
                 ) {
-                    let _ = self.state.restore_browser_controller_viewport(&request.session_id).await;
-                    return Err(room_environment_control_error("environment.viewport.update", error));
+                    let _ = self
+                        .state
+                        .restore_browser_controller_viewport(&request.session_id)
+                        .await;
+                    return Err(room_environment_control_error(
+                        "environment.viewport.update",
+                        error,
+                    ));
                 }
             }
             let environment = match self.state.update_room_environment_viewport_as_actor(
-                &request.session_id, actor, request.expected_revision, viewport,
+                &request.session_id,
+                actor,
+                request.expected_revision,
+                viewport,
             ) {
                 Ok(environment) => environment,
                 Err(error) => {
                     if controlled {
-                        let _ = self.state.restore_browser_controller_viewport(&request.session_id).await;
+                        let _ = self
+                            .state
+                            .restore_browser_controller_viewport(&request.session_id)
+                            .await;
                     }
-                    return Err(room_environment_control_error("environment.viewport.update", error));
+                    return Err(room_environment_control_error(
+                        "environment.viewport.update",
+                        error,
+                    ));
                 }
             };
             Ok(LocalDaemonResponse::RoomEnvironmentUpdated { environment })
-        }.await;
+        }
+        .await;
 
         (result, None)
     }

@@ -108,59 +108,130 @@ async fn a_start_fails_at_once_on_a_browser_error_that_waiting_cannot_fix() {
 async fn refused_physical_viewport_does_not_publish_a_new_canonical_revision() {
     let (started, tool, state, session_id) = start_with_reconcile_failures("", 0).await;
     started.expect("initial viewport should start");
-    state.transition_room_environment(&session_id, crate::session::EnvironmentLifecycle::Ready).expect("fixture reaches Ready after controller startup");
-    state.reconcile_room_environment_actors(&session_id, Some(crate::session::DEFAULT_LOCAL_USER_ID)).expect("local actor participates");
-    state.request_room_environment_takeover_as_actor(&session_id, crate::session::EnvironmentActor::new(crate::session::human_environment_actor_id(crate::session::DEFAULT_LOCAL_USER_ID), crate::session::EnvironmentActorKind::Human, "local"), crate::session::InputTarget::Desktop).expect("local user owns Desktop input");
+    state
+        .transition_room_environment(&session_id, crate::session::EnvironmentLifecycle::Ready)
+        .expect("fixture reaches Ready after controller startup");
+    state
+        .reconcile_room_environment_actors(&session_id, Some(crate::session::DEFAULT_LOCAL_USER_ID))
+        .expect("local actor participates");
+    state
+        .request_room_environment_takeover_as_actor(
+            &session_id,
+            crate::session::EnvironmentActor::new(
+                crate::session::human_environment_actor_id(crate::session::DEFAULT_LOCAL_USER_ID),
+                crate::session::EnvironmentActorKind::Human,
+                "local",
+            ),
+            crate::session::InputTarget::Desktop,
+        )
+        .expect("local user owns Desktop input");
     assert!(state.browser_controller_enabled_for_room(&session_id));
     let before = state.room_environment_snapshot(&session_id).unwrap();
-    assert_eq!(before.lifecycle, crate::session::EnvironmentLifecycle::Ready);
-    assert!(before.input_ownership.iter().any(|ownership| ownership.target == crate::session::InputTarget::Desktop && ownership.actor_id == crate::session::human_environment_actor_id(crate::session::DEFAULT_LOCAL_USER_ID)));
+    assert_eq!(
+        before.lifecycle,
+        crate::session::EnvironmentLifecycle::Ready
+    );
+    assert!(before
+        .input_ownership
+        .iter()
+        .any(
+            |ownership| ownership.target == crate::session::InputTarget::Desktop
+                && ownership.actor_id
+                    == crate::session::human_environment_actor_id(
+                        crate::session::DEFAULT_LOCAL_USER_ID
+                    )
+        ));
     // The controller fixture keeps reporting 1280x800. A 1024x768 request
     // therefore fails the real reconciliation dimension check.
     let store = crate::runtime::session_actor::store::SessionRuntimeStore::new(state.clone());
-    let (result, _) = store.update_room_environment_viewport(
-        crate::local::UpdateRoomEnvironmentViewportRequest {
-            session_id: session_id.clone(),
-            expected_revision: before.viewport.revision,
-            viewport: crate::local::RoomEnvironmentViewportRequest {
-                css_width: 1024, css_height: 768, device_scale_factor: 1,
-                desktop_pixel_width: 1024, desktop_pixel_height: 768,
+    let (result, _) = store
+        .update_room_environment_viewport(
+            crate::local::UpdateRoomEnvironmentViewportRequest {
+                session_id: session_id.clone(),
+                expected_revision: before.viewport.revision,
+                viewport: crate::local::RoomEnvironmentViewportRequest {
+                    css_width: 1024,
+                    css_height: 768,
+                    device_scale_factor: 1,
+                    desktop_pixel_width: 1024,
+                    desktop_pixel_height: 768,
+                },
             },
-        }, crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
-    ).await;
-    assert!(matches!(before.lifecycle, crate::session::EnvironmentLifecycle::Ready | crate::session::EnvironmentLifecycle::Degraded));
-    assert!(reconcile_count(&tool) > 1, "must reach physical reconcile, got {result:?}; owners {:?}", before.input_ownership);
-    assert!(result.is_err(), "a refused display must not be an accepted resize: {result:?}");
+            crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .await;
+    assert!(matches!(
+        before.lifecycle,
+        crate::session::EnvironmentLifecycle::Ready
+            | crate::session::EnvironmentLifecycle::Degraded
+    ));
+    assert!(
+        reconcile_count(&tool) > 1,
+        "must reach physical reconcile, got {result:?}; owners {:?}",
+        before.input_ownership
+    );
+    assert!(
+        result.is_err(),
+        "a refused display must not be an accepted resize: {result:?}"
+    );
     let after = state.room_environment_snapshot(&session_id).unwrap();
     assert_eq!(after.viewport, before.viewport);
     assert_eq!(after.actors, before.actors);
-    let (unsupported, _) = store.update_room_environment_viewport(
-        crate::local::UpdateRoomEnvironmentViewportRequest {
-            session_id: session_id.clone(), expected_revision: before.viewport.revision,
-            viewport: crate::local::RoomEnvironmentViewportRequest {
-                css_width: 393, css_height: 844, device_scale_factor: 1,
-                desktop_pixel_width: 391, desktop_pixel_height: 844,
+    let (unsupported, _) = store
+        .update_room_environment_viewport(
+            crate::local::UpdateRoomEnvironmentViewportRequest {
+                session_id: session_id.clone(),
+                expected_revision: before.viewport.revision,
+                viewport: crate::local::RoomEnvironmentViewportRequest {
+                    css_width: 393,
+                    css_height: 844,
+                    device_scale_factor: 1,
+                    desktop_pixel_width: 391,
+                    desktop_pixel_height: 844,
+                },
             },
-        }, crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
-    ).await;
-    assert!(unsupported.is_err(), "unverified physical sizes must be refused");
-    assert_eq!(state.room_environment_snapshot(&session_id).unwrap().viewport, before.viewport);
-    state.update_room_environment_component_health(&session_id,
-        crate::session::EnvironmentComponent::Browser,
-        crate::session::EnvironmentComponentHealthState::Degraded,
-        Some("fixture_previous_failure")).unwrap();
-    let (accepted, _) = store.update_room_environment_viewport(
-        crate::local::UpdateRoomEnvironmentViewportRequest {
-            session_id: session_id.clone(), expected_revision: before.viewport.revision,
-            viewport: crate::local::RoomEnvironmentViewportRequest {
-                css_width: 1280, css_height: 800, device_scale_factor: 1,
-                desktop_pixel_width: 1280, desktop_pixel_height: 800,
+            crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .await;
+    assert!(
+        unsupported.is_err(),
+        "unverified physical sizes must be refused"
+    );
+    assert_eq!(
+        state
+            .room_environment_snapshot(&session_id)
+            .unwrap()
+            .viewport,
+        before.viewport
+    );
+    state
+        .update_room_environment_component_health(
+            &session_id,
+            crate::session::EnvironmentComponent::Browser,
+            crate::session::EnvironmentComponentHealthState::Degraded,
+            Some("fixture_previous_failure"),
+        )
+        .unwrap();
+    let (accepted, _) = store
+        .update_room_environment_viewport(
+            crate::local::UpdateRoomEnvironmentViewportRequest {
+                session_id: session_id.clone(),
+                expected_revision: before.viewport.revision,
+                viewport: crate::local::RoomEnvironmentViewportRequest {
+                    css_width: 1280,
+                    css_height: 800,
+                    device_scale_factor: 1,
+                    desktop_pixel_width: 1280,
+                    desktop_pixel_height: 800,
+                },
             },
-        }, crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
-    ).await;
+            crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .await;
     accepted.expect("a verified resize should commit");
     let committed = state.room_environment_snapshot(&session_id).unwrap();
     assert_eq!(committed.viewport.revision, before.viewport.revision + 1);
-    assert!(committed.health.iter().any(|health| health.component == crate::session::EnvironmentComponent::Browser
+    assert!(committed.health.iter().any(|health| health.component
+        == crate::session::EnvironmentComponent::Browser
         && health.state == crate::session::EnvironmentComponentHealthState::Ready));
 }
