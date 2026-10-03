@@ -911,6 +911,15 @@ fn an_idle_stop_keeps_a_worker_whose_wake_was_admitted_after_its_idle_check() {
 }
 
 fn assert_call_waits_at_start_checkpoint(checkpoint: StartCheckpoint) {
+}
+
+#[test]
+fn full_receipt_journal_stops_and_reaps_a_live_worker() {
+    use crate::local::{
+        AppRequestErrorCode, AppWorkerAction, ControlAppWorkerRequest, LocalDaemonRequest,
+        LocalDaemonResponse,
+    };
+    use crate::runtime::command::KernelCommand;
     let scratch = Scratch::new();
     let runtime = runtime();
     let store = scratch.store();
@@ -929,6 +938,9 @@ fn assert_call_waits_at_start_checkpoint(checkpoint: StartCheckpoint) {
                 .recv_timeout(Duration::from_secs(5));
         }
     }));
+}
+
+#[test]
     control
         .lifecycle()
         .start_active_blocking("alice", "installed", runtime.handle().clone())
@@ -1022,3 +1034,90 @@ fn callable_readiness_refuses_terminal_start_failure() {
 }
 mod admission;
 mod snapshot_restore;
+}
+
+#[test]
+    wait(|| control.active_app_lease("alice", "installed").is_some());
+    let old = control.active_app_lease("alice", "installed").unwrap();
+    let restart = LocalDaemonRequest::ControlAppWorker(ControlAppWorkerRequest {
+        installation_id: "installed".into(),
+        action: AppWorkerAction::Restart,
+    });
+    runtime.block_on(async {
+        for n in 0..crate::runtime_transport::COMMAND_RESULT_CACHE_LIMIT {
+            let command =
+                KernelCommand::from_local_request(format!("fill-{n}"), None, None, &restart);
+            assert_eq!(
+                control
+                    .execute_once("alice", &command, &restart, || async {
+                        LocalDaemonResponse::AppRequestFailed {
+                            code: AppRequestErrorCode::Busy,
+                        }
+                    })
+                    .await,
+                LocalDaemonResponse::AppRequestFailed {
+                    code: AppRequestErrorCode::Busy
+                }
+            );
+        }
+        let stop = LocalDaemonRequest::ControlAppWorker(ControlAppWorkerRequest {
+            installation_id: "installed".into(),
+            action: AppWorkerAction::Stop,
+        });
+        let command = KernelCommand::from_local_request("stop-full", None, None, &stop);
+        let started = Instant::now();
+        let service = control.lifecycle().clone();
+        let result = control
+            .execute_once("alice", &command, &stop, move || async move {
+                tokio::task::spawn_blocking(move || service.stop_blocking("alice", "installed"))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                LocalDaemonResponse::AppWorker {
+                    worker: crate::local::AppWorkerSummary {
+                        installation_id: "installed".into(),
+                        phase: crate::local::AppWorkerPhase::Stopped,
+                        enabled: false,
+                        failure: None,
+                        updated_at_ms: None,
+                    },
+                }
+            })
+            .await;
+        eprintln!(
+            "receipt_capacity_stop_ms={:.3}",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
+        assert_eq!(
+            result,
+            LocalDaemonResponse::AppWorker {
+                worker: crate::local::AppWorkerSummary {
+                    installation_id: "installed".into(),
+                    phase: crate::local::AppWorkerPhase::Stopped,
+                    enabled: false,
+                    failure: None,
+                    updated_at_ms: None
+                }
+            }
+        );
+    });
+    assert!(old.is_stopped());
+    assert!(all_reaped(&observations));
+    assert!(control.active_app_lease("alice", "installed").is_none());
+    let stopped = store
+        .app_worker_status("alice", "installed")
+        .unwrap()
+        .unwrap();
+    assert_eq!(stopped.phase, WorkerPhase::Stopped);
+    assert!(!stopped.desired_running);
+    drop(control);
+    drop(store);
+    let reopened = scratch.store();
+    assert!(
+        !reopened
+            .app_worker_status("alice", "installed")
+            .unwrap()
+            .unwrap()
+            .desired_running
+    );
+}
