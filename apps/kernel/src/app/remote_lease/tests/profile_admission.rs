@@ -392,13 +392,17 @@ fn assert_leased_project_launch_and_refresh(imported_workspace: bool) {
     } else {
         initial.workspace_id().to_string()
     };
+    let mut workspace_ids = vec![initial.workspace_id().into()];
+    if manifest_workspace != initial.workspace_id() {
+        workspace_ids.push(manifest_workspace.clone());
+    }
     let project = app
         .sessions
         .read()
         .prepare_leased_project(
             initial.id(),
             "envlayer5-leased-project",
-            vec![initial.workspace_id().into(), manifest_workspace.clone()],
+            workspace_ids,
         )
         .unwrap();
     let session = app
