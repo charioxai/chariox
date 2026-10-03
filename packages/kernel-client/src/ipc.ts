@@ -1185,9 +1185,14 @@ export class LocalIpcClient {
     return lane === "control" ? this.controlWebsocket : this.eventWebsocket
   }
 
+  /** Connection-local state can reset without becoming an event consumer. */
+  protected onControlConnectionChanged(): void {}
+
   private setWebSocket(lane: KernelSocketLane, socket: WebSocket | null) {
     if (lane === "control") {
+      const changed = this.controlWebsocket !== socket
       this.controlWebsocket = socket
+      if (changed) this.onControlConnectionChanged()
     } else {
       this.eventWebsocket = socket
     }

@@ -1108,12 +1108,15 @@ fn incoming_frame_decode_error(payload: &[u8], error: &serde_json::Error) -> Ker
         Some(request_id) => (
             request_id,
             "invalid_request",
-            format!("invalid request: {error}"),
+            crate::transport::request_decode_error::message("invalid request", error),
         ),
         None => (
             "unknown".to_string(),
             "invalid_frame",
-            format!("invalid kernel transport payload: {error}"),
+            crate::transport::request_decode_error::message(
+                "invalid kernel transport payload",
+                error,
+            ),
         ),
     };
     KernelOutgoingFrame::Response {

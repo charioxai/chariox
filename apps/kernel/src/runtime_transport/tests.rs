@@ -1955,6 +1955,21 @@ fn malformed_local_request_replies_with_its_request_id() {
     }));
     assert_eq!(request_id, "req-unknown-variant");
     assert_eq!(error.code, "invalid_request");
+    assert!(error.message.contains(&format!("This kernel (protocol {}) does not support this request; update the Chariox client or kernel so both match.", crate::local::LOCAL_DAEMON_PROTOCOL_VERSION)));
+}
+
+#[test]
+fn request_decode_refusal_preserves_websocket_correlation_for_unknown_field_shape() {
+    let (request_id, error) = decode_error_reply(serde_json::json!({
+        "type": "request", "request_id": "req-host-shape",
+        "request": { "AcceptAppHostAction": { "session_id": "s", "operation_id": 17 } }
+    }));
+    assert_eq!(request_id, "req-host-shape");
+    assert_eq!(error.code, "invalid_request");
+    assert!(!error.retryable);
+    assert!(error
+        .message
+        .contains("update the Chariox client or kernel so both match"));
 }
 
 #[test]
