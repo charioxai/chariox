@@ -1,3 +1,4 @@
+import { isApprovalShortcut } from "./approval-shortcuts.js"
 import type { RuntimeInteraction, RuntimeSession } from "./cli-types.js"
 import type { InteractionPasskeyProof } from "./ipc-requests.js"
 
@@ -22,6 +23,7 @@ function passkeyRefusal(error: unknown): string | null {
 }
 
 export type KernelApprovalKey = {
+  super?: boolean
   name: string
   ctrl?: boolean
   meta?: boolean
@@ -55,6 +57,7 @@ function passkeyKeyText(event: KernelApprovalKey): string {
 export type KernelApprovalView = {
   open: boolean
   count: number
+  criticalCount: number
   index: number
   interaction: RuntimeInteraction | null
   selected: number | null
@@ -110,7 +113,7 @@ export function createKernelApprovalController(deps: {
     index = Math.min(index, Math.max(0, items.length - 1))
     const interaction = items[index] ?? null
     if (entry && entry.interactionId !== interaction?.id) entry = null
-    return { open, count: items.length, index, interaction,
+    return { open, count: items.length, criticalCount: items.filter(item => item.choices.some(choice => choice.requires_passkey)).length, index, interaction,
       selected, pending: pending !== null, connected: deps.connected(), error,
       passkey: entry ? { length: Array.from(entry.value).length, rememberMinutes: entry.remember } : null }
   }
@@ -262,14 +265,15 @@ export function createKernelApprovalController(deps: {
     dispose() { disposed = true; epoch += 1; close() },
     handleKey(event: KernelApprovalKey): boolean {
       if (event.defaultPrevented) return true
-      if (!open && event.name !== "f8") return false
+      const shortcut = isApprovalShortcut(event)
+      if (!open && !shortcut) return false
       if (!open && !view().count) return false
       event.preventDefault()
       event.stopPropagation()
       claimedInputTurn = true
       queueMicrotask(() => { claimedInputTurn = false })
       if (event.eventType === "release" || event.eventType === "repeat") return true
-      if (event.name === "f8" || (event.name === "escape" && !entry)) {
+      if (shortcut || (event.name === "escape" && !entry)) {
         if (open) close(); else show()
         return true
       }
