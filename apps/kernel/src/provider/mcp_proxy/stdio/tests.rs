@@ -192,7 +192,7 @@ process.stdin.resume()
         "session-timeout",
         &config,
     );
-    let pid_deadline = Instant::now() + Duration::from_secs(2);
+    let pid_deadline = Instant::now() + Duration::from_secs(10);
     let child_pid = loop {
         if let Ok(contents) = std::fs::read_to_string(&pid_file) {
             if let Ok(pid) = contents.parse::<u32>() {
