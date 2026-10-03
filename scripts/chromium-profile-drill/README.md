@@ -5,7 +5,10 @@ on a Linux hosted runner. Nothing launches a browser or Docker during its small
 local contract tests.
 
 The fixture image uses the production slice's immutable Node base, CA bundle,
-Debian snapshot, UID/GID 1001, and exact `slice-screen.sh`, `browser-cdp.mjs`, `tint2rc` and seccomp bytes.
+Debian snapshot, UID/GID 1001, and exact `slice-screen.sh`, `browser-cdp.mjs`, `tint2rc` and seccomp bytes,
+plus the browser lifetime owner (`browser-lifecycle.py`, `browser-upload-store.py`) and the
+controller modules its verified `Browser.close` imports; the contract test derives that import
+closure from `browser-cdp.mjs` and fails when the fixture omits a module.
 `inputs.lock.json` pins those production bytes; intentional production changes
 require updating the pins. The restore pin covers only the extracted production
 functions consumed by the adapter, so unrelated provisioner edits do not invalidate it. Preparation fails if launcher, hashes, image, CA,

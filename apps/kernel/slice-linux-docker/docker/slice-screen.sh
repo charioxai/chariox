@@ -281,7 +281,7 @@ supervise_chromium() {
     if record="$(run_chromium owned "$@" 3>&-)" && [[ -n "$record" ]]; then
       # Wait for this lifetime's browser by recorded identity, never by
       # pattern. A pidfd cannot follow a reused PID; recheck after opening it.
-      python3 - "$ROOT/browser-lifecycle.py" "$record" 3>&- <<'PYTHON' &
+      python3 -B - "$ROOT/browser-lifecycle.py" "$record" 3>&- <<'PYTHON' &
 import importlib.util, json, os, select, sys
 spec = importlib.util.spec_from_file_location("browser_lifecycle", sys.argv[1])
 lifecycle = importlib.util.module_from_spec(spec)

@@ -18,10 +18,21 @@ export function restoreScript(provisioner) {
     'SLICE_HOME_VOLUME="$CHARIOX_SLICE_HOME_VOLUME"',
     'SLICE_SAVED_HOME_ARCHIVE="$CHARIOX_SLICE_SAVED_HOME_ARCHIVE"',
     'SLICE_IMAGE="$CHARIOX_SLICE_DOCKER_IMAGE"',
+    // The production guarded command runner and digest live beside the
+    // provisioner. Quotas stay off and the archive streams through stdin, as
+    // for an unprotected restore without a broker-pinned archive directory.
+    'SCRIPT_DIR="$CHARIOX_SLICE_SCRIPT_DIR"',
+    'SLICE_SAVED_HOME_ARCHIVE_DIR=""',
+    'SLICE_ID="chromium-drill"',
+    'SLICE_OWNER_KERNEL_ID="chromium-drill"',
+    'SLICE_OWNER_MACHINE_ID="chromium-drill"',
+    'SLICE_DISK_LAYER_MB=""',
+    'SLICE_DISK_HOME_MB=""',
     'log() { printf "[fixture-restore] %s\\n" "$*" >&2; }',
     'fail() { log "$*"; exit 1; }',
     section(provisioner, "hash_stdin() {", "runtime_source_revision() {"),
-    section(provisioner, "run_with_timeout() {", "run_with_file_stdin_timeout() {"),
+    section(provisioner, "disk_quota_enabled() {", "apply_layer_disk_quota() {"),
+    section(provisioner, "run_guarded_command() {", "usage() {"),
     section(provisioner, "volume_inspect_reports_not_found() {", "machine_id_hex() {"),
     "prepare_home_volume",
   ].join("\n");

@@ -91,9 +91,7 @@ async fn daemon_health_projection_reports_session_and_agent_mailboxes_inner() {
         attachment_id: attachment.id().to_string(),
         command: "/bin/true".to_string(),
         args: Vec::new(),
-        working_directory: Some(
-            std::env::temp_dir().join(format!("missing-health-worktree-{}", rand::random::<u64>())),
-        ),
+        working_directory: None,
         timeout_ms: Some(1_000),
     });
     let shell_command =

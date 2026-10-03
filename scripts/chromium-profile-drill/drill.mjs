@@ -99,6 +99,7 @@ try {
     PATH: `${join(scratch, "bin")}:${process.env.PATH}`, HOME: join(scratch, "home"), TMPDIR: join(scratch, "tmp"),
     CHARIOX_SLICE_NAME: `chariox-chromium-${owner.id}`, CHARIOX_SLICE_HOME_VOLUME: restoredVolume,
     CHARIOX_SLICE_DOCKER_IMAGE: owner.image, CHARIOX_SLICE_SAVED_HOME_ARCHIVE: archive,
+    CHARIOX_SLICE_SCRIPT_DIR: source,
   } });
   const restoredLabels = JSON.parse(docker(["volume", "inspect", "--format", "{{json .Labels}}", restoredVolume]));
   assert.equal(restoredLabels["io.chariox.chromium-drill"], owner.id);

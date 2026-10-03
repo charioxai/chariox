@@ -10,7 +10,27 @@ import { drillEnvironment } from "./environment.mjs";
 export const repository = fileURLToPath(new URL("../../", import.meta.url));
 export const source = join(repository, "apps/kernel/slice-linux-docker");
 export const fixtureSource = dirname(fileURLToPath(import.meta.url));
-const productionFiles = ["docker/slice-screen.sh", "docker/browser-cdp.mjs", "docker/tint2rc", "chromium-seccomp.json"];
+// The launcher starts and retires Chromium through the release F lifetime owner;
+// its verified Browser.close imports the controller CDP client (closure below).
+const browserCloseModules = [
+  "browser-controller-actions.mjs",
+  "browser-controller-bar.mjs",
+  "browser-controller-cdp.mjs",
+  "browser-controller-compatibility.mjs",
+  "browser-controller-cookie-fence.mjs",
+  "browser-controller-dialogs.mjs",
+  "browser-controller-events.mjs",
+  "browser-controller-files.mjs",
+  "browser-controller-frames.mjs",
+  "browser-controller-history.mjs",
+  "browser-controller-input.mjs",
+  "browser-controller-permissions.mjs",
+  "browser-controller-snapshot.mjs",
+  "browser-controller-upload-staging.mjs",
+];
+const productionFiles = ["docker/slice-screen.sh", "docker/browser-cdp.mjs", "docker/browser-lifecycle.py",
+  "docker/browser-upload-store.py", ...browserCloseModules.map(name => `docker/${name}`), "docker/tint2rc", "chromium-seccomp.json"];
+const launcherFiles = productionFiles.filter(name => name.startsWith("docker/")).map(name => name.slice("docker/".length));
 const digest = bytes => createHash("sha256").update(bytes).digest("hex");
 export function verifyInputs({ sourceRoot = source, fixtureRoot = fixtureSource } = {}) {
   const production = readFileSync(join(sourceRoot, "docker/Dockerfile"), "utf8");
@@ -34,10 +54,21 @@ export function verifyInputs({ sourceRoot = source, fixtureRoot = fixtureSource 
   const browserPackages = "bash chromium chromium-sandbox curl dbus fonts-dejavu fonts-liberation novnc openbox procps python3 tint2 websockify x11-utils x11vnc xdotool xvfb zstd".split(" ");
   assert.deepEqual(packages(fixture).sort(), browserPackages.sort(), "fixture apt package selection drifted");
   for (const name of packages(fixture)) assert.ok(packages(browserStage).includes(name), `fixture apt package drifted: ${name}`);
-  for (const name of ["slice-screen.sh", "browser-cdp.mjs", "tint2rc"]) {
+  for (const name of launcherFiles) {
     assert.ok(browserStage.split("\n").some(line => /^(COPY|COPY --chown=slice:slice) /.test(line)
       && line.endsWith(`apps/kernel/slice-linux-docker/docker/${name} /opt/chariox-slice/${name}`)), `production image omits ${name}`);
   }
+  // A new import of the owned close path must also reach the fixture image.
+  const closure = new Set(), pending = ["browser-cdp.mjs"];
+  while (pending.length > 0) {
+    const name = pending.pop();
+    if (closure.has(name)) continue;
+    closure.add(name);
+    for (const match of readFileSync(join(sourceRoot, "docker", name), "utf8").matchAll(/(?:from|import\()\s*["']\.\/([^"'/]+\.mjs)["']/g)) pending.push(match[1]);
+  }
+  for (const name of closure) assert.ok(launcherFiles.includes(name), `fixture omits browser-cdp dependency ${name}`);
+  const fixtureCopy = fixture.match(/^COPY (.+) \/opt\/chariox-slice\/$/m)?.[1].split(" ") ?? [];
+  assert.deepEqual([...fixtureCopy].sort(), [...launcherFiles].sort(), "fixture launcher COPY drifted from the pinned production files");
   const pins = JSON.parse(readFileSync(join(fixtureRoot, "inputs.lock.json")));
   assert.deepEqual(Object.keys(pins).sort(), [...productionFiles, "restore-script"].sort());
   for (const name of productionFiles) {

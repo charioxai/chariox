@@ -362,9 +362,9 @@ fn remote_cancel_reconciles_a_prompt_the_worker_never_started() {
         let _test_home = RelayTestHome::new();
         let fixture = RemoteQueueFixture::start("remote-queue-cancel").await;
 
-        // Leave the home holding an activated prompt that never reached the
-        // idle worker, the state a lost dispatch leaves behind.
-        let stuck = {
+        // Leave the home holding an admitted prompt whose worker dispatch has
+        // not run yet, the state a lost or delayed dispatch leaves behind.
+        let (stuck, held_dispatch) = {
             let mut app = fixture.app_home.lock().await;
             let queued = PromptQueueItem::new(
                 "pending-draft:stuck",
@@ -375,17 +375,18 @@ fn remote_cancel_reconciles_a_prompt_the_worker_never_started() {
             );
             app.prompt_owner_submit_prepared_prompt(&fixture.session_id, queued, true)
                 .expect("stuck prompt should queue");
-            let prompt_id = app.sessions_mut().reserve_prompt_id();
-            app.prompt_owner_activate_next_queued_prompt_with_prompt_id(
-                &fixture.session_id,
-                &fixture.agent_id,
-                None,
-                prompt_id,
-            )
-            .expect("stuck prompt should activate")
-            .expect("stuck prompt should become active")
+            let (stuck, intent) = crate::app::KernelAgentService::new(&mut app)
+                .admit_next_queued_remote_prompt(&fixture.session_id, &fixture.agent_id, None)
+                .expect("stuck prompt should be admitted")
+                .expect("stuck prompt should become active");
+            (stuck, intent.dispatch)
         };
         assert_eq!(stuck.status(), PromptStatus::Dispatching);
+        assert_eq!(
+            stuck.durable_delivery_phase(),
+            Some(DurablePromptDeliveryPhase::Accepted)
+        );
+        assert_eq!(held_dispatch.prompt_id, stuck.id());
         assert!(matches!(
             fixture
                 .submit(&fixture.attachment_id, "QUEUED_BEHIND_STUCK\n")
@@ -393,6 +394,9 @@ fn remote_cancel_reconciles_a_prompt_the_worker_never_started() {
             PromptSubmissionOutcome::Queued { .. }
         ));
 
+        // The worker never received this prompt, so cancellation cannot ask it
+        // to stop anything: the home durably records the intent and holds the
+        // prompt until its dispatch observes it.
         let LocalDaemonResponse::PromptCancelled { cancellation } = fixture
             .dispatch(
                 "cancel-stuck",
@@ -407,19 +411,43 @@ fn remote_cancel_reconciles_a_prompt_the_worker_never_started() {
             panic!("cancellation should answer with PromptCancelled");
         };
         assert_eq!(cancellation.prompt.id(), stuck.id());
-        assert_eq!(cancellation.prompt.status(), PromptStatus::Cancelled);
-        assert_eq!(
-            cancellation
-                .started_next
-                .as_ref()
-                .map(PromptQueueItem::prompt),
-            Some("QUEUED_BEHIND_STUCK\n")
-        );
+        assert_eq!(cancellation.prompt.status(), PromptStatus::Cancelling);
 
+        // The held dispatch now runs. It must settle the cancelled prompt
+        // without submitting it and hand the queue to the next prompt, so the
+        // agent is not left blocked behind a turn its worker never started.
         fixture
+            .router
+            .runtime_state()
+            .spawn_remote_prompt_dispatch(held_dispatch);
+        let promoted = fixture
             .wait_for_delivered_prompt("QUEUED_BEHIND_STUCK\n")
             .await;
+        assert_ne!(promoted.id(), stuck.id());
         assert!(fixture.queued_prompt_texts().await.is_empty());
+        let settlement = fixture
+            .app_home
+            .lock()
+            .await
+            .operational_history_store()
+            .load_prompt_settlement_event(&fixture.session_id, &fixture.agent_id, stuck.id())
+            .expect("settlement history should load")
+            .expect("the cancelled prompt should have a durable settlement");
+        assert_eq!(
+            settlement
+                .metadata
+                .get(crate::history::PROMPT_SETTLEMENT_STATUS_METADATA_KEY)
+                .and_then(serde_json::Value::as_str),
+            Some("cancelled")
+        );
+        {
+            let mut worker = fixture.app_worker.lock().await;
+            assert!(
+                !RemoteLeaseRuntime::new(&mut worker)
+                    .leased_prompt_receipt_recorded(&fixture.leased_agent_id, stuck.id()),
+                "the cancelled prompt must never reach the worker"
+            );
+        }
 
         fixture.shutdown().await;
     });

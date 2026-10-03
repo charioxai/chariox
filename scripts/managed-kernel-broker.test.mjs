@@ -1134,7 +1134,10 @@ test("MP-08 MP-10 MP-11 all provisioner requests use common owned lifetime", asy
   let cleaned = 0
   const execute = runInNewContext(`${spawnSource}\n${executeSource}\nexecute`, {
     ...archivePolicy, process, Buffer, Set,
-    PROVISIONER: process.execPath, DOCKER_HOST: "unix:///synthetic/unused", SIGNED_BUILD_CONTEXT_DIGEST: "", MAX_OUTPUT_BYTES: 1024,
+    PROVISIONER: process.execPath, DOCKER_HOST: "unix:///synthetic/unused", MAX_OUTPUT_BYTES: 1024,
+    // Phase 1 managed authority: no Local DEV enrollment, no verified build
+    // context, and an accepting protected-layout controller.
+    LOCAL_AUTHORITY: undefined, VERIFIED_BUILD_CONTEXT_DIGEST: "", protectedLayouts: { complete: () => {} },
     validateRequest: () => {},
     provisionerQuotaRequest: () => ({ identity: { containerName: "synthetic-owned" } }),
     diskQuotaMarkerPresent: () => false,

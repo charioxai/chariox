@@ -536,9 +536,6 @@ fn mcp_browser_status_uses_the_room_owned_controller_instead_of_one_shot_cdp() {
 
 #[cfg(unix)]
 async fn mcp_browser_status_uses_the_room_owned_controller_instead_of_one_shot_cdp_inner() {
-    let worktree = crate::test_support::TestWorktree::new(
-        "mcp_browser_status_uses_the_room_owned_controller_instead_of_one_shot_cdp_inner",
-    );
     use std::os::unix::fs::PermissionsExt;
 
     let _guard = crate::env_lock::lock();

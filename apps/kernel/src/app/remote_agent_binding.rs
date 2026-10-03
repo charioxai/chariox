@@ -2714,9 +2714,12 @@ mod tests {
         let listener =
             std::net::TcpListener::bind("127.0.0.1:0").expect("Cloud fixture should bind");
         let address = listener.local_addr().expect("Cloud fixture address");
+        // The window covers daemon bootstrap and slice setup below, which can
+        // take several seconds while the full suite runs in parallel. The
+        // fixture still returns as soon as the request arrives.
         let fixture = std::thread::spawn(move || {
             let (mut stream, _) =
-                accept_cloud_request(&listener, std::time::Duration::from_secs(2))
+                accept_cloud_request(&listener, std::time::Duration::from_secs(30))
                     .expect("accept Cloud request");
             let request = read_http_request(&mut stream);
             let body = r#"{"token":"slice-metadata-token","expiresAt":"2099-01-01T00:00:00Z"}"#;

@@ -9,8 +9,33 @@ pub(crate) fn require_verified_layout(
     record: &SliceRecord,
     operation: &'static str,
 ) -> Result<(), DaemonError> {
+    #[cfg(test)]
+    if TEST_VERIFIED_LAYOUT.with(std::cell::Cell::get) {
+        return Ok(());
+    }
     super::broker::require_capture_preflight(&super::local_docker_container_name(record))
         .map_err(|_| refusal(operation))
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_VERIFIED_LAYOUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Release F's capture-mechanics tests (helper cleanup, stall recovery) run
+/// below the Phase 1 capture preflight. Production never bypasses it: without
+/// a broker-verified layout every save/backup is refused before Docker runs.
+#[cfg(test)]
+pub(crate) fn with_test_verified_layout<T>(run: impl FnOnce() -> T) -> T {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_VERIFIED_LAYOUT.with(|flag| flag.set(false));
+        }
+    }
+    TEST_VERIFIED_LAYOUT.with(|flag| flag.set(true));
+    let _reset = Reset;
+    run()
 }
 
 fn refusal(operation: &'static str) -> DaemonError {

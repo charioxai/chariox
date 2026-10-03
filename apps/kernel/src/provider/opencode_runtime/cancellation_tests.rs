@@ -110,7 +110,8 @@ fn check_error_without_assistant(user_id: &str, status: &str, expect_failure: bo
     let status = status.to_string();
     let server = std::thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(10);
-        for _ in 0..if status == "idle" { 6 } else { 4 } {
+        // One account catalog lookup validates the selected model before admission.
+        for _ in 0..if status == "idle" { 7 } else { 5 } {
             let mut stream = loop {
                 match listener.accept() {
                     Ok((stream, _)) => break stream,
@@ -133,6 +134,15 @@ fn check_error_without_assistant(user_id: &str, status: &str, expect_failure: bo
             }
             let (code, response) = if request.starts_with("POST /session/session-1/prompt_async ") {
                 (202, serde_json::json!({}))
+            } else if request.starts_with("GET /provider ") {
+                // The catalog still lists the model; OpenCode fails it only
+                // after admission, which is the asynchronous error under test.
+                (
+                    200,
+                    serde_json::json!({"all": [{"id": "missing", "name": "Missing",
+                        "models": {"model": {"id": "model", "name": "Stale model"}}}],
+                        "default": {}, "connected": ["missing"]}),
+                )
             } else if request.starts_with("GET /session/status ") {
                 (200, serde_json::json!({"session-1": {"type": status}}))
             } else {

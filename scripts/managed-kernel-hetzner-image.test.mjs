@@ -740,7 +740,11 @@ test("managed Docker authority and publication access remain narrowly separated"
   assert.match(archiveStream, /HOME_ARCHIVE_MINIMUM_FREE_BYTES = policy\.minimumFreeBytes/)
   const archivePolicy = JSON.parse(await readFile(new URL("../apps/kernel/slice-linux-docker/home-archive-policy.json", import.meta.url), "utf8"))
   assert.deepEqual(archivePolicy, { schemaVersion: 1, minimumFreeBytes: 2 * 1024 ** 3, progressTimeoutMs: 300_000 })
-  assert.match(managedBroker, /await capturePrivateHomeArchive\(\{/)
+  // Phase 1 capture admission: the kernel refuses save/backup unless the broker
+  // verifies a protected layout, so the broker captures only that layout. The
+  // protected capture runs as a lease-owned broker producer (release F).
+  assert.match(managedBroker, /protectedLayouts\.requireQuiescedHome\(owner\)/)
+  assert.match(managedBroker, /await spawnBounded\(process\.execPath,\s*\[join\(dirname\(fileURLToPath\(import\.meta\.url\)\), "protected-home-capture\.mjs"\)/)
   assert.match(managedBroker, /await digestPinnedHomeArchive\(archive\.fd, HOME_ARCHIVE_PROGRESS_TIMEOUT_MS, brokerLifetime\.signal\)/)
   assert.match(managedBroker, /verifyManagedHomeArchive/)
   assert.match(managedBroker, /spawnControl\("\/usr\/bin\/mount", \["--bind", "\/proc\/self\/fd\/3", path\]/)

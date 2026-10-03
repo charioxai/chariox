@@ -6349,6 +6349,9 @@ async fn pr364_opencode_discovery_rejects_source_mcp_and_restores_ordinary_confi
     .to_string();
 
     let mut config = DaemonConfig::for_tests();
+    // The worker kernel home owns preparation state. As in production, it is
+    // this worker's CHARIOX_HOME, not the per-test state directory.
+    config.user_config_path = home.join("config.toml");
     config.daemon_id = "worker-kernel".into();
     config.host_machine_id = "worker-machine".into();
     config.relay_public_key = "worker-public-key".into();

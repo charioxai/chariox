@@ -1879,7 +1879,6 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
 mod tests {
     use std::collections::VecDeque;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -2264,11 +2263,19 @@ mod tests {
                 std::process::id()
             ));
             fs::create_dir_all(&root).expect("create test tool root");
+            let source = root.join("controller-tool.source");
+            fs::write(&source, script).expect("write test tool source");
+            // Install the executable from a child process: a writable fd held
+            // by this multi-threaded test process could leak into another
+            // test's fork and make exec fail with ETXTBSY.
             let path = root.join("controller-tool.sh");
-            fs::write(&path, script).expect("write test tool");
-            let mut permissions = fs::metadata(&path).expect("tool metadata").permissions();
-            permissions.set_mode(0o700);
-            fs::set_permissions(&path, permissions).expect("make test tool executable");
+            let installed = std::process::Command::new("install")
+                .args(["-m", "700"])
+                .arg(&source)
+                .arg(&path)
+                .status()
+                .expect("run install for test tool");
+            assert!(installed.success(), "install test tool: {installed}");
             Self { root, path }
         }
 
@@ -2620,7 +2627,7 @@ done
         let started = std::time::Instant::now();
         let error = backend.start().expect_err("health request must time out");
 
-        assert!(error.contains("timed out"));
+        assert!(error.contains("timed out"), "{error}");
         assert!(started.elapsed() < Duration::from_secs(2));
         assert_eq!(
             backend
