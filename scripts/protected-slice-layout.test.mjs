@@ -698,7 +698,41 @@ test("legacy upgrade survives worker recreation, repeated provision, save and re
     const controller = createManagedLayoutController({root, sourceDigest: source, docker, dataOwner: process.getuid()})
     const env = {CHARIOX_SLICE_NAME: container, CHARIOX_SLICE_ID: "slice-upgraded-legacy"}
     assert.equal(controller.prepare("provision", env), null)
-    recordManagedImageProof(controller.imageRoot, source, current)
+    // Start without a managed proof. Exercise the real provisioner build
+    // function and proof CLI, with Docker scoped to synthetic fixture results.
+    assert.throws(() => requireManagedImageProof(controller.imageRoot, source, current.Id))
+    const buildRoot = join(parent, "build"), bin = join(parent, "bin")
+    const moduleDir = join(buildRoot, "apps/kernel/slice-linux-docker")
+    mkdirSync(moduleDir, {recursive: true}); mkdirSync(bin)
+    const proofPath = new URL("../apps/kernel/slice-linux-docker/protected-image-proof.mjs", import.meta.url).pathname
+    symlinkSync(proofPath, join(moduleDir, "protected-image-proof.mjs"))
+    const built = join(parent, "built")
+    writeFileSync(join(bin, "docker"), `#!${process.execPath}
+const fs = require("node:fs"); const args = process.argv.slice(2)
+if (!fs.existsSync(${JSON.stringify(built)})) process.exit(1)
+if (args[0] === "image") process.stdout.write(${JSON.stringify(JSON.stringify([current]))})
+else if (args[0] === "run") process.stdout.write("${"f".repeat(64)}  /opt/chariox-slice/bin/chariox-kernel\\n")
+else if (args[0] !== "rm") process.exit(1)
+`, {mode: 0o700})
+    const provisioner = readFileSync(new URL("../apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh", import.meta.url), "utf8")
+    const build = provisioner.match(/^build_standard_runtime_image\(\) \{\n[\s\S]*?^\}/m)?.[0]
+    assert.ok(build)
+    for (const prebuilt of [false, true]) {
+      if (prebuilt) { mkdirSync(join(moduleDir, "prebuilt")); writeFileSync(join(moduleDir, "prebuilt/.managed-release"), "synthetic") }
+      const result = spawnSync("bash", ["-c", `set -eu
+log() { :; }
+docker_target_arch() { echo amd64; }
+docker_build() { touch "$BUILT_MARKER"; }
+${build}
+build_standard_runtime_image synthetic-standard-image
+`], {encoding: "utf8", env: {...process.env, PATH: `${bin}:${process.env.PATH}`, REPO_ROOT: buildRoot,
+        BUILT_MARKER: built, SLICE_RUNTIME_BUILD_PROFILE: "release", SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL: "3",
+        SLICE_RELAY_PEER_PROTOCOL_VERSION: "69", SLICE_RUNTIME_SOURCE_REVISION: source,
+        CHARIOX_SLICE_PRIVATE_HOST_ROOT: "", CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: source,
+        CHARIOX_SLICE_PROTECTED_IMAGE_PROOF_ROOT: controller.imageRoot}})
+      assert.equal(result.status, 0, result.stderr)
+      assert.equal(requireManagedImageProof(controller.imageRoot, source, current.Id), current.Id)
+    }
     info = {...info, Id: "recreated-container", Image: current.Id}
     controller.complete(env)
     assert.equal(controller.prepare("provision", env), null)

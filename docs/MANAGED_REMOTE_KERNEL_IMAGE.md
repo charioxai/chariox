@@ -331,3 +331,10 @@ Only pre-Apps release F image protocols (relay 58–68), without protected mount
 or environment markers, qualify. New slices and protected slices still require
 the complete verified protected layout; losing its receipt never enables legacy
 capture. Migrate intentionally to a new protected slice to separate credentials.
+
+Pre-upgrade saved images have no broker image proof. For an already retained
+legacy home only, restore preserves release F’s saved-image selection: the
+kernel selects its saved-state image, and the broker requires a release F relay
+label (58–68) with no protected marker. That compatibility fallback is not a
+per-slice image proof. Newly captured legacy images have broker-owned proofs;
+protected restores never use the release F fallback.

@@ -120,6 +120,15 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
     writeProtectedLayoutReceipt(legacyDirectory(), container, current)
     return current
   }
+  function adoptLegacyIfReleaseF(container) {
+    const prior = containerInfo(container)
+    if (!prior) return
+    if (legacyRecord(container)) { legacyReceipt(container); return }
+    const inspected = docker(["image", "inspect", prior.Image])
+    if (inspected.status !== 0) return
+    const images = JSON.parse(inspected.stdout)
+    if (/^(?:5[8-9]|6[0-8])$/.test(images[0]?.Config?.Labels?.["io.chariox.relay-peer-protocol-version"] ?? "")) legacyReceipt(container)
+  }
   function captureOrigin(container, digest) {
     return findRetainedCaptureOrigin(join(root, "capture-origins"), container, digest)
   }
@@ -226,16 +235,7 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
       if (!trusted) return null // Unsigned/unattested contexts never enable capture.
       const container = environment.CHARIOX_SLICE_NAME
       if (!identifier(container) || !identifier(environment.CHARIOX_SLICE_ID)) refuse()
-      if (["provision", "restore-state"].includes(action) && !receipt(container) && !legacyRecord(container)) {
-        const prior = containerInfo(container)
-        if (prior) {
-          const inspected = docker(["image", "inspect", prior.Image])
-          if (inspected.status === 0) {
-            const images = JSON.parse(inspected.stdout)
-            if (/^(?:5[8-9]|6[0-8])$/.test(images[0]?.Config?.Labels?.["io.chariox.relay-peer-protocol-version"] ?? "")) legacyReceipt(container)
-          }
-        }
-      }
+      if (["provision", "restore-state"].includes(action) && !receipt(container)) adoptLegacyIfReleaseF(container)
       if (["provision", "restore-state"].includes(action) && environment.CHARIOX_SLICE_SAVED_HOME_ARCHIVE) {
         // Reject an unknown/missing lineage before creating roots or allowing
         // the provisioner to replace a container/volume. Never fall back to a
@@ -248,6 +248,9 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
         if (legacy) requireLegacyRestoreImage(legacy, images[0])
         else requireManagedRuntimeHash(imageRoot, sourceDigest, images[0].Id)
       }
+      // Trusted standard builds need their proof directory even for mixed
+      // legacy homes. A protected private root is not a build-proof prerequisite.
+      if (["provision", "restore-state"].includes(action)) initialize()
       const existing = receipt(container)
       if (existing) {
         if (existing.ownerSliceId !== environment.CHARIOX_SLICE_ID) refuse()
@@ -262,14 +265,6 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
       if (prior) {
         if (prior.Mounts?.some(mount => mount.Destination === PRIVATE_ROOT)
             || prior.Config?.Env?.some(value => value.startsWith("CHARIOX_SLICE_PRIVATE_ROOT="))) refuse()
-        if (legacyRecord(container)) legacyReceipt(container)
-        else {
-          const inspected = docker(["image", "inspect", prior.Image])
-          if (inspected.status === 0) {
-            const images = JSON.parse(inspected.stdout)
-            if (/^(?:5[8-9]|6[0-8])$/.test(images[0]?.Config?.Labels?.["io.chariox.relay-peer-protocol-version"] ?? "")) legacyReceipt(container)
-          }
-        }
         return null
       }
       const volumes = docker(["volume", "ls", "--format", "{{.Name}}"])
