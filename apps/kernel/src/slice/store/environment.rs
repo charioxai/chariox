@@ -1,5 +1,8 @@
 use super::*;
 
+pub(crate) const ENVIRONMENT_USE_ADMISSION_EXPIRED: &str =
+    "Room Environment operation admission deadline expired before dispatch";
+
 impl SliceStore {
     /// FIFO admission for controller routes and viewer reads. Admitted uses
     /// share the slice, but a queued use waits for a controller route already
@@ -42,8 +45,7 @@ impl SliceStore {
         };
         let timed_out = || DaemonError::LocalTransport {
             operation,
-            message: "Room Environment operation admission deadline expired before dispatch"
-                .to_string(),
+            message: ENVIRONMENT_USE_ADMISSION_EXPIRED.to_string(),
         };
         let queue = tokio::time::timeout_at(deadline, queue.lock_owned())
             .await

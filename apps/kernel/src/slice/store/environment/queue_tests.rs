@@ -73,7 +73,7 @@ async fn environment_queue_deadline_leaves_no_operation_or_waiter() {
             .expect("occupied route must have a bounded wait");
         assert!(error
             .to_string()
-            .contains("deadline expired before dispatch"));
+            .contains(ENVIRONMENT_USE_ADMISSION_EXPIRED));
         drop(raw);
         drop(queued);
         drop(
