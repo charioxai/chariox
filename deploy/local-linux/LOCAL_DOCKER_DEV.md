@@ -50,7 +50,11 @@ Local DEV enrollment explicitly opts its workers into provider sandbox
 compatibility, just as the topology fixture does. The installer requires
 `--allow-provider-sandbox-compatibility` to acknowledge the grant: Docker
 seccomp is disabled, system paths are unmasked, and the selected AppArmor
-profile is used (default `unconfined`). The broker applies this grant only to
+profile is used (default `unconfined`). The grant also adds `SYS_ADMIN`,
+`NET_ADMIN` and `SYS_PTRACE` to the container capability bounding set. This
+DEV engine is rootful and unmapped: container uid 0 maps to host uid 0, including
+when the shipped setuid Bubblewrap helper runs. A DEV host must be selected with
+this complete grant in mind. The broker applies this grant only to
 its enrolled DEV workers; ordinary local slices still use
 `slices.linux.allow_provider_sandbox_compatibility = true` as a separate opt-in.
 The isolation probe still runs and must succeed. On hosts restricting

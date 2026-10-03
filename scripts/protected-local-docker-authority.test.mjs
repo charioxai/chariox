@@ -103,7 +103,7 @@ test("actual provisioner compatibility uses worker revision while first-boot pro
   assert.throws(()=>localDevRuntimeEnvironment({...enrollment,workerRuntimeRevision:undefined}))
 })
 
- test("local DEV installer requires an explicit provider sandbox compatibility grant", async () => {
+test("local DEV installer requires an explicit provider sandbox compatibility grant", async () => {
   const {spawnSync} = await import("node:child_process")
   const installer = new URL("../deploy/local-linux/install-local-docker-dev.py", import.meta.url)
   const result = spawnSync("python3", [installer.pathname], {encoding: "utf8"})
