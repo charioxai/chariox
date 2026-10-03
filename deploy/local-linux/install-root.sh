@@ -260,6 +260,16 @@ install_all() {
     done
   done
 
+  # Probe the parser, not just kernel support: a newer kernel can be paired
+  # with older AppArmor userspace. Compile without loading or touching caches.
+  local needs_apparmor=0
+  if [[ -r $R/sys/module/apparmor/parameters/enabled && "$(cat "$R/sys/module/apparmor/parameters/enabled")" == Y &&
+        -e $R/proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+    needs_apparmor=1
+    apparmor_parser -Q -K "$here/chariox-app-bwrap.apparmor" \
+      || die "this kernel exposes AppArmor user namespace restrictions, but its parser cannot compile the required exception; install a compatible AppArmor 4 parser and ABI 4 policy, then re-run this installer"
+  fi
+
   # Both binaries are used from a private root-owned copy from here on, so the
   # source directory cannot swap what is verified, compared or installed.
   local before after status=0 restart=0
@@ -309,13 +319,18 @@ install_all() {
 
   # 4. Only kernels exposing the AppArmor userns restriction need the ABI 4
   # exception. Bookworm has neither that restriction nor an ABI 4 parser.
-  if [[ -r $R/sys/module/apparmor/parameters/enabled && "$(cat "$R/sys/module/apparmor/parameters/enabled")" == Y &&
-        -e $R/proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+  if (( needs_apparmor )); then
     if put "$here/chariox-app-bwrap.apparmor" "$PROFILE" 0644 || ! profile_loaded; then
       act "load AppArmor profile chariox-app-bwrap" apparmor_parser -r "$PROFILE"
     fi
   else
     say "AppArmor user namespace restriction is unavailable; no profile needed"
+    # The old installer may have written this ABI 4 file before a parse failure.
+    # Remove it so AppArmor does not retry the broken profile on every boot.
+    if [[ -e "$PROFILE" ]]; then
+      ! profile_loaded || act "unload AppArmor profile chariox-app-bwrap" apparmor_parser -R "$PROFILE"
+      remove "$PROFILE"
+    fi
   fi
 
   # 5. Lingering.
