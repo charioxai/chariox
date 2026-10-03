@@ -130,3 +130,17 @@ test("quota accepts only the owning container's legacy or protected generation h
       identity: {...identity, homeVolumeName}}), /identity/)
   }
 })
+
+test("retained home project IDs remain unique, bounded and tracked by durable state", () => {
+  const min = SLICE_DISK_QUOTA_PROJECT_ID_MIN
+  const state = {schemaVersion: 1, nextProjectId: min + 3, reservations: {
+    [sliceDiskQuotaIdentityKey(identity)]: {identity, limits: request.limits,
+      projectIds: {writableLayer: min, persistentHome: min + 2}, retainedHomeProjectIds: [min + 1]},
+  }}
+  assert.equal(validateSliceDiskQuotaState(state), state)
+  for (const ids of [[min], [min + 1, min + 1], [0], "invalid"]) {
+    const invalid = structuredClone(state)
+    invalid.reservations[sliceDiskQuotaIdentityKey(identity)].retainedHomeProjectIds = ids
+    assert.throws(() => validateSliceDiskQuotaState(invalid), /project ID/)
+  }
+})

@@ -203,6 +203,7 @@ export function createSliceDiskQuotaAllocator({ backend, stateStore }) {
     const next = {...record, identity: {...identity}, projectIds: {...record.projectIds,
       persistentHome: allocateProjectIds(state).persistentHome}}
     applyHome(next) // Verify the new volume labels/tree/cap before publication.
+    record.retainedHomeProjectIds = [...(record.retainedHomeProjectIds ?? []), record.projectIds.persistentHome]
     record.identity = next.identity
     record.projectIds = next.projectIds
     persist(state)
@@ -303,7 +304,7 @@ export function createSliceDiskQuotaAllocator({ backend, stateStore }) {
       if (!backend.confirmContainerAndVolumeRemoved(record.identity)) {
         fail("disk quota reservation is retained until Docker container and volume removal are verified")
       }
-      for (const id of Object.values(record.projectIds)) {
+      for (const id of [...(record.retainedHomeProjectIds ?? []), ...Object.values(record.projectIds)]) {
         backend.clearProjectQuota(id)
       }
       delete state.reservations[key]

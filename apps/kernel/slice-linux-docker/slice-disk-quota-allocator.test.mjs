@@ -336,10 +336,18 @@ test("destroy after a protected restore retires every retained home before quota
     if (args[1] === "inspect") return {status: 0, stdout: JSON.stringify([{Name: args[2], Driver: "local", Labels: identityLabels(identity)}])}
     assert.equal(args[1], "rm"); volumes.delete(args[2]); return {status: 0}
   }
-  retireProtectedQuotaHomes([...volumes], generation, docker)
+  // The provisioner already removed the current home; retirement must accept
+  // its exact not-found result while still deleting the retained old home.
+  volumes.delete(generation.homeVolumeName)
+  const afterProvisionerDocker = args => !volumes.has(args[2])
+    ? {status: 1, stderr: `Error: No such volume: ${args[2]}\n`} : docker(args)
+  const beforeRelease = f.getState().reservations[sliceDiskQuotaIdentityKey(identity)]
+  assert.equal(beforeRelease.retainedHomeProjectIds.length, 1)
+  retireProtectedQuotaHomes([identity.homeVolumeName, generation.homeVolumeName], generation, afterProvisionerDocker)
   assert.equal(volumes.size, 0)
   assert.equal(f.allocator.handle({protocolVersion: 1, operation: "release", identity: generation}).released, true)
   assert.equal(Object.keys(f.getState().reservations).length, 0)
+  assert.deepEqual(f.calls.filter(call => call[0] === "clear").map(call => call[1]).sort(), [...beforeRelease.retainedHomeProjectIds, ...Object.values(beforeRelease.projectIds)].sort())
   assert.throws(() => retireProtectedQuotaHomes([identity.homeVolumeName], generation,
     () => ({status: 0, stdout: JSON.stringify([{Name: identity.homeVolumeName, Driver: "local", Labels: {}}])})), /ownership is unverified/)
 })

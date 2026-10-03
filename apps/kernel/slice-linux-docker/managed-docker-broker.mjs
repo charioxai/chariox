@@ -1842,7 +1842,6 @@ async function execute(request) {
   if (quotaCoordinated && request.kind === "provisioner" && request.action === "destroy") {
     const quota = provisionerQuotaRequest(request.environment)
     releaseDiskQuota = diskQuotaMarkerPresent(quota.identity.containerName)
-    if (releaseDiskQuota) retainedQuotaHomes = protectedLayouts.retainedHomeVolumes(quota.identity.containerName)
     try {
       const status = await requestSliceDiskQuota({
         protocolVersion: 1,
@@ -1853,6 +1852,7 @@ async function execute(request) {
     } catch (error) {
       if (!new Set(["ENOENT", "ECONNREFUSED"]).has(error?.code)) releaseDiskQuota = true
     }
+    if (releaseDiskQuota) retainedQuotaHomes = protectedLayouts.retainedHomeVolumes(quota.identity.containerName)
   }
   let prepared
   try {

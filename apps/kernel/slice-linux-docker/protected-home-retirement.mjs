@@ -7,7 +7,7 @@ export function retireProtectedQuotaHomes(volumes, identity, docker) {
   for (const volume of volumes) {
     validateSliceDiskQuotaIdentity({...identity, homeVolumeName: volume})
     const result = docker(["volume", "inspect", volume])
-    if (dockerObjectNotFound(result, "volume", volume)) continue
+    if (result.status === 1 && !result.error && !result.signal && dockerObjectNotFound(result.stderr, "volume", volume)) continue
     if (result.status !== 0) throw new Error("retained quota home inspection failed; reservation is preserved")
     const records = JSON.parse(result.stdout)
     const labels = records?.[0]?.Labels

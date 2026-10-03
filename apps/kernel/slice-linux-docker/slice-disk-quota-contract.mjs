@@ -98,7 +98,7 @@ export function validateSliceDiskQuotaState(state) {
   const containerNames = new Set()
   let maxProjectId = 0
   for (const [key, record] of Object.entries(state.reservations)) {
-    exactKeys(record, ["identity", "limits", "projectIds"], "quota reservation")
+    exactKeys(record, ["identity", "limits", "projectIds", ...(record.retainedHomeProjectIds !== undefined ? ["retainedHomeProjectIds"] : [])], "quota reservation")
     validateSliceDiskQuotaIdentity(record.identity)
     if (key !== sliceDiskQuotaIdentityKey(record.identity)) fail("quota reservation identity key is stale")
     if (containerNames.has(record.identity.containerName)) fail("quota reservation container name is duplicated")
@@ -110,7 +110,8 @@ export function validateSliceDiskQuotaState(state) {
       limits: record.limits,
     })
     exactKeys(record.projectIds, ["writableLayer", "persistentHome"], "quota project IDs")
-    for (const id of Object.values(record.projectIds)) {
+    if (record.retainedHomeProjectIds !== undefined && !Array.isArray(record.retainedHomeProjectIds)) fail("retained home project IDs are invalid")
+    for (const id of [...Object.values(record.projectIds), ...(record.retainedHomeProjectIds ?? [])]) {
       if (!Number.isInteger(id) || id < PROJECT_ID_MIN || id > PROJECT_ID_MAX || projectIds.has(id)) {
         fail("quota project ID is stale or duplicated")
       }
