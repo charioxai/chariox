@@ -81,9 +81,13 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str, agent: &str, tab: &
                 .into_iter()
                 .filter(|reason| message.contains(reason))
                 .collect::<Vec<_>>();
+                let operation = match error {
+                    crate::error::DaemonError::LocalTransport { operation, .. }
+                    | crate::error::DaemonError::RelayTransport { operation, .. } => *operation,
+                    _ => "other",
+                };
                 eprintln!(
-                    "configuration before injection: code={} classes={reasons:?}",
-                    error.code()
+                    "configuration before injection: operation={operation} classes={reasons:?}"
                 );
             } else {
                 eprintln!("configuration settled without its injection marker");
