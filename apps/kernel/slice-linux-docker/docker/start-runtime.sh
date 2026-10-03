@@ -146,6 +146,20 @@ fi
 KERNEL_LOCAL_AUTH_FILE="$PRIVATE_RUNTIME_ROOT/kernel-local-auth.token"
 umask 077
 
+wait_for_kernel_auth_consumption() {
+  local attempt
+  for attempt in $(seq 1 60); do
+    [[ -e "$KERNEL_LOCAL_AUTH_FILE" ]] || return 0
+    if ! screen -ls | grep -E '[.]chariox-slice-kernel[[:space:]]' >/dev/null; then
+      printf '[slice-runtime] kernel exited before consuming local auth token\n' >&2
+      return 1
+    fi
+    sleep 0.25
+  done
+  printf '[slice-runtime] kernel did not consume local auth token\n' >&2
+  return 1
+}
+
 # Start the slice kernel with a fresh single-use local auth token. Extra
 # arguments are environment assignments for this kernel only.
 start_slice_kernel() {
@@ -185,7 +199,7 @@ start_slice_kernel() {
     "$ROOT/bin/chariox-kernel"
   sleep 1
   wait_for_screen_session chariox-slice-kernel kernel
-  [[ ! -e "$KERNEL_LOCAL_AUTH_FILE" ]] || { printf '[slice-runtime] kernel did not consume local auth token\n' >&2; exit 1; }
+  wait_for_kernel_auth_consumption
 }
 
 provider_probe_result="/workspace/.chariox-managed-isolation-probe.result"
