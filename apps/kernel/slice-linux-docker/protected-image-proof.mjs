@@ -56,10 +56,11 @@ export function recordCapturedImageProof(root, sourceDigest, parent, container, 
 
 // The broker's own flattening of a proven parent's stopped or paused container
 // (captured-image-depth.mjs) restarts lineage at one layer with the same runtime.
-export function recordFlattenedImageProof(root, sourceDigest, parent, container, flattened) {
+// `importedImageId` is the ID the helper reported, so a retagged image is never proven.
+export function recordFlattenedImageProof(root, sourceDigest, parent, container, flattened, importedImageId) {
   requireManagedImageProof(root, sourceDigest, parent?.Id)
   const prior = readProtectedLayoutReceipt(root, identity(parent.Id))
-  if (container?.Image !== parent.Id || flattened?.Parent
+  if (container?.Image !== parent.Id || flattened?.Id !== importedImageId || flattened?.Parent
       || flattened?.Config?.User !== "slice"
       || JSON.stringify(flattened.Config?.Env) !== JSON.stringify(container.Config?.Env)
       || JSON.stringify(parent.RootFS?.Layers) !== JSON.stringify(prior.layers)

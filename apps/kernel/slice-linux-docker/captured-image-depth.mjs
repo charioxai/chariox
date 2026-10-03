@@ -123,6 +123,17 @@ export async function flattenContainerImage({ container, image, docker = "docker
   return flattened
 }
 
+// The flatten CLI prints exactly one JSON line with the imported image ID.
+export function flattenedImageId(stdout) {
+  const lines = Buffer.from(stdout ?? "").toString("utf8").trim().split("\n")
+  let reported
+  try { reported = JSON.parse(lines.at(-1)).image } catch { reported = undefined }
+  if (typeof reported !== "string" || !/^sha256:[a-f0-9]{64}$/.test(reported)) {
+    throw new Error("flattened slice capture did not report its image")
+  }
+  return reported
+}
+
 // Commit, or flatten once the parent is too deep. Used by the opt-in Docker
 // regression; the broker and kernel apply the same rule to their own commits.
 export async function captureContainerImage({ container, image, docker = "docker", env = process.env, maxLayers = MAX_CAPTURED_IMAGE_LAYERS }) {

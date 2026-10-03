@@ -2,7 +2,7 @@
 
 import { retireProtectedQuotaHomes } from "./protected-home-retirement.mjs"
 import { recordCapturedImageProof, recordFlattenedImageProof } from "./protected-image-proof.mjs"
-import { captureNeedsFlatten } from "./captured-image-depth.mjs"
+import { captureNeedsFlatten, flattenedImageId } from "./captured-image-depth.mjs"
 import { requireSafeHomeVolume as requireSafeManagedHomeVolume } from "./protected-home-preflight.mjs"
 import { requireSafeLocalHomeVolume } from "./protected-local-home-scan.mjs"
 import { createManagedLayoutController } from "./protected-managed-layout.mjs"
@@ -1992,10 +1992,15 @@ async function execute(request) {
       : await runPrepared()
     if (commitSource && result.status === 0) {
       const captured = inspectDockerObject("image", request.args[2])
+      // A flattened capture is bound to the image ID its helper imported, not to the tag.
+      const imported = flattenCapture ? flattenedImageId(result.stdout) : undefined
+      if (flattenCapture && captured.Id !== imported) fail("flattened slice capture changed before its proof")
       if (legacyCommit) protectedLayouts.recordLegacyImage(request.args[1], commitParent, commitSource, captured,
         {flattened: flattenCapture})
-      else (flattenCapture ? recordFlattenedImageProof : recordCapturedImageProof)(protectedLayouts.imageRoot,
-        VERIFIED_BUILD_CONTEXT_DIGEST, commitParent, commitSource, captured)
+      else if (flattenCapture) recordFlattenedImageProof(protectedLayouts.imageRoot, VERIFIED_BUILD_CONTEXT_DIGEST,
+        commitParent, commitSource, captured, imported)
+      else recordCapturedImageProof(protectedLayouts.imageRoot, VERIFIED_BUILD_CONTEXT_DIGEST,
+        commitParent, commitSource, captured)
     }
     if (request.kind === "docker" && prepared.output && result.status === 0) {
       publishStagedOutput(prepared.output)

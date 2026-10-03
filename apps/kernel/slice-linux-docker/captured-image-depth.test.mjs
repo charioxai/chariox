@@ -5,7 +5,8 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
 import {
-  MAX_CAPTURED_IMAGE_LAYERS, captureContainerImage, captureNeedsFlatten, flattenedConfigMismatches, importChanges,
+  MAX_CAPTURED_IMAGE_LAYERS, captureContainerImage, captureNeedsFlatten, flattenContainerImage, flattenedConfigMismatches,
+  flattenedImageId, importChanges,
 } from "./captured-image-depth.mjs"
 import { recordCapturedImageProof, recordFlattenedImageProof, recordManagedImageProof } from "./protected-image-proof.mjs"
 import { recordLegacyImageProof } from "./legacy-image-proof.mjs"
@@ -69,6 +70,18 @@ test("import restates the container configuration that commit would keep", () =>
   assert.deepEqual(flattenedConfigMismatches(config, { ...config, Env: config.Env.slice(1), User: "root" }), ["Env", "User"])
 })
 
+test("the broker reads the imported image ID from the flatten helper's output", () => {
+  const id = image(42)
+  assert.equal(flattenedImageId(Buffer.from(`noise\n${JSON.stringify({ image: id, layers: 1 })}\n`)), id)
+  for (const output of ["", "{}", '{"image":"latest"}', "not json"]) {
+    assert.throws(() => flattenedImageId(Buffer.from(output)), /did not report its image/)
+  }
+  // The broker refuses to prove a tag that no longer names the imported image.
+  return readFile(new URL("./managed-docker-broker.mjs", import.meta.url), "utf8").then((broker) => {
+    assert.match(broker, /flattenCapture && captured\.Id !== imported\) fail\(/)
+  })
+})
+
 test("a flattened capture restarts protected lineage at one layer and keeps the runtime proof", async () => {
   const root = await privateRoot("flatten-proof")
   try {
@@ -83,9 +96,11 @@ test("a flattened capture restarts protected lineage at one layer and keeps the 
       { ...flat, Parent: base.Id },
       { ...flat, Config: { User: "slice", Env: env.slice(1) } },
       { ...flat, Config: { User: "root", Env: env } },
-    ]) assert.throws(() => recordFlattenedImageProof(root, digest, base, container, refused), /trusted managed runtime/)
-    assert.throws(() => recordFlattenedImageProof(root, `sha256:${"e".repeat(64)}`, base, container, flat))
-    recordFlattenedImageProof(root, digest, base, container, flat)
+    ]) assert.throws(() => recordFlattenedImageProof(root, digest, base, container, refused, refused.Id), /trusted managed runtime/)
+    assert.throws(() => recordFlattenedImageProof(root, `sha256:${"e".repeat(64)}`, base, container, flat, flat.Id))
+    // The tag must still name the image the helper imported.
+    assert.throws(() => recordFlattenedImageProof(root, digest, base, container, flat, image(9)), /trusted managed runtime/)
+    recordFlattenedImageProof(root, digest, base, container, flat, flat.Id)
     const receipt = readProtectedLayoutReceipt(root, flat.Id.slice(7))
     assert.deepEqual([receipt.parentImageId, receipt.layers, receipt.kernelHash], [base.Id, [layer(900)], kernelHash])
     // Later ordinary captures extend the flattened image one layer at a time.
@@ -112,6 +127,34 @@ test("legacy captures accept a flattened image only as one parentless layer", as
     assert.equal(readProtectedLayoutReceipt(root, flat.Id.slice(7)).ownerContainer, layout.sliceId)
   } finally {
     await rm(root, { recursive: true, force: true })
+  }
+})
+
+// Opt in with an existing slice image. The default Desktop save pauses a running
+// slice, so a paused container must flatten exactly like a stopped one, and a
+// running one is refused.
+test("a paused container flattens with its changes and a running one is refused", {
+  skip: !process.env.CHARIOX_SLICE_TEST_IMAGE,
+  timeout: 1_800_000,
+}, async () => {
+  const docker = (...args) => execFileSync("docker", args, { encoding: "utf8", timeout: 600_000, maxBuffer: 16 * 1024 * 1024 }).trim()
+  const name = `chariox-depth-paused-${process.pid}`, tag = `chariox-depth-test:${name}`
+  try {
+    docker("run", "-d", "--name", name, "--user", "0", "--entrypoint", "/bin/sh", process.env.CHARIOX_SLICE_TEST_IMAGE,
+      "-c", "echo paused > /opt/chariox-depth-paused && exec sleep infinity")
+    for (let n = 0; n < 50 && docker("exec", name, "sh", "-c", "cat /opt/chariox-depth-paused 2>/dev/null || true") !== "paused"; n++) {
+      await new Promise((resolve) => setTimeout(resolve, 200))
+    }
+    await assert.rejects(flattenContainerImage({ container: name, image: tag }), /must be stopped or paused/)
+    docker("pause", name)
+    const captured = await captureContainerImage({ container: name, image: tag, maxLayers: 1 })
+    assert.equal(captured.flattened, true)
+    assert.equal(captured.image.RootFS.Layers.length, 1)
+    assert.equal(docker("inspect", "--format", "{{.State.Paused}}", name), "true")
+    assert.equal(docker("run", "--rm", "--network", "none", "--user", "0", "--entrypoint", "/bin/cat", tag, "/opt/chariox-depth-paused"), "paused")
+  } finally {
+    execFileSync("docker", ["rm", "-f", name], { stdio: "ignore" })
+    execFileSync("docker", ["image", "rm", "-f", tag], { stdio: "ignore" })
   }
 })
 

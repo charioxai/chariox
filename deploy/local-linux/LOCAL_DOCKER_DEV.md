@@ -80,9 +80,12 @@ capture whose parent image already has 100 layers instead flattens the stopped
 or paused container into a single layer with the same configuration
 (`apps/kernel/slice-linux-docker/captured-image-depth.mjs`, applied by the
 broker and by a kernel driving Docker directly). Saved images therefore never
-exceed 100 layers. A flattened image shares no layers with its base, so that
-capture needs disk space for the whole root filesystem, and disk admission
-reserves it.
+exceed 100 layers. A flattened image shares no layers with its base, so a
+flattening capture needs disk space for the whole root filesystem, and disk
+admission reserves it. The cost repeats: a container keeps the image it was
+created from, so every capture of a slice running on an image with 100 or more
+layers flattens (and a desktop save keeps the slice paused for that copy) until
+the slice is restored onto a flattened image.
 
 Build the worker image with the repository's standard path: the provisioner's
 Dockerfile build (`CHARIOX_SLICE_BUILD_IMAGE=always`, or `auto` when the image
@@ -90,8 +93,8 @@ is stale) from `apps/kernel/slice-linux-docker/docker/Dockerfile`. It produces
 about 75 layers, so most save cycles stay ordinary one-layer commits. Validation
 images assembled by adding one layer per changed file on top of a built image
 can start near Docker's limit (a 124-layer candidate image failed Restore before
-this bound existed). Squash such an overlay into one layer, or rebuild from the
-Dockerfile, before enrolling it.
+this bound existed), and every capture from such an image flattens. Squash such
+an overlay into one layer, or rebuild from the Dockerfile, before enrolling it.
 
 A fresh Slice without an explicit workspace uses its own named workspace
 volume. Explicit host workspace binds and development mounts are refused;
