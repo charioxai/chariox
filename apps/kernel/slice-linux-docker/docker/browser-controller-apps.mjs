@@ -4,6 +4,7 @@
 // the tab is blocked at the browser boundary, and popups it opens are closed.
 // `window.chariox.call` is a CDP binding; the kernel answers each call.
 import { BrowserControllerError } from "./browser-controller-cdp.mjs";
+import { placeholderOrigin } from "./browser-app-restore.mjs";
 
 export const APP_ORIGIN_SUFFIX = ".app.chariox.internal";
 const MAX_ASSETS = 256;
@@ -126,7 +127,11 @@ export class AppTabs {
     }
     // Each App view gets its own fullscreen window: its page then covers the
     // desktop exactly, so page and stream coordinates agree (see panels).
-    const { targetId } = await connection.send("Target.createTarget", { url: "about:blank", newWindow: true });
+    // A restored placeholder has no App script or authority. Only an Open
+    // with kernel-verified assets can adopt it, matching the exact origin.
+    const { targetInfos = [] } = await connection.send("Target.getTargets", {});
+    const restored = targetInfos.find(target => target.type === "page" && placeholderOrigin(target.url) === origin);
+    const { targetId } = restored ?? await connection.send("Target.createTarget", { url: "about:blank", newWindow: true });
     const sessionId = await this.browser.ensureTargetSession(connection, targetId);
     this.apps.set(sessionId, { ...app, targetId, panel: null });
     try {

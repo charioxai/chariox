@@ -204,6 +204,9 @@ run_chromium() {
   if ! process_running "chromium.*$CHROME_PROFILE"; then
     clear_chromium_profile_locks
     if chromium_has_restorable_session; then
+      # App URLs cannot be restored until their verified assets and CDP Fetch
+      # interception are reattached. This must finish before Chromium starts.
+      node "$ROOT/browser-app-restore.mjs" "$CHROME_PROFILE"
       chrome_startup_target_args+=(--restore-last-session)
     fi
   fi

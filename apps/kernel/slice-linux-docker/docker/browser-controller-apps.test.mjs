@@ -4,6 +4,7 @@ import test from "node:test";
 import vm from "node:vm";
 
 import { APP_CSP, AppTabs, appOrigin } from "./browser-controller-apps.mjs";
+import { appPlaceholder } from "./browser-app-restore.mjs";
 
 function fakeConnection(targets = []) {
   const sent = [];
@@ -40,6 +41,24 @@ function fakeBrowser() {
 
 const asset = (path, body, type = "text/html") => ({ path, content_type: type, body_base64: Buffer.from(body).toString("base64") });
 
+test("cold restored placeholder is reused only after Fetch and bridge are installed", async () => {
+  const { browser, connection } = fakeBrowser();
+  const origin = appOrigin("todo-1");
+  connection.targets = [{targetId:"restored", type:"page", url:appPlaceholder(origin)},
+    {targetId:"other", type:"page", url:appPlaceholder(appOrigin("other"))}];
+  const tabs = new AppTabs(browser);
+  await tabs.reconcile();
+  assert.equal(connection.sent.some(message => message.method === "Target.closeTarget"), false);
+  const opened = await tabs.open({origin_label:"todo-1", installation_id:"inst-1", assets:[asset("index.html", "hi")]});
+  assert.equal(opened.target_id, "restored");
+  assert.equal(connection.sent.some(message => message.method === "Target.createTarget"), false);
+  const order = connection.sent.map(message => message.method);
+  for (const method of ["Fetch.enable", "Runtime.addBinding", "Page.addScriptToEvaluateOnNewDocument"]) {
+    assert.ok(order.indexOf(method) < order.indexOf("Page.navigate"));
+  }
+  assert.deepEqual(connection.sent.at(-1), {method:"Page.navigate", params:{url:origin + "/"}, sessionId:"s-restored"});
+});
+
 async function opened() {
   const { browser, connection } = fakeBrowser();
   const tabs = new AppTabs(browser);
@@ -56,11 +75,11 @@ test("app origin labels are DNS labels", () => {
 test("open intercepts every request, installs the bridge, and navigates to the App origin", async () => {
   const { connection, result } = await opened();
   assert.deepEqual(result, { target_id: "t1", origin: "https://todo-1.app.chariox.internal" });
-  assert.deepEqual(connection.sent.map((m) => m.method), ["Target.createTarget", "Browser.getWindowForTarget",
+  assert.deepEqual(connection.sent.map((m) => m.method), ["Target.getTargets", "Target.createTarget", "Browser.getWindowForTarget",
     "Browser.getWindowBounds", "Browser.setWindowBounds", "Fetch.enable",
     "Runtime.addBinding", "Page.addScriptToEvaluateOnNewDocument", "Page.navigate"]);
   // Its own fullscreen window: page coordinates are desktop coordinates.
-  assert.equal(connection.sent[0].params.newWindow, true);
+  assert.equal(connection.sent.find(m => m.method === "Target.createTarget").params.newWindow, true);
   assert.equal(connection.windowState, "fullscreen");
   assert.equal(connection.sent.at(-1).params.url, "https://todo-1.app.chariox.internal/");
 });
@@ -90,7 +109,7 @@ test("another installation or origin gets its own window, and a closed Tab a new
   connection.sent.length = 0;
   const reopened = await tabs.open({ origin_label: "todo-1", installation_id: "inst-1", assets: [asset("index.html", "x")] });
   assert.equal(reopened.target_id, "t3");
-  assert.equal(connection.sent[0].method, "Target.createTarget");
+  assert.equal(connection.sent[1].method, "Target.createTarget");
 });
 
 test("bridge call ids differ between documents, so a late answer cannot match a new call", async () => {

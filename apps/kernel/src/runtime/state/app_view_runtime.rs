@@ -179,6 +179,34 @@ impl KernelRuntimeState {
         let mut failures = 0;
         while views.keep_pumping(&session_id) {
             tokio::time::sleep(POLL_INTERVAL).await;
+            let restoring = views.cold_start_views(&session_id);
+            if !restoring.is_empty() {
+                if self
+                    .owned
+                    .slice_store
+                    .environment_slice(&session_id)
+                    .is_some_and(|slice| slice.status == crate::slice::SliceStatus::Running)
+                    && self
+                        .room_environment_snapshot(&session_id)
+                        .is_ok_and(|room| {
+                            room.lifecycle == crate::session::EnvironmentLifecycle::Ready
+                        })
+                {
+                    for binding in restoring {
+                        match self.restore_cold_app_view(&session_id, &binding).await {
+                            Ok(()) | Err(AppRequestErrorCode::NotFound) => {
+                                views.finish_cold_start_view(&session_id, &binding)
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                }
+                // An explicit cold stop retains intent; failures while the
+                // worker is down must not consume the one-time resume or drop
+                // bindings. No old target's view calls run during restoration.
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
             let polled_up_to = views.registrations(&session_id);
             let Some(batch) = self
                 .app_view_command::<BrowserAppViewCalls>(&session_id, BrowserAppViewRequest::Calls)
@@ -239,6 +267,65 @@ impl KernelRuntimeState {
                 tokio::spawn(async move { state.answer_app_view_call(session, call).await });
             }
         }
+    }
+
+    async fn restore_cold_app_view(
+        &self,
+        session: &str,
+        binding: &AppViewBinding,
+    ) -> Result<(), AppRequestErrorCode> {
+        let store = self.owned.durable_state_store.clone();
+        let (owner, installation) = (binding.owner.clone(), binding.installation.clone());
+        let view =
+            tokio::task::spawn_blocking(move || store.app_view_assets(&owner, &installation))
+                .await
+                .map_err(|_| AppRequestErrorCode::StorageUnavailable)?
+                .map_err(|_| AppRequestErrorCode::NotFound)?;
+        let generation = view.generation;
+        let (entry, assets) = view_assets(view);
+        // The worker kernel restarted with the slice. Reacquire its normal
+        // Room controller before sending App commands; home metadata may still
+        // be ready while that worker has no controller lease yet.
+        self.ensure_browser_controller_process_started(session)
+            .await
+            .map_err(|_| AppRequestErrorCode::Conflict)?;
+        let opened: BrowserAppViewOpened = self
+            .app_view_command(
+                session,
+                BrowserAppViewRequest::Open {
+                    origin_label: origin_label(&binding.owner, &binding.installation),
+                    installation_id: binding.installation.clone(),
+                    entry,
+                    assets,
+                },
+            )
+            .await
+            .ok_or(AppRequestErrorCode::Conflict)?;
+        self.app_control().views().register(
+            session,
+            &opened.target_id,
+            AppViewBinding {
+                generation,
+                ..binding.clone()
+            },
+        );
+        // Match normal Open's uninstall race gate: an install may disappear
+        // while the browser command is in flight, after its assets were read.
+        let store = self.owned.durable_state_store.clone();
+        let (owner, installation) = (binding.owner.clone(), binding.installation.clone());
+        if !tokio::task::spawn_blocking(move || {
+            store.active_app_release(&owner, &installation).is_ok()
+        })
+        .await
+        .unwrap_or(false)
+        {
+            self.app_control()
+                .views()
+                .forget_installation(&binding.owner, &binding.installation);
+            return Err(AppRequestErrorCode::NotFound);
+        }
+        let _ = self.reconcile_browser_controller_environment(session).await;
+        Ok(())
     }
 
     /// Marks the Room's App view Tabs and their reserved panels. A panel is in

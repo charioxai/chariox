@@ -656,6 +656,17 @@ impl KernelRuntimeState {
             crate::slice::SliceStatus::Stopping,
             crate::session::unix_epoch_ms(),
         )?;
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        for session in self.owned.slice_store.environment_sessions() {
+            if self
+                .owned
+                .slice_store
+                .environment_slice(&session)
+                .is_some_and(|bound| bound.id == slice.id)
+            {
+                self.app_control().views().suspend_for_cold_start(&session);
+            }
+        }
         self.append_slice_durable_event("slice.updated", &slice)?;
         Ok(slice)
     }

@@ -22,6 +22,7 @@ const requiredOverlayDestinations = [
   ["Selkies viewer module", "/opt/chariox-slice/selkies_viewers.py"],
   ...[
     "browser-controller-actions.mjs",
+    "browser-app-restore.mjs",
     "browser-controller-cdp.mjs",
     "browser-controller-resources.mjs",
     "browser-controller-cookie-fence.mjs",
@@ -102,6 +103,7 @@ test("recovery fails closed on representative required overlay errors before sta
       ["provider bridge", "/opt/chariox-slice/provider-port-bridge.mjs"],
       ["Selkies lifecycle", "/opt/chariox-slice/slice-selkies.py"],
       ["Browser Controller entrypoint", "/opt/chariox-slice/browser-controller.mjs"],
+      ["Browser Controller App restore", "/opt/chariox-slice/browser-app-restore.mjs"],
       ["browser import controller", "/opt/chariox-slice/browser-session-import/controller-cookie-import.mjs"],
     ];
     for (const [label, destination] of rejectedDestinations) {

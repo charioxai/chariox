@@ -17,7 +17,9 @@ for (const session of [null, "Sessions/Session_1", "Last Session", "Current Sess
       const argsFile = join(root, "args.json")
       await mkdir(bin)
       await mkdir(join(profile, "Default", "Sessions"), { recursive: true })
-      if (session) await writeFile(join(profile, "Default", session), "saved-session-fixture")
+      const saved = Buffer.from("534e535303000000", "hex")
+      if (session) await writeFile(join(profile, "Default", session), saved)
+      await writeFile(join(root, "browser-app-restore.mjs"), await readFile(new URL("./docker/browser-app-restore.mjs", import.meta.url)))
       // Only OS/browser boundaries are substituted. Run the full production
       // entry point with private profile state; never touch a user's browser.
       await writeFile(join(bin, "pgrep"), `#!/bin/sh
@@ -51,7 +53,7 @@ require('node:fs').writeFileSync(process.env.CHARIOX_TEST_ARGS, JSON.stringify(p
       assert.ok(args.includes(`--user-data-dir=${profile}`))
       assert.equal(args.slice(0, separator).includes("--no-sandbox"), false)
       assert.equal(args.some(arg => arg.startsWith("--unsafely-treat-insecure-origin-as-secure")), false)
-      if (session) assert.equal(await readFile(join(profile, "Default", session), "utf8"), "saved-session-fixture")
+      if (session) assert.deepEqual(await readFile(join(profile, "Default", session)), saved)
     } finally {
       try {
         const pid = Number(await readFile(join(root, "logs/chromium-supervisor.pid"), "utf8"));
