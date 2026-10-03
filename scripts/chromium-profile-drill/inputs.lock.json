@@ -1,5 +1,5 @@
 {
-  "docker/slice-screen.sh": "8cdb3b08c6268b520b3c1087a674a87881b42cd7218aa54e7966d9354a02b6e5",
+  "docker/slice-screen.sh": "7f2eca03da15167dc614782ca534ef73a357a95716ebb629e817203b11f34bb3",
   "docker/browser-cdp.mjs": "713003620580cd3f14f20824b8f10cb3e028c0ae98cc16bf749b2aa57e6c736e",
   "docker/tint2rc": "44bfe66faa0769967a7a0d32dd5697f9211b31796e89938d245962034344999a",
   "chromium-seccomp.json": "9bca667a1e5f4ff084f2784f37d38d69bee86f1a305ec9dc30d3e1c61b5125b5",
