@@ -1,9 +1,11 @@
 import { parseKeypress } from "@opentui/core"
-import { useKeyboard } from "@opentui/solid"
+import { useKeyboard, useRenderer } from "@opentui/solid"
+import { onCleanup } from "solid-js"
 
 import { createCliStdinKeyController } from "./cli-stdin-key-controller.js"
 import { createFocusedInteractionChoiceController } from "./focused-interaction-choice-controller.js"
 import { createGlobalKeyboardShortcutController } from "./global-keyboard-shortcut-controller.js"
+import { routeInteractionPastes } from "./interaction-paste-routing.js"
 import { createNormalPromptSubmitController } from "./normal-prompt-submit-controller.js"
 import { createPromptKeyDownController } from "./prompt-keydown-controller.js"
 import { createPromptSubmitCoordinator } from "./prompt-submit-coordinator.js"
@@ -31,6 +33,7 @@ type AnyFn = (...args: any[]) => any
 
 export type CliInputRoutingCompositionDeps = {
   handleKernelApprovalKey?: (event: import("./kernel-approval-controller.js").KernelApprovalKey) => boolean
+  openKernelApprovals: () => void
   kernelApprovalOwnsInput?: () => boolean
   client: any
   options: any
@@ -239,6 +242,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     onExit: deps.requestExit,
     onWaiting: deps.requestWaitingRoom,
     onStop: () => requestPromptStop(),
+    onApprovals: deps.openKernelApprovals,
     handleAttachmentCommand: deps.handleAttachmentCommand,
     handleSessionCommand: deps.handleSessionCommand,
     handleProviderCommand: deps.handleProviderCommand,
@@ -499,12 +503,16 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   const submitFocusedInteractionChoice = focusedInteractionChoiceController.submitChoice
   const cycleFocusedInteractionChoice = focusedInteractionChoiceController.cycleChoice
   const handleFocusedInteractionKey = focusedInteractionChoiceController.handleKey
+  onCleanup(routeInteractionPastes(
+    useRenderer().keyInput,
+    focusedInteractionChoiceController.handlePaste,
+    () => deps.kernelApprovalOwnsInput?.() ?? false,
+  ))
 
   const globalKeyboardShortcutController = createGlobalKeyboardShortcutController({
     handleKernelApprovalKey: (event) => deps.handleKernelApprovalKey?.(event) ?? false,
     handleHotkeysToggleShortcut: deps.handleHotkeysToggleShortcut,
     dialogOverlayOpen: deps.dialogOverlayOpen,
-    closeActiveDialogOverlay: deps.closeActiveDialogOverlay,
     requestExit: () => {
       void deps.requestExit()
     },

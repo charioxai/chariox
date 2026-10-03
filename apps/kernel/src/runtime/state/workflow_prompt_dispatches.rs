@@ -1,5 +1,8 @@
 #[derive(Default)]
 pub(super) struct WorkflowPromptDispatches {
+    // MP-08/MP-10/MP-11: synchronous publication settlement defers Project
+    // activation to the same Vault-aware runtime boundary as ordinary turns.
+    pub(super) project_queue_promotions: Vec<(String, String)>,
     pub(super) local: Vec<crate::app::KernelPromptDispatch>,
     pub(super) remote: Vec<crate::app::KernelRemotePromptDispatch>,
     pub(super) starting_provider_runs: Vec<String>,
@@ -17,7 +20,8 @@ pub(super) struct WorkflowPromptDispatches {
 impl WorkflowPromptDispatches {
     #[cfg(test)]
     pub(super) fn is_empty(&self) -> bool {
-        self.local.is_empty()
+        self.project_queue_promotions.is_empty()
+            && self.local.is_empty()
             && self.remote.is_empty()
             && self.starting_provider_runs.is_empty()
             && self.provider_run_retirements.is_empty()
@@ -25,6 +29,8 @@ impl WorkflowPromptDispatches {
     }
 
     pub(super) fn extend(&mut self, other: Self) {
+        self.project_queue_promotions
+            .extend(other.project_queue_promotions);
         self.local.extend(other.local);
         self.remote.extend(other.remote);
         self.starting_provider_runs

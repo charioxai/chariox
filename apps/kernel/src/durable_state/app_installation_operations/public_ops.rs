@@ -20,8 +20,13 @@ pub(crate) struct InstallApprovalChallenge {
     capabilities_digest: String,
     review: serde_json::Value,
     reinstall: bool,
+    /// The deployment a copy installation serves, named in its prompt.
+    deployment_id: Option<String>,
 }
 impl InstallApprovalChallenge {
+    pub(crate) fn deployment_id(&self) -> Option<&str> {
+        self.deployment_id.as_deref()
+    }
     pub(crate) fn installation_id(&self) -> &str {
         &self.binding.token().installation_id
     }
@@ -250,8 +255,7 @@ fn commit(
     operation: InstallOperation,
 ) -> Result<Reply> {
     limit(budget)?;
-    tx.commit()
-        .map_err(|_| InstallOperationError::CommitUnknown)?;
+    tx.commit().map_err(commit_failed)?;
     Ok(Reply::Operation(operation))
 }
 pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Result<Reply> {
@@ -418,8 +422,7 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
                 .map_err(|_| InstallOperationError::Stale)?;
             if matches!(update.decision, CapabilityDecision::Approved { .. }) {
                 limit(&budget)?;
-                tx.commit()
-                    .map_err(|_| InstallOperationError::CommitUnknown)?;
+                tx.commit().map_err(commit_failed)?;
                 return Ok(Reply::Review(InstallReviewDisposition::Approved));
             }
             if update.decision != CapabilityDecision::Pending {
@@ -460,8 +463,7 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
                         )
                         .map_err(|_| InstallOperationError::Stale)?;
                     limit(&budget)?;
-                    tx.commit()
-                        .map_err(|_| InstallOperationError::CommitUnknown)?;
+                    tx.commit().map_err(commit_failed)?;
                     return Ok(Reply::Review(InstallReviewDisposition::Approved));
                 }
             }
@@ -492,8 +494,7 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
                     )
                     .map_err(|_| InstallOperationError::Stale)?;
                 limit(&budget)?;
-                tx.commit()
-                    .map_err(|_| InstallOperationError::CommitUnknown)?;
+                tx.commit().map_err(commit_failed)?;
                 return Ok(Reply::Review(InstallReviewDisposition::Approved));
             }
             let review = current.review.ok_or(InstallOperationError::Storage)?;
@@ -502,10 +503,16 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
             {
                 return Err(InstallOperationError::Storage);
             }
+            let deployment_id: Option<String> = sql(tx
+                .query_row(
+                    "SELECT deployment_id FROM app_installation_deployments WHERE owner_id=?1 AND installation_id=?2",
+                    params![owner, current.token.installation_id],
+                    |row| row.get(0),
+                )
+                .optional())?;
             sql(tx.execute("UPDATE app_installation_operations SET interaction_id=?1,updated_ms=?2 WHERE owner_id=?3 AND request_id=?4",params![interaction_id,now()?,owner,request_id]))?;
             limit(&budget)?;
-            tx.commit()
-                .map_err(|_| InstallOperationError::CommitUnknown)?;
+            tx.commit().map_err(commit_failed)?;
             Ok(Reply::Review(InstallReviewDisposition::Prompt(
                 InstallApprovalChallenge {
                     owner,
@@ -517,6 +524,7 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
                     capabilities_digest: update.release.capabilities_digest,
                     review,
                     reinstall,
+                    deployment_id,
                 },
             )))
         }

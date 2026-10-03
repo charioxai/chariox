@@ -83,9 +83,12 @@ impl AppWorkerOwner {
             phase: Mutex::new(Phase::Starting),
             changed,
             cancellation: process.cancellation(),
+            ending: process.ending(),
             broker: Arc::downgrade(&delegate),
             broker_draining: std::sync::atomic::AtomicBool::new(false),
             migrating: std::sync::atomic::AtomicBool::new(migrating),
+            updating: std::sync::atomic::AtomicBool::new(false),
+            deliveries: std::sync::atomic::AtomicUsize::new(0),
         });
         let (sender, registration) = oneshot::channel();
         let broker = Arc::new(StartupBroker {
@@ -147,7 +150,20 @@ impl StartingAppWorker {
                 _ = owner.peer.closed() => Err(AppWorkerError::Unavailable),
                 _ = tokio::time::sleep(timeout) => Err(AppWorkerError::Deadline),
             }
-        })?;
+        });
+        let report = match report {
+            Ok(report) => report,
+            Err(error) => {
+                // Reap the worker so its exit and bounded output explain why
+                // it never registered; the bytes are untrusted diagnostics.
+                let (installation, generation) = (
+                    owner.catalog.installation_id().to_owned(),
+                    owner.catalog.generation(),
+                );
+                log_startup_exit(error, &installation, generation, owner.finish_blocking());
+                return Err(error);
+            }
+        };
         Ok(RegisteredAppWorker {
             owner,
             registration: report.registration,
@@ -189,7 +205,7 @@ impl RegisteredAppWorker {
             catalog: self.owner.catalog.clone(),
             peer: self.owner.peer.clone(),
             admission: self.owner.admission.clone(),
-            last_used_ms: crate::session::unix_epoch_ms().into(),
+            residency: super::Residency::new(crate::session::unix_epoch_ms()),
         });
         let handle = ActivatedApp(Arc::downgrade(&live));
         {
@@ -315,4 +331,40 @@ fn remote(code: &str) -> RemoteError {
         message: "App worker is not available".into(),
         retryable: Some(false),
     }
+}
+
+fn log_startup_exit(
+    error: AppWorkerError,
+    installation: &str,
+    generation: u64,
+    exit: Result<
+        chariox_app_runtime::worker_process::WorkerExit,
+        chariox_app_runtime::worker_process::WorkerError,
+    >,
+) {
+    let fields = match exit {
+        Ok(exit) => serde_json::json!({
+            "installation_id": installation,
+            "generation": generation,
+            "error": error.to_string(),
+            "exit_code": exit.code,
+            "signal": exit.signal,
+            "failure": exit.failure.map(|failure| failure.to_string()),
+            "stderr_tail": diagnostic_text(&exit.stderr_tail),
+            "stdout_tail": diagnostic_text(&exit.stdout_tail),
+        }),
+        Err(reap) => serde_json::json!({
+            "installation_id": installation,
+            "generation": generation,
+            "error": error.to_string(),
+            "reap": reap.to_string(),
+        }),
+    };
+    crate::logging::warn_with_fields("app.worker", "App worker did not register", fields);
+}
+
+/// Last 2 KiB of worker output with control characters escaped.
+fn diagnostic_text(bytes: &[u8]) -> String {
+    let tail = &bytes[bytes.len().saturating_sub(2048)..];
+    String::from_utf8_lossy(tail).escape_default().to_string()
 }

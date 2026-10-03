@@ -8,7 +8,9 @@ mod invocation;
 mod payload;
 
 use chariox_app_package::{ActionDeclaration, Limits, VerifiedPackage};
-pub use invocation::{Actor, CallerContext, OwnedValidatedToolCall, ValidatedToolCall};
+pub use invocation::{
+    is_context_id, Actor, CallerContext, OwnedValidatedToolCall, ValidatedToolCall,
+};
 use jsonschema::JSONSchema;
 use rusqlite::Transaction;
 use serde_json::Value;
@@ -40,7 +42,9 @@ pub enum CatalogError {
     NameCollision,
     #[error("app_catalog_unknown_tool")]
     UnknownTool,
-    #[error("app_catalog_input")]
+    /// Its text is what a caller (an agent or a view) reads after
+    /// `INVALID_INPUT`, so it is a sentence, not an internal context name.
+    #[error("The input does not match the tool's declared input schema")]
     Input,
     #[error("app_catalog_output")]
     Output,
@@ -85,6 +89,7 @@ pub struct AppCatalog {
     trust: TrustedPublisherSnapshot,
     release: ReleaseMetadata,
     tools: BTreeMap<String, CompiledTool>,
+    clipboard_write: bool,
 }
 
 impl AppCatalog {
@@ -169,6 +174,11 @@ impl AppCatalog {
             trust: trust.clone(),
             release: candidate.release_metadata().clone(),
             tools,
+            clipboard_write: package
+                .manifest()
+                .capabilities
+                .clipboard
+                .contains(&chariox_app_package::ClipboardAccess::Write),
         })
     }
 
@@ -211,6 +221,11 @@ impl AppCatalog {
         &self.release.package_digest
     }
 
+    /// Signed declaration only; the kernel still requires human acceptance.
+    pub fn allows_clipboard_write(&self) -> bool {
+        self.clipboard_write
+    }
+
     /// Discovery data only. Call require_current before publication and then
     /// again at invocation: provider catalogs can remain visible after revoke.
     pub fn tools(&self) -> impl Iterator<Item = &ToolSpec> {
@@ -234,6 +249,16 @@ impl AppCatalog {
         }
         Ok(())
     }
+}
+
+/// Whether `name` is the runtime name of one of `installation`'s tools, so a
+/// caller can recognize a tool while its catalog is withdrawn (an update is
+/// replacing the App). A local name longer than the kept prefix is not
+/// recognized.
+pub fn is_installation_tool_name(name: &str, installation: &str) -> bool {
+    name.strip_prefix("app_")
+        .and_then(|rest| rest.rsplit_once('_'))
+        .is_some_and(|(local, _)| !local.is_empty() && tool_name(installation, local) == name)
 }
 
 fn tool_name(installation: &str, local: &str) -> String {

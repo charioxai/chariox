@@ -39,6 +39,10 @@ pub enum DaemonError {
         "browser controller restarted at generation {runtime_generation} before the operation"
     )]
     BrowserControllerRecoveryRequired { runtime_generation: u64 },
+    /// App open diagnostics use the existing non-retryable request-error
+    /// envelope. This internal error is not a serialized protocol type.
+    #[error("App view unavailable: {message}")]
+    AppViewUnavailable { message: String },
     #[error("internal invariant `{operation}` failed: {message}")]
     InternalInvariant {
         operation: &'static str,
@@ -389,4 +393,21 @@ pub enum DaemonError {
     AgentAliasConflict { session_id: String, alias: String },
     #[error("session `{session_id}` has reached the maximum of {max_agents} agents")]
     AgentLimitReached { session_id: String, max_agents: i32 },
+}
+
+impl DaemonError {
+    /// True when a worker reports that the prompt it was asked to settle is no
+    /// longer active. Relay peers carry that error as text, so the relay
+    /// transport message is matched as well as the local variants.
+    pub(crate) fn is_no_active_prompt(&self) -> bool {
+        match self {
+            Self::NoActivePrompt { .. } => true,
+            Self::LocalTransport { message, .. } | Self::RelayTransport { message, .. } => {
+                message.contains("no active prompt")
+                    || message.contains("NoActivePrompt")
+                    || message.contains("no_active_prompt")
+            }
+            _ => false,
+        }
+    }
 }

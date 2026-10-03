@@ -4,9 +4,10 @@ import { mkdtemp, writeFile, rm, rename, symlink, open } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
-import { AppFileInstaller, formatInstallOperation } from "./app-install-file.js"
+import { AppFileInstaller, FollowLostContact, formatInstallFailure, formatInstallOperation, KernelFailure } from "./app-install-file.js"
 import { AppFileSource, chunkBytes, maxArchiveBytes, InstallFileChanged } from "./app-install-file/source.js"
 import { handleAppSlashCommand } from "./app-command-handler.js"
+import { runAppCommand } from "./app-command.js"
 import { parseSlashCommand, sharedShellCommandForSlashCommand } from "./commands.js"
 
 type Message = Record<string, any>
@@ -129,7 +130,97 @@ test("normal quoted /app install uses current session and only bytes cross the s
   k.status!.phase = "awaiting_approval"
   assert.equal((await installer.status()).phase, "awaiting_approval")
   assert.equal(k.upload!.phase, "aborted")
+  // Approved, waiting for a worker slot: a known, still active phase.
+  k.status!.phase = "queued"
+  assert.equal((await installer.status()).phase, "queued")
   assert.ok(!k.requests.some(v => v.RespondToInteraction))
+})
+
+test("/app install follows its operation and reports each phase through the outcome", async t => {
+  const f = await sourceFixture(t)
+  const k = kernel()
+  const installer = new AppFileInstaller(k.send, () => {}, f.root, 5)
+  t.after(() => installer.dispose())
+  const notices: string[] = []
+  const command = parseSlashCommand('/app install "local App.cxapp"')! as Extract<ReturnType<typeof parseSlashCommand>, { kind: "app" }>
+  const deps = {
+    sendAppRequest: k.send, appFileInstaller: installer, currentAppSessionId: () => "current-session",
+    appendNotice: (value: string) => { notices.push(value) }, flashFooter: (value: string) => assert.fail(value),
+  }
+  // The command returns while the operation waits, so the prompt is free for the approval.
+  await handleAppSlashCommand(deps, command)
+  assert.match(notices.at(-1)!, /^Preparing App\. Operation app-install-/)
+  const reached = async (pattern: RegExp) => {
+    for (let wait = 0; !notices.some(notice => pattern.test(notice)); wait++) {
+      assert.ok(wait < 400, `no notice matching ${pattern}: ${notices.join(" | ")}`)
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+  }
+  k.status!.phase = "awaiting_approval"
+  await reached(/^Awaiting approval/)
+  // Running the same command again (as a lost connection advises) joins the follow: no second report.
+  await handleAppSlashCommand(deps, command)
+  k.status!.phase = "starting"
+  await reached(/^Starting App\./)
+  Object.assign(k.status!, { phase: "committed", installation_id: "app_1", generation: "1" })
+  await reached(/^App operation complete: app_1\. Operation app-install-[^ ]+\.$/)
+  const polls = k.requests.filter(v => v.GetAppInstallOperation).length
+  await new Promise(resolve => setTimeout(resolve, 30))
+  assert.equal(k.requests.filter(v => v.GetAppInstallOperation).length, polls, "polling stops at the outcome")
+  assert.deepEqual(notices.filter(notice => notice.startsWith("App operation")), [notices.at(-1)])
+  assert.equal(notices.filter(notice => notice.startsWith("Starting App")).length, 1)
+  // Many polls, one release of the upload the kernel took into the operation.
+  assert.ok(polls > 3)
+  assert.equal(k.requests.filter(v => v.AbortAppPackageUpload).length, 1)
+})
+
+test("a followed App operation rides out busy status reads and gives up after ten in a row", async t => {
+  const f = await sourceFixture(t)
+  const k = kernel()
+  let busy = 0
+  const send = async (request: Message): Promise<Message> => {
+    if (request.GetAppInstallOperation && busy > 0) { busy -= 1; throw new KernelFailure("busy") }
+    return k.send(request)
+  }
+  const installer = new AppFileInstaller(send, () => {}, f.root)
+  t.after(() => installer.dispose())
+  const started = await installer.install(f.path, "current-session")
+  busy = 3
+  Object.assign(k.status!, { phase: "committed", installation_id: "app_1" })
+  const reports: string[] = []
+  assert.equal((await installer.follow(started, next => reports.push(next.phase), { pollMs: 1 })).phase, "committed")
+  assert.deepEqual(reports, ["committed"])
+
+  const lost = kernel()
+  const lostSend = async (request: Message): Promise<Message> => {
+    if (request.GetAppInstallOperation) throw new KernelFailure("busy")
+    return lost.send(request)
+  }
+  const lostInstaller = new AppFileInstaller(lostSend, () => {}, f.root)
+  t.after(() => lostInstaller.dispose())
+  await assert.rejects(lostInstaller.follow(await lostInstaller.install(f.path, "current-session"), () => {}, { pollMs: 1 }),
+    (error: unknown) => error instanceof FollowLostContact && /^Lost contact with the kernel while following App operation app-install-/.test(error.message))
+})
+
+test("a followed App operation reports its failure, and closing the terminal stops following", async t => {
+  const f = await sourceFixture(t)
+  const k = kernel()
+  const installer = new AppFileInstaller(k.send, () => {}, f.root)
+  t.after(() => installer.dispose())
+  const started = await installer.install(f.path, "current-session")
+  const reports: string[] = []
+  const following = installer.follow(started, next => reports.push(next.phase), { pollMs: 5 })
+  Object.assign(k.status!, { phase: "failed", failure: "app_install_publisher_not_enrolled" })
+  assert.equal((await following).phase, "failed")
+  assert.deepEqual(reports, ["failed"])
+  assert.match(formatInstallOperation((await installer.status())), /^App operation failed\. This publisher must be enrolled/)
+
+  const other = kernel()
+  const closing = new AppFileInstaller(other.send, () => {}, f.root)
+  const pending = await closing.install(f.path, "current-session")
+  const stopped = closing.follow(pending, () => assert.fail("no report after close"), { pollMs: 60_000 })
+  await closing.dispose()
+  assert.equal((await stopped).phase, "preparing")
 })
 
 test("/app update fences the shared upload on the generation it read first", async t => {
@@ -154,8 +245,11 @@ test("/app update fences the shared upload on the generation it read first", asy
   assert.match(request_id, /^app-update-/)
   assert.match(notices.at(-1)!, /Preparing App/)
   await assert.rejects(installer.install(f.path, "current-session"), /Another App installation or update is retained/)
-  assert.equal(formatInstallOperation({ ...k.status!, phase: "committed", installation_id: "todo" } as never), `App operation complete: todo. Operation ${request_id}. Use /app operation for status; /app cancel to cancel before it completes.`)
+  // An ended operation has nothing left to check or cancel.
+  assert.equal(formatInstallOperation({ ...k.status!, phase: "committed", installation_id: "todo" } as never), `App operation complete: todo. Operation ${request_id}.`)
+  assert.equal(formatInstallOperation({ ...k.status!, phase: "starting" } as never), `Starting App. Operation ${request_id}. Use /app operation for status; /app cancel to cancel before it completes.`)
   assert.match(formatInstallOperation({ ...k.status!, phase: "failed", failure: "app_update_schema_downgrade" } as never), /^App operation failed\. This release's data schema is older than the installed App's/)
+  assert.match(formatInstallOperation({ ...k.status!, phase: "queued" } as never), /^Approved; waiting for a free App worker slot to start/)
   assert.deepEqual(installer.retained(), { path: f.path, request: request_id, digest: digest(f.bytes), installation: "todo", begun: true })
   assert.equal(installer.discardRetained(), false)
   k.status!.phase = "committed"
@@ -365,4 +459,74 @@ test("cancelling a lost upload Begin reply recovers its original handle before A
   assert.equal(k.upload!.phase, "aborted")
   assert.ok(!k.requests.some(v => v.PutAppPackageUploadChunk || v.BeginAppInstall))
   await installer.dispose()
+})
+
+test("chariox app install that outlasts its wait says only an approval needs the owner", async t => {
+  for (const [phase, next] of [
+    ["queued", /Still queued after waiting; .* It starts once an App worker slot is free/],
+    ["awaiting_approval", /Still awaiting_approval after waiting; .* Finish it in session s1's terminal/],
+    ["starting", /Still starting after waiting; .* It continues on its own/],
+  ] as const) {
+    const f = await sourceFixture(t)
+    const k = kernel()
+    const send = async (request: Message) => {
+      const reply = await k.send(request)
+      if (request.BeginAppInstall) k.status!.phase = phase
+      return reply
+    }
+    await assert.rejects(runAppCommand(["app", "install", f.path, "--session", "s1"], {
+      createClient: () => ({ send, close: async () => {} }),
+      write: () => {},
+      installWaitMs: 20,
+      installPollMs: 1,
+    }), (error: Error) => {
+      assert.match(error.message, next)
+      if (phase !== "awaiting_approval") assert.doesNotMatch(error.message, /Finish it in session/)
+      return true
+    })
+  }
+})
+
+test("each stable package error code renders its own message (V-PKG-03)", () => {
+  const codes = [
+    "invalid_arguments", "io", "invalid_developer_key", "invalid_archive", "archive_limit", "invalid_path",
+    "duplicate_path", "invalid_manifest", "invalid_schema", "incompatible_protocol", "incompatible_sdk",
+    "incompatible_contract", "incompatible_resource_policy", "untrusted_publisher", "invalid_signature",
+    "integrity_mismatch", "missing_entry", "unexpected_entry", "unsupported_feature",
+  ]
+  const rendered = codes.map((code) => formatInstallFailure(`app_install_package_${code}`))
+  assert.equal(new Set(rendered).size, codes.length, "every code reads differently")
+  for (const message of rendered) assert.doesNotMatch(message, /^Kernel failure:|could not complete/)
+  assert.deepEqual(
+    Object.fromEntries(codes.map((code, index) => [code, rendered[index]])),
+    {
+      invalid_arguments: "The package request was invalid.",
+      io: "The kernel could not read the package.",
+      invalid_developer_key: "The package's developer key is invalid.",
+      invalid_archive: "The file is not a valid .cxapp archive.",
+      archive_limit: "The package exceeds the archive size or file-count limits.",
+      invalid_path: "The package contains an invalid file path.",
+      duplicate_path: "The package contains the same file path twice.",
+      invalid_manifest: "The package manifest is invalid.",
+      invalid_schema: "A tool, event or state schema in the package is invalid.",
+      incompatible_protocol: "The App needs a kernel protocol version this kernel does not support.",
+      incompatible_sdk: "The App was built with an SDK version this kernel does not support.",
+      incompatible_contract: "The App's declared contract is not supported by this kernel.",
+      incompatible_resource_policy: "The App requests more resources than this kernel allows.",
+      untrusted_publisher: "The package's publisher is not trusted by this kernel.",
+      invalid_signature: "The package signature is invalid.",
+      integrity_mismatch: "The package contents do not match its signed digest.",
+      missing_entry: "The package is missing a file its manifest declares.",
+      unexpected_entry: "The package contains a file its manifest does not declare.",
+      unsupported_feature: "The App uses a feature this kernel does not support.",
+    },
+  )
+})
+
+test("release and upload failures render their own messages; inherited keys fall back", () => {
+  const codes = ["invalid_request", "upload_aborted", "upload_digest_mismatch", "release_limit", "release_unsafe", "release_archive_mismatch"]
+  const rendered = codes.map((code) => formatInstallFailure(`app_install_${code}`))
+  assert.equal(new Set(rendered).size, codes.length)
+  for (const message of rendered) assert.doesNotMatch(message, /^Kernel failure:|could not complete/)
+  for (const key of ["constructor", "toString", "__proto__"]) assert.equal(formatInstallFailure(key), "The kernel could not complete the App operation.")
 })

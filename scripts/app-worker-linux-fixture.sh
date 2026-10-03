@@ -30,8 +30,13 @@ for fixture_name in package runtime good-data good-tmp weak-data weak-tmp bad-da
   if [[ "$fixture_name" == runtime || "$fixture_name" == bad-data ]]; then
     fixture_flags="rw,nodev,nosuid,exec,size=8m,mode=0700,uid=$fixture_uid,gid=$fixture_gid"
   fi
+  # Installed runtimes are host-root owned, seen as overflow UID in the worker.
+  if [[ "$fixture_name" == runtime ]]; then
+    fixture_flags="rw,nodev,nosuid,exec,size=8m,mode=0755,uid=0,gid=0"
+  fi
   mount -t tmpfs -o "$fixture_flags" chariox-native-fixture "$fixture_mounts/$fixture_name"
 done
+chmod 755 "$fixture_mounts/package"
 printf 'private supervisor fixture\n' > "$fixture_scratch/secret"
 chmod 600 "$fixture_scratch/secret"
 ln -s "$fixture_scratch/secret" "$fixture_mounts/package/escape"
@@ -40,6 +45,17 @@ cp "$fixture_scratch/bin/chariox-app-worker" "$fixture_scratch/bin/weakened-test
   "$fixture_scratch/bin/libchariox-app-runtime.so" "$fixture_mounts/runtime/"
 mount -o remount,ro,nodev,nosuid,noexec "$fixture_mounts/package"
 mount -o remount,ro,nodev,nosuid,exec "$fixture_mounts/runtime"
+# The unconfined negative control may access only these owned sentinels.
+mkdir -m 755 "$fixture_scratch/unconfined"
+for fixture_name in package data tmp; do
+  mkdir -m 700 "$fixture_scratch/unconfined/$fixture_name"
+  chown "$fixture_uid:$fixture_gid" "$fixture_scratch/unconfined/$fixture_name"
+done
+printf 'owned readable negative-control sentinel\n' > "$fixture_scratch/unconfined/secret"
+chmod 600 "$fixture_scratch/unconfined/secret"
+chown "$fixture_uid:$fixture_gid" "$fixture_scratch/unconfined/secret"
+ln -s "$fixture_scratch/unconfined/secret" "$fixture_scratch/unconfined/package/escape"
+dd if=/dev/zero of="$fixture_scratch/unconfined/package/fixture.bin" bs=4096 count=1 status=none
 # Root controls provisioning only. The harness drops supplementary groups and
 # uses uid/gid in spawn before bundled bwrap executes; no host-root descriptor
 # enters the worker. The private fixture sentinel is the only extra test FD.

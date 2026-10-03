@@ -5,37 +5,43 @@ pub mod agent_prompt_service;
 pub(crate) mod agent_utility_executor;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_backend_broker;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_call_errors;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_connection_broker;
 pub(crate) mod app_control;
 pub(crate) mod app_event_pump;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_file_grant_broker;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_files_broker;
-#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-mod app_snapshot_broker;
-#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-mod app_connection_broker;
-#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-mod app_log_broker;
-#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-mod app_validation_broker;
+pub(crate) mod app_host_broker;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_http;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_install_control;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_lifecycle;
-pub(crate) mod app_views;
 pub(crate) mod app_lock;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_log_broker;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_on_demand;
 pub(crate) mod app_operation_budget;
 mod app_package_preparation;
 mod app_package_upload_control;
 pub(crate) mod app_publisher_control;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_snapshot_broker;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_snapshot_restore;
 mod app_state_broker;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_validation_broker;
+pub(crate) mod app_views;
 pub(crate) mod app_wake_pump;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_worker;
-mod browser_controller;
 pub(crate) mod browser_controller_action;
 pub(crate) mod browser_controller_app_view;
 pub(crate) mod browser_controller_compatibility;
@@ -45,17 +51,18 @@ pub(crate) mod browser_controller_history;
 pub(crate) mod browser_controller_permission;
 pub(crate) mod browser_controller_process;
 pub(crate) mod browser_controller_snapshot;
-pub(crate) mod room_tab_outline;
 pub(crate) mod browser_controller_tab;
 pub(crate) mod browser_import_admission;
 pub(crate) mod browser_import_payload;
 pub mod capability_executor;
 pub(crate) mod capability_registry;
+mod claude_setup_token_login;
 pub(crate) mod cloud_api_client;
 pub(crate) mod cloud_relay_connection_executor;
 pub(crate) mod cloud_relay_control;
 pub(crate) mod cloud_relay_executor;
 pub(crate) mod cloud_relay_login_executor;
+mod cloud_relay_logout;
 pub(crate) mod cloud_relay_pairing_executor;
 pub(crate) mod cloud_relay_profile_store;
 pub(crate) mod cloud_session_control_executor;
@@ -67,20 +74,25 @@ pub(crate) mod computer_input_execution;
 pub(crate) mod credential_enrollment_control;
 pub(crate) mod daemon_health_projection;
 pub(crate) mod debug_bundle_control;
+pub(crate) mod disposable_worker_control;
 pub(crate) mod event_catalog_control;
 pub mod event_log;
 pub(crate) mod external_provider_session_control;
+pub(crate) mod fresh_remote_relay_inventory;
 pub(crate) mod history_executor;
 pub(crate) mod history_requests;
 pub(crate) mod interactive_command_dispatcher;
 pub(crate) mod invite_tokens;
 pub(crate) mod kernel_lifecycle_executor;
+pub(crate) mod kernel_process_identity;
 pub(crate) mod kernel_runtime_role_policy;
 pub(crate) mod managed_bootstrap_observation_control;
 pub(crate) mod managed_context_outbound_control;
 pub(crate) mod managed_context_target_control;
 pub(crate) mod managed_environment_control;
 pub(crate) mod managed_kernel_activity;
+pub(crate) mod managed_kernel_quiescence;
+pub(crate) mod managed_release_update;
 pub(crate) mod metaagent_command_registry;
 pub(crate) mod metaagent_event;
 pub(crate) mod metaagent_event_control;
@@ -106,6 +118,7 @@ pub(crate) mod remote_machine_registry;
 pub(crate) mod remote_relay_inventory;
 pub(crate) mod resource_telemetry;
 pub(crate) mod response_redaction;
+pub(crate) mod room_tab_outline;
 pub mod router;
 pub(crate) mod runtime_lane_cleanup;
 pub(crate) mod runtime_mcp_proxy_dispatcher;

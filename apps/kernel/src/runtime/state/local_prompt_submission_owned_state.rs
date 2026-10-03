@@ -123,6 +123,7 @@ impl KernelRuntimeOwnedState {
         } else {
             prompt.with_id(self.session_store.reserve_prompt_id())
         };
+        let _admission = self.begin_managed_activity_admission()?;
         let outcome = self
             .prompt_state_owner
             .submit_prepared_prompt_with_queue_policy(&session, prompt, force_queue, allow_queue)?;

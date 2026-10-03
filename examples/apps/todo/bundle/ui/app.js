@@ -98,6 +98,33 @@ async function refresh() {
   shown = next
   todos = result.todos
   render()
+  showReminders()
+}
+
+// Reminders only reach a workflow while the reminders automation is active.
+// Say so while a Todo still waits for its reminder; Chariox owns the fix.
+// Chariox cannot pause an automation yet; `paused` reads like `disabled`.
+const OFF = "Reminders are turned off in Chariox."
+const REMINDERS = {
+  paused: OFF,
+  broken: "Reminders are broken. Fix the reminders automation in Chariox.",
+  disabled: OFF,
+  missing: "Reminders are not set up. Add the reminders automation in Chariox.",
+}
+let reminderState = "unknown"
+async function checkReminders() {
+  try {
+    reminderState = (await window.chariox.call("reminder_status", {})).state
+  } catch {
+    reminderState = "unknown"
+  }
+  showReminders()
+}
+function showReminders() {
+  const hint = $("reminders")
+  const message = todos.some((todo) => !todo.done && !todo.reminded && todo.due_at_ms != null) ? REMINDERS[reminderState] : undefined
+  if (hint.textContent !== (message ?? "")) hint.textContent = message ?? ""
+  hint.hidden = !message
 }
 
 // Always re-render afterwards, so a refused change (e.g. a checkbox the
@@ -127,28 +154,9 @@ $("new-todo").addEventListener("submit", async (event) => {
 })
 $("open-only").addEventListener("change", () => render())
 
-// On a wide window, keep the right side for Chariox's private conversation
-// panel: the agent's work shows next to the list, drawn by the terminal. The
-// App only learns that the area is reserved.
-const PANEL_WIDTH = 380
-async function reservePanel() {
-  const panel = window.chariox?.panel
-  if (!panel) return
-  const wide = innerWidth >= 960
-  document.body.classList.toggle("with-panel", wide)
-  try {
-    await (wide
-      ? panel.reserve({ x: innerWidth - PANEL_WIDTH, y: 0, width: PANEL_WIDTH, height: innerHeight })
-      : panel.release())
-  } catch {
-    document.body.classList.remove("with-panel")
-  }
-}
-let resized
-addEventListener("resize", () => { clearTimeout(resized); resized = setTimeout(reservePanel, 150) })
-reservePanel()
-
 // Agents and other views change Todos too; a short poll keeps this view current
 // without any network access.
 refresh()
+checkReminders()
 setInterval(() => { if (!document.hidden) refresh() }, 2000)
+setInterval(() => { if (!document.hidden) checkReminders() }, 15000)

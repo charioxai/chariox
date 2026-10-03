@@ -5,14 +5,14 @@ use super::model::{
     EnvironmentTabRuntimeBinding,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct TabState {
     controller_target_id: String,
     document_id: Option<String>,
     tab: EnvironmentTab,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct TabRegistry {
     tabs: BTreeMap<String, TabState>,
     tab_id_by_controller_target: BTreeMap<String, String>,

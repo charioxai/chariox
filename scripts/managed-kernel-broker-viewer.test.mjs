@@ -3,8 +3,9 @@ import { spawnSync } from "node:child_process"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import { test } from "node:test"
+import { createFileSliceDiskQuotaStateStore } from "../apps/kernel/slice-linux-docker/slice-disk-quota-state-store.mjs"
 
 const broker = fileURLToPath(new URL("../apps/kernel/slice-linux-docker/managed-docker-broker.mjs", import.meta.url))
 
@@ -21,6 +22,8 @@ function provision(action, backend) {
   return { kind: "provisioner", action, files: [], environment: {
     CHARIOX_SLICE_NAME: "chariox-slice-viewer",
     CHARIOX_SLICE_ID: "slice-viewer",
+    CHARIOX_SLICE_OWNER_KERNEL_ID: "kernel-owner",
+    CHARIOX_SLICE_OWNER_MACHINE_ID: "machine-owner",
     CHARIOX_SLICE_HOME_VOLUME: "chariox-slice-viewer-home",
     ...(backend === undefined ? {} : { CHARIOX_SLICE_VIEWER_BACKEND: backend }),
   } }
@@ -56,6 +59,41 @@ test("managed broker accepts complete Room bindings on provision, restore and re
 test("managed broker execution delivers the Room binding to its provisioner child", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-broker-room-execution-"))
   context.after(() => rm(root, { recursive: true, force: true }))
+  const preload = join(root, "fake-docker.cjs")
+  await writeFile(preload, `const assert = require("node:assert/strict")
+const cp = require("node:child_process")
+cp.spawnSync = (command, args) => {
+  assert.equal(command, "/usr/bin/docker")
+  const commands = [
+    ["container", "inspect", "--format", "{{json .Config.Labels}}", "chariox-slice-viewer"],
+    ["volume", "inspect", "--format", "{{json .Labels}}", "chariox-slice-viewer-home"],
+    ["container", "inspect", "--format", "{{json .Mounts}}", "chariox-slice-viewer"],
+  ]
+  assert.ok(commands.some(expected => JSON.stringify(expected) === JSON.stringify(args)), JSON.stringify(args))
+  return args[3] === "{{json .Mounts}}"
+    ? { status: 1, signal: null, stdout: "", stderr: "Error: No such container: chariox-slice-viewer" }
+    : { status: 0, signal: null, stdout: "{}", stderr: "" }
+}
+require("node:module").syncBuiltinESMExports()
+`)
+  const loader = join(root, "fixture-loader.mjs")
+  const quotaState = join(root, "quota", "reservations.json")
+  const quotaStore = createFileSliceDiskQuotaStateStore(quotaState)
+  quotaStore.save(quotaStore.load())
+  const stateStoreUrl = new URL("../apps/kernel/slice-linux-docker/slice-disk-quota-state-store.mjs", import.meta.url).href
+  await writeFile(loader, `export async function load(url, context, next) {
+  const loaded = await next(url, context)
+  if (url !== ${JSON.stringify(pathToFileURL(broker).href)}) return loaded
+  const source = loaded.source.toString().split(String.fromCharCode(10)).slice(1).join(String.fromCharCode(10))
+  if (!source.includes("createSliceDiskQuotaCoordinator()")) throw new Error("broker coordinator fixture seam changed")
+  return { ...loaded, source: 'import { createFileSliceDiskQuotaStateStore } from ' + ${JSON.stringify(JSON.stringify(stateStoreUrl))} + ';\\n' + source.replace("createSliceDiskQuotaCoordinator()", ${JSON.stringify(`createSliceDiskQuotaCoordinator({
+    statePath: ${JSON.stringify(quotaState)},
+    stateStore: createFileSliceDiskQuotaStateStore(${JSON.stringify(quotaState)}),
+    coordinationRoot: ${JSON.stringify(join(root, "quota", "coordination"))},
+    proofRoot: ${JSON.stringify(join(root, "quota", "proofs"))},
+  })`)}) }
+}
+`)
   const provisioner = join(root, "provisioner")
   await writeFile(provisioner, `#!${process.execPath}
 process.stdout.write(JSON.stringify(Object.fromEntries(Object.entries(process.env)
@@ -64,7 +102,7 @@ process.stdout.write(JSON.stringify(Object.fromEntries(Object.entries(process.en
   for (const action of ["provision", "restore-state", "recover"]) {
     const request = provision(action, "selkies")
     Object.assign(request.environment, roomBinding)
-    const result = spawnSync(process.execPath, [broker, "--stdio"], {
+    const result = spawnSync(process.execPath, ["--require", preload, "--experimental-loader", loader, broker, "--stdio"], {
       input: JSON.stringify(request) + "\n", encoding: "utf8", timeout: 5000,
       env: { ...process.env,
         CHARIOX_SLICE_DOCKER_SHARE_ROOT: root,
@@ -112,6 +150,7 @@ test("managed broker permits the exact snapshot quiesce and image integrity comm
     ["unpause", "chariox-slice-viewer"],
     ["image", "inspect", "--format", "{{.Id}}", "chariox-slice-state:viewer-0123456789abcdef"],
     ["image", "inspect", "--format", "{{.Id}}", "chariox-slice-backup:viewer-0123456789abcdef"],
+    ["image", "inspect", "--format", "{{.Id}}", "ubuntu:latest"],
   ]) {
     const result = validate({ kind: "docker", args })
     assert.equal(result.status, 0, `${JSON.stringify(args)}: ${result.stderr}`)
@@ -124,7 +163,7 @@ test("snapshot broker commands cannot target other resources or widen inspection
     ["pause", "other"], ["unpause", "chariox-relay"],
     ["pause", "chariox-slice-viewer", "chariox-slice-second"],
     ["unpause", "--all"],
-    ["image", "inspect", "--format", "{{.Id}}", "ubuntu:latest"],
+    ["image", "inspect", "--format", "{{.Id}}", "--all"],
     ["image", "inspect", "--format", "{{json .}}", "chariox-slice-state:viewer"],
     ["image", "inspect", "chariox-slice-state:viewer"],
     ["image", "inspect", "--format", "{{.Id}}", "chariox-slice-state:viewer", "other"],

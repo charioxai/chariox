@@ -13,6 +13,15 @@ pub(crate) struct RoomEnvironmentRegistry {
 }
 
 impl RoomEnvironmentRegistry {
+    pub(crate) fn environment(&self, session_id: &str) -> Option<&RoomEnvironment> {
+        self.environments_by_session.get(session_id)
+    }
+
+    pub(crate) fn restore(&mut self, environment: RoomEnvironment) {
+        self.environments_by_session
+            .insert(environment.snapshot().session_id, environment);
+    }
+
     pub(crate) fn new() -> Self {
         Self::default()
     }
@@ -51,7 +60,12 @@ impl RoomEnvironmentRegistry {
             .expect("Room Environment must exist after creation");
         match environment.snapshot().lifecycle {
             EnvironmentLifecycle::Stopped => environment.start_runtime()?,
-            EnvironmentLifecycle::Starting | EnvironmentLifecycle::Ready => {}
+            // A degraded Room can retain a running browser after kernel restart.
+            // Controller startup reconciles its health without losing Tabs or
+            // invalidating the restart fence a second time.
+            EnvironmentLifecycle::Starting
+            | EnvironmentLifecycle::Ready
+            | EnvironmentLifecycle::Degraded => {}
             from => {
                 return Err(EnvironmentError::InvalidLifecycleTransition {
                     from,
@@ -171,6 +185,40 @@ impl RoomEnvironmentRegistry {
         Ok(environment.snapshot())
     }
 
+    pub(crate) fn set_browser_bar_visible_as_actor(
+        &mut self,
+        session_id: &str,
+        actor: EnvironmentActor,
+        visible: bool,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        let environment = self
+            .environments_by_session
+            .get_mut(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        environment.set_browser_bar_visible_as_actor(actor, visible)?;
+        Ok(environment.snapshot())
+    }
+
+    pub(crate) fn preview_update_viewport_as_actor(
+        &self,
+        session_id: &str,
+        actor: EnvironmentActor,
+        expected_revision: u64,
+        viewport: CanonicalViewport,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        let mut environment = self
+            .environments_by_session
+            .get(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?
+            .clone();
+        environment.update_viewport_as_actor(actor, expected_revision, viewport)?;
+        Ok(environment.snapshot())
+    }
+
     pub(crate) fn update_viewport_as_actor(
         &mut self,
         session_id: &str,
@@ -245,15 +293,25 @@ impl RoomEnvironmentRegistry {
     pub(crate) fn set_app_tabs(
         &mut self,
         session_id: &str,
-        apps: &std::collections::BTreeMap<String, super::EnvironmentTabApp>,
-    ) -> Result<(), EnvironmentError> {
-        self.environments_by_session
+        apps: std::collections::BTreeMap<String, (String, crate::session::AppPanelLayout)>,
+        agent_id: Option<String>,
+        app_panels: bool,
+    ) -> Result<std::collections::BTreeMap<String, (u32, u32)>, EnvironmentError> {
+        let environment = self
+            .environments_by_session
             .get_mut(session_id)
             .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
                 session_id: session_id.to_string(),
-            })?
-            .set_app_tabs(apps);
-        Ok(())
+            })?;
+        environment.set_app_tabs(apps, agent_id, app_panels);
+        Ok(environment.app_page_sizes())
+    }
+
+    /// A session without a Room has no App panels to update.
+    pub(crate) fn set_panel_agent(&mut self, session_id: &str, agent_id: Option<String>) {
+        if let Some(environment) = self.environments_by_session.get_mut(session_id) {
+            environment.set_panel_agent(agent_id);
+        }
     }
 
     pub(crate) fn controller_tab_binding(
@@ -480,5 +538,55 @@ impl RoomEnvironmentRegistry {
         self.environments_by_session
             .remove(session_id)
             .map(|environment| environment.snapshot())
+    }
+}
+
+#[cfg(test)]
+mod restart_acceptance_tests {
+    use super::*;
+
+    // MP-08/MP-10/MP-11: restart fences input but must retain physical Tab identity.
+    #[test]
+    fn start_after_kernel_restart_preserves_degraded_room_tabs() {
+        let viewport = CanonicalViewport::new(1280, 800, 1, 1280, 800).unwrap();
+        let mut registry = RoomEnvironmentRegistry::new();
+        registry.start("room", viewport.clone()).unwrap();
+        registry
+            .transition("room", EnvironmentLifecycle::Ready)
+            .unwrap();
+        registry
+            .reconcile_controller_tabs(
+                "room",
+                vec![EnvironmentTabObservation {
+                    runtime_target_id: "surviving-target".into(),
+                    document_id: "document-1".into(),
+                    url: "http://localhost/login".into(),
+                    title: "Login".into(),
+                }],
+                Some("surviving-target"),
+            )
+            .unwrap();
+        let before = registry.environment("room").unwrap().snapshot();
+        let durable = serde_json::to_vec(registry.environment("room").unwrap()).unwrap();
+        let mut restored: RoomEnvironment = serde_json::from_slice(&durable).unwrap();
+        restored.reconcile_after_kernel_restart();
+        let fenced = restored.snapshot();
+        assert_eq!(fenced.lifecycle, EnvironmentLifecycle::Degraded);
+        assert!(fenced.runtime_generation > before.runtime_generation);
+        let mut recovered_registry = RoomEnvironmentRegistry::new();
+        recovered_registry.restore(restored);
+        let started = recovered_registry.start("room", viewport).unwrap();
+        assert_eq!(started.lifecycle, EnvironmentLifecycle::Degraded);
+        assert_eq!(started.runtime_generation, fenced.runtime_generation);
+        assert_eq!(started.tabs[0].tab_id, before.tabs[0].tab_id);
+        assert_eq!(
+            recovered_registry
+                .environment("room")
+                .unwrap()
+                .controller_tab_binding(&started.tabs[0].tab_id)
+                .unwrap()
+                .runtime_target_id,
+            "surviving-target"
+        );
     }
 }

@@ -59,6 +59,32 @@ impl KernelRuntimeState {
                     max_safety: args.allow.clone(),
                 };
                 grant.validate_app_binding()?;
+                // Nothing to change for an App already bound to this agent: no
+                // grant, no provider reload and no resumed request. Arming the
+                // reload again replayed the request after each reload, so an
+                // agent asked to bind the App asked again, in a loop.
+                if self
+                    .owned
+                    .agent_store
+                    .get_agent(agent.id())?
+                    .has_extension_grant(crate::extension::ExtensionKind::App, &args.name)
+                {
+                    return Ok((
+                        crate::transport::runtime_tools::RuntimeToolResult {
+                            ok: true,
+                            payload: serde_json::json!({
+                                "granted": true,
+                                "kind": "app",
+                                "name": args.name,
+                                "agent_ref": agent.agent_ref(),
+                                "effective": "already_bound",
+                                "requires_provider_restart": false,
+                                "note": "This App is already bound to you. Nothing changed and no reload follows. Its tools are listed while the App can start; a catalog refresh from an earlier binding change applies after the current turn.",
+                            }),
+                        },
+                        None,
+                    ));
+                }
                 if !self
                     .authorize_agent_app_binding(session_id, agent.id(), agent.id(), &args.name)
                     .await?
@@ -77,18 +103,21 @@ impl KernelRuntimeState {
                 let granted_agent = self
                     .grant_agent_app_for_tool(agent.id(), grant, agent.owner_user_id())
                     .await?;
+                // Listed when it runs or may start on demand (the grant seeded it).
                 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-                let active = self
-                    .app_control()
-                    .active_app_lease(granted_agent.owner_user_id(), &args.name)
-                    .is_some();
+                let active = {
+                    let control = self.app_control();
+                    let owner = granted_agent.owner_user_id();
+                    control.active_app_lease(owner, &args.name).is_some()
+                        || control.is_app_dormant(owner, &args.name)
+                };
                 #[cfg(not(any(
                     target_os = "macos",
                     all(target_os = "linux", target_env = "gnu")
                 )))]
                 let active = false;
                 if active {
-                    let (source, previous) = self
+                    let previous = self
                         .owned
                         .session_store
                         .get_session(session_id)
@@ -97,20 +126,14 @@ impl KernelRuntimeState {
                             self.owned
                                 .prompt_state_owner
                                 .active_prompt_for_agent(&session, granted_agent.id())
-                                .map(|prompt| {
-                                    (
-                                        prompt.source_attachment_id().to_owned(),
-                                        prompt.prompt().to_owned(),
-                                    )
-                                })
+                                .map(|prompt| prompt.prompt().to_owned())
                         })
-                        .unwrap_or_else(|| ("chariox-runtime".into(), String::new()));
+                        .unwrap_or_default();
                     // Providers cache tools. Reuse the actual shared runtime MCP's
                     // established idle reload/resume, not a per-App MCP server.
                     self.remember_pending_runtime_tools_continuation(
                         session_id,
                         granted_agent.id(),
-                        &source,
                         &previous,
                     );
                     (granted_agent, "after_provider_reload", true)
@@ -135,7 +158,7 @@ impl KernelRuntimeState {
                 let granted_agent = self
                     .grant_agent_mcp(agent.id(), args.name.clone(), agent.owner_user_id())
                     .await?;
-                let (source_attachment_id, previous_prompt) = self
+                let previous_prompt = self
                     .owned
                     .session_store
                     .get_session(session_id)
@@ -144,18 +167,12 @@ impl KernelRuntimeState {
                         self.owned
                             .prompt_state_owner
                             .active_prompt_for_agent(&session, granted_agent.id())
-                            .map(|prompt| {
-                                (
-                                    prompt.source_attachment_id().to_string(),
-                                    prompt.prompt().to_string(),
-                                )
-                            })
+                            .map(|prompt| prompt.prompt().to_string())
                     })
-                    .unwrap_or_else(|| ("chariox-runtime".to_string(), String::new()));
+                    .unwrap_or_default();
                 self.remember_pending_mcp_continuation(
                     session_id,
                     granted_agent.id(),
-                    &source_attachment_id,
                     &args.name,
                     &previous_prompt,
                 );
@@ -243,7 +260,16 @@ impl KernelRuntimeState {
                         agent.owner_user_id(),
                     )
                     .await?;
-                (granted_agent, "now", false)
+                {
+                    let (effective, restart) = self.runtime_catalog_grant_effect(
+                        &granted_agent,
+                        agent.has_extension_grant(
+                            crate::extension::ExtensionKind::Script,
+                            &args.name,
+                        ),
+                    );
+                    (granted_agent, effective, restart)
+                }
             }
             "connector" => {
                 let connector_registry = connector_registry()?;
@@ -275,7 +301,16 @@ impl KernelRuntimeState {
                         agent.owner_user_id(),
                     )
                     .await?;
-                (granted_agent, "now", false)
+                {
+                    let (effective, restart) = self.runtime_catalog_grant_effect(
+                        &granted_agent,
+                        agent.has_extension_grant(
+                            crate::extension::ExtensionKind::Connector,
+                            &args.name,
+                        ),
+                    );
+                    (granted_agent, effective, restart)
+                }
             }
             _ => {
                 return Ok((
@@ -298,7 +333,7 @@ impl KernelRuntimeState {
             "effective": effective_when,
             "requires_provider_restart": requires_provider_restart,
             "note": match effective_when {
-                "binding_saved" => "The App binding is saved. Its tools become available when the installation is running and the provider catalog is refreshed.",
+                "binding_saved" => "The App binding is saved. The App is stopped or cannot start, so its tools are not listed; they appear once it can start again.",
                 "after_provider_reload" => "Chariox will reload this provider conversation after the current turn and send an automatic continuation prompt once the MCP is available.",
                 "next_provider_launch" => "MCP grants are rendered into provider-native MCP config when the provider run launches; restart/relaunch the agent provider run before using this MCP.",
                 "now" => "The extension grant is persisted and available immediately in this turn.",

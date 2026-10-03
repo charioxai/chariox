@@ -42,6 +42,7 @@ impl SessionActor {
                 | LocalDaemonRequest::RetryRoomEnvironment(_)
                 | LocalDaemonRequest::UpdateRoomEnvironmentViewport(_)
                 | LocalDaemonRequest::UpdateRoomEnvironmentPointer(_)
+                | LocalDaemonRequest::SetRoomBrowserBar(_)
                 | LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(_)
                 | LocalDaemonRequest::ReleaseRoomEnvironmentInput(_)
                 | LocalDaemonRequest::SubmitRoomEnvironmentAction(_)

@@ -12,8 +12,10 @@ use crate::durable_state::{
 };
 use chariox_app_package::{ExternalFileAccess, VerifiedPackage};
 use chariox_app_runtime::{
-    app_outbox::EventCatalog, wire::RemoteError, worker_peer::BrokerRequest,
-    worker_process::PrivateData,
+    app_outbox::EventCatalog,
+    wire::RemoteError,
+    worker_peer::BrokerRequest,
+    worker_process::{PrivateData, PrivateDataError},
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -154,7 +156,6 @@ impl AppFileGrantBroker {
             .store
             .app_file_pick(&self.owner, self.installation(), &request.operation_id)
             .map_err(|code| error(code, true))?
-            .filter(|pick| pick.generation == self.catalog.generation())
             .ok_or_else(|| error("NOT_FOUND", false))?;
         Ok(reply(&pick))
     }
@@ -177,7 +178,6 @@ impl AppFileGrantBroker {
             .claim_app_file_grant(FileGrantCommand::Claim {
                 owner,
                 installation,
-                generation: self.catalog.generation(),
                 grant_id,
                 now_ms: crate::session::unix_epoch_ms(),
             })
@@ -185,7 +185,14 @@ impl AppFileGrantBroker {
         let published = self
             .data
             .prepare_replace(&request.destination, &file.contents)
-            .map_err(|_| error("INVALID_ARGUMENT", false))
+            .map_err(|failure| match failure {
+                PrivateDataError::Invalid => error("INVALID_ARGUMENT", false),
+                PrivateDataError::StorageFull => super::app_files_broker::storage_full(),
+                // Any other copy that could not be written (for example, a
+                // missing parent directory), as for `atomic_replace`. The grant
+                // is released below, so a later import can succeed.
+                _ => error("APP_FILE_UNAVAILABLE", false),
+            })
             .and_then(|staged| {
                 budget.check().map_err(stopped)?;
                 self.store

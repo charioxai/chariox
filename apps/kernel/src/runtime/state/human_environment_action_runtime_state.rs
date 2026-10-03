@@ -1,4 +1,5 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::time::Instant;
 
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
@@ -21,7 +22,6 @@ use crate::transport::room_browser_controller::{
 use super::KernelRuntimeState;
 
 const HUMAN_ACTION_QUEUE_POLL_INTERVAL: Duration = Duration::from_millis(10);
-const HUMAN_ACTION_QUEUE_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const HUMAN_ACTION_IDEMPOTENCY_KEY_MAX_BYTES: usize = 128;
 
 impl KernelRuntimeState {
@@ -36,6 +36,9 @@ impl KernelRuntimeState {
             .for_room(&request.session_id)
             .read_owned()
             .await;
+        // One admission budget covers both the action ledger and controller
+        // slot. Moving from one queue to the other must not reset the clock.
+        let admission_deadline = Instant::now() + crate::slice::ENVIRONMENT_USE_ADMISSION_TIMEOUT;
         let environment = self
             .room_environment_snapshot(&request.session_id)
             .map_err(human_action_environment_error)?;
@@ -73,8 +76,13 @@ impl KernelRuntimeState {
                 return Ok((action_id, environment));
             }
             ActionAdmission::Queued { action_id, .. } => {
-                self.wait_for_human_action_admission(&request.session_id, &actor, &action_id)
-                    .await?;
+                self.wait_for_human_action_admission(
+                    &request.session_id,
+                    &actor,
+                    &action_id,
+                    admission_deadline,
+                )
+                .await?;
                 action_id
             }
             ActionAdmission::RejectedSaturated { capacity } => {
@@ -106,6 +114,17 @@ impl KernelRuntimeState {
         let current = self
             .room_environment_snapshot(&request.session_id)
             .map_err(human_action_environment_error)?;
+        if Instant::now() >= admission_deadline {
+            let _ = self.finish_room_environment_action(
+                &request.session_id,
+                &action_id,
+                EnvironmentActionTerminal::Failed,
+            );
+            return Err(human_action_dispatch_error(
+                "environment_action_busy",
+                format!("human Action `{action_id}` admission deadline expired before dispatch"),
+            ));
+        }
         if let Err(error) = validate_human_action_authority(&current, &actor.actor_id)
             .and_then(|_| validate_human_action_freshness(&current, &request, &input_action))
         {
@@ -131,7 +150,11 @@ impl KernelRuntimeState {
                 &request.session_id,
                 &action_id,
                 &action_id,
-                self.room_browser_controller_command(&request.session_id, command),
+                self.room_browser_controller_command_with_admission_deadline(
+                    &request.session_id,
+                    command,
+                    admission_deadline,
+                ),
             )
             .await;
         let terminal = match &execution {
@@ -240,8 +263,8 @@ impl KernelRuntimeState {
         session_id: &str,
         actor: &EnvironmentActor,
         action_id: &str,
+        deadline: Instant,
     ) -> Result<(), DaemonError> {
-        let started = Instant::now();
         loop {
             if let Err(error) = self.ensure_browser_import_execution_allowed(session_id) {
                 let _ = self.cancel_unstarted_import_blocked_action(session_id, action_id);
@@ -262,9 +285,7 @@ impl KernelRuntimeState {
                 })?;
             match action.state {
                 EnvironmentActionState::Running => return Ok(()),
-                EnvironmentActionState::Queued
-                    if started.elapsed() < HUMAN_ACTION_QUEUE_WAIT_TIMEOUT =>
-                {
+                EnvironmentActionState::Queued if Instant::now() < deadline => {
                     tokio::time::sleep(HUMAN_ACTION_QUEUE_POLL_INTERVAL).await;
                 }
                 EnvironmentActionState::Queued => {

@@ -18,6 +18,9 @@
 #include <unistd.h>
 #if defined(__APPLE__)
 #include <dlfcn.h>
+#include <servers/bootstrap.h>
+#include <sys/sysctl.h>
+#include <sys/utsname.h>
 extern int sandbox_check(pid_t, const char*, int, ...);
 #endif
 #if defined(__linux__)
@@ -66,6 +69,11 @@ const char* chariox_app_runtime_node_version(void) { return "24.20.0"; }
 int chariox_app_runtime_run(const struct chariox_runtime_config* config) {
   check("trusted_bootstrap", config->trusted_bootstrap_length == 8 &&
       !memcmp(config->trusted_bootstrap, "probe-v1", 8));
+#if defined(__linux__)
+  check("supplementary_groups_empty", getgroups(0, NULL) == 0);
+  check("unprivileged_identity", getuid() != 0 && getgid() != 0 &&
+      getuid() == geteuid() && getgid() == getegid());
+#endif
   char request[4];
   struct pollfd sdk = {3, POLLIN, 0};
   check("inherited_sdk_bidirectional", poll(&sdk, 1, 1000) > 0 && read(3, request, 4) == 4 &&
@@ -85,6 +93,31 @@ int chariox_app_runtime_run(const struct chariox_runtime_config* config) {
   fd = open("/etc/passwd", O_RDONLY);
   check("unrelated_host_read_denied", fd < 0);
   if (fd >= 0) close(fd);
+#if defined(__APPLE__)
+  // Node startup grants (libuv opens "/", OpenSSL reads its default config)
+  // stay exact: a sibling system file and the page-size sysctl are checked.
+  fd = open("/", O_RDONLY);
+  check("root_directory_read_allowed", fd >= 0);
+  if (fd >= 0) close(fd);
+  fd = open("/System/Library/CoreServices/SystemVersion.plist", O_RDONLY);
+  check("system_sibling_read_denied", fd < 0);
+  if (fd >= 0) close(fd);
+  check("openssl_config_policy_allowed",
+      sandbox_check(getpid(), "file-read-data", 1, "/System/Library/OpenSSL/openssl.cnf") == 0);
+  int page_size = 0;
+  size_t page_size_length = sizeof(page_size);
+  check("page_size_sysctl_allowed",
+      sysctlbyname("hw.pagesize", &page_size, &page_size_length, NULL, 0) == 0 && page_size > 0);
+  // The lookup that failed before the prefix rule was by MIB, not by name.
+  int page_size_mib[2] = {CTL_HW, HW_PAGESIZE};
+  page_size = 0;
+  page_size_length = sizeof(page_size);
+  check("page_size_mib_sysctl_allowed",
+      sysctl(page_size_mib, 2, &page_size, &page_size_length, NULL, 0) == 0 && page_size > 0);
+  // Node's os module calls uname(3) at load (fs/promises imports it).
+  struct utsname host;
+  check("uname_allowed", uname(&host) == 0 && host.machine[0] != '\0');
+#endif
   snprintf(path, sizeof(path), "%s/fixture.bin", getenv("CHARIOX_APP_PACKAGE"));
 #if defined(__APPLE__)
   // SANDBOX_FILTER_PATH=1. Query the compiled rule as well as exercising mmap:
@@ -93,6 +126,12 @@ int chariox_app_runtime_run(const struct chariox_runtime_config* config) {
   Dl_info runtime_info = {0};
   check("runtime_executable_policy_allowed", dladdr((void*)chariox_app_runtime_run, &runtime_info) != 0 &&
       runtime_info.dli_fname && sandbox_check(getpid(), "file-map-executable", 1, runtime_info.dli_fname) == 0);
+  // fseventsd reports deleted/renamed paths outside the roots to a watcher of
+  // "/" or an ancestor; directory watches poll in the bootstrap instead.
+  // SANDBOX_FILTER_GLOBAL_NAME=2.
+  mach_port_t fsevents = MACH_PORT_NULL;
+  check("fsevents_lookup_denied", sandbox_check(getpid(), "mach-lookup", 2, "com.apple.FSEvents") > 0 &&
+      bootstrap_look_up(bootstrap_port, "com.apple.FSEvents", &fsevents) != KERN_SUCCESS);
 #endif
   fd = open(path, O_RDONLY);
   check("package_read", fd >= 0);

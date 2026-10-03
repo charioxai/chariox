@@ -72,16 +72,38 @@ test("parseSlashCommand parses the kernel notification center namespace", () => 
   ), true)
 })
 
-test("App slash commands preserve arguments and delegate to the shared shell", () => {
+test("App slash commands retain raw input and decode shell arguments in the TUI", () => {
   const input = "/app list --after install-1 --limit 10"
   const parsed = parseSlashCommand(input)!
   assert.deepEqual(parsed, { kind: "app", raw: input, args: ["list", "--after", "install-1", "--limit", "10"] })
   assert.equal(shouldClearCommandCenterForSlashCommand(parsed), true)
-  assert.equal(sharedShellCommandForSlashCommand(input), input.slice(1))
   assert.deepEqual(parseSlashCommand("/app\tstatus install-1")?.kind, "app")
   assert.equal(parseSlashCommand("/application list"), null)
   assert.equal(sharedShellCommandForSlashCommand("/application list"), null)
-  for (const command of ['/app install "local App.cxapp"', '/app update install-1 "local App.cxapp"', "/app operation", "/app cancel", '/app dev "./my app"', "/app dev stop"]) {
+  const inboxTest = '/app inbox test todo mail occ-1 {"step":"request","n":1}'
+  assert.deepEqual(parseSlashCommand(inboxTest), {
+    kind: "app",
+    raw: inboxTest,
+    args: ["inbox", "test", "todo", "mail", "occ-1", "{step:request,n:1}"],
+  })
+  for (const command of [
+    input,
+    "/app",
+    inboxTest,
+    "/app inbox test todo mail occ-1 '{\"step\":\"spend\"}'",
+    '/app install "local App.cxapp"',
+    '/app update install-1 "local App.cxapp"',
+    "/app operation",
+    "/app cancel",
+    '/app dev "./my app"',
+    "/app dev stop",
+    '/app publisher enroll "publisher.json"',
+    "/app publisher status",
+    "/app publisher cancel review-1",
+    '/app file grant file-pick-1 "notes.md"',
+    '/app file save file-export-1 "plan.md"',
+    "/app file revoke install-1",
+  ]) {
     assert.equal(sharedShellCommandForSlashCommand(command), null, command)
   }
 })
@@ -231,6 +253,7 @@ test("executeSlashCommand dispatches agent wait schedules", async () => {
   const command = await executeSlashCommand("/wait-every 5 Check repeatedly", {
     onExit: () => undefined,
     onWaiting: () => undefined,
+    onApprovals: () => undefined,
     onStop: () => undefined,
     onAttachment: () => undefined,
     onSession: () => undefined,
@@ -275,6 +298,7 @@ test("executeSlashCommand dispatches to the matching handlers", async () => {
   const handlers = {
     onExit: () => calls.push("exit"),
     onWaiting: () => calls.push("waiting"),
+    onApprovals: () => calls.push("approvals"),
     onStop: () => calls.push("stop"),
     onAttachment: () => calls.push("attachment"),
     onSession: () => calls.push("session"),
@@ -328,6 +352,7 @@ test("executeSlashCommand returns null for non-command input", async () => {
   const command = await executeSlashCommand("hello", {
     onExit: () => undefined,
     onWaiting: () => undefined,
+    onApprovals: () => undefined,
     onStop: () => undefined,
     onAttachment: () => undefined,
     onSession: () => undefined,
@@ -395,4 +420,16 @@ test("parseSlashCommand parses extension commands", () => {
     raw: "/extension grants script agent-1",
     args: ["grants", "script", "agent-1"],
   })
+})
+
+
+test("App slash tokenizes quoted recovery IDs while preserving input previews", () => {
+  for (const [input, id] of [
+    ['/app start "install-1"', "install-1"],
+    ['/app start "my app"', "my app"],
+    ["/app start 'install-1'", "install-1"],
+  ]) {
+    assert.deepEqual(parseSlashCommand(input!), { kind: "app", raw: input, args: ["start", id] })
+  }
+  assert.equal(parseSlashCommand('/app start "install-1')?.kind, "app")
 })

@@ -5,8 +5,10 @@ import {
   type AppInboxConnection,
   removeAppInboxRouteRequest, testAppInboxRouteRequest,
   grantAppConnectionRequest, revokeAppConnectionRequest, listAppConnectionsRequest, getAppSetRequest,
+  revokeAppFileGrantsRequest,
 } from "./ipc-app-requests.js"
 import type { AppAutomationSummary, AppConnectionSummary, AppInboxRouteSummary, AppInstallationSummary, AppUpdateSummary, AppWorkerSummary } from "./kernel-types-apps.js"
+import { LocalIpcError } from "./local-ipc-error.js"
 import type { ShellCommandResult } from "./shell-core.js"
 
 type Client = { send(request: Record<string, unknown>): Promise<Record<string, unknown>> }
@@ -20,14 +22,22 @@ const usage = [
   "       app automation disable <installation-id> <automation-id> <revision>",
   "       app inbox list <installation-id> | remove <installation-id> <route-id>",
   "       app inbox add <installation-id> <route-id> <event> <source-event-type> [--version <n>] [--connection <generator>/<connection-id>/<scope>]",
-  "       app inbox test <installation-id> <route-id> <occurrence-id> <json-payload>",
+  "       app inbox test <installation-id> <route-id> <occurrence-id> '<json-payload>'",
   "       app connection list <installation-id> | grant <installation-id> <generator>/<connection-id> | revoke <installation-id> <connection-id>",
+  "       app file revoke <installation-id> [<operation-id>]",
 ].join("\n")
+
+/** `/app` arguments with an `inbox test` payload taken from the raw line, so
+ * every shell passes the JSON exactly as typed, quotes and spaces included. */
+export function appCommandArgs(raw: string, args: readonly string[]): string[] {
+  const test = /^\/?app\s+inbox\s+test\s+(\S+)\s+(\S+)\s+(\S+)\s+([\s\S]+)$/.exec(raw.trim())
+  return test ? ["inbox", "test", test[1]!, test[2]!, test[3]!, test[4]!.trim()] : [...args]
+}
 
 export async function executeAppCommand(
   args: string[],
   client: Client,
-  defaults: { sessionId?: string | undefined } = {},
+  defaults: { sessionId?: string | undefined; appCommandPrefix?: string } = {},
 ): Promise<ShellCommandResult> {
   const [action = "list", ...rest] = args
   let request: Record<string, unknown>
@@ -52,7 +62,11 @@ export async function executeAppCommand(
     request = getAppWorkerRequest(rest[0])
   } else if ((action === "start" || action === "stop" || action === "restart") && rest.length === 1 && rest[0]) {
     request = controlAppWorkerRequest(rest[0], action)
-  } else if (action === "open" && rest[0] && (rest.length === 1 || (rest.length === 3 && rest[1] === "--session" && rest[2]))) {
+  } else if (action === "open") {
+    if (!rest[0] || rest[0].startsWith("--") || !(rest.length === 1 ||
+      (rest.length === 3 && rest[1] === "--session" && rest[2] && !rest[2].startsWith("--")))) {
+      return { ok: false, message: "usage: app open <installation-id> [--session <session-id>]" }
+    }
     const sessionId = rest[2] ?? defaults.sessionId
     if (!sessionId) return { ok: false, message: "Attach to a session or pass --session to open an App view." }
     request = openAppViewRequest(sessionId, rest[0])
@@ -80,14 +94,25 @@ export async function executeAppCommand(
       const [generatorId = "", connectionId = ""] = target.split("/")
       request = grantAppConnectionRequest(installation, generatorId, connectionId)
     } else return { ok: false, message: usage }
+  } else if (action === "file" && rest[0] === "revoke" && rest[1] && rest.length <= 3) {
+    request = revokeAppFileGrantsRequest(rest[1], rest[2])
   } else if (action === "automation") {
     const parsed = automationRequest(rest)
     if (!parsed) return { ok: false, message: usage }
     request = parsed
   } else return { ok: false, message: usage }
 
-  const response = await client.send(request)
-  if (response.AppRequestFailed) return appFailure(response, action === "connection" ? `connection ${rest[0]}` : action)
+  let response: Record<string, unknown>
+  try {
+    response = await client.send(request)
+  } catch (error) {
+    // Only a worker control or an uninstall ends this way: the client does not
+    // resend one the kernel may be running, so its outcome is checked, not retried.
+    if (!(error instanceof LocalIpcError && error.code === "outcome_unknown")) throw error
+    const check = action === "uninstall" ? `app status ${rest[0]}` : `app worker ${rest[0]}`
+    return { ok: false, message: `The kernel did not answer, so the ${action} may still happen. Check with ${check} before trying again.` }
+  }
+  if (response.AppRequestFailed) return appFailure(response, action === "connection" || action === "file" ? `${action} ${rest[0]}` : action)
   if (response.AppLogs) {
     const data = expect<{ installation_id: string; entries: AppLogEntry[] }>(response, "AppLogs")
     const lines = data.entries.map(formatLogEntry)
@@ -123,6 +148,14 @@ export async function executeAppCommand(
       `${connection.connection_id} · ${connection.generator_id} · actions: ${connection.actions.join(", ") || "none declared"}`)
     return { ok: true, message: lines.join("\n") || "No connections granted to this App.", data }
   }
+  if (response.AppFileGrantsRevoked) {
+    const data = expect<{ installation_id: string; requests: number; files: number }>(response, "AppFileGrantsRevoked")
+    if (data.requests === 0) return { ok: true, message: `No open file requests or unused grants for ${data.installation_id}.`, data }
+    const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`
+    return { ok: true, message: `Revoked ${plural(data.requests, "file request")} for ${data.installation_id}; `
+      + `${plural(data.files, "granted file")} the App had not imported ${data.files === 1 ? "was" : "were"} dropped. `
+      + "Files it already imported stay in its data.", data }
+  }
   if (response.AppSet) {
     const data = expect<{ schema: string; installations: Array<{ installation_id: string; app_id: string;
       release: { version: string }; automations: unknown[]; inbox_routes: unknown[]; connections: unknown[] }> }>(response, "AppSet")
@@ -134,7 +167,7 @@ export async function executeAppCommand(
   }
   if (response.AppWorker) {
     const data = expect<{ worker: AppWorkerSummary }>(response, "AppWorker")
-    return { ok: true, message: formatWorker(data.worker), data }
+    return { ok: true, message: formatWorker(data.worker, defaults.appCommandPrefix ?? "app"), data }
   }
   if (response.AppAutomations) {
     const data = expect<{ installation_id: string; automations: AppAutomationSummary[] }>(response, "AppAutomations")
@@ -194,9 +227,10 @@ export function inboxRequest(args: string[]): Record<string, unknown> | null {
   if (!installation) return null
   if (verb === "list" && rest.length === 0) return listAppInboxRoutesRequest(installation)
   if (verb === "remove" && rest.length === 1 && rest[0]) return removeAppInboxRouteRequest(installation, rest[0])
-  if (verb === "test" && rest.length === 3 && rest[0] && rest[1]) {
+  // The JSON payload is the rest of the line: a terminal splits it at spaces.
+  if (verb === "test" && rest.length >= 3 && rest[0] && rest[1]) {
     try {
-      return testAppInboxRouteRequest(installation, rest[0], rest[1], JSON.parse(rest[2] ?? ""))
+      return testAppInboxRouteRequest(installation, rest[0], rest[1], JSON.parse(rest.slice(2).join(" ")))
     } catch {
       return null
     }
@@ -228,10 +262,16 @@ function formatInboxRoute(route: AppInboxRouteSummary): string {
   return `${route.route_id} · ${route.source_event_type} v${route.source_event_version}${source} → ${route.event_name} · ${counts}`
 }
 
-function formatWorker(worker: AppWorkerSummary): string {
+function formatWorker(worker: AppWorkerSummary, commandPrefix: string): string {
   const enabled = worker.enabled ? "" : " (stopped by user)"
-  const failure = worker.failure ? ` · ${worker.failure}` : ""
-  return `${worker.installation_id} · ${worker.phase.replace("_", " ")}${enabled}${failure}`
+  const hint = worker.failure === "app_lifecycle_disk_space"
+    ? `: not enough free disk space on the host; app logs ${worker.installation_id} says how much to free`
+    : ""
+  const failure = worker.failure ? ` · ${worker.failure}${hint}` : ""
+  const recovery = worker.phase === "quarantined"
+    ? ` · explicit start required: ${commandPrefix} start ${JSON.stringify(worker.installation_id)}`
+    : ""
+  return `${worker.installation_id} · ${worker.phase.replace("_", " ")}${recovery}${enabled}${failure}`
 }
 
 function formatAutomation(automation: AppAutomationSummary): string {
@@ -240,7 +280,7 @@ function formatAutomation(automation: AppAutomationSummary): string {
 }
 
 function formatInstallation(app: AppInstallationSummary): string {
-  const version = app.active_release ? `version ${app.active_release.version}` : "no active release"
+  const version = app.active_release ? `version ${app.active_release.version}; digest ${app.active_release.package_digest}` : "no active release"
   const pending = app.pending_generation == null ? "" : `; pending generation ${app.pending_generation}`
   const paused = app.admission_paused ? "; admission paused" : ""
   const kept = app.data_kept ? "; data kept" : ""
@@ -272,6 +312,7 @@ function appFailure(response: Record<string, unknown>, action?: string): ShellCo
       ? "Not found: check the App installation, session, workflow or automation."
       : action === "inbox" ? "Not found: check the App installation and route."
       : action?.startsWith("connection") ? "Not found: check the App installation and the connection id."
+      : action === "file revoke" ? "Not found: check the App installation and the file request id."
       : "App installation not found.",
     invalid_request: action === "inbox"
       ? "Invalid App request: the event must be one the App declares as incoming, and a payload must match its schema."

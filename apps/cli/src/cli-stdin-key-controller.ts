@@ -1,3 +1,4 @@
+import { isApprovalShortcut } from "./approval-shortcuts.js"
 import { shouldCycleFocusOnTabEvent } from "./hotkeys.js"
 import type { ParsedShortcut } from "./keybind.js"
 
@@ -57,7 +58,7 @@ export function createCliStdinKeyController(
       }
       // OpenTUI's global key handler owns this dialog. Do not also dispatch
       // its terminal bytes into focused-agent or workflow shortcuts.
-      if (deps.kernelApprovalOwnsInput?.() || event.name === "f8") return true
+      if (deps.kernelApprovalOwnsInput?.() || isApprovalShortcut(event)) return true
       if (event.eventType !== "release" && deps.dialogOverlayOpen() && event.name === "escape") {
         deps.closeActiveDialogOverlay()
         return true

@@ -26,6 +26,7 @@ use tokio::{
 const WAIT: Duration = Duration::from_secs(3);
 mod drain;
 mod identity;
+mod residency;
 mod tools;
 struct Scratch(PathBuf);
 impl Scratch {
@@ -74,7 +75,10 @@ fn start(
     Receiver<ControlEvent>,
     chariox_app_runtime::worker_process::test_fixture::Observation,
 ) {
-    let (bytes, publisher) = if matches!(mode, Mode::ToolEcho) {
+    let (bytes, publisher) = if matches!(
+        mode,
+        Mode::ToolEcho | Mode::ToolStall | Mode::ToolOverMemory | Mode::ToolKilledAtMemoryLimit
+    ) {
         crate::durable_state::app_state::fixture_tool_package()
     } else {
         fixture_event_package()

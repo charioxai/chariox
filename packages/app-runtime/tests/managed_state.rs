@@ -4,9 +4,10 @@ use chariox_app_runtime::{
         ReleaseMetadata,
     },
     managed_state::{
-        complete_wake, defer_wake, due_wakes, ManagedStateStore, StateChanges, StateCheck,
-        StateError, StateScope, StateWrite, Wake, WakeChange, MAX_CHANGES, MAX_KEYS, MAX_REVISION,
-        MAX_STATE_BYTES, MAX_VALUE_BYTES, MAX_WAKES,
+        complete_wake, defer_wake, due_wakes, next_wake_at_ms, postpone_wake, ManagedStateStore,
+        StateChanges, StateCheck, StateError, StateScope, StateWrite, Wake, WakeChange,
+        WakeFailureOutcome, MAX_CHANGES, MAX_KEYS, MAX_REVISION, MAX_STATE_BYTES, MAX_VALUE_BYTES,
+        MAX_WAKES,
     },
 };
 use rusqlite::{Connection, TransactionBehavior};
@@ -412,10 +413,70 @@ fn wake(id: &str, due_at_ms: u64, revision: &str) -> WakeChange {
     })
 }
 fn apply_wakes(db: &mut Connection, id: &str, changes: &[WakeChange]) -> Result<(), StateError> {
+    arm(db, id, changes, false)
+}
+fn arm(
+    db: &mut Connection,
+    id: &str,
+    changes: &[WakeChange],
+    counts_as_use: bool,
+) -> Result<(), StateError> {
     let mut tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    ManagedStateStore::apply_wakes_in(&mut tx, scope(id), changes)?;
+    ManagedStateStore::apply_wakes_in(&mut tx, scope(id), changes, counts_as_use)?;
     tx.commit()?;
     Ok(())
+}
+fn origins(db: &Connection, now_ms: u64) -> Vec<(String, bool)> {
+    due_wakes(db, now_ms, 8)
+        .unwrap()
+        .into_iter()
+        .map(|due| (due.wake.id, due.counts_as_use))
+        .collect()
+}
+
+#[test]
+fn a_wake_keeps_its_arming_context_until_it_is_set_again() {
+    let fixture = Database::new();
+    let mut db = fixture.open();
+    install(&mut db, "todo");
+    arm(&mut db, "todo", &[wake("tool", 100, "")], true).unwrap();
+    arm(&mut db, "todo", &[wake("self", 100, "")], false).unwrap();
+    assert_eq!(
+        origins(&db, 100),
+        [("self".into(), false), ("tool".into(), true)]
+    );
+    // Waiting for an on-demand start or a retry keeps the origin.
+    let due = due_wakes(&db, 100, 8).unwrap();
+    assert_eq!(
+        defer_wake(&db, &due[0], 100).unwrap(),
+        WakeFailureOutcome::Retried
+    );
+    postpone_wake(&db, &due[1], 200).unwrap();
+    assert_eq!(origins(&db, 200), [("tool".into(), true)]);
+    // Re-armed from the App's own wake handler, it is the App's own wake.
+    arm(&mut db, "todo", &[wake("tool", 300, "")], false).unwrap();
+    assert_eq!(origins(&db, 300), [("tool".into(), false)]);
+    arm(&mut db, "todo", &[wake("tool", 400, "")], true).unwrap();
+    assert_eq!(origins(&db, 400), [("tool".into(), true)]);
+}
+
+#[test]
+fn wakes_armed_before_their_origin_was_recorded_do_not_count_as_use() {
+    let fixture = Database::new();
+    let mut db = Connection::open(fixture.0.join("kernel.sqlite")).unwrap();
+    db.execute_batch(
+        "CREATE TABLE app_wakes (
+           owner_id TEXT NOT NULL, installation_id TEXT NOT NULL, wake_id TEXT NOT NULL,
+           due_at_ms INTEGER NOT NULL CHECK(due_at_ms >= 0), revision TEXT NOT NULL,
+           attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
+           next_attempt_at_ms INTEGER NOT NULL CHECK(next_attempt_at_ms >= 0),
+           PRIMARY KEY(installation_id, wake_id));
+         INSERT INTO app_wakes VALUES('alice','todo','old',100,'',0,100);",
+    )
+    .unwrap();
+    ManagedStateStore::new(&mut db).initialize().unwrap();
+    ManagedStateStore::new(&mut db).initialize().unwrap();
+    assert_eq!(origins(&db, 100), [("old".into(), false)]);
 }
 
 #[test]
@@ -463,7 +524,16 @@ fn failed_wake_delivery_backs_off_and_is_dropped_after_bounded_attempts() {
     while kept {
         let due = due_wakes(&db, now, 8).unwrap();
         assert_eq!(due.len(), 1);
-        kept = defer_wake(&db, &due[0], now).unwrap();
+        let outcome = defer_wake(&db, &due[0], now).unwrap();
+        assert_eq!(
+            outcome,
+            if attempts < 7 {
+                WakeFailureOutcome::Retried
+            } else {
+                WakeFailureOutcome::Dropped
+            }
+        );
+        kept = outcome == WakeFailureOutcome::Retried;
         if kept {
             // A deferred wake is not redelivered before its backoff delay.
             assert!(due_wakes(&db, now, 8).unwrap().is_empty());
@@ -502,4 +572,255 @@ fn wakes_require_an_active_installation_and_are_bounded() {
             .len(),
         MAX_WAKES
     );
+}
+
+const DAY_MS: u64 = 86_400_000;
+const NOW_MS: u64 = 1_790_000_000_000;
+
+fn due_ids(db: &Connection, now_ms: u64) -> Vec<(String, String, u32)> {
+    due_wakes(db, now_ms, 8)
+        .unwrap()
+        .into_iter()
+        .map(|due| (due.wake.id, due.wake.revision, due.attempts))
+        .collect()
+}
+
+#[test]
+fn wake_due_times_are_absolute_epoch_ms_however_far_ahead() {
+    let fixture = Database::new();
+    let mut db = fixture.open();
+    install(&mut db, "todo");
+    // Past a 32-bit millisecond timer (~24.8 days) and up to the JSON-safe limit.
+    let far = NOW_MS + 40 * DAY_MS;
+    apply_wakes(
+        &mut db,
+        "todo",
+        &[wake("far", far, "r1"), wake("limit", MAX_REVISION, "r1")],
+    )
+    .unwrap();
+    assert!(matches!(
+        apply_wakes(&mut db, "todo", &[wake("over", MAX_REVISION + 1, "r1")]),
+        Err(StateError::Invalid)
+    ));
+    assert!(due_ids(&db, NOW_MS).is_empty());
+    assert!(due_ids(&db, far - 1).is_empty());
+    assert_eq!(due_ids(&db, far), [("far".into(), "r1".into(), 0)]);
+    let tx = db.transaction().unwrap();
+    let stored = ManagedStateStore::wakes_in(&tx, scope("todo")).unwrap();
+    assert!(stored
+        .iter()
+        .any(|w| w.id == "limit" && w.due_at_ms == MAX_REVISION));
+}
+
+#[test]
+fn a_clock_jump_neither_loses_nor_strands_a_due_wake() {
+    let fixture = Database::new();
+    let mut db = fixture.open();
+    install(&mut db, "todo");
+    apply_wakes(
+        &mut db,
+        "todo",
+        &[
+            wake("a", NOW_MS, "r1"),
+            wake("b", NOW_MS + 60_000, "r1"),
+            wake("later", NOW_MS + DAY_MS, "r1"),
+        ],
+    )
+    .unwrap();
+    // Forward: everything that fell due during the jump is due, oldest first.
+    let ahead = NOW_MS + DAY_MS / 2;
+    let due = due_wakes(&db, ahead, 8).unwrap();
+    assert_eq!(
+        due.iter().map(|w| w.wake.id.as_str()).collect::<Vec<_>>(),
+        ["a", "b"]
+    );
+    // Deliveries fail or wait while the clock is ahead...
+    defer_wake(&db, &due[0], ahead).unwrap();
+    postpone_wake(&db, &due[1], ahead + 60_000).unwrap();
+    // ...then it is corrected back: both are due again at once, not in half a day.
+    let corrected = NOW_MS + 120_000;
+    assert_eq!(
+        due_ids(&db, corrected),
+        [("a".into(), "r1".into(), 1), ("b".into(), "r1".into(), 0)]
+    );
+    // A wake not yet due by the corrected clock waits for its own due time.
+    assert!(due_ids(&db, corrected).iter().all(|(id, ..)| id != "later"));
+    // Backward before a due time: nothing is delivered early or lost.
+    let fixture = Database::new();
+    let mut db = fixture.open();
+    install(&mut db, "todo");
+    apply_wakes(&mut db, "todo", &[wake("a", NOW_MS, "r1")]).unwrap();
+    assert!(due_ids(&db, NOW_MS - DAY_MS).is_empty());
+    assert_eq!(due_ids(&db, NOW_MS), [("a".into(), "r1".into(), 0)]);
+}
+
+#[test]
+fn outcomes_recorded_after_an_edit_or_delete_across_the_due_time_keep_the_new_schedule() {
+    let fixture = Database::new();
+    let mut db = fixture.open();
+    install(&mut db, "todo");
+    apply_wakes(
+        &mut db,
+        "todo",
+        &[wake("edit", NOW_MS, "r1"), wake("gone", NOW_MS, "r1")],
+    )
+    .unwrap();
+    // The pump reads both as due; the App moves one and deletes the other
+    // before the delivery outcome is recorded.
+    let due = due_wakes(&db, NOW_MS, 8).unwrap();
+    apply_wakes(
+        &mut db,
+        "todo",
+        &[
+            wake("edit", NOW_MS + DAY_MS, "r2"),
+            WakeChange::Cancel { id: "gone".into() },
+        ],
+    )
+    .unwrap();
+    for stale in &due {
+        defer_wake(&db, stale, NOW_MS).unwrap();
+        postpone_wake(&db, stale, NOW_MS + 2_000).unwrap();
+        complete_wake(&db, stale).unwrap();
+    }
+    assert!(due_ids(&db, NOW_MS + DAY_MS - 1).is_empty());
+    // The edited wake keeps its new time and revision with no spent attempts;
+    // the deleted one never comes back.
+    assert_eq!(
+        due_ids(&db, MAX_REVISION),
+        [("edit".into(), "r2".into(), 0)]
+    );
+}
+
+#[test]
+fn a_short_clock_correction_recovers_retries_in_due_order_after_reopen() {
+    let fixture = Database::new();
+    let mut db = fixture.open();
+    install(&mut db, "todo");
+    let now = 1_000_000;
+    apply_wakes(
+        &mut db,
+        "todo",
+        &[
+            wake("older-z", now, "r1"),
+            wake("newer-a", now + 60_000, "r1"),
+            wake("later", now + 3_600_000, "r1"),
+        ],
+    )
+    .unwrap();
+    let ahead = now + 1_000_000;
+    let due = due_wakes(&db, ahead, 8).unwrap();
+    for wake in &due {
+        defer_wake(&db, wake, ahead).unwrap();
+    }
+    assert_eq!(next_wake_at_ms(&db, ahead).unwrap(), Some(ahead + 10_000));
+    // Sub-second jitter preserves retry backoff.
+    assert_eq!(
+        next_wake_at_ms(&db, ahead - 1).unwrap(),
+        Some(ahead + 10_000)
+    );
+    // An unchanged clock must still honor real retry backoff.
+    assert!(due_wakes(&db, ahead, 8).unwrap().is_empty());
+    drop(db);
+    let db = fixture.open();
+    let corrected = now + 120_000;
+    // The scheduler must see the overdue original deadline before asking the
+    // writer to perform rollback recovery. This read itself mutates nothing.
+    assert_eq!(next_wake_at_ms(&db, corrected).unwrap(), Some(now));
+    let recovered = due_wakes(&db, corrected, 8).unwrap();
+    assert_eq!(
+        recovered
+            .iter()
+            .map(|w| (w.wake.id.as_str(), w.attempts))
+            .collect::<Vec<_>>(),
+        [("older-z", 1), ("newer-a", 1)]
+    );
+    for wake in &recovered {
+        complete_wake(&db, wake).unwrap();
+    }
+    assert!(due_wakes(&db, corrected, 8).unwrap().is_empty());
+    assert_eq!(
+        next_wake_at_ms(&db, corrected).unwrap(),
+        Some(now + 3_600_000)
+    );
+    assert_eq!(
+        due_wakes(&db, now + 3_600_000, 8).unwrap()[0].wake.id,
+        "later"
+    );
+}
+
+#[test]
+fn postponed_pages_step_aside_for_later_deliverable_wakes() {
+    let fixture = Database::new();
+    let mut db = fixture.open();
+    install(&mut db, "todo");
+    let mut changes = (0..8)
+        .map(|i| wake(&format!("waiting-{i}"), 100 + i, "r1"))
+        .collect::<Vec<_>>();
+    changes.push(wake("deliverable", 900, "r1"));
+    apply_wakes(&mut db, "todo", &changes).unwrap();
+    for waiting in due_wakes(&db, 2_000, 8).unwrap() {
+        postpone_wake(&db, &waiting, 4_000).unwrap();
+    }
+    // The idle cadence is longer than the postponed start delay. A full page
+    // of eligible waiting wakes must still yield to later work on this pass.
+    assert_eq!(due_wakes(&db, 7_000, 8).unwrap()[0].wake.id, "deliverable");
+}
+
+#[test]
+fn empty_and_future_only_wake_polls_do_not_write_durable_state() {
+    let fixture = Database::new();
+    let mut db = fixture.open();
+    let observer = fixture.open();
+    let version = || {
+        observer
+            .query_row("PRAGMA data_version", [], |row| row.get::<_, i64>(0))
+            .unwrap()
+    };
+    let before = version();
+    assert!(due_wakes(&db, 1_000, 8).unwrap().is_empty());
+    assert_eq!(version(), before);
+    install(&mut db, "todo");
+    apply_wakes(&mut db, "todo", &[wake("future", 10_000, "r1")]).unwrap();
+    let before = version();
+    assert!(due_wakes(&db, 2_000, 8).unwrap().is_empty());
+    assert_eq!(version(), before);
+    let due = due_wakes(&db, 10_000, 8).unwrap();
+    postpone_wake(&db, &due[0], 70_000).unwrap();
+    let before = version();
+    // A stopped App can leave a postponed wake for a minute. Polling it
+    // before the retry must not sync clock state or collapse its backoff.
+    assert!(due_wakes(&db, 11_000, 8).unwrap().is_empty());
+    assert!(due_wakes(&db, 12_000, 8).unwrap().is_empty());
+    assert!(due_wakes(&db, 9_999, 8).unwrap().is_empty());
+    assert_eq!(version(), before);
+    // A real correction resets the future retry to its original due time.
+    assert!(due_wakes(&db, 8_000, 8).unwrap().is_empty());
+    assert_ne!(version(), before);
+    let before = version();
+    assert!(due_wakes(&db, 9_000, 8).unwrap().is_empty());
+    assert_eq!(version(), before);
+    assert_eq!(due_wakes(&db, 10_000, 8).unwrap().len(), 1);
+}
+
+#[test]
+fn wake_deadline_tracks_committed_replacements_cancellation_and_postponement() {
+    let fixture = Database::new();
+    let mut db = fixture.open();
+    install(&mut db, "todo");
+    assert_eq!(next_wake_at_ms(&db, 0).unwrap(), None);
+    apply_wakes(
+        &mut db,
+        "todo",
+        &[wake("a", 100, "r1"), wake("b", 200, "r1")],
+    )
+    .unwrap();
+    assert_eq!(next_wake_at_ms(&db, 0).unwrap(), Some(100));
+    let due = due_wakes(&db, 100, 8).unwrap();
+    postpone_wake(&db, &due[0], 400).unwrap();
+    assert_eq!(next_wake_at_ms(&db, 100).unwrap(), Some(200));
+    apply_wakes(&mut db, "todo", &[WakeChange::Cancel { id: "b".into() }]).unwrap();
+    assert_eq!(next_wake_at_ms(&db, 100).unwrap(), Some(400));
+    apply_wakes(&mut db, "todo", &[wake("a", 300, "r2")]).unwrap();
+    complete_wake(&db, &due[0]).unwrap(); // stale completion preserves replacement
+    assert_eq!(next_wake_at_ms(&db, 100).unwrap(), Some(300));
 }

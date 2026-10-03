@@ -529,6 +529,7 @@ mod tests {
 
     #[test]
     fn managed_empty_workspace_path_keeps_user_workspace_separate_from_control_state() {
+        crate::test_support::isolated_env_test!();
         let _lock = crate::env_lock::lock();
         let root = test_root("managed-user-workspace");
         let mut config = test_config(&root, "machine-empty", "kernel-empty", "http://127.0.0.1:9");
@@ -545,6 +546,7 @@ mod tests {
 
     #[test]
     fn managed_empty_workspace_uses_the_bootstrap_repository_root() {
+        crate::test_support::isolated_env_test!();
         let _lock = crate::env_lock::lock();
         let previous = std::env::var_os(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV);
         std::env::set_var(

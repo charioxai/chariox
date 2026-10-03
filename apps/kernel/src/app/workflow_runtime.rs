@@ -40,7 +40,7 @@ impl WorkflowProgression {
                 {
                     continue;
                 }
-                app.end_provider_run_for_workflow_context_flush(session_id, node.agent_id())?;
+                app.end_agent_provider_run(session_id, node.agent_id())?;
             }
             return Ok(());
         }
@@ -128,6 +128,22 @@ use entry_ownership::workflow_queue_scheduler_owner;
 pub(crate) use entry_ownership::{workflow_entry_scheduler_owner, WorkflowSchedulerOwner};
 
 impl DaemonApp {
+    /// Retain a remote workflow dispatch until the lock-owning runtime caller
+    /// has released the app mutex and can hand it to the ordered sender.
+    pub(crate) fn defer_workflow_remote_prompt_dispatch(
+        &mut self,
+        dispatch: crate::app::KernelRemotePromptDispatch,
+    ) {
+        self.pending_workflow_remote_prompt_dispatches
+            .push(dispatch);
+    }
+
+    pub(crate) fn take_deferred_workflow_remote_prompt_dispatches(
+        &mut self,
+    ) -> Vec<crate::app::KernelRemotePromptDispatch> {
+        std::mem::take(&mut self.pending_workflow_remote_prompt_dispatches)
+    }
+
     pub fn enqueue_workflow_prompt_and_maybe_start(
         &mut self,
         session_id: &str,
@@ -982,6 +998,7 @@ mod tests {
 
     #[test]
     fn workflow_context_flush_is_keyed_to_the_dispatched_node_not_provider_start_time() {
+        crate::test_support::isolated_env_test!();
         let worktree = crate::test_support::TestWorktree::new("workflow-runtime-flush-node");
         let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
@@ -1064,6 +1081,7 @@ mod tests {
 
     #[test]
     fn workflow_context_flush_waits_for_an_active_user_prompt_before_replacing_provider() {
+        crate::test_support::isolated_env_test!();
         // Provider setup reads environment-backed account paths. Config tests
         // may replace and remove those roots while this test promotes the queue.
         let _environment = crate::env_lock::lock();
@@ -1193,6 +1211,7 @@ mod tests {
 
     #[test]
     fn app_event_prompt_never_attaches_invocation_artifacts() {
+        crate::test_support::isolated_env_test!();
         let _environment = crate::env_lock::lock();
         let worktree = crate::test_support::TestWorktree::new("workflow-runtime-event");
         let mut app = crate::test_support::bootstrap_authenticated_app(
@@ -1323,6 +1342,7 @@ mod tests {
 
     #[test]
     fn queued_workflow_scheduler_continues_after_invalid_candidate() {
+        crate::test_support::isolated_env_test!();
         let _environment = crate::env_lock::lock();
         let worktree = crate::test_support::TestWorktree::new("workflow-runtime-scheduler");
         let mut app = crate::test_support::bootstrap_authenticated_app(

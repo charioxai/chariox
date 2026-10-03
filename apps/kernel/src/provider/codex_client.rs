@@ -35,6 +35,7 @@ use permission::{codex_permission_policy, workspace_live_sync_codex_permission_g
 
 pub use auth::{ProviderAuthStatus, ProviderLoginStart};
 pub use health::{codex_endpoint_is_healthy, CODEX_ENDPOINT_STARTUP_TIMEOUT};
+pub(crate) use notifications::codex_error_text;
 pub use notifications::CodexNotification;
 pub use socket_io::CodexSocket;
 pub use thread_runtime::{CodexThread, CodexThreadStartResponse};
@@ -47,6 +48,8 @@ pub struct CodexClient {
     endpoint: String,
     runtime_mcp_server_url: Option<String>,
     runtime_mcp_auth_token: Option<String>,
+    native_approval_origin: Option<crate::session::NativeInteractionOrigin>,
+    native_approval_turn_id: Option<String>,
     native_interaction_bridge: Option<std::sync::Arc<dyn ProviderNativeInteractionBridge>>,
     mcp_servers: Vec<CharioxMcpServerConfig>,
     provider_config_overrides: BTreeMap<String, Value>,
@@ -57,6 +60,7 @@ pub struct CodexClient {
     /// read-only sandbox, but must not inherit its ordinary permission reply
     /// policy. This flag is intentionally client-local and never serialized.
     read_only_discovery_permissions: bool,
+    metadata_only_discovery: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +70,13 @@ pub struct CodexRunSelection {
 }
 
 impl CodexClient {
+    pub(crate) fn with_metadata_only_discovery(mut self) -> Self {
+        self.read_only_discovery_permissions = true;
+        self.metadata_only_discovery = true;
+        self.discovery_read_root = None;
+        self
+    }
+
     pub fn new(
         provider_run_id: impl Into<String>,
         endpoint: impl Into<String>,
@@ -78,12 +89,15 @@ impl CodexClient {
             runtime_mcp_server_url: None,
             runtime_mcp_auth_token: None,
             native_interaction_bridge: None,
+            native_approval_origin: None,
+            native_approval_turn_id: None,
             mcp_servers: Vec::new(),
             provider_config_overrides: BTreeMap::new(),
             write_access_mode: ProviderWriteAccessMode::Unrestricted,
             workspace_live_sync_roots: Vec::new(),
             discovery_read_root: None,
             read_only_discovery_permissions: false,
+            metadata_only_discovery: false,
         })
     }
 
@@ -114,6 +128,16 @@ impl CodexClient {
 
     pub fn with_provider_config_overrides(mut self, overrides: &BTreeMap<String, Value>) -> Self {
         self.provider_config_overrides = overrides.clone();
+        self
+    }
+
+    pub(crate) fn with_native_approval_context(
+        mut self,
+        origin: Option<crate::session::NativeInteractionOrigin>,
+        turn_id: Option<String>,
+    ) -> Self {
+        self.native_approval_origin = origin;
+        self.native_approval_turn_id = turn_id;
         self
     }
 
@@ -989,6 +1013,81 @@ mod tests {
     }
 
     #[test]
+    fn parse_notification_frames_codex_errors_with_their_structured_code() {
+        let parse = |method: &str, params: serde_json::Value| {
+            parse_notification(JsonRpcMessage {
+                id: None,
+                method: Some(method.to_string()),
+                params: Some(params),
+                result: None,
+                error: None,
+            })
+        };
+        let at_capacity = "Selected model is at capacity. Please try a different model.";
+        assert_eq!(
+            parse(
+                "error",
+                json!({
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "willRetry": false,
+                    "error": {"message": at_capacity, "codexErrorInfo": "serverOverloaded"}
+                })
+            ),
+            Some(CodexNotification::Error {
+                message: format!("Codex error [server_overloaded]: {at_capacity}"),
+            })
+        );
+        assert_eq!(
+            parse(
+                "turn/completed",
+                json!({
+                    "threadId": "thread-1",
+                    "turn": {
+                        "id": "turn-1",
+                        "status": "failed",
+                        "error": {
+                            "message": "stream closed",
+                            "codexErrorInfo": {"httpConnectionFailed": {"httpStatusCode": 502}}
+                        }
+                    }
+                })
+            ),
+            Some(CodexNotification::TurnCompleted {
+                turn_id: "turn-1".to_string(),
+                status: "failed".to_string(),
+                error_message: Some(
+                    "Codex error [http_connection_failed]: stream closed".to_string()
+                ),
+                items: Vec::new(),
+            })
+        );
+        // The rollout spelling carries the same code.
+        assert_eq!(
+            parse(
+                "error",
+                json!({"error": {"message": at_capacity, "codex_error_info": "server_overloaded"}})
+            ),
+            Some(CodexNotification::Error {
+                message: format!("Codex error [server_overloaded]: {at_capacity}"),
+            })
+        );
+        // A retried error is progress and keeps its text as sent.
+        assert_eq!(
+            parse(
+                "error",
+                json!({
+                    "willRetry": true,
+                    "error": {"message": "Reconnecting... 1/5", "codexErrorInfo": "serverOverloaded"}
+                })
+            ),
+            Some(CodexNotification::Error {
+                message: "Reconnecting... 1/5".to_string(),
+            })
+        );
+    }
+
+    #[test]
     fn parse_notification_recognizes_codex_terminal_events() {
         let v2_completed = parse_notification(JsonRpcMessage {
             id: None,
@@ -1132,5 +1231,37 @@ mod tests {
                 reason: Some("interrupted".to_string()),
             })
         );
+    }
+}
+
+#[cfg(test)]
+mod metadata_discovery_tests {
+    use super::*;
+    #[test]
+    fn mp08_metadata_discovery_disables_host_context_tools_and_permissions() {
+        let client = CodexClient::new("metadata", "ws://127.0.0.1:1")
+            .unwrap()
+            .with_provider_config_overrides(&BTreeMap::from([(
+                "features.shell_tool".into(),
+                serde_json::json!(true),
+            )]))
+            .with_metadata_only_discovery();
+        let params = client
+            .thread_start_params(
+                Some("/tmp"),
+                None,
+                crate::provider::ProviderWriteAccessMode::WorkspaceLiveSyncTracked,
+                crate::provider::AgentExecutionMode::Plan,
+                crate::provider::AgentPermissionLevel::Required,
+                None,
+            )
+            .unwrap();
+        assert_eq!(params["ephemeral"], true);
+        assert_eq!(params["config"]["features.shell_tool"], false);
+        assert_eq!(params["config"]["features.unified_exec"], false);
+        assert_eq!(params["config"]["tools.view_image"], false);
+        assert_eq!(params["config"]["mcp_servers"], serde_json::json!({}));
+        assert_eq!(params["config"]["project_doc_max_bytes"], 0);
+        assert_eq!(params["config"]["web_search"], "disabled");
     }
 }

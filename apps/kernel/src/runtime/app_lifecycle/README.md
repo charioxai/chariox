@@ -15,8 +15,13 @@ registration and the writer's current activation confirmation must all succeed
 before the weak callable handle becomes visible to MCP discovery or event pumps.
 
 There are four aggregate live/preparing worker slots, one package/preparation
-slot, and the existing eight shared App operation slots. Start and stop actions
-serialize per owner/installation. A replacement cannot acquire the old owner's
+slot, and the existing eight shared App operation slots. Only a full live set
+refuses a start (`LiveLimit`); an accepted start's owner thread queues for a
+shared slot for its claim, then for the preparation slot, so concurrent starts
+(recovery after a reboot) prepare one after another instead of failing `Busy`.
+A stop ends a queued start. Its owner records the stop if a shared slot is free
+and never waits for one; otherwise maintenance or shutdown records it. Start and stop actions serialize per
+owner/installation. A replacement cannot acquire the old owner's
 slot until its process is reaped and its single SDK peer's broker work drains.
 Every thread retains its resource and artifact leases through that cleanup, even
 if a requesting future is cancelled. Worker threads retain a weak-handle
@@ -26,7 +31,11 @@ The same SQLite writer persists one health/restart-intent row per installation.
 Generation and attempt fences prevent old cleanup from overwriting a replacement.
 Current installation and publisher admission are rechecked before preparation,
 activation, Running publication, and periodically while the owner lives. The
-periodic check retains one monotonic budget through shared-admission contention.
+periodic check retains one monotonic budget and one FIFO admission future through
+shared-admission contention. The native owner polls that same future in its
+100 ms loop, so a replenished SDK queue cannot steal every released permit.
+Stop, revocation and the original deadline still fence the check; admission remains
+in the shared eight-operation pool.
 Each ordinary SDK call continues to use its own current catalog/permission fence.
 
 A stop request withdraws tool/pump handles immediately, including when App
@@ -37,12 +46,24 @@ supervision finishes cleanup. `Busy` from a saturated stop means durable/join
 confirmation is pending; it does not restore a withdrawn worker. A completed
 stop returns only after the actual owner is joined and the stop row commits.
 
-Apps run on demand. A worker with no tool call or wake for ten minutes stops
-while keeping its restart intent; its verified catalog stays **dormant** so its
-tools remain discoverable. The next tool call starts it and waits up to 20
-seconds for registration; a due wake starts it through the wake pump. Recovery
-skips dormant installations. An App's own timers or broker calls do not count
-as use. A kernel restart starts enabled Apps once, then they idle-stop again.
+Apps run on demand. A worker with no use for ten minutes stops while keeping
+its restart intent; its verified catalog stays **dormant** so its tools remain
+discoverable. Use is a tool call (an agent, runtime MCP or an App view action),
+an inbound event, or the delivery of a wake armed during one of them. The next
+tool call starts it and waits up to 20 seconds for registration; a due wake
+starts it through the wake pump. Recovery skips dormant installations. An App's
+own timers and broker calls do not count as use, and neither does a wake it
+armed from its own wake handler, lifecycle handler or timer (owner decision 6):
+such a wake is still delivered on time, and a worker that has served only such
+wakes since it started stops once they are delivered. The kernel attributes a
+wake to the calls the worker had open when its arming request arrived. Idle
+suspension is committed on the kernel writer before the worker stops.
+A kernel restart retains that dormancy: only due work (wakes or inbox), a tool
+call, or an explicit start starts an idle-stopped App. Previously running Apps
+retain their normal restart intent; manual stops remain disabled. If the
+suspension write fails because host storage is unavailable, the worker still
+suspends in memory without charging the App a failure; it may start once after
+a reboot if dormancy could not commit.
 
 A user stop persists `desired_running = false` and ends dormant on-demand use. Graceful kernel shutdown retains
 the previous restart intent. Restart recovery scans eight installations per

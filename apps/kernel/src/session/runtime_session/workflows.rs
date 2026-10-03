@@ -573,6 +573,10 @@ impl RuntimeSession {
     pub(crate) fn durable_runtime_snapshot(&self) -> Self {
         let pending_settlement = self.workflow_run_ids_pending_prompt_settlement();
         let mut snapshot = self.clone();
+        // MP-08/MP-10/MP-11: official login challenges are ephemeral human UI.
+        snapshot
+            .active_interactions
+            .retain(|interaction| !interaction.provider_login_is_human_only());
         snapshot.workflow_runs.retain(|workflow_run| {
             !workflow_run.status().is_terminal() || pending_settlement.contains(workflow_run.id())
         });

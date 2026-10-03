@@ -1,6 +1,7 @@
+import { LocalIpcError } from "./local-ipc-error.js"
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { executeAppCommand } from "./shell-app-command.js"
+import { appCommandArgs, executeAppCommand } from "./shell-app-command.js"
 
 test("App list preserves large generations and pages without unbounded collection", async () => {
   const requests: Record<string, unknown>[] = []
@@ -33,6 +34,15 @@ test("App status and journal use the shared requests and stable errors", async (
   }
 })
 
+test("App status shows the full active package digest and handles uninstalled Apps", async () => {
+  const digest = `sha256:${"a".repeat(64)}`
+  const installation = { installation_id: "todo", app_id: "com.chariox.todo", generation: "7", active_release: { version: "1.0.0", package_digest: digest }, pending_generation: null, admission_paused: false, data_kept: false }
+  const status = await executeAppCommand(["status", "todo"], { send: async () => ({ AppInstallation: { installation } }) })
+  assert.equal(status.message, `todo · com.chariox.todo · version 1.0.0; digest ${digest}; generation 7`)
+  const removed = await executeAppCommand(["status", "todo"], { send: async () => ({ AppInstallation: { installation: { ...installation, active_release: null } } }) })
+  assert.equal(removed.message, "todo · com.chariox.todo · no active release; generation 7")
+})
+
 test("App worker control uses owner-free requests and shows dormant Apps", async () => {
   const worker = { installation_id: "todo", phase: "dormant", enabled: true, failure: null, updated_at_ms: 1 }
   for (const [args, request] of [
@@ -47,6 +57,41 @@ test("App worker control uses owner-free requests and shows dormant Apps", async
     assert.equal(result.ok, true)
     assert.equal(result.message, "todo · dormant")
   }
+})
+
+test("A worker control or uninstall whose answer was lost is reported as unknown, not resent", async () => {
+  for (const [args, check] of [
+    [["restart", "todo"], "app worker todo"],
+    [["stop", "todo"], "app worker todo"],
+    [["uninstall", "todo", "--generation", "3"], "app status todo"],
+  ] as const) {
+    let sends = 0
+    const result = await executeAppCommand([...args], { send: async () => {
+      sends += 1
+      throw new LocalIpcError("handle kernel response", "the connection closed before the answer", "outcome_unknown")
+    } })
+    assert.equal(result.ok, false)
+    assert.equal(sends, 1)
+    assert.match(result.message!, new RegExp(`may still happen\\. Check with ${check} before trying again`))
+  }
+  // A request that never reached the kernel keeps its transport error: retrying it is safe.
+  await assert.rejects(executeAppCommand(["restart", "todo"], { send: async () => {
+    throw new LocalIpcError("connect kernel websocket", "connect ECONNREFUSED 127.0.0.1:1", "connection_closed", true)
+  } }), /ECONNREFUSED/)
+  await assert.rejects(executeAppCommand(["restart", "todo"], { send: async () => {
+    throw new LocalIpcError("kernel websocket", "closed", "client_closed", false)
+  } }), /closed/)
+})
+
+test("a worker refused for low host disk space points at the App log that says how much to free", async () => {
+  const worker = { installation_id: "docs", phase: "failed", enabled: true, failure: "app_lifecycle_disk_space", updated_at_ms: 1 }
+  const result = await executeAppCommand(["worker", "docs"], { send: async () => ({ AppWorker: { worker } }) })
+  assert.equal(result.message, "docs · failed · app_lifecycle_disk_space: not enough free disk space on the host; "
+    + "app logs docs says how much to free")
+  const other = await executeAppCommand(["worker", "docs"], {
+    send: async () => ({ AppWorker: { worker: { ...worker, failure: "app_lifecycle_preparation" } } }),
+  })
+  assert.equal(other.message, "docs · failed · app_lifecycle_preparation")
 })
 
 test("App automation commands route one event to one workflow and validate arguments", async () => {
@@ -151,20 +196,61 @@ test("app inbox configures routes and test occurrences through the shared reques
   } }
   const added = await executeAppCommand(["inbox", "add", "todo", "mail", "todo_requested", "dev.chariox.dummy/dummy.test", "--version", "2"], client)
   assert.match(added.message!, /mail · dev.chariox.dummy\/dummy.test v2 → todo_requested · 1 pending, 3 delivered, 0 failed, 0 expired/)
-  const tested = await executeAppCommand(["inbox", "test", "todo", "mail", "occ-1", '{"title":"x"}'], client)
+  const tested = await executeAppCommand(["inbox", "test", "todo", "mail", "occ-1", '{"title":"x', 'y"}'], client)
   assert.equal(tested.message, "Occurrence occ-1 on mail was already accepted.")
   await executeAppCommand(["inbox", "remove", "todo", "mail"], client)
   await executeAppCommand(["inbox", "list", "todo"], client)
   assert.deepEqual(sent, [
     { CreateAppInboxRoute: { installation_id: "todo", route_id: "mail", event_name: "todo_requested", source_event_type: "dev.chariox.dummy/dummy.test", source_event_version: 2 } },
-    { TestAppInboxRoute: { installation_id: "todo", route_id: "mail", occurrence_id: "occ-1", payload: { title: "x" } } },
+    { TestAppInboxRoute: { installation_id: "todo", route_id: "mail", occurrence_id: "occ-1", payload: { title: "x y" } } },
     { RemoveAppInboxRoute: { installation_id: "todo", route_id: "mail" } },
     { ListAppInboxRoutes: { installation_id: "todo" } },
   ])
   for (const args of [["inbox", "test", "todo", "mail", "occ", "{bad"], ["inbox", "add", "todo", "mail", "e", "t", "--version", "0"], ["inbox", "list"]]) {
     const result = await executeAppCommand(args, { send: async () => { throw new Error("unexpected request") } })
     assert.equal(result.ok, false)
+    assert.match(result.message!, /'<json-payload>'/)
   }
   const refused = await executeAppCommand(["inbox", "list", "todo"], { send: async () => ({ AppRequestFailed: { code: "invalid_request" } }) })
   assert.match(refused.message!, /declares as incoming/)
+})
+
+test("an inbox test payload is taken from the raw line in every shell", () => {
+  const raw = '/app inbox test todo mail occ-1 {"title":"a  b", "note":"x"}'
+  assert.deepEqual(appCommandArgs(raw, ["inbox", "test", "todo", "mail", "occ-1", "{title:a", "b,"]), [
+    "inbox", "test", "todo", "mail", "occ-1", '{"title":"a  b", "note":"x"}',
+  ])
+  assert.deepEqual(appCommandArgs("/app list", ["list"]), ["list"])
+})
+
+
+test("App open argument errors show only open usage without sending", async () => {
+  for (const args of [["open"], ["open", "todo", "--session"], ["open", "--session", "s"], ["open", "todo", "--session", "--bad"], ["open", "todo", "extra"]]) {
+    const result = await executeAppCommand(args, { send: async () => { throw new Error("unexpected request") } })
+    assert.equal(result.ok, false)
+    assert.equal(result.message, "usage: app open <installation-id> [--session <session-id>]")
+  }
+})
+
+
+test("App quarantine shows explicit start recovery without relabelling ordinary failures", async () => {
+  for (const [phase, enabled, label] of [
+    ["quarantined", true, 'quarantined · explicit start required: app start "todo"'],
+    ["failed", true, "failed"],
+    ["stopped", false, "stopped (stopped by user)"],
+  ] as const) {
+    const result = await executeAppCommand(["worker", "todo"], { send: async request => {
+      assert.deepEqual(request, { GetAppWorker: { installation_id: "todo" } })
+      return { AppWorker: { worker: { installation_id: "todo", phase, enabled,
+        failure: "app_worker_exited", updated_at_ms: 1 } } }
+    } })
+    assert.equal(result.ok, true)
+    assert.equal(result.message, `todo · ${label} · app_worker_exited`)
+  }
+  const recovered = await executeAppCommand(["start", "todo"], { send: async request => {
+    assert.deepEqual(request, { ControlAppWorker: { installation_id: "todo", action: "start" } })
+    return { AppWorker: { worker: { installation_id: "todo", phase: "running", enabled: true,
+      failure: null, updated_at_ms: 2 } } }
+  } })
+  assert.equal(recovered.message, "todo · running")
 })

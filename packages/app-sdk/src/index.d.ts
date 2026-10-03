@@ -9,9 +9,15 @@ export interface InvocationContext {
   readonly operation_id?: string;
   readonly agent_id?: string;
   readonly task_id?: string;
+  /** The agent turn an agent's call was made in: its Chariox prompt id, as in session history. */
   readonly turn_id?: string;
   readonly actor?: Readonly<{ kind: 'human' | 'agent' | 'background'; id: string }>;
 }
+/**
+ * A result that is not JSON (an `undefined` field, a function, a BigInt, NaN,
+ * a Date, a cycle, over 1 MiB) fails only that call, with INVALID_OUTPUT, and
+ * is logged to the App's own log. The worker keeps serving other calls.
+ */
 export type Handler<Input = Json, Output = Json | void> =
   (input: Input, context: InvocationContext) => Output | Promise<Output>;
 export type LifecycleEvent = 'health_check' | 'startup' | 'suspend' | 'resume' | 'shutdown' | 'prepare_update' | 'configuration_change';
@@ -54,6 +60,16 @@ export interface EventReceipt {
   receiptId: string;
   state: 'accepted' | 'queued' | 'delivered' | 'retryable' | 'failed' | 'expired';
 }
+/** One of the App's automations as the owner configured it; never its workflow target. */
+export interface AppAutomation {
+  automationId: string;
+  event: string;
+  eventVersion: number;
+  /** No current request pauses an automation; treat `paused` like `disabled`. */
+  state: 'active' | 'paused' | 'broken' | 'disabled';
+  /** The most recent retained receipt, or null before any delivery or after cleanup. */
+  lastReceipt: EventReceipt | null;
+}
 export interface StateRecord { value: Json; version: number }
 export interface StateTransaction {
   schemaVersion: number;
@@ -94,13 +110,8 @@ export interface HttpResponse {
 }
 export interface ValidationOperation {
   operationId: string;
+  /** A spent approval is not returned: it fails `VALIDATION_CONSUMED`. */
   state: 'pending' | 'approved' | 'denied' | 'expired' | 'cancelled' | 'reconciliation';
-}
-export interface OutputRequest {
-  informationSet: string;
-  version: number;
-  taskRef: string;
-  mode: 'intermediate' | 'final';
 }
 
 export interface AppSdk {
@@ -117,6 +128,8 @@ export interface AppSdk {
     occurrenceId(sourceKey: string, occurredAtMs: number): string;
     /** Reconcile a due, kernel-classified retryable receipt; never restart a terminal operation. */
     retry(receiptId: string, options?: CallOptions): Promise<EventReceipt>;
+    /** The owner's automations of this App's events, read from the kernel. */
+    automations(options?: CallOptions): Promise<{ automations: AppAutomation[] }>;
   };
   readonly lifecycle: { on(event: LifecycleEvent, handler: Handler): void };
   readonly state: {
@@ -136,7 +149,7 @@ export interface AppSdk {
   /** Event generator connections the owner granted this App (kernel protocol 359). */
   readonly connections: {
     list(options?: CallOptions): Promise<{ connections: Array<{ generatorId: string; connectionId: string; actions: string[] }> }>;
-    /** Runs one declared action; `context` is a generator-issued reply context from an inbox occurrence. Calls with the same `idempotencyKey` act once; without one, every call acts. */
+    /** Runs one declared action; `context` is a generator-issued reply context from an inbox occurrence. Calls with the same `idempotencyKey` act once; without one, every call acts. An `APP_CONNECTION_OUTCOME_UNCERTAIN` error means the action may have run: retry only with an `idempotencyKey`. */
     action(request: { connectionId: string; action: string; input?: Json; context?: Json; idempotencyKey?: string }, options?: CallOptions): Promise<{ accepted: boolean; result: Json; idempotencyKey: string }>;
   };
   readonly files: {
@@ -172,8 +185,8 @@ export interface AppSdk {
   };
   readonly host: {
     notify(request: { title: string; body?: string }, options?: CallOptions): Promise<{ notificationId: string }>;
-    openLink(url: string, options?: CallOptions): Promise<null>;
-    writeClipboard(text: string, options?: CallOptions): Promise<null>;
+    openLink(url: string, options?: CallOptions): Promise<HostActionOffer>;
+    writeClipboard(text: string, options?: CallOptions): Promise<HostActionOffer>;
     /**
      * Asks the owner to share files (requires `externalFiles: ["user_selected"]`).
      * Resolves once they choose, with grants to pass to `files.import`; rejects
@@ -184,10 +197,6 @@ export interface AppSdk {
   readonly validation: {
     request(request: { action: string; parameters: Json; operationId?: string; connectionId?: string }, options?: CallOptions): Promise<ValidationOperation>;
     status(operationId: string, options?: CallOptions): Promise<ValidationOperation>;
-  };
-  readonly outputs: {
-    request(request: OutputRequest, options?: CallOptions): Promise<{ requestId: string; state: 'pending_consent' | 'pending_output' }>;
-    cancel(requestId: string, options?: CallOptions): Promise<null>;
   };
   /** Completes bootstrap registration. This never asserts sandbox lockdown. */
   ready(options?: CallOptions): Promise<null>;
@@ -228,3 +237,10 @@ export interface AppSdkOptions {
   limits?: { maxPending?: number; maxHandlers?: number; maxDeadlineMs?: number };
 }
 export function createAppSdk(options: AppSdkOptions): AppSdk;
+
+/** A pending human copy/link request. The App cannot accept it. */
+export interface HostActionOffer {
+  operationId: string;
+  state: 'pending';
+  expiresAtMs: number;
+}

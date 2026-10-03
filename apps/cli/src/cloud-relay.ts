@@ -171,11 +171,12 @@ export async function pairCloudRelayClient(
   clientId: string,
   alias?: string,
 ): Promise<RelayCloudProfile> {
+  const sessionToken = requiredPairingSession(profile)
   const pairing = await postJson<{ token: string }>(profile.apiUrl, "/pairing-tokens", {
     accountId: profile.accountId,
     createdByUserId: profile.userId,
     subjectKind: "client",
-  })
+  }, sessionToken)
   await postJson(profile.apiUrl, "/clients/pair", {
     accountId: profile.accountId,
     token: pairing.token,
@@ -196,11 +197,12 @@ export async function pairCloudRelayMachine(
   alias?: string,
   runtimeProfile?: CloudMachineRuntimeProfile,
 ): Promise<RelayCloudProfile> {
+  const sessionToken = requiredPairingSession(profile)
   const pairing = await postJson<{ token: string }>(profile.apiUrl, "/pairing-tokens", {
     accountId: profile.accountId,
     createdByUserId: profile.userId,
     subjectKind: "machine",
-  })
+  }, sessionToken)
   await postJson(profile.apiUrl, "/machines/pair", {
     accountId: profile.accountId,
     token: pairing.token,
@@ -243,14 +245,26 @@ export async function issueCloudRelayToken(
   }
 }
 
+function requiredPairingSession(profile: RelayCloudProfile): string {
+  const token = profile.cloudSessionToken
+  if (!token || token.trim() === "") {
+    throw new Error("cloud session required for account-wide pairing; run /relay cloud login first")
+  }
+  return token
+}
+
 async function postJson<TResponse>(
   apiUrl: string,
   pathname: string,
   body: Record<string, unknown>,
+  bearerToken?: string,
 ): Promise<TResponse> {
   const response = await fetch(`${normalizeApiUrl(apiUrl)}${pathname}`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(bearerToken ? { authorization: `Bearer ${bearerToken}` } : {}),
+    },
     body: JSON.stringify(body),
   })
   return readJson<TResponse>(response)

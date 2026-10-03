@@ -344,3 +344,58 @@ async fn receipt_queries_stay_owner_scoped_and_recheck_same_generation_publisher
     peer.close();
     timeout(WAIT, task.join()).await.unwrap().unwrap();
 }
+
+#[tokio::test]
+async fn automations_report_own_state_and_latest_receipt_without_targets() {
+    assert!(decode::operation("events.automations", json!({})).is_ok());
+    assert_eq!(
+        rejection("events.automations", json!({"owner":"forged"})).code,
+        "INVALID_ARGUMENT"
+    );
+    let fixture = Fixture::new();
+    let store = fixture.open();
+    let catalog = fixture_event_catalog(&store);
+    automations(&store, &catalog);
+    Connection::open(store.path())
+        .unwrap()
+        .execute(
+            "UPDATE app_automations SET status='paused' WHERE automation_id='auto-b'",
+            [],
+        )
+        .unwrap();
+    let (peer, mut worker, task) = start(&store, catalog, "alice", Arc::new(Semaphore::new(8)));
+    send(&mut worker, "before", "events.automations", json!({})).await;
+    assert_eq!(
+        receive(&mut worker).await.unwrap(),
+        json!({"automations":[
+            {"automationId":"auto-a","event":"changed","eventVersion":1,"state":"active","lastReceipt":null},
+            {"automationId":"auto-b","event":"changed","eventVersion":1,"state":"paused","lastReceipt":null},
+        ]})
+    );
+    for id in ["first", "second"] {
+        send(&mut worker, id, "events.emit", occurrence("auto-a", id)).await;
+    }
+    receive(&mut worker).await.unwrap();
+    let latest = receive(&mut worker).await.unwrap();
+    // Another owner's and another installation's `auto-a`, each with a newer
+    // receipt, stay invisible.
+    let db = Connection::open(store.path()).unwrap();
+    for (owner, installation) in [("bob", "installed"), ("alice", "other")] {
+        db.execute("INSERT INTO app_automations SELECT ?1,?2,automation_id,revision,event_name,event_version,schema_digest,session_id,publication_id,endpoint_id,queue_id,'broken',scheduled
+            FROM app_automations WHERE owner_id='alice' AND installation_id='installed' AND automation_id='auto-a'",
+            rusqlite::params![owner, installation]).unwrap();
+        let columns = "automation_id,event_version,occurrence_id,occurred_at_ms,schedule_revision,event_name,schema_digest,content_digest,automation_revision,accepted_generation,payload_json,invocation_json,accepted_at_ms,expires_at_ms,state,revision,attempts,next_attempt_at_ms";
+        db.execute(&format!("INSERT INTO app_outbox(owner_id,installation_id,receipt_id,{columns}) SELECT ?1,?2,'foreign-'||?1||?2,{columns}
+            FROM app_outbox WHERE receipt_id=?3"),
+            rusqlite::params![owner, installation, latest["receiptId"].as_str().unwrap()]).unwrap();
+    }
+    send(&mut worker, "after", "events.automations", json!({})).await;
+    let listed = receive(&mut worker).await.unwrap();
+    assert_eq!(listed["automations"].as_array().unwrap().len(), 2);
+    assert_eq!(listed["automations"][0]["state"], "active");
+    assert_eq!(listed["automations"][0]["lastReceipt"], latest);
+    assert_eq!(listed["automations"][0].as_object().unwrap().len(), 5);
+    assert!(listed["automations"][1]["lastReceipt"].is_null());
+    peer.close();
+    timeout(WAIT, task.join()).await.unwrap().unwrap();
+}

@@ -2,7 +2,6 @@ use crate::support::kernel_websocket::*;
 use chariox_kernel::attachment::ClientCapabilityLevel;
 use chariox_kernel::local::{AttachToSessionRequest, GetDaemonHealthRequest, LocalDaemonRequest};
 use chariox_kernel::runtime_transport::run_kernel_websocket_server_on_listener;
-use chariox_kernel::session::CreateSessionRequest;
 use chariox_kernel::{DaemonApp, DaemonConfig};
 use serde_json::json;
 use tokio::sync::oneshot;
@@ -10,6 +9,7 @@ use tokio::time::{timeout, Duration};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_reports_replay_gap_when_resume_cursor_is_not_retained() {
+    let workspace = ExecutionWorkspace::directory("kernel-replay-gap");
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
@@ -33,10 +33,7 @@ async fn kernel_websocket_reports_replay_gap_when_resume_cursor_is_not_retained(
     let create_response = send_request(
         &mut socket,
         "create-session",
-        LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-            "workspace-kernel-replay-gap",
-            "worktree-kernel-replay-gap",
-        )),
+        LocalDaemonRequest::CreateSession(workspace.session_request()),
     )
     .await;
     let session_id = response_variant(&create_response, "SessionCreated")["session"]["id"]
@@ -130,6 +127,7 @@ async fn kernel_websocket_reports_replay_gap_when_resume_cursor_is_not_retained(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_replays_persisted_events_after_server_restart() {
+    let workspace = ExecutionWorkspace::directory("event-replay-restart");
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
@@ -154,10 +152,7 @@ async fn kernel_websocket_replays_persisted_events_after_server_restart() {
     let create_response = send_request(
         &mut socket,
         "create-session-before-event-replay-restart",
-        LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-            "workspace-event-replay-restart",
-            "worktree-event-replay-restart",
-        )),
+        LocalDaemonRequest::CreateSession(workspace.session_request()),
     )
     .await;
     let session_id = response_variant(&create_response, "SessionCreated")["session"]["id"]
@@ -198,7 +193,9 @@ async fn kernel_websocket_replays_persisted_events_after_server_restart() {
     let resume_from_event_id = snapshot_event["event_id"]
         .as_u64()
         .expect("snapshot event id should be present");
-    let heartbeat_event = wait_for_event(&mut socket, "heartbeat").await;
+    // Needs the heartbeat *after* the snapshot cursor: the next one is a full interval away.
+    let heartbeat_event =
+        wait_for_event_with_timeout(&mut socket, "heartbeat", SUBSCRIPTION_HEARTBEAT_BUDGET).await;
     let expected_replay_event_id = heartbeat_event["event_id"]
         .as_u64()
         .expect("heartbeat event id should be present");

@@ -48,6 +48,9 @@ struct ManagedActivityTransitionInner {
     pending: VecDeque<PendingManagedActivityTransition>,
     pending_journal_dirty: bool,
     last_runtime_sequence: u64,
+    // Active-turn retries are also runtime-only. Keep every turn's finish,
+    // even when another retained turn keeps the binary aggregate busy.
+    latest_prompt_finish_at_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +67,15 @@ impl ManagedActivityTransitionState {
             kernel_id: Arc::new(Mutex::new(kernel_id)),
             inner: Arc::new(Mutex::new(ManagedActivityTransitionInner::default())),
         }
+    }
+
+    pub(super) fn record_prompt_finish(&self, observed_at_ms: u64) -> u64 {
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("managed activity transition mutex poisoned");
+        inner.latest_prompt_finish_at_ms = inner.latest_prompt_finish_at_ms.max(observed_at_ms);
+        inner.latest_prompt_finish_at_ms
     }
 
     pub(super) fn is_enabled(&self) -> bool {
@@ -176,10 +188,19 @@ impl ManagedActivityTransitionState {
         Ok(inner.latest_durable)
     }
 
+    #[cfg(test)]
     pub(super) fn current_observation(
         &self,
         running_agent_count: u8,
     ) -> Result<ManagedActivityObservation, DaemonError> {
+        self.current_observation_with_sequence(running_agent_count)
+            .map(|(_, observation)| observation)
+    }
+
+    pub(super) fn current_observation_with_sequence(
+        &self,
+        running_agent_count: u8,
+    ) -> Result<(u64, ManagedActivityObservation), DaemonError> {
         let kernel_id = self.kernel_id().ok_or_else(|| {
             activity_state_error("managed activity tracking is not enabled for this kernel")
         })?;
@@ -197,7 +218,7 @@ impl ManagedActivityTransitionState {
                 "managed activity changed without a durable mutation-boundary transition",
             ));
         }
-        Ok(observation)
+        Ok((inner.latest_durable_sequence, observation))
     }
 
     fn kernel_id(&self) -> Option<String> {

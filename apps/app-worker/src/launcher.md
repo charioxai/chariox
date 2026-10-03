@@ -26,7 +26,9 @@ Those are required implementation and validation work, not per-user setup.
    Create a new session without a controlling terminal. Pass only the intended
    descriptors below; the launcher additionally closes ambient descriptors.
 4. On Linux, the installer-provisioned pinned **bundled** bubblewrap establishes
-   user, mount, PID, IPC and network namespaces and drops every capability. Use
+   user, mount, PID, IPC, network and UTS namespaces and drops every
+   capability. The UTS namespace sets the fixed host name `chariox-app`, so
+   Apps never see the host's name. Use
    a private read-only root containing only the allowed mounts, not a bind of
    host `/`. Attach the worker to its delegated cgroup before continuation.
    The provider sandbox's existing bubblewrap argument list is not this policy.
@@ -35,7 +37,10 @@ Those are required implementation and validation work, not per-user setup.
 
 The native launcher validates canonical absolute roots, ownership and absence of
 group/other-writable ancestors, disjoint paths/inodes, inherited streams, bounds,
-and Linux mount/capability invariants. These checks complement the supervisor's
+and Linux mount/capability invariants. Owners must be the worker's UID or root;
+on Linux the runtime root may also show as the overflow UID, because the
+root-owned enrolled runtime is unmapped in the worker's user namespace (the
+supervisor verifies its root ownership on the host, and its mount is read-only). These checks complement the supervisor's
 held verified objects; they do not replace artifact signatures or independently
 attest that the supervisor created every namespace or cgroup correctly.
 
@@ -129,7 +134,21 @@ supervised startup before importing the installation entry point.
 ## Platform policy and resource scope
 
 The macOS profile denies by default; it permits private files, exact ancestor
-metadata, self signals/process metadata and named CPU/OS sysctls. Read/executable
+metadata, self signals/process metadata and named CPU/OS sysctls. Embedded Node
+startup additionally needs three read-only grants, each confirmed by bisecting
+the profile around the enrolled runtime (without any of them Node exits 122,
+initialization failed): a data read of `/` itself (libuv loop init; this
+exposes only the names of top-level entries on the sealed system volume), reads
+under `/System/Library/OpenSSL` (OpenSSL's default configuration), and the
+`hw.pagesize` sysctl as a name prefix, because the page-size lookup by MIB does
+not match its exact name. Node startup also needs the `uname(3)` sysctls
+`kern.version`, `hw.machine` and `kern.hostname`: Node's `os` module calls
+`uname` when it loads (and `fs/promises` loads `os`), and libc `uname` fails if
+any of its five sysctls (with `kern.ostype` and `kern.osrelease`) is denied.
+**Accepted exposure:** App code can read the Mac's host name through
+`os.hostname()`; Seatbelt cannot virtualise it. On Linux the UTS namespace
+instead has the fixed host name `chariox-app`. The native probe asserts the `/` read, the OpenSSL
+policy and the page-size sysctl, and that a sibling system file stays denied. Read/executable
 mapping support is restricted to the verified runtime, `/usr/lib`, the system
 dyld directory and OS Cryptex paths. `file-map-executable` has an explicit deny
 before the trusted library exceptions: relying on `(deny default)` while
@@ -150,6 +169,15 @@ Mach service lookup, device writes, home/workspace access, or desktop access.
 The signed release must keep hardened-runtime library validation and use the
 V8 JIT entitlement, then test this policy against the pinned embedded Node.
 
+**`com.apple.FSEvents` stays denied.** Node's macOS directory watch needs it.
+With the lookup allowed, a sandboxed client on macOS 26.5 that watched `/` or a
+metadata-readable ancestor received the names of deleted and renamed-away files
+in directories its policy cannot read, including other processes' files, and a
+history replay (`sinceWhen`) also returned existing unreadable files. Only
+streams rooted at unreadable directories stayed silent. The service also exposes
+the host-wide event counter. The trusted bootstrap polls directory watches
+instead, and the native probe asserts the lookup stays denied.
+
 Linux first checks prepared mount flags and zero capabilities, disables dumping,
 sets `no_new_privs`, then installs an architecture-checked default-deny BPF
 syscall policy. Threads require the thread-form `clone` flags; `clone3` returns
@@ -161,8 +189,10 @@ The mount boundary supplies filesystem policy; seccomp alone does not.
 Descriptor copies and inotify watches operate only on reachable private paths
 and inherited handles. Their memory/watch usage remains part of admitted cgroup
 and filesystem resource budgets. The Linux native fixture includes private
-copy/watch positives, escaped-watch denial, and limit query/mutation checks;
-the actual pinned Node `fs.copyFile`/`fs.watch` cases still need execution.
+copy/watch positives, escaped-watch denial, and limit query/mutation checks.
+The hosted embedded fixture runs the pinned Node `fs.copyFile` and directory
+`fs.watch`; plain, recursive and `fs/promises` directory watches also work on
+the production Linux worker path (inotify).
 
 `RLIMIT_CORE=0`, `RLIMIT_NOFILE`, `RLIMIT_CPU` and `RLIMIT_FSIZE` are hard native
 limits. CPU here is a lifetime fallback, not a bandwidth allowance. FSIZE is a
@@ -200,3 +230,33 @@ Policy references: [Chromium Seatbelt entry points](https://github.com/chromium/
 [Apple XNU mmap and mprotect checks](https://github.com/apple-oss-distributions/xnu/blob/xnu-10002.81.5/bsd/kern/kern_mman.c),
 [Linux seccomp documentation](https://www.kernel.org/doc/html/latest/userspace-api/seccomp_filter.html),
 [upstream bubblewrap](https://github.com/containers/bubblewrap).
+
+The bundled Linux bubblewrap build uses `apps/app-worker/src/build-bwrap.sh`, which
+verifies the pinned upstream archive and applies `bubblewrap-openat.patch`.
+The Linux managed service retains `RestrictSUIDSGID=true`; systemd can therefore
+return ENOSYS for `openat2` even on a supported kernel. The pinned 5.9 build
+normally compiles out bubblewrap's fallback. Our fallback walks held directory
+descriptors with `openat(O_NOFOLLOW|O_CLOEXEC)`, rejects symlinks and `..`, and
+checks the complete device/inode and parent chain before returning a handle.
+Creation and truncation flags fail closed. It deliberately supports only the
+canonical, symlink-free bind paths supplied by the App domain, rather than
+bubblewrap's general symlink-resolving fallback. The patch, fallback source and
+build helper belong to the final launcher attestation inputs; the expensive
+native Node libraries can be reused. Run `apps/app-worker/src/test-bwrap-fallback.sh`
+against the build scratch to inject ENOSYS into the actual patched upstream
+`safe_openat()` and verify normal opens, denied escapes and ancestor replacement.
+
+Only the shared-host bootstrap service needs AF_NETLINK added to its address
+family allowlist for bubblewrap's private loopback setup. systemd's
+`RestrictAddressFamilies` cannot distinguish NETLINK_ROUTE from other netlink
+protocols. App main still cannot create sockets under the native launcher policy.
+The storage helper and Docker broker units retain their existing restrictions.
+
+These two unit compatibility fixes assume the Linux App domain's other launch
+prerequisites are present: executable installed ELF loaders, the runtime-only
+overflow-owner check, and the leased storage helper's supplementary-group
+clearing handshake. The service kernel also needs `chariox-slice`; the App
+observer must keep rejecting that extra group until the handshake clears it.
+Do not widen the worker's accepted groups to make an older deployment start.
+Installations without the leased-helper supplementary-group clearing handshake
+must add it before a signed managed-unit start can be qualified.

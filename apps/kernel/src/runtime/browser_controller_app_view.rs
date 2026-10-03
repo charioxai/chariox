@@ -27,6 +27,14 @@ pub(crate) enum BrowserAppViewRequest {
         installation_id: String,
         entry: String,
         assets: Vec<BrowserAppViewAsset>,
+        /// The page's CSS size beside its agent panel; absent: the default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        page: Option<AppViewPage>,
+    },
+    /// The Tab's page size changed (its panel moved, was minimized or hidden).
+    Layout {
+        target_id: String,
+        page: AppViewPage,
     },
     Calls,
     /// Serve the current generation's assets to an open view and reload it.
@@ -51,6 +59,7 @@ impl BrowserAppViewRequest {
             Self::Open { .. } => "browser.app.open",
             Self::Calls => "browser.app.calls",
             Self::Reload { .. } => "browser.app.reload",
+            Self::Layout { .. } => "browser.app.layout",
             Self::Respond { .. } => "browser.app.respond",
         }
     }
@@ -65,6 +74,14 @@ impl BrowserAppViewRequest {
     }
 }
 
+/// An App page's CSS size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AppViewPage {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub(crate) struct BrowserAppViewOpened {
     pub(crate) target_id: String,
@@ -75,6 +92,10 @@ pub(crate) struct BrowserAppViewOpened {
 pub(crate) struct BrowserAppViewCall {
     pub(crate) installation_id: String,
     pub(crate) target_id: String,
+    /// The Tab's top-level document (CDP loader) that made the call. Absent
+    /// from an older controller: the call then ends only with its Tab.
+    #[serde(default)]
+    pub(crate) document_id: Option<String>,
     pub(crate) call_id: String,
     pub(crate) method: String,
     #[serde(default)]
@@ -88,17 +109,12 @@ pub(crate) struct BrowserAppViewCalls {
     /// Absent (an older controller) means "unknown": nothing is pruned.
     #[serde(default)]
     pub(crate) open_targets: Option<Vec<String>>,
-    /// Reserved conversation panels in page CSS pixels. Absent from an older
-    /// controller, which neither reports panels nor marks App Tabs.
+    /// Each open App target's current document; a call made by another
+    /// document is cancelled. Absent from an older controller.
     #[serde(default)]
-    pub(crate) panels: Option<Vec<BrowserAppViewPanel>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub(crate) struct BrowserAppViewPanel {
-    pub(crate) target_id: String,
-    pub(crate) x: u32,
-    pub(crate) y: u32,
-    pub(crate) width: u32,
-    pub(crate) height: u32,
+    pub(crate) documents: Option<std::collections::HashMap<String, String>>,
+    /// The controller lays App pages out beside the trusted conversation
+    /// panel. An older controller does not, so its App Tabs get no panel.
+    #[serde(default)]
+    pub(crate) app_panels: bool,
 }

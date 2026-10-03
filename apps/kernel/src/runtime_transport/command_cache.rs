@@ -2,15 +2,21 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{value::RawValue, Value};
 use tokio::sync::{oneshot, Mutex};
 
 use crate::local::LocalDaemonRequest;
 use crate::runtime::command::KernelCommand;
 use crate::transport::kernel_protocol::{KernelOutgoingFrame, KernelTransportError};
+
+mod at_most_once;
+pub(crate) use at_most_once::is_receipt_capacity_error;
 
 pub(crate) const COMMAND_RESULT_CACHE_LIMIT: usize = 512;
 const COMMAND_RESULT_CACHE_MAX_MEMORY_BYTES: u64 = 128 * 1024 * 1024;
@@ -26,6 +32,7 @@ struct CommandResultRetentionPolicy {
     max_memory_bytes: u64,
     max_total_bytes: Option<u64>,
     max_age_ms: Option<u64>,
+    at_most_once: bool,
 }
 
 impl CommandResultRetentionPolicy {
@@ -35,6 +42,7 @@ impl CommandResultRetentionPolicy {
             max_memory_bytes: COMMAND_RESULT_CACHE_MAX_MEMORY_BYTES,
             max_total_bytes: None,
             max_age_ms: None,
+            at_most_once: false,
         }
     }
 
@@ -44,17 +52,36 @@ impl CommandResultRetentionPolicy {
             max_memory_bytes: COMMAND_RESULT_CACHE_MAX_MEMORY_BYTES,
             max_total_bytes: Some(COMMAND_RESULT_CACHE_MAX_BYTES),
             max_age_ms: Some(COMMAND_RESULT_CACHE_MAX_AGE_MS),
+            at_most_once: false,
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct CachedCommandResult {
-    pub(crate) response: Box<Option<Value>>,
+    response: Option<Arc<RawValue>>,
     pub(crate) error: Option<KernelTransportError>,
     #[serde(default)]
     completed_at_ms: u64,
     fingerprint: CommandFingerprint,
+}
+
+impl CachedCommandResult {
+    pub(crate) fn response_value(&self) -> Box<Option<Value>> {
+        Box::new(self.response.as_ref().map(|response| {
+            let mut deserializer = serde_json::Deserializer::from_str(response.get());
+            // Responses are already validated Values; generated trees may exceed
+            // the parser's default input nesting limit.
+            deserializer.disable_recursion_limit();
+            Value::deserialize(&mut deserializer).expect("cached response is valid JSON")
+        }))
+    }
+}
+
+fn serialized_response(response: &Option<Value>) -> Option<Arc<RawValue>> {
+    response
+        .as_ref()
+        .map(|value| Arc::from(serde_json::value::to_raw_value(value).expect("response is JSON")))
 }
 
 #[derive(Debug)]
@@ -103,7 +130,10 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
     // current durable state. Their own owner-scoped ledgers deduplicate retries;
     // this older transport fingerprint does not carry the caller, and cached
     // results could outlive live authority. Other commands retain in-memory
-    // deduplication; disk exclusions are separate.
+    // deduplication; disk exclusions are separate. An excluded request with no
+    // ledger that a replay would run again must be on the kernel client's
+    // KERNEL_REQUESTS_RUN_AGAIN_ON_REPLAY (packages/kernel-client/src/ipc.ts),
+    // which never resends it once written; the tests hold the two lists equal.
     !matches!(
         request,
         LocalDaemonRequest::ListAppInstallations(_)
@@ -122,10 +152,12 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::AbortAppPackageUpload(_)
             | LocalDaemonRequest::GetAppWorker(_)
             | LocalDaemonRequest::ControlAppWorker(_)
+            | LocalDaemonRequest::RestoreAppDataSnapshot(_)
             | LocalDaemonRequest::ListAppAutomations(_)
             | LocalDaemonRequest::ConfigureAppAutomation(_)
             | LocalDaemonRequest::DisableAppAutomation(_)
             | LocalDaemonRequest::OpenAppView(_)
+            | LocalDaemonRequest::SetAppViewPanel(_)
             | LocalDaemonRequest::UninstallApp(_)
             | LocalDaemonRequest::GetAppLogs(_)
             | LocalDaemonRequest::CreateAppInboxRoute(_)
@@ -140,6 +172,8 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::ListAppConnections(_)
             | LocalDaemonRequest::GrantAppFile(_)
             | LocalDaemonRequest::SaveAppFileExport(_)
+            | LocalDaemonRequest::RevokeAppFileGrants(_)
+            | LocalDaemonRequest::AcceptAppHostAction(_)
             | LocalDaemonRequest::PrepareBrowserImport(_)
             | LocalDaemonRequest::ApproveBrowserImport(_)
             | LocalDaemonRequest::ClaimBrowserImportSource(_)
@@ -189,6 +223,8 @@ pub(crate) struct CommandResultCache {
     memory_accounting: Mutex<CommandResultMemoryAccounting>,
     retention: CommandResultRetentionPolicy,
     persistence: Option<CommandResultPersistence>,
+    #[cfg(test)]
+    fail_settlement_sync: AtomicBool,
 }
 
 impl Default for CommandResultCache {
@@ -199,6 +235,8 @@ impl Default for CommandResultCache {
             memory_accounting: Mutex::new(CommandResultMemoryAccounting::default()),
             retention: CommandResultRetentionPolicy::memory(),
             persistence: None,
+            #[cfg(test)]
+            fail_settlement_sync: AtomicBool::new(false),
         }
     }
 }
@@ -208,6 +246,18 @@ impl CommandResultCache {
         Self::new_with_persistent_path_and_retention(
             path,
             CommandResultRetentionPolicy::persistent(),
+        )
+    }
+
+    /// Durable receipts never expire or evict. At capacity, refuse new identities.
+    pub(crate) fn new_at_most_once(path: impl Into<PathBuf>) -> io::Result<Self> {
+        Self::new_with_persistent_path_and_retention(
+            path,
+            CommandResultRetentionPolicy {
+                at_most_once: true,
+                max_age_ms: None,
+                ..CommandResultRetentionPolicy::persistent()
+            },
         )
     }
 
@@ -221,6 +271,8 @@ impl CommandResultCache {
             order: Mutex::new(VecDeque::new()),
             memory_accounting: Mutex::new(CommandResultMemoryAccounting::default()),
             retention,
+            #[cfg(test)]
+            fail_settlement_sync: AtomicBool::new(false),
             persistence: Some(CommandResultPersistence {
                 path: path.clone(),
                 io_lock: Mutex::new(()),
@@ -319,13 +371,18 @@ impl CommandResultCache {
         let cached = CachedCommandResult {
             fingerprint,
             completed_at_ms: crate::session::unix_epoch_ms(),
-            response: response.clone(),
+            response: serialized_response(response),
             error: error.clone(),
         };
+        self.publish_completed_result(&command_id, &cached).await;
+        self.record_completed_order(command_id, cached).await;
+    }
+
+    async fn publish_completed_result(&self, command_id: &str, cached: &CachedCommandResult) {
         let waiters = {
             let mut results = self.results.lock().await;
             match results.insert(
-                command_id.clone(),
+                command_id.to_owned(),
                 CommandResultEntry::Completed(cached.clone()),
             ) {
                 Some(CommandResultEntry::Pending { waiters, .. }) => waiters,
@@ -335,13 +392,10 @@ impl CommandResultCache {
         for waiter in waiters {
             let _ = waiter.send(cached.clone());
         }
-        self.record_completed_order(command_id, cached).await;
     }
 
     async fn record_completed_order(&self, command_id: String, cached: CachedCommandResult) {
-        // Account every completed result in memory, including responses that are too large or
-        // too noisy to persist. A Vec<u8> represented as serde_json::Value is especially costly,
-        // so entry-count retention alone is not a meaningful memory bound.
+        // Account serialized response bytes even when the result is excluded from disk.
         // Do not clone and serialize large read-only responses merely to decide that they should
         // not be written. History outlines are intentionally paged and may still be large enough
         // for this work to become visible on every browser refresh.
@@ -389,16 +443,27 @@ impl CommandResultCache {
         if next_append_bytes > COMMAND_RESULT_CACHE_MAX_PERSISTED_RECORD_BYTES {
             return Ok(());
         }
-        let compact_snapshot = if persistence.should_compact_now(next_append_bytes)? {
-            Some(self.persistable_completed_results_snapshot().await)
-        } else {
-            None
-        };
+        let compact_snapshot =
+            if !self.retention.at_most_once && persistence.should_compact_now(next_append_bytes)? {
+                Some(self.persistable_completed_results_snapshot().await)
+            } else {
+                None
+            };
         let _guard = persistence.io_lock.lock().await;
         if let Some(parent) = persistence.path.parent() {
             fs::create_dir_all(parent)?;
         }
         append_persistent_result(&persistence.path, &persisted)?;
+        if self.retention.at_most_once {
+            #[cfg(test)]
+            if self.fail_settlement_sync.swap(false, Ordering::SeqCst) {
+                return Err(io::Error::other("injected settlement sync failure"));
+            }
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&persistence.path)?
+                .sync_all()?;
+        }
         if let Some(snapshot) = compact_snapshot {
             rewrite_persistent_results(&persistence.path, &snapshot)?;
             persistence.skipped_compactions.store(0, Ordering::Release);
@@ -433,6 +498,10 @@ impl CommandResultCache {
             .saturating_add(completed_memory_bytes);
 
         let now_ms = crate::session::unix_epoch_ms();
+
+        if self.retention.at_most_once {
+            return;
+        }
 
         if let Some(max_age_ms) = self.retention.max_age_ms {
             while order.front().is_some_and(|command_id| {
@@ -510,7 +579,7 @@ impl CommandResultCache {
         let cached = CachedCommandResult {
             fingerprint,
             completed_at_ms: crate::session::unix_epoch_ms(),
-            response: Box::new(response),
+            response: serialized_response(&response),
             error: None,
         };
         self.results.lock().await.insert(
@@ -634,36 +703,12 @@ fn cached_command_result_memory_bytes(command_id: &str, result: &CachedCommandRe
             .saturating_add(error.code.capacity() as u64)
             .saturating_add(error.message.capacity() as u64);
     }
-    if let Some(response) = result.response.as_ref().as_ref() {
+    if let Some(response) = &result.response {
         bytes = bytes
-            .saturating_add(std::mem::size_of::<Option<Value>>() as u64)
-            .saturating_add(value_heap_bytes(response));
+            .saturating_add((2 * std::mem::size_of::<usize>()) as u64)
+            .saturating_add(response.get().len() as u64);
     }
     bytes
-}
-
-fn value_heap_bytes(value: &Value) -> u64 {
-    match value {
-        Value::String(value) => value.capacity() as u64,
-        Value::Array(values) => (values.capacity() as u64)
-            .saturating_mul(std::mem::size_of::<Value>() as u64)
-            .saturating_add(values.iter().fold(0_u64, |total, value| {
-                total.saturating_add(value_heap_bytes(value))
-            })),
-        Value::Object(values) => values.iter().fold(
-            (values.len() as u64).saturating_mul(
-                (std::mem::size_of::<String>()
-                    + std::mem::size_of::<Value>()
-                    + 3 * std::mem::size_of::<usize>()) as u64,
-            ),
-            |total, (key, value)| {
-                total
-                    .saturating_add(key.capacity() as u64)
-                    .saturating_add(value_heap_bytes(value))
-            },
-        ),
-        Value::Null | Value::Bool(_) | Value::Number(_) => 0,
-    }
 }
 
 fn stable_hash64(bytes: &[u8]) -> u64 {
@@ -689,6 +734,11 @@ fn read_persistent_results(
         let max_load_bytes =
             max_total_bytes.saturating_mul(COMMAND_RESULT_COMPACTION_FILE_GROWTH_MULTIPLIER);
         if metadata.len() > max_load_bytes {
+            if retention.at_most_once {
+                return Err(io::Error::other(
+                    "at-most-once receipts exceed the load limit",
+                ));
+            }
             return Ok(LoadedPersistentCommandResults {
                 entries: Vec::new(),
                 compact_after_load: true,
@@ -708,14 +758,23 @@ fn read_persistent_results(
         }
         let jsonl_bytes = line.as_bytes().len().saturating_add(1) as u64;
         if jsonl_bytes > COMMAND_RESULT_CACHE_MAX_PERSISTED_RECORD_BYTES {
+            if retention.at_most_once {
+                return Err(io::Error::other("oversized at-most-once receipt"));
+            }
             compact_after_load = true;
             continue;
         }
         let Ok(mut entry) = serde_json::from_str::<PersistentCommandResult>(&line) else {
+            if retention.at_most_once {
+                return Err(io::Error::other("corrupt at-most-once receipt"));
+            }
             compact_after_load = true;
             continue;
         };
         if !should_persist_completed_result(&entry.result.fingerprint) {
+            if retention.at_most_once {
+                return Err(io::Error::other("unexpected at-most-once receipt type"));
+            }
             compact_after_load = true;
             continue;
         }
@@ -755,6 +814,9 @@ fn apply_persistent_retention(
     entries: &mut Vec<PersistentCommandResultWithBytes>,
     retention: CommandResultRetentionPolicy,
 ) -> bool {
+    if retention.at_most_once {
+        return false;
+    }
     let original_len = entries.len();
     let now_ms = crate::session::unix_epoch_ms();
     if let Some(max_age_ms) = retention.max_age_ms {
@@ -839,7 +901,12 @@ fn rewrite_persistent_results(
         serde_json::to_writer(&mut file, entry).map_err(io::Error::other)?;
         file.write_all(b"\n")?;
     }
-    fs::rename(tmp_path, path)
+    file.sync_all()?;
+    fs::rename(tmp_path, path)?;
+    if let Some(parent) = path.parent() {
+        fs::File::open(parent)?.sync_all()?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

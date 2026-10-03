@@ -197,6 +197,14 @@ impl Drop for TestDomain {
         self.observed.dropped.store(true, Ordering::SeqCst);
     }
 }
+/// The monitor's published cause, as a call that lost its channel reads it.
+fn ended(ending: &WorkerEnding) -> Option<WorkerError> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(ending.failure(Duration::from_secs(1)))
+}
 fn assert_released(observed: &Observed) {
     assert!(observed.reaped.load(Ordering::SeqCst));
     assert!(observed.dropped.load(Ordering::SeqCst));
@@ -217,6 +225,7 @@ fn native_abi_and_process_lifecycle() {
     };
     let (prepared, observed, marker) = fixture.prepare("normal", false, false);
     let mut worker = WorkerProcess::spawn_blocking(prepared, limits).unwrap();
+    let ending = worker.ending();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_io()
         .enable_time()
@@ -230,6 +239,7 @@ fn native_abi_and_process_lifecycle() {
     let result = worker.wait_blocking().unwrap();
     assert_eq!(result.code, Some(0));
     assert_eq!(result.failure, None);
+    assert_eq!(ended(&ending), None);
     assert_eq!(result.stdout_tail, b"fixture complete\n");
     assert_eq!(result.stderr_tail, b"diagnostic\n");
     assert!(marker.exists());

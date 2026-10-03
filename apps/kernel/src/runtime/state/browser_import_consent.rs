@@ -107,12 +107,14 @@ impl KernelRuntimeState {
         ) {
             return Err(denied());
         }
-        let viewport = self
+        let environment = self
             .room_environment_snapshot(session_id)
-            .map_err(|_| denied())?
-            .viewport;
+            .map_err(|_| denied())?;
         let reconciled = self.room_browser_controller_recovery_command(session_id,
-            crate::transport::room_browser_controller::RoomBrowserControllerCommand::Reconcile { viewport }).await?;
+            crate::transport::room_browser_controller::RoomBrowserControllerCommand::Reconcile {
+                viewport: environment.viewport,
+                browser_bar_visible: environment.browser_bar_visible,
+            }).await?;
         let crate::transport::room_browser_controller::RoomBrowserControllerResult::Reconciled {
             reconciliation: Some(reconciliation),
         } = reconciled

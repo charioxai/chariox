@@ -150,9 +150,10 @@ except Exception as error:
 
 const NODE_TEST_RUNNER: &str = r#"
 const scriptPath = process.argv[1]
-const mod = await import(scriptPath.startsWith("file://") ? scriptPath : `file://${scriptPath}`)
-if (typeof mod.run !== "function") throw new Error("script must export run")
-if (typeof mod.test_run !== "function") throw new Error("script must export test_run")
+const imported = await import(scriptPath.startsWith("file://") ? scriptPath : `file://${scriptPath}`)
+const mod = typeof imported.run === "function" ? imported : imported.default
+if (typeof mod?.run !== "function") throw new Error("script must export run")
+if (typeof mod?.test_run !== "function") throw new Error("script must export test_run")
 await mod.test_run()
 "#;
 
@@ -168,7 +169,8 @@ const originalError = console.error
 console.log = (...values) => logs.push(values.join(" "))
 console.error = (...values) => logs.push(values.join(" "))
 try {
-  const mod = await import(scriptPath.startsWith("file://") ? scriptPath : `file://${scriptPath}`)
+  const imported = await import(scriptPath.startsWith("file://") ? scriptPath : `file://${scriptPath}`)
+  const mod = typeof imported.run === "function" ? imported : imported.default
   const result = await mod.run(...parameterOrder.map((name) => args[name]))
   JSON.stringify(result)
   originalLog(JSON.stringify({ ok: true, payload: result, logs: logs.join("\n") }))
@@ -362,7 +364,11 @@ pub(super) fn execute_python_script(
     arguments: Value,
     timeout_sec: u64,
 ) -> Result<ScriptExecutionResult, DaemonError> {
-    let mut child = Command::new(python)
+    let mut command = Command::new(python);
+    for name in crate::provider::managed_provider_control_env_remove() {
+        command.env_remove(name);
+    }
+    let mut child = command
         .arg("-c")
         .arg(PYTHON_CALLER)
         .arg(script)
@@ -437,6 +443,9 @@ pub(super) fn execute_node_script(
         .get("x-chariox-parameter-order")
         .cloned()
         .unwrap_or_else(|| serde_json::json!([]));
+    for name in crate::provider::managed_provider_control_env_remove() {
+        command.env_remove(name);
+    }
     command
         .arg("-e")
         .arg(NODE_CALLER)

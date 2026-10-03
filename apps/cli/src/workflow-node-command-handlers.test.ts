@@ -167,6 +167,25 @@ test("workflow node extension commands explain collaborator-owned nodes without 
   assert.doesNotMatch(harness.calls.join("\n"), /agent-hidden/)
 })
 
+test("workflow extension inspection shows a missing App with recovery and no invented version", async () => {
+  const notices: string[] = []
+  const harness = createHarness({
+    workflow: workflow({ nodes: [node({ agent_id: "agent-a" })] }),
+    sessionAgents: [agent({ extension_grants: [{ kind: "app", name: "installed" }] })],
+    getAppInstallation: async () => ({ installation_id: "installed", app_id: "Todo", generation: "2",
+      active_release: null, pending_generation: null, admission_paused: false, data_kept: true }),
+    appendNotice: (text) => notices.push(text),
+  })
+  await handleWorkflowNodeCommand(harness.deps, harness.context, ["node", "extensions", "node-1"])
+  assert.match(notices[0]!, /app:installed \(Todo\).*Missing App binding/)
+  assert.match(notices[0]!, /Reinstall the App, then bind it to this agent/)
+  assert.doesNotMatch(notices[0]!, /App ·|\d+\.\d+\.\d+/)
+  harness.deps.getAppInstallation = async () => { throw new Error("temporarily unavailable") }
+  await handleWorkflowNodeCommand(harness.deps, harness.context, ["node", "extensions", "node-1"])
+  assert.match(notices[1]!, /App status unavailable/)
+  assert.doesNotMatch(notices[1]!, /Missing App binding/)
+})
+
 type HarnessOptions = Partial<WorkflowNodeCommandDeps> & {
   agentsByRef?: Record<string, AgentInstance>
   context?: Partial<WorkflowNodeCommandContext>

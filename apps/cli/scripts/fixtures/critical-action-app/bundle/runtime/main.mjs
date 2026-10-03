@@ -15,9 +15,10 @@ export default function register(chariox) {
       writes: [{ key: 'last', value: { operationId, message } }] });
   };
   const spend = async (operationId) => {
+    let streamId;
     try {
-      const { streamId } = await chariox.http.open({ url: ROUTE, method: 'POST', hasBody: false,
-        headers: [['accept', 'application/json']], operationId });
+      ({ streamId } = await chariox.http.open({ url: ROUTE, method: 'POST', hasBody: false,
+        headers: [['accept', 'application/json']], operationId }));
       for (let i = 0; i < 50; i += 1) {
         const headers = await chariox.http.headers(streamId);
         if (!headers.pending) return { status: headers.status };
@@ -26,6 +27,10 @@ export default function register(chariox) {
       return { status: 'no headers' };
     } catch (error) {
       return { error: error?.code ?? String(error) };
+    } finally {
+      // This drill needs only headers; release the unread response and its
+      // admission slot after success, timeout, or a failed header request.
+      if (streamId) await chariox.http.cancel(streamId, { timeoutMs: 1000 });
     }
   };
 

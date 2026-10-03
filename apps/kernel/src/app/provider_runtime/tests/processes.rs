@@ -792,6 +792,7 @@ fn provider_launch_runtime_profile_survives_kernel_restart() {
 
 #[test]
 fn provider_launch_scrubs_configured_credential_env_names() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let old_home = std::env::var_os("HOME");
     let temp_home = std::env::temp_dir().join("chariox-provider-env-credential-test");

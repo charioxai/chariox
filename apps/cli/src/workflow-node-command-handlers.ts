@@ -1,3 +1,4 @@
+import type { AppInstallationSummary } from "@chariox/kernel-client/kernel-types"
 import type {
   AgentInstance,
   RuntimeSession,
@@ -58,6 +59,7 @@ export type WorkflowNodeCommandDeps = WorkflowNodeInstructionsCommandDeps & {
     maxTurns: number | null,
   ) => Promise<WorkflowNodePayload>
   grantAgentMcp?: (agentRef: string, name: string) => Promise<AgentInstance>
+  getAppInstallation?: (installationId: string) => Promise<AppInstallationSummary | null>
   grantAgentApp?: (agentRef: string, installationId: string) => Promise<AgentInstance>
   revokeAgentApp?: (agentRef: string, installationId: string) => Promise<AgentInstance>
   revokeAgentMcp?: (agentRef: string, name: string) => Promise<AgentInstance>
@@ -336,9 +338,20 @@ async function handleWorkflowNodeExtensionsCommand(
   const { node, agent } = await resolveWorkflowNodeAgent(deps, workflowRef, nodeId)
   if (!node || !agent) return
   const grants = agent.extension_grants ?? []
-  deps.appendNotice?.(grants.length
-    ? grants.map((grant) => `${grant.kind}:${grant.name}${grant.environment ? `@${grant.environment}` : ""}${grant.max_safety ? ` allow=${grant.max_safety}` : ""}`).join("\n")
-    : `node ${node.id} agent ${agent.agent_ref} has no extensions`)
+  const lines = await Promise.all(grants.map(async (grant) => {
+    if (grant.kind !== "app") return `${grant.kind}:${grant.name}${grant.environment ? `@${grant.environment}` : ""}${grant.max_safety ? ` allow=${grant.max_safety}` : ""}`
+    if (!deps.getAppInstallation) return `app:${grant.name} · App status unavailable`
+    try {
+      const installation = await deps.getAppInstallation(grant.name)
+      const label = installation ? `${grant.name} (${installation.app_id})` : grant.name
+      return installation?.active_release
+        ? `app:${label} · ${installation.active_release.version}`
+        : `app:${label} · Missing App binding. Reinstall the App, then bind it to this agent in Extensions. Revoke the old binding if you choose another installation.`
+    } catch {
+      return `app:${grant.name} · App status unavailable`
+    }
+  }))
+  deps.appendNotice?.(lines.length ? lines.join("\n") : `node ${node.id} agent ${agent.agent_ref} has no extensions`)
   deps.flashFooter(`showing ${grants.length} extension${grants.length === 1 ? "" : "s"} for node ${node.id}`, "info")
 }
 

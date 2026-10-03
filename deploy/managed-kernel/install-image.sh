@@ -5,15 +5,15 @@ if [ "$(id -u)" -ne 0 ]; then
   echo "install-image.sh must run as root" >&2
   exit 1
 fi
-if [ "$#" -ne 3 ] && [ "$#" -ne 4 ]; then
-  echo "usage: install-image.sh <managed-kernel-rootfs> <expected-release-digest> <trusted-public-key> [path1|shared_host]" >&2
+if [ "$#" -ne 4 ]; then
+  echo "usage: install-image.sh <managed-kernel-rootfs> <expected-release-digest> <trusted-public-key> <path1|shared_host>" >&2
   exit 1
 fi
 
 image_root=$1
 expected_release_digest=$2
 trusted_public_key=$3
-managed_provider_topology=${4:-shared_host}
+managed_provider_topology=$4
 case "$managed_provider_topology" in
   path1)
     selected_bootstrap_service=chariox-path1-managed-bootstrap.service
@@ -104,10 +104,11 @@ require_directory() {
 require_regular_file "$trusted_public_key"
 verify_selected_release() {
   if [ "$managed_provider_topology" = path1 ]; then
-    node "$script_root/verify-image-release.mjs" "$@" path1 "$trusted_builder_public_key"
+    node "$script_root/verify-image-release.mjs" "$@" path1 "$trusted_builder_public_key" || return 1
   else
-    node "$script_root/verify-image-release.mjs" "$@" shared_host
+    node "$script_root/verify-image-release.mjs" "$@" shared_host || return 1
   fi
+  node "$script_root/managed-kernel-upgrade-state.mjs" verify-immutable-release-tree "$1" 0
 }
 verify_selected_release "$image_root" "$expected_release_digest" "$trusted_public_key"
 
@@ -130,11 +131,21 @@ fi
 require_regular_file "$image_root/etc/systemd/system/chariox-disposable-worker-bootstrap.service"
 require_regular_file "$image_root/etc/systemd/system/chariox-rootless-docker.service"
 require_regular_file "$image_root/etc/systemd/system/chariox-slice-broker.service"
+if [ "$managed_provider_topology" = path1 ]; then
+  require_regular_file "$image_root/etc/systemd/system/chariox-data-volume-admission.service"
+  require_regular_file "$image_root/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf"
+  require_regular_file "$image_root/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf"
+fi
 require_directory "$image_root/usr/lib/chariox/slice-build-context"
 rootless_context=usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker
-for rootless_file in managed-rootless-service.sh chariox-rootless-engine.service chariox-rootless-user-manager.conf; do
+for rootless_file in managed-rootless-service.sh chariox-rootless-engine.service chariox-rootless-user-manager.conf chariox-slice-disk-quota-allocator.service slice-disk-quota-admission.mjs slice-disk-quota-allocator.mjs slice-disk-quota-client.mjs slice-disk-quota-contract.mjs slice-disk-quota-coordinator.mjs slice-disk-quota-service.mjs slice-disk-quota-state-store.mjs slice-disk-quota-xfs-backend.mjs probe-slice-disk-quota-backend.mjs; do
   require_regular_file "$image_root/$rootless_context/$rootless_file"
 done
+if [ "$managed_provider_topology" = path1 ]; then
+  for rootless_file in chariox-data-volume-admission.mjs slice-data-volume-device.mjs slice-data-volume-protected-io.mjs slice-disk-quota-xfs-readback.mjs; do
+    require_regular_file "$image_root/$rootless_context/$rootless_file"
+  done
+fi
 
 install_lock=${CHARIOX_IMAGE_INSTALL_LOCK:-/run/lock/chariox-managed-image-install.lock}
 exec 9>"$install_lock"
@@ -355,6 +366,28 @@ fi
 if ! id chariox >/dev/null 2>&1; then
   useradd --system --gid chariox --home-dir /home/chariox --shell /usr/sbin/nologin chariox
 fi
+# Path 1: the VM is the boundary and chariox is its ordinary user. Providers
+# such as OpenCode run tools through the passwd login shell. Shared hosts keep
+# (or return to) nologin.
+chariox_login_shell=/usr/sbin/nologin
+if [ "$managed_provider_topology" = path1 ]; then
+  chariox_login_shell=/bin/bash
+fi
+[ "$(getent passwd chariox | cut -d: -f7)" = "$chariox_login_shell" ] || usermod --shell "$chariox_login_shell" chariox
+# Path 1: agents operate their disposable single-tenant VM with full rights (plan,
+# locked decisions 2026-09-30). Shared hosts grant none, including former Path-1 hosts.
+chariox_sudoers=$install_root/etc/sudoers.d/90-chariox-path1
+if [ "$managed_provider_topology" = path1 ]; then
+  install -d -o root -g root -m 0750 "$install_root/etc/sudoers.d"
+  # sudo skips names containing a dot, so the staged file is inert until renamed.
+  chariox_sudoers_tmp=$(mktemp "$install_root/etc/sudoers.d/.chariox.XXXXXX")
+  printf '%s\n' 'chariox ALL=(ALL) NOPASSWD: ALL' >"$chariox_sudoers_tmp"
+  chmod 0440 "$chariox_sudoers_tmp"
+  visudo -cqf "$chariox_sudoers_tmp" || { rm -f "$chariox_sudoers_tmp"; echo "Path-1 sudoers drop-in is invalid" >&2; exit 1; }
+  mv -f "$chariox_sudoers_tmp" "$chariox_sudoers"
+else
+  rm -f "$chariox_sudoers"
+fi
 chariox_home_from_passwd=$(getent passwd chariox | cut -d: -f6)
 if [ "$chariox_home_from_passwd" = "/var/lib/chariox/home" ]; then
   usermod --home /home/chariox chariox
@@ -401,49 +434,22 @@ case "$docker_uid" in
 esac
 usermod --append --groups chariox-slice chariox
 
-# Root-installed authority is derived from the actual managed kernel OS user.
-# App requests cannot supply this UID/GID, cgroup root, quota, or filesystem path.
-app_storage_uid=$(id -u chariox)
-app_storage_gid=$(id -g chariox)
-for app_storage_id in "$app_storage_uid" "$app_storage_gid"; do
-  case "$app_storage_id" in
-    ''|*[!0-9]*|0) echo "invalid managed App storage owner" >&2; exit 1 ;;
-  esac
-done
-for app_storage_path in "$install_root/etc/chariox" "$install_root/var/lib/chariox-app-storage"; do
-  if [ -L "$app_storage_path" ] || { [ -e "$app_storage_path" ] && [ ! -d "$app_storage_path" ]; }; then
-    echo "managed App storage root is obstructed" >&2; exit 1
-  fi
-done
-install -d -o root -g root -m 0755 "$install_root/etc/chariox"
-install -d -o root -g root -m 0711 "$install_root/var/lib/chariox-app-storage"
-app_storage_config=$install_root/etc/chariox/app-storage.json
-if [ -L "$app_storage_config" ] || { [ -e "$app_storage_config" ] && [ ! -f "$app_storage_config" ]; }; then
-  echo "managed App storage enrollment is obstructed" >&2; exit 1
-fi
-app_storage_pending=$(mktemp "$install_root/etc/chariox/.app-storage.XXXXXXXX")
-printf '{"schema":"chariox.app-storage-enrollment.v1","owners":[{"uid":%s,"gid":%s,"cgroup_root":"/sys/fs/cgroup/system.slice/%s/apps","kernel_database_paths":["/home/chariox/.chariox/state/kernel.db"]}]}\n' "$app_storage_uid" "$app_storage_gid" "$selected_bootstrap_service" > "$app_storage_pending"
-chmod 0644 "$app_storage_pending"
-chown root:root "$app_storage_pending"
-if [ -e "$app_storage_config" ] && ! cmp -s "$app_storage_config" "$app_storage_pending"; then
-  rm -f -- "$app_storage_pending"
-  echo "managed App storage enrollment conflicts with the installed owner" >&2; exit 1
-fi
-node - "$app_storage_pending" "$app_storage_config" <<'NODE'
-const fs = require("node:fs")
-const path = require("node:path")
-const [from, to] = process.argv.slice(2)
-const file = fs.openSync(from, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
-try { fs.fsyncSync(file) } finally { fs.closeSync(file) }
-fs.renameSync(from, to)
-const directory = fs.openSync(path.dirname(to), fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
-try { fs.fsyncSync(directory) } finally { fs.closeSync(directory) }
-NODE
+. "$script_root/managed-app-storage.sh"
+enroll_managed_app_storage "$install_root" "$managed_provider_topology"
 
 install -d -o chariox -g chariox -m 0700 "$managed_home" "$managed_state"
 install -d -o chariox-docker -g chariox-docker -m 0700 \
   "$install_root/var/lib/chariox-docker" \
   "$install_root/var/lib/chariox-docker/home"
+private_layout_root="$install_root/var/lib/chariox-docker/private-layout"
+if [ -e "$private_layout_root" ] || [ -L "$private_layout_root" ]; then
+  [ -d "$private_layout_root" ] && [ ! -L "$private_layout_root" ] \
+    && [ "$(stat -c %u "$private_layout_root")" = "$(id -u chariox-docker)" ] \
+    && [ "$(stat -c %a "$private_layout_root")" = 711 ] \
+    || { echo "protected slice layout ownership is incompatible; retained private state is unchanged" >&2; exit 1; }
+else
+  install -d -o chariox-docker -g chariox-docker -m 0711 "$private_layout_root"
+fi
 install -d -o root -g chariox-slice -m 0710 "$install_root/var/lib/chariox-slice-share"
 setfacl -P -m "u:chariox-docker:--x" -- "$install_root/var/lib/chariox-slice-share"
 install -d -o root -g root -m 0711 "$install_root/var/lib/chariox-slice-share/.broker-private"
@@ -493,6 +499,8 @@ install -d -o root -g root -m 0755 \
   "$install_root/usr/lib/chariox" \
   "$install_root/etc/systemd/system" \
   "$install_root/etc/systemd/user" \
+  "$install_root/etc/systemd/system/chariox-rootless-docker.service.d" \
+  "$install_root/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d" \
   "$install_root/etc/systemd/system/user@$docker_uid.service.d" \
   "$releases_root"
 if [ "$managed_provider_topology" = path1 ]; then
@@ -503,6 +511,16 @@ if [ "$managed_provider_topology" = path1 ]; then
     || [ -n "$(find "$install_root/etc/chariox" -maxdepth 0 -perm /022 -print -quit)" ]; then
     echo "trusted builder key directory owner or permissions are unsafe" >&2
     exit 1
+  fi
+  protected_bootstrap_dir=$install_root/etc/chariox/bootstrap
+  if path_exists "$protected_bootstrap_dir"; then
+    require_real_directory "$protected_bootstrap_dir" "protected bootstrap directory"
+    if [ "$(stat -c '%u:%g:%a' "$protected_bootstrap_dir")" != "0:$(id -g chariox):750" ]; then
+      echo "protected bootstrap directory must be root:chariox mode 0750" >&2
+      exit 1
+    fi
+  else
+    install -d -o root -g chariox -m 0750 "$protected_bootstrap_dir"
   fi
   if path_exists "$trusted_builder_runtime_key"; then
     require_regular_file "$trusted_builder_runtime_key"
@@ -536,7 +554,9 @@ if [ ! -e "$published_release" ]; then
     "$pending_release/usr/lib/chariox" \
     "$pending_release/etc" \
     "$pending_release/etc/systemd" \
-    "$pending_release/etc/systemd/system"
+    "$pending_release/etc/systemd/system" \
+    "$pending_release/etc/systemd/system/chariox-rootless-docker.service.d" \
+    "$pending_release/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d"
   install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-kernel" "$pending_release/usr/local/bin/chariox-kernel"
   install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-managed-bootstrap" "$pending_release/usr/local/bin/chariox-managed-bootstrap"
   install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-app-package" "$pending_release/usr/local/bin/chariox-app-package"
@@ -554,6 +574,14 @@ if [ ! -e "$published_release" ]; then
   fi
   install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-disposable-worker-bootstrap.service" "$pending_release/etc/systemd/system/chariox-disposable-worker-bootstrap.service"
   install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-rootless-docker.service" "$pending_release/etc/systemd/system/chariox-rootless-docker.service"
+  # Modern signed releases include these artifacts for shared-host verification too;
+  # older shared-host releases omit the set and remain installable.
+  if [ "$managed_provider_topology" = path1 ] \
+    || path_exists "$image_root/etc/systemd/system/chariox-data-volume-admission.service"; then
+    install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-data-volume-admission.service" "$pending_release/etc/systemd/system/chariox-data-volume-admission.service"
+    install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf" "$pending_release/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf"
+    install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf" "$pending_release/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf"
+  fi
   install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-slice-broker.service" "$pending_release/etc/systemd/system/chariox-slice-broker.service"
   (umask 000; cp -RP "$image_root/usr/lib/chariox/slice-build-context" "$pending_release/usr/lib/chariox/slice-build-context")
   verify_selected_release "$pending_release" "$expected_release_digest" "$trusted_public_key"
@@ -561,6 +589,13 @@ if [ ! -e "$published_release" ]; then
   mv "$pending_release" "$published_release"
   node "$script_root/managed-kernel-upgrade-state.mjs" sync-directory "$releases_root"
 fi
+
+# Provision before supervisor namespace setup, including upgrades from PrivateTmp hosts.
+. "$script_root/docker-admission-install.sh"
+install_docker_admission_artifacts "$published_release" "$install_root" || {
+  echo "failed to provision host-wide Docker admission locks" >&2
+  exit 1
+}
 
 atomic_symlink "../../../usr/lib/chariox/current/usr/local/bin/chariox-kernel" "$install_root/usr/local/bin/chariox-kernel"
 atomic_symlink "../../../usr/lib/chariox/current/usr/local/bin/chariox-managed-bootstrap" "$install_root/usr/local/bin/chariox-managed-bootstrap"
@@ -577,6 +612,21 @@ fi
 atomic_symlink "../../../usr/lib/chariox/current/etc/systemd/system/chariox-disposable-worker-bootstrap.service" "$install_root/etc/systemd/system/chariox-disposable-worker-bootstrap.service"
 atomic_symlink "../../../usr/lib/chariox/current/etc/systemd/system/chariox-rootless-docker.service" "$install_root/etc/systemd/system/chariox-rootless-docker.service"
 atomic_symlink "../../../usr/lib/chariox/current/etc/systemd/system/chariox-slice-broker.service" "$install_root/etc/systemd/system/chariox-slice-broker.service"
+if [ "$managed_provider_topology" = path1 ]; then
+  atomic_symlink "../../../usr/lib/chariox/current/etc/systemd/system/chariox-data-volume-admission.service" "$install_root/etc/systemd/system/chariox-data-volume-admission.service"
+  atomic_symlink "../../../../usr/lib/chariox/current/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf" "$install_root/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf"
+  atomic_symlink "../../../../usr/lib/chariox/current/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf" "$install_root/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf"
+else
+  for path1_data_volume_link in \
+    "$install_root/etc/systemd/system/chariox-data-volume-admission.service" \
+    "$install_root/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf" \
+    "$install_root/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf"; do
+    if path_exists "$path1_data_volume_link"; then
+      echo "Path-1 data-volume activation is present on a shared-host image: $path1_data_volume_link" >&2
+      exit 1
+    fi
+  done
+fi
 atomic_symlink "current/usr/lib/chariox/release-manifest.json" "$install_root/usr/lib/chariox/release-manifest.json"
 atomic_symlink "current/usr/lib/chariox/release-manifest.sig" "$install_root/usr/lib/chariox/release-manifest.sig"
 atomic_symlink "current/usr/lib/chariox/release-public-key" "$install_root/usr/lib/chariox/release-public-key"
@@ -585,6 +635,7 @@ atomic_symlink "current/usr/lib/chariox/build-attestation.sig" "$install_root/us
 atomic_symlink "current/usr/lib/chariox/builder-public-key" "$install_root/usr/lib/chariox/builder-public-key"
 atomic_symlink "current/usr/lib/chariox/slice-build-context" "$install_root/usr/lib/chariox/slice-build-context"
 atomic_symlink "../../../usr/lib/chariox/current/$rootless_context/chariox-rootless-engine.service" "$install_root/etc/systemd/user/chariox-rootless-engine.service"
+atomic_symlink "../../../usr/lib/chariox/current/$rootless_context/chariox-slice-disk-quota-allocator.service" "$install_root/etc/systemd/system/chariox-slice-disk-quota-allocator.service"
 atomic_symlink "../../../../usr/lib/chariox/current/$rootless_context/chariox-rootless-user-manager.conf" "$install_root/etc/systemd/system/user@$docker_uid.service.d/50-chariox-docker.conf"
 previous_current_target=
 if [ -L "$install_root/usr/lib/chariox/current" ]; then
@@ -612,6 +663,7 @@ fi
 if ! rm -f -- "$install_root/etc/systemd/system/multi-user.target.wants/chariox-slice-broker.service" \
   || ! systemctl daemon-reload \
   || ! loginctl enable-linger chariox-docker \
+  || ! systemctl enable chariox-slice-disk-quota-allocator.service \
   || ! systemctl enable chariox-rootless-docker.service \
   || ! systemctl enable chariox-app-storage.service \
   || ! systemctl enable "$selected_bootstrap_service"; then

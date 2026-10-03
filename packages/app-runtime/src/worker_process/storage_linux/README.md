@@ -19,8 +19,11 @@ local kernel is enrolled by the installer, never by a socket request. The helper
 uses the same `ReleaseStore::root_for_database` mapping as the kernel and rejects
 a digest found in more than one enrolled store. The managed path is
 `/sys/fs/cgroup/system.slice/chariox-managed-bootstrap.service/apps`.
-The root-only `--prepare-managed-domain` mode runs as that unit's ExecStartPre,
+The root-only `--prepare-managed-domain` mode runs as that unit's ExecStartPost,
 verifies its own `.control` cgroup, and configures only the fixed App subtree.
+It cannot be an ExecStartPre: systemd 259 (Ubuntu 26.04) spawns the main process
+through the unit's own cgroup, and that fails with EBUSY once controllers are
+enabled there. After the fork the main process is already in `supervisor`.
 It never accepts paths or service names over the socket.
 
 `/usr/libexec/chariox-app-storage` uses the signed versioned release and the
@@ -54,8 +57,15 @@ posix_fallocate reservation. The helper admits at most64 installation roots,
 32GiB promised capacity and8GiB additional host free space, counting every
 promised byte not yet backed by actual allocation, including failed creations
 and temporary images that need recreation. These are private initial policies.
+Short of host space, the helper refuses with `app_storage_host_reserve` and the
+free and needed bytes (`host_disk`); the worker then fails
+`app_lifecycle_disk_space`, and the App's log tells the owner how much to free.
 
-A kernel acquire also names the installation's committed generation. A staged
+A kernel acquire also names the installation's committed data generation when
+one exists; a fresh first install sends `None`, takes no snapshot, and a retry
+of the same staged generation keeps its own writes. Failed first-install data
+is retained with `cleanup_pending` until the installation is deleted (see
+`apps/kernel/src/runtime/app_lifecycle/FIRST_INSTALL.md`). A staged
 (uncommitted) generation must start on committed data. When the committed
 generation ran last, the data image is copied to `data-snapshot.ext4`, which
 counts as a second promised data reservation. On the managed ext4 root this is
@@ -79,12 +89,18 @@ settles it.
 Every image creation, formatting transition, deletion intent and mount lease is
 journaled and fsynced. Loop association is atomic via LOOP_CONFIGURE with fixed
 size/AUTOCLEAR; recovery scans by backing dev/inode rather than trusting a stale
-loop number. Ext4 UUID/block capacity and actual mount ID/flags/device/owner are
+loop number. Scans open loop devices read-only: udev watches loop devices and
+synthesizes a `change` event for every close of a descriptor opened for writing,
+so a writing scan (repeated while a detach waits) floods udevd, whose workers
+then hold the device being detached and defer its autoclear. Ext4 UUID/block capacity and actual mount ID/flags/device/owner are
 checked before use or detach. Unmount is ordinary, never forced/lazy. Failure
 retains the pending journal and reservation; failed preparations also remain in
 the helper's owned recovery queue. cgroup-v2 immutable paths plus inode and boot
 identity prevent cleanup from signalling a replacement cgroup. On disconnect,
-the helper quiesces only the original bound domain and waits for emptiness.
+the helper quiesces only the original bound domain and waits for emptiness. A
+bound leaf removed meanwhile (reading it fails with ENODEV) counts as empty:
+cgroup v2 removes only an empty cgroup and none can join it afterwards, and
+after a kernel crash systemd trims the stopped unit's delegated subtree.
 
 The helper uses systemd Type=notify so kernel startup waits for completed
 recovery and socket readiness. It must share the host mount namespace. Its systemd unit intentionally

@@ -1,0 +1,297 @@
+//! Agent decisions belong to the turn that raised them, without a wall-clock cutoff.
+use super::*;
+
+impl KernelRuntimeOwnedState {
+    pub(crate) fn capture_native_interaction_origin(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: &str,
+    ) -> Option<crate::session::NativeInteractionOrigin> {
+        use crate::session::NativeInteractionOrigin;
+        let session = self.session_store.get_session(session_id).ok()?;
+        if let Some(prompt) = self
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+        {
+            return Some(NativeInteractionOrigin::Prompt {
+                provider_run_id: provider_run_id.into(),
+                prompt_id: prompt.id().into(),
+            });
+        }
+        self.active_turns
+            .get(provider_run_id)
+            .map(|turn| NativeInteractionOrigin::NativeTurn {
+                provider_run_id: provider_run_id.into(),
+                native_turn_id: turn.prompt_id,
+            })
+    }
+
+    pub(super) fn agent_interaction_is_live(
+        &self,
+        pending: &super::super::PendingInteraction,
+    ) -> bool {
+        let Some(lifetime) = &pending.agent_lifetime else {
+            return true;
+        };
+        let Ok(agent) = self.agent_store.get_agent(&lifetime.agent_id) else {
+            return false;
+        };
+        if agent.session_id() != pending.session_id {
+            return false;
+        }
+        let Ok(session) = self.session_store.get_session(&pending.session_id) else {
+            return false;
+        };
+        if !self.worker_interaction_binding_is_live(lifetime, agent.remote_execution(), &session) {
+            return false;
+        }
+        self.agent_interaction_turn_is_live(pending, &session)
+    }
+
+    pub(super) fn worker_interaction_binding_is_live(
+        &self,
+        lifetime: &super::super::PendingAgentInteractionLifetime,
+        remote: Option<&crate::agent::RemoteAgentBinding>,
+        session: &crate::session::RuntimeSession,
+    ) -> bool {
+        let Some(worker) = &lifetime.worker else {
+            return true;
+        };
+        let Some(remote) = remote else {
+            return false;
+        };
+        if remote.leased_agent_id != worker.leased_agent_id
+            || remote.execution_lease_id != worker.execution_lease_id
+        {
+            return false;
+        }
+        match remote.active_worker_provider_run_id.as_deref() {
+            Some(id) if id == worker.provider_run_id => {
+                worker
+                    .binding_observed
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                true
+            }
+            // The pre-ACK allowance ends permanently once this run is observed.
+            _ if worker
+                .binding_observed
+                .load(std::sync::atomic::Ordering::Relaxed) =>
+            {
+                false
+            }
+            // The forward arrives independently of the dispatch ACK/projection.
+            // A previous run may still be bound while this fixed prompt dispatches.
+            _ if lifetime.prompt_id.as_deref().is_some_and(|id| {
+                self.prompt_state_owner
+                    .active_prompt_for_agent(session, &lifetime.agent_id)
+                    .is_some_and(|prompt| prompt.id() == id && prompt.delivery_pending())
+            }) =>
+            {
+                true
+            }
+            None => lifetime.prompt_id.as_deref().is_none_or(|id| {
+                self.prompt_state_owner
+                    .active_prompt_for_agent(session, &lifetime.agent_id)
+                    .is_some_and(|prompt| {
+                        prompt.id() == id
+                            && (prompt.delivery_pending()
+                                || prompt.durable_delivery_provider_run_id().is_none())
+                    })
+            }),
+            Some(_) => false,
+        }
+    }
+
+    pub(super) fn agent_interaction_turn_is_live(
+        &self,
+        pending: &super::super::PendingInteraction,
+        session: &crate::session::RuntimeSession,
+    ) -> bool {
+        let Some(lifetime) = &pending.agent_lifetime else {
+            return true;
+        };
+        if session.status() == crate::session::SessionStatus::Ended {
+            return false;
+        }
+        if let Some(prompt_id) = &lifetime.prompt_id {
+            if !self
+                .prompt_state_owner
+                .active_prompt_for_agent(session, &lifetime.agent_id)
+                .is_some_and(|prompt| {
+                    prompt.id() == prompt_id
+                        && matches!(
+                            prompt.status(),
+                            crate::session::PromptStatus::Running
+                                | crate::session::PromptStatus::Dispatching
+                        )
+                })
+            {
+                return false;
+            }
+        }
+        if let Some(turn_id) = &lifetime.native_turn_id {
+            if !lifetime
+                .provider_run_id
+                .as_deref()
+                .and_then(|id| self.active_turns.get(id))
+                .is_some_and(|turn| {
+                    let identity_matches = turn.prompt_id == *turn_id
+                        || turn
+                            .external_observed_id
+                            .as_ref()
+                            .is_some_and(|id| id.provider_turn_id == *turn_id);
+                    identity_matches
+                        && self
+                            .prompt_state_owner
+                            .active_prompt_for_agent(session, &lifetime.agent_id)
+                            .is_none_or(|prompt| {
+                                prompt.id() == turn.prompt_id
+                                    && matches!(
+                                        prompt.status(),
+                                        crate::session::PromptStatus::Running
+                                            | crate::session::PromptStatus::Dispatching
+                                    )
+                            })
+                })
+            {
+                return false;
+            }
+        }
+        if let Some(worker) = &lifetime.worker {
+            let projected_id = crate::provider::projected_leased_provider_run_id(
+                &worker.leased_agent_id,
+                &worker.provider_run_id,
+            );
+            // No local worker run exists on the home kernel. If a projection is
+            // present, it is authoritative for provider exit even before a sweep.
+            if self
+                .provider_store
+                .get_run(&projected_id)
+                .is_ok_and(|run| run.state() != crate::provider::ProviderRunState::Running)
+            {
+                return false;
+            }
+        }
+        if let Some(run_id) = &lifetime.provider_run_id {
+            let local_live = self.provider_store.get_run(run_id).is_ok_and(|run| {
+                run.state() == crate::provider::ProviderRunState::Running
+                    && run.session_id() == pending.session_id
+                    && run.agent_instance_id() == Some(lifetime.agent_id.as_str())
+            });
+            if !local_live {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Also used by the pump for exits, abandoned callers, and non-prompt decisions.
+    pub(in crate::runtime::state) fn withdraw_stale_agent_interactions(&self) {
+        let Ok(_mutation) = self.pending_interactions.mutation.lock() else {
+            return;
+        };
+        let candidates = self
+            .pending_interactions
+            .write()
+            .iter()
+            .filter(|(_, pending)| {
+                pending.belongs_to(&self.session_store) && pending.agent_lifetime.is_some()
+            })
+            .map(|(id, pending)| (id.clone(), pending.clone()))
+            .collect::<Vec<_>>();
+        for (id, pending) in candidates {
+            let abandoned = pending.responder.lock().map_or(true, |sender| {
+                sender.as_ref().is_none_or(|sender| sender.is_closed())
+            });
+            if abandoned || !self.agent_interaction_is_live(&pending) {
+                let _ = self.withdraw_agent_interaction_locked(&id, &pending);
+            }
+        }
+    }
+
+    pub(in crate::runtime::state) fn withdraw_agent_interactions(
+        &self,
+        session_id: &str,
+        agent_id: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        let _mutation = self
+            .pending_interactions
+            .mutation
+            .lock()
+            .map_err(|_| interaction_error("Interaction store is unavailable"))?;
+        let candidates = self
+            .pending_interactions
+            .write()
+            .iter()
+            .filter(|(_, pending)| {
+                pending.belongs_to(&self.session_store) && pending.session_id == session_id
+            })
+            .filter(|(_, pending)| {
+                pending
+                    .agent_lifetime
+                    .as_ref()
+                    .is_some_and(|lifetime| agent_id.is_none_or(|id| id == lifetime.agent_id))
+            })
+            .map(|(id, pending)| (id.clone(), pending.clone()))
+            .collect::<Vec<_>>();
+        for (id, pending) in candidates {
+            self.withdraw_agent_interaction_locked(&id, &pending)?;
+        }
+        Ok(())
+    }
+
+    // Caller holds the shared interaction mutation guard. Never apply timeout defaults.
+    pub(super) fn withdraw_agent_interaction_locked(
+        &self,
+        id: &str,
+        pending: &super::super::PendingInteraction,
+    ) -> Result<(), DaemonError> {
+        self.pending_interactions.write().remove(id);
+        let activity_mutation = self.begin_managed_activity_mutation();
+        let mut sessions = self.session_store.write();
+        if let Ok(mut session) = sessions.get_session(&pending.session_id) {
+            session.remove_active_interaction(id);
+            sessions.restore_session(session);
+        }
+        activity_mutation.record();
+        drop(sessions);
+        if let Some(sender) = pending
+            .responder
+            .lock()
+            .expect("pending interaction responder mutex poisoned")
+            .take()
+        {
+            let _ = sender.send(super::super::PendingInteractionResolution {
+                status: "timed_out",
+                choice_id: None,
+                reply: None,
+            });
+        }
+        self.terminal_stream
+            .notify_terminal_projection_change(&pending.session_id);
+        if self.session_store.get_session(&pending.session_id).is_ok() {
+            self.record_notice_for_agent(
+                &pending.session_id,
+                None,
+                pending.agent_lifetime.as_ref().map(|l| l.agent_id.as_str()),
+                self.attachment_store.list_session_attachment_ids(&pending.session_id),
+                format!("Approval `{id}` withdrawn because its turn or agent ended, or its caller closed. Late answers are refused."),
+            );
+            self.session_snapshot(&pending.session_id)?;
+        }
+        Ok(())
+    }
+}
+
+impl KernelRuntimeState {
+    pub(crate) fn capture_native_interaction_origin(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        run_id: &str,
+    ) -> Option<crate::session::NativeInteractionOrigin> {
+        self.owned
+            .capture_native_interaction_origin(session_id, agent_id, run_id)
+    }
+}

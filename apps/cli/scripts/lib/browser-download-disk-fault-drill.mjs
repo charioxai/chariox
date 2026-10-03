@@ -16,6 +16,7 @@ export function buildBrowserDownloadDiskNodeArgs() {
     "--test",
     "--test-concurrency=1",
     `--test-name-pattern=${BROWSER_DOWNLOAD_DISK_TEST_NAMES.join("|")}`,
+    "--test-reporter=spec",
     "apps/kernel/slice-linux-docker/docker/browser-controller-files.test.mjs",
     "apps/kernel/slice-linux-docker/docker/browser-controller-cdp.test.mjs",
   ]

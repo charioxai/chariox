@@ -1,5 +1,7 @@
-//! Fixed managed-kernel systemd delegation setup. Only ExecStartPre runs this
-//! root mode; no socket operation accepts a path, service name or controller.
+//! Fixed managed-kernel systemd delegation setup. Only the unit's root
+//! ExecStartPost runs this mode (the main process is already in its
+//! `supervisor` subgroup); no socket operation accepts a path, service name or
+//! controller.
 use super::{files, model::Enrollment, Error, Result};
 use crate::private_fs::Dir;
 use std::{

@@ -9,6 +9,21 @@ registrations through the existing `worker.ready` request. It owns `ready`,
 Scaffolding should generate `runtime/main.mjs` with `export default function
 register(chariox) { ... }` and let the existing packer choose that entry.
 
+Before any App module loads, the bootstrap replaces every `node:fs` fsync and
+fdatasync form with one that fails `ERR_ACCESS_DENIED`: the sync and callback
+forms, which Node 24.20's permission model already denies, and the `FileHandle`
+methods, which it lets through. Node's own guard varies across releases (some
+deny none, newer ones deny all), so this bootstrap is the only deny that stays
+stable across runtime updates. It then re-syncs
+the built-in ESM exports. The
+SDK README's "Durability" section is the contract. This applies to the App's
+own thread only. A worker thread gets its own `node:fs` and keeps Node's
+behavior. It cannot be patched reliably: a `Worker` started with its own
+`execArgv` does not even inherit `--permission` on Node 24.20, which is why the
+OS sandbox, not Node's permission model, is the containment. If the deny's
+probe of its own file fails, the worker exits 131, like an App import failure.
+That file is readable wherever this one could be loaded.
+
 This source is a runtime artifact, never an App-selected module. The release
 bundle must contain `bootstrap.cjs`, `bootstrap-config.cjs`, and the exact
 `@chariox/app-sdk` package source graph at `sdk/`, alongside the native runtime
@@ -76,7 +91,8 @@ Codes are 130 invalid configuration, 131 import/registration/readiness failure,
 
 `node --test --test-concurrency=1 apps/app-worker/tests/bootstrap.test.mjs`
 uses ordinary Node processes and real inherited FD3 streams. It proves bootstrap
-registration, framing, dispatch, bounded errors, shutdown flushing and teardown;
+registration, framing, dispatch, bounded errors, shutdown flushing and teardown,
+and includes the platform-independent Linux native receipt parser tests;
 it does not prove native confinement or embedded Node compatibility. The native
 CI workflow separately runs Linux containment and then the development macOS
 Seatbelt probe. Signed/hardened macOS validation remains required, including the
@@ -91,3 +107,38 @@ trap and completes a gzip exchange through the broker messages. Bootstrap/SDK
 changes belong to the versioned bundle graph, not the native compiler inputs.
 See [the Fetch contract](../../../packages/app-sdk/FETCH.md) for its precise
 supported subset and remaining integrated validation.
+
+On macOS the bootstrap also replaces `fs.watch` and `fs/promises` `watch` for
+directories before any migration or App module loads (`syncBuiltinESMExports`
+covers ESM imports). Node watches a macOS directory through FSEvents, which the
+Seatbelt policy denies (see the launcher's platform policy), so libuv reported
+an asynchronous `EMFILE` and an App without an `error` listener exited. The
+replacement lists the directory (recursively when asked) every 250 ms and
+reports `rename`/`change` from inode, size and time stamps; more than 4096
+entries fail with `ENOSPC`. Non-directories keep Node's own watch (kqueue on
+macOS), and Linux keeps inotify. This is compatibility, not containment: the
+listing uses the same permission-checked `node:fs` calls as the App.
+
+Before the SDK or any App module loads, the bootstrap also keeps worker threads
+inside Node's permission model. On Node 24.20 a `Worker` given its own
+`execArgv` (even `[]`) is parsed afresh, so it starts without `--permission` or
+with wider allow-lists; a `NODE_OPTIONS` in its environment is parsed too; and
+`module.register` starts a hooks thread that inherits `--allow-worker`. So every
+`Worker` gets the launcher's `--permission`, `--no-addons` and file allow-lists,
+without `--allow-worker` (a worker thread cannot start another one). An App's
+`execArgv` may only repeat launcher flags, `NODE_OPTIONS` is dropped from the
+worker's environment, `SHARE_ENV` is refused, and `module.register` fails with
+`ERR_ACCESS_DENIED`, as Node itself does without `--allow-worker`. The
+replacement `Worker` is a plain wrapper function (not a Proxy, which
+`util.inspect` could unwrap), so the native constructor is not reachable
+from the export, its prototype or an instance. The instance's native thread
+handle, and the same handle published on the `worker_threads` diagnostics
+channel, still expose the handle's own constructor, which is the one reachable
+way to build a fresh handle that can start a thread (a handle faked with
+`Object.create` has no native state and its `startThread` throws). So the guard
+neutralizes that constructor on the shared handle prototype during setup, before
+any App or migration code runs and could capture the original; a reference an
+App reads afterwards, from an instance or the channel, is the neutralized one,
+and the original is unreachable. Child processes, WASI, the
+inspector and `process.binding` stay denied by Node's permission model. Node's
+permissions remain defense in depth; the native sandbox contains the worker.

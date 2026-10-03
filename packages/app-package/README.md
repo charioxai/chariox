@@ -232,13 +232,12 @@ SDK compatibility, App contract version, kernel protocol floor, and resource
 policy support are separate kernel-supplied checks. The default SDK requirement
 is exactly `0.2.0`; it is not a claim of compatibility with future SDK releases.
 
-Optional `tools`, `events`, `actions`, and `informationSets` properties refer to
+Optional `tools`, `events`, and `actions` properties refer to
 JSON files within `schemas/`. These files contain respectively:
 
 - `{"tools": [{"name", "description"?, "inputSchema", "outputSchema"?, "action"?}]}`
 - `{"events": [{"name", "schemaVersion", "payloadSchema", "filterSchema"?}]}`
 - `{"actions": [{"name", "inputSchema", "criticalValidation"?, "effectRoutes"?}]}`
-- `{"informationSets": [{"name", "purpose", "sourceScope", "schemaVersion", "delivery", "fieldsSchema", "validator"?}]}`
 
 Event `schemaVersion` is a positive unsigned 32-bit integer signed with the
 declaration; emitted `eventVersion` must match it. Packages declaring events
@@ -248,8 +247,8 @@ packages rather than inferring a publisher's missing schema version.
 The compact shapes above denote fields, not literal JSON examples. Local
 function names are lowercase letters/digits/underscores, start with a letter,
 and are unique within each category. The kernel supplies the installation/tool
-namespace. JSON schemas are compiled as Draft 7. Inputs, event payloads/filters,
-and information fields require `type: "object"` and
+namespace. JSON schemas are compiled as Draft 7. Inputs and event payloads/filters
+require `type: "object"` and
 `additionalProperties: false`. Schemas must be inline, without `$id`, `$ref`,
 `$dynamicRef`, or `$recursiveRef`; the build must resolve reusable references
 before packing. No external schema retrieval occurs. App validators are local
@@ -278,11 +277,6 @@ schema. The kernel must intercept the declared route at execution; package
 validation alone cannot prove that arbitrary service requests represent a
 particular business effect.
 
-Information sets scope collection to `app_task` or `agent_turn`, declare a
-positive schema version and `intermediate`, `final`, or `both` delivery, and
-optionally reference a sandboxed App validator. Declaring a set never grants
-consent or transcript access.
-
 Optional migrations declare `directory: "migrations"`, `targetVersion`, and a
 complete ordered chain `steps: [{from: 0, to: 1, entry: "migrations/001.js"}, …]`.
 Every step advances one schema version, has a unique existing JavaScript file,
@@ -305,7 +299,31 @@ Run `cargo test -p chariox-app-package`. The corpus includes reproducibility,
 an independent signed fixture writer, standard USTAR readability, wrong trust
 identities/keys, signature and payload tampering, missing/extra files,
 compatibility categories, migration graphs, invalid/recursive/external schemas,
-duplicate JSON keys, protected routes, information-set scope, hostile header
+duplicate JSON keys, protected routes, hostile header
 types, traversal, case/Unicode handling, limits, truncation, padding, compressed
 input, and canonical control encoding. These tests do not establish installer
 or App runtime conformance.
+
+`fuzz/` holds two cargo-fuzz targets (nightly only; not part of the workspace
+build). `archive` feeds arbitrary bytes to `inspect_untrusted()` and `verify()`.
+`signed` replaces the manifest or one declaration document of a valid package
+with the input and signs the result, so manifest, declaration and JSON Schema
+checks see arbitrary content behind a valid signature. Both must reject without
+panicking. `signed` panics on its first input if its unmodified package does not
+verify, and verifies every committed signed declaration seed before mutation, so
+a harness that only reaches the rejection path cannot pass silently. The baseline
+uses the current manifest/declaration contract; retired information-set metadata
+is not a supported declaration.
+`fuzz/seeds/archive/0` is that package, signed with the fuzz key that `archive`
+trusts, so `archive` can mutate its way into the manifest and declaration
+checks; a real `.cxapp` stops at the signature check. `archive` panics on its
+first input if the seed no longer verifies; regenerate it with
+`CHARIOX_FUZZ_WRITE_ARCHIVE_SEED=$PWD/fuzz/seeds/archive/0 cargo +nightly fuzz run -O signed fuzz/corpus/signed fuzz/seeds/signed -- -runs=1`
+(after the `mkdir` below). Run, for example (libFuzzer writes new inputs to the
+first, ignored, corpus directory and only reads the committed seeds):
+
+    mkdir -p fuzz/corpus/signed fuzz/corpus/archive
+    cargo +nightly fuzz run -O signed fuzz/corpus/signed fuzz/seeds/signed -- -max_total_time=120 -rss_limit_mb=2048
+    cargo +nightly fuzz run -O archive fuzz/corpus/archive fuzz/seeds/archive -- -max_total_time=120 -rss_limit_mb=2048
+
+(With a Homebrew `cargo`, put the nightly toolchain's `bin` first in `PATH`.)

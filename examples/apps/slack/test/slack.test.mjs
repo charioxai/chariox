@@ -51,12 +51,14 @@ function fakeKernel({ automation = true } = {}) {
 }
 
 // As the Slack event generator forwards an app_mention through AEDS.
-function mention(text, channel = 'C1', user = 'U1') {
+// Every Slack message has its own timestamp; the same one names the same message.
+let nextTs = 0;
+function mention(text, channel = 'C1', user = 'U1', ts = `${(nextTs += 1)}.2`) {
   return {
     source: { generator_id: 'dev.chariox.slack', connection_id: 'connection-1', event_type: 'app.mentioned', event_type_version: 1 },
     occurred_at: '2026-09-26T19:00:00.000Z',
     text: `Handle Slack app.mentioned: ${text}`,
-    metadata: { team_id: 'T1', event: { type: 'app_mention', text, channel, user, ts: '1.2' } },
+    metadata: { team_id: 'T1', event: { type: 'app_mention', text, channel, user, ts } },
     artifacts: [],
     reply_context: { provider: 'slack', team_id: 'T1', channel_id: channel, message_ts: '1.2', thread_ts: '1.2', user_id: user },
   };
@@ -75,7 +77,7 @@ test('a mention is kept once and forwarded once to the notifications automation'
   assert.equal(notifications.length, 1, 'a redelivered event is stored once');
   assert.deepEqual(notifications[0], {
     id: 'Ev1', kind: 'mentioned', text: '<@B1> deploy status?', channel: 'C1', user: 'U1',
-    occurred_at: '2026-09-26T19:00:00.000Z', can_reply: true,
+    occurred_at: '2026-09-26T19:00:00.000Z', in_thread: false, can_reply: true,
   }, 'the reply context and connection stay inside the App');
   assert.equal(kernel.occurrences.length, 1);
   const [occurrence] = kernel.occurrences;
@@ -131,6 +133,23 @@ test('a reply goes back through the notification\'s own connection and context',
   await assert.rejects(kernel.tools.get('reply')({ id: 'Ev9', text: 'x' }), { code: 'INVALID_ARGUMENT' });
 });
 
+test('a message in a thread is answered in that thread, and its prompt says so', async () => {
+  const kernel = fakeKernel();
+  const threaded = mention('can you read previous messages?');
+  threaded.reply_context = { ...threaded.reply_context, message_ts: '1.5', thread_ts: '1.2' };
+  await kernel.deliver('channel_message', 'Ev2', threaded);
+  assert.match(kernel.occurrences.at(-1).invocation.prompt, /^Slack channel message in a thread in <#C1>/);
+  const listed = (await kernel.tools.get('list_notifications')({})).notifications[0];
+  assert.equal(listed.in_thread, true);
+  // Even when the agent asks for the channel, the answer stays in the thread.
+  await kernel.tools.get('reply')({ id: 'Ev2', text: 'Only what this App received', mode: 'channel' });
+  assert.deepEqual(kernel.actions.at(-1).input, { text: 'Only what this App received', mode: 'thread' });
+  // A top-level message can still be answered in the channel.
+  await kernel.deliver('mentioned', 'Ev3', mention('top level'));
+  await kernel.tools.get('reply')({ id: 'Ev3', text: 'In the channel', mode: 'channel' });
+  assert.deepEqual(kernel.actions.at(-1).input, { text: 'In the channel', mode: 'channel' });
+});
+
 test('long multibyte messages stay under the state value cap, newest first, and never split a character', async () => {
   const kernel = fakeKernel();
   // 3999 CJK units then an emoji straddling the 4000-unit cut.
@@ -151,4 +170,60 @@ test('long multibyte messages stay under the state value cap, newest first, and 
   assert.equal(stored('EvBig').reply_context, null);
   assert.equal(stored('EvDeep').reply_context, null);
   assert.deepEqual(stored('Ev99').reply_context, mention('').reply_context);
+});
+
+test('a mention in a channel, also sent as a channel message, is one notification and one run', async () => {
+  const kernel = fakeKernel();
+  const asMessage = { ...mention('<@B1> ship it', 'C1', 'U1', '9.1'), source: { ...mention('').source, event_type: 'message.channels' } };
+  await kernel.deliver('mentioned', 'EvA', mention('<@B1> ship it', 'C1', 'U1', '9.1'));
+  await kernel.deliver('channel_message', 'EvB', asMessage);
+  // The other order: the channel message first, then the mention.
+  const later = (text) => ({ ...mention(text), metadata: { ...mention(text).metadata, event: { ...mention(text).metadata.event, ts: '2.3' } } });
+  await kernel.deliver('channel_message', 'EvC', { ...later('<@B1> again'), source: asMessage.source });
+  await kernel.deliver('mentioned', 'EvD', later('<@B1> again'));
+  // A redelivered mention after the merge is neither kept nor forwarded again.
+  await kernel.deliver('mentioned', 'EvD', later('<@B1> again'));
+  const { notifications } = await kernel.tools.get('list_notifications')({});
+  assert.deepEqual(notifications.map(item => [item.id, item.kind]), [['EvC', 'mentioned'], ['EvA', 'mentioned']]);
+  assert.equal(kernel.occurrences.length, 2);
+  assert.ok(notifications.every(item => !('message' in item)));
+});
+
+test('this App\'s own replies and reactions are kept but start no run; other bots still do', async () => {
+  const kernel = fakeKernel();
+  const own = { api_app_id: 'A1', authorizations: [{ user_id: 'UBOT', is_bot: true }] };
+  const withEvent = (base, event) => ({ ...base, metadata: { ...base.metadata, ...own, event: { ...base.metadata.event, ...event } } });
+  const message = { ...mention('x'), source: { ...mention('').source, event_type: 'message.channels' } };
+  await kernel.deliver('channel_message', 'EvReply', withEvent(message, { type: 'message', text: 'reminder fired', user: 'UBOT', bot_id: 'B1', app_id: 'A1' }));
+  await kernel.deliver('reaction_added', 'EvReact', withEvent(mention(''), { type: 'reaction_added', reaction: 'eyes', user: 'UBOT', item: { channel: 'C1', ts: '7.1' } }));
+  const other = { ...mention('y'), source: message.source };
+  await kernel.deliver('channel_message', 'EvCi', withEvent(other, { type: 'message', text: 'build failed', user: 'UCI', bot_id: 'B2', app_id: 'A2' }));
+  const { notifications } = await kernel.tools.get('list_notifications')({});
+  assert.deepEqual(notifications.map(item => item.id), ['EvCi', 'EvReact', 'EvReply']);
+  assert.deepEqual(kernel.occurrences.map(value => value.payload.text), ['build failed']);
+});
+
+test('without the App\'s identity in the event, any bot message is kept but starts no run', async () => {
+  const kernel = fakeKernel();
+  const legacy = mention('posted by an integration');
+  legacy.metadata = { ...legacy.metadata, event: { ...legacy.metadata.event, type: 'message', subtype: 'bot_message' } };
+  await kernel.deliver('channel_message', 'EvLegacy', legacy);
+  assert.equal((await kernel.tools.get('list_notifications')({})).notifications.length, 1);
+  assert.equal(kernel.occurrences.length, 0);
+});
+
+test('an edit or unfurl of a message is not kept and starts no run, whoever wrote it', async () => {
+  const kernel = fakeKernel();
+  const own = { api_app_id: 'A1', authorizations: [{ user_id: 'UBOT', is_bot: true }] };
+  const changed = (id, author) => {
+    const base = { ...mention('z'), source: { ...mention('').source, event_type: 'message.channels' } };
+    return [id, { ...base, metadata: { ...base.metadata, ...own, event: {
+      type: 'message', subtype: 'message_changed', hidden: true, channel: 'C1',
+      message: { text: 'https://example.test', ts: base.metadata.event.ts, ...author },
+    } } }];
+  };
+  await kernel.deliver('channel_message', ...changed('EvUnfurl', { user: 'UBOT', bot_id: 'B1', app_id: 'A1' }));
+  await kernel.deliver('channel_message', ...changed('EvEdit', { user: 'U1' }));
+  assert.equal(kernel.occurrences.length, 0);
+  assert.equal((await kernel.tools.get('list_notifications')({})).notifications.length, 0);
 });

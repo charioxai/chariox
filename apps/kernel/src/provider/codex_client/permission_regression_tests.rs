@@ -21,6 +21,10 @@ impl TemporaryPermissionRoots {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&root).expect("permission regression root should be created");
+        // Read grants are canonical paths; on macOS temp_dir() is behind a /var symlink.
+        let root = root
+            .canonicalize()
+            .expect("permission regression root should resolve");
         Self { root }
     }
 

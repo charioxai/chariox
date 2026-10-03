@@ -3,6 +3,7 @@ use super::*;
 
 #[tokio::test]
 async fn idle_native_capacity_and_lane_contention_do_not_invalidate_catalog() {
+    crate::test_support::isolated_env_test!();
     use crate::provider::{
         AgentEndpointMode, LaunchProviderRequest, ProviderClientInterface, ProviderLaunchResult,
         RuntimeProviderRun,
@@ -85,6 +86,7 @@ async fn idle_native_capacity_and_lane_contention_do_not_invalidate_catalog() {
 
 #[tokio::test]
 async fn busy_catalog_refresh_retains_typed_reason_and_self_grant_uses_one_continuation() {
+    crate::test_support::isolated_env_test!();
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(crate::session::CreateSessionRequest::new(
@@ -158,12 +160,7 @@ async fn busy_catalog_refresh_retains_typed_reason_and_self_grant_uses_one_conti
         .write()
         .remove(agent.id());
 
-    runtime.remember_pending_runtime_tools_continuation(
-        session.id(),
-        agent.id(),
-        source.id(),
-        "active turn",
-    );
+    runtime.remember_pending_runtime_tools_continuation(session.id(), agent.id(), "active turn");
     let mut pending = runtime.owned.pending_mcp_continuations.write();
     let continuation = pending.remove(agent.id()).unwrap();
     assert_eq!(

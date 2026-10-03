@@ -24,6 +24,24 @@ const hasDisplayClientDist = [
 
 const importProductTransport = () => import(moduleUrl.href);
 
+function cleanupTelemetryResponse() {
+  return { KernelResourceTelemetry: { snapshot: {
+    telemetry: { scope: "managed-target", authoritative: true, targetId: "machine-1", source: "kernel-test" },
+    capturedAt: new Date().toISOString(),
+    release: {
+      status: "verified", runtimeReleaseDigest: `sha256:${"3".repeat(64)}`,
+      sourceCommit: "1".repeat(40), sourceTree: "5".repeat(40),
+      target: "x86_64-unknown-linux-gnu", activeReleasePath: "/usr/lib/chariox/releases/test",
+      manifestSignatureVerified: true, manifestDigestVerified: true,
+      kernelArtifactVerified: true, bootstrapReceiptVerified: true,
+    },
+    memory: { totalBytes: 8000, usedBytes: 4000, availableBytes: 4000 },
+    disk: { totalBytes: 16000, usedBytes: 4000, availableBytes: 12000 },
+    process: { count: 1, rssBytes: 100 }, logs: { bytes: 0 },
+    cpuPercent: 5, cpuSampleWindowMs: 1000, docker: { containers: [] },
+  } } };
+}
+
 test("factory fails closed when the managed parity endpoint is not configured", async () => {
   const imported = await importProductTransport();
   const previousEndpoint = process.env.CHARIOX_MANAGED_PARITY_HOME_KERNEL_URL;
@@ -375,12 +393,12 @@ test("real LocalIpcClient authorizes a Selkies endpoint, then fails closed witho
   let LocalIpcClient;
   let getSliceDisplayEndpointRequest;
   let decryptRelayPayload;
-  let encryptRelayPayload;
+  let RelayClientIdentity;
   let WebSocketServer;
   try {
     ({ LocalIpcClient } = await import(kernelClientDistUrl.href));
     ({ getSliceDisplayEndpointRequest } = await import(kernelRequestsDistUrl.href));
-    ({ decryptRelayPayload, encryptRelayPayload } = await import(relayCryptoDistUrl.href));
+    ({ decryptRelayPayload, RelayClientIdentity } = await import(relayCryptoDistUrl.href));
     ({ WebSocketServer } = createRequire(fileURLToPath(kernelClientDistUrl))("ws"));
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -438,10 +456,10 @@ test("real LocalIpcClient authorizes a Selkies endpoint, then fails closed witho
             },
           },
         };
-        const encryptedResponse = encryptRelayPayload(
+        const encryptedResponse = new RelayClientIdentity(socket.daemon.getPrivateKey()).encrypt(
           frame.encrypted_request.sender_public_key,
           Buffer.from(JSON.stringify(response), "utf8"),
-        ).payload;
+        );
         socket.send(JSON.stringify({
           kind: "client_response",
           request_id: frame.request_id,
@@ -496,7 +514,7 @@ test("real LocalIpcClient authorizes and connects the encrypted Selkies display 
   let getRoomEnvironmentStateRequest;
   let relayStatusRequest;
   let decryptRelayPayload;
-  let encryptRelayPayload;
+  let RelayClientIdentity;
   let createBrowserRelayKeypair;
   let decryptBrowserRelayPayload;
   let encryptBrowserRelayPayload;
@@ -506,7 +524,7 @@ test("real LocalIpcClient authorizes and connects the encrypted Selkies display 
   try {
     ({ LocalIpcClient } = await import(kernelClientDistUrl.href));
     ({ getSliceDisplayEndpointRequest, getRoomEnvironmentStateRequest, relayStatusRequest } = await import(kernelRequestsDistUrl.href));
-    ({ decryptRelayPayload, encryptRelayPayload } = await import(relayCryptoDistUrl.href));
+    ({ decryptRelayPayload, RelayClientIdentity } = await import(relayCryptoDistUrl.href));
     ({
       createRelayKeypair: createBrowserRelayKeypair,
       decryptRelayPayload: decryptBrowserRelayPayload,
@@ -597,6 +615,7 @@ test("real LocalIpcClient authorizes and connects the encrypted Selkies display 
         if (frame.kind === "client_connect") {
           assert.equal(frame.auth_token, "operator-test-token");
           assert.deepEqual(frame.target, { daemon_id: "daemon-1", daemon_alias: null });
+          socket.daemon = worker;
           socket.send(JSON.stringify({
             kind: "client_connected",
             target: frame.target,
@@ -657,10 +676,10 @@ test("real LocalIpcClient authorizes and connects the encrypted Selkies display 
             },
           };
         }
-        const encryptedResponse = encryptRelayPayload(
+        const encryptedResponse = new RelayClientIdentity(socket.daemon.getPrivateKey()).encrypt(
           frame.encrypted_request.sender_public_key,
           Buffer.from(JSON.stringify(response), "utf8"),
-        ).payload;
+        );
         socket.send(JSON.stringify({
           kind: "client_response",
           request_id: frame.request_id,
@@ -673,9 +692,12 @@ test("real LocalIpcClient authorizes and connects the encrypted Selkies display 
     });
   });
 
+  const viewer = createECDH("prime256v1");
+  viewer.generateKeys();
   const client = new LocalIpcClient(relayEndpoint, {
     relayAuthToken: "operator-test-token",
     targetDaemonId: "daemon-1",
+    relayIdentity: new RelayClientIdentity(viewer.getPrivateKey()),
   });
   const imported = await importProductTransport();
   const transport = imported.createManagedBrowserComputerParityTransportFromPublicClient({
@@ -710,9 +732,11 @@ test("real LocalIpcClient authorizes and connects the encrypted Selkies display 
     assert.deepEqual(result.startupMessage, { kind: "text", byteLength: "VIDEO_STARTED".length });
     assert.deepEqual(result.firstFrame, { kind: "binary", byteLength: 12, recordType: 4 });
     assert.deepEqual(receivedFrames.map((frame) => frame.kind), [
-      "client_connect", "client_request", "client_request", "client_request",
+      "client_connect", "client_request", "client_request", "client_request", "client_request",
     ]);
-    assert.equal(receivedRequests.length, 3);
+    assert.deepEqual(receivedRequests.map(({ request }) => Object.keys(request)[0]), [
+      "RelayStatus", "GetRoomEnvironmentState", "GetSliceDisplayEndpoint", "GetRoomEnvironmentState",
+    ]);
     assert.equal(receivedDisplayControls.length, 1);
     assert.ifError(serverError);
   } finally {
@@ -740,7 +764,7 @@ test("real public create binds and starts the home-owned slice before attach use
   let relayStatusRequest;
   let startSliceRequest;
   let decryptRelayPayload;
-  let encryptRelayPayload;
+  let RelayClientIdentity;
   let WebSocketServer;
   try {
     ({ LocalIpcClient } = await import(kernelClientDistUrl.href));
@@ -762,7 +786,7 @@ test("real public create binds and starts the home-owned slice before attach use
       relayStatusRequest,
       startSliceRequest,
     } = await import(kernelRequestsDistUrl.href));
-    ({ decryptRelayPayload, encryptRelayPayload } = await import(relayCryptoDistUrl.href));
+    ({ decryptRelayPayload, RelayClientIdentity } = await import(relayCryptoDistUrl.href));
     ({ WebSocketServer } = createRequire(fileURLToPath(kernelClientDistUrl))("ws"));
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -784,6 +808,7 @@ test("real public create binds and starts the home-owned slice before attach use
   let slicePresent = false;
   let roomPresent = false;
   let roomEnded = false;
+  let attachmentPresent = false;
   let serverError;
   server.on("connection", (socket) => {
     socket.on("message", (raw) => {
@@ -792,6 +817,7 @@ test("real public create binds and starts the home-owned slice before attach use
         if (frame.kind === "client_connect") {
           assert.equal(frame.auth_token, "operator-test-token");
           assert.deepEqual(frame.target, { daemon_id: "daemon-1", daemon_alias: null });
+          socket.daemon = worker;
           socket.send(JSON.stringify({
             kind: "client_connected",
             target: frame.target,
@@ -922,7 +948,8 @@ test("real public create binds and starts the home-owned slice before attach use
                   diagnostic_code: null,
                 })),
                 viewport: { revision: 1 },
-                tabs: [],
+                tabs: environmentActive ? [{ tab_id: "tab-1", focused: true }] : [],
+                focused_tab_id: environmentActive ? "tab-1" : null,
                 actions: [],
                 input_ownership: [],
                 pending_input_takeovers: [],
@@ -948,7 +975,7 @@ test("real public create binds and starts the home-owned slice before attach use
           response = {
             SessionsListed: {
               sessions: [
-                ...(roomPresent ? [{ id: "room-1", status: roomEnded ? "ended" : "active", attachment_ids: [] }] : []),
+                ...(roomPresent ? [{ id: "room-1", status: roomEnded ? "ended" : "active", attachment_ids: attachmentPresent ? ["attachment-web-1"] : [] }] : []),
                 { id: "other-room" },
               ],
             },
@@ -1009,6 +1036,7 @@ test("real public create binds and starts the home-owned slice before attach use
           assert.equal(requestValue.session_id, "room-1");
           assert.match(requestValue.client_id, /^managed-parity-web-/);
           assert.deepEqual(envelope.request, attachToSessionRequest("room-1", requestValue.client_id));
+          attachmentPresent = true;
           response = {
             SessionAttached: {
               attachment: {
@@ -1038,6 +1066,7 @@ test("real public create binds and starts the home-owned slice before attach use
           };
         } else if (Object.hasOwn(envelope.request, "DetachFromSession")) {
           assert.deepEqual(envelope.request, detachFromSessionRequest("attachment-web-1"));
+          attachmentPresent = false;
           response = {
             SessionDetached: {
               attachment: {
@@ -1079,12 +1108,14 @@ test("real public create binds and starts the home-owned slice before attach use
           roomPresent = false;
           response = { SessionDeleted: { session: { id: "room-1", status: "ended" } } };
         } else {
-          throw new Error(`unexpected managed create request ${JSON.stringify(envelope.request)}`);
+          if (Object.hasOwn(envelope.request, "GetKernelResourceTelemetry")) {
+            response = cleanupTelemetryResponse();
+          } else throw new Error(`unexpected managed create request ${JSON.stringify(envelope.request)}`);
         }
-        const encryptedResponse = encryptRelayPayload(
+        const encryptedResponse = new RelayClientIdentity(socket.daemon.getPrivateKey()).encrypt(
           frame.encrypted_request.sender_public_key,
           Buffer.from(JSON.stringify(response), "utf8"),
-        ).payload;
+        );
         socket.send(JSON.stringify({
           kind: "client_response",
           request_id: frame.request_id,
@@ -1226,12 +1257,15 @@ test("real public create binds and starts the home-owned slice before attach use
       "GetRoomEnvironmentState",
       "AttachToSession",
       "GetSliceDisplayEndpoint",
+      "GetRoomEnvironmentState",
       "ListSlices",
       "ListSessions",
       "GetRoomEnvironmentResourceInventory",
       "GetRoomEnvironmentState",
+      "GetKernelResourceTelemetry",
       "ListSessions",
       "DetachFromSession",
+      "ListSlices",
       "ListSlices",
       "DeleteSlice",
       "ListSlices",
@@ -1377,7 +1411,7 @@ test("real LocalIpcClient cleanup deletes a slice after post-create validation f
   let listSessionsRequest;
   let listSlicesRequest;
   let decryptRelayPayload;
-  let encryptRelayPayload;
+  let RelayClientIdentity;
   let WebSocketServer;
   try {
     ({ LocalIpcClient } = await import(kernelClientDistUrl.href));
@@ -1395,7 +1429,7 @@ test("real LocalIpcClient cleanup deletes a slice after post-create validation f
       listSessionsRequest,
       listSlicesRequest,
     } = await import(kernelRequestsDistUrl.href));
-    ({ decryptRelayPayload, encryptRelayPayload } = await import(relayCryptoDistUrl.href));
+    ({ decryptRelayPayload, RelayClientIdentity } = await import(relayCryptoDistUrl.href));
     ({ WebSocketServer } = createRequire(fileURLToPath(kernelClientDistUrl))("ws"));
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -1423,6 +1457,7 @@ test("real LocalIpcClient cleanup deletes a slice after post-create validation f
         if (frame.kind === "client_connect") {
           assert.equal(frame.auth_token, "operator-test-token");
           assert.deepEqual(frame.target, { daemon_id: "daemon-1", daemon_alias: null });
+          socket.daemon = worker;
           socket.send(JSON.stringify({
             kind: "client_connected",
             target: frame.target,
@@ -1514,12 +1549,14 @@ test("real LocalIpcClient cleanup deletes a slice after post-create validation f
           roomPresent = false;
           response = { SessionDeleted: { session: { id: "room-1", status: "ended" } } };
         } else {
-          throw new Error(`unexpected partial cleanup request ${JSON.stringify(envelope.request)}`);
+          if (Object.hasOwn(envelope.request, "GetKernelResourceTelemetry")) {
+            response = cleanupTelemetryResponse();
+          } else throw new Error(`unexpected partial cleanup request ${JSON.stringify(envelope.request)}`);
         }
-        const encryptedResponse = encryptRelayPayload(
+        const encryptedResponse = new RelayClientIdentity(socket.daemon.getPrivateKey()).encrypt(
           frame.encrypted_request.sender_public_key,
           Buffer.from(JSON.stringify(response), "utf8"),
-        ).payload;
+        );
         socket.send(JSON.stringify({
           kind: "client_response",
           request_id: frame.request_id,
@@ -1583,6 +1620,8 @@ test("real LocalIpcClient cleanup deletes a slice after post-create validation f
       "ListSessions",
       "GetRoomEnvironmentResourceInventory",
       "GetRoomEnvironmentState",
+      "GetKernelResourceTelemetry",
+      "ListSlices",
       "ListSlices",
       "DeleteSlice",
       "ListSlices",

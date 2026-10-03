@@ -34,7 +34,7 @@
     },
     {
       "name": "reply",
-      "description": "Reply to a Slack notification, in its thread unless mode is channel. Uses the Slack connection the owner granted this App.",
+      "description": "Reply to a Slack notification in its thread. mode channel posts to the channel instead, only for a message that is not already in a thread (a threaded message is always answered in its thread). Uses the Slack connection the owner granted this App.",
       "inputSchema": {
         "type": "object",
         "properties": {

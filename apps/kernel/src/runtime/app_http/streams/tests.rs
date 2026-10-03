@@ -163,6 +163,101 @@ fn writer_rechecks_expiry_cancellation_generation_and_unchanged_generation_revoc
 }
 
 #[test]
+fn a_publisher_revoked_while_a_response_streams_fails_the_next_read_and_stops_the_socket() {
+    use crate::{
+        durable_state::app_publishers::AppPublisherMutation, runtime::app_http::decode::Command,
+    };
+    use chariox_app_runtime::publisher_trust::TrustDecision;
+    let fixture = Fixture::new();
+    let group = fixture.group();
+    let (stopped, socket_stopped) = oneshot::channel();
+    let id = fixture
+        .start(
+            group.prepare(fixture.target(), false).unwrap(),
+            &budget(),
+            move |_, _, exchange, mut stop, lease, _| async move {
+                let _lease = lease;
+                let (_upload, headers, chunks) = exchange.fixture_parts();
+                headers.send(Ok(head())).unwrap();
+                chunks.send(Ok(Bytes::from_static(b"first"))).await.unwrap();
+                // Still streaming: only a stop ends this socket task.
+                super::super::cancelled(&mut stop).await;
+                let _ = stopped.send(());
+                Err(HttpError::Cancelled)
+            },
+        )
+        .unwrap();
+    // The open stream holds one of the installation's leases; take the rest.
+    let others = (0..3)
+        .map(|_| fixture.limits.acquire("alice", "installed").unwrap())
+        .collect::<Vec<_>>();
+    assert!(matches!(
+        fixture.limits.acquire("alice", "installed"),
+        Err(HttpError::Busy)
+    ));
+    fixture.runtime.block_on(async {
+        let cancellation = Cancellation::new().await;
+        let head = fixture
+            .operate(
+                &group,
+                Command::Headers(id.clone()),
+                cancellation.token.clone(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(head["status"], 200);
+        let first = fixture
+            .operate(
+                &group,
+                Command::Read(id.clone()),
+                cancellation.token.clone(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first["chunkBase64"], "Zmlyc3Q=");
+        fixture
+            .store
+            .mutate_app_publisher(
+                "alice",
+                AppPublisherMutation::Revoke {
+                    publisher_id: "com.example".into(),
+                    key_id: "state-key".into(),
+                    expected_revision: 1,
+                    decision: TrustDecision {
+                        decision_id: "http-revoke-mid-flight".into(),
+                        authority_ref: "kernel-fixture".into(),
+                    },
+                    now_ms: 20,
+                },
+            )
+            .unwrap();
+        // The open stream's authority was the installation's trusted catalog.
+        // Its next operation fails the writer fence and stops the socket task.
+        assert!(matches!(
+            fixture
+                .operate(
+                    &group,
+                    Command::Read(id.clone()),
+                    cancellation.token.clone()
+                )
+                .await,
+            Err(HttpError::Provenance)
+        ));
+        timeout(WAIT, socket_stopped).await.unwrap().unwrap();
+        assert!(group.entry(&id).is_err());
+        timeout(WAIT, group.join()).await.unwrap();
+        cancellation.close().await;
+    });
+    // Stopping the socket released exactly the stream's lease.
+    let released = fixture.limits.acquire("alice", "installed").unwrap();
+    assert!(matches!(
+        fixture.limits.acquire("alice", "installed"),
+        Err(HttpError::Busy)
+    ));
+    drop((released, others));
+}
+
+#[test]
 fn unread_full_response_retains_capacity_and_eof_cannot_hide_task_failure() {
     let fixture = Fixture::new();
     let group = fixture.group();
@@ -395,6 +490,7 @@ fn an_approval_is_spent_durably_only_by_an_admitted_start_and_only_once() {
             digest: digest.clone(),
             state: ValidationState::Pending,
             expires_ms: u64::MAX / 4,
+            callers: "[]".into(),
         }))
         .unwrap();
     fixture

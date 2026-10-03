@@ -37,6 +37,7 @@ fn imported_observer_targets_keep_responsive_history_catch_up() {
 
 #[test]
 fn external_observed_history_entry_match_includes_visible_metadata() {
+    crate::test_support::isolated_env_test!();
     let existing = ExternalImportHistoryEntry {
         kind: SessionHistoryEntryKind::ProviderOutput,
         text: "same output".to_string(),

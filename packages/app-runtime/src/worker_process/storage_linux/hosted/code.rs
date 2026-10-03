@@ -1,14 +1,16 @@
 //! Signed tiny bytes exercise preparation and mounts; they are never executed.
 use super::*;
 use crate::{
-    installation::{InstallationRegistry, StageTrustBinding, VerifiedInstallCandidate},
+    installation::{
+        CapabilityApproval, CapabilityDecision, InstallationRegistry, StageTrustBinding,
+        VerifiedInstallCandidate,
+    },
     publisher_trust::{PublisherTrustRegistry, TrustDecision},
     release_store::{ReleaseStore, StageBudget, VerifiedReleaseLease},
     runtime_enrollment::EnrolledRuntime,
     worker_process::PreparedWorker,
 };
 use chariox_app_package::{pack, verify, Limits, Manifest, TrustedPublisher, VerificationPolicy};
-use ed25519_dalek::SigningKey;
 use serde_json::json;
 use std::{
     collections::BTreeMap,
@@ -17,7 +19,20 @@ use std::{
 };
 
 pub(super) fn proofs() -> (VerifiedReleaseLease, EnrolledRuntime, StageTrustBinding) {
-    let key = SigningKey::from_bytes(&[27; 32]);
+    let (package, runtime, binding, _, _) = proofs_with_registry("factory-only");
+    (package, runtime, binding)
+}
+
+fn proofs_with_registry(
+    installation: &str,
+) -> (
+    VerifiedReleaseLease,
+    EnrolledRuntime,
+    StageTrustBinding,
+    rusqlite::Connection,
+    VerifiedInstallCandidate,
+) {
+    let key = crate::storage_drill_fixture::signing_key([27; 32]);
     let publisher = TrustedPublisher {
         publisher_id: "com.example".into(),
         key_id: "fixture".into(),
@@ -84,12 +99,18 @@ pub(super) fn proofs() -> (VerifiedReleaseLease, EnrolledRuntime, StageTrustBind
     let mut installs = InstallationRegistry::new(&mut connection);
     installs.initialize().unwrap();
     let update = installs
-        .create_and_stage_verified("factory-only", "hosted-owner", &candidate, 2)
+        .create_and_stage_verified(installation, "hosted-owner", &candidate, 2)
         .unwrap();
     let binding = installs
         .staged_trust("hosted-owner", &update.token)
         .unwrap();
-    (lease, EnrolledRuntime::open_installed().unwrap(), binding)
+    (
+        lease,
+        EnrolledRuntime::open_installed().unwrap(),
+        binding,
+        connection,
+        candidate,
+    )
 }
 
 #[test]
@@ -145,9 +166,14 @@ fn hosted_readonly_code_views_match_verified_roots_in_kernel_namespace() {
 fn hosted_prepared_worker_uses_only_enrolled_sources_and_reclaims_unstarted_domain() {
     let context = Context::open("55555555555555555555555555555555");
     let (package, runtime, binding) = proofs();
-    let prepared =
-        PreparedWorker::prepare_linux(runtime, package, &binding, None, binding.token().generation)
-            .unwrap();
+    let prepared = PreparedWorker::prepare_linux(
+        runtime,
+        package,
+        &binding,
+        None,
+        Some(binding.token().generation),
+    )
+    .unwrap();
     assert_eq!(prepared.record.installation, "factory-only");
     assert_eq!(prepared.record.generation, "1");
     assert_eq!(
@@ -171,4 +197,157 @@ fn hosted_prepared_worker_uses_only_enrolled_sources_and_reclaims_unstarted_doma
     drop(prepared);
     assert!(!prepared_leaves[0].exists());
     println!("Actual production factory prepared exact signed roots, platform graph and cgroup, then released without executing fixture code");
+}
+
+#[test]
+#[ignore = "dedicated hosted fresh Linux preparation with signed tiny graph; never spawns it"]
+fn hosted_fresh_first_install_prepares_without_a_committed_generation() {
+    let context = Context::open("66666666666666666666666666666666");
+    let (package, runtime, binding, mut connection, _) = proofs_with_registry("factory-only");
+    let token = binding.token();
+    assert_eq!(token.base_generation, 0);
+    assert_eq!(token.generation, 1);
+    let mut installs = InstallationRegistry::new(&mut connection);
+    let fresh = installs.get(&token.installation_id).unwrap();
+    assert_eq!(fresh.generation, 0);
+    let committed = fresh.data_release().map(|release| release.generation);
+    assert_eq!(committed, None);
+    installs
+        .decide(
+            token,
+            CapabilityDecision::Approved {
+                approval: CapabilityApproval {
+                    decision_id: "fresh-approval".into(),
+                    authority_ref: "dedicated-root-drill".into(),
+                },
+            },
+            3,
+        )
+        .unwrap();
+    installs.quiesce(token, 4).unwrap();
+    let prepared =
+        PreparedWorker::prepare_linux(runtime, package, &binding, None, committed).unwrap();
+    assert_eq!(prepared.record.generation, "1");
+    assert_eq!(prepared.record.installation, "factory-only");
+    installs.mark_prepared(token, 5).unwrap();
+    let snapshot = PublisherTrustRegistry::new(&mut connection)
+        .trusted_publisher("hosted-owner", "com.example", "fixture")
+        .unwrap();
+    let mut installs = InstallationRegistry::new(&mut connection);
+    let active = installs
+        .commit_verified(token, "hosted-owner", &snapshot, 6)
+        .unwrap();
+    assert_eq!(active.generation, 1);
+    let committed = installs
+        .get(&token.installation_id)
+        .unwrap()
+        .data_release()
+        .map(|release| release.generation);
+    assert_eq!(committed, Some(1));
+    drop(prepared);
+    let (package, runtime, _) = proofs();
+    let restarted =
+        PreparedWorker::prepare_linux(runtime, package, &binding, None, committed).unwrap();
+    drop(restarted);
+    let leaves: Vec<_> = fs::read_dir(context.cgroup.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.is_dir() && path != &context.cgroup)
+        .collect();
+    assert!(leaves.is_empty());
+    println!("Fresh signed generation 1 over base 0 reached production Linux PreparedWorker and verified registry commit with no prior generation; restart with Some(1) and domain reclamation passed; tiny graph never executed");
+}
+
+#[test]
+#[ignore = "dedicated hosted Linux retained-data reinstall and snapshot rollback"]
+fn hosted_failed_retained_data_reinstall_restores_the_retained_release() {
+    let context = Context::open("77777777777777777777777777777777");
+    let (_package, _runtime, binding, mut connection, candidate) =
+        proofs_with_registry("retained-reinstall");
+    let snapshot = PublisherTrustRegistry::new(&mut connection)
+        .trusted_publisher("hosted-owner", "com.example", "fixture")
+        .unwrap();
+    let mut installs = InstallationRegistry::new(&mut connection);
+    let approval = || CapabilityDecision::Approved {
+        approval: CapabilityApproval {
+            decision_id: "reinstall-approval".into(),
+            authority_ref: "dedicated-root-drill".into(),
+        },
+    };
+    let token = binding.token();
+    installs.decide(token, approval(), 3).unwrap();
+    installs.quiesce(token, 4).unwrap();
+    let mut original =
+        Lease::acquire("hosted-owner", "retained-reinstall", 1, None, &context.leaf).unwrap();
+    fs::write(original.data_path().join("todos"), b"retained data").unwrap();
+    installs.mark_prepared(token, 5).unwrap();
+    installs
+        .commit_verified(token, "hosted-owner", &snapshot, 6)
+        .unwrap();
+    original.release().unwrap();
+    let uninstalled = installs.uninstall("retained-reinstall", 1, 7).unwrap();
+    assert!(uninstalled.active.is_none());
+    assert!(uninstalled.generation > 1); // Uninstall fence, not the data generation.
+    assert_eq!(uninstalled.data_release().unwrap().generation, 1);
+    // Each failed reinstall must start from retained data, including after
+    // another failed reinstall dirtied the data volume.
+    for now in [8, 16] {
+        let stage = installs
+            .stage_verified(
+                "retained-reinstall",
+                "hosted-owner",
+                uninstalled.generation,
+                &candidate,
+                now,
+            )
+            .unwrap();
+        assert!(stage.token.generation > uninstalled.generation);
+        installs.decide(&stage.token, approval(), now + 1).unwrap();
+        installs.quiesce(&stage.token, now + 2).unwrap();
+        let committed = installs
+            .get("retained-reinstall")
+            .unwrap()
+            .data_release()
+            .map(|release| release.generation);
+        assert_eq!(committed, Some(1));
+        let mut staged = Lease::acquire(
+            "hosted-owner",
+            "retained-reinstall",
+            stage.token.generation,
+            committed,
+            &context.leaf,
+        )
+        .unwrap();
+        assert!(staged
+            .data_path()
+            .parent()
+            .unwrap()
+            .join("data-snapshot.ext4")
+            .exists());
+        assert_eq!(
+            fs::read(staged.data_path().join("todos")).unwrap(),
+            b"retained data"
+        );
+        assert!(!staged.data_path().join("failed-only").exists());
+        fs::write(staged.data_path().join("todos"), b"failed reinstall writes").unwrap();
+        fs::write(staged.data_path().join("failed-only"), b"uncommitted").unwrap();
+        staged.release().unwrap();
+        installs
+            .abort(&stage.token, "fixture reinstall failed", now + 3)
+            .unwrap();
+    }
+    let mut restored = context.lease("retained-reinstall", 1);
+    assert_eq!(
+        fs::read(restored.data_path().join("todos")).unwrap(),
+        b"retained data"
+    );
+    assert!(!restored.data_path().join("failed-only").exists());
+    assert!(!restored
+        .data_path()
+        .parent()
+        .unwrap()
+        .join("data-snapshot.ext4")
+        .exists());
+    restored.release().unwrap();
+    println!("Retained-data uninstall fence differs from the data generation; two failed signed reinstalls took snapshots and restored retained generation 1 without preserving failed writes");
 }

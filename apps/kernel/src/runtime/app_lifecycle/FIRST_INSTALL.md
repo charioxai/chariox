@@ -19,7 +19,9 @@ owns the same four-worker, one-preparation and eight-operation limits used for
 active-generation restart. The writer resolves the exact stage, approval,
 enrollment revision and attempt before preparation. The owner reopens and
 verifies the anchored signed archive, retains its sealed release lease, and
-constructs the existing platform worker and its sole SDK peer.
+constructs the existing platform worker and its sole SDK peer. Until the start is
+claimed (for example while all four worker slots are taken), the operation's
+status reports `queued` (protocol 381).
 
 SDK 0.5 / protocol 293 adds a distinct `health_check` lifecycle round trip before
 activation. It has a three-second limit, also bounded by the actual pending

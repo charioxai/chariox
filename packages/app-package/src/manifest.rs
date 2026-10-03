@@ -29,8 +29,6 @@ pub struct Manifest {
     pub events: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actions: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub information_sets: Option<String>,
     #[serde(default)]
     pub capabilities: Capabilities,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -62,6 +60,36 @@ pub enum RuntimeEngine {
 #[serde(deny_unknown_fields)]
 pub struct Ui {
     pub entry: String,
+    /// Where Chariox draws the private agent panel beside this App's view by
+    /// default (kernel protocol 380). Omitted: at the right. The page can ask
+    /// for another placement at runtime; the user's own choice wins.
+    #[serde(
+        default,
+        rename = "agentPanel",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub agent_panel: Option<AgentPanel>,
+}
+
+/// First kernel protocol that reads `ui.agentPanel`.
+pub const AGENT_PANEL_PROTOCOL: u32 = 380;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentPanel {
+    pub placement: PanelPlacement,
+    /// CSS pixels: the panel's width at the right or height at the bottom.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PanelPlacement {
+    Right,
+    Bottom,
+    /// The App shows no agent panel; approvals still reach the user.
+    None,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -189,14 +217,21 @@ impl Manifest {
         if !self.ui.entry.starts_with("ui/") || !self.ui.entry.ends_with(".html") {
             return Err(invalid("UI entry must be HTML inside ui/"));
         }
-        for path in [
-            &self.tools,
-            &self.events,
-            &self.actions,
-            &self.information_sets,
-        ]
-        .into_iter()
-        .flatten()
+        if let Some(panel) = &self.ui.agent_panel {
+            let size_ok = match (panel.placement, panel.size) {
+                (PanelPlacement::None, Some(_)) => false,
+                (_, Some(size)) => (120..=1200).contains(&size),
+                (_, None) => true,
+            };
+            if !size_ok || self.min_kernel_protocol < AGENT_PANEL_PROTOCOL {
+                return Err(invalid(
+                    "ui.agentPanel needs minKernelProtocol 380 and a size of 120 to 1200 CSS pixels (none takes no size)",
+                ));
+            }
+        }
+        for path in [&self.tools, &self.events, &self.actions]
+            .into_iter()
+            .flatten()
         {
             validate_path(path, limits)?;
             if !path.starts_with("schemas/") || !path.ends_with(".json") {
@@ -278,15 +313,10 @@ impl Manifest {
     pub(crate) fn required_paths(&self) -> Vec<&str> {
         let mut paths = vec![self.runtime.entry.as_str(), self.ui.entry.as_str()];
         paths.extend(
-            [
-                &self.tools,
-                &self.events,
-                &self.actions,
-                &self.information_sets,
-            ]
-            .into_iter()
-            .flatten()
-            .map(String::as_str),
+            [&self.tools, &self.events, &self.actions]
+                .into_iter()
+                .flatten()
+                .map(String::as_str),
         );
         if let Some(migrations) = &self.migrations {
             paths.extend(migrations.steps.iter().map(|step| step.entry.as_str()));

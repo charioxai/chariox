@@ -80,31 +80,47 @@ impl Bound {
             identity,
         })
     }
+    pub fn require_single_process(&self, pid: i32) -> Result<()> {
+        if files::identity(&self.directory.0)? != self.identity
+            || files::identity(&self._root.0)? != self.root_identity
+        {
+            return Err(Error::Identity);
+        }
+        let mut bytes = Vec::new();
+        use std::io::Read;
+        open(&self.directory, "cgroup.procs", libc::O_RDONLY)?
+            .take(1025)
+            .read_to_end(&mut bytes)?;
+        if bytes != format!("{pid}\n").as_bytes() {
+            return Err(Error::Identity);
+        }
+        Ok(())
+    }
     pub fn require_empty(&self) -> Result<()> {
-        if files::identity(&self.directory.0)? != self.identity {
-            return Err(Error::Identity);
-        }
-        let mut bytes = [0u8; 1025];
-        let count = self.events.read_at(&mut bytes, 0)?;
-        if count > 1024 {
-            return Err(Error::Identity);
-        }
-        let text = std::str::from_utf8(&bytes[..count]).map_err(|_| Error::Identity)?;
-        match populated(text)? {
-            false => Ok(()),
-            true => Err(Error::Busy),
+        match self.members()? {
+            Members::None => Ok(()),
+            Members::Some => Err(Error::Busy),
+            // Acquisition and an explicit release still need the live leaf.
+            Members::Removed => Err(Error::Io),
         }
     }
+    /// Disconnect and recovery release: kill whatever is left and wait until
+    /// the leaf is empty. A leaf removed meanwhile is empty for good (see
+    /// `Members::Removed`): after a kernel crash, systemd trims the stopped
+    /// unit's delegated subtree, often before this loop observes it empty.
     pub fn quiesce(&self) -> Result<()> {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            match self.require_empty() {
-                Ok(()) => return Ok(()),
-                Err(Error::Busy) => {}
-                Err(error) => return Err(error),
+            match self.members()? {
+                Members::None | Members::Removed => return Ok(()),
+                Members::Some => {}
             }
-            if self.kill.write_at(b"1", 0)? != 1 {
-                return Err(Error::Io);
+            match self.kill.write_at(b"1", 0) {
+                Ok(1) => {}
+                // Removed after the observation above: the next observation
+                // reports it (still within the deadline).
+                Err(error) if error.raw_os_error() == Some(libc::ENODEV) => {}
+                _ => return Err(Error::Io),
             }
             if Instant::now() >= deadline {
                 return Err(Error::RecoveryRequired);
@@ -112,6 +128,43 @@ impl Bound {
             std::thread::sleep(Duration::from_millis(20));
         }
     }
+    fn members(&self) -> Result<Members> {
+        if files::identity(&self.directory.0)? != self.identity {
+            return Err(Error::Identity);
+        }
+        let mut bytes = [0u8; 1025];
+        members(
+            self.events
+                .read_at(&mut bytes, 0)
+                .map(|count| &bytes[..count]),
+        )
+    }
+}
+/// What the bound leaf's `cgroup.events` says about its processes.
+#[derive(Debug, PartialEq)]
+enum Members {
+    None,
+    Some,
+    /// The held directory was removed (reading it fails with ENODEV). cgroup
+    /// v2 removes only a cgroup with no processes or children, and no process
+    /// can join a removed one, so it stays empty.
+    Removed,
+}
+fn members(read: std::io::Result<&[u8]>) -> Result<Members> {
+    let bytes = match read {
+        Ok(bytes) => bytes,
+        Err(error) if error.raw_os_error() == Some(libc::ENODEV) => return Ok(Members::Removed),
+        Err(error) => return Err(error.into()),
+    };
+    if bytes.len() > 1024 {
+        return Err(Error::Identity);
+    }
+    let text = std::str::from_utf8(bytes).map_err(|_| Error::Identity)?;
+    Ok(if populated(text)? {
+        Members::Some
+    } else {
+        Members::None
+    })
 }
 fn open_root(owner: &Owner) -> Result<Option<Dir>> {
     let mut dir = Dir::absolute_root()?;
@@ -209,5 +262,85 @@ mod tests {
         ] {
             assert!(populated(bad).is_err());
         }
+    }
+    #[test]
+    fn only_a_removed_leaf_reads_as_removed() {
+        let removed = std::io::Error::from_raw_os_error(libc::ENODEV);
+        assert_eq!(members(Err(removed)), Ok(Members::Removed));
+        for other in [libc::EIO, libc::EACCES, libc::EBADF] {
+            assert_eq!(
+                members(Err(std::io::Error::from_raw_os_error(other))),
+                Err(Error::Io)
+            );
+        }
+        assert_eq!(members(Ok(b"populated 0\nfrozen 0\n")), Ok(Members::None));
+        assert_eq!(members(Ok(b"populated 1\nfrozen 0\n")), Ok(Members::Some));
+        assert_eq!(members(Ok(&[b'x'; 1025])), Err(Error::Identity));
+    }
+    /// The kernel-crash case on a real cgroup: the leaf's last process dies
+    /// and the leaf is removed (as systemd trims a stopped unit) before the
+    /// helper quiesces it on disconnect. Run as root on a cgroup v2 host:
+    /// `cargo test -p chariox-app-runtime --lib -- --ignored removed_after`.
+    #[test]
+    #[ignore = "needs root and a writable cgroup v2 root at /sys/fs/cgroup"]
+    fn quiesce_releases_a_leaf_removed_after_its_members_died() {
+        use std::{fs, io::Write, os::unix::fs::DirBuilderExt, process::Command};
+        /// Removes the scratch cgroups (and kills a leftover member) even when
+        /// an assertion fails midway.
+        struct Scratch(std::path::PathBuf, std::path::PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = fs::write(self.1.join("cgroup.kill"), "1");
+                for _ in 0..100 {
+                    if fs::remove_dir(&self.1).is_ok() || !self.1.exists() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                let _ = fs::remove_dir(&self.0);
+            }
+        }
+        let unique = format!(
+            "{:08x}{:024x}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::path::PathBuf::from(format!("/sys/fs/cgroup/chariox-quiesce-{unique}"));
+        let leaf = format!("app-{unique}");
+        let path = root.join(&leaf);
+        fs::DirBuilder::new().mode(0o755).create(&root).unwrap();
+        let _scratch = Scratch(root.clone(), path.clone());
+        fs::DirBuilder::new().mode(0o755).create(&path).unwrap();
+        let owner = Owner {
+            uid: 0,
+            gid: 0,
+            cgroup_root: root.to_str().unwrap().into(),
+            kernel_database_paths: Vec::new(),
+        };
+        let bound = Bound::acquire(&owner, &leaf).unwrap();
+        let mut child = Command::new("sleep").arg("30").spawn().unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(path.join("cgroup.procs"))
+            .unwrap()
+            .write_all(child.id().to_string().as_bytes())
+            .unwrap();
+        assert_eq!(bound.require_empty(), Err(Error::Busy));
+        fs::write(path.join("cgroup.kill"), "1").unwrap();
+        child.wait().unwrap();
+        while fs::read_to_string(path.join("cgroup.events"))
+            .unwrap()
+            .contains("populated 1")
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        fs::remove_dir(&path).unwrap();
+        // Acquisition and explicit release keep refusing a removed leaf...
+        assert_eq!(bound.require_empty(), Err(Error::Io));
+        // ...but the disconnect release it blocked forever now completes.
+        assert_eq!(bound.quiesce(), Ok(()));
     }
 }

@@ -1,9 +1,10 @@
 import { execFile } from "node:child_process"
 import { constants } from "node:fs"
 import { access, realpath, stat } from "node:fs/promises"
-import { isAbsolute, join, resolve } from "node:path"
+import { dirname, isAbsolute, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "@chariox/kernel-client"
+import { releaseVersion } from "./release-build.js"
 
 const commands = new Set(["create", "keygen", "manifest", "validate", "pack", "inspect"])
 const protocolCommands = new Set(["create", "manifest", "validate", "pack"])
@@ -94,6 +95,7 @@ async function executable(path: string): Promise<string | undefined> {
 export async function locateAppPackageBinary(
   env: NodeJS.ProcessEnv = process.env,
   moduleUrl: string = import.meta.url,
+  release: { version: string | undefined, executable: string } = { version: releaseVersion, executable: process.execPath },
 ): Promise<string> {
   const explicit = env.CHARIOX_APP_PACKAGE_BIN?.trim()
   if (explicit) {
@@ -101,6 +103,12 @@ export async function locateAppPackageBinary(
     const selected = await executable(explicit)
     if (!selected) throw new Error("CHARIOX_APP_PACKAGE_BIN is not an executable file")
     return selected
+  }
+  // The compiled release executable uses the tool its release bundle ships beside it.
+  if (release.version !== undefined) {
+    const self = await realpath(release.executable).catch(() => undefined)
+    const selected = self && await executable(join(dirname(self), "chariox-app-package"))
+    if (selected) return selected
   }
   // A source checkout is derived from this module, never the user's cwd or PATH.
   const repository = fileURLToPath(new URL("../../../", moduleUrl))

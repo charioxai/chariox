@@ -1,4 +1,6 @@
 // Ordinary Node/FD3 integration only: these tests do not establish containment.
+// Include the pure native receipt parser tests in the platform-independent suite.
+import './linux-native-contract.test.mjs';
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { spawn } from 'node:child_process';
@@ -49,8 +51,8 @@ async function fixture(source, { entry = 'runtime/main.mjs', config = {}, enviro
   } };
 }
 
-function start(prepared) {
-  const child = spawn(process.execPath, ['--no-warnings', '-e', prepared.script], {
+function start(prepared, nodeArguments = []) {
+  const child = spawn(process.execPath, ['--no-warnings', ...nodeArguments, '-e', prepared.script], {
     cwd: prepared.roots.data, env: prepared.environment, stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
   });
   active.add(child);
@@ -205,6 +207,45 @@ test('malformed and stale generation frames close IPC without dispatch', async (
   }
 });
 
+test('a result that is not JSON fails only its call; the App log says why and the worker keeps serving', async () => {
+  // Drill App 1.1.0 returned {echoed: undefined}: the worker used to exit 133.
+  const running = start(await fixture(`export default sdk => sdk.tools.register('echo', ({ mode, ...input }) => {
+    if (mode === 'undefined') return { ok: true, echoed: undefined };
+    if (mode === 'bigint') return { count: 1n };
+    if (mode === 'cycle') { const value = { nested: {} }; value.nested.self = value; return value; }
+    if (mode === 'error') throw new sdk.AppError('not a code', 'App-made error with an invalid code');
+    return input;
+  });`));
+  await running.ready();
+  const cases = [
+    ['undefined', 'result.echoed is undefined'],
+    ['bigint', 'result.count is a BigInt'],
+    ['cycle', 'result.nested.self refers back to an object that contains it (a cycle)'],
+  ];
+  for (const [mode, detail] of cases) {
+    running.request(`bad-${mode}`, 'tools.invoke', { name: 'echo', input: { mode } });
+    const log = await running.receive(message => message.method === 'log.write' && message.params.message.endsWith(detail));
+    assert.deepEqual(log.params, { level: 'error', fields: { code: 'INVALID_OUTPUT', method: 'tools.invoke', name: 'echo' },
+      message: `Tool echo returned a result that cannot be sent, so that call failed with INVALID_OUTPUT: ${detail}` });
+    running.send({ kind: 'response', id: log.id, result: null });
+    const reply = await running.receive(message => message.id === `bad-${mode}`);
+    assert.deepEqual(reply.error, { code: 'INVALID_OUTPUT', message: `The App's result cannot be sent: ${detail}`, retryable: false });
+  }
+  running.request('bad-error', 'tools.invoke', { name: 'echo', input: { mode: 'error' } });
+  const log = await running.receive(message => message.method === 'log.write' && message.params.fields.code === 'HANDLER_FAILED');
+  assert.match(log.params.message, /^Tool echo threw an AppError that cannot be sent, so that call failed with HANDLER_FAILED: its code/);
+  running.send({ kind: 'response', id: log.id, result: null });
+  assert.deepEqual((await running.receive(message => message.id === 'bad-error')).error,
+    { code: 'HANDLER_FAILED', message: 'App handler failed', retryable: false });
+  running.request('good', 'tools.invoke', { name: 'echo', input: { text: 'still serving' } });
+  assert.deepEqual((await running.receive(message => message.id === 'good')).result, { text: 'still serving' });
+  running.request('shutdown', 'lifecycle.dispatch', { event: 'shutdown' });
+  const result = await running.completed;
+  assert.equal(result.code, 0, JSON.stringify(result));
+  assert.equal(result.stderr, '');
+  assert.equal(result.malformed, undefined);
+});
+
 test('kernel readiness rejection and failed App shutdown terminate with bounded errors', async () => {
   const rejected = start(await fixture(`export default ${registration}`));
   const ready = await rejected.receive(message => message.method === 'worker.ready');
@@ -266,6 +307,116 @@ test('global Fetch is installed before App import and uses only the actual inher
   assert.equal(completed.code, 0, JSON.stringify(completed));
   assert.equal(completed.malformed, undefined);
   assert.equal(completed.stderr, '');
+});
+
+test('an App directory watch reports private data changes; macOS workers poll', async () => {
+  const running = start(await fixture(`
+    import { watch, writeFileSync } from 'node:fs';
+    import { join } from 'node:path';
+    export default sdk => sdk.tools.register('echo', () => new Promise((resolve, reject) => {
+      const watcher = watch(sdk.paths.data, (eventType, filename) => {
+        watcher.close();
+        resolve({ eventType, filename, polled: watcher.constructor.name !== 'FSWatcher' });
+      });
+      watcher.on('error', reject);
+      writeFileSync(join(sdk.paths.data, 'marker'), 'x');
+    }));
+  `));
+  await running.ready();
+  running.request('watch-call', 'tools.invoke', { name: 'echo', input: null });
+  const reply = await running.receive(message => message.id === 'watch-call');
+  assert.deepEqual(reply.result, { eventType: 'rename', filename: 'marker', polled: process.platform === 'darwin' });
+  running.request('shutdown-watch', 'lifecycle.dispatch', { event: 'shutdown' });
+  assert.equal((await running.completed).code, 0);
+});
+
+// The fallback runs on macOS only; naming the platform exercises it anywhere.
+async function watchFallback(body) {
+  const directory = await mkdtemp(path.join(scratch, 'watch-'));
+  const bootstrap = path.join(repository, 'apps/app-worker/src/bootstrap.cjs');
+  const script = `const fs = require('node:fs'); const path = require('node:path');
+    const install = platform => require(${JSON.stringify(bootstrap)}).installDirectoryWatch(platform);
+    const dir = ${JSON.stringify(directory)}; const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+    (async () => { ${body} })().then(result => process.stdout.write(JSON.stringify(result)));`;
+  const child = spawn(process.execPath, ['-e', script], { stdio: ['ignore', 'pipe', 'pipe'] });
+  active.add(child);
+  let stdout = ''; let stderr = '';
+  child.stdout.on('data', chunk => { stdout += chunk; });
+  child.stderr.on('data', chunk => { stderr += chunk; });
+  const deadline = setTimeout(() => child.kill('SIGKILL'), 10000);
+  const code = await new Promise(resolve => child.once('close', resolve));
+  clearTimeout(deadline); active.delete(child);
+  assert.equal(code, 0, stderr);
+  return JSON.parse(stdout);
+}
+
+test('macOS directory watch fallback reports creation, change and removal, then closes', async () => {
+  const result = await watchFallback(`
+    install('darwin');
+    fs.mkdirSync(path.join(dir, 'sub'));
+    const events = [];
+    const watcher = fs.watch(dir, (type, name) => events.push([type, name]));
+    fs.writeFileSync(path.join(dir, 'a.txt'), '1');
+    await pause(600);
+    fs.appendFileSync(path.join(dir, 'a.txt'), '2');
+    fs.writeFileSync(path.join(dir, 'sub', 'nested.txt'), 'not recursive');
+    await pause(600);
+    fs.rmSync(path.join(dir, 'a.txt'));
+    await pause(600);
+    let closed = false;
+    watcher.on('close', () => { closed = true; });
+    watcher.close();
+    fs.writeFileSync(path.join(dir, 'after-close.txt'), 'x');
+    await pause(600);
+    return { events, closed, native: watcher.constructor.name === 'FSWatcher' };`);
+  assert.deepEqual(result, { events: [['rename', 'a.txt'], ['change', 'a.txt'], ['rename', 'a.txt']], closed: true, native: false });
+});
+
+test('macOS fallback: recursive and buffer names, native file watches, synchronous errors and entry limit', async () => {
+  const result = await watchFallback(`
+    install('darwin');
+    fs.mkdirSync(path.join(dir, 'tree', 'deep'), { recursive: true });
+    const events = [];
+    const watcher = fs.watch(dir, { recursive: true, encoding: 'buffer' },
+      (type, name) => events.push([type, Buffer.isBuffer(name), name.toString()]));
+    fs.writeFileSync(path.join(dir, 'tree', 'deep', 'x.txt'), 'x');
+    await pause(600);
+    watcher.close();
+    fs.writeFileSync(path.join(dir, 'file.txt'), '0');
+    const file = fs.watch(path.join(dir, 'file.txt'));
+    const native = file.constructor.name === 'FSWatcher';
+    file.close();
+    const code = operation => { try { operation(); return 'none'; } catch (error) { return error.code; } };
+    const missing = code(() => fs.watch(path.join(dir, 'missing')));
+    fs.mkdirSync(path.join(dir, 'big'));
+    for (let index = 0; index < 4097; ++index) fs.writeFileSync(path.join(dir, 'big', String(index)), '');
+    return { events, native, missing, limit: code(() => fs.watch(path.join(dir, 'big'))) };`);
+  assert.deepEqual(result, { events: [['rename', true, path.join('tree', 'deep', 'x.txt')]], native: true,
+    missing: 'ENOENT', limit: 'ENOSPC' });
+});
+
+test('macOS fallback covers ESM and fs/promises watch, abort and non-persistent watchers', async () => {
+  const result = await watchFallback(`
+    const early = await import('node:fs');
+    install('darwin');
+    const { watch } = await import('node:fs/promises');
+    const controller = new AbortController();
+    setTimeout(() => fs.writeFileSync(path.join(dir, 'p.txt'), 'p'), 50);
+    const seen = [];
+    let aborted;
+    try {
+      for await (const { eventType, filename } of watch(dir, { signal: controller.signal })) {
+        seen.push([eventType, filename]);
+        controller.abort();
+      }
+    } catch (error) { aborted = error.name; }
+    fs.watch(dir, { persistent: false }, () => {});
+    return { seen, aborted, esm: early.watch === fs.watch && watch === fs.promises.watch };`);
+  assert.deepEqual(result, { seen: [['rename', 'p.txt']], aborted: 'AbortError', esm: true });
+});
+
+test('other platforms keep the native directory watch', async () => {
+  assert.equal(await watchFallback(`const before = fs.watch; install('linux'); return fs.watch === before;`), true);
 });
 
 test('fatal asynchronous App exceptions terminate without exposing exception text', async () => {
@@ -375,4 +526,211 @@ test('the migration timeout bounds migrations and startup is re-armed for App lo
   await running.ready();
   running.request('shutdown-slow', 'lifecycle.dispatch', { event: 'shutdown' });
   assert.equal((await running.completed).code, 0);
+});
+
+test('every fsync form is denied the same way before App code runs', async () => {
+  const source = `import fs from 'node:fs';
+import { fsyncSync } from 'node:fs';
+import { open } from 'node:fs/promises';
+export default chariox => chariox.tools.register('echo', async () => {
+  const file = chariox.paths.data + '/probe';
+  const code = run => { try { run(); return 'ok'; } catch (error) { return error.code; } };
+  const settled = promise => promise.then(() => 'ok', error => error.code);
+  const fd = fs.openSync(file, 'w');
+  fs.writeSync(fd, 'x');
+  const outcome = {
+    fsyncSync: code(() => fs.fsyncSync(fd)),
+    importedFsyncSync: code(() => fsyncSync(fd)),
+    fdatasyncSync: code(() => fs.fdatasyncSync(fd)),
+    writeFileSyncFlush: code(() => fs.writeFileSync(file + '-2', Buffer.from('x'), { flush: true })),
+    fsync: await new Promise(resolve => fs.fsync(fd, error => resolve(error ? error.code : 'ok'))),
+    fdatasync: await new Promise(resolve => fs.fdatasync(fd, error => resolve(error ? error.code : 'ok'))),
+  };
+  fs.closeSync(fd);
+  const handle = await open(file, 'r+');
+  outcome.fileHandleSync = await settled(handle.sync());
+  outcome.fileHandleDatasync = await settled(handle.datasync());
+  await handle.close();
+  outcome.promisesWriteFileFlush = await settled(fs.promises.writeFile(file + '-3', 'x', { flush: true }));
+  outcome.written = fs.readFileSync(file, 'utf8');
+  // A worker thread gets its own node:fs and keeps Node's behavior (here,
+  // without --permission, both forms work).
+  const { Worker } = await import('node:worker_threads');
+  outcome.worker = await new Promise((resolve, reject) => {
+    const worker = new Worker(\`
+      const fs = require('node:fs');
+      const { parentPort, workerData } = require('node:worker_threads');
+      (async () => {
+        const fd = fs.openSync(workerData, 'r+');
+        let sync; try { fs.fsyncSync(fd); sync = 'ok'; } catch (error) { sync = error.code; }
+        fs.closeSync(fd);
+        const handle = await fs.promises.open(workerData, 'r+');
+        const fileHandle = await handle.sync().then(() => 'ok', error => error.code);
+        await handle.close();
+        parentPort.postMessage({ fsyncSync: sync, fileHandleSync: fileHandle });
+      })();\`, { eval: true, workerData: file });
+    worker.once('message', resolve);
+    worker.once('error', reject);
+  });
+  return outcome;
+});`;
+  const running = start(await fixture(source));
+  await running.ready();
+  running.request('call-1', 'tools.invoke', { name: 'echo', input: {} });
+  const outcome = (await running.receive(message => message.id === 'call-1')).result;
+  const denied = 'ERR_ACCESS_DENIED';
+  assert.deepEqual(outcome, {
+    fsyncSync: denied, importedFsyncSync: denied, fdatasyncSync: denied, writeFileSyncFlush: denied,
+    fsync: denied, fdatasync: denied, fileHandleSync: denied, fileHandleDatasync: denied,
+    promisesWriteFileFlush: denied, written: 'x',
+    worker: { fsyncSync: 'ok', fileHandleSync: 'ok' },
+  });
+  running.child.kill('SIGKILL');
+  await running.completed;
+});
+
+test('App worker threads keep the permission model, whatever their options', async () => {
+  const source = `import { register } from 'node:module';
+import { SHARE_ENV, Worker } from 'node:worker_threads';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+const code = run => { try { run(); return 'ok'; } catch (error) { return error.code; } };
+const probe = \`
+  const fs = require('node:fs');
+  const { Worker, parentPort, workerData } = require('node:worker_threads');
+  const code = run => { try { run(); return 'ok'; } catch (error) { return error.code; } };
+  parentPort.postMessage({
+    outside: code(() => fs.readFileSync(workerData.outside)),
+    storage: code(() => fs.writeFileSync(workerData.storage, 'x')),
+    worker: code(() => new Worker('0', { eval: true, execArgv: [] }).terminate()),
+    register: code(() => require('node:module').register('data:text/javascript,')),
+    childProcess: code(() => require('node:child_process').spawnSync('true')),
+  });\`;
+export default chariox => chariox.tools.register('echo', async ({ outside }) => {
+  const storage = chariox.paths.data + '/from-worker';
+  const run = (Constructor, options) => new Promise(resolve => {
+    let worker;
+    try { worker = new Constructor(probe, { eval: true, workerData: { outside, storage }, ...options }); }
+    catch (error) { resolve(error.code); return; }
+    worker.once('message', resolve);
+    worker.once('error', error => resolve('error:' + error.code));
+  });
+  class Subclass extends Worker {}
+  const outcome = {
+    app: code(() => require('node:fs').readFileSync(outside)),
+    register: code(() => register('data:text/javascript,')),
+    childProcess: code(() => require('node:child_process').spawnSync('true')),
+    binding: code(() => process.binding('spawn_sync')),
+    sameWorker: require('node:worker_threads').Worker === Worker && Worker.prototype.constructor === Worker,
+    // The native handle constructor reached from a returned Worker's handle is
+    // the neutralized one; constructing it throws before any thread can start.
+    handleConstructor: code(() => {
+      const worker = new Worker('0', { eval: true });
+      worker.terminate();
+      const handle = Object.getOwnPropertySymbols(worker).find(symbol => symbol.description === 'kHandle');
+      const native = new worker[handle].constructor('data:text/javascript,', null, [], new Float64Array(4), false, false, 'x');
+      return native.startThread();
+    }),
+    // The worker_threads diagnostics channel hands App code the same handle, so
+    // App code subscribing before creating a Worker still only ever sees the
+    // neutralized constructor: the guard replaced it before any App code ran.
+    diagnosticsCapture: await new Promise(resolve => {
+      let native;
+      const channel = require('node:diagnostics_channel');
+      const onPublish = ({ worker }) => {
+        const handle = Object.getOwnPropertySymbols(worker).find(symbol => symbol.description === 'kHandle');
+        native = worker[handle].constructor;
+      };
+      channel.subscribe('worker_threads', onPublish);
+      const worker = new Worker('0', { eval: true });
+      worker.terminate();
+      channel.unsubscribe('worker_threads', onPublish);
+      resolve(code(() => {
+        const handle = new native('data:text/javascript,', null, [], new Float64Array(4), false, false, 'x');
+        return handle.startThread();
+      }));
+    }),
+    // util.inspect({ showProxy: true }) must not hand back an unguarded native
+    // constructor: the wrapper is not a Proxy, so the recovered value is itself.
+    inspectCapture: await (async () => {
+      const { inspect } = require('node:util');
+      let recovered;
+      Worker[inspect.custom] = function () { recovered = this; return 'worker'; };
+      inspect(Worker, { showProxy: true });
+      delete Worker[inspect.custom];
+      if (recovered !== Worker) return 'leaked-native-constructor';
+      return run(recovered, { execArgv: [] });
+    })(),
+    // A handle faked with Object.create has no native state, so startThread
+    // rejects it; the neutralized constructor is the only lever, and it is gone.
+    fakeHandleDenied: (() => {
+      const worker = new Worker('0', { eval: true });
+      worker.terminate();
+      const handle = Object.getOwnPropertySymbols(worker).find(symbol => symbol.description === 'kHandle');
+      const proto = Object.getPrototypeOf(worker[handle]);
+      try { Object.create(proto).startThread(); return false; } catch { return true; }
+    })(),
+    inherited: await run(Worker, {}),
+    emptyExecArgv: await run(Worker, { execArgv: [] }),
+    repeatedExecArgv: await run(Worker, { execArgv: process.execArgv }),
+    constructorExecArgv: await run(Worker.prototype.constructor, { execArgv: [] }),
+    subclassExecArgv: await run(Subclass, { execArgv: [] }),
+    customExecArgv: await run(Worker, { execArgv: ['--stack-trace-limit=5'] }),
+    widerExecArgv: await run(Worker, { execArgv: ['--permission', '--allow-fs-read=*'] }),
+    envNodeOptions: await run(Worker, { env: { NODE_OPTIONS: '--allow-fs-read=*' } }),
+    shareEnv: await run(Worker, { env: SHARE_ENV }),
+    // A getter that synchronously creates a nested Worker during the outer
+    // construction: both are permitted threads from the parent, both stay
+    // contained, and the outer one must not fail because of the inner one.
+    reentrant: await (async () => {
+      const contained = worker => new Promise(settle => {
+        worker.once('message', message => settle(message.outside));
+        worker.once('error', error => settle('error:' + error.code));
+      });
+      let innerContained;
+      let outerWorker;
+      try {
+        outerWorker = new Worker(probe, {
+          eval: true,
+          get workerData() {
+            innerContained = contained(new Worker(probe, { eval: true, workerData: { outside, storage } }));
+            return { outside, storage };
+          },
+        });
+      } catch (error) { return 'outer:' + (error.code || error.message); }
+      return { outer: await contained(outerWorker), inner: await innerContained };
+    })(),
+  };
+  process.env.NODE_OPTIONS = '--allow-fs-read=*';
+  outcome.processNodeOptions = await run(Worker, {});
+  Object.prototype.execArgv = [];
+  outcome.prototypeExecArgv = await run(Worker, {});
+  delete Object.prototype.execArgv;
+  return outcome;
+});`;
+  const prepared = await fixture(source);
+  const outside = path.join(path.dirname(prepared.roots.data), 'outside.txt');
+  await writeFile(outside, 'secret');
+  const roots = Object.values(prepared.roots);
+  const running = start(prepared, ['--permission', '--no-addons', '--allow-worker', '--max-old-space-size=128',
+    ...roots.map(root => `--allow-fs-read=${root}`),
+    `--allow-fs-write=${prepared.roots.data}`, `--allow-fs-write=${prepared.roots.temporary}`]);
+  await running.ready();
+  running.request('call-1', 'tools.invoke', { name: 'echo', input: { outside } });
+  const outcome = (await running.receive(message => message.id === 'call-1')).result;
+  const denied = 'ERR_ACCESS_DENIED';
+  const contained = { outside: denied, storage: 'ok', worker: denied, register: denied, childProcess: denied };
+  assert.deepEqual(outcome, {
+    app: denied, register: denied, childProcess: denied, binding: denied, sameWorker: true,
+    handleConstructor: denied, diagnosticsCapture: denied, fakeHandleDenied: true,
+    inspectCapture: contained,
+    inherited: contained, emptyExecArgv: contained, repeatedExecArgv: contained,
+    constructorExecArgv: contained, subclassExecArgv: contained,
+    customExecArgv: denied, widerExecArgv: denied, envNodeOptions: contained, shareEnv: denied,
+    reentrant: { outer: denied, inner: denied },
+    processNodeOptions: contained, prototypeExecArgv: contained,
+  });
+  assert.equal(await readFile(path.join(prepared.roots.data, 'from-worker'), 'utf8'), 'x');
+  running.child.kill('SIGKILL');
+  await running.completed;
 });

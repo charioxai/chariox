@@ -61,6 +61,8 @@ fn record(dir: &Dir) -> Journal {
             journal::image("data", 64 * 1024 * 1024, FileIdentity::of(&data.0).unwrap()),
             journal::image("tmp", 64 * 1024 * 1024, FileIdentity::of(&tmp.0).unwrap()),
         ],
+        restoring: None,
+        restoring_generation: None,
     }
 }
 
@@ -191,6 +193,49 @@ fn journal_reopens_with_same_identity_and_rejects_unsafe_capacity_and_paths() {
 }
 
 #[test]
+fn a_journal_saved_before_a_reboot_keeps_its_identities_under_a_new_device_number() {
+    let scratch = Scratch::new();
+    let dir = Dir::open_private(&scratch.0).unwrap();
+    let mut journal = record(&dir);
+    // Created images record their backing file too; recovery checks it first.
+    let mut files = Vec::new();
+    for image in &mut journal.images {
+        let file = dir.create_private_file(OsStr::new(&image.image)).unwrap();
+        image.identity = Some(FileIdentity::of(&file).unwrap());
+        files.push(file);
+    }
+    journal.save(&dir).unwrap();
+    // A reboot gives the volume another st_dev; the inodes stay the same.
+    let path = scratch.0.join(journal::NAME);
+    let mut saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    for image in saved["images"].as_array_mut().unwrap() {
+        image["mount_identity"]["device"] = json!(1);
+        image["identity"]["device"] = json!(1);
+    }
+    fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+    let reopened = journal::load(&dir).unwrap().unwrap();
+    let device = dir.0.metadata().unwrap().dev();
+    for (index, image) in reopened.images.iter().enumerate() {
+        assert_eq!(image.mount_identity.device, device);
+        assert_eq!(
+            image.mount_identity.inode,
+            journal.images[index].mount_identity.inode
+        );
+        // The check recovery runs before detaching passes again.
+        let mount = private_mount(&dir, &image.role).unwrap();
+        image
+            .mount_identity
+            .require(&dir, OsStr::new(&image.role), &mount.0)
+            .unwrap();
+        let identity = image.identity.as_ref().expect("the image file identity");
+        assert_eq!(identity.device, device);
+        identity
+            .require(&dir, OsStr::new(&image.image), &files[index])
+            .unwrap();
+    }
+}
+
+#[test]
 fn held_file_identity_and_private_root_reject_replacement_and_aliases() {
     let scratch = Scratch::new();
     let dir = Dir::open_private(&scratch.0).unwrap();
@@ -209,6 +254,7 @@ fn held_file_identity_and_private_root_reject_replacement_and_aliases() {
 
 #[test]
 fn accounting_reserves_full_unallocated_image_capacity_and_host_headroom() {
+    use crate::worker_process::{HostDiskSpace, HOST_RESERVE_BYTES as HOST_RESERVE};
     let reserved = 132 * 1024 * 1024;
     assert_eq!(
         require_capacity(MAX_RESERVED_BYTES, reserved, HOST_RESERVE + reserved),
@@ -220,12 +266,48 @@ fn accounting_reserves_full_unallocated_image_capacity_and_host_headroom() {
     );
     assert_eq!(
         require_capacity(reserved, reserved, HOST_RESERVE + reserved - 1),
-        Err(Error::Capacity)
+        Err(Error::HostReserve(HostDiskSpace {
+            free: HOST_RESERVE + reserved - 1,
+            needed: HOST_RESERVE + reserved
+        }))
     );
     assert_eq!(
         require_capacity(reserved, reserved, 0),
-        Err(Error::Capacity)
+        Err(Error::HostReserve(HostDiskSpace {
+            free: 0,
+            needed: HOST_RESERVE + reserved
+        }))
     );
+}
+
+#[test]
+fn a_snapshot_is_admitted_with_the_start_that_takes_it() {
+    use SnapshotStep::*;
+    let image = 580;
+    // A staged start's new snapshot counts before it exists.
+    assert_eq!(
+        snapshot_reservation(Some(Take), &[], image),
+        Some((image, image))
+    );
+    assert_eq!(
+        snapshot_reservation(Some(RestoreAndTake), &[100], image),
+        Some((image, image))
+    );
+    // A committed start that restores or drops it frees its room.
+    assert_eq!(
+        snapshot_reservation(Some(Restore), &[image], image),
+        Some((0, 0))
+    );
+    assert_eq!(
+        snapshot_reservation(Some(Discard), &[image], image),
+        Some((0, 0))
+    );
+    // Otherwise each present one is reserved as a full data image.
+    assert_eq!(
+        snapshot_reservation(None, &[100, 0], image),
+        Some((2 * image, image - 100 + image))
+    );
+    assert_eq!(snapshot_reservation(Some(Keep), &[], image), Some((0, 0)));
 }
 
 #[test]
@@ -261,4 +343,141 @@ fn drop_preserves_recovery_after_an_explicit_cleanup_attempt() {
     });
     let dir = Dir::open_private(&scratch.0).unwrap();
     assert!(journal::load(&dir).unwrap().unwrap().pending_recovery);
+}
+
+#[test]
+fn a_restore_whose_rename_landed_records_the_restored_generation() {
+    let scratch = Scratch::new();
+    let dir = Dir::open_private(&scratch.0).unwrap();
+    let mut journal = record(&dir);
+    let data = dir
+        .create_private_file(OsStr::new(&journal.images[0].image))
+        .unwrap();
+    let renamed = FileIdentity::of(&data).unwrap();
+    let other =
+        FileIdentity::of(&dir.create_private_file(OsStr::new("other.dmg")).unwrap()).unwrap();
+    // 5 committed, 6 failed: the restore of 5's snapshot was interrupted.
+    journal.generation = 6;
+    let mut storage = MountedStorage {
+        root: dir,
+        path: scratch.0.clone(),
+        journal,
+        images: [None, None],
+        mounted: [None, None],
+        released: true,
+        cleanup_attempted: true,
+        deadline: std::time::Instant::now(),
+    };
+    // The rename had not landed: nothing changes but the cleared intent.
+    storage.journal.restoring = Some(other);
+    storage.journal.restoring_generation = Some(5);
+    storage.settle_restore().unwrap();
+    assert_eq!(storage.journal.generation, 6);
+    assert!(storage.journal.restoring.is_none() && storage.journal.restoring_generation.is_none());
+    // The rename landed: the data is 5's again.
+    storage.journal.restoring = Some(renamed.clone());
+    storage.journal.restoring_generation = Some(5);
+    storage.settle_restore().unwrap();
+    assert_eq!(storage.journal.generation, 5);
+    assert_eq!(storage.journal.images[0].identity, Some(renamed));
+    let saved = journal::load(&storage.root).unwrap().unwrap();
+    assert_eq!((saved.generation, saved.restoring.is_none()), (5, true));
+}
+
+#[test]
+fn only_the_committed_generation_may_reuse_storage_of_an_uncommitted_successor() {
+    // Normal starts and updates move forward.
+    assert!(super::admits_generation(5, 5, 5));
+    assert!(super::admits_generation(5, 6, 5));
+    // Update 6 failed before commit: generation 5 starts again.
+    assert!(super::admits_generation(6, 5, 5));
+    // A superseded worker stays refused once 6 is committed.
+    assert!(!super::admits_generation(6, 5, 6));
+    assert!(!super::admits_generation(7, 6, 5));
+}
+
+#[test]
+fn failed_updates_roll_back_to_the_committed_generations_snapshot() {
+    use SnapshotStep::*;
+    // 5 committed; staged 6 snapshots 5's data (or keeps the one it took).
+    assert_eq!(snapshot_step(5, 6, 5, false), Take);
+    assert_eq!(snapshot_step(5, 6, 5, true), Take);
+    // 6 retrying keeps its own writes.
+    assert_eq!(snapshot_step(6, 6, 5, true), Keep);
+    // 7 staged after 6 failed starts on 5's data again, not on 6's.
+    assert_eq!(snapshot_step(6, 7, 5, true), RestoreAndTake);
+    // Staged before snapshots existed: nothing to restore.
+    assert_eq!(snapshot_step(6, 7, 5, false), Keep);
+    // 5 starts again after 6 or 7 failed: restore its snapshot.
+    assert_eq!(snapshot_step(7, 5, 5, true), Restore);
+    assert_eq!(snapshot_step(6, 5, 5, true), Restore);
+    // 5 restarts on its own data, or 8 committed after running staged.
+    assert_eq!(snapshot_step(5, 5, 5, true), Discard);
+    assert_eq!(snapshot_step(8, 8, 8, true), Discard);
+}
+
+#[test]
+fn deleting_storage_removes_the_installation_journal_last_and_is_repeatable() {
+    let scratch = Scratch::new();
+    let root = StorageRoot::open(&scratch.0).unwrap();
+    // Absent storage is already deleted.
+    root.delete_blocking("owner", "app").unwrap();
+    let name = storage_name("owner", "app");
+    let dir = Dir::open_or_create_private_child(&scratch.0, OsStr::new(&name)).unwrap();
+    record(&dir).save(&dir).unwrap();
+    fs::write(
+        scratch.0.join(&name).join("data-snapshot-3.dmg"),
+        b"snapshot",
+    )
+    .unwrap();
+    drop(dir);
+    // Another owner's request names other storage; this one is untouched.
+    root.delete_blocking("other", "app").unwrap();
+    assert!(scratch.0.join(&name).join(journal::NAME).exists());
+    root.delete_blocking("owner", "app").unwrap();
+    assert!(!scratch.0.join(&name).exists());
+    root.delete_blocking("owner", "app").unwrap();
+    // Storage recorded for another identity under this name is refused.
+    let dir = Dir::open_or_create_private_child(&scratch.0, OsStr::new(&name)).unwrap();
+    let mut foreign = record(&dir);
+    foreign.installation = "other-app".into();
+    foreign.save(&dir).unwrap();
+    drop(dir);
+    assert_eq!(root.delete_blocking("owner", "app"), Err(Error::Identity));
+}
+
+#[test]
+fn an_interrupted_deletion_is_finished_by_deleting_again_or_by_recovery() {
+    let scratch = Scratch::new();
+    let root = StorageRoot::open(&scratch.0).unwrap();
+    // Volumes detached and the journal renamed to the marker, then the
+    // deletion stopped after removing the data mount and a snapshot.
+    let interrupted = |installation: &str| {
+        let name = storage_name("owner", installation);
+        let dir = Dir::open_or_create_private_child(&scratch.0, OsStr::new(&name)).unwrap();
+        let mut journal = record(&dir);
+        journal.installation = installation.into();
+        journal.save(&dir).unwrap();
+        crate::private_fs::publish(
+            &dir,
+            OsStr::new(journal::NAME),
+            OsStr::new(journal::DELETING),
+        )
+        .unwrap();
+        dir.remove_directory(OsStr::new("data")).unwrap();
+        scratch.0.join(name)
+    };
+    let first = interrupted("app");
+    // Capacity accounting skips storage being deleted instead of requiring
+    // recovery (the host's free space may still refuse on a full disk).
+    let other = storage_name("owner", "new");
+    assert_ne!(
+        root.check_capacity(&other, CAPACITIES, 1, 1),
+        Err(Error::RecoveryRequired)
+    );
+    root.delete_blocking("owner", "app").unwrap();
+    assert!(!first.exists());
+    let second = interrupted("other-app");
+    root.recover_all_blocking().unwrap();
+    assert!(!second.exists());
 }

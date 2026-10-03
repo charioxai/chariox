@@ -5,12 +5,13 @@ import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 import {
   cancelProjectEnvironmentSetupRequest,
   getProjectEnvironmentSetupStatusRequest,
+  getProjectEnvironmentManifestRequest,
   retryProjectEnvironmentSetupRequest,
   startProjectEnvironmentSetupRequest,
 } from "./ipc-project-environment-setup-requests.js"
 
 test("project environment setup requests use the versioned kernel seam", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 383)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 410)
   assert.deepEqual(
     startProjectEnvironmentSetupRequest({
       operationId: "setup-1",
@@ -41,5 +42,13 @@ test("project environment setup requests use the versioned kernel seam", () => {
   })
   assert.deepEqual(retryProjectEnvironmentSetupRequest("setup-1", "session-1"), {
     RetryProjectEnvironmentSetup: { operationId: "setup-1", sessionId: "session-1" },
+  })
+})
+
+// MP-08: one shared request builder for TUI and Web.
+test("MP-08 Project manifest query is value-free and versioned", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 410)
+  assert.deepEqual(getProjectEnvironmentManifestRequest("project-1"), {
+    GetProjectEnvironmentManifest: { projectId: "project-1" },
   })
 })

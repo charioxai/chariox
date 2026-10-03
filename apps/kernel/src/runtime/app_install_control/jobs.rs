@@ -13,6 +13,8 @@ pub(super) enum Outcome {
 }
 pub(super) enum Error {
     Busy,
+    /// Every live worker slot is taken: an idle worker can make room.
+    LiveLimit,
     Failed(&'static str),
     Storage,
     Unknown,
@@ -54,7 +56,42 @@ fn preparation(error: PreparationError) -> Error {
         PreparationError::StorageUnavailable | PreparationError::PublicationInterrupted => {
             Error::Storage
         }
-        _ => Error::Failed("app_install_package_rejected"),
+        PreparationError::PackageRejected(code) => Error::Failed(package_failure(code)),
+        PreparationError::InvalidRequest => Error::Failed("app_install_invalid_request"),
+        PreparationError::UploadConflict => Error::Failed("app_install_upload_aborted"),
+        PreparationError::UploadDigestMismatch => {
+            Error::Failed("app_install_upload_digest_mismatch")
+        }
+        PreparationError::LimitExceeded => Error::Failed("app_install_release_limit"),
+        PreparationError::UnsafeRelease => Error::Failed("app_install_release_unsafe"),
+        PreparationError::ArchiveMismatch => Error::Failed("app_install_release_archive_mismatch"),
+    }
+}
+
+/// The package's stable error code reaches clients (V-PKG-03), so a protocol,
+/// SDK or manifest mismatch reads differently from a bad signature.
+fn package_failure(code: chariox_app_package::ErrorCode) -> &'static str {
+    use chariox_app_package::ErrorCode;
+    match code {
+        ErrorCode::InvalidArguments => "app_install_package_invalid_arguments",
+        ErrorCode::Io => "app_install_package_io",
+        ErrorCode::InvalidDeveloperKey => "app_install_package_invalid_developer_key",
+        ErrorCode::InvalidArchive => "app_install_package_invalid_archive",
+        ErrorCode::ArchiveLimit => "app_install_package_archive_limit",
+        ErrorCode::InvalidPath => "app_install_package_invalid_path",
+        ErrorCode::DuplicatePath => "app_install_package_duplicate_path",
+        ErrorCode::InvalidManifest => "app_install_package_invalid_manifest",
+        ErrorCode::InvalidSchema => "app_install_package_invalid_schema",
+        ErrorCode::IncompatibleProtocol => "app_install_package_incompatible_protocol",
+        ErrorCode::IncompatibleSdk => "app_install_package_incompatible_sdk",
+        ErrorCode::IncompatibleContract => "app_install_package_incompatible_contract",
+        ErrorCode::IncompatibleResourcePolicy => "app_install_package_incompatible_resource_policy",
+        ErrorCode::UntrustedPublisher => "app_install_package_untrusted_publisher",
+        ErrorCode::InvalidSignature => "app_install_package_invalid_signature",
+        ErrorCode::IntegrityMismatch => "app_install_package_integrity_mismatch",
+        ErrorCode::MissingEntry => "app_install_package_missing_entry",
+        ErrorCode::UnexpectedEntry => "app_install_package_unexpected_entry",
+        ErrorCode::UnsupportedFeature => "app_install_package_unsupported_feature",
     }
 }
 fn budget(cancelled: Arc<AtomicBool>) -> AppOperationBudget {
@@ -246,7 +283,8 @@ pub(super) async fn run(
                 } else {
                     Outcome::Done
                 }),
-                Err(LifecycleError::Busy | LifecycleError::LiveLimit) => Err(Error::Busy),
+                Err(LifecycleError::LiveLimit) => Err(Error::LiveLimit),
+                Err(LifecycleError::Busy) => Err(Error::Busy),
                 Err(LifecycleError::CommitUnknown) => Err(Error::Unknown),
                 Err(LifecycleError::Storage) => Err(Error::Storage),
                 Err(_) => Err(Error::Failed("app_install_start_rejected")),
@@ -266,5 +304,49 @@ pub(super) async fn run(
             .await?;
             Ok(Outcome::Done)
         }
+    }
+}
+
+#[cfg(test)]
+mod package_failure_tests {
+    use super::package_failure;
+    use chariox_app_package::ErrorCode;
+
+    #[test]
+    fn each_package_error_code_reaches_clients_as_its_own_failure() {
+        let codes = [
+            ErrorCode::InvalidArguments,
+            ErrorCode::Io,
+            ErrorCode::InvalidDeveloperKey,
+            ErrorCode::InvalidArchive,
+            ErrorCode::ArchiveLimit,
+            ErrorCode::InvalidPath,
+            ErrorCode::DuplicatePath,
+            ErrorCode::InvalidManifest,
+            ErrorCode::InvalidSchema,
+            ErrorCode::IncompatibleProtocol,
+            ErrorCode::IncompatibleSdk,
+            ErrorCode::IncompatibleContract,
+            ErrorCode::IncompatibleResourcePolicy,
+            ErrorCode::UntrustedPublisher,
+            ErrorCode::InvalidSignature,
+            ErrorCode::IntegrityMismatch,
+            ErrorCode::MissingEntry,
+            ErrorCode::UnexpectedEntry,
+            ErrorCode::UnsupportedFeature,
+        ];
+        let failures = codes.map(package_failure);
+        for (code, failure) in codes.iter().zip(failures) {
+            // Same spelling as the package's serialized code, in the clients'
+            // `app_(install|update)_[a-z_]+` failure format.
+            let serialized = serde_json::to_value(code).unwrap();
+            let expected = format!(
+                "app_install_package_{}",
+                serialized.as_str().unwrap().to_lowercase()
+            );
+            assert_eq!(failure, expected);
+        }
+        let distinct = failures.iter().collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(distinct.len(), codes.len());
     }
 }

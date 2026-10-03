@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { execFile as execFileCallback } from "node:child_process"
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { promisify } from "node:util"
@@ -16,7 +16,7 @@ import {
 const execFile = promisify(execFileCallback)
 
 async function temporaryEvidenceRoot(context) {
-  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-managed-parity-evidence-"))
+  const root = await mkdtemp(path.join(await realpath(os.tmpdir()), "chariox-managed-parity-evidence-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   return root
 }

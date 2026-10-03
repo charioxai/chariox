@@ -2,8 +2,8 @@ use std::{collections::BTreeMap, io::Read};
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use chariox_app_package::{
-    inspect_untrusted, pack, verify, ErrorCode, Limits, Manifest, TrustedPublisher,
-    VerificationPolicy,
+    inspect_untrusted, pack, verify, AgentPanel, ErrorCode, Limits, Manifest, PanelPlacement,
+    TrustedPublisher, VerificationPolicy,
 };
 use ed25519_dalek::{Signer, SigningKey};
 use serde_json::{json, Value};
@@ -32,7 +32,7 @@ fn manifest_value() -> Value {
         "resourcePolicy":"chariox.app.resources.v1",
         "runtime":{"engine":"node","entry":"runtime/main.js"}, "ui":{"entry":"ui/index.html"},
         "tools":"schemas/tools.json", "events":"schemas/events.json",
-        "actions":"schemas/actions.json", "informationSets":"schemas/information-sets.json",
+        "actions":"schemas/actions.json",
         "capabilities":{"network":[{"origin":"https://api.example.com","methods":["POST"]}]},
         "migrations":{"directory":"migrations","targetVersion":1,"steps":[{"from":0,"to":1,"entry":"migrations/001.js"}]}
     })
@@ -56,10 +56,6 @@ fn files() -> BTreeMap<String, Vec<u8>> {
             "name":"create_todo","inputSchema":closed_schema(),
             "criticalValidation":{"reason":"Confirm creation","userVerification":true},
             "effectRoutes":[{"origin":"https://api.example.com","method":"POST","path":"/todos","connection":"todo_account"}]
-        }]})).unwrap()),
-        ("schemas/information-sets.json".to_owned(), serde_json::to_vec(&json!({"informationSets":[{
-            "name":"task_result","purpose":"Show the created Todo","sourceScope":"app_task","schemaVersion":1,
-            "delivery":"both","fieldsSchema":closed_schema(),"validator":"validate_result"
         }]})).unwrap()),
     ])
 }
@@ -191,12 +187,6 @@ fn reproducible_signed_package_round_trip_and_independent_fixture() {
     assert_eq!(verified.files().count(), files().len());
     assert_eq!(verified.package_digest(), hash(&first));
     assert_eq!(verified.declarations().tools[0].name, "create_todo");
-    assert_eq!(
-        verified.declarations().information_sets[0]
-            .validator
-            .as_deref(),
-        Some("validate_result")
-    );
     assert!(verified.file("signatures/publisher.sig").is_none());
     verify(&raw_package(manifest_value(), files()), &policy()).unwrap();
     // Standard tooling can list/read the archive without a custom decompressor.
@@ -322,6 +312,47 @@ fn closed_manifest_and_migration_contracts_are_enforced() {
 }
 
 #[test]
+fn an_agent_panel_placement_is_a_bounded_signed_default() {
+    let with_panel = |panel: Value| {
+        let mut value = manifest_value();
+        value["ui"]["agentPanel"] = panel;
+        value
+    };
+    let package = raw_package(
+        with_panel(json!({"placement":"bottom","size":260})),
+        files(),
+    );
+    let verified = verify(&package, &policy()).unwrap();
+    assert_eq!(
+        verified.manifest().ui.agent_panel,
+        Some(AgentPanel {
+            placement: PanelPlacement::Bottom,
+            size: Some(260)
+        })
+    );
+    assert!(verify(
+        &raw_package(with_panel(json!({"placement":"none"})), files()),
+        &policy()
+    )
+    .is_ok());
+    for bad in [
+        json!({"placement":"none","size":300}),
+        json!({"placement":"right","size":40}),
+        json!({"placement":"left"}),
+        json!({"placement":"right","hidden":true}),
+    ] {
+        assert_code(
+            &raw_package(with_panel(bad), files()),
+            ErrorCode::InvalidManifest,
+        );
+    }
+    // An older kernel cannot read the field: the App must require 380.
+    let mut value = with_panel(json!({"placement":"right"}));
+    value["minKernelProtocol"] = 379.into();
+    assert_code(&raw_package(value, files()), ErrorCode::InvalidManifest);
+}
+
+#[test]
 fn hostile_schema_corpus_is_rejected_even_with_a_trusted_signature() {
     for tool_document in [
         json!({"tools":[{"name":"one","inputSchema":{"type":"object"}}]}),
@@ -351,7 +382,7 @@ fn hostile_schema_corpus_is_rejected_even_with_a_trusted_signature() {
 }
 
 #[test]
-fn protected_actions_and_information_sets_cannot_exceed_their_contract() {
+fn protected_actions_cannot_exceed_their_contract() {
     for (path, pointer, value) in [
         (
             "schemas/actions.json",
@@ -364,21 +395,6 @@ fn protected_actions_and_information_sets_cannot_exceed_their_contract() {
             json!("/../transfer"),
         ),
         ("schemas/actions.json", "/actions/0/effectRoutes", json!([])),
-        (
-            "schemas/information-sets.json",
-            "/informationSets/0/sourceScope",
-            json!("all_conversations"),
-        ),
-        (
-            "schemas/information-sets.json",
-            "/informationSets/0/schemaVersion",
-            json!(0),
-        ),
-        (
-            "schemas/information-sets.json",
-            "/informationSets/0/purpose",
-            json!(""),
-        ),
     ] {
         let mut payload = files();
         let mut document: Value = serde_json::from_slice(&payload[path]).unwrap();

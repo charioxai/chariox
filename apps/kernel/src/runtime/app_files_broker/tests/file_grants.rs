@@ -88,6 +88,22 @@ fn a_granted_file_imports_once_into_private_data_and_only_with_the_capability() 
         assert_eq!(status["state"], "granted");
         assert_eq!(status["grantIds"], serde_json::json!(granted.grants));
 
+        // A destination the App may not name is its own error; a copy that
+        // cannot be written (here its parent directory is missing, as a
+        // full data volume would refuse it) did not complete. Neither spends
+        // the grant.
+        for (destination, code) in [
+            ("../fixture-file", "INVALID_ARGUMENT"),
+            ("missing/fixture-file", "APP_FILE_UNAVAILABLE"),
+        ] {
+            peer.send(
+                "unwritten",
+                "files.import",
+                serde_json::json!({"grantId": granted.grants[0], "destination": destination}),
+            )
+            .await;
+            assert_eq!(peer.response().await.1.unwrap_err().code, code);
+        }
         let import =
             serde_json::json!({"grantId": granted.grants[0], "destination": "fixture-file"});
         peer.send("import", "files.import", import.clone()).await;
@@ -102,6 +118,65 @@ fn a_granted_file_imports_once_into_private_data_and_only_with_the_capability() 
     assert_eq!(
         fixture.observed.private_file().unwrap(),
         Some(b"# Notes".to_vec())
+    );
+}
+
+#[test]
+fn a_grant_chosen_for_an_earlier_release_imports_after_the_update() {
+    let fixture = Fixture::new(Mode::Ready);
+    let store = fixture.store.clone();
+    // The pick was made by the release before this one.
+    store
+        .app_file_grant(FileGrantCommand::Create(FilePick {
+            operation_id: "before-update".into(),
+            owner: "alice".into(),
+            installation: fixture.catalog.installation_id().into(),
+            generation: fixture.catalog.generation() - 1,
+            accept: Vec::new(),
+            multiple: false,
+            state: PickState::Pending,
+            expires_ms: u64::MAX / 2,
+            grants: Vec::new(),
+        }))
+        .unwrap();
+    let granted = store
+        .app_file_grant(FileGrantCommand::Grant {
+            owner: "alice".into(),
+            operation_id: "before-update".into(),
+            files: vec![GrantedFile {
+                name: "plan.md".into(),
+                contents: b"# Plan".to_vec(),
+            }],
+            now_ms: crate::session::unix_epoch_ms(),
+        })
+        .unwrap()
+        .unwrap();
+    fixture.runtime.block_on(async {
+        let mut peer = TestPeer::start_with(broker(&fixture, true));
+        peer.send(
+            "status",
+            "host.pick_file_status",
+            serde_json::json!({"operationId": "before-update"}),
+        )
+        .await;
+        let status = peer.response().await.1.unwrap();
+        assert_eq!(status["state"], "granted");
+        assert_eq!(status["grantIds"], serde_json::json!(granted.grants));
+        peer.send(
+            "import",
+            "files.import",
+            serde_json::json!({"grantId": granted.grants[0], "destination": "fixture-file"}),
+        )
+        .await;
+        assert_eq!(
+            peer.response().await.1.unwrap(),
+            serde_json::json!({"bytesWritten": 6, "name": "plan.md"})
+        );
+        peer.close().await;
+    });
+    assert_eq!(
+        fixture.observed.private_file().unwrap(),
+        Some(b"# Plan".to_vec())
     );
 }
 

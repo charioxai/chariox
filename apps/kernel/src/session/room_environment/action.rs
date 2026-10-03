@@ -153,7 +153,7 @@ pub enum EnvironmentActionCancellationReason {
     ControllerCancellation,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EnvironmentActionRequest {
     pub(crate) idempotency_key: Option<String>,
     idempotency_fingerprint: Option<[u8; 32]>,

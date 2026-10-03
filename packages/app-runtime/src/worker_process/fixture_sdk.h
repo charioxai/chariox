@@ -5,8 +5,9 @@
 #include <time.h>
 
 static int fixture_sdk_mode(const char* mode) {
-  return !strcmp(mode, "sdk_ready") || !strcmp(mode, "sdk_wrong_handlers") ||
+  return !strncmp(mode, "sdk_lifecycle", 13) || !strcmp(mode, "sdk_ready") || !strcmp(mode, "sdk_wrong_handlers") ||
       !strcmp(mode, "sdk_no_report") || !strcmp(mode, "sdk_broker_call") || !strcmp(mode, "sdk_tool") ||
+      !strcmp(mode, "sdk_tool_stall") || !strcmp(mode, "sdk_tool_killed") ||
       !strcmp(mode, "sdk_other_installation") || !strcmp(mode, "sdk_files") ||
       !strcmp(mode, "sdk_health") || !strcmp(mode, "sdk_bad_health") || !strcmp(mode, "sdk_http") || !strcmp(mode, "sdk_http_paused") ||
       !strcmp(mode, "sdk_migrate") || !strcmp(mode, "sdk_bad_migration");
@@ -94,7 +95,10 @@ static int fixture_sdk_event(const char* name) {
   return fixture_sdk_send(message);
 }
 
-static int fixture_sdk_tool(const struct cx_launch_record* record) {
+/* `stall` 1: the first call is recorded but never answered, until the worker
+ * is stopped under it. 2: the worker dies right after recording it, as when
+ * its domain kills it (Linux: at the cgroup memory limit). */
+static int fixture_sdk_tool(const struct cx_launch_record* record, int stall) {
   // Fixed trusted-serializer fixture, deliberately not a general JSON parser.
   const int64_t deadline = cx_monotonic_ms() + 30000;
   for (unsigned int calls = 0; calls < 32; ++calls) {
@@ -118,6 +122,25 @@ static int fixture_sdk_tool(const struct cx_launch_record* record) {
     if (file < 0) return 114;
     const int failed = send_all(file, "1\n", 2) || fsync(file);
     if (close(file) || failed) return 115;
+    // The request as received, one per line, so tests can read its context.
+    const int requests_size = snprintf(marker, sizeof(marker), "%s/tool-requests", record->roots[CX_DATA]);
+    if (requests_size < 0 || (size_t)requests_size >= sizeof(marker)) return 113;
+    const int requests = open(marker, O_WRONLY | O_CREAT | O_APPEND, 0600);
+    if (requests < 0) return 114;
+    const int requests_failed = send_all(requests, request, strlen(request)) || send_all(requests, "\n", 1);
+    if (close(requests) || requests_failed) return 115;
+    if (stall == 2) raise(SIGKILL);
+    if (stall) {
+      const int cancelled = fixture_sdk_receive(request, deadline);
+      if (cancelled != 1 || strncmp(request, "{\"kind\":\"cancel\",", 17)) return 129;
+      const int marker_size = snprintf(marker, sizeof(marker), "%s/tool-cancellations", record->roots[CX_DATA]);
+      if (marker_size < 0 || (size_t)marker_size >= sizeof(marker)) return 130;
+      const int cancel_file = open(marker, O_WRONLY | O_CREAT | O_APPEND, 0600);
+      if (cancel_file < 0) return 131;
+      const int cancel_failed = send_all(cancel_file, "1\n", 2) || fsync(cancel_file);
+      if (close(cancel_file) || cancel_failed) return 132;
+      return 0;
+    }
     char response[512];
     const int count = snprintf(response, sizeof(response),
         "{\"kind\":\"response\",\"version\":1,\"generation\":\"1\",\"id\":\"%.*s\",\"result\":{\"ok\":true}}",
@@ -128,6 +151,7 @@ static int fixture_sdk_tool(const struct cx_launch_record* record) {
 }
 
 #include "fixture_health.h"
+#include "fixture_lifecycle.h"
 #include "fixture_http.h"
 
 /* A staged worker migrating schema 0 to 1 before it registers: it reads and
@@ -167,16 +191,26 @@ static int fixture_sdk_run(const struct cx_launch_record* record, const char* mo
   }
   const char* report = !strcmp(mode, "sdk_wrong_handlers") ?
       "{\"tools\":[\"undeclared\"],\"events\":[],\"lifecycle\":[]}" :
+      !strncmp(mode, "sdk_lifecycle", 13) ? "{\"tools\":[],\"events\":[],\"lifecycle\":[\"health_check\",\"startup\",\"suspend\",\"resume\",\"prepare_update\",\"configuration_change\",\"shutdown\"]}" :
       fixture_health_mode(mode) ? "{\"tools\":[],\"events\":[],\"lifecycle\":[\"health_check\",\"startup\"]}" :
-      !strcmp(mode, "sdk_tool") ? "{\"tools\":[\"echo\"],\"events\":[],\"lifecycle\":[]}" :
+      !strcmp(mode, "sdk_tool") || !strcmp(mode, "sdk_tool_stall") || !strcmp(mode, "sdk_tool_killed") ?
+          "{\"tools\":[\"echo\"],\"events\":[],\"lifecycle\":[]}" :
       "{\"tools\":[],\"events\":[],\"lifecycle\":[]}";
   if (fixture_sdk_request("ready", "worker.ready", report) != 1) return 99;
-  if (fixture_health_mode(mode)) {
+  if (fixture_health_mode(mode) && strncmp(mode, "sdk_lifecycle", 13)) {
     if (fixture_health_before(mode, response) != 1) return 121;
     if (!strcmp(mode, "sdk_bad_health")) return fixture_sdk_receive(response, cx_monotonic_ms()+5000)==0 ? 0 : 122;
   }
   char startup[8193] = {0};
   int received = fixture_sdk_receive(response, cx_monotonic_ms() + 5000);
+  if (received==1 && !strncmp(mode,"sdk_lifecycle",13)) {
+    char id[129];
+    // First installs health-check before ACK; active restarts ACK directly.
+    if (fixture_health_parse(response,"health_check",id)==1) {
+      if (fixture_health_reply(id,0)!=1) return 147;
+      received=fixture_sdk_receive(response,cx_monotonic_ms()+5000);
+    }
+  }
   if (received==1 && fixture_health_mode(mode) && strstr(response,"\"method\":\"lifecycle.dispatch\"")) {
     char id[129];
     if (fixture_health_parse(response,"startup",id)!=1) return 124;
@@ -196,6 +230,7 @@ static int fixture_sdk_run(const struct cx_launch_record* record, const char* mo
   if (file < 0) return 103;
   if (fsync(file) || close(file)) return 104;
   if (fixture_sdk_event("worker.fixture.ready_ack") != 1) return 105;
+  if (!strncmp(mode, "sdk_lifecycle", 13)) return fixture_lifecycle_run(record, mode, response, startup);
   if (fixture_health_mode(mode)) return fixture_health_after(response,startup)==1 ? 0 : 123;
   if (!strcmp(mode, "sdk_http") || !strcmp(mode, "sdk_http_paused")) { int result=fixture_http_run(response,!strcmp(mode, "sdk_http_paused")); if (result) return result; }
   if (!strcmp(mode, "sdk_files")) {
@@ -209,7 +244,8 @@ static int fixture_sdk_run(const struct cx_launch_record* record, const char* mo
         strcmp(response, "{\"kind\":\"response\",\"version\":1,\"generation\":\"1\",\"id\":\"files-write\",\"result\":{\"bytesWritten\":6}}")) return 119;
     if (fixture_sdk_event("worker.fixture.files_complete") != 1) return 120;
   }
-  if (!strcmp(mode, "sdk_tool")) return fixture_sdk_tool(record);
+  if (!strcmp(mode, "sdk_tool") || !strcmp(mode, "sdk_tool_stall") || !strcmp(mode, "sdk_tool_killed"))
+    return fixture_sdk_tool(record, !strcmp(mode, "sdk_tool_stall") ? 1 : !strcmp(mode, "sdk_tool_killed") ? 2 : 0);
   if (!strcmp(mode, "sdk_broker_call")) {
     if (fixture_sdk_request("after-ready", "state.get", "{\"key\":\"fixture\"}") != 1) return 106;
     const int reply = fixture_sdk_receive(response, cx_monotonic_ms() + 5000);
@@ -219,5 +255,6 @@ static int fixture_sdk_run(const struct cx_launch_record* record, const char* mo
   }
   // Valid fixture stays alive until its one inherited channel closes. No
   // additional transport, subprocess or runtime loop is introduced.
-  return fixture_sdk_receive(response, cx_monotonic_ms() + 30000) == 0 ? 0 : 108;
+  // Span the kernel's 30-second authority-check budget in sustained-load tests.
+  return fixture_sdk_receive(response, cx_monotonic_ms() + 60000) == 0 ? 0 : 108;
 }

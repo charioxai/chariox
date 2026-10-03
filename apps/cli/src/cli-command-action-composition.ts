@@ -1,9 +1,13 @@
+import { appHostOperationIds, type AppHostTerminal } from "./app-host-action.js"
+import { getAppInstallationRequest } from "@chariox/kernel-client/ipc-requests"
+import type { AppInstallationSummary } from "@chariox/kernel-client/kernel-types"
 import type { AppDevLoop } from "./app-dev-loop.js"
 import type { AppFileInstaller } from "./app-install-file.js"
 import type { AppPublisherEnrollment } from "./app-publisher-file.js"
 import type { BootstrapState, RuntimeSession } from "./cli-types.js"
 import type { CharioxLogger } from "./logging.js"
 import { createCommandActionHandlers } from "./command-actions.js"
+import { createCliRelayIdentityStore } from "./cli-relay-identity-store.js"
 import { resolveConfiguredCloudRelayApiUrl } from "./cli-options.js"
 import { bootstrapCloudRelayProfile } from "./cloud-relay.js"
 import { buildHostedCloudViewUrl } from "./cloud-command-lifecycle.js"
@@ -190,6 +194,8 @@ import {
 type AnyFn = (...args: any[]) => any
 
 export type CliCommandActionCompositionDeps = {
+  appHostTerminal?: AppHostTerminal
+  lastViewedAppHostOperationId?: () => string | undefined
   appFileInstaller?: AppFileInstaller
   appDevLoop?: AppDevLoop
   appPublisherEnrollment?: AppPublisherEnrollment
@@ -459,7 +465,10 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     focusedAgentId,
     multiAgentResponseLayout,
     maxAgentsPerScreen,
-    isRelayConnection: () => Boolean(options.relayUrl),
+    isRelayConnection: () => client.isRelayTransport(),
+    createViewerPublicKey: async () => client.isRelayTransport()
+      ? client.getRelayClientIdentity()?.publicKeyBase64 ?? null
+      : null,
     flashFooter,
     appendNotice,
     sendRoomEnvironmentRequest: (request) => client.send(request),
@@ -484,6 +493,9 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     ...(deps.appFileInstaller ? { appFileInstaller: deps.appFileInstaller } : {}),
     ...(deps.appDevLoop ? { appDevLoop: deps.appDevLoop } : {}),
     ...(deps.appPublisherEnrollment ? { appPublisherEnrollment: deps.appPublisherEnrollment } : {}),
+    ...(deps.appHostTerminal ? { appHostTerminal: deps.appHostTerminal } : {}),
+    ...(deps.lastViewedAppHostOperationId ? { lastViewedAppHostOperationId: deps.lastViewedAppHostOperationId } : {}),
+    currentAppHostOperationIds: () => isAttached() ? appHostOperationIds(sessionState()) : [],
     currentAppSessionId: () => isAttached() ? sessionState().id : undefined,
     appendCloudNotice,
     formatError,
@@ -570,13 +582,16 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       pairKernelCloudRelayMachine(client, machineId, alias),
     issueCloudKernelRelayToken: async () => connectKernelCloudRelay(client),
     issueCloudMachineRelayToken: async () => connectKernelCloudRelay(client),
-    issueCloudClientRelayToken: async (_profile, targetDaemonAlias, tokenOptions) =>
-      issueKernelCloudRelayClientToken(
+    issueCloudClientRelayToken: async (_profile, targetDaemonAlias, tokenOptions) => {
+      const relayIdentity = createCliRelayIdentityStore().getOrCreate()
+      return issueKernelCloudRelayClientToken(
         client,
         targetDaemonAlias,
         options.clientId ?? "chariox-cli",
         tokenOptions?.sessionId ?? null,
-      ),
+        relayIdentity.publicKeyThumbprint,
+      )
+    },
     createCloudSessionInvite: (sessionId, inviteOptions) =>
       createCloudSessionInvite(client, sessionId, inviteOptions),
     acceptCloudSessionInvite: (inviteToken) => acceptCloudSessionInvite(client, inviteToken),
@@ -638,7 +653,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       setSlicesState(await listSlices(client))
       return result
     },
-    getSliceDisplayEndpoint: async (sliceRef) => getSliceDisplayEndpoint(client, sliceRef),
+    getSliceDisplayEndpoint: async (sliceRef, room) => getSliceDisplayEndpoint(client, sliceRef, room),
     getSliceLogs: async (sliceRef, tailLines) => getSliceLogs(client, sliceRef, tailLines),
     listSliceAudit: async (sliceRef, limit) => listSliceAudit(client, sliceRef, limit),
     saveSliceState: async (sliceRef, mode, scope) => {
@@ -690,6 +705,13 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     registerScript: (sourcePath, environment, name) => registerScript(client, pendingWorkspaceTarget(), sourcePath, environment, name),
     removeScript: (name) => removeScript(client, pendingWorkspaceTarget(), name),
     grantAgentScript: (agentRef, name, environment) => grantAgentScript(client, pendingWorkspaceTarget(), agentRef, name, environment),
+    getAppInstallation: async (installationId) => {
+      const response = await client.send<Record<string, unknown>>(getAppInstallationRequest(installationId))
+      const value = (response.AppInstallation as { installation: AppInstallationSummary } | undefined)?.installation
+      if (value) return value
+      if ((response.AppRequestFailed as { code: string } | undefined)?.code === "not_found") return null
+      throw new Error("App installation status unavailable")
+    },
     grantAgentApp: (agentRef, installationId) => grantAgentApp(client, pendingWorkspaceTarget(), agentRef, installationId),
     revokeAgentApp: (agentRef, installationId) => revokeAgentApp(client, agentRef, installationId),
     revokeAgentScript: (agentRef, name) => revokeAgentScript(client, agentRef, name),

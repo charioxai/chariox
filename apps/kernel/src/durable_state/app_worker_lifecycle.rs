@@ -53,11 +53,18 @@ pub(crate) struct WorkerStatus {
     pub(crate) attempt: String,
     pub(crate) phase: WorkerPhase,
     pub(crate) desired_running: bool,
+    /// Idle suspension survives owning-kernel restart; use may still start it.
+    pub(crate) dormant: bool,
     pub(crate) failure: Option<String>,
     pub(crate) updated_ms: u64,
     /// Consecutive failures since the last explicit start, install or update,
     /// or since a run that stayed healthy (see `restart_allowed`).
     pub(crate) failures: u32,
+}
+impl WorkerStatus {
+    pub(crate) fn is_quarantined(&self) -> bool {
+        self.phase == WorkerPhase::Failed && self.failures > store::RESTARTS
+    }
 }
 /// Only the current writer transaction can mint this retained start snapshot.
 pub(crate) struct ActiveStartAdmission {
@@ -131,6 +138,13 @@ enum Command {
         trust: TrustedPublisherSnapshot,
         budget: AppOperationBudget,
     },
+    Suspend {
+        owner: String,
+        attempt: String,
+        binding: StageTrustBinding,
+        trust: TrustedPublisherSnapshot,
+        budget: AppOperationBudget,
+    },
     Stop {
         owner: String,
         installation: String,
@@ -141,6 +155,8 @@ enum Command {
         installation: String,
         budget: AppOperationBudget,
     },
+    /// See `store::reset_after_kernel_start`.
+    ResetAfterKernelStart,
 }
 enum Reply {
     Admitted(ActiveStartAdmission),
@@ -211,6 +227,22 @@ impl DurableKernelStateStore {
         })?;
         Ok(())
     }
+    /// Persist idle suspension before withdrawing the worker. Exact admission
+    /// fencing prevents a stale owner from suspending a replacement attempt.
+    pub(crate) fn suspend_app_worker(
+        &self,
+        admission: &ActiveStartAdmission,
+        budget: AppOperationBudget,
+    ) -> Result<()> {
+        self.worker_lifecycle(Command::Suspend {
+            owner: admission.owner.clone(),
+            attempt: admission.attempt.clone(),
+            binding: admission.binding.clone(),
+            trust: admission.trust.clone(),
+            budget,
+        })?;
+        Ok(())
+    }
     pub(crate) fn stop_app_worker_intent(
         &self,
         owner: &str,
@@ -260,6 +292,11 @@ impl DurableKernelStateStore {
             .lock_connection("durable_state.app_worker_start_gate")
             .map_err(|_| LifecycleStoreError::Storage)?;
         store::start_gate(&mut connection, owner, installation)
+    }
+    /// See `store::reset_after_kernel_start`; `open_owned` calls it once.
+    pub(super) fn reset_app_workers_after_kernel_start(&self) -> Result<()> {
+        self.worker_lifecycle(Command::ResetAfterKernelStart)
+            .map(|_| ())
     }
     /// Kernel recovery scans a bounded page of its own authoritative records;
     /// owner IDs are selected from the database, never supplied by an App.

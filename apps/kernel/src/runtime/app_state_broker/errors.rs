@@ -1,7 +1,11 @@
 use crate::{
     durable_state::app_state::AppStateError, runtime::app_operation_budget::AppOperationStopped,
 };
-use chariox_app_runtime::{app_outbox::OutboxError, managed_state::StateError, wire::RemoteError};
+use chariox_app_runtime::{
+    app_outbox::{OutboxError, MAX_PENDING},
+    managed_state::StateError,
+    wire::RemoteError,
+};
 
 fn error(code: &str, message: &str, retryable: bool) -> RemoteError {
     RemoteError {
@@ -19,9 +23,6 @@ pub(super) fn limit() -> RemoteError {
         "App storage request exceeds its limit",
         false,
     )
-}
-pub(super) fn busy() -> RemoteError {
-    error("BUSY", "Kernel App operation capacity is full", true)
 }
 pub(super) fn unavailable() -> RemoteError {
     error("UNAVAILABLE", "App storage is unavailable", true)
@@ -75,6 +76,13 @@ pub(super) fn outbox(reason: OutboxError) -> RemoteError {
     match reason {
         OutboxError::Invalid => invalid(),
         OutboxError::Limit => limit(),
+        OutboxError::Full => error(
+            "LIMIT_EXCEEDED",
+            &format!(
+                "App event outbox is full: {MAX_PENDING} events are waiting for delivery; retry after some are delivered"
+            ),
+            true,
+        ),
         OutboxError::NotFound => error(
             "NOT_FOUND",
             "App event receipt or automation is unavailable",

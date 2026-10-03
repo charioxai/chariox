@@ -422,6 +422,7 @@ mod tests {
 
     #[tokio::test]
     async fn workflow_launch_retains_vaulted_environment_until_detached_spawn() {
+        crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-workflow-provider-credentials-{}-{}",
@@ -523,6 +524,7 @@ mod tests {
 
     #[tokio::test]
     async fn retired_workflow_run_does_not_spawn_after_vault_unlock() {
+        crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-retired-workflow-vault-unlock-{}-{}",
@@ -1376,9 +1378,36 @@ mod tests {
         crate::provider::RuntimeProviderRun,
         crate::app::KernelPromptDispatch,
     ) {
+        assert!(
+            crate::test_support::environment_test_isolated(),
+            "Claude lifecycle fixtures require a private test environment"
+        );
+        let worktree = crate::test_support::TestWorktree::new("local-prompt-claude-headless");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let executable = worktree.path().join("claude-fixture");
+            std::fs::write(
+                &executable,
+                "#!/bin/sh\nprintf '❯ '\nwhile IFS= read -r line; do printf '❯ '; done\n",
+            )
+            .expect("Claude lifecycle fixture should write");
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
+                .expect("Claude lifecycle fixture should be executable");
+            std::env::set_var("CHARIOX_CLAUDE_BIN", executable);
+            let profile =
+                std::path::PathBuf::from(std::env::var_os("HOME").unwrap()).join(".claude");
+            std::fs::create_dir_all(&profile).unwrap();
+            // Synthetic refresh data satisfies launch preflight. The fixture
+            // CLI never contacts a provider or reads real account credentials.
+            std::fs::write(
+                profile.join(".credentials.json"),
+                br#"{"claudeAiOauth":{"refreshToken":"synthetic-lifecycle-fixture"}}"#,
+            )
+            .unwrap();
+        }
         let mut app = crate::test_support::bootstrap_authenticated_app(DaemonConfig::for_tests())
             .expect("daemon should boot");
-        let worktree = crate::test_support::TestWorktree::new("local-prompt-claude-headless");
         let (session, agent) = KernelSessionService::new(&mut app)
             .create_session(worktree.session_request())
             .expect("session should create");
@@ -1391,13 +1420,47 @@ mod tests {
             .expect("source attachment should attach");
         let resume_state =
             crate::provider::ProviderResumeState::from_claude_session_id("claude-session-poisoned");
+        // Unattended Claude launches (the queued-prompt replacement) need a vault setup
+        // token or, on Linux, a portable login in the account's config dir. Use an isolated
+        // account with a fixture login instead of the host's default ~/.claude.
+        let registry = app.provider_account_profile_registry();
+        let claude_profile = registry
+            .create_managed(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "claude",
+                "Headless ack fixture",
+            )
+            .expect("isolated Claude account should create");
+        crate::test_support::authenticate_provider_account(
+            &registry,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "claude",
+            &claude_profile.profile_id,
+        )
+        .expect("isolated Claude account should authenticate");
+        let claude_config_dir = std::path::PathBuf::from(
+            registry
+                .resolve_environment(
+                    crate::session::DEFAULT_LOCAL_USER_ID,
+                    "claude",
+                    &claude_profile.profile_id,
+                )
+                .expect("Claude environment should resolve")["CLAUDE_CONFIG_DIR"]
+                .clone(),
+        );
+        std::fs::write(
+            claude_config_dir.join(".credentials.json"),
+            br#"{"claudeAiOauth":{"refreshToken":"fixture-refresh"}}"#,
+        )
+        .expect("portable Claude login fixture should write");
         let configured_agent = app
             .agents_mut()
-            .set_agent_runtime_profile(
+            .set_agent_runtime_profile_with_account_profile(
                 agent.id(),
                 "claude-headless",
                 Some("claude-opus-5".to_string()),
                 None,
+                Some(claude_profile.profile_id.clone()),
                 resume_state.clone(),
             )
             .expect("Claude resume state should be configured");
@@ -1418,7 +1481,7 @@ mod tests {
                     session.id(),
                     "claude",
                     "claude-headless",
-                    "default",
+                    &claude_profile.profile_id,
                     "claude-opus-5",
                 )
                 .with_agent_id(agent.id())
@@ -1823,9 +1886,12 @@ mod tests {
             .into_iter()
             .filter(|record| record.kind == crate::terminal::TerminalOutputKind::ProviderError)
             .collect::<Vec<_>>();
-        assert_eq!(provider_errors.len(), 1);
+        // The dispatch error, then the failed turn's "not carried out" entry.
+        assert_eq!(provider_errors.len(), 2);
         assert!(String::from_utf8_lossy(&provider_errors[0].bytes)
             .contains("Provider prompt dispatch failed"));
+        assert!(String::from_utf8_lossy(&provider_errors[1].bytes)
+            .starts_with("Request not carried out: "));
 
         let completions = runtime
             .owned
@@ -1849,8 +1915,592 @@ mod tests {
         );
     }
 
+    const FAILED_REQUEST_NOTE: &str = "Your previous request (\"active prompt\") failed";
+
+    async fn submit_and_dispatch(
+        runtime: &KernelRuntimeState,
+        session_id: &str,
+        agent_id: &str,
+        source_id: &str,
+        prompt: &str,
+    ) {
+        let submission = runtime
+            .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
+                session_id: session_id.to_string(),
+                prompt: PromptQueueItem::new(
+                    format!("pending-{}", prompt.replace(' ', "-")),
+                    source_id,
+                    agent_id,
+                    prompt,
+                    PromptStatus::Queued,
+                ),
+                force_queue: false,
+                refresh_projection: true,
+            })
+            .await
+            .expect("prompt should be admitted");
+        runtime
+            .enqueue_prompt_dispatch(&submission.dispatch.expect("prompt should need dispatch"))
+            .await
+            .expect("prompt should reach the provider");
+    }
+
+    fn provider_inputs_containing(runtime: &KernelRuntimeState, text: &str) -> Vec<String> {
+        runtime
+            .owned
+            .terminal_stream
+            .input_records()
+            .iter()
+            .map(|record| String::from_utf8_lossy(&record.bytes).into_owned())
+            .filter(|input| input.contains(text))
+            .collect()
+    }
+
+    fn not_carried_out_entries(
+        runtime: &KernelRuntimeState,
+        session_id: &str,
+        observer_id: &str,
+    ) -> Vec<String> {
+        runtime
+            .owned
+            .terminal_stream
+            .drain_output_records(session_id, observer_id)
+            .into_iter()
+            .filter(|record| record.kind == crate::terminal::TerminalOutputKind::ProviderError)
+            .map(|record| String::from_utf8_lossy(&record.bytes).into_owned())
+            .filter(|text| text.starts_with("Request not carried out: "))
+            .collect()
+    }
+
+    fn failed_requests(
+        runtime: &KernelRuntimeState,
+        agent_id: &str,
+    ) -> Vec<crate::agent::FailedRequest> {
+        runtime
+            .owned
+            .agent_store
+            .get_agent(agent_id)
+            .expect("agent should remain available")
+            .failed_requests()
+            .to_vec()
+    }
+
+    fn last_durable_failed_requests(runtime: &KernelRuntimeState) -> serde_json::Value {
+        runtime
+            .owned
+            .durable_state_store
+            .load_events_by_kind("agent.updated")
+            .expect("agent updates should load")
+            .last()
+            .expect("the failed request should be recorded durably")
+            .payload["agent"]["failed_requests"]
+            .clone()
+    }
+
+    #[tokio::test]
+    async fn failed_turn_is_marked_and_noted_to_the_next_turn_once() {
+        let (_worktree, runtime, session_id, agent_id, observer_id, provider_run_id, dispatch) =
+            runtime_with_admitted_prompt().await;
+        let source_id = dispatch.source_attachment_id.clone();
+        runtime
+            .fail_prompt_dispatch(
+                dispatch,
+                DaemonError::LocalTransport {
+                    operation: "test prompt dispatch",
+                    message: "rejected".to_string(),
+                },
+            )
+            .await
+            .expect_err("dispatch failure should be returned");
+
+        let entries = not_carried_out_entries(&runtime, &session_id, &observer_id);
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        assert!(entries[0].contains("rejected"), "{entries:?}");
+        assert!(entries[0].ends_with("It was dropped; send it again to retry."));
+        let failed = failed_requests(&runtime, &agent_id);
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].excerpt, "active prompt");
+        assert_eq!(
+            last_durable_failed_requests(&runtime)[0]["excerpt"],
+            "active prompt",
+            "the note must survive a kernel restart"
+        );
+
+        submit_and_dispatch(
+            &runtime,
+            &session_id,
+            &agent_id,
+            &source_id,
+            "second prompt",
+        )
+        .await;
+        let second = provider_inputs_containing(&runtime, "second prompt");
+        assert_eq!(second.len(), 1);
+        assert!(second[0].contains(FAILED_REQUEST_NOTE), "{second:?}");
+        assert!(failed_requests(&runtime, &agent_id).is_empty());
+        assert_eq!(
+            last_durable_failed_requests(&runtime),
+            serde_json::Value::Null
+        );
+
+        runtime
+            .owned
+            .complete_local_prompt_without_advance(&session_id, &agent_id, Some(&provider_run_id))
+            .expect("second prompt should settle");
+        submit_and_dispatch(&runtime, &session_id, &agent_id, &source_id, "third prompt").await;
+        assert_eq!(
+            provider_inputs_containing(&runtime, "third prompt").len(),
+            1
+        );
+        assert_eq!(
+            provider_inputs_containing(&runtime, FAILED_REQUEST_NOTE).len(),
+            1,
+            "the note is delivered exactly once"
+        );
+    }
+
+    async fn runtime_with_finished_structured_submit(
+        accepted: bool,
+    ) -> (
+        crate::test_support::TestWorktree,
+        KernelRuntimeState,
+        String,
+        String,
+        String,
+        String,
+        crate::app::KernelPromptDispatch,
+        crate::provider::FinishedProviderPromptSubmitJob,
+    ) {
+        let (worktree, runtime, session_id, agent_id, observer_id, run_id, dispatch) =
+            runtime_with_admitted_prompt().await;
+        let request = LaunchProviderRequest::new(
+            &session_id,
+            if accepted { "dev-stub" } else { "codex" },
+            if accepted { "slow-structured" } else { "codex" },
+            "default",
+            "model",
+        )
+        .with_agent_id(&agent_id);
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            &run_id,
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "failed-note-submit".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("test".to_string()),
+            },
+        );
+        run.mark_running();
+        runtime
+            .owned
+            .provider_store
+            .write()
+            .insert_run_for_test(run.clone());
+        runtime
+            .owned
+            .agent_store
+            .record_failed_request_durably(
+                &runtime.owned.durable_state_store,
+                &agent_id,
+                crate::agent::FailedRequest::new(
+                    "earlier-failure",
+                    "earlier request",
+                    "rejected".to_string(),
+                ),
+            )
+            .expect("prior failure should persist");
+        runtime
+            .enqueue_prompt_dispatch_after_liveness(&dispatch, &runtime.owned)
+            .await
+            .expect("mailbox enqueue should succeed");
+        assert_eq!(
+            failed_requests(&runtime, &agent_id).len(),
+            1,
+            "enqueue is not provider acceptance"
+        );
+        let finished = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let jobs = runtime
+                    .owned
+                    .provider_store
+                    .drain_finished_structured_prompt_submit_jobs();
+                if let Some(finished) = jobs.into_iter().next() {
+                    break finished;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("actor should return its provider result");
+        assert_eq!(
+            finished.result.is_ok(),
+            accepted,
+            "actual provider submit result: {:?}",
+            finished.result
+        );
+        (
+            worktree,
+            runtime,
+            session_id,
+            agent_id,
+            observer_id,
+            run_id,
+            dispatch,
+            finished,
+        )
+    }
+
+    async fn reap_finished_submit(
+        runtime: &KernelRuntimeState,
+        app_reaper: bool,
+        finished: crate::provider::FinishedProviderPromptSubmitJob,
+    ) {
+        runtime
+            .owned
+            .provider_store
+            .push_finished_structured_prompt_submit_for_test(
+                finished.session_id,
+                finished.provider_run_id,
+                finished.agent_id,
+                finished.prompt_id,
+                finished.result,
+            );
+        if app_reaper {
+            runtime
+                .with_app_side_effect(|app| app.reap_structured_prompt_jobs())
+                .await;
+        } else {
+            runtime.owned.reap_structured_prompt_jobs();
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_request_note_survives_mailbox_enqueue_until_provider_acceptance() {
+        for accepted in [false, true] {
+            let (_worktree, runtime, _, agent_id, _, _, _, finished) =
+                runtime_with_finished_structured_submit(accepted).await;
+            reap_finished_submit(&runtime, false, finished).await;
+            let failed = failed_requests(&runtime, &agent_id);
+            if accepted {
+                assert!(
+                    failed.is_empty(),
+                    "accepted context must be consumed: {failed:?}"
+                );
+            } else {
+                assert!(
+                    failed
+                        .iter()
+                        .any(|note| note.prompt_id == "earlier-failure"),
+                    "provider rejection must preserve undelivered note: {failed:?}"
+                );
+            }
+        }
+    }
+
+    async fn assert_async_rejection_settlement(app_reaper: bool, stale: bool) {
+        let (_worktree, runtime, session_id, agent_id, observer_id, run_id, dispatch, finished) =
+            runtime_with_finished_structured_submit(false).await;
+        let mut successor = None;
+        if stale {
+            runtime
+                .owned
+                .complete_local_prompt_without_advance(&session_id, &agent_id, Some(&run_id))
+                .expect("B should settle before its late result");
+            let run = runtime
+                .owned
+                .provider_store
+                .get_run(&run_id)
+                .expect("successor reuses the live provider");
+            runtime
+                .owned
+                .session_store
+                .set_active_provider_run(&session_id, Some(run.id().to_string()))
+                .expect("successor provider should attach");
+            let admitted = runtime
+                .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
+                    session_id: session_id.clone(),
+                    prompt: PromptQueueItem::new(
+                        "successor-prompt",
+                        &dispatch.source_attachment_id,
+                        &agent_id,
+                        "current successor request",
+                        PromptStatus::Queued,
+                    ),
+                    force_queue: false,
+                    refresh_projection: true,
+                })
+                .await
+                .expect("successor prompt should admit");
+            let PromptSubmissionOutcome::Started { prompt } = admitted.outcome else {
+                panic!("successor should start");
+            };
+            runtime
+                .owned
+                .mark_active_prompt_delivery(
+                    &session_id,
+                    &agent_id,
+                    prompt.id(),
+                    crate::session::DurablePromptDeliveryPhase::Dispatching,
+                    Some(run.id().to_string()),
+                    None,
+                )
+                .expect("successor should own delivery");
+            let agent_state = runtime
+                .owned
+                .agent_store
+                .get_agent(&agent_id)
+                .unwrap()
+                .state();
+            successor = Some((prompt, run, agent_state));
+        }
+        reap_finished_submit(&runtime, app_reaper, finished).await;
+        let failed = failed_requests(&runtime, &agent_id);
+        assert!(
+            failed
+                .iter()
+                .any(|note| note.prompt_id == "earlier-failure"),
+            "earlier undelivered warning must survive"
+        );
+        if let Some((prompt, run, agent_state)) = successor {
+            assert_eq!(
+                failed.len(),
+                1,
+                "late B cannot mark successor request failed"
+            );
+            let session = runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .unwrap();
+            assert_eq!(
+                runtime
+                    .owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, &agent_id)
+                    .unwrap()
+                    .id(),
+                prompt.id()
+            );
+            assert_eq!(session.active_provider_run_id(), Some(run.id()));
+            assert_eq!(
+                runtime
+                    .owned
+                    .provider_store
+                    .get_run(run.id())
+                    .unwrap()
+                    .state(),
+                crate::provider::ProviderRunState::Running
+            );
+            assert_eq!(
+                runtime
+                    .owned
+                    .agent_store
+                    .get_agent(&agent_id)
+                    .unwrap()
+                    .state(),
+                agent_state
+            );
+            assert!(not_carried_out_entries(&runtime, &session_id, &observer_id).is_empty());
+        } else {
+            assert_eq!(
+                failed.len(),
+                2,
+                "rejected B must also be remembered: {failed:?}"
+            );
+            assert_eq!(failed[1].prompt_id, dispatch.prompt_id);
+            assert_eq!(failed[1].excerpt, dispatch.prompt);
+            assert_eq!(
+                last_durable_failed_requests(&runtime)
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                2
+            );
+            assert_eq!(
+                not_carried_out_entries(&runtime, &session_id, &observer_id).len(),
+                1
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn owned_async_rejection_records_current_failed_request() {
+        assert_async_rejection_settlement(false, false).await;
+    }
+
+    #[tokio::test]
+    async fn owned_async_rejection_preserves_successor_prompt() {
+        assert_async_rejection_settlement(false, true).await;
+    }
+
+    #[tokio::test]
+    async fn app_async_rejection_records_current_failed_request() {
+        assert_async_rejection_settlement(true, false).await;
+    }
+
+    #[tokio::test]
+    async fn app_async_rejection_preserves_successor_prompt() {
+        assert_async_rejection_settlement(true, true).await;
+    }
+
+    #[tokio::test]
+    async fn completed_and_cancelled_turns_add_no_failed_request_note() {
+        let (_worktree, runtime, session_id, agent_id, observer_id, provider_run_id, dispatch) =
+            runtime_with_admitted_prompt().await;
+        let source_id = dispatch.source_attachment_id.clone();
+        runtime
+            .enqueue_prompt_dispatch(&dispatch)
+            .await
+            .expect("prompt should reach the provider");
+        runtime
+            .owned
+            .complete_local_prompt_without_advance(&session_id, &agent_id, Some(&provider_run_id))
+            .expect("prompt should complete");
+        submit_and_dispatch(
+            &runtime,
+            &session_id,
+            &agent_id,
+            &source_id,
+            "after success",
+        )
+        .await;
+        runtime
+            .owned
+            .cancel_local_prompt(&session_id, &agent_id, &source_id)
+            .expect("cancellation should succeed")
+            .expect("local cancellation should be owned");
+        runtime
+            .owned
+            .finalize_local_prompt_cancellation_with_queued_advance(
+                &session_id,
+                &agent_id,
+                Some(&provider_run_id),
+            )
+            .expect("cancellation should finalize");
+        submit_and_dispatch(&runtime, &session_id, &agent_id, &source_id, "after cancel").await;
+
+        assert!(failed_requests(&runtime, &agent_id).is_empty());
+        assert!(not_carried_out_entries(&runtime, &session_id, &observer_id).is_empty());
+        assert!(provider_inputs_containing(&runtime, "Your previous request").is_empty());
+    }
+
+    async fn assert_provider_limit_records_failed_request(
+        adapter: &str,
+        provider: &str,
+        message: &str,
+    ) {
+        let worktree =
+            crate::test_support::TestWorktree::new(&format!("failed-request-{provider}"));
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = KernelSessionService::new(&mut app)
+            .create_session(worktree.session_request())
+            .expect("session should create");
+        let observer = KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "failed-request-observer",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("observer should attach");
+        let request =
+            LaunchProviderRequest::new(session.id(), adapter, provider, "default", "model")
+                .with_agent_id(agent.id());
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            format!("failed-request-{provider}-run"),
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: format!("failed-request-{provider}"),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: (adapter != "claude")
+                    .then(|| "ws://failed-request-test".to_string()),
+            },
+        );
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run.clone());
+        app.sessions_mut()
+            .set_active_provider_run(session.id(), Some(run.id().to_string()))
+            .expect("run should become active");
+        app.update_provider_run_projection(run.clone());
+        let prompt = PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            observer.id(),
+            agent.id(),
+            "record r372-mcp-1, then r372-mcp-2",
+            PromptStatus::Queued,
+        );
+        app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+            .expect("prompt should start");
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+
+        runtime
+            .fail_owned_provider_prompt(session.id(), run.id(), message, false)
+            .await
+            .expect("provider failure should settle");
+
+        let failed = failed_requests(&runtime, agent.id());
+        assert_eq!(failed.len(), 1, "{provider}");
+        assert_eq!(failed[0].excerpt, "record r372-mcp-1, then r372-mcp-2");
+        assert_eq!(failed[0].reason, "usage limit reached", "{provider}");
+        assert_eq!(
+            not_carried_out_entries(&runtime, session.id(), observer.id()),
+            vec!["Request not carried out: usage limit reached. It was dropped; send it again to retry."],
+            "{provider}"
+        );
+        assert!(runtime
+            .owned
+            .agent_store
+            .hidden_context_with_failed_requests(agent.id(), "")
+            .starts_with("Your previous request (\"record r372-mcp-1, then r372-mcp-2\") failed (usage limit reached)"));
+    }
+
+    #[tokio::test]
+    async fn provider_limit_failures_record_the_failed_request_for_each_provider() {
+        assert_provider_limit_records_failed_request(
+            "claude",
+            "claude-headless",
+            "Provider prompt dispatch failed: You've hit your session limit · resets 8:30am",
+        )
+        .await;
+        assert_provider_limit_records_failed_request(
+            "codex",
+            "codex",
+            "Provider prompt dispatch failed: You exceeded your current quota, please check your plan and billing details.",
+        )
+        .await;
+        assert_provider_limit_records_failed_request(
+            "opencode",
+            "opencode",
+            "Provider prompt dispatch failed: insufficient_quota",
+        )
+        .await;
+    }
+
+    // The replacement is an unattended Claude launch. Without a vault setup token it
+    // needs a portable login file, which the credential gate reads only on Linux.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "unattended Claude launch needs a vault token or a Linux portable login"
+    )]
     #[tokio::test]
     async fn claude_headless_ack_failure_retires_poisoned_provider_run() {
+        crate::test_support::isolated_env_test!();
+        if cfg!(not(unix)) && crate::provider::resolve_claude_executable().is_err() {
+            eprintln!("SKIP claude_headless_ack_failure_retires_poisoned_provider_run: claude binary is absent");
+            return;
+        }
         let (_worktree, runtime, session_id, agent_id, source_id, provider_run, dispatch) =
             runtime_with_claude_headless_active_prompt().await;
         let PromptSubmissionOutcome::Queued {
@@ -1942,6 +2592,11 @@ mod tests {
 
     #[tokio::test]
     async fn claude_headless_ack_failure_intent_finishes_resume_clear_after_restart() {
+        crate::test_support::isolated_env_test!();
+        if cfg!(not(unix)) && crate::provider::resolve_claude_executable().is_err() {
+            eprintln!("SKIP claude_headless_ack_failure_intent_finishes_resume_clear_after_restart: claude binary is absent");
+            return;
+        }
         let (_worktree, runtime, session_id, agent_id, _, provider_run, dispatch) =
             runtime_with_claude_headless_active_prompt().await;
         let durable_path = runtime.owned.durable_state_store.path().to_path_buf();
@@ -2059,6 +2714,11 @@ mod tests {
 
     #[tokio::test]
     async fn claude_headless_ack_failure_does_not_clear_resume_without_durable_intent() {
+        crate::test_support::isolated_env_test!();
+        if cfg!(not(unix)) && crate::provider::resolve_claude_executable().is_err() {
+            eprintln!("SKIP claude_headless_ack_failure_does_not_clear_resume_without_durable_intent: claude binary is absent");
+            return;
+        }
         let (_worktree, runtime, session_id, agent_id, _, provider_run, dispatch) =
             runtime_with_claude_headless_active_prompt().await;
         let durable_path = runtime.owned.durable_state_store.path().to_path_buf();
@@ -2168,6 +2828,11 @@ mod tests {
 
     #[tokio::test]
     async fn claude_headless_late_resume_update_wins_before_delivery_phase_commit() {
+        crate::test_support::isolated_env_test!();
+        if cfg!(not(unix)) && crate::provider::resolve_claude_executable().is_err() {
+            eprintln!("SKIP claude_headless_late_resume_update_wins_before_delivery_phase_commit: claude binary is absent");
+            return;
+        }
         let (_worktree, runtime, session_id, agent_id, _, provider_run, dispatch) =
             runtime_with_claude_headless_active_prompt().await;
         let current_resume_state =
@@ -2267,6 +2932,11 @@ mod tests {
 
     #[tokio::test]
     async fn claude_headless_delivered_phase_wins_over_late_timeout() {
+        crate::test_support::isolated_env_test!();
+        if cfg!(not(unix)) && crate::provider::resolve_claude_executable().is_err() {
+            eprintln!("SKIP claude_headless_delivered_phase_wins_over_late_timeout: claude binary is absent");
+            return;
+        }
         let (_worktree, runtime, session_id, agent_id, _, provider_run, dispatch) =
             runtime_with_claude_headless_active_prompt().await;
         runtime
@@ -2319,6 +2989,11 @@ mod tests {
 
     #[tokio::test]
     async fn claude_headless_delivery_settlement_claim_blocks_timeout_retirement() {
+        crate::test_support::isolated_env_test!();
+        if cfg!(not(unix)) && crate::provider::resolve_claude_executable().is_err() {
+            eprintln!("SKIP claude_headless_delivery_settlement_claim_blocks_timeout_retirement: claude binary is absent");
+            return;
+        }
         let (_worktree, runtime, session_id, agent_id, _, provider_run, dispatch) =
             runtime_with_claude_headless_active_prompt().await;
         let session = runtime
@@ -2399,6 +3074,11 @@ mod tests {
 
     #[tokio::test]
     async fn stale_claude_headless_ack_failure_preserves_replacement_prompt_and_provider() {
+        crate::test_support::isolated_env_test!();
+        if cfg!(not(unix)) && crate::provider::resolve_claude_executable().is_err() {
+            eprintln!("SKIP stale_claude_headless_ack_failure_preserves_replacement_prompt_and_provider: claude binary is absent");
+            return;
+        }
         let (_worktree, runtime, session_id, agent_id, source_id, provider_run, stale_dispatch) =
             runtime_with_claude_headless_active_prompt().await;
         runtime
@@ -2621,10 +3301,19 @@ impl KernelRuntimeState {
         &self,
         dispatch: &crate::app::KernelPromptDispatch,
     ) -> Result<(), DaemonError> {
+        self.enqueue_prompt_dispatch_with_acceptance(dispatch)
+            .await
+            .map(|_| ())
+    }
+
+    pub(super) async fn enqueue_prompt_dispatch_with_acceptance(
+        &self,
+        dispatch: &crate::app::KernelPromptDispatch,
+    ) -> Result<bool, DaemonError> {
         {
             let owned = &self.owned;
             if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
-                return Ok(());
+                return Ok(false);
             }
             let has_managed_process = owned
                 .provider_process_tracking
@@ -2644,13 +3333,13 @@ impl KernelRuntimeState {
                     )
                     .await?;
                 if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
-                    return Ok(());
+                    return Ok(false);
                 }
             }
             let result = self
-                .enqueue_prompt_dispatch_after_liveness(dispatch, owned)
+                .enqueue_prompt_dispatch_after_liveness_with_acceptance(dispatch, owned)
                 .await;
-            if result.is_ok() {
+            if result.as_ref().is_ok_and(|accepted| *accepted) {
                 owned.update_metaagent_event_prompt_delivery_for_prompt(
                     &dispatch.prompt_id,
                     crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Delivered,
@@ -2661,13 +3350,78 @@ impl KernelRuntimeState {
         }
     }
 
+    /// A substitute run serves only the turn it reruns. A later turn bound to
+    /// it moves to a fresh run of the agent's configured profile.
+    async fn dispatch_off_finished_turn_substitute(
+        &self,
+        dispatch: &crate::app::KernelPromptDispatch,
+    ) -> Result<Option<crate::app::KernelPromptDispatch>, DaemonError> {
+        if dispatch.steering {
+            return Ok(None);
+        }
+        let Ok(run) = self.owned.provider_store.get_run(&dispatch.provider_run_id) else {
+            return Ok(None);
+        };
+        if run
+            .turn_substitute()
+            .is_none_or(|turn| turn.prompt_id == dispatch.prompt_id)
+        {
+            return Ok(None);
+        }
+        let session = self.owned.session_store.get_session(&dispatch.session_id)?;
+        let Some(prompt) = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &dispatch.agent_id)
+            .filter(|prompt| prompt.id() == dispatch.prompt_id)
+        else {
+            return Ok(None);
+        };
+        self.retire_owned_provider_run_after_terminal_failure(&dispatch.session_id, run.id())
+            .await;
+        let provider_run_id = self
+            .with_app_side_effect(|app| {
+                if prompt.workflow_run_id().is_some() {
+                    crate::app::workflow_runtime::ensure_workflow_provider_run_for_prompt_from_runtime(
+                        app,
+                        &dispatch.session_id,
+                        &dispatch.agent_id,
+                        &prompt,
+                    )
+                } else {
+                    app.ensure_prompt_provider_run_for_agent(&dispatch.session_id, &dispatch.agent_id)
+                }
+            })
+            .await?;
+        Ok(Some(crate::app::KernelPromptDispatch {
+            provider_run_id,
+            ..dispatch.clone()
+        }))
+    }
+
     pub(super) async fn enqueue_prompt_dispatch_after_liveness(
         &self,
         dispatch: &crate::app::KernelPromptDispatch,
         owned: &KernelRuntimeOwnedState,
     ) -> Result<(), DaemonError> {
+        self.enqueue_prompt_dispatch_after_liveness_with_acceptance(dispatch, owned)
+            .await
+            .map(|_| ())
+    }
+
+    pub(super) async fn enqueue_prompt_dispatch_after_liveness_with_acceptance(
+        &self,
+        dispatch: &crate::app::KernelPromptDispatch,
+        owned: &KernelRuntimeOwnedState,
+    ) -> Result<bool, DaemonError> {
         if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
-            return Ok(());
+            return Ok(false);
+        }
+        if let Some(rerouted) = self.dispatch_off_finished_turn_substitute(dispatch).await? {
+            return Box::pin(
+                self.enqueue_prompt_dispatch_after_liveness_with_acceptance(&rerouted, owned),
+            )
+            .await;
         }
         if !dispatch.steering {
             let provider_run = owned
@@ -2692,6 +3446,10 @@ impl KernelRuntimeState {
                 operation: "submit prompt",
             });
         }
+        let hidden_system_context = owned.hidden_context_with_failed_requests(
+            &dispatch.agent_id,
+            &dispatch.hidden_system_context,
+        );
         if owned
             .provider_store
             .run_uses_structured_prompt_io(&provider_run)
@@ -2716,7 +3474,7 @@ impl KernelRuntimeState {
                 &prompt_with_handoff,
             )?;
             let hidden_system_context =
-                join_hidden_context(&dispatch.hidden_system_context, &granted_skill_context);
+                join_hidden_context(&hidden_system_context, &granted_skill_context);
             let (source_client_id, _source_user_id) =
                 owned.active_prompt_source_attribution(&dispatch.session_id, &dispatch.agent_id)?;
             let mode = crate::prompt_assembly::provider_turn_mode_for_prompt(
@@ -2744,14 +3502,7 @@ impl KernelRuntimeState {
                 mode,
                 dispatch.steering,
             );
-            if result.is_ok() {
-                owned.consume_pending_context_handoff(
-                    &dispatch.session_id,
-                    &dispatch.agent_id,
-                    &provider_run,
-                );
-            }
-            return result;
+            return result.map(|()| true);
         }
         if !internal_recovery
             && !crate::scheduler::runtime::is_workflow_prompt_attachment(
@@ -2780,7 +3531,7 @@ impl KernelRuntimeState {
             &dispatch.prompt,
         );
         let prompt_with_hidden_context =
-            join_hidden_context(&dispatch.hidden_system_context, &prompt_with_handoff);
+            join_hidden_context(&hidden_system_context, &prompt_with_handoff);
         let provider_prompt = owned.apply_granted_skill_summary(
             &dispatch.session_id,
             &dispatch.agent_id,
@@ -2833,6 +3584,9 @@ impl KernelRuntimeState {
             }
         }
         if !has_managed_process {
+            if dispatch.steering {
+                return Ok(false);
+            }
             if !dispatch.steering {
                 let session = owned.session_store.get_session(&dispatch.session_id)?;
                 let Some(_settlement_claim) = owned
@@ -2844,7 +3598,7 @@ impl KernelRuntimeState {
                         &dispatch.provider_run_id,
                     )
                 else {
-                    return Ok(());
+                    return Ok(false);
                 };
                 owned.note_prompt_started(&dispatch.provider_run_id);
                 owned.mark_active_prompt_delivery(
@@ -2855,8 +3609,9 @@ impl KernelRuntimeState {
                     Some(dispatch.provider_run_id.clone()),
                     provider_run.provider_session_id().map(str::to_string),
                 )?;
+                owned.consume_failed_requests(&dispatch.agent_id, &dispatch.prompt_id);
             }
-            return Ok(());
+            return Ok(true);
         }
         if uses_claude_native_bridge {
             let dispatch_with_handoff = crate::app::KernelPromptDispatch {
@@ -2871,7 +3626,7 @@ impl KernelRuntimeState {
                     &dispatch.session_id,
                     &dispatch.agent_id,
                     &provider_run,
-                    &dispatch.hidden_system_context,
+                    &hidden_system_context,
                 ),
                 attachments: dispatch.attachments.clone(),
                 prompt_origin: dispatch.prompt_origin,
@@ -2926,6 +3681,8 @@ impl KernelRuntimeState {
                     }
                 }
             }
+            // Claude's hook acknowledgement consumes the failure note. PTY
+            // injection alone does not prove the provider accepted its context.
             owned.consume_pending_context_handoff(
                 &dispatch.session_id,
                 &dispatch.agent_id,
@@ -2942,7 +3699,7 @@ impl KernelRuntimeState {
                         &dispatch.provider_run_id,
                     )
                 else {
-                    return Ok(());
+                    return Ok(false);
                 };
                 owned.note_prompt_started(&dispatch.provider_run_id);
                 owned.mark_active_prompt_delivery(
@@ -2954,7 +3711,7 @@ impl KernelRuntimeState {
                     provider_run.provider_session_id().map(str::to_string),
                 )?;
             }
-            return Ok(());
+            return Ok(true);
         }
         let provider_run_id = dispatch.provider_run_id.clone();
         let writer = self
@@ -2975,9 +3732,10 @@ impl KernelRuntimeState {
                 });
             }
         }
-        owned.consume_pending_context_handoff(
+        owned.consume_delivered_turn_context(
             &dispatch.session_id,
             &dispatch.agent_id,
+            &dispatch.prompt_id,
             &provider_run,
         );
         if !dispatch.steering {
@@ -2991,7 +3749,7 @@ impl KernelRuntimeState {
                     &dispatch.provider_run_id,
                 )
             else {
-                return Ok(());
+                return Ok(false);
             };
             owned.note_prompt_started(&dispatch.provider_run_id);
             owned.mark_active_prompt_delivery(
@@ -3003,7 +3761,7 @@ impl KernelRuntimeState {
                 provider_run.provider_session_id().map(str::to_string),
             )?;
         }
-        Ok(())
+        Ok(true)
     }
 
     pub(super) async fn fail_prompt_dispatch(
@@ -3015,6 +3773,18 @@ impl KernelRuntimeState {
         let dispatch_owns_active_prompt = self
             .owned
             .prompt_dispatch_matches_active_prompt(&dispatch)?;
+        if dispatch_owns_active_prompt {
+            let run = self
+                .owned
+                .provider_store
+                .get_run(&dispatch.provider_run_id)?;
+            if self
+                .try_provider_auth_recovery(&run, &error.to_string(), Some(&dispatch.prompt_id))
+                .await?
+            {
+                return Ok(());
+            }
+        }
         let failed_provider_run = dispatch_owns_active_prompt
             .then(|| {
                 self.owned
@@ -3197,6 +3967,24 @@ impl KernelRuntimeState {
                     (cancelled, released_claim)
                 }
             };
+            if let Some(failed_prompt) = failed_prompt
+                .as_ref()
+                .filter(|_| should_advance && failed_prompt_matches)
+            {
+                let adapter_key = owned
+                    .provider_store
+                    .get_run(&dispatch.provider_run_id)
+                    .map(|run| run.adapter_key().to_string())
+                    .unwrap_or_default();
+                owned.record_failed_request(
+                    &dispatch.session_id,
+                    &dispatch.provider_run_id,
+                    &adapter_key,
+                    &dispatch.agent_id,
+                    failed_prompt,
+                    &dispatch_failure,
+                );
+            }
             if should_advance && retire_failed_provider {
                 restart_provider_for_queued_prompt = owned
                     .prompt_state_owner
@@ -3276,6 +4064,14 @@ impl KernelRuntimeState {
             // Accepted prompts and their entry receipts remain for authoritative
             // restart. A failed writer cannot authorize new provider dispatch.
             return;
+        }
+        for (session_id, agent_id) in dispatches.project_queue_promotions {
+            let state = self.clone();
+            tokio::spawn(async move {
+                state
+                    .advance_project_queued_prompt_after_settlement(&session_id, &agent_id)
+                    .await;
+            });
         }
         for task in dispatches.starting_metaagent_tasks {
             let state = self.clone();
@@ -3565,7 +4361,7 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         {
             let owned = &self.owned;
-            owned.reap_structured_prompt_jobs();
+            self.reap_structured_prompt_jobs_and_dispatch();
             self.reconcile_provider_run_exit(&dispatch.session_id, &dispatch.provider_run_id)
                 .await?;
             let provider_run = owned
@@ -3626,6 +4422,14 @@ impl KernelRuntimeState {
                 format!("Prompt cancellation dispatch failed after acknowledgement: {error}"),
             );
             Err(error)
+        }
+    }
+
+    /// Reaps finished structured prompt jobs and dispatches the follow-ups an
+    /// abort acknowledgement left to the dispatcher.
+    pub(super) fn reap_structured_prompt_jobs_and_dispatch(&self) {
+        for dispatch in self.owned.reap_structured_prompt_jobs() {
+            self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
         }
     }
 
@@ -3737,7 +4541,7 @@ impl KernelRuntimeState {
                             .wait_for_change_after(completion_sequence)
                             .await;
                         completion_sequence = completion_signal.sequence();
-                        state.owned.reap_structured_prompt_jobs();
+                        state.reap_structured_prompt_jobs_and_dispatch();
                         let prompt_is_still_cancelling = state
                             .owned
                             .provider_store

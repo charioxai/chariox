@@ -6,6 +6,7 @@ import { openSync, closeSync } from 'node:fs';
 import { access, chown, readFile, readlink, realpath, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { launchRecord, expectedReadiness } from './launch-record.mjs';
+import { parseNativeChecks } from './linux-native-contract.mjs';
 
 const [repository, scratch, uidText, gidText, unit] = process.argv.slice(2);
 assert.equal(process.platform, 'linux');
@@ -27,9 +28,16 @@ const interpreter = await realpath('/lib64/ld-linux-x86-64.so.2');
 const active = new Set();
 const outcomes = [];
 
-function start(kind, executable = 'chariox-app-worker', bytes = launchRecord(roots)) {
+function start(kind, executable = 'chariox-app-worker', bytes) {
+  const unconfined = kind === 'unconfined';
+  const authorityRoots = unconfined
+    ? Object.fromEntries(Object.keys(roots).map(name => [name,
+        name === 'runtime' ? path.join(scratch, 'bin') : path.join(scratch, `unconfined/${name}`)]))
+    : roots;
+  bytes ??= launchRecord(authorityRoots);
   const args = [
     '--unshare-user', '--unshare-pid', '--unshare-net', '--unshare-ipc', '--unshare-uts', '--unshare-cgroup',
+    '--hostname', 'chariox-app',
     '--disable-userns', '--cap-drop', 'ALL', '--new-session', '--die-with-parent', '--as-pid-1',
     '--clearenv', '--setenv', 'CX_TEST_SECRET', 'fixture-only-must-be-filtered', '--json-status-fd', '5',
     '--ro-bind', path.join(mounts, 'package'), roots.package,
@@ -46,7 +54,8 @@ function start(kind, executable = 'chariox-app-worker', bytes = launchRecord(roo
   const stdio = Array.from({ length: 32 }, () => 'ignore');
   for (const fd of [1, 2, 3, 4, 5]) stdio[fd] = 'pipe';
   stdio[31] = sentinel;
-  const child = spawn(bwrap, args, { uid, gid, env: {}, cwd: '/', stdio });
+  const child = spawn(unconfined ? path.join(scratch, 'bin', executable) : bwrap,
+    unconfined ? [] : args, { uid, gid, env: {}, cwd: '/', stdio });
   closeSync(sentinel);
   active.add(child);
   const output = { stdout: '', stderr: '', sdk: '', ready: Buffer.alloc(0), status: '' };
@@ -69,14 +78,14 @@ function start(kind, executable = 'chariox-app-worker', bytes = launchRecord(roo
   });
   child.stdio[3].write('PING');
   child.stdio[4].write(bytes);
-  return { child, output, completed };
+  return { child, output, completed, unconfined };
 }
 
 const awaitFalsePath = await realpath('/usr/bin/false');
 
 async function waitReady(running) {
   const deadline = Date.now() + 10000;
-  while ((running.output.ready.length < expectedReadiness.length || !running.output.status.includes('\n')) && Date.now() < deadline) {
+  while ((running.output.ready.length < expectedReadiness.length || (!running.unconfined && !running.output.status.includes('\n'))) && Date.now() < deadline) {
     if (running.child.exitCode !== null || running.child.signalCode !== null) break;
     await new Promise(resolve => setTimeout(resolve, 10));
   }
@@ -92,6 +101,8 @@ async function inspectWorker(running) {
   assert.match(status, /^CapEff:\s+0000000000000000$/m);
   assert.match(status, /^CapPrm:\s+0000000000000000$/m);
   assert.match(status, /^CapInh:\s+0000000000000000$/m);
+  assert.match(status, /^CapBnd:\s+0000000000000000$/m);
+  assert.match(status, /^CapAmb:\s+0000000000000000$/m);
   assert.match(status, /^NoNewPrivs:\s+1$/m);
   assert.match(status, /^Seccomp:\s+2$/m);
   const uids = status.match(/^Uid:\s+(.+)$/m)[1].trim().split(/\s+/).map(Number);
@@ -124,10 +135,13 @@ async function inspectWorker(running) {
   const expected = await stat(path.join(mounts, 'runtime/chariox-app-worker'));
   assert.equal(executable.ino, expected.ino);
   assert.equal(executable.dev, expected.dev);
-  return { namespaces, mounts: observedMounts, uids, gids, supplementaryGroups: [], noNewPrivileges: true, capabilities: 'none', seccompFilter: true };
+  return { namespaces, mounts: observedMounts, uids, gids, supplementaryGroups: [],
+    noNewPrivileges: true, capabilities: { effective: 0, permitted: 0, inheritable: 0, bounding: 0, ambient: 0 },
+    seccompFilter: true, cgroup: `0::/system.slice/${unit}.service` };
 }
 
 try {
+  assert.equal((await stat(path.join(mounts, 'runtime'))).uid, 0);
   const running = start('good');
   await waitReady(running);
   await assert.rejects(access(path.join(mounts, 'good-data/constructor-ran')));
@@ -137,19 +151,25 @@ try {
   assert.equal(result.code, 0, JSON.stringify(result));
   assert.equal(result.signal, null);
   assert.equal(result.sdk, 'PONG');
-  const checks = Object.fromEntries(result.stdout.trim().split('\n').map(line => line.split(':')));
-  for (const name of [
-    'constructor_already_confined', 'environment_filtered', 'ambient_descriptor_closed', 'constructor_host_read_denied',
-    'trusted_bootstrap', 'inherited_sdk_bidirectional', 'native_thread_create_join',
-    'private_data_write', 'private_tmp_write', 'package_write_denied', 'parent_traversal_denied',
-    'unrelated_host_read_denied', 'package_read', 'package_executable_mapping_denied',
-    'package_mapping_cannot_become_executable', 'anonymous_memory', 'raw_network_denied',
-    'fork_denied', 'foreign_signal_denied', 'native_limit_query', 'native_limit_mutation_denied',
-    'foreign_limit_query_denied', 'private_descriptor_copy', 'private_file_watch', 'private_file_watch_event',
-    'escaped_file_watch_denied', 'private_file_watch_remove', 'exec_denied',
-  ]) assert.equal(checks[name], 'ok', JSON.stringify(result));
-  assert.ok(!result.stdout.includes(':FAIL'));
+  const checks = parseNativeChecks(result.stdout);
   outcomes.push({ name: 'production-native-boundary', passed: true, observed, checks });
+
+  // The runtime-only overflow-owner exception must never admit a package root.
+  const packageRoot = path.join(mounts, 'package');
+  const packageMode = 'ro,nodev,nosuid,noexec';
+  execFileSync('/usr/bin/mount', ['-o', 'remount,rw,nodev,nosuid,noexec', packageRoot]);
+  await chown(packageRoot, 0, 0);
+  execFileSync('/usr/bin/mount', ['-o', `remount,${packageMode}`, packageRoot]);
+  try {
+    const untrusted = await start('good').completed;
+    assert.equal(untrusted.code, 101, JSON.stringify(untrusted));
+    assert.equal(untrusted.ready.length, 0);
+    outcomes.push({ name: 'root-owned-package-rejected-before-readiness', passed: true });
+  } finally {
+    execFileSync('/usr/bin/mount', ['-o', 'remount,rw,nodev,nosuid,noexec', packageRoot]);
+    await chown(packageRoot, uid, gid);
+    execFileSync('/usr/bin/mount', ['-o', `remount,${packageMode}`, packageRoot]);
+  }
 
   const bad = start('bad');
   const badResult = await bad.completed;
@@ -165,7 +185,20 @@ try {
   assert.equal(weakResult.code, 1, JSON.stringify(weakResult));
   assert.match(weakResult.stdout, /raw_network_denied:FAIL/);
   assert.match(weakResult.stdout, /fork_denied:FAIL/);
-  outcomes.push({ name: 'removed-native-policy-detected', passed: true });
+  outcomes.push({ name: 'removed-native-policy-detected', passed: true, stdout: weakResult.stdout });
+
+  // Removing seccomp alone leaves the namespace/read-only mounts effective.
+  // A separate direct-launch control removes those boundaries too, against
+  // readable and writable task-owned fixtures, never unrelated host data.
+  const unconfined = start('unconfined', 'weakened-test-worker');
+  await waitReady(unconfined);
+  unconfined.child.stdio[4].write('CXAWGO01');
+  const unconfinedResult = await unconfined.completed;
+  assert.equal(unconfinedResult.code, 1, JSON.stringify(unconfinedResult));
+  for (const name of ['constructor_host_read_denied', 'package_write_denied', 'fork_denied'])
+    assert.match(unconfinedResult.stdout, new RegExp(`${name}:FAIL`));
+  outcomes.push({ name: 'removed-namespace-mount-and-native-policy-detected', passed: true,
+    stdout: unconfinedResult.stdout });
 } finally {
   for (const child of active) child.kill('SIGKILL');
 }

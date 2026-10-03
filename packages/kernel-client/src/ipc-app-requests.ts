@@ -131,14 +131,18 @@ export function getAppSetRequest() {
   return { GetAppSet: {} }
 }
 
-/** Protocol 367: the Apps a workflow publication would deploy with, before any
- * export (its pinned plan, or the plan the owner's App set gives). */
-export function previewDeploymentAppsRequest(sessionId: string, publicationRef: string) {
-  return { PreviewDeploymentApps: { session_id: sessionId, publication_ref: publicationRef } }
+/** Protocol 367/377: the Apps a new release of a workflow publication would deploy
+ * with (the owner's current App set); with `packageDigest` (377) also the Apps
+ * that release was exported with. */
+export function previewDeploymentAppsRequest(sessionId: string, publicationRef: string, packageDigest?: string) {
+  return { PreviewDeploymentApps: {
+    session_id: sessionId, publication_ref: publicationRef, ...(packageDigest ? { package_digest: packageDigest } : {}),
+  } }
 }
 
-/** Protocol 367: ask the owner once to deploy a workflow with the Apps of its
- * publication's pinned App plan; the same `requestId` polls the answer. */
+/** Protocol 367: ask the owner once to deploy a workflow with the Apps of this
+ * release's App plan; the same `requestId` polls the answer. Since 377 a
+ * release with the App releases the owner approved before is approved at once. */
 export function prepareDeploymentAppsRequest(options: {
   sessionId: string; requestId: string; publicationRef: string; deploymentId: string; releaseId: string; packageDigest: string
 }) {
@@ -180,7 +184,27 @@ export function grantAppFileRequest(sessionId: string, operationId: string, file
     files: files.map(file => ({ name: file.name, contents_base64: file.contentsBase64 })) } }
 }
 
+/**
+ * Protocol 394: the owner ends an installation's file requests and the grants
+ * its App has not imported: all of them, or one request's.
+ */
+export function revokeAppFileGrantsRequest(installationId: string, operationId?: string) {
+  return { RevokeAppFileGrants: { installation_id: installationId, ...(operationId ? { operation_id: operationId } : {}) } }
+}
+
 /** Protocol 355: the owner takes a copy of a file an App offered with `files.export`. */
 export function saveAppFileExportRequest(sessionId: string, operationId: string) {
   return { SaveAppFileExport: { session_id: sessionId, operation_id: operationId } }
+}
+
+/** Protocol 409: take a copy/link offer once, after an explicit human gesture.
+ * Execute the returned payload in the accepting terminal, never in an App view. */
+export function acceptAppHostActionRequest(sessionId: string, operationId: string) {
+  return { AcceptAppHostAction: { session_id: sessionId, operation_id: operationId } }
+}
+
+/** Protocol 410: restore one same-installation saved snapshot; leaves the App stopped. */
+export function restoreAppDataSnapshotRequest(installationId: string, expectedGeneration: string, snapshotId: string) {
+  return { RestoreAppDataSnapshot: { installation_id: installationId,
+    expected_generation: expectedGeneration, snapshot_id: snapshotId } }
 }

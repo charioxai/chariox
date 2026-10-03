@@ -15,16 +15,13 @@ pub(crate) fn workflow_entry_scheduler_owner(
     session: &str,
     run: &str,
     node: &str,
-    allow_submitted_resume: bool,
 ) -> Result<WorkflowSchedulerOwner, DaemonError> {
     let store = app.durable_state_store();
     store.require_writer_healthy()?;
     Ok(
         if store
             .workflow_dispatch_intent(&app.config().daemon_id, session, run)?
-            .is_some_and(|intent| {
-                intent.node_id == node && (!intent.submitted || !allow_submitted_resume)
-            })
+            .is_some_and(|intent| intent.node_id == node)
         {
             WorkflowSchedulerOwner::Owned
         } else {

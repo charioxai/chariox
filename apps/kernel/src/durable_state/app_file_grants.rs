@@ -2,6 +2,11 @@
 //! owner answers, through a trusted kernel prompt, by handing over the file's
 //! bytes (or declining). Each grant is a copy the App may import once into its
 //! private data before it expires. No host path ever reaches the App.
+//!
+//! Picks and grants belong to the installation, not to the release that
+//! asked: an update of the same App keeps them for the new release (whose
+//! broker still requires the user-selected capability), and old-generation
+//! workers are fenced where the import publishes. Uninstalling ends them.
 use super::{DurableKernelStateStore, DurableWriterRequest};
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
@@ -54,6 +59,8 @@ pub(crate) struct FilePick {
     pub(crate) operation_id: String,
     pub(crate) owner: String,
     pub(crate) installation: String,
+    /// The release that asked. Its picks and grants outlive it: they belong
+    /// to the installation.
     pub(crate) generation: u64,
     /// Accepted file name suffixes (for example `.md`); empty accepts any.
     pub(crate) accept: Vec<String>,
@@ -86,12 +93,11 @@ pub(crate) enum FileGrantCommand {
     Expire {
         now_ms: u64,
     },
-    /// Takes an unexpired grant of this installation's current generation for
-    /// one import: no concurrent import can take it too.
+    /// Takes an unexpired grant of this installation for one import: no
+    /// concurrent import can take it too.
     Claim {
         owner: String,
         installation: String,
-        generation: u64,
         grant_id: String,
         now_ms: u64,
     },
@@ -107,16 +113,66 @@ pub(crate) enum FileGrantCommand {
         installation: String,
         grant_id: String,
     },
+    /// The owner ends the installation's unanswered picks and unimported
+    /// grants, or those of one pick. Imported files stay in the App's data.
+    Revoke {
+        owner: String,
+        installation: String,
+        operation_id: Option<String>,
+        now_ms: u64,
+    },
+}
+
+/// What a revoke ended.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct RevokedFiles {
+    /// Picks that were still unanswered: their prompts close.
+    pub(crate) pending: Vec<String>,
+    /// Picks ended, answered or not.
+    pub(crate) requests: u32,
+    /// Granted files the App had not imported; their bytes are dropped.
+    pub(crate) files: u32,
 }
 
 enum FileGrantReply {
     Pick(Option<FilePick>),
     Claimed(GrantedFile),
+    Revoked(RevokedFiles),
 }
 
 pub(super) struct FileGrantRequest {
     command: FileGrantCommand,
     response: mpsc::Sender<Result<FileGrantReply, &'static str>>,
+}
+
+/// An uninstall ends file access even if no expiry pass runs before reinstall.
+/// Called again while staging a reinstall, so failed cleanup cannot restore it.
+pub(super) fn forget_inactive(
+    connection: &Connection,
+    owner: &str,
+    installation: &str,
+) -> rusqlite::Result<()> {
+    // Prepared reinstalls already own an Immediate transaction. Join it;
+    // only standalone uninstall cleanup needs a transaction of its own.
+    let transaction = if connection.is_autocommit() {
+        Some(connection.unchecked_transaction()?)
+    } else {
+        None
+    };
+    connection.execute(
+        "UPDATE app_file_picks SET state='expired'
+         WHERE owner_id=?1 AND installation_id=?2 AND state IN ('pending','granted')",
+        params![owner, installation],
+    )?;
+    connection.execute(
+        "UPDATE app_file_grants SET contents=NULL
+         WHERE owner_id=?1 AND installation_id=?2 AND contents IS NOT NULL",
+        params![owner, installation],
+    )?;
+    if let Some(transaction) = transaction {
+        transaction.commit()?;
+    }
+    Ok(())
 }
 impl std::fmt::Debug for FileGrantRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -219,7 +275,7 @@ impl DurableKernelStateStore {
     ) -> Result<Option<FilePick>, &'static str> {
         match self.send_app_file_grant(command)? {
             FileGrantReply::Pick(pick) => Ok(pick),
-            FileGrantReply::Claimed(_) => Err("STORAGE_UNAVAILABLE"),
+            _ => Err("STORAGE_UNAVAILABLE"),
         }
     }
 
@@ -230,7 +286,18 @@ impl DurableKernelStateStore {
     ) -> Result<GrantedFile, &'static str> {
         match self.send_app_file_grant(command)? {
             FileGrantReply::Claimed(file) => Ok(file),
-            FileGrantReply::Pick(_) => Err("STORAGE_UNAVAILABLE"),
+            _ => Err("STORAGE_UNAVAILABLE"),
+        }
+    }
+
+    /// `FileGrantCommand::Revoke`: what it ended.
+    pub(crate) fn revoke_app_file_grants(
+        &self,
+        command: FileGrantCommand,
+    ) -> Result<RevokedFiles, &'static str> {
+        match self.send_app_file_grant(command)? {
+            FileGrantReply::Revoked(revoked) => Ok(revoked),
+            _ => Err("STORAGE_UNAVAILABLE"),
         }
     }
 
@@ -395,7 +462,8 @@ fn apply(
                     params![now_ms as i64],
                 )
                 .map_err(storage)?;
-            // An uninstalled or updated App cannot receive or import files.
+            // An uninstalled App cannot receive or import files. An update
+            // keeps them for the new release.
             transaction
                 .execute(
                     "UPDATE app_file_picks SET state='expired', updated_ms=?1
@@ -403,7 +471,6 @@ fn apply(
                        SELECT 1 FROM app_installations i
                        WHERE i.installation_id=app_file_picks.installation_id
                          AND i.owner_id=app_file_picks.owner_id
-                         AND i.generation=app_file_picks.generation
                          AND i.active_json IS NOT NULL)",
                     params![now_ms as i64],
                 )
@@ -436,7 +503,6 @@ fn apply(
         FileGrantCommand::Claim {
             owner,
             installation,
-            generation,
             grant_id,
             now_ms,
         } => {
@@ -446,14 +512,8 @@ fn apply(
                      JOIN app_file_picks p ON p.operation_id=g.operation_id
                      WHERE g.grant_id=?1 AND g.owner_id=?2 AND g.installation_id=?3
                        AND g.imported=0 AND g.contents IS NOT NULL AND g.expires_ms>?4
-                       AND p.state='granted' AND p.generation=?5",
-                    params![
-                        grant_id,
-                        owner,
-                        installation,
-                        now_ms as i64,
-                        generation as i64
-                    ],
+                       AND p.state='granted'",
+                    params![grant_id, owner, installation, now_ms as i64],
                     |row| {
                         Ok(GrantedFile {
                             name: row.get(0)?,
@@ -501,9 +561,83 @@ fn apply(
                 .map_err(storage)?;
             None
         }
+        FileGrantCommand::Revoke {
+            owner,
+            installation,
+            operation_id,
+            now_ms,
+        } => {
+            let revoked = revoke(&transaction, &owner, &installation, operation_id, now_ms)?;
+            transaction.commit().map_err(storage)?;
+            return Ok(FileGrantReply::Revoked(revoked));
+        }
     };
     transaction.commit().map_err(storage)?;
     Ok(FileGrantReply::Pick(result))
+}
+
+/// Ends the owner's open picks of one installation (or one pick): unanswered
+/// ones are no longer shown, and granted files not yet imported are dropped,
+/// including one an import holds right now, so a failed import cannot give it
+/// back (one that publishes still lands). The App reads them as `expired`.
+fn revoke(
+    transaction: &Connection,
+    owner: &str,
+    installation: &str,
+    operation_id: Option<String>,
+    now_ms: u64,
+) -> Result<RevokedFiles, &'static str> {
+    let storage = |_| "STORAGE_UNAVAILABLE";
+    if let Some(operation_id) = &operation_id {
+        load(transaction, operation_id)
+            .map_err(storage)?
+            .filter(|pick| pick.owner == owner && pick.installation == installation)
+            .ok_or("NOT_FOUND")?;
+    }
+    // `?3` is NULL for every pick of the installation.
+    const OPEN: &str = "owner_id=?1 AND installation_id=?2 AND (?3 IS NULL OR operation_id=?3)
+                        AND state IN ('pending','granted')";
+    let scope = params![owner, installation, operation_id];
+    let mut statement = transaction
+        .prepare(&format!(
+            "SELECT operation_id FROM app_file_picks WHERE {OPEN} AND state='pending'"
+        ))
+        .map_err(storage)?;
+    let pending = statement
+        .query_map(scope, |row| row.get(0))
+        .map_err(storage)?
+        .collect::<rusqlite::Result<Vec<String>>>()
+        .map_err(storage)?;
+    let files: i64 = transaction
+        .query_row(
+            &format!(
+                "SELECT count(*) FROM app_file_grants WHERE imported=0 AND contents IS NOT NULL
+                 AND operation_id IN (SELECT operation_id FROM app_file_picks WHERE {OPEN})"
+            ),
+            scope,
+            |row| row.get(0),
+        )
+        .map_err(storage)?;
+    transaction
+        .execute(
+            &format!(
+                "UPDATE app_file_grants SET contents=NULL WHERE contents IS NOT NULL
+                 AND operation_id IN (SELECT operation_id FROM app_file_picks WHERE {OPEN})"
+            ),
+            scope,
+        )
+        .map_err(storage)?;
+    let requests = transaction
+        .execute(
+            &format!("UPDATE app_file_picks SET state='expired', updated_ms=?4 WHERE {OPEN}"),
+            params![owner, installation, operation_id, now_ms as i64],
+        )
+        .map_err(storage)?;
+    Ok(RevokedFiles {
+        pending,
+        requests: requests as u32,
+        files: files as u32,
+    })
 }
 
 #[cfg(test)]

@@ -134,3 +134,49 @@ test('shared versioned HTTP wire fixture matches the SDK operations exactly', as
     assert.deepEqual(result,entry.result);
   }
 });
+test('an approved effect with no reply by its deadline is an uncertain outcome, not a timeout', async () => {
+  let time = 1000;
+  const clock = mock.method(performance,'now',()=>time);
+  try {
+    const pendingHeaders = operationId => createHttp(async method => {
+      time += 400;
+      if (method === 'http.cancel') return null;
+      if (method === 'http.open') return {streamId:ID};
+      if (method === 'http.headers') return {pending:true};
+      throw new Error('unexpected');
+    }).request({url:FIXTURE_URL,method:'POST',...(operationId ? {operationId} : {})},{timeoutMs:1000});
+    // The open spent the approval and the kernel sent the effect.
+    await assert.rejects(pendingHeaders('validation-1'),{code:'APP_HTTP_OUTCOME_UNCERTAIN',retryable:false});
+    // An ordinary request that times out is still a timeout.
+    await assert.rejects(pendingHeaders(undefined),{code:'DEADLINE_EXCEEDED'});
+    // An open that times out may already have spent the approval and sent the effect.
+    const opening = createHttp(async () => { throw new AppError('DEADLINE_EXCEEDED','App request deadline exceeded'); });
+    await assert.rejects(opening.request({url:FIXTURE_URL,method:'POST',operationId:'validation-2'}),{code:'APP_HTTP_OUTCOME_UNCERTAIN'});
+    // A stop by the kernel after the open is just as uncertain.
+    const stopped = createHttp(async method => {
+      if (method === 'http.cancel') return null;
+      if (method === 'http.open') return {streamId:ID};
+      throw new AppError('APP_OPERATION_STOPPED','HTTP operation was cancelled');
+    });
+    await assert.rejects(stopped.request({url:FIXTURE_URL,method:'POST',operationId:'validation-4'}),{code:'APP_HTTP_OUTCOME_UNCERTAIN'});
+    // A deadline that passes before the open is even sent spent nothing.
+    let calls = 0;
+    const late = createHttp(async () => { calls++; return {streamId:ID}; });
+    time = 5000;
+    clock.mock.mockImplementation(() => (time += 10));
+    await assert.rejects(late.request({url:FIXTURE_URL,method:'POST',operationId:'validation-5'},{timeoutMs:1}),{code:'DEADLINE_EXCEEDED'});
+    assert.equal(calls,0);
+    clock.mock.mockImplementation(() => time);
+    // An open the kernel refused spent nothing: its own error stands.
+    const refused = createHttp(async () => { throw new AppError('VALIDATION_REQUIRED','needs approval'); });
+    await assert.rejects(refused.request({url:FIXTURE_URL,method:'POST',operationId:'validation-2'}),{code:'VALIDATION_REQUIRED'});
+    // A received response, a gateway's 502 included, is passed through.
+    const gateway = createHttp(async method => {
+      if (method === 'http.cancel') return null;
+      if (method === 'http.open') return {streamId:ID};
+      if (method === 'http.headers') return {pending:false,status:502,headers:[],url:FIXTURE_URL};
+      return {pending:false,done:true};
+    });
+    assert.equal((await gateway.request({url:FIXTURE_URL,method:'POST',operationId:'validation-3'})).status,502);
+  } finally { clock.mock.restore(); }
+});

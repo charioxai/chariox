@@ -14,15 +14,20 @@ export function protocolError(message) {
 export function wireError(error) {
   // App exceptions can contain paths, credentials or other private details.
   // Explicit AppErrors are suitable for callers; unclassified errors are not.
-  return error instanceof AppError
-    ? { code: error.code, message: boundedMessage(error.message), retryable: error.retryable }
-    : { code: 'HANDLER_FAILED', message: 'App handler failed', retryable: false };
+  // App code can alter an AppError's fields: reading them must not throw, and
+  // a code the wire refuses fails the call as HANDLER_FAILED (see AppPeer).
+  try {
+    if (error instanceof AppError && typeof error.code === 'string' && typeof error.message === 'string') {
+      return { code: error.code, message: boundedMessage(error.message), retryable: error.retryable === true };
+    }
+  } catch { /* an App-made error object */ }
+  return { code: 'HANDLER_FAILED', message: 'App handler failed', retryable: false };
 }
 
 function boundedMessage(message) {
   let length = 0;
   let result = '';
-  for (const character of message) {
+  for (const character of message.toWellFormed()) {
     length += Buffer.byteLength(character);
     if (length > 4096) break;
     result += character;

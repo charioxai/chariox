@@ -164,7 +164,18 @@ async fn managed_structured_codex_exit_preserves_redacted_diagnostic_without_rep
         .iter()
         .filter(|record| record.kind == crate::terminal::TerminalOutputKind::ProviderError)
         .collect::<Vec<_>>();
-    assert_eq!(terminal_errors.len(), 1, "{terminal_records:?}");
+    assert_eq!(terminal_errors.len(), 2, "{terminal_records:?}");
+    let failure_notice = String::from_utf8_lossy(&terminal_errors[1].bytes);
+    assert!(failure_notice.starts_with("Request not carried out: "));
+    assert!(failure_notice.ends_with("It was dropped; send it again to retry."));
+    assert!(!failure_notice.contains(SYNTHETIC_API_KEY));
+    assert!(!failure_notice.contains(SYNTHETIC_TOKEN));
+    let failed = runtime.owned.agent_store.get_agent(agent.id()).unwrap();
+    assert_eq!(failed.failed_requests().len(), 1);
+    assert!(!failed.failed_requests()[0]
+        .reason
+        .contains(SYNTHETIC_API_KEY));
+    assert!(!failed.failed_requests()[0].reason.contains(SYNTHETIC_TOKEN));
     let terminal_error = String::from_utf8_lossy(&terminal_errors[0].bytes);
     assert!(
         terminal_error.contains(SAFE_DIAGNOSTIC_CONTEXT),
@@ -205,7 +216,11 @@ async fn managed_structured_codex_exit_preserves_redacted_diagnostic_without_rep
         .iter()
         .filter(|event| event.kind == crate::history::HistoryEventKind::ProviderError)
         .collect::<Vec<_>>();
-    assert_eq!(provider_errors.len(), 1, "{history:?}");
+    assert_eq!(provider_errors.len(), 2, "{history:?}");
+    assert_eq!(
+        provider_errors[1].content.as_deref(),
+        Some(failure_notice.as_ref())
+    );
     let provider_error = provider_errors[0]
         .content
         .as_deref()
@@ -258,7 +273,7 @@ async fn managed_structured_codex_exit_preserves_redacted_diagnostic_without_rep
             .iter()
             .filter(|event| event.kind == crate::history::HistoryEventKind::ProviderError)
             .count(),
-        1,
-        "repeated exit observation must not duplicate the diagnostic"
+        2,
+        "repeated exit observation must not duplicate the diagnostic or failed-request notice"
     );
 }

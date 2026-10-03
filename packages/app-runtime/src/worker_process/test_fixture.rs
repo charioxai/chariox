@@ -30,6 +30,14 @@ pub enum Mode {
     NoReport,
     BrokerCall,
     ToolEcho,
+    /// Declares the echo tool; its first call is never answered.
+    ToolStall,
+    /// As ToolStall, and the worker's resource check then finds it over its
+    /// memory limit, so the monitor stops it under the call.
+    ToolOverMemory,
+    /// Declares the echo tool and dies by SIGKILL during its first call; its
+    /// domain reports that kill as the memory limit (a Linux cgroup OOM kill).
+    ToolKilledAtMemoryLimit,
     Files,
     Http,
     HttpPaused,
@@ -40,6 +48,14 @@ pub enum Mode {
     Migrate,
     /// Writes during its migration, then fails before reporting the step.
     BadMigration,
+    Lifecycle,
+    LifecycleFailPrepare,
+    LifecycleHangPrepare,
+    LifecycleHangSuspend,
+    LifecycleHangResume,
+    LifecycleHangConfiguration,
+    LifecycleSlowResume,
+    LifecycleFailConfiguration,
 }
 impl Mode {
     fn argument(self) -> &'static str {
@@ -49,6 +65,8 @@ impl Mode {
             Self::NoReport => "sdk_no_report",
             Self::BrokerCall => "sdk_broker_call",
             Self::ToolEcho => "sdk_tool",
+            Self::ToolStall | Self::ToolOverMemory => "sdk_tool_stall",
+            Self::ToolKilledAtMemoryLimit => "sdk_tool_killed",
             Self::Files => "sdk_files",
             Self::Http => "sdk_http",
             Self::HttpPaused => "sdk_http_paused",
@@ -57,6 +75,14 @@ impl Mode {
             Self::OtherInstallation => "sdk_other_installation",
             Self::Migrate => "sdk_migrate",
             Self::BadMigration => "sdk_bad_migration",
+            Self::Lifecycle => "sdk_lifecycle",
+            Self::LifecycleFailPrepare => "sdk_lifecycle_fail_prepare",
+            Self::LifecycleHangPrepare => "sdk_lifecycle_hang_prepare_update",
+            Self::LifecycleHangSuspend => "sdk_lifecycle_hang_suspend",
+            Self::LifecycleHangResume => "sdk_lifecycle_hang_resume",
+            Self::LifecycleHangConfiguration => "sdk_lifecycle_hang_configuration_change",
+            Self::LifecycleSlowResume => "sdk_lifecycle_slow_resume",
+            Self::LifecycleFailConfiguration => "sdk_lifecycle_fail_configuration_change",
         }
     }
 }
@@ -82,9 +108,44 @@ impl Observation {
     pub fn ready_was_acknowledged(&self) -> bool {
         self.marker.is_file()
     }
+    /// Frames received by the fixed lifecycle fixture over the real IPC FD.
+    pub fn lifecycle_frames(&self) -> io::Result<Vec<serde_json::Value>> {
+        let bytes = match fs::read(self.marker.with_file_name("lifecycle-frames")) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        };
+        if bytes.len() > 1024 * 1024 {
+            return Err(io::Error::other("fixture log limit"));
+        }
+        bytes
+            .split(|b| *b == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).map_err(io::Error::other))
+            .collect()
+    }
     pub fn tool_invocations(&self) -> u64 {
         self.marker
             .with_file_name("tool-effects")
+            .metadata()
+            .map(|m| m.len() / 2)
+            .unwrap_or(0)
+    }
+    /// The `tools.invoke` requests the echo fixture received, in order.
+    pub fn tool_requests(&self) -> io::Result<Vec<serde_json::Value>> {
+        let mut text = String::new();
+        match File::open(self.marker.with_file_name("tool-requests")) {
+            Ok(file) => file.take(512 * 1024).read_to_string(&mut text)?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        };
+        text.lines()
+            .map(|line| serde_json::from_str(line).map_err(io::Error::other))
+            .collect()
+    }
+    pub fn tool_cancellations(&self) -> u64 {
+        self.marker
+            .with_file_name("tool-cancellations")
             .metadata()
             .map(|m| m.len() / 2)
             .unwrap_or(0)
@@ -267,6 +328,8 @@ impl Fixture {
                 _scratch: self.scratch.clone(),
             };
             let private_data = objects[1].try_clone()?;
+            let over_memory = matches!(mode, Mode::ToolOverMemory)
+                .then(|| Path::new(&roots[1]).join("tool-effects"));
             Ok((
                 PreparedWorker {
                     program: CString::new(self.executable.as_os_str().as_bytes()).unwrap(),
@@ -286,6 +349,8 @@ impl Fixture {
                     _objects: objects,
                     domain: Box::new(FixtureDomain {
                         private_data,
+                        over_memory,
+                        killed_at_memory_limit: matches!(mode, Mode::ToolKilledAtMemoryLimit),
                         reaped,
                         dropped,
                         _scratch: self.scratch.clone(),
@@ -308,6 +373,10 @@ impl Fixture {
 
 struct FixtureDomain {
     private_data: File,
+    /// Reported over its memory limit once this tool-effect marker exists.
+    over_memory: Option<PathBuf>,
+    /// The worker's own exit is reported as a kill at its memory limit.
+    killed_at_memory_limit: bool,
     reaped: Arc<AtomicBool>,
     dropped: Arc<AtomicBool>,
     _scratch: Arc<Scratch>,
@@ -323,6 +392,16 @@ impl ResourceDomain for FixtureDomain {
             return Err(WorkerError::ResourceDomain);
         }
         Ok(())
+    }
+    fn check_running(&mut self, _pid: libc::pid_t, _now: Instant) -> Result<(), WorkerError> {
+        match &self.over_memory {
+            Some(marker) if marker.exists() => Err(WorkerError::MemoryLimit),
+            _ => Ok(()),
+        }
+    }
+    fn exit_failure(&mut self) -> Option<WorkerError> {
+        self.killed_at_memory_limit
+            .then_some(WorkerError::MemoryLimit)
     }
     fn terminate(&mut self, _pid: libc::pid_t) {}
     fn reap_domain_blocking(&mut self) {

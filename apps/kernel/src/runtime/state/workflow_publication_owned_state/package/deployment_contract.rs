@@ -3,6 +3,13 @@ use sha2::{Digest, Sha256};
 
 use super::*;
 
+/// The kernel protocol a package's contract requires. A deployment's bind and
+/// recovery re-export its package and compare digests, so this is the package
+/// format's version, not the exporting kernel's: raising it with every kernel
+/// protocol would fail every deployment bound before the upgrade. Raise it only
+/// when a package needs a newer kernel to run.
+pub(crate) const PACKAGE_PROTOCOL_VERSION: u32 = 367;
+
 pub(super) fn workflow_publication_deployment_contract_json(
     publication: &crate::session::WorkflowPublicationDefinition,
     publication_value: &serde_json::Value,
@@ -64,7 +71,7 @@ pub(super) fn workflow_publication_deployment_contract_json(
         "compatibility": {
             "package_version": super::workflow_publication_package_version(agent_app),
             "minimum_kernel_version": env!("CARGO_PKG_VERSION"),
-            "minimum_local_daemon_protocol_version": crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+            "minimum_local_daemon_protocol_version": PACKAGE_PROTOCOL_VERSION,
         },
         "routes": [route],
         "provider_requirements": provider_requirements,

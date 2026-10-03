@@ -1,4 +1,4 @@
-//! P1.20: an App-bound deployment runs as a pinned independent copy.
+//! P1.20: an App-bound deployment runs as an independent copy of its release's Apps.
 use super::*;
 use crate::durable_state::app_inbox::AppInboxOperation;
 use chariox_app_runtime::app_inbox::{InboxRoute, InboxSource};
@@ -102,11 +102,16 @@ fn approve(harness: &LocalRouterTestHarness, deployed: &Deployed, release: &str)
         LocalDaemonResponse::DeploymentAppsConsent { consent } => consent,
         response => panic!("unexpected response: {response:?}"),
     };
+    let asked = request();
+    // Protocol 377: App releases approved before are not asked about again.
+    if asked.status == crate::local::DeploymentAppsConsentStatus::Approved {
+        return;
+    }
     harness
         .dispatch(LocalDaemonRequest::RespondToInteraction(
             crate::local::RespondToInteractionRequest {
                 session_id: deployed.graph.session_id.clone(),
-                interaction_id: request().interaction_id,
+                interaction_id: asked.interaction_id,
                 choice_id: "approve".into(),
                 custom_reply: None,
                 passkey: None,
@@ -142,6 +147,15 @@ fn installation<'a>(
     set.iter()
         .find(|installation| installation.installation_id == id)
         .unwrap_or_else(|| panic!("installation `{id}` in {set:?}"))
+}
+
+/// The (owner, installation) App storages the kernel deleted.
+fn deleted_storage(harness: &LocalRouterTestHarness) -> Vec<(String, String)> {
+    harness
+        .runtime_state()
+        .app_control()
+        .fixture_app_storage()
+        .deleted()
 }
 
 fn ensure(
@@ -181,11 +195,20 @@ fn pumped_ensure(
     harness: &LocalRouterTestHarness,
     deployed: &Deployed,
 ) -> Result<Option<String>, crate::DaemonError> {
+    pumped_ensure_release(harness, deployed, RELEASE)
+}
+
+fn pumped_ensure_release(
+    harness: &LocalRouterTestHarness,
+    deployed: &Deployed,
+    release: &str,
+) -> Result<Option<String>, crate::DaemonError> {
     let runtime = harness.runtime_state();
-    let (session_id, publication_id, digest) = (
+    let (session_id, publication_id, digest, release) = (
         deployed.graph.session_id.clone(),
         deployed.publication.id().to_owned(),
         deployed.digest.clone(),
+        release.to_owned(),
     );
     let task = harness.spawn_test_task(async move {
         runtime
@@ -193,7 +216,7 @@ fn pumped_ensure(
                 &session_id,
                 &publication_id,
                 DEPLOYMENT,
-                RELEASE,
+                &release,
                 &digest,
             )
             .await
@@ -372,11 +395,103 @@ fn a_consented_app_bound_deployment_runs_as_an_independent_copy() {
     assert!(set
         .iter()
         .all(|installation| installation.installation_id != "copy"));
+    assert_eq!(
+        deleted_storage(&harness),
+        [(DEFAULT_LOCAL_USER_ID.to_owned(), "copy".to_owned())],
+        "the copy's data is deleted with it"
+    );
     assert!(installation(&set, "installed").inbox_routes[0].active);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while harness.runtime_state().fixture_session(&session_id).is_ok()
+        && std::time::Instant::now() < deadline
+    {
+        harness.pump_transport_runtime();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     assert!(harness
         .runtime_state()
         .fixture_session(&session_id)
         .is_err());
+    // Starting again is durable before the copy is prepared, so a start that
+    // waits for App approvals does not leave the source looking stopped (the
+    // reconcile would remove the copies it installed). The start itself may
+    // fail here; its intent must not.
+    let _ = harness.dispatch(LocalDaemonRequest::ControlWorkflowPublicationRuntime(
+        crate::local::ControlWorkflowPublicationRuntimeRequest {
+            session_id: deployed.graph.session_id.clone(),
+            publication_ref: deployed.publication.id().into(),
+            action: crate::local::WorkflowPublicationRuntimeAction::Start,
+            host: None,
+            port: None,
+            kernel_url: None,
+        },
+    ));
+    let states = harness
+        .with_app(|app| {
+            app.durable_state_store()
+                .load_workflow_hot_states(&durable_owner)
+        })
+        .unwrap();
+    let durable = states
+        .iter()
+        .find(|(id, _)| *id == deployed.graph.session_id)
+        .and_then(|(_, state)| {
+            state
+                .workflow_publications
+                .iter()
+                .find(|publication| publication.id() == deployed.publication.id())
+        })
+        .expect("the durable publication");
+    let deployment = durable.deployment().expect("the deployment metadata");
+    assert!(deployment.get("desired_state").is_none());
+    assert_eq!(
+        deployment.pointer("/binding/deployment_id"),
+        Some(&serde_json::json!(DEPLOYMENT)),
+    );
+    // A deploy (bind) is an explicit start too: it clears a stop first, so the
+    // launch does not yield to a stop that the deploy itself overrides.
+    let _ = harness.dispatch(LocalDaemonRequest::ControlWorkflowPublicationRuntime(
+        crate::local::ControlWorkflowPublicationRuntimeRequest {
+            session_id: deployed.graph.session_id.clone(),
+            publication_ref: deployed.publication.id().into(),
+            action: crate::local::WorkflowPublicationRuntimeAction::Stop,
+            host: None,
+            port: None,
+            kernel_url: None,
+        },
+    ));
+    let _ = harness.dispatch(LocalDaemonRequest::BindWorkflowPublicationDeployment(
+        crate::local::BindWorkflowPublicationDeploymentRequest {
+            session_id: deployed.graph.session_id.clone(),
+            publication_ref: deployed.publication.id().into(),
+            setup_id: "setup-2".into(),
+            operation_key: "deployment-setup:setup-2:runtime".into(),
+            deployment_id: DEPLOYMENT.into(),
+            environment_id: "environment-1".into(),
+            release_id: RELEASE.into(),
+            package_digest: deployed.digest.clone(),
+            desired_revision: 2,
+            caller_claims_public_key_pem: PEM.into(),
+        },
+    ));
+    let states = harness
+        .with_app(|app| {
+            app.durable_state_store()
+                .load_workflow_hot_states(&durable_owner)
+        })
+        .unwrap();
+    let rebound = states
+        .iter()
+        .find(|(id, _)| *id == deployed.graph.session_id)
+        .and_then(|(_, state)| {
+            state
+                .workflow_publications
+                .iter()
+                .find(|publication| publication.id() == deployed.publication.id())
+        })
+        .and_then(|publication| publication.deployment())
+        .expect("the durable deployment metadata");
+    assert!(rebound.get("desired_state").is_none(), "{rebound}");
     drop(harness);
     let _ = std::fs::remove_dir_all(root);
 }
@@ -400,6 +515,7 @@ fn disabling_the_source_publication_removes_its_copy() {
     harness.pump_transport_runtime();
     assert!(harness.runtime_state().fixture_session(&session_id).is_ok());
     assert!(!installation(&app_set(&harness), "installed").inbox_routes[0].active);
+    assert!(deleted_storage(&harness).is_empty());
 
     harness
         .dispatch(LocalDaemonRequest::DisableWorkflowPublication(
@@ -414,7 +530,18 @@ fn disabling_the_source_publication_removes_its_copy() {
     assert!(set
         .iter()
         .all(|installation| installation.installation_id != "copy"));
+    assert_eq!(
+        deleted_storage(&harness),
+        [(DEFAULT_LOCAL_USER_ID.to_owned(), "copy".to_owned())]
+    );
     assert!(installation(&set, "installed").inbox_routes[0].active);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while harness.runtime_state().fixture_session(&session_id).is_ok()
+        && std::time::Instant::now() < deadline
+    {
+        harness.pump_transport_runtime();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     assert!(harness
         .runtime_state()
         .fixture_session(&session_id)
@@ -449,6 +576,95 @@ fn an_app_bound_bind_without_the_owners_consent_is_refused() {
     let set = app_set(&harness);
     assert_eq!(set.len(), 1);
     assert!(set[0].inbox_routes[0].active);
+    drop(harness);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_bind_the_kernel_cannot_verify_is_refused_before_the_running_release_stops() {
+    let root = temp_root("copy-unverified");
+    let harness = harness_with_app(&root);
+    let deployed = deployed(&harness, "copy-unverified", true);
+    let runtime = harness.runtime_state();
+    let (session_id, publication_id) = (
+        deployed.graph.session_id.clone(),
+        deployed.publication.id().to_owned(),
+    );
+    // The release that runs now.
+    let running = {
+        let (runtime, session_id, publication_id) =
+            (runtime.clone(), session_id.clone(), publication_id.clone());
+        move || {
+            let (runtime, session_id, publication_id) =
+                (runtime.clone(), session_id.clone(), publication_id.clone());
+            async move {
+                runtime
+                    .fixture_publication_runtime_running(&session_id, &publication_id)
+                    .await
+            }
+        }
+    };
+    harness.block_on_test_task({
+        let (runtime, session_id, publication_id) =
+            (runtime.clone(), session_id.clone(), publication_id.clone());
+        async move {
+            runtime
+                .fixture_run_publication_runtime(&session_id, &publication_id)
+                .await
+        }
+    });
+    assert!(harness.block_on_test_task(running()));
+    // A release this kernel cannot verify (as a rollback to a release whose
+    // source changed since) is refused before the running release stops.
+    let error = harness
+        .dispatch(LocalDaemonRequest::BindWorkflowPublicationDeployment(
+            crate::local::BindWorkflowPublicationDeploymentRequest {
+                session_id: session_id.clone(),
+                publication_ref: publication_id.clone(),
+                setup_id: "setup-1".into(),
+                operation_key: "deployment-setup:setup-1:runtime".into(),
+                deployment_id: DEPLOYMENT.into(),
+                environment_id: "environment-1".into(),
+                release_id: RELEASE.into(),
+                package_digest: format!("sha256:{}", "f".repeat(64)),
+                desired_revision: 1,
+                caller_claims_public_key_pem: PEM.into(),
+            },
+        ))
+        .expect_err("unverifiable release");
+    // Refused by the missing plan, or (once a release without Apps re-exports
+    // with none) by the digest check.
+    assert!(
+        error.to_string().contains("export the release again")
+            || error
+                .to_string()
+                .contains("no longer matches the bound deployment"),
+        "{error}"
+    );
+    assert!(
+        harness.block_on_test_task(running()),
+        "the running release still runs"
+    );
+    let publication = harness
+        .runtime_state()
+        .fixture_session(&session_id)
+        .expect("session")
+        .workflow_publications()
+        .iter()
+        .find(|publication| publication.id() == publication_id)
+        .cloned()
+        .expect("publication");
+    assert_ne!(
+        publication.status(),
+        Some("error"),
+        "nothing was marked failed"
+    );
+    let set = app_set(&harness);
+    assert_eq!(set.len(), 1, "nothing was copied");
+    assert!(
+        set[0].inbox_routes[0].active,
+        "the owner's route still receives"
+    );
     drop(harness);
     let _ = std::fs::remove_dir_all(root);
 }
@@ -515,7 +731,7 @@ fn a_copy_install_the_consent_does_not_cover_fails_the_deployment_clearly() {
 }
 
 #[test]
-fn a_copy_whose_data_schema_differs_from_the_release_fails_closed() {
+fn a_release_with_an_older_data_schema_than_the_copy_fails_closed() {
     let root = temp_root("copy-schema");
     let harness = harness_with_app(&root);
     let deployed = deployed(&harness, "copy-schema", true);
@@ -564,6 +780,61 @@ fn a_copy_whose_data_schema_differs_from_the_release_fails_closed() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// Protocol 377: a release whose App has a newer data schema updates the copy
+/// in place (the update migrates its data); only an older schema fails closed.
+#[test]
+fn a_release_with_a_newer_data_schema_updates_the_copy() {
+    let root = temp_root("copy-migrate");
+    let harness = harness_with_app(&root);
+    let first = deployed(&harness, "copy-migrate", true);
+    harness.with_app(|app| {
+        crate::durable_state::app_state::fixture_copy_installation(
+            &app.durable_state_store(),
+            DEFAULT_LOCAL_USER_ID,
+            "copy",
+            DEPLOYMENT,
+            crate::durable_state::app_state::fixture_inbox_package(),
+        )
+    });
+    // The owner updates the App to a release with a newer data schema, and
+    // the next release of the deployment packages it.
+    let newer = crate::durable_state::app_state::fixture_inbox_package_version("1.1.0", 1);
+    stage_release(&harness, newer.clone());
+    harness.with_app(|app| {
+        crate::durable_state::app_state::fixture_update_installation(
+            &app.durable_state_store(),
+            DEFAULT_LOCAL_USER_ID,
+            "installed",
+            newer,
+        )
+    });
+    let (digest, files) =
+        export(&harness, &first.graph, first.publication.id()).expect("the next release");
+    assert_eq!(
+        package_json_file(&files, "apps.json")["apps"][0]["schema_version"],
+        1
+    );
+    let next = Deployed {
+        graph: first.graph,
+        publication: first.publication,
+        digest,
+    };
+    approve(&harness, &next, "release-2");
+    // The copy's update is begun rather than refused for its schema; this
+    // harness runs no App worker, so the update itself cannot complete here:
+    // it fails, or (under load) is still running at the install deadline.
+    let error = pumped_ensure_release(&harness, &next, "release-2").expect_err("no App worker");
+    let error = error.to_string();
+    assert!(!error.contains("schema version"), "{error}");
+    assert!(
+        error.contains("could not be installed for the deployment")
+            || error.contains("did not finish installing for the deployment"),
+        "{error}"
+    );
+    drop(harness);
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// Rollback: binding another release of the deployment moves the copy to that
 /// release's session and plan, keeping the copy's installation (and its data)
 /// when the release pins the same App release.
@@ -582,7 +853,8 @@ fn binding_another_release_re_applies_its_plan_on_the_same_copy() {
         )
     });
     let first = ensure(&harness, &deployed).unwrap().unwrap();
-    // Another release needs its own consent.
+    // Another release needs its own consent; with the same App releases it
+    // is approved without asking again (protocol 377).
     let refused = ensure_release(&harness, &deployed, "release-2").expect_err("no consent");
     assert!(refused.to_string().contains("approve"), "{refused}");
     approve(&harness, &deployed, "release-2");
@@ -609,6 +881,214 @@ fn binding_another_release_re_applies_its_plan_on_the_same_copy() {
     // Rolling back applies release 1 again.
     assert_ne!(ensure(&harness, &deployed).unwrap().unwrap(), second);
     assert!(harness.runtime_state().fixture_session(&second).is_err());
+    // The same copy served both releases: its data was never deleted.
+    assert!(deleted_storage(&harness).is_empty());
+    drop(harness);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// A release whose plan names no App (its last App was removed) runs from the
+/// source: binding it removes the deployment's copy and resumes the owner.
+#[test]
+fn a_release_without_apps_removes_the_copy_and_resumes_the_owner() {
+    let root = temp_root("copy-no-apps");
+    let harness = harness_with_app(&root);
+    let deployed = deployed(&harness, "copy-no-apps", true);
+    harness.with_app(|app| {
+        crate::durable_state::app_state::fixture_copy_installation(
+            &app.durable_state_store(),
+            DEFAULT_LOCAL_USER_ID,
+            "copy",
+            DEPLOYMENT,
+            crate::durable_state::app_state::fixture_inbox_package(),
+        )
+    });
+    let copy_session = ensure(&harness, &deployed).unwrap().expect("a copy");
+    let set = app_set(&harness);
+    assert!(installation(&set, "copy").inbox_routes[0].active);
+    assert!(!installation(&set, "installed").inbox_routes[0].active);
+
+    let empty = format!("sha256:{}", "e".repeat(64));
+    harness.runtime_state().fixture_record_release_app_plan(
+        &deployed.graph.session_id,
+        deployed.publication.id(),
+        &empty,
+        serde_json::json!({"schema": "chariox.publication-apps.v1", "apps": []}),
+    );
+    let next = Deployed {
+        graph: deployed.graph,
+        publication: deployed.publication,
+        digest: empty,
+    };
+    assert_eq!(ensure_release(&harness, &next, "release-2").unwrap(), None);
+    let set = app_set(&harness);
+    assert!(
+        set.iter()
+            .all(|installation| installation.deployment_id.as_deref() != Some(DEPLOYMENT)),
+        "the deployment's copy installations are gone: {set:?}"
+    );
+    assert!(
+        installation(&set, "installed").inbox_routes[0].active,
+        "the owner's route resumes"
+    );
+    assert!(harness
+        .runtime_state()
+        .fixture_session(&copy_session)
+        .is_err());
+    drop(harness);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_stop_that_lands_while_a_runtime_starts_wins() {
+    let root = temp_root("copy-stop-race");
+    let harness = harness_with_app(&root);
+    let deployed = deployed(&harness, "copy-stop-race", true);
+    let (session_id, publication_id) = (
+        deployed.graph.session_id.clone(),
+        deployed.publication.id().to_owned(),
+    );
+    harness.runtime_state().fixture_mark_publication_deployment(
+        &session_id,
+        &publication_id,
+        serde_json::json!({
+            "kind": "local_runtime",
+            "status": "starting",
+            "binding": {
+                "setup_id": "setup-1",
+                "operation_key": "deployment-setup:setup-1:runtime",
+                "deployment_id": DEPLOYMENT,
+                "environment_id": "environment-1",
+                "release_id": RELEASE,
+                "package_digest": deployed.digest,
+                "desired_revision": 1,
+                "caller_claims_public_key_pem": PEM,
+            },
+        }),
+    );
+    let register = || {
+        let (runtime, session_id, publication_id) = (
+            harness.runtime_state(),
+            session_id.clone(),
+            publication_id.clone(),
+        );
+        harness.block_on_test_task(async move {
+            let outcome = runtime
+                .fixture_register_launched_runtime(&session_id, &publication_id)
+                .await;
+            let running = runtime
+                .fixture_publication_runtime_running(&session_id, &publication_id)
+                .await;
+            (outcome, running)
+        })
+    };
+    let alive = |pid: u32| {
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .status()
+            .is_ok_and(|status| status.success())
+    };
+    // Without a stop, a launched gateway is registered and runs.
+    let ((outcome, first), running) = register();
+    outcome.expect("registered");
+    assert!(running && alive(first));
+    // The owner stops the deployment; its next gateway is still starting
+    // (not registered yet) when the stop lands.
+    harness
+        .dispatch(LocalDaemonRequest::ControlWorkflowPublicationRuntime(
+            crate::local::ControlWorkflowPublicationRuntimeRequest {
+                session_id: session_id.clone(),
+                publication_ref: publication_id.clone(),
+                action: crate::local::WorkflowPublicationRuntimeAction::Stop,
+                host: None,
+                port: None,
+                kernel_url: None,
+            },
+        ))
+        .expect("stop");
+    let ((outcome, pid), running) = register();
+    let error = outcome.expect_err("the stop wins");
+    assert!(
+        error
+            .to_string()
+            .contains("stopped while its runtime was starting"),
+        "{error}"
+    );
+    assert!(!running, "no runtime is registered");
+    assert!(!alive(pid), "the launched gateway is gone");
+    assert!(!alive(first), "the stop stopped the running gateway");
+    // The stop is durable: a restarted kernel does not serve it again.
+    let durable_owner = harness
+        .runtime_state()
+        .fixture_session(&session_id)
+        .unwrap()
+        .host_daemon_id()
+        .to_owned();
+    let states = harness
+        .with_app(|app| {
+            app.durable_state_store()
+                .load_workflow_hot_states(&durable_owner)
+        })
+        .unwrap();
+    let durable = states
+        .iter()
+        .find(|(id, _)| *id == session_id)
+        .and_then(|(_, state)| {
+            state
+                .workflow_publications
+                .iter()
+                .find(|publication| publication.id() == publication_id)
+        })
+        .and_then(|publication| publication.deployment())
+        .expect("the durable deployment metadata");
+    assert_eq!(
+        durable.get("desired_state"),
+        Some(&serde_json::json!("stopped")),
+        "{durable}"
+    );
+    drop(harness);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// Rolling back to a release exported before the publication used any App
+/// removes the later release's copy and resumes the owner.
+#[test]
+fn a_rollback_to_a_release_without_apps_removes_the_copy() {
+    let root = temp_root("copy-rollback-no-apps");
+    let harness = harness_with_app(&root);
+    let deployed = deployed(&harness, "copy-rollback-no-apps", true);
+    harness.with_app(|app| {
+        crate::durable_state::app_state::fixture_copy_installation(
+            &app.durable_state_store(),
+            DEFAULT_LOCAL_USER_ID,
+            "copy",
+            DEPLOYMENT,
+            crate::durable_state::app_state::fixture_inbox_package(),
+        )
+    });
+    let copy_session = ensure(&harness, &deployed).unwrap().expect("a copy");
+    assert!(!installation(&app_set(&harness), "installed").inbox_routes[0].active);
+    // A release with no recorded plan while later releases record theirs.
+    let earlier = Deployed {
+        graph: deployed.graph,
+        publication: deployed.publication,
+        digest: format!("sha256:{}", "d".repeat(64)),
+    };
+    assert_eq!(
+        ensure_release(&harness, &earlier, "release-0").unwrap(),
+        None
+    );
+    let set = app_set(&harness);
+    assert!(
+        set.iter()
+            .all(|installation| installation.deployment_id.as_deref() != Some(DEPLOYMENT)),
+        "the copy's installations are gone: {set:?}"
+    );
+    assert!(installation(&set, "installed").inbox_routes[0].active);
+    assert!(harness
+        .runtime_state()
+        .fixture_session(&copy_session)
+        .is_err());
     drop(harness);
     let _ = std::fs::remove_dir_all(root);
 }

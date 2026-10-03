@@ -2,7 +2,9 @@
 //! an App's declared incoming event. Accepted occurrences are durable before
 //! the source is acknowledged, then delivered to the App's handler at least
 //! once, starting a stopped worker on demand, and waiting through updates.
-use super::app_wake_pump_runtime::{after_delivery, Settle, DELIVERY_TIMEOUT, PAGE, START_WAIT_MS};
+use super::app_wake_pump_runtime::{
+    after_delivery, page_wants_rerun, Settle, DELIVERY_TIMEOUT, PAGE, START_WAIT_MS,
+};
 use super::KernelRuntimeState;
 use crate::durable_state::app_active_release::ActiveReleaseError;
 use crate::durable_state::app_inbox::{AppInboxOperation, AppInboxOutcome};
@@ -127,15 +129,19 @@ impl KernelRuntimeState {
                 now_ms: crate::session::unix_epoch_ms(),
             })
             .await?;
-        self.schedule_app_wake_pump();
+        self.request_app_wake_pump();
         Ok(matches!(
             accepted,
             AppInboxOutcome::Accepted(Accepted::Duplicate(_))
         ))
     }
 
-    /// One bounded delivery pass, run with the wake pass.
-    pub(super) async fn app_inbox_pass(&self, now_ms: u64) {
+    /// One bounded delivery pass, run with the wake pass; true when it filled
+    /// its page and delivered something.
+    pub(super) async fn app_inbox_pass(
+        &self,
+        now_ms: u64,
+    ) -> (bool, super::app_wake_pump_runtime::Installations) {
         let store = self.owned.durable_state_store.clone();
         let due = tokio::task::spawn_blocking(move || {
             store.app_inbox(AppInboxOperation::Due {
@@ -145,19 +151,26 @@ impl KernelRuntimeState {
         })
         .await;
         let Ok(Ok(AppInboxOutcome::Due(due))) = due else {
-            return;
+            return Default::default();
         };
         if due.is_empty() {
-            return;
+            return Default::default();
         }
-        let (deliver, planned) = self
+        let page = due.len();
+        let mut delivered_count = 0;
+        let Ok((deliver, planned, at_live_limit)) = self
             .plan_app_delivery(due, now_ms, |item: &InboxItem| {
                 (item.owner_id.clone(), item.installation_id.clone())
             })
-            .await;
+            .await
+        else {
+            return Default::default();
+        };
         let mut records: Vec<_> = planned
             .into_iter()
-            .map(|(item, settle)| record(item.sequence, settle, 0, now_ms))
+            .map(|(item, settle)| {
+                record(item.sequence, settle, 0, now_ms, "the App could not start")
+            })
             .collect();
         let control = self.app_control().clone();
         for item in deliver {
@@ -177,20 +190,28 @@ impl KernelRuntimeState {
             {
                 records.push(AppInboxOperation::Undeliverable {
                     sequence: item.sequence,
+                    now_ms,
                 });
                 continue;
             }
-            let delivered = lease.deliver_event(&item, DELIVERY_TIMEOUT).await.is_ok();
-            let update_pending = !delivered
+            let delivered = lease.deliver_event(&item, DELIVERY_TIMEOUT).await;
+            delivered_count += usize::from(delivered.is_ok());
+            let update_pending = delivered.is_err()
                 && self
                     .app_update_pending(&item.owner_id, &item.installation_id)
                     .await;
-            let settle = after_delivery(delivered, update_pending, now_ms);
+            let reason = delivered
+                .as_ref()
+                .err()
+                .map(ToString::to_string)
+                .unwrap_or_default();
+            let settle = after_delivery(delivered.is_ok(), update_pending, now_ms);
             records.push(record(
                 item.sequence,
                 settle,
                 lease.catalog().generation(),
                 now_ms,
+                &reason,
             ));
         }
         let store = self.owned.durable_state_store.clone();
@@ -200,6 +221,7 @@ impl KernelRuntimeState {
             }
         })
         .await;
+        (page_wants_rerun(page, delivered_count), at_live_limit)
     }
 
     async fn still_accepted(&self, item: &InboxItem) -> bool {
@@ -257,14 +279,24 @@ impl KernelRuntimeState {
     }
 }
 
-fn record(sequence: i64, settle: Settle, generation: u64, now_ms: u64) -> AppInboxOperation {
+fn record(
+    sequence: i64,
+    settle: Settle,
+    generation: u64,
+    now_ms: u64,
+    reason: &str,
+) -> AppInboxOperation {
     match settle {
         Settle::Delivered => AppInboxOperation::Delivered {
             sequence,
             generation,
         },
         Settle::Postponed(until_ms) => AppInboxOperation::Postponed { sequence, until_ms },
-        Settle::Failed => AppInboxOperation::Failed { sequence, now_ms },
+        Settle::Failed => AppInboxOperation::Failed {
+            sequence,
+            now_ms,
+            reason: reason.to_owned(),
+        },
     }
 }
 

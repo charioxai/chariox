@@ -69,6 +69,7 @@ async fn kernel_websocket_replies_to_client_ping() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_pongs_while_event_writer_is_delayed() {
+    let workspace = ExecutionWorkspace::directory("delayed-pong");
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
@@ -93,10 +94,7 @@ async fn kernel_websocket_pongs_while_event_writer_is_delayed() {
     let create_response = send_request(
         &mut socket,
         "create-session-before-delayed-ping",
-        LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-            "workspace-delayed-pong",
-            "worktree-delayed-pong",
-        )),
+        LocalDaemonRequest::CreateSession(workspace.session_request()),
     )
     .await;
     let session_id = response_variant(&create_response, "SessionCreated")["session"]["id"]
@@ -162,6 +160,7 @@ async fn kernel_websocket_pongs_while_event_writer_is_delayed() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_detaches_terminal_attachment_on_connection_close() {
+    let workspace = ExecutionWorkspace::directory("close-detach");
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
@@ -184,10 +183,7 @@ async fn kernel_websocket_detaches_terminal_attachment_on_connection_close() {
     let create_response = send_request(
         &mut socket,
         "create-session",
-        LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-            "workspace-close-detach",
-            "worktree-close-detach",
-        )),
+        LocalDaemonRequest::CreateSession(workspace.session_request()),
     )
     .await;
     let session_id = response_variant(&create_response, "SessionCreated")["session"]["id"]
@@ -254,6 +250,7 @@ async fn kernel_websocket_detaches_terminal_attachment_on_connection_close() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_closes_slow_consumers_when_the_outgoing_queue_overflows() {
+    let workspace = ExecutionWorkspace::directory("kernel-overflow");
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
@@ -279,10 +276,7 @@ async fn kernel_websocket_closes_slow_consumers_when_the_outgoing_queue_overflow
     let create_response = send_request(
         &mut socket,
         "create-session",
-        LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-            "workspace-kernel-overflow",
-            "worktree-kernel-overflow",
-        )),
+        LocalDaemonRequest::CreateSession(workspace.session_request()),
     )
     .await;
     let session_id = response_variant(&create_response, "SessionCreated")["session"]["id"]

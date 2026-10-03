@@ -2,13 +2,16 @@ use super::*;
 
 #[tokio::test]
 async fn mixed_spawn_agents_preserves_response_order_and_final_focus() {
+    let worktree = crate::test_support::TestWorktree::new(
+        "mixed_spawn_agents_preserves_response_order_and_final_focus",
+    );
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
     ));
     let (session_id, terminal_stream, local_kernel_ref) = {
         let mut app_locked = app.lock().await;
         let (session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
-            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .create_session(worktree.session_request())
             .expect("session should be created");
         (
             session.id().to_string(),
@@ -37,7 +40,7 @@ async fn mixed_spawn_agents_preserves_response_order_and_final_focus() {
                 effort: None,
                 execution_mode: None,
                 permission_level: None,
-                worktree_id: Some("worktree".to_string()),
+                worktree_id: Some(worktree.path().display().to_string()),
                 kernel_ref: None,
                 slice_ref: None,
                 worktree_placement: None,
@@ -51,7 +54,7 @@ async fn mixed_spawn_agents_preserves_response_order_and_final_focus() {
                 effort: None,
                 execution_mode: None,
                 permission_level: None,
-                worktree_id: Some("worktree".to_string()),
+                worktree_id: Some(worktree.path().display().to_string()),
                 kernel_ref: Some(local_kernel_ref),
                 slice_ref: None,
                 worktree_placement: None,
@@ -87,13 +90,16 @@ async fn mixed_spawn_agents_preserves_response_order_and_final_focus() {
 
 #[tokio::test]
 async fn local_spawn_agents_batch_rejects_duplicate_aliases_without_partial_create() {
+    let worktree = crate::test_support::TestWorktree::new(
+        "local_spawn_agents_batch_rejects_duplicate_aliases_without_partial_create",
+    );
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
     ));
     let (session_id, terminal_stream, initial_agent_count) = {
         let mut app_locked = app.lock().await;
         let (session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
-            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .create_session(worktree.session_request())
             .expect("session should be created");
         let initial_agent_count = app_locked.agents().get_session_agents(session.id()).len();
         (
@@ -122,7 +128,7 @@ async fn local_spawn_agents_batch_rejects_duplicate_aliases_without_partial_crea
                 effort: None,
                 execution_mode: None,
                 permission_level: None,
-                worktree_id: Some("worktree".to_string()),
+                worktree_id: Some(worktree.path().display().to_string()),
                 kernel_ref: None,
                 slice_ref: None,
                 worktree_placement: None,
@@ -136,7 +142,7 @@ async fn local_spawn_agents_batch_rejects_duplicate_aliases_without_partial_crea
                 effort: None,
                 execution_mode: None,
                 permission_level: None,
-                worktree_id: Some("worktree".to_string()),
+                worktree_id: Some(worktree.path().display().to_string()),
                 kernel_ref: None,
                 slice_ref: None,
                 worktree_placement: None,
@@ -167,13 +173,16 @@ async fn local_spawn_agents_batch_rejects_duplicate_aliases_without_partial_crea
 
 #[tokio::test]
 async fn local_spawn_agents_batch_recalculates_layout_and_focus_once() {
+    let worktree = crate::test_support::TestWorktree::new(
+        "local_spawn_agents_batch_recalculates_layout_and_focus_once",
+    );
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
     ));
     let (session_id, terminal_stream) = {
         let mut app_locked = app.lock().await;
         let (session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
-            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .create_session(worktree.session_request())
             .expect("session should be created");
         (session.id().to_string(), app_locked.terminal_stream_store())
     };
@@ -198,7 +207,7 @@ async fn local_spawn_agents_batch_recalculates_layout_and_focus_once() {
                 effort: None,
                 execution_mode: None,
                 permission_level: None,
-                worktree_id: Some("worktree".to_string()),
+                worktree_id: Some(worktree.path().display().to_string()),
                 kernel_ref: None,
                 slice_ref: None,
                 worktree_placement: None,
@@ -303,6 +312,9 @@ async fn local_spawn_agent_creates_requested_git_worktree_in_kernel() {
 
 #[tokio::test]
 async fn local_spawn_agent_inherits_session_agent_defaults_when_omitted() {
+    let worktree = crate::test_support::TestWorktree::new(
+        "local_spawn_agent_inherits_session_agent_defaults_when_omitted",
+    );
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
     ));
@@ -314,9 +326,7 @@ async fn local_spawn_agent_inherits_session_agent_defaults_when_omitted() {
             .with_execution_mode(AgentExecutionMode::Plan)
             .with_permission_level(AgentPermissionLevel::Required);
         let (session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
-            .create_session(
-                CreateSessionRequest::new("workspace", "worktree").with_agent_defaults(defaults),
-            )
+            .create_session(worktree.session_request().with_agent_defaults(defaults))
             .expect("session should be created");
         (session.id().to_string(), app_locked.terminal_stream_store())
     };
@@ -338,7 +348,7 @@ async fn local_spawn_agent_inherits_session_agent_defaults_when_omitted() {
         effort: None,
         execution_mode: None,
         permission_level: None,
-        worktree_id: Some("worktree".to_string()),
+        worktree_id: Some(worktree.path().display().to_string()),
         kernel_ref: None,
         slice_ref: None,
         worktree_placement: None,

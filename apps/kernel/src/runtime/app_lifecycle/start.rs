@@ -17,6 +17,7 @@ use chariox_app_runtime::{
 pub(super) struct FixturePlatform {
     pub(super) native: Arc<chariox_app_runtime::worker_process::test_fixture::Fixture>,
     pub(super) fail_health: bool,
+    pub(super) lifecycle: Option<chariox_app_runtime::worker_process::test_fixture::Mode>,
     pub(super) fail_migration: bool,
     /// The kernel stops right after an update commits, before activation.
     pub(super) stop_after_commit: bool,
@@ -95,28 +96,44 @@ pub(super) fn register(
     mut check: impl FnMut() -> Result<()>,
 ) -> Result<RegisteredStart> {
     check()?;
-    let active = ActiveRelease::load(context.store.path(), binding.clone(), trust.clone())
-        .map_err(|_| LifecycleError::Preparation)?;
+    let installation = &binding.token().installation_id;
+    let active =
+        ActiveRelease::load(context.store.path(), binding.clone(), trust.clone()).map_err(
+            preparation_failed(installation, binding.token().generation, "active_release"),
+        )?;
     budget.check().map_err(|_| LifecycleError::Stopped)?;
-    let verified = active.verify().map_err(|_| LifecycleError::Preparation)?;
+    let verified = active.verify().map_err(preparation_failed(
+        installation,
+        binding.token().generation,
+        "verify_release",
+    ))?;
     let events = active
         .event_catalog(&verified)
         .map_err(|error| match error {
             ActiveReleaseError::Untrusted => LifecycleError::Authority,
-            _ => LifecycleError::Preparation,
+            error => {
+                preparation_failed(installation, binding.token().generation, "event_catalog")(error)
+            }
         })?;
     let release = ReleaseStore::open_or_create(context.store.path())
         .and_then(|releases| releases.lease_verified(&verified, active.bytes()))
-        .map_err(|_| LifecycleError::Preparation)?;
+        .map_err(preparation_failed(
+            installation,
+            binding.token().generation,
+            "release_lease",
+        ))?;
     check()?;
     // A staged worker whose update opened a migration runs its steps first,
     // always from the snapshot: a run a kernel stop interrupted may have
     // written at the new schema without recording its step.
-    let installation = &binding.token().installation_id;
     let mut migrate_from = context
         .store
         .app_migration_from(installation, binding.token().generation)
-        .map_err(|_| LifecycleError::Preparation)?;
+        .map_err(preparation_failed(
+            installation,
+            binding.token().generation,
+            "migration_state",
+        ))?;
     if migrate_from.is_some() {
         let crate::durable_state::app_state::AppStateOutcome::Rewound(from) = context
             .store
@@ -126,14 +143,31 @@ pub(super) fn register(
                 crate::durable_state::app_state::AppStateOperation::MigrationRewind,
                 budget.fork(|| false),
             )
-            .map_err(|_| LifecycleError::Preparation)?
+            .map_err(preparation_failed(
+                installation,
+                binding.token().generation,
+                "migration_rewind",
+            ))?
         else {
-            return Err(LifecycleError::Preparation);
+            return Err(preparation_failed(
+                installation,
+                binding.token().generation,
+                "migration_rewind",
+            )("unexpected_outcome"));
         };
         migrate_from = from;
     }
     let prepared = spawn(context, binding, &verified, release, migrate_from)?;
     let process = prepared.process;
+    *context
+        .control
+        .restore_data
+        .lock()
+        .map_err(|_| LifecycleError::Supervisor)? = Some(
+        process
+            .private_data()
+            .map_err(|_| LifecycleError::Preparation)?,
+    );
     if context.control.stopped() {
         return Err(LifecycleError::Stopped);
     }
@@ -150,7 +184,11 @@ pub(super) fn register(
         },
         context.event_config.clone(),
     )
-    .map_err(|_| LifecycleError::Preparation)?;
+    .map_err(preparation_failed(
+        installation,
+        binding.token().generation,
+        "backend_broker",
+    ))?;
     let started = if migrate_from.is_some() {
         AppWorkerOwner::start_migrating_blocking(
             process,
@@ -199,7 +237,7 @@ fn spawn(
     #[cfg(test)]
     if let Some(fixture) = &context.fixture {
         use chariox_app_runtime::worker_process::test_fixture::Mode;
-        let mode = match context.kind {
+        let mode = fixture.lifecycle.unwrap_or_else(|| match context.kind {
             StartKind::First { .. } if migrate_from.is_some() && fixture.fail_migration => {
                 Mode::BadMigration
             }
@@ -207,7 +245,7 @@ fn spawn(
             StartKind::First { .. } if fixture.fail_health => Mode::BadHealth,
             StartKind::First { .. } => Mode::Health,
             StartKind::Active { .. } => Mode::Ready,
-        };
+        });
         let (process, observation) = fixture
             .native
             .spawn_for_generation_blocking(
@@ -233,14 +271,33 @@ fn spawn(
     {
         let _ = (context, verified);
         let runtime = chariox_app_runtime::runtime_enrollment::EnrolledRuntime::open_installed()
-            .map_err(|_| LifecycleError::Preparation)?;
+            .map_err(preparation_failed(
+                &binding.token().installation_id,
+                binding.token().generation,
+                "enrolled_runtime",
+            ))?;
         // A staged update starts on a data snapshot; the committed generation
         // starting again after it fails restores that snapshot.
         let committed = context
             .store
             .get_app_installation(binding.owner_id(), &binding.token().installation_id)
-            .map(|installation| installation.generation)
-            .map_err(|_| LifecycleError::Preparation)?;
+            .map(|installation| {
+                installation
+                    .data_release()
+                    .map(|release| release.generation)
+            })
+            .map_err(preparation_failed(
+                &binding.token().installation_id,
+                binding.token().generation,
+                "installation",
+            ))?;
+        crate::runtime::app_snapshot_restore::require_recovery_generation(
+            &context.store,
+            binding.owner_id(),
+            &binding.token().installation_id,
+            binding.token().generation,
+        )
+        .map_err(|_| LifecycleError::Preparation)?;
         let prepared = chariox_app_runtime::worker_process::PreparedWorker::prepare_linux(
             runtime,
             release,
@@ -248,21 +305,180 @@ fn spawn(
             migrate_from,
             committed,
         )
-        .map_err(|_| LifecycleError::Preparation)?;
+        .map_err(|error| {
+            disk_space::preparation_error_with_diagnostic(
+                error,
+                preparation_failed(
+                    &binding.token().installation_id,
+                    binding.token().generation,
+                    "prepare",
+                ),
+            )
+        })?;
         if context.control.stopped() {
             return Err(LifecycleError::Stopped);
         }
-        let process = WorkerProcess::spawn_blocking(prepared, WorkerLimits::default())
+        let (prepared, recovered) = prepared
+            .visit_private_data(|data| {
+                crate::runtime::app_snapshot_restore::recover(
+                    &context.store,
+                    binding.owner_id(),
+                    data,
+                )
+            })
             .map_err(|_| LifecycleError::Preparation)?;
+        recovered.map_err(|_| LifecycleError::Preparation)?;
+        let process = WorkerProcess::spawn_blocking(prepared, WorkerLimits::default()).map_err(
+            preparation_failed(
+                &binding.token().installation_id,
+                binding.token().generation,
+                "spawn",
+            ),
+        )?;
         Ok(PreparedProcess {
             process,
             #[cfg(test)]
             fixture_release: None,
         })
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        let _ = verified;
+        // A refused preparation (no enrolled runtime, low disk, ...) keeps its
+        // stable code visible; it names no App path or package content.
+        let failed = |step: &str, code: String| {
+            crate::logging::warn_with_fields(
+                "app.worker",
+                "App worker preparation failed",
+                serde_json::json!({
+                    "installation_id": binding.token().installation_id,
+                    "generation": binding.token().generation,
+                    "step": step,
+                    "code": code,
+                }),
+            );
+            LifecycleError::Preparation
+        };
+        let runtime = chariox_app_runtime::runtime_enrollment::EnrolledRuntime::open_installed()
+            .map_err(|error| failed("enrolled_runtime", error.to_string()))?;
+        let storage_root = macos_storage_root(&context.store)?;
+        // After a failed update the committed generation starts again on
+        // storage its uncommitted successor last prepared.
+        let committed = context
+            .store
+            .get_app_installation(binding.owner_id(), &binding.token().installation_id)
+            .map(|installation| installation.generation)
+            .map_err(|_| failed("installation", "app_installation_unavailable".into()))?;
+        crate::runtime::app_snapshot_restore::require_recovery_generation(
+            &context.store,
+            binding.owner_id(),
+            &binding.token().installation_id,
+            binding.token().generation,
+        )
+        .map_err(|_| {
+            failed(
+                "restore_generation",
+                "app_restore_generation_conflict".into(),
+            )
+        })?;
+        let prepared = chariox_app_runtime::worker_process::PreparedWorker::prepare_macos(
+            runtime,
+            release,
+            binding,
+            &storage_root,
+            committed,
+            migrate_from,
+        )
+        .map_err(|error| {
+            disk_space::preparation_error_with_diagnostic(error, |other| {
+                failed("prepare", other.to_string())
+            })
+        })?;
+        if context.control.stopped() {
+            return Err(LifecycleError::Stopped);
+        }
+        let (prepared, recovered) = prepared
+            .visit_private_data(|data| {
+                crate::runtime::app_snapshot_restore::recover(
+                    &context.store,
+                    binding.owner_id(),
+                    data,
+                )
+            })
+            .map_err(|_| failed("restore_storage", "app_restore_storage_unavailable".into()))?;
+        recovered.map_err(|_| failed("restore_recovery", "app_restore_recovery_failed".into()))?;
+        let process = WorkerProcess::spawn_blocking(prepared, WorkerLimits::default())
+            .map_err(|error| failed("spawn", error.to_string()))?;
+        Ok(PreparedProcess {
+            process,
+            #[cfg(test)]
+            fixture_release: None,
+        })
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = (context, binding, verified, release, migrate_from);
         Err(LifecycleError::Preparation)
+    }
+}
+
+/// Kernel-owned private APFS image root beside the kernel database. It is
+/// never derived from an App, client or package value.
+#[cfg(target_os = "macos")]
+pub(crate) fn macos_storage_root(
+    store: &crate::durable_state::DurableKernelStateStore,
+) -> Result<std::path::PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+    let root = store
+        .path()
+        .parent()
+        .ok_or(LifecycleError::Preparation)?
+        .join("app-storage");
+    match std::fs::DirBuilder::new().mode(0o700).create(&root) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(_) => return Err(LifecycleError::Preparation),
+    }
+    // Recover once per kernel storage root before its first preparation, while
+    // no worker of this kernel can hold a volume. Failure retries next start.
+    static RECOVERED: std::sync::Mutex<std::collections::BTreeSet<std::path::PathBuf>> =
+        std::sync::Mutex::new(std::collections::BTreeSet::new());
+    let mut recovered = RECOVERED.lock().map_err(|_| LifecycleError::Supervisor)?;
+    if !recovered.contains(&root) {
+        chariox_app_runtime::worker_process::PreparedWorker::recover_macos_storage(&root).map_err(
+            |code| {
+                // Fail closed, but keep the cause visible (no App-supplied paths).
+                crate::logging::warn_with_fields(
+                    "app.lifecycle",
+                    "App storage recovery failed; macOS App starts are paused",
+                    serde_json::json!({ "code": code }),
+                );
+                LifecycleError::Preparation
+            },
+        )?;
+        recovered.insert(root.clone());
+    }
+    Ok(root)
+}
+
+/// A worker whose preparation fails keeps the stable `app_lifecycle_preparation`
+/// code; the kernel log names the step and its cause.
+fn preparation_failed<'a, E: std::fmt::Debug>(
+    installation: &'a str,
+    generation: u64,
+    step: &'static str,
+) -> impl FnOnce(E) -> LifecycleError + 'a {
+    move |error| {
+        crate::logging::warn_with_fields(
+            "app.worker",
+            "App worker preparation failed",
+            serde_json::json!({
+                "installation_id": installation,
+                "generation": generation,
+                "step": step,
+                "code": format!("{error:?}"),
+            }),
+        );
+        LifecycleError::Preparation
     }
 }

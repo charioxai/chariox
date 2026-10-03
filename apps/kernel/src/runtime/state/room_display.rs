@@ -66,11 +66,17 @@ impl KernelRuntimeState {
                 "Room Environment Selkies display is not running",
             ));
         }
-        let _guard = self.owned.slice_store.guard_environment_use(
-            &slice.id,
-            Some(&session_id),
-            "environment.display.open",
-        )?;
+        let _guard = self
+            .owned
+            .slice_store
+            .queue_environment_use(&slice.id, Some(&session_id), "environment.display.open")
+            .await?;
+        let slice = self.resolve_slice(&slice.id)?;
+        if slice.status != SliceStatus::Running {
+            return Err(display_error(
+                "Room Environment Selkies display is not running",
+            ));
+        }
         let config = self.owned.config_projection.snapshot();
         let config = config.slice_relay_override(&slice).unwrap_or(config);
         let target = ClientTarget {
@@ -80,17 +86,18 @@ impl KernelRuntimeState {
                 .is_none()
                 .then(|| slice.worker_kernel_ref.clone()),
         };
-        let response = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
-            &config,
-            target,
-            RelayPeerRequest::OpenRoomDisplay {
-                session_id: session_id.clone(),
-                slice_id: slice.id.clone(),
-                viewer_public_key,
-            },
-            Duration::from_secs(15),
-        )
-        .await?;
+        let response = self
+            .send_room_slice_peer_request(
+                &config,
+                target,
+                RelayPeerRequest::OpenRoomDisplay {
+                    session_id: session_id.clone(),
+                    slice_id: slice.id.clone(),
+                    viewer_public_key,
+                },
+                Duration::from_secs(15),
+            )
+            .await?;
         match response {
             RelayPeerResponse::RoomDisplayOpened {
                 session_id: returned_session,

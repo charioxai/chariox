@@ -4,7 +4,19 @@ use rusqlite::{params, OptionalExtension, Transaction};
 pub(super) const OWNER_RECEIPTS: i64 = 4096;
 pub(super) const TOTAL_RECEIPTS: i64 = 16384;
 pub(super) fn sql<T>(value: rusqlite::Result<T>) -> Result<T> {
-    value.map_err(|_| InstallOperationError::Storage)
+    value.map_err(|error| {
+        crate::durable_state::storage_full::observe(&error);
+        InstallOperationError::Storage
+    })
+}
+/// A COMMIT that failed on a full disk did not commit: an ordinary storage
+/// failure. Any other COMMIT failure may have committed.
+pub(super) fn commit_failed(error: rusqlite::Error) -> InstallOperationError {
+    if crate::durable_state::storage_full::observe(&error) {
+        InstallOperationError::Storage
+    } else {
+        InstallOperationError::CommitUnknown
+    }
 }
 pub(super) fn identity(value: &str) -> Result<()> {
     if value.is_empty() || value.len() > 128 || value.chars().any(char::is_control) {

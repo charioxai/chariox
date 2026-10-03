@@ -159,6 +159,10 @@ impl CommandRouter {
             .await;
     }
 
+    pub(crate) async fn wait_for_started_app_refreshes(&self) {
+        self.runtime_state.wait_for_started_app_refreshes().await;
+    }
+
     pub(crate) fn pty_output_change_sequence(&self) -> u64 {
         self.runtime_state.pty_output_change_sequence()
     }

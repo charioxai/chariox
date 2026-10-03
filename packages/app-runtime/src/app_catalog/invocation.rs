@@ -17,6 +17,16 @@ pub enum Actor {
     Background(String),
 }
 
+/// A context id: nonempty, at most 128 bytes, no whitespace or control
+/// characters. Shared by every context the kernel sends.
+pub fn is_context_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && !id
+            .chars()
+            .any(|ch| ch.is_control() || ch.is_whitespace() || ch == '\u{feff}')
+}
+
 /// No arbitrary metadata, history, prompt, transcript or credential field.
 /// The kernel retains richer authenticated provider/binding context privately.
 #[derive(Debug, Clone)]
@@ -28,28 +38,29 @@ pub struct CallerContext {
     pub turn_id: Option<String>,
 }
 impl CallerContext {
+    /// Whether `id` can be carried in a context: 1 to 128 bytes, with no
+    /// control, whitespace or byte-order-mark characters.
+    pub fn valid_id(id: &str) -> bool {
+        !id.is_empty()
+            && id.len() <= 128
+            && !id
+                .chars()
+                .any(|ch| ch.is_control() || ch.is_whitespace() || ch == '\u{feff}')
+    }
+
     fn value(&self, installation: &str) -> Result<Value> {
         let actor_id = match &self.actor {
             Actor::Human(id) | Actor::Agent(id) | Actor::Background(id) => id,
         };
-        for id in [
+        let ids = [
             Some(actor_id.as_str()),
             Some(self.room_id.as_str()),
             Some(self.operation_id.as_str()),
             self.task_id.as_deref(),
             self.turn_id.as_deref(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            if id.is_empty()
-                || id.len() > 128
-                || id
-                    .chars()
-                    .any(|ch| ch.is_control() || ch.is_whitespace() || ch == '\u{feff}')
-            {
-                return Err(CatalogError::Invalid);
-            }
+        ];
+        if !ids.into_iter().flatten().all(Self::valid_id) {
+            return Err(CatalogError::Invalid);
         }
         let mut context = json!({"installation_id": installation, "room_id": self.room_id,
             "operation_id": self.operation_id, "actor": self.actor});

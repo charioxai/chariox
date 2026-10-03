@@ -5,6 +5,8 @@ pub struct ListSlicesRequest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateSliceRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_slice_ref: Option<String>,
     pub name: String,
     #[serde(default)]
     pub backend: SliceBackendKind,
@@ -40,6 +42,8 @@ pub struct CreateSliceRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SliceRefRequest {
     pub slice_ref: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub interactive: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

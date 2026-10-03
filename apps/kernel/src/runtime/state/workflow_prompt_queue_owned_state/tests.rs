@@ -350,8 +350,18 @@ fn assert_workflow_queue_promotion_append_failure_is_retryable(requested: bool) 
         .owned
         .session_snapshot(&session_id)
         .expect("baseline should project");
+    let queue_start_event_count_before = runtime
+        .owned
+        .durable_state_store
+        .load_events_by_kind("workflow.runtime.updated")
+        .unwrap()
+        .iter()
+        .filter(|event| event.payload["reason"] == "workflow_queue_run_created")
+        .count();
     let activity_sequence = runtime.managed_activity_change_sequence();
     let projection_sequence = runtime.owned.session_projection.change_sequence();
+    // Queue promotion persists through the durable queue-start commit, whose
+    // workflow runtime event carries this reason.
     let connection = rusqlite::Connection::open(runtime.owned.durable_state_store.path())
         .expect("durable database should open for promotion failure injection");
     connection
@@ -361,7 +371,7 @@ fn assert_workflow_queue_promotion_append_failure_is_retryable(requested: bool) 
              WHEN NEW.kind = 'workflow.runtime.updated'
                AND instr(
                    NEW.payload_json,
-                   '"reason":"workflow_queued_prompt_promoted"'
+                   '"reason":"workflow_queue_run_created"'
                ) > 0
              BEGIN
                SELECT RAISE(FAIL, 'injected workflow queue promotion append failure');
@@ -486,9 +496,9 @@ fn assert_workflow_queue_promotion_append_failure_is_retryable(requested: bool) 
     assert_eq!(
         events
             .iter()
-            .filter(|event| event.payload["reason"] == "workflow_queued_prompt_promoted")
+            .filter(|event| event.payload["reason"] == "workflow_queue_run_created")
             .count(),
-        1,
+        queue_start_event_count_before + 1,
         "retry must durably promote exactly one prompt"
     );
     let owner_id = retried.host_daemon_id().to_string();
@@ -1529,7 +1539,7 @@ async fn pool_clone_binds_exact_stable_account_and_launch_ignores_later_default_
     // And a fresh relaunch of the existing clone still uses the original id.
     {
         let mut app = runtime.app.lock().await;
-        app.end_provider_run_for_workflow_context_flush(&session_id, clone_a.id())
+        app.end_agent_provider_run(&session_id, clone_a.id())
             .expect("previous run should retire");
     }
     let relaunched_run_id = {
@@ -1736,13 +1746,10 @@ async fn source_agent_substitute_change_retires_idle_materialized_pool_copies() 
             &session_id,
             source.id(),
             crate::session::DEFAULT_LOCAL_USER_ID,
-            crate::local::AgentSubstituteAction::Activate {
-                index: 0,
-                reason: Some("resource exhausted".to_string()),
-            },
+            crate::local::AgentSubstituteAction::Remove { index: 0 },
         )
         .await
-        .expect("source substitute activation should retire stale copies");
+        .expect("source substitute change should retire stale copies");
 
     let session = runtime
         .owned
@@ -1913,7 +1920,7 @@ impl Drop for TestRoot {
     }
 }
 
-fn runtime_state_from_app(app: DaemonApp) -> KernelRuntimeState {
+pub(in crate::runtime) fn runtime_state_from_app(app: DaemonApp) -> KernelRuntimeState {
     let config_projection = app.config_projection_store();
     let session_store = app.session_state_store();
     let agent_store = app.agents().clone();

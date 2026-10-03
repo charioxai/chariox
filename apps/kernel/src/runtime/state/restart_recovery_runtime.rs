@@ -72,6 +72,7 @@ impl KernelRuntimeState {
         let recovery_targets = self.durable_restart_recovery_targets();
         let dispatch_targets = self.durable_restart_dispatch_targets(&recovery_targets);
         let queued_recovery_targets = self.durable_restart_queued_recovery_targets();
+        let uncertain_steer_targets = self.durable_restart_uncertain_remote_steer_targets();
         crate::logging::info_with_fields(
             "durable_state.recovery",
             "captured durable restart recovery targets",
@@ -79,12 +80,18 @@ impl KernelRuntimeState {
                 "active_prompt_targets": recovery_targets.len(),
                 "unobserved_dispatch_targets": dispatch_targets.len(),
                 "queued_publication_targets": queued_recovery_targets.len(),
+                "uncertain_remote_steer_targets": uncertain_steer_targets.len(),
             }),
         );
         let state = self.clone();
         DurableRestartRecoveryTask(tokio::spawn(async move {
             state.owned.publication_activation.wait().await;
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            for (session_id, agent_id, prompt_id) in uncertain_steer_targets {
+                state.spawn_remote_queued_steer_receipt_reconciliation(
+                    session_id, agent_id, prompt_id,
+                );
+            }
             let mut attempt = 0_u32;
             let mut pending_dispatch_targets = dispatch_targets;
             let summary = loop {
@@ -270,6 +277,36 @@ impl KernelRuntimeState {
             .collect()
     }
 
+    fn durable_restart_uncertain_remote_steer_targets(
+        &self,
+    ) -> BTreeSet<DurableRestartRecoveryTarget> {
+        self.owned
+            .session_store
+            .list_all_sessions()
+            .into_iter()
+            .flat_map(|session| {
+                session
+                    .prompt_states()
+                    .iter()
+                    .flat_map(|(agent_id, prompt_state)| {
+                        prompt_state
+                            .queued_prompts()
+                            .iter()
+                            .filter(|prompt| prompt.remote_steer_outcome_uncertainty().is_some())
+                            .map(|prompt| {
+                                (
+                                    session.id().to_string(),
+                                    agent_id.to_string(),
+                                    prompt.id().to_string(),
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
     async fn recover_durable_runtime_after_restart_targets(
         &self,
         recovery_targets: &BTreeSet<DurableRestartRecoveryTarget>,
@@ -319,7 +356,12 @@ impl KernelRuntimeState {
                         continue;
                     }
                 };
-                if prompt.workflow_run_id().is_some()
+                let uncertain_remote_delivery = agent.remote_execution().is_some()
+                    && (prompt.durable_delivery_reconciliation_pending()
+                        || delivery_phase
+                            == Some(crate::session::DurablePromptDeliveryPhase::Dispatching));
+                if !uncertain_remote_delivery
+                    && prompt.workflow_run_id().is_some()
                     && self
                         .owned
                         .session_store
@@ -1636,6 +1678,134 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn uncertain_remote_workflow_prompt_is_reconciled_before_orphan_finalization() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "workspace-uncertain-workflow-restart",
+                "worktree-uncertain-workflow-restart",
+            ))
+            .expect("session should create");
+        let attachment = KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "uncertain-workflow-restart-client",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        app.agents
+            .bind_remote_execution(
+                agent.id(),
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: "worker-orphaned-workflow".to_string(),
+                    worker_machine_id: "machine-orphaned-workflow".to_string(),
+                    execution_lease_id: "lease-orphaned-workflow".to_string(),
+                    leased_agent_id: "leased-orphaned-workflow".to_string(),
+                    active_worker_provider_run_id: None,
+                    relay_url: None,
+                    relay_token: None,
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
+                },
+            )
+            .expect("agent should bind to the remote worker");
+
+        let app = Arc::new(Mutex::new(app));
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            app,
+            crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+        );
+        let runtime = router.runtime_state();
+        let started = runtime
+            .owned
+            .submit_remote_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
+                session_id: session.id().to_string(),
+                prompt: PromptQueueItem::new(
+                    "uncertain-orphaned-workflow",
+                    attachment.id(),
+                    agent.id(),
+                    "prompt that may have been accepted by the worker",
+                    PromptStatus::Queued,
+                )
+                .with_workflow_context("missing-workflow-run", "missing-workflow-node"),
+                force_queue: false,
+                refresh_projection: true,
+            })
+            .expect("remote prompt should be accepted")
+            .expect("remote binding should produce a dispatch");
+        let dispatch = started
+            .remote_dispatch
+            .expect("remote dispatch should exist");
+        runtime
+            .owned
+            .mark_active_prompt_delivery(
+                &dispatch.session_id,
+                &dispatch.agent_id,
+                &dispatch.prompt_id,
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+                None,
+                None,
+            )
+            .expect("dispatching phase should be durable before send");
+        let queued_submission = runtime
+            .owned
+            .submit_remote_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
+                session_id: session.id().to_string(),
+                prompt: PromptQueueItem::new(
+                    "queued-after-uncertain-orphaned-workflow",
+                    attachment.id(),
+                    agent.id(),
+                    "successor must stay queued",
+                    PromptStatus::Queued,
+                ),
+                force_queue: true,
+                refresh_projection: true,
+            })
+            .expect("successor should remain queued");
+
+        let targets = BTreeSet::from([(
+            session.id().to_string(),
+            agent.id().to_string(),
+            dispatch.prompt_id.clone(),
+        )]);
+        let summary = runtime
+            .recover_durable_runtime_after_restart_targets(&targets, &BTreeSet::new())
+            .await;
+
+        assert_eq!(summary.remote_reconciliations_started, 1);
+        assert_eq!(summary.orphaned_workflow_prompts_finalized, 0);
+        assert_eq!(summary.failed_reconciliations, 0);
+        let session_after = runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .expect("session should remain available");
+        let (active, queued) = runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&session_after, agent.id());
+        let active = active.expect("the uncertain prompt should stay active");
+        assert_eq!(active.id(), dispatch.prompt_id);
+        assert_eq!(
+            active.durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+        );
+        assert!(active.durable_delivery_reconciliation_pending());
+        assert_eq!(queued.len(), 1, "successor must not be promoted");
+        let crate::session::PromptSubmissionOutcome::Queued {
+            prompt: expected_queued,
+        } = queued_submission
+            .expect("remote binding should produce queued admission")
+            .outcome
+        else {
+            panic!("successor should queue");
+        };
+        assert_eq!(queued[0].id(), expected_queued.id());
+        assert_eq!(queued[0].prompt(), "successor must stay queued");
+    }
+
+    #[tokio::test]
     async fn cancelling_local_prompt_is_finalized_instead_of_resumed_after_restart() {
         let (runtime, session_id, agent_id, _prompt_id) =
             runtime_with_active_prompt(crate::session::DurablePromptDeliveryPhase::Delivered);
@@ -2037,6 +2207,7 @@ mod tests {
 
     #[tokio::test]
     async fn restart_recovery_preserves_superseding_resume_as_uncertain_delivery() {
+        crate::test_support::isolated_env_test!();
         let _environment = crate::env_lock::lock();
         let mut app = crate::test_support::bootstrap_authenticated_app(DaemonConfig::for_tests())
             .expect("daemon should boot");

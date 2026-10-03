@@ -29,6 +29,10 @@ pub(crate) struct ActiveRelease {
 }
 
 impl ActiveRelease {
+    pub(crate) fn binding(&self) -> &StageTrustBinding {
+        &self.binding
+    }
+
     /// Reads the stored archive of an already-resolved binding. Worker start
     /// and worker-free reads share this and `verify`, so their policy matches.
     pub(crate) fn load(

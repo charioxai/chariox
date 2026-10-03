@@ -4,17 +4,25 @@
 // App's tools through the kernel's call pump. It also checks that App calls
 // and other Room commands can overlap: the call poll and answers must not
 // make Room commands fail with "already has an active" operation errors.
-// Protocol 351: the page reserves a private conversation panel and the Room
-// snapshot marks the App Tab with it, in desktop pixels, for the focus agent.
+// Protocol 351: the Room snapshot marks the App Tab with its private
+// conversation panel, in desktop pixels, for the session's focus agent. The
+// panel is automatic: the page lays out left of it and cannot reach it.
+// With --other-agent, a focus change moves the panel to that agent at once.
 // Protocol 357: the App Tab's accessibility outline lists every node after its
 // parent. Opening the App again shows the same, single App Tab, navigated to a
 // new document whose title the Room shows once the view calls.
+// Protocol 379: the Room browser bar. An ordinary Tab's window is fullscreen
+// by default and maximized while the bar is shown; the App view's window stays
+// fullscreen either way.
+// Protocol 380: the App chooses its panel placement (right, bottom or none) and
+// the user's SetAppViewPanel choice wins; `reset` hands it back to the App.
 //
 // Runs against a live kernel with a Room bound to a local Docker slice and an
 // installed, running App:
 //   node scripts/live-app-view-drill.mjs --session ID --installation ID \
 //     --slice-id ID --container NAME --tool LOCAL_TOOL [--input JSON] \
-//     [--calls 20] [--kernel-url ws://127.0.0.1:44240/kernel] [--evidence FILE]
+//     [--calls 20] [--other-agent ID] [--kernel-url ws://127.0.0.1:44240/kernel]
+//     [--evidence FILE]
 
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
@@ -42,7 +50,7 @@ try {
   const view = opened.AppViewOpened
   assert.ok(view, `OpenAppView answered ${JSON.stringify(opened)}`)
   assert.equal(view.installation_id, options.installation)
-  assert.match(view.origin, /^https:\/\/a[0-9a-f]{24,}\.app\.chariox\.internal\/?$/)
+  assert.match(view.origin, /^https:\/\/app\.a[0-9a-f]{24,}\.invalid\/?$/)
   assert.equal(typeof view.target_id, "string")
   evidence.steps.push({ step: "open", view })
 
@@ -54,16 +62,65 @@ try {
   assert.deepEqual([unknown.ok, unknown.code], [false, "UNKNOWN_TOOL"])
   evidence.steps.push({ step: "unknown_tool", error: unknown })
 
-  const reserved = await evaluate(view.target_id, `window.chariox.panel.reserve({ x: 880, y: 0, width: 400, height: 800 })`)
-  assert.deepEqual(reserved, { reserved: true })
-  // The App may reserve its own panel on load; wait for the drill's rect.
-  const marked = await roomApps((apps) => apps.find((app) => app.panel?.x === 880 && app.panel?.width === 400))
-  assert.deepEqual({ ...marked.panel, agent_id: undefined }, { x: 880, y: 0, width: 400, height: 800, agent_id: undefined })
-  assert.equal(marked.installation_id, options.installation)
+  // Every App Tab gets the panel at the right of the desktop, full height, and
+  // the page lays out in the rest. The App's panel API only places the panel.
+  const marked = await roomApps((apps) => apps.find((app) => app.panel))
+  const { viewport } = (await client.send({ GetRoomEnvironmentState: { session_id: options.session } }))
+    .RoomEnvironmentState.environment
+  const { x, y, width, height } = marked.panel
+  assert.deepEqual([x + width, y, height], [viewport.desktop_pixel_width, 0, viewport.desktop_pixel_height])
   assert.equal(marked.panel.agent_id, view.bound_agent_id ?? null)
-  assert.deepEqual(await evaluate(view.target_id, `window.chariox.panel.release()`), { released: true })
+  const page = await evaluate(view.target_id, `({ width: innerWidth, panel: Object.keys(window.chariox.panel) })`)
+  assert.deepEqual(page, { width: x / viewport.device_scale_factor, panel: ["set", "get"] })
+  evidence.steps.push({ step: "panel", marked, page })
+  if (options.otherAgent) {
+    const focus = async (agentId) => {
+      const started = Date.now()
+      await client.send({ FocusAgent: { session_id: options.session, agent_id: agentId } })
+      await roomApps((apps) => apps.every((app) => app.panel?.agent_id === agentId))
+      return Date.now() - started
+    }
+    const moved_ms = await focus(options.otherAgent)
+    evidence.steps.push({ step: "panel_follows_focus", agent_id: options.otherAgent, moved_ms })
+    if (marked.panel.agent_id) await focus(marked.panel.agent_id)
+  }
+
+  // Protocol 380: the App chooses the placement; the user's choice wins.
+  const scale = viewport.device_scale_factor
+  const setPanel = (layout) => evaluate(view.target_id, `window.chariox.panel.set(${JSON.stringify(layout)})`)
+  const pageSize = async (width, height) => {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const page = await evaluate(view.target_id, "[innerWidth, innerHeight]")
+      if (page[0] === width && page[1] === height) return
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+    throw new Error(`the App page never became ${width}x${height} CSS pixels`)
+  }
+  const user = (fields) => client.send({ SetAppViewPanel: { session_id: options.session, installation_id: options.installation, ...fields } })
+  // An earlier run's user choice would win over the App: start from the App's.
+  await user({ reset: true })
+  assert.deepEqual(await setPanel({ placement: "none" }), { placement: "none", minimized: false })
   await roomApps((apps) => apps.every((app) => !app.panel))
-  evidence.steps.push({ step: "panel", marked })
+  await pageSize(viewport.css_width, viewport.css_height)
+  assert.deepEqual(await setPanel({ placement: "bottom", size: 250 }), { placement: "bottom", minimized: false })
+  const bottom = (await roomApps((apps) => apps.find((app) => app.panel?.placement === "bottom"))).panel
+  assert.deepEqual([bottom.x, bottom.y + bottom.height, bottom.width], [0, viewport.desktop_pixel_height, viewport.desktop_pixel_width])
+  await pageSize(viewport.css_width, bottom.y / scale)
+  const minimizedSet = await user({ minimized: true })
+  assert.equal(minimizedSet.AppViewPanelSet?.minimized, true, JSON.stringify(minimizedSet))
+  const minimized = (await roomApps((apps) => apps.find((app) => app.panel?.minimized))).panel
+  await pageSize(viewport.css_width, minimized.y / scale)
+  await user({ minimized: false, placement: "right" })
+  const right = (await roomApps((apps) => apps.find((app) => app.panel?.placement === "right" && !app.panel.minimized))).panel
+  await pageSize(right.x / scale, viewport.css_height)
+  // The user's choice wins over a later request from the App.
+  assert.deepEqual(await setPanel({ placement: "bottom" }), { placement: "right", minimized: false })
+  // Reset hands the panel back to the App (bottom, as it last asked), then
+  // the drill leaves the default placement.
+  await user({ reset: true })
+  await roomApps((apps) => apps.find((app) => app.panel?.placement === "bottom"))
+  await setPanel({ placement: "right" })
+  evidence.steps.push({ step: "panel_placement", bottom, minimized, right })
 
   const tabId = await roomAppTab()
   const read = await client.send({ GetRoomEnvironmentTabAccessibility: { session_id: options.session, tab_id: tabId } })
@@ -94,6 +151,31 @@ try {
   assert.ok(reloadedAt > loadedAt, "reopening did not load the App again")
   const title = await roomTabTitle()
   evidence.steps.push({ step: "reopen", target_id: again.target_id, loaded_at: loadedAt, reloaded_at: reloadedAt, title })
+
+  // The Room browser bar: an ordinary Tab next to the App view.
+  // Its own window: a Tab opened while the App view has focus would join the
+  // App's window, which the bar leaves to the App view.
+  const { targetId: ordinary } = await browserCdp("Target.createTarget", { url: "about:blank", newWindow: true })
+  try {
+    const barStates = {}
+    for (const visible of [true, false]) {
+      const set = (await client.send({ SetRoomBrowserBar: { session_id: options.session, visible } }))
+        .RoomEnvironmentUpdated?.environment
+      assert.equal(set?.browser_bar_visible ?? false, visible, `SetRoomBrowserBar ${visible} was not kept`)
+      const state = async (targetId) => {
+        const { windowId } = await browserCdp("Browser.getWindowForTarget", { targetId })
+        return (await browserCdp("Browser.getWindowBounds", { windowId })).bounds.windowState
+      }
+      barStates[visible ? "shown" : "hidden"] = { ordinary: await state(ordinary), app: await state(view.target_id) }
+    }
+    assert.deepEqual(barStates, {
+      shown: { ordinary: "maximized", app: "fullscreen" },
+      hidden: { ordinary: "fullscreen", app: "fullscreen" },
+    })
+    evidence.steps.push({ step: "browser_bar", windows: barStates })
+  } finally {
+    await browserCdp("Target.closeTarget", { targetId: ordinary }).catch(() => {})
+  }
 
   // Room commands run while the page makes calls back to back.
   let calling = true
@@ -226,6 +308,33 @@ async function evaluate(targetId, expression) {
   return JSON.parse(line)
 }
 
+// One browser-level CDP command in the slice (window state lives on the
+// browser target, not a page).
+async function browserCdp(method, params) {
+  const script = `
+    const [method, params] = process.argv.slice(1)
+    const version = await (await fetch("http://127.0.0.1:9222/json/version")).json()
+    const socket = new WebSocket(version.webSocketDebuggerUrl)
+    await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject })
+    socket.send(JSON.stringify({ id: 1, method, params: JSON.parse(params) }))
+    const reply = await new Promise((resolve, reject) => {
+      socket.onmessage = (event) => { const message = JSON.parse(event.data); if (message.id === 1) resolve(message) }
+      socket.onclose = () => reject(new Error("DevTools socket closed before the answer"))
+    })
+    socket.close()
+    if (reply.error) throw new Error(JSON.stringify(reply.error))
+    console.log(JSON.stringify(reply.result))
+  `
+  const { stdout, stderr } = await run(
+    "docker",
+    ["exec", options.container, "node", "--input-type=module", "-e", script, method, JSON.stringify(params)],
+    { timeout: 30_000 },
+  )
+  const line = stdout.trim().split("\n").at(-1)
+  if (!line) throw new Error(`${method} gave no answer: ${stderr.trim()}`)
+  return JSON.parse(line)
+}
+
 function parseArgs(argv) {
   const values = {}
   for (let index = 0; index < argv.length; index += 2) {
@@ -244,6 +353,7 @@ function parseArgs(argv) {
     tool: values.tool,
     input: JSON.parse(values.input ?? "{}"),
     calls: Number(values.calls ?? 20),
+    otherAgent: values["other-agent"],
     evidence: values.evidence,
   }
 }

@@ -26,11 +26,15 @@ const SLICE_BUILD_CONTEXT_PATH = "/usr/lib/chariox/slice-build-context"
 const SLICE_BUILD_CONTEXT_SOURCES = [
   "Cargo.toml",
   "Cargo.lock",
+  "deploy/local-linux/provision-docker-admission-locks.py",
+  "deploy/managed-kernel/chariox-docker-admission-locks.service",
   "adapters/rust",
   "apps/aegs-dummy",
   "apps/browser-session-import",
   "apps/kernel",
   "apps/relay",
+  // Signed upgrade tooling: an installed release updates itself with its own scripts.
+  "deploy/managed-kernel",
   "examples/workflow-code",
   "packages/aegs-sdk",
   "packages/app-package",
@@ -400,6 +404,18 @@ async function packageRelease(options) {
     rootfs,
     "etc/systemd/system/chariox-rootless-docker.service",
   )
+  const dataVolumeAdmissionServiceDestination = join(
+    rootfs,
+    "etc/systemd/system/chariox-data-volume-admission.service",
+  )
+  const rootlessDataVolumeDropInDestination = join(
+    rootfs,
+    "etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf",
+  )
+  const quotaAllocatorDataVolumeDropInDestination = join(
+    rootfs,
+    "etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf",
+  )
   const sliceBrokerServiceDestination = join(
     rootfs,
     "etc/systemd/system/chariox-slice-broker.service",
@@ -430,6 +446,24 @@ async function packageRelease(options) {
     "deploy/managed-kernel/chariox-rootless-docker.service",
     "rootless Docker service cannot be read from source commit",
   )
+  const dataVolumeAdmissionServiceBytes = gitBlob(
+    repositoryRoot,
+    sourceIdentity.commit,
+    "apps/kernel/slice-linux-docker/chariox-data-volume-admission.service",
+    "data-volume admission service cannot be read from source commit",
+  )
+  const rootlessDataVolumeDropInBytes = gitBlob(
+    repositoryRoot,
+    sourceIdentity.commit,
+    "apps/kernel/slice-linux-docker/chariox-rootless-docker.path1-data-volume.conf",
+    "Path-1 rootless Docker data-volume drop-in cannot be read from source commit",
+  )
+  const quotaAllocatorDataVolumeDropInBytes = gitBlob(
+    repositoryRoot,
+    sourceIdentity.commit,
+    "apps/kernel/slice-linux-docker/chariox-slice-disk-quota-allocator.path1-data-volume.conf",
+    "Path-1 quota allocator data-volume drop-in cannot be read from source commit",
+  )
   const sliceBrokerServiceBytes = gitBlob(
     repositoryRoot,
     sourceIdentity.commit,
@@ -442,6 +476,9 @@ async function packageRelease(options) {
     path1ServiceBytes.length > 64 * 1024 ||
     workerServiceBytes.length > 64 * 1024 ||
     rootlessDockerServiceBytes.length > 64 * 1024 ||
+    dataVolumeAdmissionServiceBytes.length > 64 * 1024 ||
+    rootlessDataVolumeDropInBytes.length > 64 * 1024 ||
+    quotaAllocatorDataVolumeDropInBytes.length > 64 * 1024 ||
     sliceBrokerServiceBytes.length > 64 * 1024
   ) {
     throw new Error("managed service unit is too large")
@@ -456,6 +493,9 @@ async function packageRelease(options) {
   await installBytes(path1ServiceBytes, path1ServiceDestination, 0o644)
   await installBytes(workerServiceBytes, workerServiceDestination, 0o644)
   await installBytes(rootlessDockerServiceBytes, rootlessDockerServiceDestination, 0o644)
+  await installBytes(dataVolumeAdmissionServiceBytes, dataVolumeAdmissionServiceDestination, 0o644)
+  await installBytes(rootlessDataVolumeDropInBytes, rootlessDataVolumeDropInDestination, 0o644)
+  await installBytes(quotaAllocatorDataVolumeDropInBytes, quotaAllocatorDataVolumeDropInDestination, 0o644)
   await installBytes(sliceBrokerServiceBytes, sliceBrokerServiceDestination, 0o644)
   await installSliceBuildContext(repositoryRoot, sliceBuildContext, sourceIdentity.commit)
   await replaceFile(options.kernel, sliceKernelDestination, 0o755)
@@ -514,6 +554,18 @@ async function packageRelease(options) {
   if (`sha256:${createHash("sha256").update(rootlessDockerServiceBytes).digest("hex")}` !== packagedRootlessDockerServiceDigest) {
     throw new Error("rootless Docker service changed while the release was packaged")
   }
+  const packagedDataVolumeAdmissionServiceDigest = await sha256File(dataVolumeAdmissionServiceDestination)
+  if (`sha256:${createHash("sha256").update(dataVolumeAdmissionServiceBytes).digest("hex")}` !== packagedDataVolumeAdmissionServiceDigest) {
+    throw new Error("data-volume admission service changed while the release was packaged")
+  }
+  const packagedRootlessDataVolumeDropInDigest = await sha256File(rootlessDataVolumeDropInDestination)
+  if (`sha256:${createHash("sha256").update(rootlessDataVolumeDropInBytes).digest("hex")}` !== packagedRootlessDataVolumeDropInDigest) {
+    throw new Error("Path-1 rootless Docker data-volume drop-in changed while the release was packaged")
+  }
+  const packagedQuotaAllocatorDataVolumeDropInDigest = await sha256File(quotaAllocatorDataVolumeDropInDestination)
+  if (`sha256:${createHash("sha256").update(quotaAllocatorDataVolumeDropInBytes).digest("hex")}` !== packagedQuotaAllocatorDataVolumeDropInDigest) {
+    throw new Error("Path-1 quota allocator data-volume drop-in changed while the release was packaged")
+  }
   const packagedSliceBrokerServiceDigest = await sha256File(sliceBrokerServiceDestination)
   if (`sha256:${createHash("sha256").update(sliceBrokerServiceBytes).digest("hex")}` !== packagedSliceBrokerServiceDigest) {
     throw new Error("slice Docker broker service changed while the release was packaged")
@@ -556,7 +608,8 @@ async function packageRelease(options) {
 
   const manifestBytes = Buffer.from(
     JSON.stringify({
-      schemaVersion: 2,
+      schemaVersion: 3,
+      managedUpdateEvidenceVersion: 1,
       sourceCommit: sourceIdentity.commit,
       sourceTree: sourceIdentity.tree,
       artifacts: [
@@ -604,6 +657,21 @@ async function packageRelease(options) {
           name: "chariox-rootless-docker.service",
           path: "/etc/systemd/system/chariox-rootless-docker.service",
           sha256: packagedRootlessDockerServiceDigest,
+        },
+        {
+          name: "chariox-data-volume-admission.service",
+          path: "/etc/systemd/system/chariox-data-volume-admission.service",
+          sha256: packagedDataVolumeAdmissionServiceDigest,
+        },
+        {
+          name: "chariox-rootless-docker.path1-data-volume.conf",
+          path: "/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf",
+          sha256: packagedRootlessDataVolumeDropInDigest,
+        },
+        {
+          name: "chariox-slice-disk-quota-allocator.path1-data-volume.conf",
+          path: "/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf",
+          sha256: packagedQuotaAllocatorDataVolumeDropInDigest,
         },
         {
           name: "chariox-slice-broker.service",

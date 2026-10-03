@@ -58,3 +58,23 @@ fn publication_with_lost_writer_reply_is_uncertain_and_never_retried() {
 fn publication_with_lost_blocking_task_completion_is_uncertain_and_never_retried() {
     uncertain(false);
 }
+
+#[test]
+fn full_data_volume_is_its_own_code_naming_the_quota() {
+    use chariox_app_runtime::worker_process::PrivateDataError;
+    let full = file_failure(AppFileError::File(PrivateDataError::StorageFull));
+    assert_eq!(full.code, "APP_STORAGE_FULL");
+    assert_eq!(full.retryable, Some(false));
+    assert_eq!(
+        full.message,
+        "App data storage is full (512 MiB quota); delete App data to free space"
+    );
+    // Other failures keep the generic code and message.
+    let other = file_failure(AppFileError::File(PrivateDataError::Io));
+    assert_eq!(other.code, "APP_FILE_UNAVAILABLE");
+    assert_eq!(other.message, "Private file operation did not complete");
+    assert_eq!(
+        file_failure(AppFileError::File(PrivateDataError::OutcomeUncertain)).code,
+        "APP_FILE_OUTCOME_UNCERTAIN"
+    );
+}

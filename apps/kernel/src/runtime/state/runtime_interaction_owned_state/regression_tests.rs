@@ -99,6 +99,7 @@ impl Fixture {
             interaction,
             send,
             Some(DEFAULT_LOCAL_USER_ID),
+            None,
         )?;
         Ok(receive)
     }
@@ -231,6 +232,7 @@ async fn pruning_dead_store_tokens_closes_only_kernel_operation_responders() {
         pending.write().insert(
             id.into(),
             super::super::PendingInteraction {
+                agent_lifetime: None,
                 session_id: "same-session".into(),
                 session_store_identity: sessions.weak_identity(),
                 kernel_operation_owner: owner,
@@ -368,6 +370,133 @@ async fn failed_projection_removes_only_its_own_registration_and_responder() {
     drop(pending);
     assert!(matches!(
         existing.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    ));
+}
+
+#[tokio::test]
+async fn a_persisted_decision_without_a_responder_is_dropped_after_restart() {
+    let fixture = Fixture::new();
+    let _live = fixture.register("live").unwrap();
+    // A decision restored from session state after an unclean stop has no
+    // pending responder: nothing can answer it and it would block a retry.
+    let orphan = fixture.id("orphan");
+    {
+        let mut sessions = fixture.state.owned.session_store.write();
+        let mut session = sessions.get_session(&fixture.session).unwrap().clone();
+        session.add_active_interaction(RuntimeInteraction::for_kernel_operation(
+            &orphan,
+            &orphan,
+            "Install App?",
+            "Review this installation",
+            vec![RuntimeInteractionChoice::new(
+                "allow", "Install", "allow", None,
+            )],
+        ));
+        // A vault prompt's responder also lives only in the kernel process;
+        // other interactions are left alone.
+        for id in ["vault-unlock-agent-1-1", "provider-notice-1"] {
+            session.add_active_interaction(RuntimeInteraction::new(
+                id,
+                "agent-1",
+                crate::session::RuntimeInteractionKind::Choice,
+                crate::session::RuntimeInteractionLevel::Critical,
+                None,
+                "Unlock",
+                vec![RuntimeInteractionChoice::new(
+                    "cancel", "Cancel", "cancel", None,
+                )],
+                None,
+                None,
+                None,
+            ));
+        }
+        sessions.restore_session(session);
+    }
+    // This fixture's store has not swept yet, so its first pass is unthrottled
+    // regardless of other kernels' sweeps in this process.
+    fixture
+        .state
+        .owned
+        .sweep_kernel_operation_interactions(false);
+    assert_eq!(
+        fixture.active_ids(),
+        vec![fixture.id("live"), "provider-notice-1".to_string()]
+    );
+}
+
+// Exercise the real export pump and durable save across two sessions, rather
+// than just the prompt-session lookup: an owner may save from another terminal.
+#[tokio::test]
+async fn app_file_export_saved_from_another_session_closes_only_its_presented_prompt() {
+    use crate::durable_state::{
+        app_file_exports::{FileExport, FileExportCommand},
+        app_state::fixture_inbox_installation,
+    };
+    use crate::local::{LocalDaemonResponse, SaveAppFileExportRequest};
+
+    let fixture = Fixture::new();
+    let store = fixture.state.owned.durable_state_store.clone();
+    fixture_inbox_installation(&store, DEFAULT_LOCAL_USER_ID);
+    let installation = store
+        .get_app_installation(DEFAULT_LOCAL_USER_ID, "installed")
+        .unwrap();
+    let operation = fixture.id("export");
+    let prompt = format!("app_file_export_{operation}");
+    store
+        .app_file_export(FileExportCommand::Create {
+            export: FileExport {
+                operation_id: operation.clone(),
+                owner: DEFAULT_LOCAL_USER_ID.into(),
+                installation: "installed".into(),
+                generation: installation.generation,
+                name: "imported.txt".into(),
+                size: 7,
+                state: "pending".into(),
+                expires_ms: crate::session::unix_epoch_ms() + 60_000,
+            },
+            contents: b"fixture".to_vec(),
+        })
+        .unwrap();
+    let mut unrelated = fixture.register("unrelated").unwrap();
+    fixture
+        .state
+        .app_file_export_pass(crate::session::unix_epoch_ms())
+        .await;
+    assert!(fixture.active_ids().contains(&prompt));
+
+    let answering_session = fixture.id("answering-session");
+    fixture
+        .state
+        .owned
+        .session_store
+        .write()
+        .restore_session(RuntimeSession::new(
+            answering_session.clone(),
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "kernel",
+        ));
+    let result = fixture
+        .state
+        .save_app_file_export(
+            DEFAULT_LOCAL_USER_ID.into(),
+            SaveAppFileExportRequest {
+                session_id: answering_session,
+                operation_id: operation.clone(),
+            },
+        )
+        .await;
+    assert!(matches!(
+        result,
+        LocalDaemonResponse::AppFileExport { operation_id, name, contents_base64 }
+            if operation_id == operation && name == "imported.txt" && contents_base64 == "Zml4dHVyZQ=="
+    ));
+    assert_eq!(fixture.active_ids(), vec![fixture.id("unrelated")]);
+    assert!(matches!(
+        unrelated.try_recv(),
         Err(oneshot::error::TryRecvError::Empty)
     ));
 }

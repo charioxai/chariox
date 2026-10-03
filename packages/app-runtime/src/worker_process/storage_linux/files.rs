@@ -194,40 +194,65 @@ pub(super) fn create_image(parent: &Dir, name: &str, capacity: u64) -> Result<Fi
     Ok(file)
 }
 
+/// Bytes copied between writebacks, so the copy's dirty page cache stays
+/// far below the helper unit's `MemoryMax`.
+const COPY_CHUNK: u64 = 16 << 20;
+
 /// Copies a detached image into a preallocated one of the same capacity and
 /// fsyncs the copy. On the managed ext4 root this is a full copy inside the
-/// acquire, not a reflink.
+/// acquire, not a reflink. Each chunk is written back and dropped from the
+/// page cache before the next: the whole image is larger than the helper's
+/// memory limit, and dirty pages outrunning writeback get it OOM-killed.
 pub(super) fn copy_image(source: &File, destination: &File, capacity: u64) -> Result<()> {
     if source.metadata()?.len() != capacity || destination.metadata()?.len() != capacity {
         return Err(Error::Identity);
     }
     let (mut from, mut to) = (0 as libc::loff_t, 0 as libc::loff_t);
     while (from as u64) < capacity {
-        let count = unsafe {
-            libc::copy_file_range(
-                source.as_raw_fd(),
-                &mut from,
-                destination.as_raw_fd(),
-                &mut to,
-                (capacity - from as u64) as usize,
-                0,
-            )
-        };
-        if count < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
-            continue;
+        let chunk = from;
+        let end = (chunk as u64 + COPY_CHUNK).min(capacity) as libc::loff_t;
+        while from < end {
+            let count = unsafe {
+                libc::copy_file_range(
+                    source.as_raw_fd(),
+                    &mut from,
+                    destination.as_raw_fd(),
+                    &mut to,
+                    (end - from) as usize,
+                    0,
+                )
+            };
+            if count < 0
+                && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+            {
+                continue;
+            }
+            // Zero is an early end of the source, which sets no errno.
+            if count == 0 {
+                return Err(Error::Identity);
+            }
+            if count < 0 {
+                return Err(
+                    if [libc::ENOSPC, libc::EDQUOT].contains(&crate::private_fs::errno()) {
+                        Error::Capacity
+                    } else {
+                        Error::Io
+                    },
+                );
+            }
         }
-        // Zero is an early end of the source, which sets no errno.
-        if count == 0 {
-            return Err(Error::Identity);
+        let length = end - chunk;
+        let flags = libc::SYNC_FILE_RANGE_WAIT_BEFORE
+            | libc::SYNC_FILE_RANGE_WRITE
+            | libc::SYNC_FILE_RANGE_WAIT_AFTER;
+        if unsafe { libc::sync_file_range(destination.as_raw_fd(), chunk, length, flags) } != 0 {
+            return Err(Error::Io);
         }
-        if count < 0 {
-            return Err(
-                if [libc::ENOSPC, libc::EDQUOT].contains(&crate::private_fs::errno()) {
-                    Error::Capacity
-                } else {
-                    Error::Io
-                },
-            );
+        for file in [source, destination] {
+            let advice = libc::POSIX_FADV_DONTNEED;
+            if unsafe { libc::posix_fadvise(file.as_raw_fd(), chunk, length, advice) } != 0 {
+                return Err(Error::Io);
+            }
         }
     }
     destination.sync_all()?;

@@ -223,15 +223,21 @@ impl<E: Clone + Serialize> EventLog<E> {
             return Err(error);
         }
         let compact_after_append = apply_retention(&mut streams, self.retention, unix_epoch_ms());
+        // Rate-limited compaction serializes under the guard to avoid cloning events.
+        // Release the guard before handing owned bytes to the asynchronous writer.
         let compact_snapshot = if compact_after_append && persistence.should_compact_now() {
-            Some(retained_events_snapshot(&streams))
+            Some(retained_events_jsonl_payload(&streams))
         } else {
             None
         };
         drop(streams);
         if compact_after_append {
             if let Some(compact_snapshot) = compact_snapshot {
-                if let Err(error) = persistence.persist_compaction(&compact_snapshot).await {
+                let result = match compact_snapshot {
+                    Ok(payload) => persistence.persist_compaction(payload).await,
+                    Err(error) => Err(error),
+                };
+                if let Err(error) = result {
                     crate::logging::warn_with_fields(
                         "daemon.event_log",
                         "persistent event log compaction failed",
@@ -365,8 +371,10 @@ where
         truncate_torn_jsonl_tail(&event_store_path)?;
         let (streams, compact_after_load) = load_retained_streams(&event_store_path, retention)?;
         if compact_after_load {
-            let snapshot = retained_events_snapshot(&streams);
-            rewrite_logged_events(&event_store_path, &snapshot)?;
+            rewrite_logged_events_jsonl(
+                &event_store_path,
+                &retained_events_jsonl_payload(&streams)?,
+            )?;
         }
         Ok(Self {
             event_ids: EventIdAllocator::persistent(
@@ -618,11 +626,7 @@ impl PersistentEventStore {
             .unwrap_or(0)
     }
 
-    async fn persist_compaction<E>(&self, compact_snapshot: &[LoggedEvent<E>]) -> io::Result<()>
-    where
-        E: Serialize,
-    {
-        let compact_jsonl = logged_events_jsonl_payload(compact_snapshot)?;
+    async fn persist_compaction(&self, compact_jsonl: Vec<u8>) -> io::Result<()> {
         let compact_jsonl_len = compact_jsonl.len() as u64;
         let (reply_tx, reply_rx) = oneshot::channel();
         self.write_tx
@@ -872,15 +876,15 @@ where
     true
 }
 
-fn retained_events_snapshot<E: Clone>(
+fn retained_events_jsonl_payload<E: Serialize>(
     streams: &BTreeMap<String, EventStream<E>>,
-) -> Vec<LoggedEvent<E>> {
+) -> io::Result<Vec<u8>> {
     let mut events = streams
         .values()
-        .flat_map(|stream| stream.retained.iter().cloned())
+        .flat_map(|stream| stream.retained.iter())
         .collect::<Vec<_>>();
-    events.sort_by_key(|event| event.event_id);
-    events
+    events.sort_unstable_by_key(|event| event.event_id);
+    logged_events_jsonl_payload(&events)
 }
 
 fn retained_events_jsonl_bytes<E>(streams: &BTreeMap<String, EventStream<E>>) -> u64 {
@@ -906,7 +910,7 @@ where
     Ok(bytes)
 }
 
-fn logged_events_jsonl_payload<E>(events: &[LoggedEvent<E>]) -> io::Result<Vec<u8>>
+fn logged_events_jsonl_payload<E>(events: &[&LoggedEvent<E>]) -> io::Result<Vec<u8>>
 where
     E: Serialize,
 {
@@ -970,11 +974,15 @@ fn truncate_torn_jsonl_file_tail(file: &mut fs::File) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn rewrite_logged_events<E>(path: &Path, events: &[LoggedEvent<E>]) -> io::Result<()>
 where
     E: Serialize,
 {
-    rewrite_logged_events_jsonl(path, &logged_events_jsonl_payload(events)?)
+    rewrite_logged_events_jsonl(
+        path,
+        &logged_events_jsonl_payload(&events.iter().collect::<Vec<_>>())?,
+    )
 }
 
 fn rewrite_logged_events_jsonl(path: &Path, payload: &[u8]) -> io::Result<()> {

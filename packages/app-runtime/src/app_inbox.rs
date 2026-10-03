@@ -94,6 +94,9 @@ pub struct InboxRoute {
     pub event_name: String,
     pub source_event_type: String,
     pub source_event_version: u32,
+    /// Persisted admission state. Deployment handover pauses an owner's route
+    /// while a copy claims its event interest, then resumes it when the copy
+    /// leaves. This is not a worker or event-connection health indicator.
     pub active: bool,
     /// Set when occurrences come from an event generator connection; absent
     /// for routes fed only by the owner (`TestAppInboxRoute`).
@@ -296,8 +299,9 @@ pub fn create_route_in(tx: &Connection, route: &InboxRoute, now_ms: u64) -> Resu
     Ok(())
 }
 
-/// Removing a route also drops its occurrences, delivered or not: a route
-/// created again under the same name starts empty.
+/// Removing a route stops new acceptance without discarding acknowledged
+/// occurrences. Pending delivery and settled dedupe receipts retain their
+/// original identities, including when the route name is reused.
 pub fn remove_route_in(
     tx: &Connection,
     owner_id: &str,
@@ -311,10 +315,6 @@ pub fn remove_route_in(
     if removed == 0 {
         return Err(InboxError::NotFound);
     }
-    tx.execute(
-        "DELETE FROM app_inbox WHERE owner_id=?1 AND installation_id=?2 AND route_id=?3",
-        params![owner_id, installation_id, route_id],
-    )?;
     Ok(())
 }
 
@@ -681,7 +681,41 @@ pub fn state(connection: &Connection, sequence: i64) -> Result<InboxState> {
     InboxState::parse(&value)
 }
 
-/// Occurrence outcomes of one route, so poison and expiry stay visible.
+/// One occurrence without its payload: what the owner's notice names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OccurrenceSummary {
+    pub owner_id: String,
+    pub installation_id: String,
+    pub route_id: String,
+    pub event_name: String,
+    pub occurrence_id: String,
+    pub attempts: u32,
+}
+
+pub fn occurrence(connection: &Connection, sequence: i64) -> Result<OccurrenceSummary> {
+    connection
+        .query_row(
+            "SELECT owner_id,installation_id,route_id,event_name,occurrence_id,attempts
+             FROM app_inbox WHERE sequence=?1",
+            [sequence],
+            |row| {
+                Ok(OccurrenceSummary {
+                    owner_id: row.get(0)?,
+                    installation_id: row.get(1)?,
+                    route_id: row.get(2)?,
+                    event_name: row.get(3)?,
+                    occurrence_id: row.get(4)?,
+                    attempts: row.get(5)?,
+                })
+            },
+        )
+        .optional()?
+        .ok_or(InboxError::NotFound)
+}
+
+/// Retained occurrence outcomes for one owner's installation and route name.
+/// Route lists expose these only while the route exists; a replacement route
+/// with the same name includes retained outcomes from its predecessor.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct InboxCounts {
     pub pending: u64,

@@ -42,6 +42,15 @@ test("slice save interruption drill requires both restorable publication outcome
     parseSliceSaveInterruptionProbe(`noise\nCHARIOX_SLICE_SAVE_INTERRUPTION_PROBE:${JSON.stringify(probe)}\n`),
     probe,
   )
+  // Single-threaded libtest prints the probe on the test's status line.
+  assert.deepEqual(
+    parseSliceSaveInterruptionProbe(`test ${SLICE_SAVE_INTERRUPTION_TEST_NAME} ... CHARIOX_SLICE_SAVE_INTERRUPTION_PROBE:${JSON.stringify(probe)}\nok`),
+    probe,
+  )
+  assert.throws(
+    () => parseSliceSaveInterruptionProbe(`test ${SLICE_SAVE_INTERRUPTION_TEST_NAME} ... CHARIOX_SLICE_SAVE_INTERRUPTION_PROBE:${JSON.stringify({ ...probe, schema: "chariox.slice_save_interruption_probe.v0" })}`),
+    /schema must be/,
+  )
   assert.throws(
     () => parseSliceSaveInterruptionProbe(`CHARIOX_SLICE_SAVE_INTERRUPTION_PROBE:${JSON.stringify({
       ...probe,

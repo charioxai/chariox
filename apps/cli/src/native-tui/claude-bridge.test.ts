@@ -82,10 +82,10 @@ test("native Claude bridge only uses prompt matching projected active turn", () 
   assert.equal(sessionActivePromptForAgent(mismatchedSession, "agent-1"), null)
 })
 
-test("native Claude bridge falls back to legacy prompt fields before projected activity exists", () => {
+test("native Claude bridge ignores unscoped legacy prompts before projected activity exists", () => {
   const activePrompt = prompt("prompt-legacy", "agent-1")
 
-  assert.equal(sessionActivePromptForAgent(session({ active_prompt: activePrompt }), "agent-1")?.id, "prompt-legacy")
+  assert.equal(sessionActivePromptForAgent(session({ active_prompt: activePrompt }), "agent-1"), null)
 })
 
 test("native Claude bridge ignores legacy active prompt once projected activity exists", () => {
@@ -200,3 +200,71 @@ function prompt(id: string, targetAgentId: string, status = "running"): PromptQu
     status,
   }
 }
+
+// MP-08/MP-10: exercise the real bridge and generated UserPromptSubmit hook.
+test("Claude Chariox-origin prompt carries hidden context only through the hook", { timeout: 3_000 }, async (t) => {
+  const { mkdtemp, readFile, rm, writeFile } = await import("node:fs/promises")
+  const { tmpdir } = await import("node:os")
+  const { join } = await import("node:path")
+  const { spawnSync } = await import("node:child_process")
+  const { startClaudeBridge } = await import("./claude-bridge.js")
+  const { writeClaudeHookHandler } = await import("./claude-hook-handler.js")
+  const { hiddenInstructionsStart, hiddenInstructionsEnd } = await import("./hidden-instructions.js")
+  const root = await mkdtemp(join(tmpdir(), "chariox-claude-bridge-test-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const contextFile = join(root, "context.txt")
+  const eventsFile = join(root, "events.jsonl")
+  const handler = join(root, "hook.mjs")
+  await writeFile(eventsFile, "")
+  await writeClaudeHookHandler(handler)
+  const hidden = "Fixture-only hidden instruction"
+  const visible = "Reply with the fixture answer."
+  const activePrompt = {
+    ...prompt("prompt-external", "agent-1"),
+    prompt: `${hiddenInstructionsStart}\n${hidden}\n${hiddenInstructionsEnd}\n\n${visible}`,
+  }
+  const state = session({
+    prompt_states: { "agent-1": { active_prompt: activePrompt, queued_prompts: [] } },
+    agent_activity: { "agent-1": {
+      status: "working", prompt_status: "running", busy: true, unread_idle_output: false,
+      active_turn: { prompt_id: activePrompt.id, status: "running", phase: "awaiting_first_output" },
+    } },
+  })
+  const requests: unknown[] = []
+  let finish: () => void = () => {}
+  let fail: (error: unknown) => void = () => {}
+  const submitted = new Promise<void>((resolve, reject) => { finish = resolve; fail = reject })
+  const bridge = startClaudeBridge({
+    client: { send: async (request: unknown) => {
+      requests.push(request)
+      return { SessionState: { session: state } }
+    } } as unknown as import("../ipc.js").LocalIpcClient,
+    sessionId: state.id, attachmentId: "attachment", agentId: "agent-1", providerRunId: "run",
+    eventsFile, contextFile, originFile: join(root, "origin.json"), attachmentContextDir: join(root, "attachments"),
+    hookContextResponseDir: join(root, "responses"), workspace: root, worktree: root,
+    inlineLocalAttachments: false, promptOrigin: { current: null }, debug: () => {},
+    submitPrompt: async (text) => {
+      try {
+        assert.equal(text, visible)
+        assert.equal(await readFile(contextFile, "utf8"), hidden)
+        const hook = spawnSync(process.execPath, [handler], {
+          input: JSON.stringify({ hook_event_name: "UserPromptSubmit", prompt: text }),
+          encoding: "utf8", timeout: 1_000,
+          env: { ...process.env, CHARIOX_CLAUDE_NATIVE_EVENTS: eventsFile, CHARIOX_CLAUDE_NATIVE_CONTEXT: contextFile },
+        })
+        assert.equal(hook.status, 0)
+        assert.deepEqual(JSON.parse(hook.stdout), {
+          hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: hidden },
+        })
+      } catch (error) {
+        fail(error)
+      } finally {
+        bridge.stop()
+        finish()
+      }
+    },
+  })
+  t.after(() => bridge.stop())
+  await submitted
+  assert.ok(requests.every((request) => Object.keys(request as object)[0] === "GetSessionState"))
+})

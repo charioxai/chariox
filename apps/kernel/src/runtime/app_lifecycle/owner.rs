@@ -9,6 +9,7 @@ pub(super) struct Context {
     pub store: DurableKernelStateStore,
     pub publisher: AppWorkerPublisher,
     pub admission: Arc<Semaphore>,
+    pub preparation: Arc<Semaphore>,
     pub owner: String,
     pub installation: String,
     pub attempt: String,
@@ -17,6 +18,8 @@ pub(super) struct Context {
     pub kind: StartKind,
     #[cfg(test)]
     pub fixture: Option<start::FixturePlatform>,
+    #[cfg(test)]
+    pub start_checkpoint: Option<StartObserver>,
     #[cfg(test)]
     pub claim_checkpoint: Option<Arc<dyn Fn() + Send + Sync>>,
 }
@@ -38,17 +41,33 @@ impl Admitted {
 struct Completion(Arc<Control>);
 impl Drop for Completion {
     fn drop(&mut self) {
+        #[cfg(test)]
+        if let Some(checkpoint) = self.0.completion_checkpoint.lock().unwrap().clone() {
+            checkpoint();
+        }
         self.0.complete();
     }
 }
-pub(super) fn run(
-    context: Context,
-    live: OwnedSemaphorePermit,
-    preparation: OwnedSemaphorePermit,
-    operation: OwnedSemaphorePermit,
-) {
+/// An accepted start waits its turn for one of `slots` instead of refusing
+/// Busy. A stop or kernel shutdown wakes and ends the wait.
+pub(super) fn queue(control: &Control, slots: &Arc<Semaphore>) -> Result<OwnedSemaphorePermit> {
+    loop {
+        if control.stopped() {
+            return Err(LifecycleError::Stopped);
+        }
+        match slots.clone().try_acquire_owned() {
+            Ok(permit) => return Ok(permit),
+            Err(tokio::sync::TryAcquireError::Closed) => return Err(LifecycleError::Supervisor),
+            Err(tokio::sync::TryAcquireError::NoPermits) => control.wait(Duration::from_millis(20)),
+        }
+    }
+}
+pub(super) fn run(context: Context, live: OwnedSemaphorePermit) {
     let _completion = Completion(context.control.clone());
     let _live = live;
+    // The claim is a writer operation: it holds a shared App slot through the
+    // claim and, if it fails, through the deferred stop write below.
+    let operation = queue(&context.control, &context.admission);
     let claim_budget = context.control.budget();
     #[cfg(test)]
     let claim_budget = match &context.claim_checkpoint {
@@ -56,7 +75,12 @@ pub(super) fn run(
         None => claim_budget,
     };
     let mut first_authority_withdrawn = false;
+    #[cfg(test)]
+    if let Some(checkpoint) = &context.start_checkpoint {
+        checkpoint(StartCheckpoint::BeforeClaim);
+    }
     let claim = match &context.kind {
+        _ if operation.is_err() => Err(LifecycleError::Stopped),
         StartKind::Active { recovery } => context
             .store
             .claim_active_app_start(
@@ -103,9 +127,18 @@ pub(super) fn run(
                     }
                 }
             }
-            // Initial claim may have been cancelled while holding the eighth
-            // App permit. Retain that permit through the deferred stop write;
-            // no ActiveStartAdmission or native process exists yet.
+            // The claim failed or was cancelled; no ActiveStartAdmission or
+            // native process exists yet. A start stopped while queued for its
+            // claim holds no App slot: it writes only if one is free now, and
+            // never waits for one. Otherwise its entry keeps the pending stop,
+            // which maintenance or shutdown persists under its own slot.
+            let _slot = match operation {
+                Ok(permit) => permit,
+                Err(_) => match context.admission.clone().try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => return,
+                },
+            };
             let _ = manual_stop::persist(
                 &context.store,
                 &context.owner,
@@ -116,9 +149,18 @@ pub(super) fn run(
             return;
         }
     };
+    drop(operation);
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        serve(&context, &mut admission, preparation, operation)
+        serve(&context, &mut admission)
     }));
+    if let Ok(Err(LifecycleError::DiskSpace(space))) = &outcome {
+        disk_space::notify(
+            &context.store,
+            &context.owner,
+            &context.installation,
+            *space,
+        );
+    }
     let uncertain = matches!(&outcome, Ok(Err(LifecycleError::CommitUnknown)));
     if uncertain {
         // Native owner/peer already dropped and reaped during error unwinding.
@@ -173,12 +215,11 @@ pub(super) fn run(
         }
     }
 }
-fn serve(
-    context: &Context,
-    admission: &mut Admitted,
-    preparation: OwnedSemaphorePermit,
-    operation: OwnedSemaphorePermit,
-) -> Result<WorkerExit> {
+fn serve(context: &Context, admission: &mut Admitted) -> Result<WorkerExit> {
+    // Claimed (the row shows Starting); one App prepares at a time. A stop
+    // while queued records Stopped like a stop during preparation.
+    let preparation = queue(&context.control, &context.preparation)?;
+    let operation = queue(&context.control, &context.admission)?;
     let started = match admission {
         Admitted::Restart(active) => start::activate(context, active, preparation, operation)?,
         Admitted::First { pending, active } => {
@@ -192,64 +233,21 @@ fn serve(
     let owner = started.owner;
     context.control.retain_drain(owner.drain_handle());
     let handle = started.handle;
+    let catalog = handle
+        .lease(&context.owner)
+        .map_err(|_| LifecycleError::Authority)?
+        .catalog()
+        .clone();
     let mut events = started.events;
     #[cfg(test)]
     let _fixture_release = started.fixture_release;
-    let work = (|| {
-        if context.control.stopped() {
-            return Err(LifecycleError::Stopped);
-        }
-        owner
-            .startup_blocking()
-            .map_err(|_| LifecycleError::Startup)?;
-        context.store.record_app_worker(
-            admission,
-            WorkerPhase::Running,
-            true,
-            None,
-            context.control.budget(),
-        )?;
-        if context.control.stopped() {
-            return Err(LifecycleError::Stopped);
-        }
-        context
-            .publisher
-            .publish(admission.owner(), handle)
-            .map_err(|_| LifecycleError::Startup)?;
-        let mut authority_check = Instant::now();
-        let mut pending_check = None;
-        loop {
-            if context.control.stopped() {
-                break;
-            }
-            if owner.is_closed() {
-                break;
-            }
-            // Control frames are bounded by the existing peer. They are not a
-            // second log sink, user transcript or an App-provided health proof.
-            for _ in 0..16 {
-                if events.try_recv().is_err() {
-                    break;
-                }
-            }
-            if Instant::now() >= authority_check {
-                // Contention cannot renew a check's deadline or immediately
-                // kill a healthy worker. Keep one budget until admission wins.
-                let budget = pending_check.get_or_insert_with(|| context.control.budget());
-                budget.check().map_err(|_| LifecycleError::Authority)?;
-                if let Ok(_permit) = context.admission.clone().try_acquire_owned() {
-                    context
-                        .store
-                        .verify_app_start(admission, budget.fork(|| false))?;
-                    pending_check = None;
-                    authority_check = Instant::now() + Duration::from_secs(2);
-                }
-            }
-            context.control.wait(Duration::from_millis(100));
-        }
-        Ok(())
-    })();
-    if context.control.stopped() && !owner.is_closed() {
+    let (work, callback_settled) =
+        notifications::serve(context, admission, &owner, handle, &mut events, catalog);
+    if context.control.stopped()
+        && !context.control.idle.load(Ordering::Acquire)
+        && callback_settled
+        && !owner.is_closed()
+    {
         let _ = owner.drain_blocking();
     }
     let exit = owner

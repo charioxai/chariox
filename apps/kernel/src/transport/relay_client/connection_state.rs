@@ -40,7 +40,7 @@ pub struct RelayClientState {
         BTreeMap<String, oneshot::Sender<Option<RelayError>>>,
     pub(super) display_streams: BTreeMap<String, mpsc::Sender<RelayDisplayTunnelClientEvent>>,
     #[cfg(test)]
-    lose_next_peer_response_payload: Option<bool>,
+    lose_next_peer_response_payload: Option<TestPeerResponseLoss>,
     #[cfg(test)]
     test_authenticated_peer_request_observer:
         Option<mpsc::UnboundedSender<TestPeerRequestObservation>>,
@@ -51,9 +51,36 @@ pub struct RelayClientState {
 
 #[cfg(test)]
 #[derive(Debug)]
+struct TestPeerResponseLoss {
+    forget_action_receipts: bool,
+    target: TestPeerResponseKind,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TestPeerResponseKind {
+    Other,
+    BrowserMutation,
+    LeasedPrompt,
+    LeasedSteer,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
 pub(crate) enum TestPeerRequestObservation {
     StartProjectEnvironmentSetup {
         operation_id: String,
+    },
+    RetryProjectEnvironmentSetup {
+        operation_id: String,
+        leased_agent_id: String,
+        release: oneshot::Sender<()>,
+    },
+    AcknowledgeProjectEnvironmentSetupDefinition {
+        operation_id: String,
+        attempt: u32,
+        definition_digest: String,
+        release: oneshot::Sender<()>,
     },
     GetProjectEnvironmentSetupStatus {
         operation_id: String,
@@ -443,8 +470,13 @@ impl RelayClientState {
         let Some(sender) = self.display_streams.get(stream_id) else {
             return false;
         };
-        if sender.try_send(event).is_ok() {
-            return true;
+        match sender.try_send(event) {
+            Ok(()) => return true,
+            Err(error) => crate::logging::warn_with_fields(
+                "display.proxy",
+                "display ingress stopped",
+                serde_json::json!({"stream_id": stream_id, "full": matches!(error, mpsc::error::TrySendError::Full(_))}),
+            ),
         }
         // Never drop an encrypted fragment and leave the channel alive: the
         // next packet would be out of sequence. Removing the only state-owned
@@ -465,13 +497,30 @@ impl RelayClientState {
     }
 
     #[cfg(test)]
-    pub(crate) fn test_lose_next_peer_response_payload(&mut self) {
-        self.lose_next_peer_response_payload = Some(false);
+    pub(crate) fn test_lose_next_leased_prompt_response(&mut self) {
+        self.lose_next_peer_response_payload = Some(TestPeerResponseLoss {
+            forget_action_receipts: false,
+            target: TestPeerResponseKind::LeasedPrompt,
+        });
     }
 
     #[cfg(test)]
-    pub(crate) fn test_lose_next_peer_response_payload_and_forget_action_receipts(&mut self) {
-        self.lose_next_peer_response_payload = Some(true);
+    pub(crate) fn test_lose_next_leased_steer_response(&mut self) {
+        self.lose_next_peer_response_payload = Some(TestPeerResponseLoss {
+            forget_action_receipts: false,
+            target: TestPeerResponseKind::LeasedSteer,
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_lose_next_browser_mutation_response(
+        &mut self,
+        forget_action_receipts: bool,
+    ) {
+        self.lose_next_peer_response_payload = Some(TestPeerResponseLoss {
+            forget_action_receipts,
+            target: TestPeerResponseKind::BrowserMutation,
+        });
     }
 
     #[cfg(test)]
@@ -502,6 +551,38 @@ impl RelayClientState {
                 },
                 None,
             ),
+            RelayPeerRequest::RetryLeasedProjectEnvironmentSetup {
+                leased_agent_id,
+                operation_id,
+                ..
+            } => {
+                let (release_tx, release_rx) = oneshot::channel();
+                (
+                    TestPeerRequestObservation::RetryProjectEnvironmentSetup {
+                        operation_id: operation_id.clone(),
+                        leased_agent_id: leased_agent_id.clone(),
+                        release: release_tx,
+                    },
+                    Some(release_rx),
+                )
+            }
+            RelayPeerRequest::AcknowledgeLeasedProjectEnvironmentSetupDefinition {
+                operation_id,
+                attempt,
+                definition_digest,
+                ..
+            } => {
+                let (release_tx, release_rx) = oneshot::channel();
+                (
+                    TestPeerRequestObservation::AcknowledgeProjectEnvironmentSetupDefinition {
+                        operation_id: operation_id.clone(),
+                        attempt: *attempt,
+                        definition_digest: definition_digest.clone(),
+                        release: release_tx,
+                    },
+                    Some(release_rx),
+                )
+            }
             RelayPeerRequest::GetLeasedProjectEnvironmentSetupStatus { operation_id, .. } => {
                 let (release_tx, release_rx) = oneshot::channel();
                 (
@@ -531,8 +612,17 @@ impl RelayClientState {
     }
 
     #[cfg(test)]
-    pub(super) fn test_take_lost_peer_response_payload(&mut self) -> Option<bool> {
-        self.lose_next_peer_response_payload.take()
+    pub(super) fn test_take_lost_peer_response_payload(
+        &mut self,
+        kind: TestPeerResponseKind,
+    ) -> Option<bool> {
+        let loss = self.lose_next_peer_response_payload.as_ref()?;
+        if loss.target != kind {
+            return None;
+        }
+        self.lose_next_peer_response_payload
+            .take()
+            .map(|loss| loss.forget_action_receipts)
     }
 }
 
@@ -1053,4 +1143,47 @@ mod tests {
             .display_tunnel("publication-expired", 0)
             .is_none());
     }
+}
+
+#[test]
+fn peer_response_fault_waits_for_the_intended_request() {
+    let mut state = RelayClientState::default();
+    for forget in [false, true] {
+        state.test_lose_next_browser_mutation_response(forget);
+        assert_eq!(
+            state.test_take_lost_peer_response_payload(TestPeerResponseKind::Other),
+            None,
+            "MP-08/MP-11 unrelated replies must not consume the fault"
+        );
+        assert_eq!(
+            state.test_take_lost_peer_response_payload(TestPeerResponseKind::BrowserMutation),
+            Some(forget)
+        );
+        assert_eq!(
+            state.test_take_lost_peer_response_payload(TestPeerResponseKind::BrowserMutation),
+            None
+        );
+    }
+    state.test_lose_next_leased_steer_response();
+    assert_eq!(
+        state.test_take_lost_peer_response_payload(TestPeerResponseKind::LeasedPrompt),
+        None
+    );
+    assert_eq!(
+        state.test_take_lost_peer_response_payload(TestPeerResponseKind::Other),
+        None
+    );
+    assert_eq!(
+        state.test_take_lost_peer_response_payload(TestPeerResponseKind::LeasedSteer),
+        Some(false)
+    );
+    state.test_lose_next_leased_prompt_response();
+    assert_eq!(
+        state.test_take_lost_peer_response_payload(TestPeerResponseKind::LeasedSteer),
+        None
+    );
+    assert_eq!(
+        state.test_take_lost_peer_response_payload(TestPeerResponseKind::LeasedPrompt),
+        Some(false)
+    );
 }

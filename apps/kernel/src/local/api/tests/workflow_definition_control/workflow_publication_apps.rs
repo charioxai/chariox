@@ -1,4 +1,4 @@
-//! Protocol 366: App-bound workflow publications carry their pinned App plan.
+//! Protocol 366/377: App-bound workflow publications carry each release's App plan.
 use super::*;
 use crate::local::{
     ConfigureAppAutomationRequest, GetWorkflowPublicationRequest, GrantAgentExtensionRequest,
@@ -8,10 +8,13 @@ use crate::session::DEFAULT_LOCAL_USER_ID;
 
 /// A harness whose local owner has the fixture App `installed`
 /// (`com.example.state`, outgoing event `changed`) with its stored release.
+/// Its kernel deletes App storage from fixture storage: on Linux, App storage
+/// belongs to the root storage helper, which tests do not run.
 fn harness_with_app(root: &std::path::Path) -> LocalRouterTestHarness {
     let mut config = crate::DaemonConfig::for_tests();
     config.user_config.state.path = Some(root.join("state.db").display().to_string());
     let harness = LocalRouterTestHarness::with_config(config);
+    harness.runtime_state().app_control().fixture_app_storage();
     let store = harness.with_app(|app| app.durable_state_store());
     stage_release(
         &harness,
@@ -130,7 +133,7 @@ fn contract_schema() -> jsonschema::JSONSchema {
 }
 
 #[test]
-fn an_app_granted_to_a_workflow_agent_is_pinned_and_packaged() {
+fn an_app_granted_to_a_workflow_agent_is_packaged_per_release() {
     let root = temp_root("grant");
     let harness = harness_with_app(&root);
     let graph = create_publication_test_graph(&harness, "app-grant");
@@ -171,10 +174,8 @@ fn an_app_granted_to_a_workflow_agent_is_pinned_and_packaged() {
     let contract = package_json_file(&files, "deployment-contract.json");
     assert_eq!(contract["capabilities"]["apps"], apps["apps"]);
     assert!(contract_schema().is_valid(&contract));
-    // The plan is pinned on the publication.
-    let LocalDaemonResponse::WorkflowPublication {
-        publication: pinned,
-    } = harness
+    // Protocol 377: the plan is recorded as this release's.
+    let get = || match harness
         .dispatch(LocalDaemonRequest::GetWorkflowPublication(
             GetWorkflowPublicationRequest {
                 session_id: graph.session_id.clone(),
@@ -182,24 +183,76 @@ fn an_app_granted_to_a_workflow_agent_is_pinned_and_packaged() {
             },
         ))
         .unwrap()
-    else {
-        panic!("publication")
+    {
+        LocalDaemonResponse::WorkflowPublication { publication } => publication,
+        response => panic!("unexpected response: {response:?}"),
     };
-    assert_eq!(pinned.apps(), Some(&apps));
+    assert_eq!(get().apps(), Some(&apps));
+    assert_eq!(get().release_app_plan(&digest), Some(&apps));
 
-    // An App change after preparation leaves the pinned package unchanged:
-    // the deployment bind re-exports and compares this digest.
+    // An owner App update is packaged by the next release; the first release
+    // keeps its own plan, which its bind and a rollback re-export.
+    let newer = crate::durable_state::app_state::fixture_inbox_package_version("1.1.0", 0);
+    stage_release(&harness, newer.clone());
+    harness.with_app(|app| {
+        crate::durable_state::app_state::fixture_update_installation(
+            &app.durable_state_store(),
+            DEFAULT_LOCAL_USER_ID,
+            "installed",
+            newer,
+        )
+    });
+    let (next, next_files) = export(&harness, &graph, publication.id()).expect("next release");
+    assert_ne!(next, digest);
+    let next_apps = package_json_file(&next_files, "apps.json");
+    assert_eq!(next_apps["apps"][0]["version"], "1.1.0");
+    assert_eq!(apps["apps"][0]["version"], "1.0.0");
+    assert_eq!(get().apps(), Some(&next_apps));
+    assert_eq!(get().release_app_plan(&digest), Some(&apps));
+    assert_eq!(get().release_app_plan(&next), Some(&next_apps));
+    // A deployment bound to either release still verifies after the owner's
+    // App update: its bind and recovery re-export with the release's plan.
+    let rebound = |expected: &str| {
+        harness
+            .runtime_state()
+            .fixture_verify_bound_release(&graph.session_id, publication.id(), expected)
+            .expect("re-export the bound release")
+    };
+    assert_eq!(rebound(&digest), Ok(()));
+    assert_eq!(rebound(&next), Ok(()));
+    // Each export recorded its release's inputs digest (protocol 378).
+    assert!(get().release_inputs_digest(&digest).is_some());
+    assert_ne!(
+        get().release_inputs_digest(&digest),
+        get().release_inputs_digest(&next)
+    );
+
+    // A workflow whose App was uninstalled cannot export a new release; its
+    // exported releases keep their plans.
     harness
         .dispatch(LocalDaemonRequest::UninstallApp(UninstallAppRequest {
             installation_id: "installed".into(),
-            expected_generation: "1".into(),
+            expected_generation: "2".into(),
             delete_data: false,
         }))
         .expect("uninstall");
-    let (after, after_files) = export(&harness, &graph, publication.id()).expect("re-export");
-    assert_eq!(after, digest);
-    assert_eq!(after_files, files);
-    // Uninstalling revoked the grant: a new trigger has no App.
+    let error = export(&harness, &graph, publication.id()).expect_err("App not installed");
+    assert!(error.to_string().contains("not installed"), "{error}");
+    assert_eq!(get().release_app_plan(&digest), Some(&apps));
+    assert_eq!(rebound(&digest), Ok(()));
+    // A new release refuses the retained missing binding until explicitly revoked.
+    let missing = publish(&harness, &graph, "todo-grant-missing", "ingress");
+    let error = export(&harness, &graph, missing.id()).expect_err("missing App binding");
+    assert!(error.to_string().contains("is not installed"), "{error}");
+    harness
+        .dispatch(LocalDaemonRequest::RevokeAgentExtension(
+            crate::local::RevokeAgentExtensionRequest {
+                agent_ref: graph.agent_id.clone(),
+                kind: crate::local::ExtensionKind::App,
+                name: "installed".into(),
+            },
+        ))
+        .expect("explicitly revoke the missing binding");
     let later = publish(&harness, &graph, "todo-grant-2", "ingress");
     let (_, later_files) = export(&harness, &graph, later.id()).expect("export");
     assert!(later_files.iter().all(|file| file.path != "apps.json"));
@@ -289,10 +342,167 @@ fn an_app_automation_feeding_an_event_trigger_is_pinned_and_packaged() {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// A failed export pins nothing; the next successful one pins the plan it
-/// packaged and persists it.
+/// A publication that had Apps and uses none now: its next release records an
+/// explicit empty plan (never the previous release's) and binds without a copy.
 #[test]
-fn only_a_successful_export_pins_and_persists_the_app_plan() {
+fn a_release_after_its_last_app_is_removed_records_an_empty_plan() {
+    let root = temp_root("apps-removed");
+    let harness = harness_with_app(&root);
+    let graph = create_publication_test_graph(&harness, "apps-removed");
+    let publication = publish(&harness, &graph, "todo-due", "event_based");
+    harness
+        .dispatch(LocalDaemonRequest::ConfigureAppAutomation(
+            ConfigureAppAutomationRequest {
+                installation_id: "installed".into(),
+                automation_id: "reminders".into(),
+                expected_revision: 0,
+                event_name: "changed".into(),
+                session_id: graph.session_id.clone(),
+                publication_ref: publication.id().into(),
+                queue_ref: None,
+                scheduled: false,
+            },
+        ))
+        .expect("automation");
+    let (with_apps, files) = export(&harness, &graph, publication.id()).expect("release 1");
+    assert_eq!(
+        package_json_file(&files, "apps.json")["apps"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+    harness
+        .dispatch(LocalDaemonRequest::DisableAppAutomation(
+            crate::local::DisableAppAutomationRequest {
+                installation_id: "installed".into(),
+                automation_id: "reminders".into(),
+                expected_revision: 1,
+            },
+        ))
+        .expect("disable");
+    let (without, files) = export(&harness, &graph, publication.id()).expect("release 2");
+    assert_ne!(without, with_apps);
+    assert_eq!(
+        package_json_file(&files, "apps.json")["apps"],
+        serde_json::json!([])
+    );
+    let publication = match harness
+        .dispatch(LocalDaemonRequest::GetWorkflowPublication(
+            GetWorkflowPublicationRequest {
+                session_id: graph.session_id.clone(),
+                publication_ref: publication.id().into(),
+            },
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::WorkflowPublication { publication } => publication,
+        response => panic!("unexpected response: {response:?}"),
+    };
+    assert_eq!(
+        publication
+            .release_app_plan(&without)
+            .map(|plan| &plan["apps"]),
+        Some(&serde_json::json!([]))
+    );
+    // Both releases verify for a bind: each re-exports with its own plan.
+    for digest in [&with_apps, &without] {
+        assert_eq!(
+            harness
+                .runtime_state()
+                .fixture_verify_bound_release(&graph.session_id, publication.id(), digest)
+                .expect("re-export"),
+            Ok(())
+        );
+    }
+    drop(harness);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// A release exported before the publication used any App still verifies for
+/// its restart and recovery after a later release records a plan.
+#[test]
+fn a_release_without_apps_still_binds_after_a_later_release_records_a_plan() {
+    let root = temp_root("apps-added");
+    let harness = harness_with_app(&root);
+    let graph = create_publication_test_graph(&harness, "apps-added");
+    let publication = publish(&harness, &graph, "todo-due", "event_based");
+    let (without, files) = export(&harness, &graph, publication.id()).expect("release 1");
+    assert!(files.iter().all(|file| file.path != "apps.json"));
+    harness
+        .dispatch(LocalDaemonRequest::ConfigureAppAutomation(
+            ConfigureAppAutomationRequest {
+                installation_id: "installed".into(),
+                automation_id: "reminders".into(),
+                expected_revision: 0,
+                event_name: "changed".into(),
+                session_id: graph.session_id.clone(),
+                publication_ref: publication.id().into(),
+                queue_ref: None,
+                scheduled: false,
+            },
+        ))
+        .expect("automation");
+    let (with_apps, _) = export(&harness, &graph, publication.id()).expect("release 2");
+    assert_ne!(without, with_apps);
+    // Each release re-exports to its own digest: release 1 with no plan.
+    for digest in [&without, &with_apps] {
+        assert_eq!(
+            harness
+                .runtime_state()
+                .fixture_verify_bound_release(&graph.session_id, publication.id(), digest)
+                .expect("re-export"),
+            Ok(())
+        );
+    }
+    // A release this kernel never exported is still refused.
+    let unknown = format!("sha256:{}", "f".repeat(64));
+    let publication = match harness
+        .dispatch(LocalDaemonRequest::GetWorkflowPublication(
+            GetWorkflowPublicationRequest {
+                session_id: graph.session_id.clone(),
+                publication_ref: publication.id().into(),
+            },
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::WorkflowPublication { publication } => publication,
+        response => panic!("unexpected response: {response:?}"),
+    };
+    assert!(publication.release_without_apps(&without));
+    assert!(!publication.release_without_apps(&with_apps));
+    assert!(
+        publication.release_without_apps(&unknown),
+        "the digest check refuses it instead"
+    );
+    // Its deploy consent covers no App: approved at once, with no prompt.
+    let consent = match harness
+        .dispatch(LocalDaemonRequest::PrepareDeploymentApps(
+            crate::local::PrepareDeploymentAppsRequest {
+                session_id: graph.session_id.clone(),
+                request_id: "no-apps".into(),
+                publication_ref: publication.id().into(),
+                deployment_id: "deployment-1".into(),
+                release_id: "release-1".into(),
+                package_digest: without.clone(),
+            },
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::DeploymentAppsConsent { consent } => consent,
+        response => panic!("unexpected response: {response:?}"),
+    };
+    assert_eq!(
+        consent.status,
+        crate::local::DeploymentAppsConsentStatus::Approved
+    );
+    drop(harness);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// A failed export records nothing; the next successful one records the plan
+/// it packaged and persists it.
+#[test]
+fn only_a_successful_export_records_and_persists_the_app_plan() {
     let root = temp_root("failed-export");
     let harness = harness_with_app(&root);
     let graph = create_publication_test_graph(&harness, "app-failed-export");
@@ -369,7 +579,8 @@ fn only_a_successful_export_pins_and_persists_the_app_plan() {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// Protocol 367: one prompt asks the owner to deploy with the pinned Apps.
+/// Protocol 367: one prompt asks the owner to deploy with the release's Apps;
+/// since 377 the same App releases are not asked about again.
 #[test]
 fn preparing_deployment_apps_asks_once_and_records_the_answer() {
     use crate::local::{DeploymentAppsConsent, DeploymentAppsConsentStatus};
@@ -390,34 +601,40 @@ fn preparing_deployment_apps_asks_once_and_records_the_answer() {
         ))
         .unwrap();
     let publication = publish(&harness, &graph, "todo-consent", "ingress");
-    let prepare = |request_id: &str, publication_ref: &str, release_id: &str| {
+    let digest = std::cell::RefCell::new(format!("sha256:{}", "a".repeat(64)));
+    let prepare_for = |request_id: &str, deployment_id: &str, release_id: &str| {
         harness.dispatch(LocalDaemonRequest::PrepareDeploymentApps(
             crate::local::PrepareDeploymentAppsRequest {
                 session_id: graph.session_id.clone(),
                 request_id: request_id.into(),
-                publication_ref: publication_ref.into(),
-                deployment_id: "deployment-1".into(),
+                publication_ref: publication.id().into(),
+                deployment_id: deployment_id.into(),
                 release_id: release_id.into(),
-                package_digest: format!("sha256:{}", "a".repeat(64)),
+                package_digest: digest.borrow().clone(),
             },
         ))
     };
-    let consent = |request_id: &str| -> DeploymentAppsConsent {
-        match prepare(request_id, publication.id(), "release-1").unwrap() {
+    let prepare = |request_id: &str, _publication_ref: &str, release_id: &str| {
+        prepare_for(request_id, "deployment-1", release_id)
+    };
+    let consent_for = |request_id: &str, deployment_id: &str| -> DeploymentAppsConsent {
+        match prepare_for(request_id, deployment_id, "release-1").unwrap() {
             LocalDaemonResponse::DeploymentAppsConsent { consent } => consent,
             response => panic!("unexpected response: {response:?}"),
         }
     };
+    let consent = |request_id: &str| consent_for(request_id, "deployment-1");
     let failed = |response: LocalDaemonResponse| match response {
         LocalDaemonResponse::AppRequestFailed { code } => code,
         response => panic!("unexpected response: {response:?}"),
     };
-    // Without a pinned plan there is nothing to consent to.
+    // Without the release's App plan there is nothing to consent to.
     assert_eq!(
         failed(prepare("early", publication.id(), "release-1").unwrap()),
         crate::local::AppRequestErrorCode::InvalidRequest
     );
-    export(&harness, &graph, publication.id()).expect("prepare the package");
+    let (exported, _) = export(&harness, &graph, publication.id()).expect("prepare the package");
+    *digest.borrow_mut() = exported;
     let answer = |interaction_id: &str, choice: &str| {
         harness
             .dispatch(LocalDaemonRequest::RespondToInteraction(
@@ -432,9 +649,9 @@ fn preparing_deployment_apps_asks_once_and_records_the_answer() {
             ))
             .expect("the owner answers");
     };
-    let settled = |request_id: &str| {
+    let settled_for = |request_id: &str, deployment_id: &str| {
         for _ in 0..200 {
-            let current = consent(request_id);
+            let current = consent_for(request_id, deployment_id);
             if current.status != DeploymentAppsConsentStatus::AwaitingApproval {
                 return current.status;
             }
@@ -442,6 +659,7 @@ fn preparing_deployment_apps_asks_once_and_records_the_answer() {
         }
         panic!("the answer was not recorded");
     };
+    let settled = |request_id: &str| settled_for(request_id, "deployment-1");
 
     let declined = consent("consent-1");
     assert_eq!(
@@ -467,19 +685,31 @@ fn preparing_deployment_apps_asks_once_and_records_the_answer() {
     answer(&approved.interaction_id, "approve");
     assert_eq!(settled("consent-2"), DeploymentAppsConsentStatus::Approved);
 
-    let expired = consent("consent-3");
-    harness.with_app(|app| {
-        app.durable_state_store()
-            .fixture_expire_deployment_consent(DEFAULT_LOCAL_USER_ID, "consent-3")
-    });
+    // Protocol 377: the same App releases for this deployment are approved
+    // without asking again.
     assert_eq!(
         consent("consent-3").status,
+        DeploymentAppsConsentStatus::Approved
+    );
+
+    // Another deployment asks; an unanswered prompt expires.
+    let expired = consent_for("consent-4", "deployment-2");
+    assert_eq!(
+        expired.status,
+        DeploymentAppsConsentStatus::AwaitingApproval
+    );
+    harness.with_app(|app| {
+        app.durable_state_store()
+            .fixture_expire_deployment_consent(DEFAULT_LOCAL_USER_ID, "consent-4")
+    });
+    assert_eq!(
+        consent_for("consent-4", "deployment-2").status,
         DeploymentAppsConsentStatus::Expired
     );
     answer(&expired.interaction_id, "approve");
     std::thread::sleep(std::time::Duration::from_millis(50));
     assert_eq!(
-        consent("consent-3").status,
+        consent_for("consent-4", "deployment-2").status,
         DeploymentAppsConsentStatus::Expired
     );
     drop(harness);
@@ -538,11 +768,12 @@ fn a_publication_previews_its_apps_before_and_after_preparation() {
     let harness = harness_with_app(&root);
     let graph = create_publication_test_graph(&harness, "app-preview");
     let publication = publish(&harness, &graph, "todo-preview", "event_based");
-    let preview = || match harness
+    let preview_release = |package_digest: Option<String>| match harness
         .dispatch(LocalDaemonRequest::PreviewDeploymentApps(
             crate::local::PreviewDeploymentAppsRequest {
                 session_id: graph.session_id.clone(),
                 publication_ref: publication.id().into(),
+                package_digest,
             },
         ))
         .unwrap()
@@ -551,11 +782,17 @@ fn a_publication_previews_its_apps_before_and_after_preparation() {
             publication_id,
             pinned,
             plan,
+            release_plan,
         } => {
             assert_eq!(publication_id, publication.id());
-            (pinned, plan)
+            (pinned, plan, release_plan)
         }
         response => panic!("unexpected response: {response:?}"),
+    };
+    let preview = || {
+        let (pinned, plan, release_plan) = preview_release(None);
+        assert_eq!(release_plan, None);
+        (pinned, plan)
     };
     assert_eq!(preview(), (false, None), "no App yet");
     harness
@@ -579,13 +816,15 @@ fn a_publication_previews_its_apps_before_and_after_preparation() {
     assert_eq!(app["app_id"], "com.example.state");
     assert_eq!(app["automations"][0]["event_name"], "changed");
     assert!(app["capabilities"].is_object());
-    // Previewing pins nothing; the export does.
-    let (_, files) = export(&harness, &graph, publication.id()).expect("export");
-    let (pinned, pinned_plan) = preview();
+    // Previewing prepares nothing; the export records the release's plan.
+    let (digest, files) = export(&harness, &graph, publication.id()).expect("export");
+    let (pinned, current) = preview();
     assert!(pinned);
-    let pinned_plan = pinned_plan.unwrap();
-    assert_eq!(pinned_plan, plan);
-    let mut packaged = pinned_plan;
+    assert_eq!(current.unwrap(), plan);
+    let (_, _, release_plan) = preview_release(Some(digest));
+    let release_plan = release_plan.expect("the release's plan");
+    assert_eq!(release_plan, plan);
+    let mut packaged = release_plan;
     packaged["apps"][0]
         .as_object_mut()
         .unwrap()

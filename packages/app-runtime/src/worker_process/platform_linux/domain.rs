@@ -13,8 +13,9 @@ pub(super) struct Domain {
     pub _roots: [plan::Binding; 4],
     pub _libraries: Vec<(String, plan::Binding)>,
     /// FD5 is cgroup.procs; FD6 is the pinned bubblewrap executable. The native
-    /// entry joins the cgroup before exec/fork, then closes both setup channels.
-    pub setup: [File; 2],
+    /// entry joins the cgroup before exec/fork. FD7 borrows the authenticated
+    /// lease for its fixed gid-map handshake; all three close before bwrap exec.
+    pub setup: [File; 3],
     pub observer: inspection::Observer,
     pub storage: Option<storage_linux::Lease>,
     pub _runtime: Option<EnrolledRuntime>,
@@ -36,12 +37,25 @@ impl ResourceDomain for Domain {
         &self.setup
     }
     fn verify_before_continue(&mut self, pid: libc::pid_t) -> Result<()> {
+        self.storage
+            .as_mut()
+            .ok_or(super::WorkerError::Preparation)?
+            .verify_group_mapping()
+            .map_err(|_| super::WorkerError::Preparation)?;
         self.leaf.verify_limits()?;
         self.observer
             .verify(pid, &self.leaf.members()?, &self.leaf.path)
     }
     fn check_running(&mut self, _pid: libc::pid_t, _now: Instant) -> Result<()> {
         self.leaf.check_running()
+    }
+    fn exit_failure(&mut self) -> Option<super::WorkerError> {
+        // With memory.oom.group the whole domain dies at the limit, often
+        // before the next running check samples memory.events.
+        self.leaf
+            .oom_killed()
+            .ok()?
+            .then_some(super::WorkerError::MemoryLimit)
     }
     fn terminate(&mut self, _pid: libc::pid_t) {
         self.leaf.terminate();

@@ -22,8 +22,7 @@ pub(super) fn apply(connection: &mut Connection, command: Command) -> Result<Rep
             }
             sql(tx.execute("UPDATE app_installation_operations SET updated_ms=?1 WHERE owner_id=?2 AND request_id=?3",params![now()?,owner,request_id]))?;
             limit(&budget)?;
-            tx.commit()
-                .map_err(|_| InstallOperationError::CommitUnknown)?;
+            tx.commit().map_err(commit_failed)?;
             Ok(Reply::Operation(current))
         }
         Command::Cancel {
@@ -55,8 +54,7 @@ pub(super) fn apply(connection: &mut Connection, command: Command) -> Result<Rep
                 WHERE owner_id=?2 AND request_id=?3",params![time,owner,request_id]))?;
             let result = load(&tx, &owner, &request_id)?.ok_or(InstallOperationError::Storage)?;
             limit(&budget)?;
-            tx.commit()
-                .map_err(|_| InstallOperationError::CommitUnknown)?;
+            tx.commit().map_err(commit_failed)?;
             Ok(Reply::Operation(result))
         }
         Command::Begin {
@@ -75,8 +73,7 @@ pub(super) fn apply(connection: &mut Connection, command: Command) -> Result<Rep
                     return Err(InstallOperationError::Conflict);
                 }
                 // Historical replay does not approve or reactivate anything.
-                tx.commit()
-                    .map_err(|_| InstallOperationError::CommitUnknown)?;
+                tx.commit().map_err(commit_failed)?;
                 return Ok(Reply::Operation(old));
             }
             admit(&tx, &owner)?;
@@ -89,8 +86,7 @@ pub(super) fn apply(connection: &mut Connection, command: Command) -> Result<Rep
                 VALUES(?1,?2,?3,?4,'approval',?5,?5)", params![owner,request_id,installation,candidate.release_metadata().package_digest,time]))?;
             let result = load(&tx, &owner, &request_id)?.ok_or(InstallOperationError::Storage)?;
             limit(&budget)?;
-            tx.commit()
-                .map_err(|_| InstallOperationError::CommitUnknown)?;
+            tx.commit().map_err(commit_failed)?;
             Ok(Reply::Operation(result))
         }
         Command::Claim {
@@ -138,8 +134,7 @@ pub(super) fn apply(connection: &mut Connection, command: Command) -> Result<Rep
             sql(tx.execute("UPDATE app_installation_operations SET phase='starting',attempt=?1,approval_json=?2,updated_ms=?3
                 WHERE owner_id=?4 AND request_id=?5", params![attempt,encoded,time,owner,request_id]))?;
             limit(&budget)?;
-            tx.commit()
-                .map_err(|_| InstallOperationError::CommitUnknown)?;
+            tx.commit().map_err(commit_failed)?;
             Ok(Reply::Approved(ApprovedFirstInstall {
                 owner,
                 request_id,
@@ -154,8 +149,7 @@ pub(super) fn apply(connection: &mut Connection, command: Command) -> Result<Rep
             let tx = sql(connection.transaction_with_behavior(TransactionBehavior::Immediate))?;
             require_start(&tx, &admission)?;
             limit(&budget)?;
-            tx.commit()
-                .map_err(|_| InstallOperationError::CommitUnknown)?;
+            tx.commit().map_err(commit_failed)?;
             Ok(Reply::Done)
         }
         Command::Commit {
@@ -216,8 +210,7 @@ pub(super) fn apply(connection: &mut Connection, command: Command) -> Result<Rep
             sql(tx.execute("UPDATE app_installation_operations SET phase=?1,failure=?2,cleanup_pending=1,updated_ms=?3
                 WHERE owner_id=?4 AND request_id=?5", params![if cancelled {"cancelled"} else {"failed"},failure,time,admission.owner,admission.request_id]))?;
             limit(&budget)?;
-            tx.commit()
-                .map_err(|_| InstallOperationError::CommitUnknown)?;
+            tx.commit().map_err(commit_failed)?;
             Ok(Reply::Done)
         }
     }

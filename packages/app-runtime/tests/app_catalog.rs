@@ -1,8 +1,8 @@
 use chariox_app_package::{pack, verify, Limits, Manifest, TrustedPublisher, VerificationPolicy};
 use chariox_app_runtime::{
     app_catalog::{
-        Actor, AppCatalog, CallerContext, CatalogError, MAX_CALL_BYTES, MAX_CALL_NODES,
-        MAX_TOOL_NAME_BYTES,
+        is_installation_tool_name, Actor, AppCatalog, CallerContext, CatalogError, MAX_CALL_BYTES,
+        MAX_CALL_NODES, MAX_TOOL_NAME_BYTES,
     },
     installation::{
         CapabilityApproval, CapabilityDecision, InstallationRegistry, StageToken, UpdatePhase,
@@ -219,6 +219,42 @@ fn names_are_stable_across_updates_and_distinguish_installations_and_full_local_
 }
 
 #[test]
+fn a_tool_name_is_recognized_only_for_its_installation_and_whole_local_name() {
+    let mut package = Package::new();
+    let long = "a_local_tool_name_longer_than_the_kept_prefix";
+    package.files.insert(
+        "schemas/tools.json".into(),
+        serde_json::to_vec(&json!({"tools":[
+            {"name":"add_todo", "inputSchema":text_schema()},
+            {"name":long, "inputSchema":text_schema()}
+        ]}))
+        .unwrap(),
+    );
+    let (mut connection, trust) = database(&package);
+    let token = install(&mut connection, "todo-installation", &package, &trust);
+    let catalog = package.catalog(&mut connection, &token, &trust).unwrap();
+    let name = |local: &str| {
+        catalog
+            .tools()
+            .find(|tool| tool.local_name == local)
+            .unwrap()
+            .name
+            .clone()
+    };
+    assert!(is_installation_tool_name(
+        &name("add_todo"),
+        "todo-installation"
+    ));
+    assert!(!is_installation_tool_name(
+        &name("add_todo"),
+        "other-installation"
+    ));
+    assert!(!is_installation_tool_name("add_todo", "todo-installation"));
+    // A cut local name cannot be recomputed from the runtime name.
+    assert!(!is_installation_tool_name(&name(long), "todo-installation"));
+}
+
+#[test]
 fn package_and_exact_signer_are_bound_to_installed_release() {
     let mut package = Package::new();
     let (mut connection, trust) = database(&package);
@@ -302,6 +338,10 @@ fn input_schema_and_typed_context_precede_worker_dispatch() {
             Err(CatalogError::Input)
         ));
     }
+    assert_eq!(
+        CatalogError::Input.to_string(),
+        "The input does not match the tool's declared input schema"
+    );
     assert!(matches!(
         catalog.prepare(
             &transaction,

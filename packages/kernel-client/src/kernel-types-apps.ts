@@ -53,7 +53,8 @@ export type AppPackageUploadSummary = {
 
 export type AppInstallOperationSummary = {
   request_id: string
-  phase: "preparing" | "awaiting_approval" | "starting" | "committed" | "cancelled" | "failed"
+  /** Protocol 381: `queued` is approved and waiting to start, usually for a free App worker slot. */
+  phase: "preparing" | "awaiting_approval" | "queued" | "starting" | "committed" | "cancelled" | "failed"
   installation_id: string | null
   /** Opaque decimal generation. Present only after verified staging. */
   generation: string | null
@@ -65,7 +66,8 @@ export type AppInstallOperationSummary = {
 /** Protocol 345 worker control. `dormant` workers start on their next use. */
 export type AppWorkerSummary = {
   installation_id: string
-  phase: "not_started" | "starting" | "running" | "dormant" | "stopped" | "failed"
+  /** Protocol 407: quarantine requires an explicit start. */
+  phase: "not_started" | "starting" | "running" | "dormant" | "stopped" | "failed" | "quarantined"
   /** False after a user stop; on-demand use does not restart it. */
   enabled: boolean
   failure: string | null
@@ -123,12 +125,31 @@ export type DeploymentAppsConsent = {
   expires_at_ms: number
 }
 
-/** Protocol 367: `DeploymentAppsPreview` — the publication's App plan with each
- * App's signed capabilities; `plan` is null when the workflow uses no App. */
+/** An App plan with each App's signed capabilities. */
+export type DeploymentAppsPlan = Omit<WorkflowPublicationApps, "apps"> & {
+  apps: (WorkflowPublicationApp & { capabilities: Record<string, unknown> })[]
+}
+
+/** Protocol 367: `DeploymentAppsPreview` — the App plan a new release would
+ * package (the owner's current App set); `plan` is null when the workflow uses
+ * no App and `pinned` says a release was prepared. Protocol 377 adds
+ * `release_plan`, the plan of the release asked for by package digest. */
 export type DeploymentAppsPreview = {
   publication_id: string
   pinned: boolean
-  plan: (Omit<WorkflowPublicationApps, "apps"> & {
-    apps: (WorkflowPublicationApp & { capabilities: Record<string, unknown> })[]
-  }) | null
+  plan: DeploymentAppsPlan | null
+  release_plan?: DeploymentAppsPlan | null
+}
+
+/** Protocol 409: the exact payload released only to the accepting terminal. */
+export type AppHostAction =
+  | { kind: "clipboard_write"; text: string }
+  | { kind: "open_link"; url: string }
+
+export type AppHostActionAccepted = { operation_id: string; action: AppHostAction }
+/** Protocol 410: owner-scoped restore result. Authority is never restored. */
+export interface AppDataSnapshotRestored {
+  installation_id: string
+  generation: string
+  snapshot_id: string
 }

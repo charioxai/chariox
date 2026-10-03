@@ -3,10 +3,15 @@ set -Eeuo pipefail
 
 ROOT="${CHARIOX_SLICE_ROOT:-/opt/chariox-slice}"
 LOGS="$ROOT/logs"
+if [[ -n "${CHARIOX_SLICE_PRIVATE_ROOT:-}" ]]; then
+  LOGS="$CHARIOX_SLICE_PRIVATE_ROOT/runtime/logs"
+fi
 DISPLAY_ID="${CHARIOX_SLICE_DISPLAY:-:99}"
 DISPLAY_MODE="${CHARIOX_SLICE_DISPLAY_MODE:-unknown}"
 SCREEN_GEOMETRY="${CHARIOX_SLICE_SCREEN_GEOMETRY:-1280x800x24}"
 SCREEN_SIZE="${SCREEN_GEOMETRY%x*}"
+DISPLAY_SERVER="${CHARIOX_SLICE_DISPLAY_SERVER:-Xvfb}"
+case "$DISPLAY_SERVER" in Xvfb|Xorg) ;; *) exit 2 ;; esac
 VNC_PORT="${CHARIOX_SLICE_VNC_PORT:-5900}"
 NOVNC_PORT="${CHARIOX_SLICE_NOVNC_PORT:-6080}"
 VIEWER_BACKEND="${CHARIOX_SLICE_VIEWER_BACKEND:-selkies}"
@@ -56,7 +61,7 @@ wait_for_display() {
     sleep 0.1
   done
   log "X display $DISPLAY_ID did not become ready"
-  tail -n 40 "$LOGS/xvfb.log" >&2 || true
+  tail -n 40 "$LOGS/display.log" >&2 || true
   return 1
 }
 
@@ -74,6 +79,12 @@ require_process() {
 
 process_running() {
   pgrep -af "$1" | grep -v defunct >/dev/null
+}
+
+chromium_running() {
+  # The lifetime supervisor carries Chromium's argv after the browser exits.
+  # Match the browser executable, never that retiring Python owner.
+  process_running "^(/[^[:space:]]*/)?chromium[[:space:]].*--user-data-dir=$CHROME_PROFILE"
 }
 
 stop_process_pattern() {
@@ -125,14 +136,29 @@ clear_chromium_profile_locks() {
   fi
 }
 
-chromium_has_restorable_session() {
-  local default_profile="$CHROME_PROFILE/Default"
-  if [[ -d "$default_profile/Sessions" ]] \
-    && find "$default_profile/Sessions" -maxdepth 1 -type f -name 'Session_*' -size +0c -print -quit \
-      | grep -q .; then
-    return 0
+stop_desktop_audio() {
+  stop_process_pattern '(^|/)pulseaudio([[:space:]]|$)'
+  if process_running '(^|/)pulseaudio([[:space:]]|$)'; then
+    log "PulseAudio did not stop before snapshot"
+    return 1
   fi
-  [[ -s "$default_profile/Last Session" || -s "$default_profile/Current Session" ]]
+  # PulseAudio's per-machine runtime link points outside the durable home.
+  # Remove only these links after its writers stop, never their targets or
+  # persistent audio settings. The protected home scanner rejects them.
+  local pulse_config="${XDG_CONFIG_HOME:-$HOME/.config}/pulse"
+  local link
+  for link in "$pulse_config"/*-runtime; do
+    if [[ -L "$link" && "${link##*/}" =~ ^[a-f0-9]{32}-runtime$ ]]; then
+      rm -- "$link"
+    fi
+  done
+}
+
+chromium_has_restorable_session() {
+  # Browser.close can retire every tab-session file while session cookies
+  # remain in the profile. Restore cookie policy for every owned cold launch
+  # of an existing profile, independently of those tab files.
+  [[ -d "$CHROME_PROFILE/Default" ]]
 }
 
 screen_missing_components() {
@@ -140,8 +166,8 @@ screen_missing_components() {
   if ! xdpyinfo -display "$DISPLAY_ID" >/dev/null 2>&1; then
     missing+=("display")
   fi
-  if ! process_running "Xvfb $DISPLAY_ID"; then
-    missing+=("xvfb")
+  if ! process_running "$DISPLAY_SERVER $DISPLAY_ID"; then
+    missing+=("display")
   fi
   if ! process_running '(^|/)tint2([[:space:]]|$)'; then
     missing+=("taskbar")
@@ -158,7 +184,7 @@ screen_missing_components() {
       missing+=("novnc")
     fi
   fi
-  if ! process_running "chromium.*$CHROME_PROFILE"; then
+  if ! chromium_running; then
     missing+=("chromium")
   fi
   if [[ "${#missing[@]}" -eq 0 ]]; then
@@ -172,10 +198,10 @@ tool_blocking_missing_components() {
   if ! xdpyinfo -display "$DISPLAY_ID" >/dev/null 2>&1; then
     missing+=("display")
   fi
-  if ! process_running "Xvfb $DISPLAY_ID"; then
-    missing+=("xvfb")
+  if ! process_running "$DISPLAY_SERVER $DISPLAY_ID"; then
+    missing+=("display")
   fi
-  if ! process_running "chromium.*$CHROME_PROFILE"; then
+  if ! chromium_running; then
     missing+=("chromium")
   fi
   if [[ "${#missing[@]}" -eq 0 ]]; then
@@ -199,12 +225,31 @@ require_screen_available() {
   return 1
 }
 
-launch_chromium() {
+# Desktop startup, supervised recovery and URL forwarding share one Chromium
+# launch configuration. `owned` starts one browser-lifecycle.py lifetime and
+# prints its record; `forward` hands the URL to the running browser.
+run_chromium() {
+  local launch_mode="$1"
+  shift
   local -a chrome_startup_target_args=()
-  if ! process_running "chromium.*$CHROME_PROFILE"; then
+  local -a chrome_launcher=(nohup chromium)
+  if [[ "$launch_mode" == owned ]]; then
+    chrome_launcher=(python3 "$ROOT/browser-lifecycle.py" start "$CHROME_PROFILE" "$LOGS/chromium-gui.log" chromium)
+    # Wait for the previous owned child tree to retire before replacing it.
+    # Start refuses a profile whose previous lifetime is not proven retired.
+    python3 "$ROOT/browser-lifecycle.py" stop "$CHROME_PROFILE" >>"$LOGS/chromium-gui.log" 2>&1 \
+      || log "previous browser lifetime is not retired"
     clear_chromium_profile_locks
     if chromium_has_restorable_session; then
-      chrome_startup_target_args+=(--restore-last-session)
+      # App URLs cannot be restored until their verified assets and CDP Fetch
+      # interception are reattached. This must finish before Chromium starts.
+      local app_restore_mode
+      app_restore_mode="$(node "$ROOT/browser-app-restore.mjs" "$CHROME_PROFILE")" || return "$?"
+      case "$app_restore_mode" in
+        restore) chrome_startup_target_args+=(--restore-last-session) ;;
+        fresh) ;;
+        *) log "invalid App restore result"; return 1 ;;
+      esac
     fi
   fi
   if [[ "$#" -gt 0 ]]; then
@@ -213,7 +258,7 @@ launch_chromium() {
     chrome_startup_target_args=(-- "$CHROME_URL")
   fi
 
-  nohup chromium \
+  chrome_launcher+=( \
     --user-data-dir="$CHROME_PROFILE" \
     --password-store=basic \
     --no-first-run \
@@ -223,12 +268,129 @@ launch_chromium() {
     --disable-gpu \
     --remote-debugging-address=127.0.0.1 \
     --remote-debugging-port=9222 \
-    "${chrome_startup_target_args[@]}" >>"$LOGS/chromium-gui.log" 2>&1 &
+    "${chrome_startup_target_args[@]}" )
+  if [[ "$launch_mode" == owned ]]; then
+    "${chrome_launcher[@]}" 2>>"$LOGS/chromium-gui.log"
+  else
+    exec "${chrome_launcher[@]}" >>"$LOGS/chromium-gui.log" 2>&1
+  fi
+}
+
+# Keep one owned browser lifetime running and relaunch it after the browser
+# exits. browser-lifecycle.py owns, reaps and proves the retirement of each
+# lifetime's process tree; this supervisor retires the current one on TERM.
+supervise_chromium() {
+  exec 3>"$LOGS/chromium-supervisor.lock"
+  flock -w 10 3 || { log "browser supervisor lock timed out"; return 1; }
+  printf '%s\n' "$$" >"$LOGS/chromium-supervisor.pid"
+  local record="" waiter_pid="" backoff_pid=""
+  trap retire_supervised_chromium TERM INT
+  while true; do
+    if record="$(run_chromium owned "$@" 3>&-)" && [[ -n "$record" ]]; then
+      # Wait for this lifetime's browser by recorded identity, never by
+      # pattern. A pidfd cannot follow a reused PID; recheck after opening it.
+      python3 -B - "$ROOT/browser-lifecycle.py" "$record" 3>&- <<'PYTHON' &
+import importlib.util, json, os, select, sys
+spec = importlib.util.spec_from_file_location("browser_lifecycle", sys.argv[1])
+lifecycle = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(lifecycle)
+browser = json.loads(sys.argv[2]).get("browser")
+try:
+    descriptor = os.pidfd_open(browser["pid"])
+except (TypeError, ProcessLookupError):
+    sys.exit(0)
+if lifecycle.same_process(browser):
+    select.select([descriptor], [], [])
+PYTHON
+      waiter_pid=$!
+      wait "$waiter_pid" || true
+      waiter_pid=""
+      # Avoid a restart storm, and leave a bounded loss window for Room health.
+      # The next lifetime start first retires this one, including descendants.
+      log "Chromium exited; relaunching in 6 seconds"
+    else
+      log "Chromium lifetime did not start; retrying in 6 seconds"
+    fi
+    sleep 6 3>&- &
+    backoff_pid=$!
+    wait "$backoff_pid" || true
+    backoff_pid=""
+    set --
+  done
+}
+
+# TERM/INT handler for supervise_chromium; its waiter and backoff are locals
+# of that frame. Retirement uses the lifecycle's verified Browser.close and
+# bounded settlement, never pattern-based termination.
+retire_supervised_chromium() {
+  trap - TERM INT
+  local child retire_exit=0
+  for child in "$waiter_pid" "$backoff_pid"; do
+    [[ -z "$child" ]] || kill -TERM "$child" 2>/dev/null || true
+    [[ -z "$child" ]] || wait "$child" || true
+  done
+  python3 "$ROOT/browser-lifecycle.py" stop "$CHROME_PROFILE" >>"$LOGS/chromium-gui.log" 2>&1 || retire_exit=$?
+  rm -f "$LOGS/chromium-supervisor.pid"
+  exit "$retire_exit"
+}
+
+# Serialize launchers, including an open-url during supervisor backoff. Child
+# processes close this lock FD; it belongs only to this bounded launch request.
+launch_chromium() (
+  exec 4>"$LOGS/chromium-launch.lock"
+  flock -w 10 4 || { log "browser launch lock timed out"; return 1; }
+  if chromium_running; then
+    run_chromium forward "$@" 4>&- &
+    return
+  fi
+  stop_chromium_supervisor || return $?
+  nohup bash "${BASH_SOURCE[0]}" supervise-browser "$@" 4>&- >>"$LOGS/chromium-supervisor.log" 2>&1 &
+  for _ in $(seq 1 50); do
+    chromium_running && return
+    sleep 0.1
+  done
+  log "Chromium supervisor did not launch a browser"
+  stop_chromium_supervisor
+  return 1
+)
+
+# The lock cannot survive process death or a container restart. Clear stale
+# markers while holding it, so a new owner's marker cannot be removed.
+chromium_supervisor_active() {
+  if flock -n "$LOGS/chromium-supervisor.lock" rm -f -- "$LOGS/chromium-supervisor.pid"; then
+    return 1
+  fi
+  return 0
+}
+
+stop_chromium_supervisor() {
+  local supervisor_pid
+  local -a supervisor_args=()
+  chromium_supervisor_active || return 0
+  supervisor_pid="$(cat "$LOGS/chromium-supervisor.pid" 2>/dev/null || true)"
+  if [[ ! "$supervisor_pid" =~ ^[1-9][0-9]*$ ]] \
+    || ! mapfile -d '' -t supervisor_args 2>/dev/null <"/proc/$supervisor_pid/cmdline" \
+    || [[ "${#supervisor_args[@]}" -lt 3 ]] \
+    || [[ "${supervisor_args[0]##*/}" != bash || "${supervisor_args[2]:-}" != supervise-browser ]] \
+    || [[ "$(readlink -f -- "${supervisor_args[1]:-}")" != "$(readlink -f -- "${BASH_SOURCE[0]}")" ]]; then
+    chromium_supervisor_active || return 0
+    log "browser supervisor identity could not be verified"
+    return 1
+  fi
+  kill -TERM "$supervisor_pid" 2>/dev/null || true
+  # Its TERM path retires the lifetime: a verified Browser.close (3 s) and
+  # bounded descendant settlement (12 s), after any in-flight launch.
+  for _ in $(seq 1 200); do
+    chromium_supervisor_active || return 0
+    sleep 0.1
+  done
+  log "Chromium supervisor did not stop"
+  return 1
 }
 
 start_desktop() {
-  if process_running "chromium.*$CHROME_PROFILE" || process_running "Xvfb $DISPLAY_ID" || process_running "x11vnc.*$DISPLAY_ID" || novnc_running; then
-    stop_desktop || true
+  if chromium_running || process_running "$DISPLAY_SERVER $DISPLAY_ID" || process_running "x11vnc.*$DISPLAY_ID" || novnc_running; then
+    stop_desktop
   fi
   # Stop an owned previous Selkies process even when switching to noVNC.
   if [[ -x /opt/chariox-selkies/bin/python ]]; then
@@ -240,13 +402,31 @@ start_desktop() {
   stop_process_pattern "x11vnc.*$VNC_PORT"
   stop_process_pattern '(^|/)openbox([[:space:]]|$)'
   stop_process_pattern '(^|/)tint2([[:space:]]|$)'
-  stop_process_pattern "chromium.*$CHROME_PROFILE"
-  stop_process_pattern "/usr/lib/chromium/chromium"
-  stop_process_pattern "Xvfb $DISPLAY_ID"
+  stop_desktop_audio
+  stop_process_pattern "$DISPLAY_SERVER $DISPLAY_ID"
   rm -f "/tmp/.X${DISPLAY_ID#:}-lock" "/tmp/.X11-unix/X${DISPLAY_ID#:}"
 
-  nohup Xvfb "$DISPLAY_ID" -screen 0 "$SCREEN_GEOMETRY" -ac +extension RANDR +extension XTEST >"$LOGS/xvfb.log" 2>&1 &
+  if [[ "$DISPLAY_SERVER" == "Xorg" ]]; then
+    nohup Xorg "$DISPLAY_ID" -config "$ROOT/xorg-dummy.conf" -logfile "$LOGS/Xorg.log" -nolisten tcp -noreset -ac >"$LOGS/display.log" 2>&1 &
+  else
+    nohup Xvfb "$DISPLAY_ID" -screen 0 "$SCREEN_GEOMETRY" -ac +extension RANDR +extension XTEST >"$LOGS/display.log" 2>&1 &
+  fi
   wait_for_display
+  if [[ "$DISPLAY_SERVER" == "Xorg" ]]; then
+    # Apply the configured initial geometry before any browser/viewer starts.
+    # Subsequent geometry changes belong to the canonical controller path.
+    /opt/chariox-selkies/bin/python - "$ROOT" "$SCREEN_SIZE" <<'PYTHON'
+import importlib.util, pathlib, sys, time
+sys.path.insert(0, sys.argv[1])
+spec = importlib.util.spec_from_file_location("canonical_display", pathlib.Path(sys.argv[1]) / "canonical-display.py")
+display = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(display)
+width, height = map(int, sys.argv[2].split("x"))
+display.dimensions(width, height)
+display._deadline = time.monotonic() + 10
+display.resize(width, height)
+PYTHON
+  fi
 
   # Desktop-launched programs inherit one session bus. Without it, ordinary
   # GTK applications cannot persist dconf settings. The supervisor stops the
@@ -259,14 +439,14 @@ start_desktop() {
       return 1
     fi
   else
-    nohup x11vnc -display "$DISPLAY_ID" -localhost -nopw -forever -shared -rfbport "$VNC_PORT" >"$LOGS/x11vnc.log" 2>&1 &
+    nohup x11vnc -display "$DISPLAY_ID" -xrandr resize -nonap -wait 100 -noxdamage -localhost -nopw -forever -shared -rfbport "$VNC_PORT" >"$LOGS/x11vnc.log" 2>&1 &
     nohup websockify --web=/usr/share/novnc/ "0.0.0.0:$NOVNC_PORT" "127.0.0.1:$VNC_PORT" >"$LOGS/novnc.log" 2>&1 &
   fi
 
-  launch_chromium
+  launch_chromium || return $?
 
   sleep 2
-  require_process "Xvfb $DISPLAY_ID" "Xvfb" "$LOGS/xvfb.log"
+  require_process "$DISPLAY_SERVER $DISPLAY_ID" "$DISPLAY_SERVER" "$LOGS/display.log"
   require_process '(^|/)openbox([[:space:]]|$)' "Openbox" "$LOGS/openbox.log"
   require_process '(^|/)tint2([[:space:]]|$)' "Applications taskbar" "$LOGS/taskbar.log"
   if [[ "$VIEWER_BACKEND" == "selkies" ]]; then
@@ -275,7 +455,7 @@ start_desktop() {
     require_process "x11vnc.*$DISPLAY_ID" "x11vnc" "$LOGS/x11vnc.log"
     require_process "websockify.*$NOVNC_PORT" "noVNC websockify" "$LOGS/novnc.log"
   fi
-  require_process "chromium.*$CHROME_PROFILE" "Chromium" "$LOGS/chromium-gui.log"
+  require_process "^(/[^[:space:]]*/)?chromium[[:space:]].*--user-data-dir=$CHROME_PROFILE" "Chromium" "$LOGS/chromium-gui.log"
   status
 }
 
@@ -298,7 +478,7 @@ status() {
       viewer_port="$discovered_port"
     fi
     printf 'viewer=http://127.0.0.1:%s/vnc.html?host=127.0.0.1&port=%s&autoconnect=true&resize=scale\n' "$viewer_port" "$viewer_port"
-    pgrep -af "Xvfb $DISPLAY_ID|openbox|x11vnc|websockify|chromium.*$CHROME_PROFILE" | grep -v defunct || true
+    pgrep -af "$DISPLAY_SERVER $DISPLAY_ID|openbox|x11vnc|websockify|chromium.*$CHROME_PROFILE" | grep -v defunct || true
     return 0
   fi
   local missing_csv
@@ -310,36 +490,42 @@ status() {
 }
 
 stop_desktop() {
-  local streamer_exit=0
+  local supervisor_exit=0 browser_exit=0 streamer_exit=0 attempt
+  # The supervisor retires its owned browser lifetime before it exits.
+  stop_chromium_supervisor || supervisor_exit=$?
+  # A lifetime can outlive its supervisor. Only the lifecycle may prove that
+  # the browser tree exited; never fall back to pattern-based termination.
+  if [[ "$supervisor_exit" -eq 0 ]]; then
+    python3 "$ROOT/browser-lifecycle.py" stop "$CHROME_PROFILE" >/dev/null || browser_exit=$?
+  fi
   if [[ -x /opt/chariox-selkies/bin/python ]]; then
     slice_selkies stop >/dev/null || streamer_exit=$?
   fi
-  if process_running "chromium.*$CHROME_PROFILE"; then
-    node "$ROOT/browser-cdp.mjs" close-browser >/dev/null 2>&1 || true
-  fi
-  local attempt
-  for attempt in $(seq 1 80); do
-    if ! process_running "chromium.*$CHROME_PROFILE"; then
-      break
-    fi
-    sleep 0.1
-  done
-  pkill -TERM -f "chromium.*$CHROME_PROFILE" >/dev/null 2>&1 || true
-  for attempt in $(seq 1 30); do
-    if ! process_running "chromium.*$CHROME_PROFILE"; then
-      break
-    fi
-    sleep 0.1
-  done
-  stop_process_pattern "chromium.*$CHROME_PROFILE"
-  stop_process_pattern "/usr/lib/chromium/chromium"
+  stop_desktop_audio
   stop_process_pattern "websockify.*127\\.0\\.0\\.1:$VNC_PORT"
   stop_process_pattern "websockify.*$NOVNC_PORT"
   stop_process_pattern "x11vnc.*$DISPLAY_ID"
   stop_process_pattern "x11vnc.*$VNC_PORT"
   stop_process_pattern '(^|/)openbox([[:space:]]|$)'
   stop_process_pattern '(^|/)tint2([[:space:]]|$)'
-  stop_process_pattern "Xvfb $DISPLAY_ID"
+  stop_process_pattern "$DISPLAY_SERVER $DISPLAY_ID"
+  if [[ "$supervisor_exit" -ne 0 ]]; then
+    # Stopping the display above can let a slow browser finish the
+    # supervisor's TERM path. Wait for that terminal proof before retaining
+    # the earlier stop failure, then require the lifecycle's retirement proof.
+    for attempt in $(seq 1 50); do
+      chromium_supervisor_active || break
+      sleep 0.1
+    done
+    if chromium_supervisor_active; then
+      return "$supervisor_exit"
+    fi
+    python3 "$ROOT/browser-lifecycle.py" stop "$CHROME_PROFILE" >/dev/null || browser_exit=$?
+  fi
+  # Profile locks belong to the browser until its retirement is proven.
+  if [[ "$browser_exit" -ne 0 ]]; then
+    return "$browser_exit"
+  fi
   clear_chromium_profile_locks
   return "$streamer_exit"
 }
@@ -390,7 +576,13 @@ pointer_click() {
     1|2) ;;
     *) printf 'pointer click count must be 1 or 2\n' >&2; return 2 ;;
   esac
-  run_xdotool mousemove "$x" "$y" click --repeat "$click_count" --delay 80 "$button"
+  # xdotool also delays after the last release. A single click needs no
+  # repeat interval; keep the double-click interval unchanged.
+  local delay=0
+  if [[ "$click_count" == 2 ]]; then
+    delay=80
+  fi
+  run_xdotool mousemove "$x" "$y" click --repeat "$click_count" --delay "$delay" "$button"
 }
 
 pointer_drag() {
@@ -583,9 +775,18 @@ secret_paste_submit_stdin() {
   node "$ROOT/browser-cdp.mjs" secret-paste-submit-stdin
 }
 
+computer_secret_target() {
+  require_screen_available
+  /opt/chariox-selkies/bin/python "${BASH_SOURCE[0]%/*}/slice-keyboard.py" secret-target
+}
+
 computer_secret_paste_stdin() {
   require_screen_available
-  run_xdotool_utf8 type --clearmodifiers --delay 5 --file -
+  if [[ $# != 1 ]]; then
+    log "computer credential input requires an approved display target"
+    return 2
+  fi
+  /opt/chariox-selkies/bin/python "${BASH_SOURCE[0]%/*}/slice-keyboard.py" secret "$1"
 }
 
 browser_status() {
@@ -703,18 +904,18 @@ find_text() {
 open_url() {
   # Opening a URL may recover the browser, but must not restart or create the
   # shared desktop. Other input operations still require the full screen state.
-  if ! xdpyinfo -display "$DISPLAY_ID" >/dev/null 2>&1 || ! process_running "Xvfb $DISPLAY_ID"; then
+  if ! xdpyinfo -display "$DISPLAY_ID" >/dev/null 2>&1 || ! process_running "$DISPLAY_SERVER $DISPLAY_ID"; then
     status
     return 1
   fi
-  if process_running "chromium.*$CHROME_PROFILE" && run_browser_cdp navigate "$1" >/dev/null 2>&1; then
+  if chromium_running && run_browser_cdp navigate "$1" >/dev/null 2>&1; then
     sleep 1
     focus_chromium
     return 0
   fi
   launch_chromium "$1"
   sleep 2
-  require_process "chromium.*$CHROME_PROFILE" "Chromium" "$LOGS/chromium-gui.log"
+  require_process "^(/[^[:space:]]*/)?chromium[[:space:]].*--user-data-dir=$CHROME_PROFILE" "Chromium" "$LOGS/chromium-gui.log"
   focus_chromium
 }
 
@@ -728,6 +929,7 @@ cleanup_failed_start() {
 }
 
 case "${1:-status}" in
+  supervise-browser) shift; supervise_chromium "$@" ;;
   start)
     # Keep errexit active inside start_desktop. An `if start_desktop` wrapper
     # would suppress failures inside the function and could report success.
@@ -758,7 +960,8 @@ case "${1:-status}" in
   paste-stdin|paste_stdin) paste_stdin ;;
   secret-paste-stdin|secret_paste_stdin) shift; secret_paste_stdin "$@" ;;
   secret-paste-submit-stdin|secret_paste_submit_stdin) shift; secret_paste_submit_stdin "$@" ;;
-  computer-secret-paste-stdin|computer_secret_paste_stdin) computer_secret_paste_stdin ;;
+  computer-secret-target) computer_secret_target ;;
+  computer-secret-paste-stdin|computer_secret_paste_stdin) shift; computer_secret_paste_stdin "$@" ;;
   browser-status|browser_status) browser_status ;;
   browser-find|browser_find) shift; browser_find "$@" ;;
   browser-fill|browser_fill) shift; browser_fill "$@" ;;

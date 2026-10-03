@@ -3,6 +3,7 @@ use futures_util::FutureExt;
 
 #[test]
 fn bound_worker_applies_authenticated_mouse_and_keyboard_input_without_a_browser_controller() {
+    crate::test_support::isolated_env_test!();
     run_test(applies_authenticated_mouse_and_keyboard_input_without_a_browser_controller);
 }
 
@@ -13,6 +14,7 @@ async fn applies_authenticated_mouse_and_keyboard_input_without_a_browser_contro
     worker_state.config.host_machine_id = "slice:slice-1".to_string();
     worker_state.config.room_environment_worker_binding =
         Some(crate::config::RoomEnvironmentWorkerBinding {
+            provisioned_slice_id: None,
             home_kernel_id: "home-kernel".to_string(),
             home_public_key: home.relay_public_key.clone(),
             session_id: "room-1".to_string(),
@@ -154,6 +156,7 @@ async fn applies_authenticated_mouse_and_keyboard_input_without_a_browser_contro
 
 #[test]
 fn room_environment_cancels_worker_computer_input_over_the_relay_before_takeover() {
+    crate::test_support::isolated_env_test!();
     run_test(cancels_worker_computer_input_over_the_relay_before_takeover);
 }
 
@@ -319,4 +322,128 @@ async fn cancels_worker_computer_input_over_the_relay_before_takeover() {
     if let Err(panic) = assertions {
         std::panic::resume_unwind(panic);
     }
+}
+
+// MP-08 / MP-11: the worker owns capture exclusion for its physical display.
+#[test]
+fn efix5_computer_secret_withholds_screenshots_and_ocr_during_input() {
+    run_test(withholds_capture_during_secret_input);
+}
+
+async fn withholds_capture_during_secret_input() {
+    let _guard = crate::env_lock::lock();
+    let mut worker_state = TestState::new();
+    let home = DaemonConfig::for_tests();
+    worker_state.config.host_machine_id = "slice:slice-1".to_string();
+    worker_state.config.room_environment_worker_binding =
+        Some(crate::config::RoomEnvironmentWorkerBinding {
+            home_kernel_id: "home-kernel".to_string(),
+            home_public_key: home.relay_public_key.clone(),
+            session_id: "room-1".to_string(),
+            slice_id: "slice-1".to_string(),
+            provisioned_slice_id: None,
+        });
+    std::fs::create_dir_all(&worker_state.root).unwrap();
+    let script = worker_state.root.join("secret-screen.sh");
+    let started = worker_state.root.join("input-started");
+    let captures = worker_state.root.join("capture-called");
+    let fixture = worker_state.root.join("safe.png");
+    std::fs::write(&fixture, b"\x89PNG\r\n\x1a\nsafe-fixture").unwrap();
+    std::fs::write(&script, format!(
+        "#!/bin/sh\nset -eu\ncase \"$1\" in\ncomputer-secret-paste-stdin) cat >/dev/null; touch '{}'; sleep 1 ;;\nscreenshot) touch '{}'; cp '{}' \"$2\" ;;\nocr) touch '{}'; printf safe ;;\nesac\n",
+        started.display(), captures.display(), fixture.display(), captures.display(),
+    )).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    std::env::set_var("CHARIOX_SLICE_SCREEN_TOOL", &script);
+    let (worker, _) = worker_state.router();
+    let action = serde_json::from_value(serde_json::json!({
+        "kind":"secret_text", "input":"synthetic",
+        "expected_target":{"focus_window":101,"active_window":100,
+            "geometry":[20,30,200,40],"window_geometry":[0,0,800,600]}
+    }))
+    .unwrap();
+    let input = worker.relay_room_browser_controller(
+        "home-kernel",
+        &home.relay_public_key,
+        "room-1",
+        "slice-1",
+        crate::transport::room_browser_controller::RoomBrowserControllerCommand::ComputerInput {
+            action_id: "secret-1".into(),
+            actor_id: "agent:agent-1".into(),
+            runtime_generation: 1,
+            viewport_revision: 1,
+            desktop_pixel_width: 1280,
+            desktop_pixel_height: 800,
+            action,
+        },
+    );
+    let observe = async {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !started.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let screenshot = worker
+            .relay_capture_room_screenshot(
+                "home-kernel",
+                &home.relay_public_key,
+                "room-1",
+                "slice-1",
+            )
+            .await;
+        let ocr = worker
+            .relay_observe_room_computer(
+                "home-kernel",
+                &home.relay_public_key,
+                "room-1",
+                "slice-1",
+                crate::transport::relay_peer::RemoteRoomComputerObservationCall::Ocr {
+                    artifact_id: None,
+                },
+            )
+            .await;
+        let frame_text = worker
+            .relay_observe_room_computer(
+                "home-kernel",
+                &home.relay_public_key,
+                "room-1",
+                "slice-1",
+                crate::transport::relay_peer::RemoteRoomComputerObservationCall::FindText {
+                    query: "synthetic".into(),
+                    artifact_id: None,
+                },
+            )
+            .await;
+        (screenshot, ocr, frame_text)
+    };
+    let (input_result, (screenshot, ocr, frame_text)) = tokio::join!(input, observe);
+    let captured_during_input = captures.exists();
+    let resumed = worker
+        .relay_capture_room_screenshot("home-kernel", &home.relay_public_key, "room-1", "slice-1")
+        .await;
+    std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL");
+    input_result.expect("secret input should settle");
+    for message in [
+        screenshot.unwrap_err().to_string(),
+        ocr.unwrap_err().to_string(),
+        frame_text.unwrap_err().to_string(),
+    ] {
+        assert!(
+            message.contains(
+                "agent screen capture withheld while computer credential input is running"
+            ),
+            "{message}"
+        );
+    }
+    assert!(
+        !captured_during_input,
+        "capture reached the display helper during insertion"
+    );
+    resumed.expect("capture resumes after insertion");
 }

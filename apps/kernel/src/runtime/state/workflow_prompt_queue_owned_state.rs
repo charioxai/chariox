@@ -682,6 +682,7 @@ impl KernelRuntimeOwnedState {
         reason: &str,
         admit: impl FnOnce(&mut crate::session::SessionService) -> Result<Option<T>, DaemonError>,
     ) -> Result<Option<T>, DaemonError> {
+        let _admission = self.begin_managed_activity_admission()?;
         let activity_mutation = self.begin_managed_activity_mutation();
         let durable_state_store = self.durable_state_store.clone();
         let admitted = durable_state_store.with_workflow_runtime_transition_lock(|| {
@@ -719,6 +720,7 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
     ) -> Result<Option<crate::session::QueuedMetaagentTask>, DaemonError> {
+        let _admission = self.begin_managed_activity_admission()?;
         let activity_mutation = self.begin_managed_activity_mutation();
         let durable_state_store = self.durable_state_store.clone();
         let admitted = durable_state_store.with_workflow_runtime_transition_lock(|| {
@@ -1089,7 +1091,9 @@ impl KernelRuntimeOwnedState {
             let next_workflow = match self.workflow_recover_pending_entry(session_id) {
                 Ok(Some(pending)) => Ok(Some(pending)),
                 Ok(None) => {
-                    if let Err(error) = self.workflow_ensure_dispatchable_runtime_instance(session_id) {
+                    if let Err(error) =
+                        self.workflow_ensure_dispatchable_runtime_instance(session_id)
+                    {
                         self.record_notice(
                             session_id,
                             None,
@@ -1314,4 +1318,4 @@ fn workflow_watchdog_failure_is_terminal(error: &DaemonError) -> bool {
 }
 
 #[cfg(test)]
-mod tests;
+pub(in crate::runtime) mod tests;

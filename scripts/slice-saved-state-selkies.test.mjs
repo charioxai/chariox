@@ -47,6 +47,7 @@ function runCapabilityProbe(source, currentState, baseState) {
     "  esac",
     "}",
     "SLICE_SAVED_HOME_ARCHIVE=/etc/hosts",
+    "SLICE_PRIVATE_HOST_ROOT=''",
     "SLICE_VIEWER_BACKEND=selkies",
     "SLICE_IMAGE=saved-image",
     "SLICE_BASE_IMAGE=base-image",
@@ -67,6 +68,8 @@ function runHomeVolumeProbe(source, volumeState, failRestore = false) {
     "fail() { printf 'FAIL %s\\n' \"$*\" >&2; return 91; }",
     "run_with_timeout() { local seconds=\"$1\"; shift; \"$@\"; }",
     "hash_stdin() { printf '%064d\\n' 0 | tr 0 a; }",
+    "disk_quota_enabled() { return 1; }",
+    "apply_home_disk_quota() { :; }",
     "docker() {",
     "  printf 'DOCKER_CALL %s\\n' \"$*\" >&2",
     "  case \"$1 $2\" in",
@@ -87,7 +90,7 @@ function runHomeVolumeProbe(source, volumeState, failRestore = false) {
     "      done",
     "      ;;",
     "    'volume rm') PROBE_VOLUME_STATE=missing ;;",
-    "    'rm -f '* ) ;;",
+    "    'rm -f' ) ;;",
     "    'create '* ) [[ \"$PROBE_FAIL_RESTORE\" == 1 ]] && return 42 ;;",
     "    'start '* ) [[ \"$PROBE_FAIL_RESTORE\" == 1 ]] && return 42 ;;",
     "    'cp -L') [[ \"$PROBE_FAIL_RESTORE\" == 1 ]] && return 42 ;;",
@@ -96,8 +99,12 @@ function runHomeVolumeProbe(source, volumeState, failRestore = false) {
     "  esac",
     "}",
     "SLICE_SAVED_HOME_ARCHIVE=/etc/hosts",
+    "SLICE_SAVED_HOME_ARCHIVE_DIR=''",
     "SLICE_HOME_VOLUME=saved-home",
     "SLICE_NAME=saved-state-probe",
+    "SLICE_ID=synthetic-slice",
+    "SLICE_OWNER_KERNEL_ID=synthetic-kernel",
+    "SLICE_OWNER_MACHINE_ID=synthetic-machine",
     "SLICE_IMAGE=current-image",
     "PROBE_ARCHIVE_LABEL=''",
     "PROBE_TOKEN_LABEL=''",
@@ -167,6 +174,63 @@ test("new saved-state volumes are labeled and cleaned up after restore failure",
   const output = `${probe.stdout}${probe.stderr}`
   assert.equal(probe.status, 0, probe.stderr)
   assert.match(output, /STATUS=91/)
-  assert.match(output, /DOCKER_CALL volume create --label io\.chariox\.saved-home\.archive-sha256=/)
+  assert.match(output, /DOCKER_CALL volume create .*--label io\.chariox\.saved-home\.archive-sha256=/)
   assert.match(output, /DOCKER_CALL volume rm saved-home/)
+})
+
+test("protected restoration cannot stop the previous container before extraction and readiness succeed", async () => {
+  const source = await readFile(provisionerPath, "utf8")
+  const restore = section(source, "restore_slice_state() {", "main() {")
+  for (const fault of ["extraction", "readiness", "none"]) {
+    const result = runProbe([
+      "SLICE_SAVED_HOME_ARCHIVE=synthetic-archive; SLICE_NAME=synthetic-slice; REPO_ROOT=/synthetic",
+      "CHARIOX_SLICE_RESTORE_GENERATION=synthetic-generation",
+      "require_docker() { :; }; build_image() { :; }; log() { :; }",
+      "fail() { return 91; }",
+      "prepare_home_volume() { printf 'EXTRACT\\n'; [[ $PROBE_FAULT != extraction ]]; }",
+      "node() { printf 'READY_CHECK\\n'; [[ $PROBE_FAULT != readiness ]]; }",
+      "stop_container() { printf 'STOP_OLD\\n'; }",
+      "container_exists() { return 0; }",
+      "run_with_timeout() { shift; \"$@\"; }",
+      "docker() { printf 'DOCKER %s\\n' \"$*\" >&2; }",
+      "destroy_container() { printf 'DESTROY_HOME\\n'; }",
+      "ensure_container() { printf 'BIND_NEW_HOME\\n'; }",
+      "ensure_protected_runtime_barrier() { printf 'RETENTION_CHECK\\n'; }",
+      restore,
+      "restore_slice_state",
+    ], {PROBE_FAULT: fault})
+    const output = `${result.stdout}${result.stderr}`
+    assert.doesNotMatch(output, /DESTROY_HOME|volume rm/)
+    if (fault !== "none") {
+      assert.notEqual(result.status, 0)
+      assert.doesNotMatch(output, /STOP_OLD|DOCKER|BIND_NEW_HOME|RETENTION_CHECK/)
+    } else {
+      assert.equal(result.status, 0, output)
+      assert.ok(output.indexOf("READY_CHECK") < output.indexOf("STOP_OLD"))
+      assert.ok(output.indexOf("STOP_OLD") < output.indexOf("BIND_NEW_HOME"))
+      assert.match(output, /DOCKER rm synthetic-slice/)
+    }
+  }
+})
+
+test("slice screen diagnostics redact JSON-quoted secret keys", async () => {
+  const source = await readFile(provisionerPath, "utf8")
+  const diagnostics = section(source, "slice_screen_diagnostics() {", "run_required_phase() {")
+  const probe = runProbe([
+    "log() { printf '%s\\n' \"$*\" >&2; }",
+    "run_with_timeout() { printf '%s\\n' \"$PROBE_DIAGNOSTICS\"; }",
+    "SLICE_NAME=diagnostic-probe",
+    diagnostics,
+    "slice_screen_diagnostics",
+  ], {
+    PROBE_DIAGNOSTICS: [
+      '{"relay_token": "CANARY_JSON_TOKEN"}',
+      '{"password":"CANARY_JSON_PASSWORD"}',
+      "ordinary diagnostic",
+    ].join("\n"),
+  })
+  assert.equal(probe.status, 0, probe.stderr)
+  assert.doesNotMatch(probe.stderr, /CANARY_JSON_/)
+  assert.match(probe.stderr, /\[REDACTED\]/)
+  assert.match(probe.stderr, /ordinary diagnostic/)
 })

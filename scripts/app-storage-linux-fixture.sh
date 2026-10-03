@@ -6,7 +6,16 @@ trap 'printf "storage_fixture_failed_at_line=%s\n" "$LINENO" >&2' ERR
 [[ $# == 4 && "$(id -u)" == 0 && -d /run/systemd/system ]]
 storage_repo="$(realpath -e "$1")" storage_scratch="$(realpath -e "$2")"
 storage_tests="$(realpath -e "$3")" storage_helper="$(realpath -e "$4")"
-[[ "$storage_scratch" == /home/runner/work/_temp/chariox-storage.* || "$storage_scratch" == /home/runner/work/_temp/*/chariox-storage.* ]]
+storage_env=(GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted GITHUB_REPOSITORY=charioxai/chariox)
+if [[ "${CHARIOX_STORAGE_PRIVATE_VM:-}" == 1 ]]; then
+  [[ -z "${GITHUB_ACTIONS+x}" && "$(hostname)" == chariox-private-storage-drill && "$(systemd-detect-virt --vm)" == qemu ]]
+  [[ "$storage_scratch" == /tmp/chariox-storage.* ]]
+  [[ -f "${CHARIOX_STORAGE_DRILL_KEY:-}" && ! -L "$CHARIOX_STORAGE_DRILL_KEY" && "$(stat -c %a "$CHARIOX_STORAGE_DRILL_KEY")" == 600 ]]
+  storage_env=(CHARIOX_STORAGE_PRIVATE_VM=1 CHARIOX_STORAGE_DRILL_KEY=/run/chariox-storage-drill.key)
+else
+  # The hosted caller checks CI identity before sudo, which resets its env.
+  [[ "$storage_scratch" == /home/runner/work/_temp/chariox-storage.* || "$storage_scratch" == /home/runner/work/_temp/*/chariox-storage.* ]]
+fi
 [[ "$storage_tests" == "$storage_scratch/build/"* && "$storage_helper" == "$storage_scratch/build/"* ]]
 for storage_path in /etc/chariox /home/chariox /var/lib/chariox-app-storage /usr/libexec/chariox-app-storage /etc/systemd/system/chariox-managed-bootstrap.service; do
   [[ ! -e "$storage_path" && ! -L "$storage_path" ]]
@@ -17,6 +26,9 @@ getent group chariox >/dev/null || groupadd --system chariox
 getent group chariox-slice >/dev/null || groupadd --system chariox-slice
 useradd --system --gid chariox --home-dir /var/lib/chariox/home --shell /usr/sbin/nologin chariox
 storage_uid="$(id -u chariox)" storage_gid="$(id -g chariox)"
+if [[ "${CHARIOX_STORAGE_PRIVATE_VM:-}" == 1 ]]; then
+  install -o chariox -g chariox -m 600 "$CHARIOX_STORAGE_DRILL_KEY" /run/chariox-storage-drill.key
+fi
 install -d -o root -g root -m 755 /etc/chariox /usr/libexec /etc/systemd/system/chariox-managed-bootstrap.service.d /etc/systemd/system/chariox-app-storage.service.d
 install -d -o root -g root -m 711 /var/lib/chariox-app-storage
 install -d -o chariox -g chariox -m 700 /var/lib/chariox /var/lib/chariox/home /home/chariox
@@ -37,7 +49,8 @@ Type=exec
 ExecStart=
 ExecStart=/usr/bin/sleep infinity
 ExecStartPre=
-ExecStartPre=+/usr/libexec/chariox-app-storage --prepare-managed-domain
+ExecStartPost=
+ExecStartPost=+/usr/libexec/chariox-app-storage --prepare-managed-domain
 MemoryMax=1G
 MemorySwapMax=0
 TasksMax=64
@@ -55,12 +68,12 @@ cleanup() {
   # No force/lazy unmount or foreign-loop cleanup. Preserve journal/identity
   # evidence on failure; this runner is discarded after bounded artifact capture.
   find /var/lib/chariox-app-storage -maxdepth 3 -name journal.json -type f -size -17k -exec cp --parents '{}' "$storage_scratch/evidence/" \;
-  findmnt --json -R /var/lib/chariox-app-storage > "$storage_scratch/evidence/final-mounts.json" 2>/dev/null
+  findmnt --json -R /var/lib/chariox-app-storage > "$storage_scratch/evidence/final-mounts.json" 2>/dev/null || printf '{"filesystems":[]}\n' > "$storage_scratch/evidence/final-mounts.json"
   losetup --json --list --output NAME,BACK-FILE,SIZELIMIT,AUTOCLEAR > "$storage_scratch/evidence/final-loops.json"
   chown -R "$(stat -c %u "$storage_scratch"):$(stat -c %g "$storage_scratch")" "$storage_scratch/evidence"
 }
 trap cleanup EXIT
-/usr/bin/env -i GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted GITHUB_REPOSITORY=charioxai/chariox \
+/usr/bin/env -i "${storage_env[@]}" \
   CHARIOX_STORAGE_HOSTED=fixed-production-helper \
   /usr/libexec/chariox-app-storage-tests \
   runtime_enrollment::installer::tests::hosted_install_signed_graph_for_storage_views \
@@ -85,17 +98,27 @@ run_test() {
     --property=TasksMax=64 --property=RuntimeMaxSec=180 --property=KillMode=control-group \
     /usr/bin/nsenter --target "$storage_kernel" --mount /usr/bin/setpriv \
     --reuid="$storage_uid" --regid="$storage_gid" --clear-groups /usr/bin/env -i \
-    GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted GITHUB_REPOSITORY=charioxai/chariox \
+    "${storage_env[@]}" \
     CHARIOX_STORAGE_HOSTED=fixed-production-helper \
     CHARIOX_STORAGE_CRASH_MARKER=/var/lib/chariox/home/storage-crash-ready \
     /usr/libexec/chariox-app-storage-tests "$storage_filter" --ignored --nocapture --test-threads=1
 }
 run_test chariox-storage-actual hosted_private_capacity_persistence_tmp_reset_and_noexec
 run_test chariox-storage-actual hosted_failed_update_restores_the_committed_data_snapshot
+# A snapshot copies the whole data image; the helper must stay far below MemoryMax.
+check_helper_peak() {
+  local peak
+  peak=$(systemctl show -p MemoryPeak --value chariox-app-storage.service)
+  printf 'Helper memory peak after %s: %s\n' "$1" "$peak"
+  [[ "$peak" =~ ^[0-9]+$ && "$peak" -lt $((128 * 1024 * 1024)) ]]
+}
+check_helper_peak "the snapshot test"
 run_test chariox-storage-actual hosted_deleting_an_installation_removes_its_storage
 # The committed start dropped the snapshot; no copy outlives the update.
 if find /var/lib/chariox-app-storage -name data-snapshot.ext4 | grep . ; then exit 1; fi
 run_test chariox-storage-actual hosted_readonly_code_views_match_verified_roots_in_kernel_namespace
+run_test chariox-storage-actual hosted_failed_retained_data_reinstall_restores_the_retained_release
+run_test chariox-storage-actual hosted_fresh_first_install_prepares_without_a_committed_generation
 run_test chariox-storage-actual hosted_prepared_worker_uses_only_enrolled_sources_and_reclaims_unstarted_domain
 run_test chariox-storage-crash hosted_crash_fixture_holds_lease_until_owner_is_killed > "$storage_scratch/evidence/crash-holder.log" 2>&1 &
 storage_waiter=$!
@@ -122,6 +145,8 @@ for storage_attempt in $(seq 1 300); do
   sleep 0.1
 done
 [[ -f /var/lib/chariox/home/storage-crash-ready ]]
+# The staged update took its own snapshot in this (restarted) helper.
+check_helper_peak "the staged update's snapshot"
 systemctl kill --kill-whom=all --signal=SIGKILL chariox-app-storage.service
 systemctl stop chariox-storage-crash.service
 wait "$storage_waiter" || true

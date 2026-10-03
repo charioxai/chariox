@@ -5,6 +5,7 @@ import { test } from "node:test"
 
 const dockerfile = await readFile(new URL("../docker/publication/Dockerfile", import.meta.url), "utf8")
 const egressDockerfile = await readFile(new URL("../docker/publication-egress/Dockerfile", import.meta.url), "utf8")
+const runtimeTypes = await readFile(new URL("../apps/kernel/src/local/api/types.rs", import.meta.url), "utf8")
 const kernelTypes = await readFile(new URL("../packages/kernel-client/src/kernel-types.ts", import.meta.url), "utf8")
 const kernelCargo = await readFile(new URL("../apps/kernel/Cargo.toml", import.meta.url), "utf8")
 const workflowCode = await readFile(new URL("../apps/kernel/src/workflow_code.rs", import.meta.url), "utf8")
@@ -53,9 +54,13 @@ test("publication Rust build consumes the workspace lock and every kernel path d
     assert.ok(copy < kernelBuild, `${requiredCopy} must happen before the kernel build`)
   }
 
-  const kernelPathDependencies = [...kernelCargo.matchAll(/^\s*[\w-]+\s*=\s*\{[^\n}]*path\s*=\s*"([^"]+)"/gm)]
-    .map((match) => match[1])
-  assert.deepEqual(kernelPathDependencies.sort(), ["../../packages/app-runtime", "../../packages/event-protocol", "../relay"])
+  // A crate may appear in both dependencies and dev-dependencies (app-runtime adds test fixtures).
+  const kernelPathDependencies = [...new Set(
+    [...kernelCargo.matchAll(/^\s*[\w-]+\s*=\s*\{[^\n}]*path\s*=\s*"([^"]+)"/gm)].map((match) => match[1]),
+  )]
+  assert.deepEqual(kernelPathDependencies.sort(), [
+    "../../packages/app-package", "../../packages/app-runtime", "../../packages/event-protocol", "../relay",
+  ])
   assert.match(
     rustStage,
     /test "\$\(target\/release\/chariox-kernel --print-local-daemon-protocol-version\)"/,
@@ -111,7 +116,7 @@ test("publication image pins and verifies every official provider CLI", () => {
   assert.match(dockerfile, /ARG CHARIOX_CODEX_VERSION=\d+\.\d+\.\d+/)
   assert.match(dockerfile, /ARG CHARIOX_OPENCODE_VERSION=\d+\.\d+\.\d+/)
   assert.match(dockerfile, /ARG CHARIOX_CLAUDE_VERSION=\d+\.\d+\.\d+/)
-  assert.equal(toolchainPackage.dependencies["@openai/codex"], "0.144.5")
+  assert.equal(toolchainPackage.dependencies["@openai/codex"], "0.159.3")
   assert.equal(toolchainPackage.dependencies["opencode-ai"], "1.18.23")
   assert.equal(toolchainPackage.dependencies["@anthropic-ai/claude-code"], "2.1.212")
   assert.equal(toolchainPackage.dependencies.pnpm, "9.15.0")
@@ -179,7 +184,8 @@ test("embedded toolchain SBOM removes volatile identity and time fields", () => 
 })
 
 test("publication image labels the protocol version verified against its kernel", () => {
-  const protocolVersion = kernelTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION\s*=\s*(\d+)/)?.[1]
+  const protocolVersion = runtimeTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+);/)?.[1]
+  assert.equal(kernelTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION\s*=\s*(\d+)/)?.[1], protocolVersion, "client and runtime protocols must agree")
   assert.ok(protocolVersion, "the shared kernel client protocol version must be readable")
   const protocolDefaults = [...dockerfile.matchAll(/^ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=(\d+)$/gm)]
     .map((match) => match[1])

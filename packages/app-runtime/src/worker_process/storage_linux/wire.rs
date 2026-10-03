@@ -170,6 +170,11 @@ pub(super) struct Reply {
     pub grant: Option<super::store::Grant>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<super::code_model::Grant>,
+    /// With `app_storage_host_reserve` only: what is free and needed, for the
+    /// owner. A client that predates it refuses the reply; the start fails
+    /// either way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_disk: Option<crate::worker_process::HostDiskSpace>,
 }
 impl Reply {
     pub fn failed(error: Error) -> Self {
@@ -177,6 +182,10 @@ impl Reply {
             status: error.to_string(),
             grant: None,
             code: None,
+            host_disk: match error {
+                Error::HostReserve(space) => Some(space),
+                _ => None,
+            },
         }
     }
     pub fn released() -> Self {
@@ -184,6 +193,7 @@ impl Reply {
             status: "released".into(),
             grant: None,
             code: None,
+            host_disk: None,
         }
     }
     pub fn deleted() -> Self {
@@ -191,6 +201,17 @@ impl Reply {
             status: "deleted".into(),
             grant: None,
             code: None,
+            host_disk: None,
+        }
+    }
+    /// A refused acquire, as the helper reported it: short of disk space
+    /// with its numbers, or any other refusal (recovery decides).
+    pub fn refusal(&self) -> Error {
+        match self.host_disk {
+            Some(space) if self.status == Error::HostReserve(space).to_string() => {
+                Error::HostReserve(space)
+            }
+            _ => Error::RecoveryRequired,
         }
     }
 }
@@ -217,6 +238,67 @@ mod tests {
         assert!(state.next(&reader).unwrap().is_none());
         assert_eq!(state.next(&reader), Err(Error::Invalid));
     }
+    #[test]
+    fn a_host_reserve_refusal_carries_what_is_free_and_needed() {
+        let space = crate::worker_process::HostDiskSpace { free: 1, needed: 2 };
+        let reply = Reply::failed(Error::HostReserve(space));
+        let bytes = serde_json::to_vec(&reply).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+            serde_json::json!({"status": "app_storage_host_reserve", "host_disk": {"free": 1, "needed": 2}})
+        );
+        let received: Reply = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(received.refusal(), Error::HostReserve(space));
+        // Other refusals, and numbers without the status, stay generic.
+        assert_eq!(
+            Reply::failed(Error::Capacity).refusal(),
+            Error::RecoveryRequired
+        );
+        let forged = Reply {
+            status: "app_storage_capacity".into(),
+            ..received
+        };
+        assert_eq!(forged.refusal(), Error::RecoveryRequired);
+        assert!(serde_json::to_string(&Reply::failed(Error::Capacity))
+            .unwrap()
+            .contains("\"status\":\"app_storage_capacity\"}"));
+    }
+    #[test]
+    fn host_reserve_refusal_survives_helper_framing_and_client_decode() {
+        let (mut helper, client) = UnixStream::pair().unwrap();
+        helper.set_nonblocking(true).unwrap();
+        client.set_nonblocking(true).unwrap();
+        let space = crate::worker_process::HostDiskSpace { free: 7, needed: 8 };
+        send(&mut helper, &Reply::failed(Error::HostReserve(space))).unwrap();
+        let reply: Reply = receive(&client, 150).unwrap();
+        assert_eq!(reply.refusal(), Error::HostReserve(space));
+    }
+
+    #[test]
+    fn old_helper_refusals_stay_fail_closed_and_success_shape_is_unchanged() {
+        let old: Reply = serde_json::from_str(r#"{"status":"app_storage_capacity"}"#).unwrap();
+        assert_eq!(old.refusal(), Error::RecoveryRequired);
+        let missing: Reply =
+            serde_json::from_str(r#"{"status":"app_storage_host_reserve"}"#).unwrap();
+        assert_eq!(missing.refusal(), Error::RecoveryRequired);
+        assert_eq!(
+            serde_json::to_value(Reply::released()).unwrap(),
+            serde_json::json!({"status":"released"})
+        );
+    }
+
+    #[test]
+    fn structured_host_headroom_reply_is_decoded_without_losing_numbers() {
+        let bytes = br#"{"status":"app_storage_host_reserve","host_disk":{"free":7,"needed":8}}"#;
+        let reply: Reply = serde_json::from_slice(bytes)
+            .expect("numeric host headroom refusal must be understood");
+        let encoded = serde_json::to_value(reply).unwrap();
+        assert_eq!(
+            encoded["host_disk"],
+            serde_json::json!({"free": 7, "needed": 8})
+        );
+    }
+
     #[test]
     fn authenticated_uid_is_observed_from_socket_peer() {
         let (left, _) = UnixStream::pair().unwrap();

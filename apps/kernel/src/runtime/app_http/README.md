@@ -16,6 +16,12 @@ parameters as the whole `application/json` body. The durable writer spends the
 approval (bound to that parameter digest, installation, generation and action)
 after local admission and commits it before the task that sends any byte
 exists; otherwise the request fails `VALIDATION_REQUIRED` and nothing is sent.
+The transport tracks whether the effect's request may have reached the origin:
+hyper hands a request back only when none of it was written. After that point,
+a reset or close, or the inactivity or lifetime limit, before any response head
+is `APP_HTTP_OUTCOME_UNCERTAIN`; before it, the failure stays a plain network
+error or deadline. Any response head, a gateway's 5xx included, is the answer.
+Ordinary requests keep plain network errors and deadlines.
 The route's symbolic `connection` class is not enforced yet: no credential is
 attached, and scoped connections arrive with the Slack App (P1.11).
 Connection authority remains unsupported.
@@ -30,8 +36,15 @@ no detached connection driver or pool.
 Initial limits are four streams per owner/installation and 32 per kernel, two
 64 KiB chunks queued in each direction, a 64 MiB request, a 256 MiB response,
 one-hour absolute lifetime, and 120 seconds without actual socket progress.
-Headers are limited to 64 entries/16 KiB. DNS has ten seconds, at most 32 returned
-addresses, and 16 tracked driver tasks. These are policy limits, not performance
+Headers are limited to 64 entries/16 KiB. A DNS lookup asks one name server at a
+time, in the host's order, for up to two seconds each, and decides A and AAAA per
+family. A server that drops the query or answers an error code (REFUSED, NOTIMP,
+SERVFAIL) gives way to the next, at once when it answered both families; the
+addresses it returned for one family are kept when the other stays silent until
+its turn ends. Each server is asked at most twice, and the whole lookup has six
+seconds, so one bad server cannot fail it. An NXDOMAIN or no-address (NODATA)
+answer for both families is final. At most 32 addresses are returned, and 16
+driver tasks are tracked per attempt. These are policy limits, not performance
 evidence. The existing lifecycle service owns one shared `HttpLimits` pool.
 
 Hickory 0.26.2 supports Rust 1.88. Its minimal Tokio/system-config features read
@@ -39,9 +52,16 @@ Linux resolv.conf and macOS's global SystemConfiguration DNS entry. This does no
 reproduce NSS, hosts-file overrides, multicast DNS, or macOS per-domain scoped
 resolution. Hostnames are absolute DNS names; there is no public resolver
 fallback or App-selected configuration. Every returned address is checked,
-including mixed public/private answers. The custom runtime handle retains DNS
-drivers, aborts and joins ordinary cancellation, and retains the stream lease
-until actual I/O future destruction. Per-exchange DNS cache storage is disabled.
+including mixed public/private answers. Loopback, unspecified, IPv4-mapped,
+6to4, Teredo, local-use NAT64, NAT64 embedding a non-global IPv4 address, and
+the other special-purpose answers are destination denials, like the same IP
+literals. A host that is not a DNS name (a label starting with a hyphen, say)
+is refused at open as an invalid request. Each request resolves once and dials
+only the checked numeric addresses. The dialer receives no host name, so a name
+that later answers a private address (DNS rebinding) cannot redirect an
+admitted connection. The custom runtime handle retains DNS drivers, aborts and
+joins ordinary cancellation, and retains the stream lease until actual I/O
+future destruction. Per-exchange DNS cache storage is disabled.
 
 `HttpStreams` owns opaque handles for one actual worker, retaining its private
 preparation lease and exact verified catalog. Targets cannot transfer between
@@ -78,16 +98,17 @@ separate RPC. Encoded responses remain raw bytes. Fetch redirect/replay,
 compression, multipart and SSE acceptance still require broader validation;
 this implementation does not claim Fetch conformance. WebSocket is excluded.
 
-The 23 Rust source fixtures cover policy/actual-address enforcement, DNS joining,
-real private HTTP sockets for SSE/multipart/backpressure/limits, exact signed
-catalog ownership, generation/revocation, pending/unread capacity, failed EOF,
-interrupted uploads, and resumable cleanup. Two inherited-channel fixtures use a
+The Rust fixtures cover policy/actual-address enforcement, DNS answers from an
+in-process name server (special-purpose addresses, a rebinding name), DNS
+joining, real private HTTP sockets for SSE/multipart/backpressure/limits, exact
+signed catalog ownership, generation/revocation (also while a response
+streams), pending/unread capacity, failed EOF, interrupted uploads, and
+resumable cleanup. Two inherited-channel fixtures use a
 fixed libc worker and fixed test Echo/Paused transports: a complete exchange,
 and a full upload queue whose cleanup retains native preparation and capacity.
 Those fixtures still use the signed package and real durable writer. Two decoder
 fixtures cover strict fields and the shared SDK snapshot through actual request
-decoding and response encoding. These kernel fixtures are currently drafted,
-not compiled or executed. Separately, 19 shared peer transport tests and one
+decoding and response encoding. Separately, 19 shared peer transport tests and one
 publication unit pass, including queued expiry, capacity retention, immediate
 next reads, incomplete-frame cancellation and preservation of the physical ACK
 when cancellation wins cleanup. The SDK suite passes 44 tests,

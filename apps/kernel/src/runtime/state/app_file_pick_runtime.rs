@@ -2,14 +2,16 @@
 //! offer is shown to its owner as a trusted kernel prompt. The owner answers
 //! from a terminal with `GrantAppFile` (the chosen files' bytes) or
 //! `SaveAppFileExport` (taking the offered copy), or declines; App code, an
-//! App view or an agent cannot answer.
+//! App view or an agent cannot answer. Protocol 394: the owner revokes
+//! requests and grants the App has not used (`RevokeAppFileGrants`).
 use super::KernelRuntimeState;
 use crate::durable_state::app_file_exports::{FileExport, FileExportCommand, FileExportReply};
 use crate::durable_state::app_file_grants::{
     FileGrantCommand, FilePick, GrantedFile, MAX_FILES, MAX_FILE_BYTES,
 };
 use crate::local::{
-    AppRequestErrorCode, GrantAppFileRequest, LocalDaemonResponse, SaveAppFileExportRequest,
+    AppRequestErrorCode, GrantAppFileRequest, LocalDaemonResponse, RevokeAppFileGrantsRequest,
+    SaveAppFileExportRequest,
 };
 use crate::session::{RuntimeInteraction, RuntimeInteractionChoice};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -27,6 +29,29 @@ fn export_interaction_id(operation_id: &str) -> String {
 impl KernelRuntimeState {
     /// Runs with each validation pass: same throttle, same prompt slots.
     pub(super) async fn app_file_pick_pass(&self, now_ms: u64) {
+        self.app_file_pick_pass_after_read(now_ms, std::future::ready(()))
+            .await;
+    }
+
+    #[cfg(test)]
+    pub(super) async fn app_file_pick_pass_with_read_barrier(
+        &self,
+        now_ms: u64,
+        read: std::sync::Arc<tokio::sync::Notify>,
+        resume: std::sync::Arc<tokio::sync::Notify>,
+    ) {
+        self.app_file_pick_pass_after_read(now_ms, async move {
+            read.notify_one();
+            resume.notified().await;
+        })
+        .await;
+    }
+
+    async fn app_file_pick_pass_after_read(
+        &self,
+        now_ms: u64,
+        after_read: impl std::future::Future<Output = ()>,
+    ) {
         let store = self.owned.durable_state_store.clone();
         let Ok(Ok(pending)) = tokio::task::spawn_blocking(move || {
             let _ = store.app_file_grant(FileGrantCommand::Expire { now_ms });
@@ -36,6 +61,7 @@ impl KernelRuntimeState {
         else {
             return;
         };
+        after_read.await;
         for pick in pending {
             if !self
                 .app_control()
@@ -61,6 +87,32 @@ impl KernelRuntimeState {
                     continue;
                 }
             };
+            // Revocation may commit after the pending read, before this
+            // interaction exists. Recheck only after registration so either
+            // ordering closes the prompt, without holding a lock across awaits.
+            let store = self.owned.durable_state_store.clone();
+            let current_pick = pick.clone();
+            let still_pending = tokio::task::spawn_blocking(move || {
+                store
+                    .app_file_pick(
+                        &current_pick.owner,
+                        &current_pick.installation,
+                        &current_pick.operation_id,
+                    )
+                    .map(|pick| {
+                        pick.is_some_and(|pick| {
+                            pick.state == crate::durable_state::app_file_grants::PickState::Pending
+                        })
+                    })
+            })
+            .await;
+            if !matches!(still_pending, Ok(Ok(true))) {
+                let _ = self
+                    .timeout_runtime_interaction(&session, &interaction_id(&pick.operation_id))
+                    .await;
+                self.app_control().end_validation_prompt(&pick.operation_id);
+                continue;
+            }
             let runtime = self.clone();
             tokio::spawn(async move {
                 let declined = receiver.await.is_ok_and(|resolution| {
@@ -110,6 +162,8 @@ impl KernelRuntimeState {
                     .end_validation_prompt(&export.operation_id);
                 continue;
             };
+            self.app_control()
+                .show_validation_prompt(&export.operation_id, &session);
             let remaining_sec = export.expires_ms.saturating_sub(now_ms) / 1000;
             let interaction =
                 export_interaction(&export).with_timeout_sec(remaining_sec.clamp(1, 300));
@@ -175,11 +229,14 @@ impl KernelRuntimeState {
             Ok(Err("CONFLICT")) => return failed(AppRequestErrorCode::Conflict),
             _ => return failed(AppRequestErrorCode::StorageUnavailable),
         };
+        // An owner may save from a different terminal than the one showing
+        // the offer. Close the prompt where it was presented, as for grants.
+        let session = self
+            .app_control()
+            .validation_prompt_session(&request.operation_id)
+            .unwrap_or(request.session_id);
         let _ = self
-            .timeout_runtime_interaction(
-                &request.session_id,
-                &export_interaction_id(&request.operation_id),
-            )
+            .timeout_runtime_interaction(&session, &export_interaction_id(&request.operation_id))
             .await;
         LocalDaemonResponse::AppFileExport {
             operation_id: request.operation_id,
@@ -247,6 +304,48 @@ impl KernelRuntimeState {
             operation_id: pick.operation_id,
             files: pick.grants.len() as u32,
         }
+    }
+}
+
+impl KernelRuntimeState {
+    /// The owner ends an installation's file requests and the grants its App
+    /// has not imported (all, or one request's). Their prompts close.
+    pub(super) async fn revoke_app_file_grants(
+        &self,
+        owner: String,
+        installation: String,
+        request: RevokeAppFileGrantsRequest,
+    ) -> Result<LocalDaemonResponse, AppRequestErrorCode> {
+        let store = self.owned.durable_state_store.clone();
+        let command = FileGrantCommand::Revoke {
+            owner,
+            installation: installation.clone(),
+            operation_id: request.operation_id,
+            now_ms: crate::session::unix_epoch_ms(),
+        };
+        let permit = self.app_control().try_admit()?;
+        let revoked = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            store.revoke_app_file_grants(command)
+        })
+        .await
+        .map_err(|_| AppRequestErrorCode::StorageUnavailable)?
+        .map_err(|code| match code {
+            "NOT_FOUND" => AppRequestErrorCode::NotFound,
+            _ => AppRequestErrorCode::StorageUnavailable,
+        })?;
+        for operation_id in &revoked.pending {
+            if let Some(session) = self.app_control().validation_prompt_session(operation_id) {
+                let _ = self
+                    .timeout_runtime_interaction(&session, &interaction_id(operation_id))
+                    .await;
+            }
+        }
+        Ok(LocalDaemonResponse::AppFileGrantsRevoked {
+            installation_id: installation,
+            requests: revoked.requests,
+            files: revoked.files,
+        })
     }
 }
 

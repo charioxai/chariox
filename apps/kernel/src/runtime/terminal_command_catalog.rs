@@ -768,13 +768,38 @@ mod tests {
                 "app-inbox",
                 "app-inbox-list",
                 "app-inbox-add",
-                "app-inbox-move",
                 "app-inbox-remove",
                 "app-inbox-test",
-                "app-file",
-                "app-file-grant",
-                "app-file-save",
+                "app-connection",
+                "app-connection-list",
+                "app-connection-grant",
+                "app-connection-revoke",
+                "app-file-revoke",
             ]
+        );
+    }
+
+    #[test]
+    fn terminal_command_catalog_lists_app_install_as_an_exact_session_command() {
+        let catalog = terminal_command_catalog().expect("catalog should load");
+        let mut nodes = Vec::new();
+        collect(&catalog.nodes, &mut nodes);
+        let install = nodes
+            .into_iter()
+            .find(|node| node.id == "app-install")
+            .expect("app install should be present");
+
+        // No trailing space: an exact `/app install` submits (the web opens its
+        // package picker) instead of completing to the `/app` group.
+        assert_eq!(install.value, "/app install");
+        assert_eq!(install.kind, TerminalCommandCatalogNodeKind::Command);
+        assert_eq!(
+            install.execution_target,
+            TerminalCommandCatalogExecutionTarget::TerminalLocal
+        );
+        assert_eq!(
+            install.surfaces,
+            vec![TerminalCommandCatalogSurface::Session]
         );
     }
 
@@ -848,5 +873,100 @@ mod tests {
             .children
             .iter()
             .any(|node| node.value == "/notifications connection remove "));
+    }
+
+    /// Every `/app` subcommand a terminal runs has its own entry, so the
+    /// palette offers it as typed instead of a neighbour whose description
+    /// mentions it (`/app dev stop` used to select `/app dev `).
+    #[test]
+    fn terminal_command_catalog_lists_every_app_subcommand_the_terminals_run() {
+        let catalog = terminal_command_catalog().expect("catalog should load");
+        let mut nodes = Vec::new();
+        collect(&catalog.nodes, &mut nodes);
+        let node = |id: &str| {
+            *nodes
+                .iter()
+                .find(|node| node.id == id)
+                .unwrap_or_else(|| panic!("{id} should be present"))
+        };
+        use TerminalCommandCatalogExecutionTarget::{Kernel, TerminalLocal};
+        use TerminalCommandCatalogSurface::{Session, WaitingRoom};
+        for (id, value, target, surfaces) in [
+            (
+                "app-dev-stop",
+                "/app dev stop",
+                TerminalLocal,
+                vec![Session],
+            ),
+            ("app-operation", "/app operation ", Kernel, vec![Session]),
+            ("app-cancel", "/app cancel ", Kernel, vec![Session]),
+            (
+                "app-publisher",
+                "/app publisher ",
+                TerminalLocal,
+                vec![Session],
+            ),
+            (
+                "app-publisher-enroll",
+                "/app publisher enroll ",
+                TerminalLocal,
+                vec![Session],
+            ),
+            (
+                "app-publisher-status",
+                "/app publisher status",
+                TerminalLocal,
+                vec![Session],
+            ),
+            (
+                "app-publisher-cancel",
+                "/app publisher cancel",
+                TerminalLocal,
+                vec![Session],
+            ),
+            (
+                "app-connection",
+                "/app connection ",
+                Kernel,
+                vec![Session, WaitingRoom],
+            ),
+            (
+                "app-connection-list",
+                "/app connection list ",
+                Kernel,
+                vec![Session, WaitingRoom],
+            ),
+            (
+                "app-connection-grant",
+                "/app connection grant ",
+                Kernel,
+                vec![Session, WaitingRoom],
+            ),
+            (
+                "app-connection-revoke",
+                "/app connection revoke ",
+                Kernel,
+                vec![Session, WaitingRoom],
+            ),
+        ] {
+            let found = node(id);
+            assert_eq!(found.value, value, "{id}");
+            assert_eq!(found.execution_target, target, "{id}");
+            assert_eq!(found.surfaces, surfaces, "{id}");
+        }
+        // An exact command with no arguments submits as typed.
+        assert_eq!(
+            node("app-dev-stop").kind,
+            TerminalCommandCatalogNodeKind::Command
+        );
+        // The dev entry no longer describes its stop form, so a typed
+        // `/app dev stop` matches only its own entry.
+        assert!(!node("app-dev").description.contains("stop"));
+        // A file request or offer is answered in the session that shows it.
+        for id in ["app-file", "app-file-grant", "app-file-save"] {
+            assert_eq!(node(id).surfaces, vec![Session], "{id}");
+        }
+        // `/app inbox move` ran MoveEventBindingToApp, retired in protocol 365.
+        assert!(nodes.iter().all(|node| node.id != "app-inbox-move"));
     }
 }

@@ -60,8 +60,29 @@ fn start_observed(
     Channel<DuplexStream>,
     chariox_app_runtime::worker_peer::PeerTask,
 ) {
+    start_fenced(
+        store,
+        catalog,
+        owner,
+        admission,
+        observe,
+        Arc::new(tokio::sync::RwLock::new(())),
+    )
+}
+pub(super) fn start_fenced(
+    store: &DurableKernelStateStore,
+    catalog: Arc<EventCatalog>,
+    owner: &str,
+    admission: Arc<Semaphore>,
+    observe: Option<Arc<dyn Fn() + Send + Sync>>,
+    fence: Arc<tokio::sync::RwLock<()>>,
+) -> (
+    WorkerPeer,
+    Channel<DuplexStream>,
+    chariox_app_runtime::worker_peer::PeerTask,
+) {
     let (host, worker) = tokio::io::duplex(64 * 1024);
-    let mut service = AppStorageBroker::new(store.clone(), owner.into(), catalog, admission);
+    let mut service = AppStorageBroker::new(store.clone(), owner.into(), catalog, admission, fence);
     service.budget_observer = observe;
     let broker = Arc::new(Delegate(service));
     let (peer, _events, task) = WorkerPeer::start(
@@ -228,7 +249,7 @@ async fn current_publisher_and_captured_owner_are_checked_through_the_actual_pee
     timeout(WAIT, task.join()).await.unwrap().unwrap();
 }
 
-async fn permits(admission: &Semaphore, count: usize) {
+pub(super) async fn permits(admission: &Semaphore, count: usize) {
     timeout(WAIT, async {
         while admission.available_permits() != count {
             tokio::time::sleep(Duration::from_millis(2)).await;
@@ -251,19 +272,38 @@ async fn shared_admission_survives_cancellation_until_the_blocked_writer_recheck
     let admission = Arc::new(Semaphore::new(8));
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let started = Mutex::new(Some(started_tx));
-    let checks = AtomicUsize::new(0);
+    let checks = Arc::new(AtomicUsize::new(0));
+    let observed_checks = checks.clone();
     let observer = Arc::new(move || {
-        // Ignore the initial BUSY request's one decoder-entry check. For the
-        // mutation, observe dispatch, blocking service, then writer admission.
-        if checks.fetch_add(1, Ordering::SeqCst) == 3 {
+        // Ignore the initial cancelled wait's one decoder-entry check. For the
+        // mutation, observe dispatch, admission, blocking service, then writer.
+        if observed_checks.fetch_add(1, Ordering::SeqCst) == 4 {
             let _ = started.lock().unwrap().take().unwrap().send(());
         }
     });
     let (peer, mut worker, task) =
         start_observed(&store, catalog, "alice", admission.clone(), Some(observer));
     let held = admission.clone().acquire_many_owned(8).await.unwrap();
-    send(&mut worker, "busy", "state.get", json!({"key":"status"})).await;
-    assert_eq!(receive(&mut worker).await.unwrap_err(), "BUSY");
+    send(&mut worker, "waiting", "state.get", json!({"key":"status"})).await;
+    timeout(WAIT, async {
+        while checks.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    worker
+        .send(
+            &Message::Cancel {
+                version: WIRE_VERSION,
+                generation: "1".into(),
+                id: "waiting".into(),
+            },
+            WAIT,
+        )
+        .await
+        .unwrap();
+    assert_eq!(receive(&mut worker).await.unwrap_err(), "CANCELLED");
     drop(held);
     let blocker = rusqlite::Connection::open(store.path()).unwrap();
     blocker.execute_batch("BEGIN IMMEDIATE").unwrap();

@@ -1,8 +1,9 @@
 import { executeAppCommand } from "@chariox/kernel-client/shell-app-command"
+import { isTuiOnlyAppCommand } from "./app-command-catalog.js"
 import { defaultKernelEndpoint, parseArgs } from "./cli-options.js"
 import { isAppDeveloperCommand, runAppDeveloperCommand, type AppDeveloperDeps } from "./app-developer.js"
 import { LocalIpcClient } from "./ipc.js"
-import { AppFileInstaller, formatInstallOperation } from "./app-install-file.js"
+import { AppFileInstaller, formatInstallOperation, terminalPhases } from "./app-install-file.js"
 
 type AppCommandClient = {
   send(request: Record<string, unknown>): Promise<Record<string, unknown>>
@@ -38,6 +39,7 @@ export async function runAppCommand(
 ): Promise<boolean> {
   if (argv[0] !== "app") return false
   if (isAppDeveloperCommand(argv[1])) return runAppDeveloperCommand(argv.slice(1), deps.developer)
+  if (isTuiOnlyAppCommand(argv[1]!, argv[2])) throw new Error(`app ${argv[1]} runs in a Chariox terminal: use /app ${argv[1]} there`)
   const args: string[] = []
   const connectionArgs: string[] = []
   const seen = new Set<string>()
@@ -81,7 +83,7 @@ export async function runAppCommand(
       await installFile(args, send, deps)
       return true
     }
-    const result = await executeAppCommand(args, { send })
+    const result = await executeAppCommand(args, { send }, { appCommandPrefix: "chariox app" })
     if (!result.ok) throw new Error(result.message ?? "App command failed")
     if (result.message) deps.write(`${result.message}\n`)
   } finally {
@@ -91,7 +93,6 @@ export async function runAppCommand(
 }
 
 const installUsage = "usage: app install FILE.cxapp --session SESSION | app update INSTALLATION FILE.cxapp --session SESSION"
-const terminal = new Set(["committed", "cancelled", "failed"])
 
 /** Upload a local package and follow its operation until it ends; the owner
  * approves it in the named session's terminal. */
@@ -114,16 +115,18 @@ async function installFile(
       ? await installer.install(targets[0]!, session)
       : await installer.update(targets[0]!, targets[1]!, session)
     deps.write(`${formatInstallOperation(value)}\n`)
-    const until = Date.now() + (deps.installWaitMs ?? 15 * 60_000)
-    while (!terminal.has(value.phase) && Date.now() < until) {
-      await new Promise((resolve) => setTimeout(resolve, deps.installPollMs ?? 2_000))
-      const next = await installer.status(value.request_id)
-      if (next.phase !== value.phase) deps.write(`${formatInstallOperation(next)}\n`)
-      value = next
-    }
+    value = await installer.follow(value, next => deps.write(`${formatInstallOperation(next)}\n`), {
+      pollMs: deps.installPollMs ?? 2_000, until: Date.now() + (deps.installWaitMs ?? 15 * 60_000),
+    })
     if (value.phase === "failed" || value.phase === "cancelled") throw new Error(formatInstallOperation(value))
-    if (!terminal.has(value.phase)) {
-      throw new Error(`Still ${value.phase} after waiting; the kernel keeps operation ${value.request_id}. Finish it in session ${session}'s terminal, then check \`chariox app list\`.`)
+    if (!terminalPhases.has(value.phase)) {
+      // Only an operation awaiting approval needs the owner.
+      const next = value.phase === "awaiting_approval"
+        ? `Finish it in session ${session}'s terminal, then check \`chariox app list\`.`
+        : value.phase === "queued"
+          ? "It starts once an App worker slot is free; check `chariox app list` later."
+          : "It continues on its own; check `chariox app list` later."
+      throw new Error(`Still ${value.phase} after waiting; the kernel keeps operation ${value.request_id}. ${next}`)
     }
   } finally {
     await installer.dispose()

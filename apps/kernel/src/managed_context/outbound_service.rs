@@ -11,7 +11,7 @@ use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::managed_bootstrap::ManagedKernelContextPlan;
 use crate::managed_context::development::{
-    export_development_context, DevelopmentContextExportRequest, DevelopmentRepositorySelection,
+    DevelopmentContextExportRequest, DevelopmentRepositorySelection,
 };
 use crate::managed_context::kernel::{export_kernel_context, KernelContextExportRequest};
 use crate::managed_context::outbound::{
@@ -512,6 +512,8 @@ pub(crate) fn start_managed_context_outbound_operation(
     store: ManagedContextOutboundOperationStore,
     provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
     ticket: ManagedContextTransferTicket,
+    runtime: Option<crate::runtime::state::KernelRuntimeState>,
+    interactive: bool,
 ) -> Result<ManagedContextOutboundOperationStatus, DaemonError> {
     validate_ticket(&config, &ticket)?;
     let prepared_git_enrollment_ticket = ticket
@@ -562,6 +564,49 @@ pub(crate) fn start_managed_context_outbound_operation(
                 }
             },
         };
+        let environment = match (
+            &authoritative_ticket
+                .context_plan
+                .package_binding()
+                .development,
+            runtime.as_ref(),
+        ) {
+            (
+                ManagedContextDevelopmentSelection::SourceProject {
+                    project_id,
+                    repositories,
+                },
+                Some(runtime),
+            ) => {
+                let selections = repositories
+                    .iter()
+                    .map(resolve_repository_selection)
+                    .collect::<Result<Vec<_>, _>>();
+                let result = match selections {
+                    Ok(selections) => {
+                        runtime
+                            .prepare_project_environment_layer(
+                                project_id,
+                                &selections,
+                                &context_id,
+                                &authoritative_ticket.target.kernel_id,
+                                &authoritative_ticket.target.relay_public_key,
+                                interactive,
+                            )
+                            .await
+                    }
+                    Err(error) => Err(error),
+                };
+                match result {
+                    Ok(layer) => Some(layer),
+                    Err(error) => {
+                        store.update(&context_id, |status| fail_status(status, &error));
+                        return;
+                    }
+                }
+            }
+            _ => None,
+        };
         let task_store = store.clone();
         let task_context_id = context_id.clone();
         let task_config = config.clone();
@@ -569,11 +614,12 @@ pub(crate) fn start_managed_context_outbound_operation(
         let task_provider_account_profiles = provider_account_profiles.clone();
         let package_store = task_store.clone();
         let package = tokio::task::spawn_blocking(move || {
-            prepare_managed_context_package(
+            prepare_managed_context_package_with_environment(
                 &task_config,
                 &package_store,
                 &task_provider_account_profiles,
                 &task_ticket,
+                environment,
             )
         })
         .await
@@ -744,11 +790,28 @@ fn retire_matching_artifact_after_terminal_preflight(
     Ok(true)
 }
 
+#[cfg(test)]
 fn prepare_managed_context_package(
     config: &DaemonConfig,
     store: &ManagedContextOutboundOperationStore,
     provider_account_profiles: &crate::account_profile::ProviderAccountProfileRegistry,
     ticket: &ManagedContextTransferTicket,
+) -> Result<PreparedOutboundArtifact, DaemonError> {
+    prepare_managed_context_package_with_environment(
+        config,
+        store,
+        provider_account_profiles,
+        ticket,
+        None,
+    )
+}
+
+fn prepare_managed_context_package_with_environment(
+    config: &DaemonConfig,
+    store: &ManagedContextOutboundOperationStore,
+    provider_account_profiles: &crate::account_profile::ProviderAccountProfileRegistry,
+    ticket: &ManagedContextTransferTicket,
+    environment: Option<super::development::DevelopmentProjectEnvironment>,
 ) -> Result<PreparedOutboundArtifact, DaemonError> {
     let plan = ticket.context_plan.package_binding();
     let artifact_parent = store.artifact_parent(config)?;
@@ -810,11 +873,14 @@ fn prepare_managed_context_package(
                 .iter()
                 .map(resolve_repository_selection)
                 .collect::<Result<Vec<_>, DaemonError>>()?;
-            let exported = export_development_context(DevelopmentContextExportRequest {
-                project_id: project_id.clone(),
-                repositories: selections,
-                archive_path: artifact_root.join("development.tar.gz"),
-            })?;
+            let exported = super::development::export_development_context_with_environment(
+                DevelopmentContextExportRequest {
+                    project_id: project_id.clone(),
+                    repositories: selections,
+                    archive_path: artifact_root.join("development.tar.gz"),
+                },
+                environment,
+            )?;
             ManagedContextPackageDevelopment::FromSource {
                 archive_path: exported.archive_path,
                 archive_sha256: exported.archive_sha256,
@@ -2170,6 +2236,8 @@ mod tests {
             store.clone(),
             provider_accounts,
             modified,
+            None,
+            false,
         )
         .expect_err("modified ticket must be rejected before operation start");
 

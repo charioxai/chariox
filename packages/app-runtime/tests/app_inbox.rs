@@ -108,6 +108,76 @@ fn routes_are_owned_and_unique() {
 }
 
 #[test]
+fn paused_generator_routes_and_accepted_work_survive_database_reopen() {
+    let path = std::env::temp_dir().join(format!(
+        "chariox-inbox-reopen-{}-{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let db = Connection::open(&path).unwrap();
+    app_inbox::initialize(&db).unwrap();
+    let mut expected = vec![route("active-control")];
+    app_inbox::create_route_in(&db, &expected[0], 1).unwrap();
+    for id in ["mentions", "messages", "reactions", "dummy"] {
+        let mut route = route(id);
+        route.source = Some(app_inbox::InboxSource {
+            generator_id: "dev.example.events".into(),
+            connection_id: "fixture-connection".into(),
+            connection_scope: "fixture-scope".into(),
+            filter_json: "null".into(),
+        });
+        app_inbox::create_route_in(&db, &route, 1).unwrap();
+        expected.push(route);
+    }
+    let Accepted::New(sequence) =
+        app_inbox::accept_in(&db, &expected[1], "accepted", &json!({"text":"hi"}), 3, 100).unwrap()
+    else {
+        panic!("first acceptance must be new");
+    };
+    for route in expected.iter_mut().skip(1) {
+        app_inbox::set_route_active_in(&db, "owner", "installed", &route.route_id, false).unwrap();
+        route.active = false;
+    }
+    drop(db);
+
+    let db = Connection::open(&path).unwrap();
+    // Opening a kernel initializes an existing schema again. Neither that
+    // step nor repeated initialization may undo deployment handover state.
+    app_inbox::initialize(&db).unwrap();
+    app_inbox::initialize(&db).unwrap();
+    expected.sort_by(|left, right| left.route_id.cmp(&right.route_id));
+    assert_eq!(
+        app_inbox::routes(&db, "owner", "installed").unwrap(),
+        expected
+    );
+    let paused = app_inbox::route(&db, "owner", "installed", "mentions")
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        app_inbox::accept_in(&db, &paused, "new", &json!({"text":"hi"}), 3, 200),
+        Err(InboxError::NotFound)
+    ));
+    // Pausing admission does not discard work accepted before the handover.
+    let due = app_inbox::due(&db, 200, 10).unwrap();
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].sequence, sequence);
+    assert_eq!(due[0].occurrence_id, "accepted");
+    app_inbox::set_route_active_in(&db, "owner", "installed", "mentions", true).unwrap();
+    let resumed = app_inbox::route(&db, "owner", "installed", "mentions")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        app_inbox::accept_in(&db, &resumed, "accepted", &json!({"text":"hi"}), 3, 200).unwrap(),
+        Accepted::Duplicate(sequence)
+    );
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn accepting_dedupes_by_source_occurrence() {
     let db = db();
     let route = route("r1");
@@ -221,6 +291,22 @@ fn failures_back_off_then_poison() {
         app_inbox::failed_attempt_in(&db, sequence, now).unwrap(),
         InboxState::Failed
     );
+    // The settled occurrence still names itself for the owner's notice.
+    assert_eq!(
+        app_inbox::occurrence(&db, sequence).unwrap(),
+        app_inbox::OccurrenceSummary {
+            owner_id: "owner".into(),
+            installation_id: "installed".into(),
+            route_id: "r1".into(),
+            event_name: "received".into(),
+            occurrence_id: "occ".into(),
+            attempts: MAX_ATTEMPTS,
+        }
+    );
+    assert!(matches!(
+        app_inbox::occurrence(&db, sequence + 1),
+        Err(InboxError::NotFound)
+    ));
     assert!(app_inbox::due(&db, u64::MAX / 2, 10).unwrap().is_empty());
     assert!(matches!(
         app_inbox::delivered_in(&db, sequence, 1),
@@ -249,7 +335,7 @@ fn postponing_spends_no_attempt_and_old_occurrences_expire() {
 }
 
 #[test]
-fn routes_are_scoped_per_owner_and_installation_and_removal_forgets_occurrences() {
+fn routes_are_scoped_per_owner_and_installation_and_removal_keeps_accepted_work() {
     let db = db();
     app_inbox::create_route_in(&db, &route("mail"), 1).unwrap();
     let other = InboxRoute {
@@ -264,18 +350,46 @@ fn routes_are_scoped_per_owner_and_installation_and_removal_forgets_occurrences(
         Accepted::New(_)
     ));
     assert_eq!(app_inbox::counts(&db, &other).unwrap().pending, 1);
+    // A settled occurrence of the route, and one still pending.
+    let Accepted::New(settled) =
+        app_inbox::accept_in(&db, &route("mail"), "occ-0", &json!({"text":"z"}), 1, 0).unwrap()
+    else {
+        panic!("new occurrence expected");
+    };
+    app_inbox::delivered_in(&db, settled, 1).unwrap();
     app_inbox::remove_route_in(&db, "owner", "installed", "mail").unwrap();
-    app_inbox::create_route_in(&db, &route("mail"), 2).unwrap();
+    assert!(app_inbox::route(&db, "owner", "installed", "mail")
+        .unwrap()
+        .is_none());
+    // Pending delivery and settled replay receipts both survive route removal.
     assert_eq!(
-        app_inbox::counts(&db, &route("mail")).unwrap(),
-        app_inbox::InboxCounts::default()
+        app_inbox::state(&db, settled).unwrap(),
+        InboxState::Delivered
     );
+    let due = app_inbox::due(&db, 10, 10).unwrap();
+    assert_eq!(due.len(), 2);
+    let kept = due
+        .iter()
+        .find(|item| item.owner_id == "owner")
+        .expect("the removed route's accepted occurrence");
+    assert_eq!(
+        (kept.route_id.as_str(), kept.occurrence_id.as_str()),
+        ("mail", "occ-1")
+    );
+    // A replacement inherits pending work and settled replay receipts.
+    app_inbox::create_route_in(&db, &route("mail"), 2).unwrap();
+    assert_eq!(app_inbox::counts(&db, &route("mail")).unwrap().pending, 1);
+    assert_eq!(app_inbox::counts(&db, &route("mail")).unwrap().delivered, 1);
     assert!(matches!(
-        app_inbox::accept_in(&db, &route("mail"), "occ-1", &json!({"text":"c"}), 1, 3).unwrap(),
+        app_inbox::accept_in(&db, &route("mail"), "occ-1", &json!({"text":"a"}), 1, 3).unwrap(),
+        Accepted::Duplicate(_)
+    ));
+    assert!(matches!(
+        app_inbox::accept_in(&db, &route("mail"), "occ-2", &json!({"text":"c"}), 1, 3).unwrap(),
         Accepted::New(_)
     ));
     let due = app_inbox::due(&db, 10, 10).unwrap();
-    assert_eq!(due.len(), 2);
+    assert_eq!(due.len(), 3);
     assert!(due.iter().all(|item| item.accepted_generation == 1));
     app_inbox::undeliverable_in(&db, due[0].sequence).unwrap();
     assert_eq!(
@@ -354,3 +468,6 @@ fn generator_fed_routes_are_capped_across_the_kernel_at_create() {
         app_inbox::MAX_GENERATOR_ROUTES
     );
 }
+
+#[path = "app_inbox/route_removal.rs"]
+mod route_removal;

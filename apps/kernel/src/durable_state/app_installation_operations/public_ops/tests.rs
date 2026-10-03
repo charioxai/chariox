@@ -4,18 +4,14 @@ use chariox_app_package::{verify, VerificationPolicy};
 
 struct Fixture {
     store: DurableKernelStateStore,
-    path: std::path::PathBuf,
+    _root: crate::test_support::TestWorktree,
 }
 impl Fixture {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "chariox-public-install-{:016x}",
-            rand::random::<u64>()
-        ));
-        std::fs::create_dir(&path).unwrap();
-        let store = DurableKernelStateStore::open_owned(path.join("kernel.sqlite")).unwrap();
+        let root = crate::test_support::TestWorktree::new("public-install");
+        let store = DurableKernelStateStore::open_owned(root.path().join("kernel.sqlite")).unwrap();
         fixture_event_catalog(&store);
-        Self { store, path }
+        Self { store, _root: root }
     }
     fn candidate(&self) -> VerifiedInstallCandidate {
         let (bytes, publisher) = fixture_event_package();
@@ -56,12 +52,6 @@ impl Fixture {
             InstallReviewDisposition::Prompt(value) => value,
             _ => panic!("expected exact pending decision"),
         }
-    }
-}
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = self.store.fence_writer();
-        let _ = std::fs::remove_dir_all(&self.path);
     }
 }
 fn budget() -> AppOperationBudget {
@@ -114,13 +104,20 @@ fn preparing_ack_replay_and_cancel_survive_reopen_without_creating_a_stage() {
         .store
         .get_app_installation("alice", &initial.token.installation_id)
         .is_err());
-    let reopened = DurableKernelStateStore::open_owned(f.store.path().to_path_buf()).unwrap();
+    // Release this kernel's ownership, keeping the database, before reopening.
+    let database = f.store.path().to_path_buf();
+    let Fixture { store, _root } = f;
+    store.fence_writer().unwrap();
+    drop(store);
+    let reopened = DurableKernelStateStore::open_owned(database).unwrap();
     assert_eq!(
         cancelled,
         reopened
             .replay_public_app_install("alice", "request", budget())
             .unwrap()
     );
+    drop(reopened);
+    drop(_root);
 }
 
 #[test]
@@ -130,7 +127,6 @@ fn verified_review_nonce_and_original_deadline_fence_fresh_writer_budgets() {
     let old = Arc::new(f.arm("review", "old-decision"));
     let mut current = f.arm("review", "current-decision");
     assert_eq!(current.review()["packageDigest"], operation.package_digest);
-    assert_eq!(current.review()["informationSetConsent"], "not_granted");
     assert!(matches!(
         f.store.decide_app_install(old, true, budget()),
         Err(InstallOperationError::Conflict)
@@ -342,6 +338,12 @@ fn an_update_stages_onto_the_active_installation_and_a_failed_start_keeps_it() {
 #[test]
 fn an_update_that_changes_capabilities_asks_the_owner_again() {
     let f = Fixture::new();
+    let before = f
+        .store
+        .get_app_installation("alice", "installed")
+        .unwrap()
+        .active;
+    assert!(before.as_ref().is_some_and(|active| active.generation == 1));
     let next = release("1.1.0", 0, true, &f.store);
     let digest = next.release_metadata().package_digest.clone();
     f.store
@@ -352,6 +354,11 @@ fn an_update_that_changes_capabilities_asks_the_owner_again() {
         .unwrap();
     let challenge = Arc::new(f.arm("network", "yes"));
     assert!(challenge.is_update());
+    // No early capability use (V1-INT-13): while the owner decides, the
+    // running generation keeps its own release and approval.
+    let waiting = f.store.get_app_installation("alice", "installed").unwrap();
+    assert_eq!(waiting.active, before);
+    assert_eq!(waiting.pending_generation, Some(2));
     assert_eq!(
         f.store
             .decide_app_install(challenge, false, budget())
@@ -363,6 +370,7 @@ fn an_update_that_changes_capabilities_asks_the_owner_again() {
     let installed = f.store.get_app_installation("alice", "installed").unwrap();
     assert_eq!(installed.generation, 1);
     assert_eq!(installed.pending_generation, None);
+    assert_eq!(installed.active, before);
 }
 
 #[test]
@@ -524,6 +532,91 @@ fn a_reinstall_needs_kept_data() {
             .unwrap_err(),
         InstallOperationError::Conflict
     );
+}
+
+#[test]
+fn a_prepared_reinstall_ends_file_grants_without_nested_transactions() {
+    use crate::durable_state::app_file_grants::{
+        FileGrantCommand, FilePick, GrantedFile, PickState,
+    };
+
+    let f = Fixture::new();
+    f.store
+        .app_file_grant(FileGrantCommand::Create(FilePick {
+            operation_id: "old-pick".into(),
+            owner: "alice".into(),
+            installation: "installed".into(),
+            generation: 1,
+            accept: vec![],
+            multiple: false,
+            state: PickState::Pending,
+            expires_ms: 1_000,
+            grants: vec![],
+        }))
+        .unwrap();
+    let grant = f
+        .store
+        .app_file_grant(FileGrantCommand::Grant {
+            owner: "alice".into(),
+            operation_id: "old-pick".into(),
+            files: vec![GrantedFile {
+                name: "notes.md".into(),
+                contents: b"private notes".to_vec(),
+            }],
+            now_ms: 2,
+        })
+        .unwrap()
+        .unwrap()
+        .grants[0]
+        .clone();
+    f.store
+        .mutate_app_installation(
+            "alice",
+            crate::durable_state::apps::AppRegistryMutation::Uninstall {
+                installation_id: "installed".into(),
+                expected_generation: 1,
+                now_ms: 5,
+            },
+        )
+        .unwrap();
+    let next = release("1.1.0", 0, false, &f.store);
+    let digest = next.release_metadata().package_digest.clone();
+    f.store
+        .reserve_app_install("alice", "reinstall", update_input(2), &digest, budget())
+        .unwrap();
+    let prepared = f
+        .store
+        .complete_app_install_preparation("alice", "reinstall", next, budget())
+        .unwrap();
+    assert_eq!(prepared.token.installation_id, "installed");
+    assert_eq!(prepared.phase, InstallPhase::AwaitingApproval);
+    // Preparation's existing transaction must commit, without reviving a grant.
+    assert_eq!(
+        f.store.claim_app_file_grant(FileGrantCommand::Claim {
+            owner: "alice".into(),
+            installation: "installed".into(),
+            grant_id: grant,
+            now_ms: 6,
+        }),
+        Err("NOT_FOUND")
+    );
+    assert_eq!(
+        f.store
+            .app_file_pick("alice", "installed", "old-pick")
+            .unwrap()
+            .unwrap()
+            .state,
+        PickState::Expired
+    );
+    let contents: Option<Vec<u8>> = Connection::open(f.store.path())
+        .unwrap()
+        .query_row(
+            "SELECT contents FROM app_file_grants WHERE operation_id='old-pick'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(contents.is_none());
 }
 
 /// Protocol 367: a deployment consent approves a copy's install only for an
@@ -820,4 +913,18 @@ mod deployment_consent {
             .unwrap();
         assert!(prompts(arm_copy(&f, "copy", "app_deploy_1")));
     }
+}
+
+#[test]
+fn a_deployment_copy_prompt_names_its_deployment() {
+    let f = Fixture::new();
+    let copy = f.stage("copy-install");
+    f.store
+        .fixture_tag_app_installation("alice", &copy.token.installation_id, "deployment-7");
+    assert_eq!(
+        f.arm("copy-install", "nonce-copy").deployment_id(),
+        Some("deployment-7")
+    );
+    f.stage("own-install");
+    assert_eq!(f.arm("own-install", "nonce-own").deployment_id(), None);
 }

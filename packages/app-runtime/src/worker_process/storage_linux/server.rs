@@ -121,7 +121,11 @@ pub(super) fn run(arguments: Vec<String>) -> Result<()> {
                     if wire::peer(&stream).ok() != Some(*uid) || !store.enrolled(*uid) {
                         continue;
                     }
+                    let Ok(peer) = super::worker_groups::Peer::capture(&stream) else {
+                        continue;
+                    };
                     clients.push(Client {
+                        peer,
                         uid: *uid,
                         stream,
                         reader: Reader::default(),
@@ -182,6 +186,7 @@ pub(super) fn run(arguments: Vec<String>) -> Result<()> {
     Ok(())
 }
 struct Client {
+    peer: super::worker_groups::Peer,
     uid: u32,
     stream: UnixStream,
     reader: Reader,
@@ -209,6 +214,7 @@ impl Client {
                             status: "acquired".into(),
                             grant: Some(grant),
                             code: None,
+                            host_disk: None,
                         },
                     )?;
                 }
@@ -264,6 +270,7 @@ impl Client {
                             status: "code_attached".into(),
                             grant: None,
                             code: Some(code),
+                            host_disk: None,
                         },
                     )?,
                     Err(error) => {
@@ -271,6 +278,30 @@ impl Client {
                         return Err(error); // EOF retains the entire lease in recovery
                     }
                 }
+            }
+            (Some(lease), Request::MapWorkerGroupsV1 { pid, birth }) => {
+                store.map_worker_groups(self.uid, lease, &self.peer, pid, birth)?;
+                wire::send(
+                    &mut self.stream,
+                    &Reply {
+                        status: "groups_mapped_v1".into(),
+                        grant: None,
+                        code: None,
+                        host_disk: None,
+                    },
+                )?;
+            }
+            (Some(lease), Request::VerifyWorkerGroupsV1) => {
+                store.verify_worker_groups(self.uid, lease, &self.peer)?;
+                wire::send(
+                    &mut self.stream,
+                    &Reply {
+                        status: "groups_verified_v1".into(),
+                        grant: None,
+                        code: None,
+                        host_disk: None,
+                    },
+                )?;
             }
             _ => return Err(Error::Identity),
         }

@@ -8,6 +8,9 @@ type ExecutionKey = (String, String);
 struct ComputerInputExecutionState {
     cancellation_requested: AtomicBool,
     process_group: Mutex<Option<u32>>,
+    // Retained by the blocking helper's cancellation handle even if its
+    // async caller is dropped. Capture resumes only after physical input settles.
+    capture_exclusion: Mutex<Option<tokio::sync::OwnedRwLockWriteGuard<()>>>,
 }
 
 #[derive(Clone)]
@@ -58,6 +61,7 @@ impl ComputerInputCancellation {
 #[derive(Clone, Default)]
 pub(crate) struct ComputerInputExecutionStore {
     active: Arc<Mutex<BTreeMap<ExecutionKey, Arc<ComputerInputExecutionState>>>>,
+    display_capture: Arc<tokio::sync::RwLock<()>>,
 }
 
 pub(crate) struct ComputerInputExecution {
@@ -67,6 +71,15 @@ pub(crate) struct ComputerInputExecution {
 }
 
 impl ComputerInputExecutionStore {
+    pub(crate) fn capture_guard(
+        &self,
+    ) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, &'static str> {
+        self.display_capture
+            .clone()
+            .try_read_owned()
+            .map_err(|_| "agent screen capture withheld while computer credential input is running")
+    }
+
     pub(crate) fn begin(
         &self,
         session_id: &str,
@@ -116,6 +129,15 @@ impl ComputerInputExecutionStore {
 }
 
 impl ComputerInputExecution {
+    pub(crate) async fn withhold_capture(&self) {
+        let guard = self.store.display_capture.clone().write_owned().await;
+        *self
+            .state
+            .capture_exclusion
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(guard);
+    }
+
     pub(crate) fn cancellation(&self) -> ComputerInputCancellation {
         ComputerInputCancellation {
             state: Arc::clone(&self.state),
@@ -149,3 +171,48 @@ fn kill_process_group(process_group: u32) {
 
 #[cfg(not(unix))]
 fn kill_process_group(_process_group: u32) {}
+
+#[cfg(test)]
+mod secret_capture_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn capture_stays_withheld_until_a_dropped_callers_helper_settles() {
+        let store = ComputerInputExecutionStore::default();
+        let execution = store.begin("room", "secret").unwrap();
+        execution.withhold_capture().await;
+        let helper = execution.cancellation();
+        drop(execution);
+        assert!(
+            store.capture_guard().is_err(),
+            "dropping caller must not reopen capture while its helper lives"
+        );
+        drop(helper);
+        assert!(
+            store.capture_guard().is_ok(),
+            "capture resumes after physical input settles"
+        );
+    }
+
+    #[tokio::test]
+    async fn insertion_waits_for_prior_frame_capture_and_withholds_new_frames() {
+        let store = ComputerInputExecutionStore::default();
+        let frame = store.capture_guard().unwrap();
+        let execution = store.begin("room", "secret").unwrap();
+        let mut wait = Box::pin(execution.withhold_capture());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut wait)
+                .await
+                .is_err()
+        );
+        assert!(
+            store.capture_guard().is_err(),
+            "queued insertion must withhold new frame reads"
+        );
+        drop(frame);
+        wait.await;
+        assert!(store.capture_guard().is_err());
+        drop(execution);
+        assert!(store.capture_guard().is_ok());
+    }
+}

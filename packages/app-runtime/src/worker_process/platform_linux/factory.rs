@@ -20,7 +20,7 @@ pub(in crate::worker_process) fn prepare(
     release: VerifiedReleaseLease,
     binding: &StageTrustBinding,
     migrate_from: Option<u32>,
-    committed_generation: u64,
+    committed_generation: Option<u64>,
 ) -> Result<PreparedWorker> {
     if release.package_digest() != binding.package_digest() {
         return Err(WorkerError::Identity);
@@ -56,7 +56,7 @@ pub(in crate::worker_process) fn prepare(
         committed_generation,
         leaf_name,
     )
-    .map_err(|_| WorkerError::Preparation)?;
+    .map_err(storage_error)?;
     storage
         .attach_code(&release, &runtime)
         .map_err(|_| WorkerError::Preparation)?;
@@ -135,6 +135,9 @@ pub(in crate::worker_process) fn prepare(
             .ok_or(WorkerError::Preparation)?
             .try_clone()
             .map_err(|_| WorkerError::Preparation)?,
+        storage
+            .group_mapping_channel()
+            .map_err(|_| WorkerError::Preparation)?,
     ];
     let domain = domain::Domain {
         _roots: roots,
@@ -210,4 +213,32 @@ fn bootstrap(package: &VerifiedReleaseLease, migrate_from: Option<u32>) -> Resul
     }
     let config = serde_json::to_string(&config).map_err(|_| WorkerError::Preparation)?;
     Ok(format!("require('node:module').createRequire('/runtime/bootstrap.cjs')('/runtime/bootstrap.cjs').start({config});"))
+}
+
+fn storage_error(error: storage_linux::Error) -> WorkerError {
+    match error {
+        storage_linux::Error::HostReserve(space) => WorkerError::HostDiskSpace(space),
+        _ => WorkerError::Preparation,
+    }
+}
+
+#[cfg(test)]
+mod disk_space_tests {
+    use super::*;
+    #[test]
+    fn host_space_numbers_survive_linux_preparation() {
+        let space = crate::worker_process::HostDiskSpace { free: 1, needed: 2 };
+        assert_eq!(
+            storage_error(storage_linux::Error::HostReserve(space)),
+            WorkerError::HostDiskSpace(space)
+        );
+        assert_eq!(
+            storage_error(storage_linux::Error::Capacity),
+            WorkerError::Preparation
+        );
+        assert_eq!(
+            storage_error(storage_linux::Error::Identity),
+            WorkerError::Preparation
+        );
+    }
 }

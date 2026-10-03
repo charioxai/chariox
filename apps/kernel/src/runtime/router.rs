@@ -33,8 +33,8 @@ mod managed_context_bridge;
 pub(crate) use managed_context_bridge::{
     RelayManagedContextArmRequest, RelayManagedContextChunkRequest,
 };
-mod meta_runtime_command;
 mod app_event_routes;
+mod meta_runtime_command;
 mod pre_lane_dispatch;
 mod priority_dispatch;
 mod refresh_dispatch;
@@ -197,10 +197,12 @@ mod tests {
     }
 
     mod agent_messaging;
+    mod agent_prompt_schedules;
     mod app_bindings;
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    mod app_open;
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
     mod app_tools;
-    mod agent_prompt_schedules;
     mod browser_import;
     mod credential_enrollment;
     mod interactive_command_admission;
@@ -212,6 +214,9 @@ mod tests {
     mod remote_agent_message_origin;
     mod remote_authorization;
     mod remote_workspace_live_sync_authorization;
+    // Kernel resource telemetry reads /proc; other platforms report it as unsupported.
+    mod agent_workflow;
+    #[cfg(target_os = "linux")]
     mod resource_telemetry;
     mod room_environment_placement;
     mod runtime_persistence;
@@ -221,7 +226,6 @@ mod tests {
     mod stack_budget;
     mod status_projection;
     mod terminal_output_projection;
-    mod agent_workflow;
     mod workflow_revision;
 
     fn attach_request(session_id: &str, client_id: &str) -> LocalDaemonRequest {

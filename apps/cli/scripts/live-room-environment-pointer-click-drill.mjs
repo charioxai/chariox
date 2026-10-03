@@ -1,8 +1,12 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict"
+import { createRoomWebFaultControl } from "./lib/room-web-fault-control.mjs"
+import { roomWebFaultHandlers } from "./lib/room-web-fault-runtime.mjs"
+import { assertRoomDrillCompletedActionNotice } from "./lib/room-drill-action-notice.mjs"
 import { validatePrebuiltSliceImage } from "./lib/prebuilt-slice-image.mjs"
 import { roomTuiPtyInvocation } from "./lib/room-tui-pty.mjs"
+import { createRetainedRoomRuntime, stopOrDeleteRoomSlice, roomCleanupComplete, verifyRetainedRoomArchive, roomDrillLeakScanRoots } from "./lib/room-provider-retention.mjs"
 import { spawn } from "node:child_process"
 import { createHash } from "node:crypto"
 import { createWriteStream } from "node:fs"
@@ -24,10 +28,12 @@ import {
   prepareRoomRealProviderAgent,
   roomProviderAgentReadyMetadata,
   roomRealProviderOptions,
+  runRoomRealProviderAction,
   runRoomRealProvider,
 } from "./lib/live-room-real-provider.mjs"
 import { roomProviderBrowserFixture } from "./lib/room-provider-browser-fixture.mjs"
-import { roomCompanionClickFixture } from "./lib/room-companion-click-fixture.mjs"
+import { roomCompanionClickFixture, roomClickFixtureCounterScript } from "./lib/room-companion-click-fixture.mjs"
+import { roomCompanionGestureTargets, roomGestureObservationScript } from "./lib/room-companion-gesture-fixture.mjs"
 import { createDrillInterruption } from "./lib/drill-interruption.mjs"
 import { makeAvailablePorts, portIsAvailable } from "./lib/drill-runtime-helpers.mjs"
 import {
@@ -63,6 +69,16 @@ import {
 import { hasRoomReadyProjection } from "./lib/room-drill-ready-notices.mjs"
 import { roomDrillRelayToken } from "./lib/room-drill-relay-token.mjs"
 import { roomFixtureProbeCommand } from "./lib/room-fixture-reachability.mjs"
+import { startRoomSharedBrowserStateProxy } from "./lib/room-shared-browser-state-proxy.mjs"
+import {
+  assertRoomSharedBrowserReconnectPreserved,
+  roomSharedBrowserReconnectSnapshot,
+  roomSharedBrowserStatusNotice,
+} from "./lib/room-shared-browser-reconnect.mjs"
+import { roomSharedBrowserClickCount } from "./lib/room-shared-browser-persistence.mjs"
+import { runRoomSharedBrowserPersistence } from "./lib/room-shared-browser-persistence-runner.mjs"
+import { runRoomSharedBrowserStatePhase } from "./lib/room-shared-browser-state-runner.mjs"
+import { createRoomSharedBrowserStateFixture } from "./lib/room-shared-browser-state-fixture.mjs"
 import {
   assertRoomRootlessWorkspaceFixture,
   assertRoomRootlessWorkspaceFixtureRemoved,
@@ -79,19 +95,32 @@ assert.ok(Number.isSafeInteger(sliceMemoryMb) && sliceMemoryMb > 0 && sliceMemor
   "CHARIOX_ROOM_DRILL_MEMORY_MB must be a positive u32 number of MiB")
 const companionOnly = process.env.CHARIOX_ROOM_DRILL_FOCUS === "web-companion"
 let realProviderOptions = roomRealProviderOptions(process.env)
+if (realProviderOptions) process.umask(0o077)
+const sharedBrowserReconnect = process.env.CHARIOX_ROOM_DRILL_SHARED_BROWSER_RECONNECT === "1"
 if (companionOnly && !process.env.CHARIOX_ROOM_DRILL_COORDINATION_DIR?.trim()) {
   throw new Error("web-companion focus requires CHARIOX_ROOM_DRILL_COORDINATION_DIR")
+}
+if (sharedBrowserReconnect) {
+  assert.ok(companionOnly, "shared Browser reconnect requires web-companion focus")
+  assert.ok(realProviderOptions?.mode === "browser", "shared Browser reconnect requires an official Browser provider")
+  assert.equal(realProviderOptions.browserTask ?? "click", "click",
+    "shared Browser reconnect currently exercises one structured Browser click")
 }
 const kernelClientRoot = path.join(repoRoot, "packages", "kernel-client")
 const startedAt = new Date().toISOString()
 const stamp = startedAt.replace(/[:.]/g, "-")
 const runId = `room-pointer-${process.pid}-${stamp}`
+const physicalClickStorageKey = `chariox-room-${runId}-physical-click-count`
+const sharedBrowserStateFixture = sharedBrowserReconnect
+  ? createRoomSharedBrowserStateFixture({ generation: runId })
+  : null
 const webKeyboardText = process.env.CHARIOX_ROOM_DRILL_WEB_KEYBOARD === "1"
   ? `web-${runId}-Grüße 世界`
   : null
 const webKeyboardReplacementText = webKeyboardText ? `ime-${runId}-日本語` : null
 const webPointerGestures = process.env.CHARIOX_ROOM_DRILL_WEB_GESTURES === "1"
-const evidenceRoot = path.join(
+const retainedProviderRoot = realProviderOptions ? await createRetainedRoomRuntime({ runId }) : null
+const publicEvidenceRoot = path.join(
   os.homedir(),
   ".codex",
   "evidence",
@@ -99,6 +128,9 @@ const evidenceRoot = path.join(
   "computer-secret-room-e2e",
   stamp,
 )
+// Real-provider execution records can contain account diagnostics or provider output.
+// Keep them with the private durable runtime; publish only the cleanup projection.
+const evidenceRoot = retainedProviderRoot ? path.join(retainedProviderRoot, "execution-record") : publicEvidenceRoot
 const containerName = `chariox-slice-${runId}`
 const homeVolume = `${containerName}-home`
 const userCredentialId = `${runId}-user-computer`
@@ -156,6 +188,7 @@ const sensitiveValues = [
   cancellationRecoveryText,
   ...clipboardValues,
 ]
+let webGestureOrigin = null
 const generatedSecretLength = 24
 const { kernelPort, relayPort } = await makeAvailablePorts({
   candidateFactory: () => {
@@ -194,9 +227,8 @@ const directDaemonEnvironmentNames = [
   "CHARIOX_RELAY_TOKEN",
   "CHARIOX_SESSION_HISTORY_DIR",
 ]
-const tempRootPromise = realProviderOptions
-  ? mkdir(path.join(os.homedir(), ".chariox", "dev", "browser-computer-use"), { recursive: true })
-    .then(() => mkdtemp(path.join(os.homedir(), ".chariox", "dev", "browser-computer-use", "room-provider-")))
+const tempRootPromise = retainedProviderRoot
+  ? Promise.resolve(retainedProviderRoot)
   : mkdtemp(path.join(os.tmpdir(), "chariox-room-pointer-"))
 const children = []
 let localForwarding = null
@@ -215,6 +247,7 @@ let requests = null
 let failure = null
 let result = null
 let companionResult = null
+let pollWebFault = null
 let secretAgent = null
 let secretProviderRun = null
 let sourceIdentity = null
@@ -230,10 +263,13 @@ await interruption.run(async () => {
 }, cleanup, (error) => { failure = error })
 
 if (failure) {
-  console.error(failure?.stack ?? String(failure))
+  console.error(retainedProviderRoot
+    ? `Official provider drill failed; private diagnostics retained at ${retainedProviderRoot}`
+    : failure?.stack ?? String(failure))
   process.exitCode = 1
 } else {
-  console.log(JSON.stringify({ status: "passed", evidenceRoot }, null, 2))
+  console.log(JSON.stringify({ status: "passed", evidenceRoot: publicEvidenceRoot,
+    ...(retainedProviderRoot ? { retainedProviderRoot } : {}) }, null, 2))
 }
 
 async function run() {
@@ -275,23 +311,41 @@ async function run() {
   fixture = await startFixture()
   await seedConfig(tempRoot)
 
-  const relayLog = createWriteStream(path.join(evidenceRoot, "relay.log"), { flags: "a" })
-  const relay = spawn(relayBinary, [], {
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      CHARIOX_RELAY_HOST: "127.0.0.1",
-      CHARIOX_RELAY_PORT: String(relayPort),
-      CHARIOX_RELAY_SCOPED_ISSUER: relayScopedIssuer,
-      CHARIOX_RELAY_SCOPED_HMAC_SECRET: relayScopedSecret,
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-  })
-  relay.stdout.pipe(relayLog)
-  relay.stderr.pipe(relayLog)
-  relay.once("exit", () => relayLog.end())
-  children.push(relay)
-  await waitForTcpPort("127.0.0.1", relayPort, 20_000, "relay did not accept connections")
+  let relayGeneration = 0
+  let relayQueueCapacity = 1024
+  let relay = null
+  const startRelayGeneration = async () => {
+    const logName = relayGeneration === 0 ? "relay.log" : `relay-reconnect-${relayGeneration}.log`
+    const relayLog = createWriteStream(path.join(evidenceRoot, logName), { flags: "a" })
+    const child = spawn(relayBinary, [], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        CHARIOX_RELAY_HOST: "127.0.0.1",
+        CHARIOX_RELAY_PORT: String(relayPort),
+        CHARIOX_RELAY_OUTGOING_QUEUE_CAPACITY: String(relayQueueCapacity),
+        CHARIOX_RELAY_SCOPED_ISSUER: relayScopedIssuer,
+        CHARIOX_RELAY_SCOPED_HMAC_SECRET: relayScopedSecret,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+    child.stdout.pipe(relayLog)
+    child.stderr.pipe(relayLog)
+    child.once("exit", () => relayLog.end())
+    children.push(child)
+    await waitForTcpPort("127.0.0.1", relayPort, 20_000, "relay did not accept connections")
+    assert.equal(child.exitCode, null, `relay generation ${relayGeneration} exited during startup`)
+    return child
+  }
+  relay = await startRelayGeneration()
+  const restartRelay = async () => {
+    assert.ok(relay, "cannot reconnect before the Room relay starts")
+    await terminateChild(relay)
+    assert.equal(await portIsAvailable(relayPort), true, "old relay listener remained after shutdown")
+    relayGeneration += 1
+    relay = await startRelayGeneration()
+    return { generation: relayGeneration, processId: relay.pid }
+  }
 
   const log = createWriteStream(path.join(evidenceRoot, "kernel.log"), { flags: "a" })
   const kernelEnv = {
@@ -319,7 +373,7 @@ async function run() {
     XDG_STATE_HOME: path.join(tempRoot, "xdg-state"),
     XDG_CACHE_HOME: path.join(tempRoot, "xdg-cache"),
   }
-  const kernel = spawn(kernelBinary, [], {
+  let kernel = spawn(kernelBinary, [], {
     cwd: repoRoot,
     env: kernelEnv,
     stdio: ["ignore", "pipe", "pipe"],
@@ -335,6 +389,35 @@ async function run() {
     import(pathToFileURL(path.join(repoRoot, "apps", "cli", "dist", "room-environment-activity-controller.js")).href),
   ])
   requests = importedRequests
+  if (process.env.CHARIOX_ROOM_DRILL_WEB_FAULTS === "1") {
+    pollWebFault = createRoomWebFaultControl({
+      directory: process.env.CHARIOX_ROOM_DRILL_COORDINATION_DIR,
+      handlers: roomWebFaultHandlers({
+        getRelay: () => relay, terminateChild,
+        startRelay: async (capacity = 1024) => {
+          assert.ok(!relay || relay.exitCode !== null || relay.signalCode !== null, "fault relay is already running")
+          relayQueueCapacity = capacity; relayGeneration += 1; relay = await startRelayGeneration()
+          return { generation: relayGeneration, capacity }
+        },
+        stopKernel: () => terminateChild(kernel),
+        restartKernel: async () => {
+          assert.ok(kernel.exitCode !== null || kernel.signalCode !== null, "fault kernel is already running")
+          const nextLog = createWriteStream(path.join(evidenceRoot, "kernel-restarted.log"), { flags: "a" })
+          kernel = spawn(kernelBinary, [], { cwd: repoRoot, env: kernelEnv, stdio: ["ignore", "pipe", "pipe"] })
+          kernel.stdout.pipe(nextLog); kernel.stderr.pipe(nextLog); kernel.once("exit", () => nextLog.end()); children.push(kernel)
+          await waitForTcpPort("127.0.0.1", kernelPort, 60_000, "restarted kernel unavailable")
+          client.close(); observerClient.close()
+          client = interruption.guardClient(new LocalIpcClient(`ws://127.0.0.1:${kernelPort}/kernel`))
+          observerClient = interruption.guardClient(new LocalIpcClient(`ws://127.0.0.1:${kernelPort}/kernel`))
+          await client.send(requests.attachToSessionRequest(sessionId, `${runId}-restarted-observer`))
+          return { restarted: true }
+        },
+        docker, containerName, sliceScreen,
+        getLocalAutomation: () => localAutomation, getRemoteAutomation: () => remoteAutomation,
+        getClient: () => client, requests, getSessionId: () => sessionId,
+      }),
+    })
+  }
   client = await waitFor(async () => {
     const candidate = interruption.guardClient(new LocalIpcClient(`ws://127.0.0.1:${kernelPort}/kernel`))
     try {
@@ -439,14 +522,17 @@ async function run() {
   )
   assert.equal(attachedLocalTui.session?.id, sessionId)
   await waitForBrowserReady(60_000)
+  const browserFixtureOrigin = sharedBrowserStateFixture
+    ? (await startRoomSharedBrowserStateProxy({ docker, containerName, port: fixture.port, waitFor })).origin
+    : `http://host.docker.internal:${fixture.port}`
   const fixtureProbe = JSON.parse((await docker([
     "exec", containerName,
-    ...roomFixtureProbeCommand(`http://host.docker.internal:${fixture.port}/click`, "POINTER_CLICK_READY"),
+    ...roomFixtureProbeCommand(`${browserFixtureOrigin}/click`, "POINTER_CLICK_READY"),
   ], 10_000)).stdout)
   await writeFile(path.join(evidenceRoot, "fixture-reachability.json"), `${JSON.stringify(fixtureProbe, null, 2)}\n`)
   assert.ok(fixtureProbe.reachable && fixtureProbe.markerPresent,
     `slice cannot reach the click fixture: ${JSON.stringify(fixtureProbe)}`)
-  await sliceScreen(["open-url", `http://host.docker.internal:${fixture.port}/click`])
+  await sliceScreen(["open-url", `${browserFixtureOrigin}/click`])
   await waitForBrowserText("POINTER_CLICK_READY", 30_000, "click fixture did not load")
   await screenshot("before-click")
 
@@ -542,6 +628,7 @@ async function run() {
     `pointer movement leaked into remote TUI notices: ${remoteNoticesAfterPointers.join(" | ")}`,
   )
 
+  const clickActivityBaseline = activityNotices.length
   const idempotencyKey = `${runId}-click`
   const click = unwrap(await client.send(requests.submitRoomEnvironmentActionRequest(
     sessionId,
@@ -552,13 +639,18 @@ async function run() {
   )), "RoomEnvironmentActionSubmitted")
   assert.equal(actionState(click.environment, click.action_id), "completed")
   assert.equal(await activityController.synchronize(), true)
-  assert.match(activityNotices.at(-1), /^Room action #\d+: Local user · computer pointer_click · desktop(?:, tab [^ ·]+)? · completed$/)
+  const clickNoticePattern = assertRoomDrillCompletedActionNotice({
+    action: click.environment.actions.find((action) => action.action_id === click.action_id),
+    actionId: click.action_id, kind: "pointer_click", actorLabel: "Local user",
+    notices: activityNotices, baseline: clickActivityBaseline,
+  })
   await Promise.all([
-    waitForLocalNotice(/^Room action #\d+: Local user · computer pointer_click · desktop(?:, tab [^ ·]+)? · completed$/),
-    waitForRemoteNotice(/^Room action #\d+: Local user · computer pointer_click · desktop(?:, tab [^ ·]+)? · completed$/),
+    waitForLocalNotice(clickNoticePattern),
+    waitForRemoteNotice(clickNoticePattern),
   ])
   await waitForBrowserText("POINTER_CLICK_COUNT=1", 20_000, "physical click did not reach the fixture")
   await screenshot("after-click")
+  if (webPointerGestures) webGestureOrigin = await readWebGestureFixture()
 
   const retry = unwrap(await client.send(requests.submitRoomEnvironmentActionRequest(
     sessionId,
@@ -612,8 +704,35 @@ async function run() {
       remoteNoticeIds: automationNoticeIds(releasedRemoteTui),
       activityController,
     })
+    if (sharedBrowserReconnect) {
+      assert.ok(companionResult?.provider, "real Web companion did not return official Browser action evidence")
+      const before = await readSharedBrowserReconnectSnapshot(companionResult)
+      const remoteNoticeBaseline = automationNoticeIds(await remoteAutomation.send("snapshot"))
+      const relayRestart = await restartRelay()
+      const remoteStatusNotice = await waitForSharedBrowserRemoteStatus(before, remoteNoticeBaseline)
+      const after = await readSharedBrowserReconnectSnapshot(companionResult)
+      assertRoomSharedBrowserReconnectPreserved(before, after)
+      const persistence = await runSharedBrowserPersistence({
+        companion: companionResult,
+        before,
+      })
+      companionResult.sharedBrowserReconnect = {
+        relayRestart,
+        remoteTuiStatus: {
+          noticeId: remoteStatusNotice.id,
+          text: remoteStatusNotice.text,
+        },
+        identityBefore: before,
+        identityAfter: after,
+        persistence,
+      }
+      await writeFile(path.join(evidenceRoot, "shared-browser-reconnect.json"),
+        `${JSON.stringify(companionResult.sharedBrowserReconnect, null, 2)}\n`, { mode: 0o600 })
+    }
     result = {
-      schema: "chariox.room_environment.web_companion_focus.v1",
+      schema: sharedBrowserReconnect
+        ? "chariox.room_environment.shared_browser_persistence.v1"
+        : "chariox.room_environment.web_companion_focus.v1",
       status: "passed",
       startedAt,
       source: sourceIdentity,
@@ -621,11 +740,29 @@ async function run() {
       sessionId,
       sliceId: slice.id,
       environmentId: released.environment_id,
-      coverage: companionResult.office
-        ? "Official provider edits and saves a graphical document, activates the mail tab, uploads and submits once; actual desktop matched in Web and actions observed in local and remote TUIs"
-        : `Web display and pointer input${companionResult.keyboard ? " and Unicode typing" : ""}${companionResult.keyboard?.replacement ? ", select-all and native IME replacement" : ""}${companionResult.gestures ? ", physical text-selection drag and two-axis scroll" : ""} with local and remote TUI observation`,
+      coverage: sharedBrowserReconnect
+        ? "Official provider structured Browser click, human Web Computer takeover, direct and relay-attached TUI projection, relay reconnect, and full local authenticated Browser state plus graphical-program save/stop/container-and-home-volume removal/restore on the running Home kernel; the same agent verifies cookie, localStorage, IndexedDB, Cache Storage, service worker, active renderer sandbox and retained program, then performs a fresh physical Browser click on the same Room and provider thread"
+        : companionResult.office
+          ? "Official provider edits and saves a graphical document, activates the mail tab, uploads and submits once; actual desktop matched in Web and actions observed in local and remote TUIs"
+          : `Web display and pointer input${companionResult.keyboard ? " and Unicode typing" : ""}${companionResult.keyboard?.replacement ? ", select-all and native IME replacement" : ""}${companionResult.gestures ? ", physical text-selection drag and two-axis scroll" : ""} with local and remote TUI observation`,
       skipped: ["computer secret", "pointer matrix", "agent keyboard matrix", "cancellation", "clipboard",
-        companionResult.keyboard?.replacement ? "remaining Web shortcuts and keyboard layouts" : "Web keyboard shortcuts and IME"],
+        companionResult.keyboard?.replacement ? "remaining Web shortcuts and keyboard layouts" : "Web keyboard shortcuts and IME",
+        ...(sharedBrowserReconnect ? [
+          "Drill B real-service and Vault authentication/reauthentication",
+          "Home kernel process restart persistence",
+          "Drill F managed-machine recovery",
+        ] : [])],
+      ...(sharedBrowserReconnect ? {
+        acceptanceGates: {
+          browserComputerTakeoverReconnect: "passed",
+          sliceSaveRecreatePersistence: "passed",
+          roomKernelRestartPersistence: "not_run",
+          drillACompleteBrowserStatePersistence: "passed",
+          drillBRendererSandboxPersistence: "not_run",
+          authenticatedServiceSessionPersistence: "not_run",
+          drillFManagedMachineRecovery: "not_run",
+        },
+      } : {}),
       companion: companionResult,
       containerLimits: limits,
     }
@@ -920,6 +1057,7 @@ async function executeAgentPointerAction({
   activityController,
   activityNotices,
 }) {
+  const activityBaseline = activityNotices.length
   const localBaseline = new Set(automationNoticeIds(await localAutomation.send("snapshot")))
   const remoteBaseline = new Set(automationNoticeIds(await remoteAutomation.send("snapshot")))
   const response = await mcpToolCall(secretProviderRun, "slice_mouse", args)
@@ -943,9 +1081,11 @@ async function executeAgentPointerAction({
     (candidate) => candidate.action_id === response.content?.action_id,
   )
   validate(action, response.content?.actor_id)
-  const noticePattern = new RegExp(`^Room action #\\d+: .+ · computer ${expectedKind} · desktop(?:, tab [^ ·]+)? · completed$`)
   assert.equal(await activityController.synchronize(), true)
-  assert.match(activityNotices.at(-1), noticePattern)
+  const noticePattern = assertRoomDrillCompletedActionNotice({
+    action, actionId: response.content.action_id, kind: expectedKind,
+    notices: activityNotices, baseline: activityBaseline,
+  })
   await Promise.all([
     waitForTuiNoticeAfter(localAutomation, "local", noticePattern, localBaseline, 20_000),
     waitForTuiNoticeAfter(remoteAutomation, "remote", noticePattern, remoteBaseline, 20_000),
@@ -1048,7 +1188,7 @@ async function exerciseRoomKeyboard(activityController, activityNotices) {
   }
   const tempRoot = await tempRootPromise
   const keyboardValues = [keyboardText, keyboardReplacementText, keyboardAfterRepeat]
-  await assertNoPlaintextSecretInTree(tempRoot, keyboardValues)
+  await assertNoPlaintextSecretInDrillState(tempRoot, keyboardValues)
   await assertNoPlaintextSecretInTree(evidenceRoot, keyboardValues)
 
   return {
@@ -1266,7 +1406,7 @@ async function exerciseRoomComputerCancellation(activityController, activityNoti
     )
   }
   const tempRoot = await tempRootPromise
-  await assertNoPlaintextSecretInTree(tempRoot, [cancellationText, takeoverCancellationText])
+  await assertNoPlaintextSecretInDrillState(tempRoot, [cancellationText, takeoverCancellationText])
   await assertNoPlaintextSecretInTree(evidenceRoot, [cancellationText, takeoverCancellationText])
 
   return {
@@ -1505,6 +1645,7 @@ async function executeAgentKeyboardAction({
   activityController,
   activityNotices,
 }) {
+  const activityBaseline = activityNotices.length
   const localBaseline = new Set(automationNoticeIds(await localAutomation.send("snapshot")))
   const remoteBaseline = new Set(automationNoticeIds(await remoteAutomation.send("snapshot")))
   const response = await mcpToolCall(secretProviderRun, "slice_keyboard", args)
@@ -1533,9 +1674,11 @@ async function executeAgentKeyboardAction({
     (candidate) => candidate.action_id === response.content?.action_id,
   )
   validate(action, response.content?.actor_id)
-  const noticePattern = new RegExp(`^Room action #\\d+: .+ · computer ${expectedKind} · desktop(?:, tab [^ ·]+)? · completed$`)
   assert.equal(await activityController.synchronize(), true)
-  assert.match(activityNotices.at(-1), noticePattern)
+  const noticePattern = assertRoomDrillCompletedActionNotice({
+    action, actionId: response.content.action_id, kind: expectedKind,
+    notices: activityNotices, baseline: activityBaseline,
+  })
   await Promise.all([
     waitForTuiNoticeAfter(localAutomation, "local", noticePattern, localBaseline, 20_000),
     waitForTuiNoticeAfter(remoteAutomation, "remote", noticePattern, remoteBaseline, 20_000),
@@ -1561,6 +1704,7 @@ async function exerciseRoomClipboard(activityController, activityNotices) {
     "human clipboard read must require desktop takeover",
   )
 
+  const agentActivityBaseline = activityNotices.length
   const agentLocalBaseline = new Set(automationNoticeIds(await localAutomation.send("snapshot")))
   const agentRemoteBaseline = new Set(automationNoticeIds(await remoteAutomation.send("snapshot")))
   const agentWrite = await mcpToolCall(secretProviderRun, "slice_clipboard_write", {
@@ -1584,9 +1728,11 @@ async function exerciseRoomClipboard(activityController, activityNotices) {
     actorId: agentWrite.content?.actor_id,
     clipboardText: agentClipboardText,
   })
-  const noticePattern = /^Room action #\d+: .+ · computer clipboard_write · desktop(?:, tab [^ ·]+)? · completed$/
   assert.equal(await activityController.synchronize(), true)
-  assert.match(activityNotices.at(-1), noticePattern)
+  const noticePattern = assertRoomDrillCompletedActionNotice({
+    action: agentAction, actionId: agentWrite.content.action_id, kind: "clipboard_write",
+    notices: activityNotices, baseline: agentActivityBaseline,
+  })
   await Promise.all([
     waitForTuiNoticeAfter(
       localAutomation,
@@ -1633,6 +1779,7 @@ async function exerciseRoomClipboard(activityController, activityNotices) {
     "rejected agent clipboard write must not enter the Action ledger",
   )
 
+  const humanActivityBaseline = activityNotices.length
   const humanLocalBaseline = new Set(automationNoticeIds(await localAutomation.send("snapshot")))
   const humanRemoteBaseline = new Set(automationNoticeIds(await remoteAutomation.send("snapshot")))
   const humanWrite = unwrap(
@@ -1654,19 +1801,22 @@ async function exerciseRoomClipboard(activityController, activityNotices) {
   })
   assert.equal(await readPhysicalClipboard(), humanClipboardText)
   assert.equal(await activityController.synchronize(), true)
-  assert.match(activityNotices.at(-1), noticePattern)
+  const humanNoticePattern = assertRoomDrillCompletedActionNotice({
+    action: humanAction, actionId: humanWrite.action_id, kind: "clipboard_write",
+    notices: activityNotices, baseline: humanActivityBaseline,
+  })
   await Promise.all([
     waitForTuiNoticeAfter(
       localAutomation,
       "local",
-      noticePattern,
+      humanNoticePattern,
       humanLocalBaseline,
       20_000,
     ),
     waitForTuiNoticeAfter(
       remoteAutomation,
       "remote",
-      noticePattern,
+      humanNoticePattern,
       humanRemoteBaseline,
       20_000,
     ),
@@ -1719,7 +1869,7 @@ async function exerciseRoomClipboard(activityController, activityNotices) {
     assertRetainedClipboardEvidenceIsRedacted(released, value)
   }
   const tempRoot = await tempRootPromise
-  await assertNoPlaintextSecretInTree(tempRoot, clipboardValues)
+  await assertNoPlaintextSecretInDrillState(tempRoot, clipboardValues)
   await assertNoPlaintextSecretInTree(evidenceRoot, clipboardValues)
 
   return {
@@ -1872,7 +2022,7 @@ async function exerciseComputerSecretInput() {
   assert.ok(automationNoticeTexts(remoteNotice).some((notice) => noticePattern.test(notice)))
 
   const tempRoot = await tempRootPromise
-  await assertNoPlaintextSecretInTree(tempRoot, [userSecret, vaultPassphrase])
+  await assertNoPlaintextSecretInDrillState(tempRoot, [userSecret, vaultPassphrase])
   await assertNoPlaintextSecretInTree(evidenceRoot, [userSecret, vaultPassphrase])
 
   await client.send(requests.deleteCredentialSecretRequest(userCredentialId))
@@ -1940,7 +2090,7 @@ async function launchComputerSecretAgent() {
   const ready = await waitFor(async () => {
     const candidate = interruption.guardClient(new LocalIpcClient(workerRelayUrl, {
       relayAuthToken: workerRelayToken,
-      targetDaemonAlias: slice.worker_kernel_ref,
+      targetDaemonId: slice.worker_kernel_ref,
     }))
     try {
       const current = unwrap(
@@ -2050,6 +2200,11 @@ function assertNoSecretProperties(value, label) {
   assert.deepEqual(forbidden, [], `${label} exposed secret-bearing properties: ${forbidden.join(", ")}`)
 }
 
+async function assertNoPlaintextSecretInDrillState(stateRoot, secrets) {
+  for (const root of roomDrillLeakScanRoots({ stateRoot, evidenceRoot, publicEvidenceRoot,
+    retain: retainedProviderRoot !== null })) await assertNoPlaintextSecretInTree(root, secrets)
+}
+
 async function assertNoPlaintextSecretInTree(root, secrets) {
   const entries = await readdir(root, { withFileTypes: true }).catch(() => [])
   for (const entry of entries) {
@@ -2090,6 +2245,9 @@ function scopedRelayToken({ subject, subjectKind, actions, userId = null }) {
 async function runCompanionIfConfigured({ environment, localNoticeIds, remoteNoticeIds, activityController }) {
   const noticePattern = roomActionNoticePattern
   const companionFixture = roomCompanionClickFixture(realProviderOptions)
+  const browserFixtureOrigin = sharedBrowserStateFixture
+    ? `http://127.0.0.1:${fixture.port}`
+    : `http://host.docker.internal:${fixture.port}`
   if (!realProviderOptions) {
     // Web View selects a headed slice through an attached Room agent. Keep the
     // browser-only companion deterministic without claiming a real provider run.
@@ -2136,20 +2294,25 @@ async function runCompanionIfConfigured({ environment, localNoticeIds, remoteNot
       options: realProviderOptions,
     })
     : null
+  const pointerGestureTargets = {}
   return await runRoomEnvironmentCompanion({
     env: process.env,
     sleep,
     prepare: async () => {
       // The keyboard/clipboard drills navigate away from the original click page.
       // Give the Web companion a fresh physical page, not the last drill's form.
-      await sliceScreen(["open-url", `http://host.docker.internal:${fixture.port}${companionFixture.path}`])
+      await sliceScreen(["open-url", `${browserFixtureOrigin}${companionFixture.path}`])
       await waitForBrowserText(companionFixture.readyMarker, 30_000, "Web companion fixture did not reset")
+      if (webPointerGestures) {
+        const current = await readWebGestureFixture()
+        Object.assign(pointerGestureTargets, roomCompanionGestureTargets(webGestureOrigin, current, environment.viewport))
+      }
       resources.push(await resourceSnapshot("before-web-companion"))
     },
     ready: {
       ...(webKeyboardText ? { keyboardText: webKeyboardText } : {}),
       ...(webKeyboardReplacementText ? { keyboardReplacementText: webKeyboardReplacementText } : {}),
-      ...(webPointerGestures ? { pointerGestures: true } : {}),
+      ...(webPointerGestures ? { pointerGestures: true, pointerGestureTargets } : {}),
       pointerClickExpectedCount: companionFixture.pointerClickExpectedCount,
       ...(realProviderOptions ? { realProvider: realProviderOptions, providerWorkspace: fixtureWorkspace } : {}),
       ...(providerAgent ? { providerAgent } : {}),
@@ -2175,6 +2338,7 @@ async function runCompanionIfConfigured({ environment, localNoticeIds, remoteNot
     activityController,
     localNoticeIds,
     remoteNoticeIds,
+    pollFault: async () => { await pollWebFault?.() },
     readTuiNotices: async () => {
       const [local, remote] = await Promise.all([localAutomation.send("snapshot"), remoteAutomation.send("snapshot")])
       return { local: automationNoticeEntries(local), remote: automationNoticeEntries(remote) }
@@ -2485,6 +2649,7 @@ async function startFixture() {
   const expectedKeyboardAfterRepeatDigest = fnv1a64(keyboardAfterRepeat)
   const expectedCancellationRecoveryDigest = fnv1a64(cancellationRecoveryText)
   const server = http.createServer((request, response) => {
+    if (sharedBrowserStateFixture?.handleRequest(request, response)) return
     if (request.url === "/secret") {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" })
       response.end(`<!doctype html><html><head><title>Room Computer secret drill</title><style>
@@ -2615,9 +2780,14 @@ async function startFixture() {
       #web-scroll-content{width:2200px;height:640px;background:linear-gradient(135deg,#f7b267,#70c1b3)}
       main{pointer-events:none;z-index:1}
       #browser-action-target{position:fixed;left:16px;top:16px;z-index:3}
-    </style></head><body>${webKeyboardText ? '<input id="web-keyboard" type="password" autocomplete="off" aria-label="Web keyboard fixture">' : ''}${webPointerGestures ? '<input data-web-gesture id="web-selection" readonly value="Select this physical text without moving the Room browser window"><div data-web-gesture id="web-scroller"><div id="web-scroll-content"></div></div>' : ''}<main><div id="state">POINTER_CLICK_READY</div>${webKeyboardText ? '<div id="web-keyboard-status">WEB_KEYBOARD_WAITING</div><div id="web-keyboard-replacement-status">WEB_KEYBOARD_REPLACEMENT_WAITING</div>' : ''}${webPointerGestures ? '<div id="web-drag-status">WEB_DRAG_WAITING</div><div id="web-scroll-status">WEB_SCROLL_WAITING</div>' : ''}</main><script>
+    </style></head><body>${webKeyboardText ? '<input id="web-keyboard" type="password" autocomplete="off" aria-label="Web keyboard fixture">' : ''}${webPointerGestures ? '<input data-web-gesture id="web-selection" readonly value="Select this physical text without moving the Room browser window"><div data-web-gesture id="web-scroller"><div id="web-scroll-content"></div></div>' : ''}<main><div id="state">POINTER_CLICK_READY</div>${sharedBrowserStateFixture ? '<div id="room-browser-state">ROOM_BROWSER_STATE_PENDING</div>' : ''}${webKeyboardText ? '<div id="web-keyboard-status">WEB_KEYBOARD_WAITING</div><div id="web-keyboard-replacement-status">WEB_KEYBOARD_REPLACEMENT_WAITING</div>' : ''}${webPointerGestures ? '<div id="web-drag-status">WEB_DRAG_WAITING</div><div id="web-scroll-status">WEB_SCROLL_WAITING</div>' : ''}</main><script>
       ${browserFixture.script}
-      let clicks=${browserFixture.initialClicks};document.addEventListener("click",(event)=>{if(event.target.closest("[data-web-gesture]"))return;clicks+=1;document.body.style.background="#69d391";document.querySelector("#state").textContent="POINTER_CLICK_COUNT="+clicks})
+      ${roomClickFixtureCounterScript({
+        storageKey: physicalClickStorageKey,
+        initialClicks: browserFixture.initialClicks,
+        requestUrl: request.url,
+      })}
+      ${sharedBrowserStateFixture?.pageScript() ?? ""}
       ${webPointerGestures ? `
       const selection=document.querySelector("#web-selection");
       // Native input gives the physical content origin even when CDP emulates
@@ -2699,6 +2869,216 @@ async function screenshot(name) {
 
 async function waitForRemoteNotice(pattern, timeoutMs = 20_000) {
   return await waitForTuiNotice(remoteAutomation, "remote", pattern, timeoutMs)
+}
+
+async function readSharedBrowserReconnectSnapshot(companion) {
+  const providerEvidence = companion.provider
+  const providerAgentId = providerEvidence.agentId
+  assert.ok(typeof providerAgentId === "string" && providerAgentId.length > 0,
+    "Web companion omitted the official provider agent identity")
+  const state = await readSharedBrowserPersistenceState(providerAgentId)
+  return roomSharedBrowserReconnectSnapshot({
+    ...state,
+    sessionId,
+    providerAgentId,
+    providerEvidence,
+    computerActionId: companion.actionId,
+    computerActorId: companion.actorId,
+    provider: realProviderOptions.provider,
+    model: realProviderOptions.model,
+    accountProfile: realProviderOptions.accountProfile ?? "default",
+  })
+}
+
+async function readSharedBrowserPersistenceState(providerAgentId) {
+  const [environmentResponse, sessionResponse, historyResponse, actionResponse] = await Promise.all([
+    client.send(requests.getRoomEnvironmentStateRequest(sessionId)),
+    client.send(requests.getSessionStateRequest(sessionId)),
+    client.send(requests.getSessionHistoryOutlineRequest(sessionId, [providerAgentId], 10)),
+    client.send(requests.listRoomEnvironmentActionHistoryRequest(sessionId, null, 100)),
+  ])
+  const environment = unwrap(environmentResponse, "RoomEnvironmentState").environment
+  const session = unwrap(sessionResponse, "SessionState").session
+  const history = unwrap(historyResponse, "SessionHistoryOutline")
+  const actionHistory = unwrap(actionResponse, "RoomEnvironmentActionHistoryListed").page.actions
+  const agentHistory = history.agents?.find(agent => agent.agent_id === providerAgentId)
+  assert.ok(agentHistory, "public provider history lookup omitted the Room agent")
+  return { environment, session, turns: agentHistory.turns ?? [],
+    actionHistory,
+  }
+}
+
+async function runSharedBrowserPersistence({ companion, before }) {
+  assert.ok(realProviderOptions?.mode === "browser", "save/restore requires the existing official Browser provider")
+  const focusedTab = before.environment.tabs.find(tab => tab.tabId === before.environment.focusedTabId)
+  assert.ok(focusedTab?.url, "Browser state fixture requires the retained focused tab URL")
+  return await runRoomSharedBrowserPersistence({
+    before,
+    sliceId: slice.id,
+    providerAgentId: companion.provider.agentId,
+    sourceRuntime: sourceIdentity,
+    dependencies: {
+      saveSliceState: async ({ sliceId, mode, scope }) => unwrap(await withTimeout(client.send(
+        requests.saveSliceStateRequest(sliceId, mode, scope),
+      ), 600_000, "SaveSliceState shutdown"), "SliceStateSaved"),
+      verifySavedStateArtifacts: async state => {
+        if (retainedProviderRoot) {
+          const verified = await verifyRetainedRoomArchive(state)
+          await writeFile(path.join(retainedProviderRoot, "saved-home-verification.json"),
+            `${JSON.stringify({ stateId: state.id, ...verified }, null, 2)}\n`, { mode: 0o600 })
+        } else {
+          await access(state.home_archive_path)
+          await access(state.manifest_path)
+        }
+        await docker(["image", "inspect", state.image_ref])
+      },
+      stopSlice: async sliceId => unwrap(await withTimeout(client.send(requests.stopSliceRequest(sliceId)),
+        30_000, "StopSlice after saved shutdown"), "SliceStopped"),
+      assertOwnedResourcesPresent: assertDrillDockerResourcesExist,
+      removeOwnedResources: async () => {
+        await docker(["rm", "-f", containerName])
+        await docker(["volume", "rm", "-f", homeVolume])
+      },
+      assertOwnedResourcesAbsent: assertDrillDockerResourcesAbsent,
+      restoreSlice: async sliceId => unwrap(await withTimeout(client.send(requests.startSliceRequest(sliceId)),
+        600_000, "StartSlice saved-state restore"), "SliceStarted"),
+      waitForSliceRunning: async sliceRef => {
+        slice = await waitForSliceRunning(sliceRef)
+        if (sharedBrowserStateFixture) {
+          await startRoomSharedBrowserStateProxy({ docker, containerName, port: fixture.port, waitFor })
+        }
+        return slice
+      },
+      inspectRuntime: async () => {
+        sliceRuntimeIdentity = await inspectSliceRuntimeIdentity()
+        return sliceRuntimeIdentity
+      },
+      waitForBrowserReady: async () => {
+        const browser = await waitForBrowserReady(60_000)
+        if (!sharedBrowserStateFixture) {
+          await waitFor(async () => {
+            const text = await sliceScreen(["browser-text"]).catch(() => "")
+            return /POINTER_CLICK_READY|POINTER_CLICK_COUNT=\d+/.test(text) ? text : false
+          }, 30_000, "restored Browser fixture or its persisted click counter did not load")
+        }
+        return browser
+      },
+      waitForEnvironmentReady: waitForSharedBrowserEnvironmentReady,
+      waitForTuiStatus: async identity => {
+        const localNoticeBaseline = automationNoticeIds(await localAutomation.send("snapshot"))
+        const remoteNoticeBaseline = automationNoticeIds(await remoteAutomation.send("snapshot"))
+        const [direct, relay] = await Promise.all([
+          waitForSharedBrowserLocalStatus(identity, localNoticeBaseline),
+          waitForSharedBrowserRemoteStatus(identity, remoteNoticeBaseline),
+        ])
+        return { direct, relay }
+      },
+      readRoomState: providerAgentId => readSharedBrowserPersistenceState(providerAgentId),
+      verifyBrowserState: ({ phase }) => runRoomSharedBrowserStatePhase({
+        client,
+        requests,
+        sessionId,
+        providerAgentId: companion.provider.agentId,
+        providerSessionId: before.providerThread.providerSessionId,
+        fixtureUrl: focusedTab.url,
+        generation: runId,
+        phase,
+        waitFor,
+        withTimeout,
+      }),
+      readBrowserClickCount: async () => roomSharedBrowserClickCount(await sliceScreen(["browser-text"])),
+      continueProviderAction: async ({ agent, expectedPhysicalEffect }) => await runRoomRealProviderAction({
+        client,
+        requests,
+        sessionId,
+        sliceId: slice.id,
+        workspace: fixtureWorkspace,
+        options: { ...realProviderOptions, importFirst: false },
+        agent,
+        expectedPhysicalEffect,
+        waitFor,
+        withTimeout,
+        checkpoint: value => writeFile(path.join(evidenceRoot, "shared-browser-post-restore-provider.json"),
+          `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 }),
+      }),
+      waitForBrowserClickCountAfter: beforeCount => waitFor(async () => {
+        const count = await roomSharedBrowserClickCount(await sliceScreen(["browser-text"]))
+        return count > beforeCount ? count : false
+      }, 30_000, "post-restore Browser click did not change the physical fixture state"),
+      readStableBrowserClickCount: async () => {
+        await sleep(250)
+        return await roomSharedBrowserClickCount(await sliceScreen(["browser-text"]))
+      },
+      waitForTuiActionProjection: async continuation => {
+        const pattern = roomActionNoticePattern({
+          sequence: continuation.actionSequence, mode: continuation.mode,
+          kind: continuation.actionKind, state: "completed",
+        })
+        const [direct, relay] = await Promise.all([
+          waitForLocalNotice(pattern, 180_000),
+          waitForRemoteNotice(pattern, 180_000),
+        ])
+        return { direct, relay }
+      },
+    },
+  })
+}
+
+async function assertDrillDockerResourcesExist() {
+  assert.equal((await runCommand("docker", ["container", "inspect", containerName], 10_000)).code, 0,
+    "expected owned slice container before physical removal")
+  assert.equal((await runCommand("docker", ["volume", "inspect", homeVolume], 10_000)).code, 0,
+    "expected owned slice home volume before physical removal")
+}
+
+async function assertDrillDockerResourcesAbsent() {
+  const container = await runCommand("docker", ["container", "inspect", containerName], 10_000)
+  assert.notEqual(container.code, 0, "owned slice container survived physical removal")
+  assert.match(`${container.stdout}\n${container.stderr}`, /no such container|not found/i)
+  const volume = await runCommand("docker", ["volume", "inspect", homeVolume], 10_000)
+  assert.notEqual(volume.code, 0, "owned slice home volume survived physical removal")
+  assert.match(`${volume.stdout}\n${volume.stderr}`, /no such volume|not found/i)
+}
+
+async function waitForSharedBrowserEnvironmentReady() {
+  return await waitFor(async () => {
+    const response = await client.send(requests.getRoomEnvironmentStateRequest(sessionId))
+    const environment = response?.RoomEnvironmentState?.environment
+    return environment?.lifecycle === "ready" ? environment : false
+  }, 180_000, "Room did not recover its Browser Environment after slice restore")
+}
+
+async function waitForSharedBrowserRemoteStatus(identity, baselineIds) {
+  return await waitForSharedBrowserTuiStatus(remoteAutomation, identity, baselineIds,
+    "relay-attached remote TUI did not return fresh Room status")
+}
+
+async function waitForSharedBrowserLocalStatus(identity, baselineIds) {
+  return await waitForSharedBrowserTuiStatus(localAutomation, identity, baselineIds,
+    "direct local TUI did not return fresh Room status after slice restore")
+}
+
+async function waitForSharedBrowserTuiStatus(automation, identity, baselineIds, message) {
+  let nextCommandAt = 0
+  let submittedStatusCommands = 0
+  return await waitFor(async () => {
+    const snapshot = await automation.send("snapshot").catch(() => null)
+    if (snapshot) {
+      const notice = roomSharedBrowserStatusNotice(automationNoticeEntries(snapshot), baselineIds, identity)
+      if (notice) return notice
+    }
+    if (Date.now() >= nextCommandAt && submittedStatusCommands < 10) {
+      nextCommandAt = Date.now() + 1_000
+      submittedStatusCommands += 1
+      const response = await automation.send("submit_prompt", { prompt: "/room status" }, 5_000)
+        .catch(() => null)
+      if (response) {
+        const notice = roomSharedBrowserStatusNotice(automationNoticeEntries(response), baselineIds, identity)
+        if (notice) return notice
+      }
+    }
+    return false
+  }, 30_000, message)
 }
 
 async function waitForLocalNotice(pattern, timeoutMs = 20_000) {
@@ -2834,6 +3214,16 @@ async function waitForAutomationSnapshot(automation, predicate, label, timeoutMs
 async function sliceScreen(args) {
   const result = await docker(["exec", "-u", "slice", containerName, "/opt/chariox-slice/slice-screen.sh", ...args])
   return `${result.stdout}${result.stderr}`
+}
+
+async function readWebGestureFixture() {
+  const origin = sharedBrowserStateFixture
+    ? `http://127.0.0.1:${fixture.port}`
+    : `http://host.docker.internal:${fixture.port}`
+  const result = await docker(["exec", "-u", "slice", containerName, "node", "--input-type=module",
+    "-e", roomGestureObservationScript(origin)])
+  assert.equal(result.stderr, "", "gesture fixture observation emitted stderr")
+  return JSON.parse(result.stdout)
 }
 
 async function readPhysicalClipboard() {
@@ -2977,7 +3367,10 @@ async function cleanup() {
     }
   }
   if (client && requests && slice) {
-    await withTimeout(client.send(requests.deleteSliceRequest(slice.id)), 30_000, "cleanup DeleteSlice")
+    await stopOrDeleteRoomSlice({ retain: retainedProviderRoot !== null,
+      stop: () => withTimeout(client.send(requests.stopSliceRequest(slice.id)), 30_000, "cleanup StopSlice"),
+      remove: () => withTimeout(client.send(requests.deleteSliceRequest(slice.id)), 30_000, "cleanup DeleteSlice"),
+    })
       .catch((error) => { failure ??= error })
   }
   await client?.close?.()
@@ -2992,15 +3385,17 @@ async function cleanup() {
   // was still provisioning when interrupted. Otherwise a late container can
   // appear after cleanup has already removed its predecessor.
   await docker(["rm", "-f", containerName]).catch(() => undefined)
-  await docker(["volume", "rm", "-f", homeVolume]).catch(() => undefined)
+  if (!retainedProviderRoot) await docker(["volume", "rm", "-f", homeVolume]).catch(() => undefined)
   try {
-    await assertNoPlaintextSecretInTree(tempRoot, sensitiveValues)
+    await assertNoPlaintextSecretInDrillState(tempRoot, sensitiveValues)
     await assertNoPlaintextSecretInTree(evidenceRoot, sensitiveValues)
   } catch (error) {
     leakedEvidence = true
     failure ??= error
-    await rm(evidenceRoot, { recursive: true, force: true })
-    await mkdir(evidenceRoot, { recursive: true, mode: 0o700 })
+    if (!retainedProviderRoot) {
+      await rm(evidenceRoot, { recursive: true, force: true })
+      await mkdir(evidenceRoot, { recursive: true, mode: 0o700 })
+    }
   }
   let fixtureWorkspaceRemoved = fixtureWorkspaceLease == null
   if (fixtureWorkspaceLease) {
@@ -3015,7 +3410,7 @@ async function cleanup() {
       failure ??= error
     }
   }
-  await rm(tempRoot, { recursive: true, force: true })
+  if (!retainedProviderRoot) await rm(tempRoot, { recursive: true, force: true })
   const after = await resourceSnapshot("after").catch(() => ({ label: "after", at: new Date().toISOString() }))
   resources.push(after)
   const containerGone = (await runCommand("docker", ["container", "inspect", containerName], 20_000)).code !== 0
@@ -3032,14 +3427,17 @@ async function cleanup() {
     volumeGone,
     fixtureWorkspaceRemoved,
     tempRootRemoved,
+    ...(retainedProviderRoot ? {
+      providerStateRetained: !tempRootRemoved, homeVolumeRetained: slice == null || !volumeGone,
+      retainedProviderRoot, retainedHomeVolume: volumeGone ? null : homeVolume,
+    } : {}),
     listenersReleased: occupiedPorts.length === 0,
     plaintextSecretLeak: leakedEvidence,
     occupiedPorts,
     resource: after,
   }
   await writeFile(path.join(evidenceRoot, "cleanup.json"), `${JSON.stringify(cleanupResult, null, 2)}\n`)
-  if ((!containerGone || !volumeGone || !fixtureWorkspaceRemoved || !tempRootRemoved || occupiedPorts.length > 0)
-      && failure == null) {
+  if (!roomCleanupComplete(cleanupResult, retainedProviderRoot !== null) && failure == null) {
     failure = new Error(`drill cleanup failed: ${JSON.stringify(cleanupResult)}`)
   }
   if (result && failure == null) {
@@ -3048,6 +3446,17 @@ async function cleanup() {
     result.cleanup = cleanupResult
     result.artifacts = await evidenceArtifacts()
     await writeFile(path.join(evidenceRoot, "result.json"), `${JSON.stringify(result, null, 2)}\n`)
+  }
+  if (retainedProviderRoot) {
+    await mkdir(publicEvidenceRoot, { recursive: true, mode: 0o700 })
+    await writeFile(path.join(publicEvidenceRoot, "provider-retention.json"), `${JSON.stringify({
+      status: failure == null ? "passed" : "failed",
+      retainedProviderRoot,
+      cleanup: { containerGone, listenersReleased: occupiedPorts.length === 0,
+        providerStateRetained: !tempRootRemoved, homeVolumeRetained: slice == null || !volumeGone,
+        homeVolume: volumeGone ? null : homeVolume },
+      executionRecords: "private; not copied to evidence",
+    }, null, 2)}\n`, { mode: 0o600 })
   }
   if (failure) {
     await writeFile(

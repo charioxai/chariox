@@ -126,6 +126,14 @@ impl AppSnapshotBroker {
         .map_err(|_| error("STORAGE_UNAVAILABLE", true))?
     }
 
+    #[cfg(test)]
+    pub(crate) fn fixture_take(&self) -> Result<Value, RemoteError> {
+        self.take(
+            "saved",
+            "quiescent",
+            &AppOperationBudget::from_supervisor(|| false),
+        )
+    }
     fn take(
         &self,
         name: &str,
@@ -178,12 +186,26 @@ impl AppSnapshotBroker {
                 .export_app_state(&self.owner, installation)
                 .map_err(|code| error(code, true))?;
             self.require_active()?;
+            let state_sha256 = {
+                use sha2::{Digest, Sha256};
+                format!(
+                    "{:x}",
+                    Sha256::digest(
+                        serde_json::to_vec(&state)
+                            .map_err(|_| error("STORAGE_UNAVAILABLE", false))?
+                    )
+                )
+            };
             let manifest = json!({
-                "schema": "chariox.app-snapshot.v1",
+                "schema": "chariox.app-snapshot.v2",
                 "snapshot_id": id,
                 "name": name,
                 "consistency": consistency,
                 "installation_id": installation,
+                "owner_id": self.owner,
+                "data_schema": self.store.get_app_installation(&self.owner, installation)
+                    .map_err(|_| error("STORAGE_UNAVAILABLE", true))?
+                    .active.ok_or_else(|| error("CONFLICT", false))?.release.schema_version,
                 "generation": generation,
                 "package_digest": self.catalog.app_catalog().package_digest(),
                 "created_at_ms": crate::session::unix_epoch_ms(),
@@ -191,6 +213,7 @@ impl AppSnapshotBroker {
                     "path": file.path, "bytes": file.bytes, "sha256": file.sha256,
                 })).collect::<Vec<_>>(),
                 "bytes": files.bytes,
+                "state_sha256": state_sha256,
                 "skipped": files.skipped,
             });
             write_private(&staging.join("state.json"), &state)?;
@@ -297,7 +320,7 @@ fn prune(root: &Path, new: &str) {
     }
 }
 
-fn free_bytes(path: &Path) -> Option<u64> {
+pub(crate) fn free_bytes(path: &Path) -> Option<u64> {
     let path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).ok()?;
     let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
     if unsafe { libc::statvfs(path.as_ptr(), stat.as_mut_ptr()) } != 0 {

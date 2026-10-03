@@ -1,6 +1,6 @@
 //! Retained operation gates, cancellation and actual thread join ownership.
 use super::*;
-impl Drop for Operation<'_> {
+impl Drop for Operation {
     fn drop(&mut self) {
         self.inner
             .operations
@@ -13,15 +13,40 @@ impl Control {
     pub(super) fn new() -> Self {
         Self {
             first_request: None,
+            restore_data: Mutex::new(None),
             stop: AtomicBool::new(false),
+            update: AtomicBool::new(false),
             manual: AtomicBool::new(false),
             manual_committed: AtomicBool::new(false),
             done: Mutex::new(false),
             wake: Condvar::new(),
             drain: Mutex::new(None),
+            notification: Mutex::new(None),
+            idle: AtomicBool::new(false),
+            idle_requested: AtomicBool::new(false),
+            #[cfg(test)]
+            completion_checkpoint: Mutex::new(None),
         }
     }
+    pub(super) fn cancel_idle(&self) -> Result<()> {
+        let _pending = self
+            .notification
+            .lock()
+            .map_err(|_| LifecycleError::Supervisor)?;
+        if self.stopped() {
+            return Err(LifecycleError::Stopped);
+        }
+        self.idle.store(true, Ordering::Release);
+        self.stop.store(true, Ordering::Release);
+        self.wake.notify_all();
+        Ok(())
+    }
     pub(super) fn cancel(&self, manual: bool) {
+        let _pending = self
+            .notification
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.idle.store(false, Ordering::Release);
         if manual {
             self.manual.store(true, Ordering::Release);
         }
@@ -32,9 +57,32 @@ impl Control {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
         {
-            drain.begin();
+            self.begin_drain(drain);
         }
         self.wake.notify_all();
+    }
+    /// A local update replaces this owner's generation. Like an idle stop it
+    /// is not a user stop; calls its worker refuses or loses say the App is
+    /// updating.
+    pub(super) fn cancel_for_update(&self) {
+        self.update.store(true, Ordering::Release);
+        self.cancel(false);
+    }
+    fn begin_drain(&self, drain: &crate::runtime::app_worker::AppWorkerDrain) {
+        if self.update.load(Ordering::Acquire) {
+            drain.begin_update();
+        } else {
+            drain.begin();
+        }
+    }
+    /// An idle stop's point of no return: false while a wake is being
+    /// delivered. A worker without a drain handle has no live lease yet.
+    pub(super) fn begin_idle_drain(&self) -> bool {
+        self.drain
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .is_none_or(|drain| drain.begin_idle())
     }
     pub(super) fn retain_drain(&self, drain: crate::runtime::app_worker::AppWorkerDrain) {
         let mut retained = self
@@ -42,7 +90,7 @@ impl Control {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.stopped() {
-            drain.begin();
+            self.begin_drain(&drain);
         }
         *retained = Some(drain);
     }
@@ -66,10 +114,25 @@ impl Control {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
     pub(super) fn complete(&self) {
+        // Match enqueue's lock order and publish done before releasing a
+        // never-dispatched request. No notification can enter the cleanup gap.
+        let mut pending = self
+            .notification
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.restore_data
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         *self
             .done
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+        if let Some(request) = pending.take() {
+            let _ = request
+                .reply
+                .send(Err(LifecycleError::NotificationNotDispatched));
+        }
         self.wake.notify_all();
     }
     pub(super) fn wait(&self, duration: Duration) {
@@ -110,7 +173,7 @@ impl Entry {
 }
 
 impl Inner {
-    pub(super) fn operation(&self, key: Key) -> Result<Operation<'_>> {
+    pub(super) fn operation(self: &Arc<Self>, key: Key) -> Result<Operation> {
         let mut active = self
             .operations
             .lock()
@@ -118,7 +181,10 @@ impl Inner {
         if active.len() >= 8 || !active.insert(key.clone()) {
             return Err(LifecycleError::Busy);
         }
-        Ok(Operation { inner: self, key })
+        Ok(Operation {
+            inner: self.clone(),
+            key,
+        })
     }
     pub(super) fn shutdown(&self) -> Result<()> {
         self.stopped.store(true, Ordering::Release);

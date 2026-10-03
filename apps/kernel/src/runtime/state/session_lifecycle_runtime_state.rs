@@ -15,6 +15,21 @@ impl KernelRuntimeState {
         &self,
         mut request: crate::session::CreateSessionRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        // Every session-create path (local, sliced, remote) starts from here:
+        // the first agent gets a real provider, never the `default` placeholder.
+        let mut defaults = request.agent_defaults.take().unwrap_or_default();
+        defaults.provider = crate::account_profile::resolve_placeholder_provider(
+            &self.owned.config_projection.snapshot(),
+            &self.owned.provider_account_profiles,
+            &request.owner_user_id,
+            &defaults.provider,
+        );
+        request.agent_defaults = Some(defaults);
+        if request.kernel_ref.as_deref().is_some_and(|kernel_ref| {
+            kernel_ref_matches_local_config(&self.owned.config_projection.snapshot(), kernel_ref)
+        }) {
+            request.kernel_ref = None;
+        }
         let slice_ref = request.slice_ref.clone();
         let kernel_ref = request.kernel_ref.clone();
         if request.metaagent {
@@ -441,7 +456,7 @@ impl KernelRuntimeState {
         let agent = self
             .owned
             .focus_agent(session_id, agent_id, caller_user_id)?;
-        // The session's foreground App follows the focus.
+        // The focus agent gets the App of the Room's focused App Tab.
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         self.bind_foreground_app(session_id).await;
         Ok(agent)
@@ -507,7 +522,10 @@ impl KernelRuntimeState {
         session_id: &str,
         caller_user_id: &str,
     ) -> Result<Option<crate::agent::AgentInstance>, DaemonError> {
-        self.owned.cycle_agent_focus(session_id, caller_user_id)
+        let agent = self.owned.cycle_agent_focus(session_id, caller_user_id)?;
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        self.bind_foreground_app(session_id).await;
+        Ok(agent)
     }
 
     pub(crate) async fn alias_session(
@@ -550,14 +568,19 @@ impl KernelRuntimeState {
         &self,
         mut request: crate::agent::CreateAgentRequest,
     ) -> Result<crate::agent::CreateAgentRequest, DaemonError> {
-        let Some(placement) = request.worktree_placement.take() else {
-            return Ok(request);
-        };
         let session = self.owned.session_store.get_session(&request.session_id)?;
         let base_worktree = request
             .worktree_id
             .as_deref()
             .unwrap_or_else(|| session.worktree_id());
+        crate::git_worktree_placement::preflight_existing_absolute_directory(
+            base_worktree,
+            "worktree_id",
+            "agent.spawn",
+        )?;
+        let Some(placement) = request.worktree_placement.take() else {
+            return Ok(request);
+        };
         let resolved = crate::git_worktree_placement::prepare_git_worktree(
             &placement,
             std::path::Path::new(base_worktree),
@@ -653,11 +676,22 @@ impl KernelRuntimeState {
         let local_agent =
             self.owned
                 .ensure_agent_ref_owner(agent_ref, caller_user_id, "move agent to remote")?;
-        let _slice_guards = self.guard_slice_execution(
+        let slice_admission = self.guard_slice_execution(
             Some(session_id),
             [(None, Some(machine_ref))],
             "agent.move_remote",
         )?;
+        let [target_slice_id] = slice_admission.slice_ids.as_slice() else {
+            return Err(DaemonError::InternalInvariant {
+                operation: "agent.move_remote",
+                message: "slice admission target count mismatch".to_string(),
+            });
+        };
+        let target_slice_id = target_slice_id.clone();
+        let worker_ref = match target_slice_id.as_deref() {
+            Some(slice_id) => self.resolve_slice_worker_kernel_ref(slice_id).await?,
+            None => machine_ref.to_string(),
+        };
         let terminated_run_ids = self
             .owned
             .terminate_idle_provider_runs_for_agent_before_remote_move(session_id, &local_agent)?;
@@ -671,14 +705,9 @@ impl KernelRuntimeState {
             self.owned
                 .remove_provider_process_tracking_for_run(&provider_run_id, process_key);
         }
-        let target_slice_id = self
-            .owned
-            .slice_store
-            .resolve_by_worker_kernel_ref(machine_ref)
-            .map(|slice| slice.id);
         let agent = self
             .with_app_side_effect(|app| {
-                app.move_agent_to_remote(session_id, agent_ref, machine_ref)
+                app.move_agent_to_remote(session_id, agent_ref, &worker_ref)
             })
             .await?;
         if let Some(slice_ref) = target_slice_id {
@@ -891,7 +920,7 @@ impl KernelRuntimeState {
         workspace_id: Option<&str>,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
         let session_id = self
-            .resolve_session_ref_id(session_ref, workspace_id)
+            .resolve_session_ref_id_for_delete(session_ref, workspace_id)
             .await?;
         self.delete_session_id(&session_id).await
     }
@@ -1090,6 +1119,16 @@ impl Drop for UnpublishedSessionGuard {
 fn prepare_local_session_worktree_placement(
     mut request: crate::session::CreateSessionRequest,
 ) -> Result<crate::session::CreateSessionRequest, DaemonError> {
+    crate::git_worktree_placement::preflight_existing_absolute_directory(
+        &request.workspace_id,
+        "workspace_id",
+        "session.create",
+    )?;
+    crate::git_worktree_placement::preflight_existing_absolute_directory(
+        &request.worktree_id,
+        "worktree_id",
+        "session.create",
+    )?;
     let Some(placement) = request.worktree_placement.take() else {
         return Ok(request);
     };
@@ -1699,13 +1738,15 @@ mod tests {
             "{}-feature",
             repo.file_name().and_then(|name| name.to_str()).unwrap()
         ));
-        let request =
-            crate::session::CreateSessionRequest::new("workspace", repo.display().to_string())
-                .with_worktree_placement(crate::agent::GitWorktreePlacement {
-                    target_directory: Some(target.display().to_string()),
-                    branch: Some("feature/session-placement".to_string()),
-                    from_ref: Some("HEAD".to_string()),
-                });
+        let request = crate::session::CreateSessionRequest::new(
+            repo.display().to_string(),
+            repo.display().to_string(),
+        )
+        .with_worktree_placement(crate::agent::GitWorktreePlacement {
+            target_directory: Some(target.display().to_string()),
+            branch: Some("feature/session-placement".to_string()),
+            from_ref: Some("HEAD".to_string()),
+        });
 
         let adjusted = prepare_local_session_worktree_placement(request)
             .expect("session placement should create git worktree");
@@ -2034,6 +2075,7 @@ mod tests {
 
     fn slice(os: &str) -> crate::slice::SliceRecord {
         crate::slice::SliceRecord {
+            source_slice_ref: None,
             id: "slice-1".to_string(),
             name: "linux-slice".to_string(),
             owner_kernel_id: "kernel-home".to_string(),

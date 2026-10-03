@@ -167,13 +167,52 @@ pub struct WorkflowPublicationDefinition {
     creation_request_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     runtime_materialization: Option<WorkflowPublicationRuntimeMaterialization>,
-    /// Protocol 366: the App plan (`chariox.publication-apps.v1`) pinned at the
-    /// first deployment preparation. Immutable once pinned.
+    /// The App plan (`chariox.publication-apps.v1`) of the owner's latest
+    /// deployment export (protocol 366; per release since 377).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     apps: Option<Value>,
+    /// Protocol 377: each exported release's App plan by package digest, the
+    /// newest last. Bind, recovery and rollback use the release's own plan.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    release_app_plans: Vec<ReleaseAppPlan>,
+    /// The single plan a publication prepared before protocol 377 pinned for
+    /// all its releases, kept for them once releases record their own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pre_release_app_plan: Option<Value>,
+    /// Releases whose plans were pruned: they never fall back to the pre-377
+    /// plan (the newest last, bounded).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pruned_release_digests: Vec<String>,
+    /// Protocol 378: each exported release's inputs digest by package digest
+    /// (the newest last). A bind or recovery verifies the release against it,
+    /// so the kernel's own templates in the package can change with upgrades.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    release_inputs: Vec<ReleaseInputs>,
     created_by_user_id: String,
     created_at_ms: u64,
     updated_at_ms: u64,
+}
+
+/// Rollback reaches this many past releases' App plans (the bound release's
+/// is always kept).
+const MAX_RELEASE_APP_PLANS: usize = 16;
+/// Pruned release digests remembered so they never take the pre-377 plan.
+const MAX_PRUNED_RELEASE_DIGESTS: usize = 256;
+
+/// Releases whose inputs digests are kept (the bound release's always is);
+/// an older release is verified by its whole package digest.
+const MAX_RELEASE_INPUTS: usize = 64;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseInputs {
+    pub package_digest: String,
+    pub inputs_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseAppPlan {
+    pub package_digest: String,
+    pub plan: Value,
 }
 
 impl WorkflowPublicationDefinition {
@@ -237,6 +276,10 @@ impl WorkflowPublicationDefinition {
             creation_request_digest: None,
             runtime_materialization: None,
             apps: None,
+            release_app_plans: Vec::new(),
+            pre_release_app_plan: None,
+            pruned_release_digests: Vec::new(),
+            release_inputs: Vec::new(),
             created_by_user_id: created_by_user_id.into(),
             created_at_ms: now,
             updated_at_ms: now,
@@ -499,11 +542,127 @@ impl WorkflowPublicationDefinition {
         self.apps.as_ref()
     }
 
-    /// Pins the App plan once; a pinned plan is never replaced.
-    pub(crate) fn pin_apps(&mut self, plan: Value) {
-        if self.apps.is_none() {
-            self.apps = Some(plan);
+    /// The App plan an export packages.
+    pub(crate) fn use_apps(&mut self, plan: Value) {
+        self.apps = Some(plan);
+    }
+
+    /// An export of a release that used no App packages no plan.
+    pub(crate) fn clear_apps(&mut self) {
+        self.apps = None;
+    }
+
+    /// Whether the release with this package digest was exported while the
+    /// publication used no App: releases record their plans (377), this one
+    /// recorded none, is not among the last pruned digests and predates no
+    /// pinned plan. A digest the kernel never recorded also matches; its bind
+    /// re-exports without Apps and the digest check refuses it.
+    pub fn release_without_apps(&self, package_digest: &str) -> bool {
+        !self.release_app_plans.is_empty()
+            && self.pre_release_app_plan.is_none()
+            && !self
+                .release_app_plans
+                .iter()
+                .any(|release| release.package_digest == package_digest)
+            && !self
+                .pruned_release_digests
+                .iter()
+                .any(|pruned| pruned == package_digest)
+    }
+
+    /// Records the App plan a successful export packaged as its release's.
+    pub(crate) fn record_release_app_plan(&mut self, package_digest: &str, plan: Value) {
+        if self.release_app_plans.is_empty() {
+            self.pre_release_app_plan = self.apps.take();
         }
+        self.release_app_plans
+            .retain(|release| release.package_digest != package_digest);
+        self.release_app_plans.push(ReleaseAppPlan {
+            package_digest: package_digest.to_owned(),
+            plan: plan.clone(),
+        });
+        // The oldest plans go first, never the bound release's: its restart
+        // and recovery re-export with it.
+        let bound = self.bound_package_digest();
+        while self.release_app_plans.len() > MAX_RELEASE_APP_PLANS {
+            let Some(oldest) = self
+                .release_app_plans
+                .iter()
+                .position(|release| Some(&release.package_digest) != bound.as_ref())
+            else {
+                break;
+            };
+            let pruned = self.release_app_plans.remove(oldest);
+            self.pruned_release_digests.push(pruned.package_digest);
+        }
+        let excess = self
+            .pruned_release_digests
+            .len()
+            .saturating_sub(MAX_PRUNED_RELEASE_DIGESTS);
+        self.pruned_release_digests.drain(..excess);
+        self.apps = Some(plan);
+    }
+
+    fn bound_package_digest(&self) -> Option<String> {
+        self.deployment
+            .as_ref()
+            .and_then(|deployment| deployment["binding"]["package_digest"].as_str())
+            .map(str::to_owned)
+    }
+
+    /// Records the inputs digest of the release a successful export packaged.
+    pub(crate) fn record_release_inputs(&mut self, package_digest: &str, inputs_digest: &str) {
+        self.release_inputs
+            .retain(|release| release.package_digest != package_digest);
+        self.release_inputs.push(ReleaseInputs {
+            package_digest: package_digest.to_owned(),
+            inputs_digest: inputs_digest.to_owned(),
+        });
+        let bound = self.bound_package_digest();
+        while self.release_inputs.len() > MAX_RELEASE_INPUTS {
+            let Some(oldest) = self
+                .release_inputs
+                .iter()
+                .position(|release| Some(&release.package_digest) != bound.as_ref())
+            else {
+                break;
+            };
+            self.release_inputs.remove(oldest);
+        }
+    }
+
+    /// The inputs digest recorded for the release with this package digest;
+    /// none for a release exported before protocol 378 or pruned since.
+    pub fn release_inputs_digest(&self, package_digest: &str) -> Option<&str> {
+        self.release_inputs
+            .iter()
+            .find(|release| release.package_digest == package_digest)
+            .map(|release| release.inputs_digest.as_str())
+    }
+
+    /// The App plan of the release with this package digest. A release
+    /// exported before protocol 377 uses the publication's single plan of
+    /// then (the bind's digest check rejects any other); a release whose plan
+    /// was pruned has none.
+    pub fn release_app_plan(&self, package_digest: &str) -> Option<&Value> {
+        if self.release_app_plans.is_empty() {
+            return self.apps.as_ref();
+        }
+        if let Some(release) = self
+            .release_app_plans
+            .iter()
+            .find(|release| release.package_digest == package_digest)
+        {
+            return Some(&release.plan);
+        }
+        if self
+            .pruned_release_digests
+            .iter()
+            .any(|pruned| pruned == package_digest)
+        {
+            return None;
+        }
+        self.pre_release_app_plan.as_ref()
     }
 
     pub fn creation_request_digest(&self) -> Option<&str> {
@@ -675,5 +834,95 @@ impl WorkflowPublicationDefinition {
             let overflow = self.runtime_logs.len() - MAX_WORKFLOW_PUBLICATION_RUNTIME_LOGS;
             self.runtime_logs.drain(0..overflow);
         }
+    }
+}
+
+#[cfg(test)]
+mod release_app_plan_tests {
+    use super::*;
+
+    fn publication() -> WorkflowPublicationDefinition {
+        serde_json::from_value(serde_json::json!({
+            "id": "publication-1", "session_id": "session-1", "workflow_id": "workflow-1",
+            "endpoint_id": "endpoint-1", "kind": "event_based", "enabled": true,
+            "methods": [], "schedules": [], "watchdogs": [], "recent_runs": [], "runtime_logs": [],
+            "created_by_user_id": "user-1", "created_at_ms": 1, "updated_at_ms": 1,
+        }))
+        .expect("publication")
+    }
+
+    #[test]
+    fn a_release_exported_before_377_keeps_the_single_plan_after_new_releases_record_theirs() {
+        let mut publication = publication();
+        let pinned = serde_json::json!({"apps": [{"version": "1.0.0"}]});
+        // A publication prepared before protocol 377: one plan, no releases.
+        publication.use_apps(pinned.clone());
+        assert_eq!(publication.release_app_plan("sha256:old"), Some(&pinned));
+        let newer = serde_json::json!({"apps": [{"version": "1.1.0"}]});
+        publication.record_release_app_plan("sha256:new", newer.clone());
+        assert_eq!(publication.apps(), Some(&newer));
+        assert_eq!(publication.release_app_plan("sha256:new"), Some(&newer));
+        assert_eq!(publication.release_app_plan("sha256:old"), Some(&pinned));
+        // Pruning keeps the bound release's plan however many exports follow.
+        publication.deployment =
+            Some(serde_json::json!({"binding": {"package_digest": "sha256:new"}}));
+        for export in 0..(MAX_RELEASE_APP_PLANS + 4) {
+            publication.record_release_app_plan(
+                &format!("sha256:later-{export}"),
+                serde_json::json!({"n": export}),
+            );
+        }
+        assert_eq!(publication.release_app_plans.len(), MAX_RELEASE_APP_PLANS);
+        assert_eq!(publication.release_app_plan("sha256:new"), Some(&newer));
+        assert_eq!(
+            publication.release_app_plan("sha256:later-0"),
+            None,
+            "a pruned release has no plan"
+        );
+        assert_eq!(
+            publication.release_app_plan("sha256:old"),
+            Some(&pinned),
+            "a pre-377 release keeps its plan"
+        );
+        assert!(publication
+            .release_app_plans
+            .iter()
+            .any(|release| release.package_digest
+                == format!("sha256:later-{}", MAX_RELEASE_APP_PLANS + 3)));
+        // A publication first prepared at 377 has no such fallback.
+        let mut fresh = self::publication();
+        fresh.record_release_app_plan("sha256:new", newer.clone());
+        assert_eq!(fresh.release_app_plan("sha256:other"), None);
+    }
+
+    #[test]
+    fn release_inputs_are_kept_for_the_bound_release_and_the_latest_ones() {
+        let mut publication = publication();
+        assert_eq!(publication.release_inputs_digest("sha256:bound"), None);
+        publication.record_release_inputs("sha256:bound", "sha256:inputs-bound");
+        publication.record_release_inputs("sha256:bound", "sha256:inputs-bound-again");
+        assert_eq!(
+            publication.release_inputs_digest("sha256:bound"),
+            Some("sha256:inputs-bound-again")
+        );
+        publication.deployment =
+            Some(serde_json::json!({"binding": {"package_digest": "sha256:bound"}}));
+        for export in 0..(MAX_RELEASE_INPUTS + 4) {
+            publication.record_release_inputs(
+                &format!("sha256:later-{export}"),
+                &format!("sha256:inputs-{export}"),
+            );
+        }
+        assert_eq!(publication.release_inputs.len(), MAX_RELEASE_INPUTS);
+        assert_eq!(
+            publication.release_inputs_digest("sha256:bound"),
+            Some("sha256:inputs-bound-again")
+        );
+        assert_eq!(publication.release_inputs_digest("sha256:later-0"), None);
+        let last = MAX_RELEASE_INPUTS + 3;
+        assert_eq!(
+            publication.release_inputs_digest(&format!("sha256:later-{last}")),
+            Some(format!("sha256:inputs-{last}").as_str())
+        );
     }
 }

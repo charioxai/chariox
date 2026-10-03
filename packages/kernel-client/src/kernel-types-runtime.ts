@@ -1,3 +1,4 @@
+import type { ProjectEnvironmentReview } from "./project-environment-review.js"
 import type { ExtensionGrant } from "./kernel-types-extensions.js"
 import type { ExternalProviderImportMetadata, RuntimeSession } from "./kernel-types-session.js"
 import type { PromptAttachmentPart, RuntimeProviderRun } from "./kernel-types-provider.js"
@@ -122,7 +123,14 @@ export type RuntimeInteractionSubject =
   | { agent_id: string; kernel_operation_id?: never }
   | { kernel_operation_id: string; agent_id?: never }
 
+export type NativeInteractionOrigin =
+  | { scope: "prompt"; provider_run_id: string; prompt_id: string }
+  | { scope: "native_turn"; provider_run_id: string; native_turn_id: string }
+  | { scope: "provider_startup"; provider_run_id: string }
+
 export type RuntimeInteraction = RuntimeInteractionSubject & {
+  provider_login?: import("./provider-login-projection.js").RuntimeProviderLogin | null
+  project_environment_review?: ProjectEnvironmentReview | null
   id: string
   kind: "choice" | "permission"
   level: "info" | "warning" | "critical"
@@ -132,6 +140,7 @@ export type RuntimeInteraction = RuntimeInteractionSubject & {
   custom_choice?: RuntimeInteractionCustomChoice | null
   timeout_sec?: number | null
   default_on_timeout?: string | null
+  native_origin?: NativeInteractionOrigin | null
   requested_at_ms: number
 }
 
@@ -140,7 +149,7 @@ export type RuntimeInteractionChoice = {
   label: string
   reply: string
   style?: "primary" | "secondary" | "danger" | null
-  /** Protocol 383: answering with this choice needs the Chariox passkey. */
+  /** Protocol 392: answering with this choice needs the Chariox passkey. */
   requires_passkey?: boolean
 }
 
@@ -153,7 +162,8 @@ export type RuntimeInteractionCustomChoice = {
   input_kind?: "text" | "secret" | null
 }
 
-export type RequestNativeProviderInteractionRequest = {
+export type RequestNativeProviderTurnInteractionRequest = {
+  origin: NativeInteractionOrigin
   session_id: string
   agent_id: string
   interaction_id: string
@@ -219,6 +229,12 @@ export type SessionConfigState = {
 
 export type CharioxUserConfig = {
   version: number
+  slices?: {
+    linux?: {
+      disk_layer_mb?: number
+      disk_home_mb?: number
+    }
+  }
   providers?: {
     default?: string
     model?: string
@@ -327,9 +343,6 @@ export type AgentInstance = {
   model: string | null
   effort?: string | null
   account_profile?: string | null
-  primary_provider?: string | null
-  primary_model?: string | null
-  primary_effort?: string | null
   execution_mode_override?: "build" | "plan" | null
   permission_level_override?: "required" | "yolo" | null
   workspace_id?: string | null
@@ -344,10 +357,8 @@ export type AgentInstance = {
   } | null
   extension_grants?: ExtensionGrant[]
   remote_extension_manifest_sync?: RemoteExtensionManifestSyncStatus | null
+  /** Tried in order, each for one turn whose provider failed (protocol 397). */
   substitutes?: AgentSubstituteProfile[]
-  active_substitute_index?: number | null
-  last_substitution?: AgentSubstitutionRecord | null
-  primary_account_profile?: string | null
   substitution_timeout_ms?: number | null
   visible_in_freeform?: boolean
   external_provider_import?: ExternalProviderImportMetadata | null
@@ -377,12 +388,6 @@ export type AgentSubstituteProfile = {
   account_profile?: string | null
   kernel_id?: string | null
   worktree_id?: string | null
-}
-
-export type AgentSubstitutionRecord = {
-  substitute_index: number
-  reason: string
-  activated_at_ms: number
 }
 
 export type PromptQueueItem = {

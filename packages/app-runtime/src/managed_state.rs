@@ -11,8 +11,8 @@ pub use changes::{StateChanges, StateCheck, StateWrite};
 use rusqlite::{Connection, Transaction, TransactionBehavior};
 use serde_json::Value;
 pub use wakes::{
-    complete_wake, defer_wake, due_wakes, postpone_wake, DueWake, Wake, WakeChange, MAX_WAKES,
-    MAX_WAKE_CHANGES,
+    complete_wake, defer_wake, due_wakes, next_wake_at_ms, postpone_wake, DueWake, Wake,
+    WakeChange, WakeFailureOutcome, MAX_WAKES, MAX_WAKE_CHANGES,
 };
 
 pub const MAX_KEYS: usize = 4096;
@@ -93,18 +93,20 @@ impl<'a> ManagedStateStore<'a> {
     }
 
     /// Compose wake changes with state in the caller's writer transaction.
-    /// Like `apply_in`, this does not commit the outer transaction.
+    /// Like `apply_in`, this does not commit the outer transaction. The host
+    /// supplies `counts_as_use` from the arming request's invocation context.
     pub fn apply_wakes_in(
         transaction: &mut Transaction<'_>,
         scope: StateScope<'_>,
         changes: &[WakeChange],
+        counts_as_use: bool,
     ) -> Result<()> {
         // No changes need no wake admission (a migrating worker has none).
         if changes.is_empty() {
             return Ok(());
         }
         let savepoint = transaction.savepoint()?;
-        wakes::apply(&savepoint, scope, changes)?;
+        wakes::apply(&savepoint, scope, changes, counts_as_use)?;
         savepoint.commit()?;
         Ok(())
     }

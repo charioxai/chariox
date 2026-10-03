@@ -42,17 +42,21 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn pump_transport_runtime(&self) {
+        self.owned.announce_durable_writer_condition();
+        self.schedule_room_browser_health();
         self.app_control().schedule_maintenance();
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         {
             self.schedule_app_event_pump();
-            self.schedule_app_wake_pump();
+            self.schedule_app_maintenance_pump();
             self.schedule_app_validation_pump();
+            self.refresh_started_app_catalogs();
         }
         if !self.owned.publication_activation.is_active() {
             return;
         }
         self.owned.sweep_kernel_operation_interactions(false);
+        self.owned.withdraw_stale_agent_interactions();
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         self.resume_app_view_pumps();
         self.app_control().publishers().pump(self).await;
@@ -97,7 +101,7 @@ impl KernelRuntimeState {
                 .provider_output_deadlines
                 .take_due_provider_run_ids(now_ms),
         );
-        self.owned.reap_structured_prompt_jobs();
+        self.reap_structured_prompt_jobs_and_dispatch();
         let mut pumped_provider_run_ids = Vec::with_capacity(ready_provider_run_ids.len());
         for provider_run_id in ready_provider_run_ids {
             let Ok(provider_run) = self.owned.provider_store.get_run(&provider_run_id) else {
@@ -261,6 +265,13 @@ impl KernelRuntimeState {
             .await;
     }
 
+    /// The transport pump's abandoned-decision sweep, for tests that drive
+    /// another pump without the transport loop.
+    #[cfg(test)]
+    pub(crate) fn sweep_kernel_decisions_for_test(&self) {
+        self.owned.sweep_kernel_operation_interactions(false);
+    }
+
     pub(crate) fn waiting_room_change_sequence(&self) -> u64 {
         self.owned.runtime_projection_changes.sequence()
     }
@@ -326,6 +337,18 @@ impl KernelRuntimeState {
             .await;
     }
 
+    /// Resolves when an App starts that an agent's tool listing left out, so
+    /// the pump refreshes that agent's catalog at once.
+    pub(crate) async fn wait_for_started_app_refreshes(&self) {
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        {
+            let signal = self.app_control().started_app_refreshes_signal();
+            signal.notified().await;
+        }
+        #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+        std::future::pending::<()>().await;
+    }
+
     pub(crate) fn pty_output_change_sequence(&self) -> u64 {
         self.owned.pty_output_signal.sequence()
     }
@@ -362,6 +385,7 @@ impl KernelRuntimeState {
             self.next_structured_output_poll_due_at_ms(),
             self.owned.provider_output_deadlines.next_due_at_ms(),
             self.owned.provider_launch_failure_retries.next_due_at_ms(),
+            self.app_event_pump_due_at_ms(now_ms),
         ]
         .into_iter()
         .flatten()
@@ -378,11 +402,38 @@ impl KernelRuntimeState {
         )
     }
 
+    /// App event handoff with a backlog or wake runs at its own one-second
+    /// floor, not the five-second idle tick. Only where the pump runs, and not
+    /// while a stopped writer keeps it from running.
+    fn app_event_pump_due_at_ms(&self, now_ms: u64) -> Option<u64> {
+        if !cfg!(any(
+            target_os = "macos",
+            all(target_os = "linux", target_env = "gnu")
+        )) || self
+            .owned
+            .durable_state_store
+            .require_writer_healthy()
+            .is_err()
+        {
+            return None;
+        }
+        let due = self.app_control().event_pump().next_due()?;
+        // Round up: a tick that wakes a hair before the floor finds the pass
+        // not yet due and waits a whole minimum interval more.
+        let wait = due.saturating_duration_since(std::time::Instant::now());
+        let wait_ms = wait.as_micros().div_ceil(1000);
+        Some(now_ms.saturating_add(u64::try_from(wait_ms).unwrap_or(u64::MAX)))
+    }
+
     fn next_structured_output_poll_due_at_ms(&self) -> Option<u64> {
         self.owned.structured_output_records.next_poll_due_at_ms()
     }
 
     pub(crate) async fn shutdown_cleanup(&self) -> Result<(), DaemonError> {
+        let sessions = self.owned.session_store.read().list_sessions();
+        for session in sessions {
+            self.owned.withdraw_agent_interactions(session.id(), None)?;
+        }
         {
             let publishers = self.app_control().publishers().clone();
             let runtime = tokio::runtime::Handle::current();

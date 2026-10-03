@@ -13,6 +13,9 @@ use std::{
 };
 
 pub const MAX_REPLACE_BYTES: usize = 512 * 1024;
+/// Fixed capacity of each installation's private data volume (the Linux ext4
+/// image and the macOS APFS image); `StorageFull` means this quota is used up.
+pub const DATA_QUOTA_BYTES: u64 = 512 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum PrivateDataError {
@@ -22,6 +25,9 @@ pub enum PrivateDataError {
     Identity,
     #[error("app_file_io")]
     Io,
+    /// The filesystem refused the write for space (ENOSPC or EDQUOT).
+    #[error("app_file_storage_full")]
+    StorageFull,
     #[error("app_file_outcome_uncertain")]
     OutcomeUncertain,
 }
@@ -35,6 +41,39 @@ pub struct PrivateData {
     installation: String,
     generation: u64,
     release_digest: String,
+}
+
+impl PreparedWorker {
+    /// Run kernel storage recovery while the domain is pinned, before spawning
+    /// any App process. A callback must release all descriptor clones.
+    pub fn visit_private_data<T>(
+        self,
+        visit: impl FnOnce(&PrivateData) -> T,
+    ) -> std::result::Result<(Self, T), WorkerError> {
+        let directory = self.domain.private_data_directory()?;
+        let installation = self.record.installation.clone();
+        let generation = self
+            .record
+            .generation
+            .parse()
+            .map_err(|_| WorkerError::Identity)?;
+        let release_digest = self.record.release_digest.clone();
+        let preparation = Arc::new(Mutex::new(self));
+        let data = PrivateData {
+            root: Arc::new(Dir(directory)),
+            preparation: preparation.clone(),
+            installation,
+            generation,
+            release_digest,
+        };
+        let result = visit(&data);
+        drop(data);
+        let prepared = Arc::try_unwrap(preparation)
+            .map_err(|_| WorkerError::Preparation)?
+            .into_inner()
+            .map_err(|_| WorkerError::Preparation)?;
+        Ok((prepared, result))
+    }
 }
 
 impl WorkerProcess {
@@ -225,12 +264,15 @@ fn same_file(parent: &Dir, name: &OsStr, expected: &File) -> Result<bool> {
         && entry.st_dev as u64 == metadata.dev()
         && entry.st_ino as u64 == metadata.ino())
 }
-fn io(_: std::io::Error) -> PrivateDataError {
-    PrivateDataError::Io
+fn io(error: std::io::Error) -> PrivateDataError {
+    match error.raw_os_error() {
+        Some(libc::ENOSPC | libc::EDQUOT) => PrivateDataError::StorageFull,
+        _ => PrivateDataError::Io,
+    }
 }
 fn fs(error: private_fs::FsError) -> PrivateDataError {
     match error {
-        private_fs::FsError::Io(_) => PrivateDataError::Io,
+        private_fs::FsError::Io(error) => io(error),
         _ => PrivateDataError::Identity,
     }
 }

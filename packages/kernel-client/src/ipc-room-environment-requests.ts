@@ -11,6 +11,7 @@ export const roomEnvironmentResourceInventoryMinimumProtocolVersion = 330
 export const roomEnvironmentBrowserHistoryMinimumProtocolVersion = 305
 export const roomEnvironmentBrowserTabActionsMinimumProtocolVersion = 306
 export const roomEnvironmentTabAccessibilityMinimumProtocolVersion = 357
+export const roomBrowserBarMinimumProtocolVersion = 379
 
 export function getRoomEnvironmentStateRequest(sessionId: string) {
   return {
@@ -126,6 +127,16 @@ export function retryRoomEnvironmentRequest(sessionId: string) {
   return {
     RetryRoomEnvironment: {
       session_id: sessionId,
+    },
+  }
+}
+
+/** Shows or hides the Room browser bar (ordinary Tabs maximized instead of fullscreen). */
+export function setRoomBrowserBarRequest(sessionId: string, visible: boolean) {
+  return {
+    SetRoomBrowserBar: {
+      session_id: sessionId,
+      visible,
     },
   }
 }

@@ -1,14 +1,21 @@
 //! Retained owners for approved first installs and active-generation restarts.
 //! Data migrations and terminal approval projection remain separate duties.
+mod authority_check;
+mod disk_space;
 mod first_install;
 mod manual_stop;
+mod notifications;
 mod operations;
 mod owner;
 mod ownership;
 mod recovery;
+mod restore;
 mod start;
+#[cfg(target_os = "macos")]
+pub(crate) use start::macos_storage_root;
 #[cfg(test)]
 mod tests;
+mod uninstall;
 use crate::{
     durable_state::{
         app_installation_operations::{ApprovedFirstInstall, InstallOperationError, InstallPhase},
@@ -50,6 +57,10 @@ pub(crate) enum LifecycleError {
     Storage,
     #[error("app_lifecycle_preparation")]
     Preparation,
+    /// App storage would leave less than the host's reserve free. The App's
+    /// log says how much is free and how much to free (`disk_space`).
+    #[error("app_lifecycle_disk_space")]
+    DiskSpace(chariox_app_runtime::worker_process::HostDiskSpace),
     #[error("app_lifecycle_registration")]
     Registration,
     #[error("app_lifecycle_health")]
@@ -58,6 +69,10 @@ pub(crate) enum LifecycleError {
     CommitUnknown,
     #[error("app_lifecycle_startup")]
     Startup,
+    #[error("app_lifecycle_notification")]
+    Notification,
+    #[error("app_lifecycle_notification_not_dispatched")]
+    NotificationNotDispatched,
     #[error("app_lifecycle_worker_exit")]
     WorkerExit,
     #[error("app_lifecycle_supervisor")]
@@ -85,10 +100,15 @@ impl From<InstallOperationError> for LifecycleError {
 }
 #[derive(Clone)]
 enum StartKind {
-    Active { recovery: bool },
+    Active {
+        recovery: bool,
+    },
     /// A supervised install operation. `replace` is a local update: the
     /// installation's current worker is drained (not user-stopped) first.
-    First { request_id: String, replace: bool },
+    First {
+        request_id: String,
+        replace: bool,
+    },
 }
 type Result<T> = std::result::Result<T, LifecycleError>;
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,7 +138,17 @@ struct Inner {
     fixture: Mutex<Option<start::FixturePlatform>>,
     #[cfg(test)]
     claim_checkpoint: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    start_checkpoint: Mutex<Option<StartObserver>>,
 }
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StartCheckpoint {
+    BeforeClaim,
+    BeforePublication,
+}
+#[cfg(test)]
+type StartObserver = Arc<dyn Fn(StartCheckpoint) + Send + Sync>;
 struct Maintenance {
     running: bool,
     next: Instant,
@@ -133,15 +163,23 @@ struct Entry {
 }
 struct Control {
     first_request: Option<String>,
+    restore_data: Mutex<Option<chariox_app_runtime::worker_process::PrivateData>>,
     stop: AtomicBool,
+    /// The stop is a local update replacing this owner's generation.
+    update: AtomicBool,
     manual: AtomicBool,
     manual_committed: AtomicBool,
     done: Mutex<bool>,
     wake: Condvar,
     drain: Mutex<Option<crate::runtime::app_worker::AppWorkerDrain>>,
+    notification: Mutex<Option<notifications::Request>>,
+    idle: AtomicBool,
+    idle_requested: AtomicBool,
+    #[cfg(test)]
+    completion_checkpoint: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
-struct Operation<'a> {
-    inner: &'a Inner,
+pub(crate) struct Operation {
+    inner: Arc<Inner>,
     key: Key,
 }
 pub(crate) type EventConfig =
@@ -183,6 +221,8 @@ impl AppLifecycleService {
             fixture: Mutex::new(None),
             #[cfg(test)]
             claim_checkpoint: Mutex::new(None),
+            #[cfg(test)]
+            start_checkpoint: Mutex::new(None),
         }))
     }
 }

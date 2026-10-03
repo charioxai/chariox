@@ -83,6 +83,28 @@ impl Child {
             }
         }
     }
+    fn exit_failure(&mut self) -> Option<WorkerError> {
+        self.prepared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .domain
+            .exit_failure()
+    }
+    /// A hard limit the domain recorded, for a worker that ended between
+    /// checks. A kernel-enforced limit (a Linux cgroup OOM kill) makes the
+    /// exit look ordinary; only these two limits are named.
+    fn limit_failure(&mut self) -> Option<WorkerError> {
+        let result = self
+            .prepared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .domain
+            .check_running(self.pid, Instant::now());
+        match result {
+            Err(error @ (WorkerError::MemoryLimit | WorkerError::ThreadLimit)) => Some(error),
+            _ => None,
+        }
+    }
     fn exited(&self) -> io::Result<bool> {
         let mut info = MaybeUninit::<libc::siginfo_t>::zeroed();
         let result = unsafe {
@@ -201,6 +223,7 @@ pub(super) fn run(
     limits: WorkerLimits,
     deadline: Instant,
     started: SyncSender<Result<(), WorkerError>>,
+    ending: tokio::sync::watch::Sender<Option<Option<WorkerError>>>,
 ) -> WorkerExit {
     let mut logs = Logs {
         tails: Default::default(),
@@ -219,13 +242,20 @@ pub(super) fn run(
             // A worker exiting on its own closes its connection first, which
             // cancels it here: give it a moment to finish that exit.
             let grace = Instant::now() + EXIT_GRACE;
+            let mut exited = false;
             while running && Instant::now() < grace {
                 if matches!(child.exited(), Ok(true)) {
+                    exited = true;
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
-            break Some(WorkerError::Cancelled);
+            // A domain kill (Linux: at the memory limit) also closes the
+            // connection and so cancels the worker here: keep its cause.
+            break exited
+                .then(|| child.exit_failure())
+                .flatten()
+                .or(Some(WorkerError::Cancelled));
         }
         if !running && Instant::now() >= deadline {
             break Some(WorkerError::StartupTimeout);
@@ -239,7 +269,7 @@ pub(super) fn run(
         match child.exited() {
             Ok(true) => {
                 break if running {
-                    None
+                    child.exit_failure()
                 } else {
                     Some(WorkerError::EarlyExit)
                 }
@@ -364,6 +394,16 @@ pub(super) fn run(
     if !running {
         let _ = started.send(Err(failure.unwrap_or(WorkerError::EarlyExit)));
     }
+    // A running worker that ended on its own (or whose exit closed its
+    // connection first) may have been killed by a limit the OS enforces
+    // between checks; ask the domain before its reap.
+    let failure = match failure {
+        None | Some(WorkerError::Cancelled) if running => child.limit_failure().or(failure),
+        other => other,
+    };
+    // Before the kill closes the SDK channel, so a call that loses it can
+    // name this cause.
+    ending.send_replace(Some(failure));
     let status = child.reap();
     // One bounded final drain retains termination diagnostics without waiting
     // on a descendant that holds stdout open.

@@ -1330,6 +1330,7 @@ esac
     #[cfg(unix)]
     #[test]
     fn managed_inventory_uses_the_managed_provider_home() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let (root, target_home, _) =
             fake_target("managed-inventory-home", Some("github-secret-canary"));
@@ -1381,6 +1382,7 @@ esac
     #[cfg(unix)]
     #[test]
     fn github_materialization_cleans_up_when_git_helper_setup_fails() {
+        crate::test_support::isolated_env_test!();
         let (root, target_home, target) = fake_target("setup-git-failure", None);
         fs::write(target_home.join("setup-git-error"), "").expect("inject setup failure");
         materialize_git_credentials(
@@ -1401,6 +1403,7 @@ esac
     #[cfg(unix)]
     #[test]
     fn github_opt_out_never_invokes_credential_commands() {
+        crate::test_support::isolated_env_test!();
         let (root, target_home, target) = fake_target("opt-out", None);
         for executable in ["gh", "git"] {
             fs::write(
@@ -1430,6 +1433,7 @@ esac
     #[cfg(unix)]
     #[test]
     fn github_materialization_refuses_a_preexisting_unowned_token() {
+        crate::test_support::isolated_env_test!();
         let (root, target_home, target) = fake_target("preexisting", Some("github-secret-canary"));
         let materializations = vec![github_materialization("github-secret-canary")];
         let error = materialize_git_credentials(
@@ -1459,6 +1463,7 @@ esac
     #[cfg(unix)]
     #[test]
     fn github_materialization_recovers_an_installing_binding() {
+        crate::test_support::isolated_env_test!();
         let (root, target_home, target) = fake_target("installing", None);
         let materializations = vec![github_materialization("github-secret-canary")];
         let receipt =
@@ -1494,6 +1499,7 @@ esac
     #[cfg(unix)]
     #[test]
     fn github_materialization_preserves_ownership_when_post_login_probe_fails() {
+        crate::test_support::isolated_env_test!();
         let (root, target_home, target) = fake_target("post-login-probe", None);
         fs::write(target_home.join("fail-token-probe-after-login"), b"")
             .expect("arm post-login token probe failure");
@@ -1548,6 +1554,7 @@ esac
     #[cfg(unix)]
     #[test]
     fn github_materialization_recovers_partial_login_configuration() {
+        crate::test_support::isolated_env_test!();
         let (root, target_home, target) = fake_target("partial-login", None);
         let materializations = vec![github_materialization("github-secret-canary")];
         let receipt =
@@ -1592,6 +1599,7 @@ esac
     #[cfg(unix)]
     #[test]
     fn github_materialization_replay_does_not_replace_a_later_token() {
+        crate::test_support::isolated_env_test!();
         let (root, target_home, target) = fake_target("rotated", None);
         let materializations = vec![github_materialization("github-secret-canary")];
         let receipts = materialize_git_credentials(
@@ -1624,6 +1632,7 @@ esac
     #[cfg(unix)]
     #[test]
     fn github_rollback_preserves_binding_when_token_probe_fails() {
+        crate::test_support::isolated_env_test!();
         let (root, target_home, target) = fake_target("rollback-token-probe", None);
         let materializations = vec![github_materialization("github-secret-canary")];
         let receipts = materialize_git_credentials(
@@ -1661,6 +1670,7 @@ esac
     #[cfg(unix)]
     #[test]
     fn github_rollback_finishes_helper_cleanup_after_logout_crash() {
+        crate::test_support::isolated_env_test!();
         let (root, target_home, target) = fake_target("rollback-after-logout", None);
         let materializations = vec![github_materialization("github-secret-canary")];
         let receipts = materialize_git_credentials(
@@ -1684,6 +1694,7 @@ esac
     #[cfg(unix)]
     #[test]
     fn github_rollback_recovers_partial_logout_configuration() {
+        crate::test_support::isolated_env_test!();
         let (root, target_home, target) = fake_target("partial-logout", None);
         let materializations = vec![github_materialization("github-secret-canary")];
         let receipts = materialize_git_credentials(
@@ -1718,6 +1729,7 @@ esac
     #[cfg(unix)]
     #[test]
     fn github_rollback_keeps_binding_when_helper_cleanup_fails() {
+        crate::test_support::isolated_env_test!();
         let (root, target_home, target) = fake_target("rollback-helper-error", None);
         let materializations = vec![github_materialization("github-secret-canary")];
         let receipts = materialize_git_credentials(
@@ -1747,6 +1759,7 @@ esac
     #[cfg(unix)]
     #[test]
     fn command_timeout_covers_a_blocked_maximum_stdin_write() {
+        crate::test_support::isolated_env_test!();
         use std::os::unix::fs::PermissionsExt;
 
         let (root, _target_home, target) = fake_target("blocked-stdin", None);

@@ -8,7 +8,7 @@ import {
 } from "@chariox/kernel-client/external-provider-sessions"
 import type { WaitingRoomRemoteState, WaitingRoomRow, WaitingRoomState } from "./waiting-room-types.js"
 
-const TITLE_MIN_WIDTH = 24
+const TITLE_MIN_WIDTH = "Saved provider conversations".length
 const PROVIDER_MIN_WIDTH = "Provider".length
 const MODE_MIN_WIDTH = "Mode".length
 const MODIFIED_MIN_WIDTH = "0000-00-00 00:00 UTC".length
@@ -29,7 +29,7 @@ export function waitingRoomExternalProviderSessionRows(
   if (sessions.length === 0 && options.inventoryLoading) {
     return [{
       id: "external-provider-sessions-loading",
-      title: "Unattached agents",
+      title: "Saved provider conversations",
       value: options.loadingText,
       titleWidth: options.titleWidth,
       indent: 1,
@@ -51,7 +51,7 @@ export function waitingRoomExternalProviderSessionRows(
   )
   const rows: WaitingRoomRow[] = [{
     id: "external-provider-session-header",
-    title: "Unattached agent",
+    title: "Saved provider conversation",
     value: "",
     titleWidth: options.titleWidth,
     columns: [
@@ -84,7 +84,7 @@ export function waitingRoomExternalProviderSessionRows(
   if (externalProviderSessionPageHasMore(remote)) {
     rows.push({
       id: "external-provider-session-more",
-      title: "Load older unattached agents",
+      title: "Load older saved conversations",
       value: "",
       titleWidth: options.titleWidth,
       indent: 1,

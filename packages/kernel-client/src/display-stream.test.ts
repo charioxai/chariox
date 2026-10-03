@@ -7,6 +7,7 @@ import {
   encryptRelayPayload,
   type RelayKeypair,
 } from "./browser-relay-crypto.js"
+import { createRelayKeypair as createNativeRelayKeypair, RelayClientIdentity } from "./relay-crypto.js"
 import {
   openSelkiesDisplayStream,
   type DisplayKernelClient,
@@ -122,6 +123,79 @@ function textFragment(sequence: number, text: string) {
     data_base64: Buffer.from(text, "utf8").toString("base64"),
   }
 }
+
+test("remote display authorization and stream crypto reuse the paired CLI key", async () => {
+  const worker = await createRelayKeypair()
+  const cliKeypair = createNativeRelayKeypair()
+  const identity = new RelayClientIdentity(cliKeypair.privateKey)
+  let requestedViewerKey: string | null = null
+  const client: DisplayKernelClient = {
+    isRelayTransport: () => true,
+    getRelayClientIdentity: () => identity,
+    async send<TResponse>(request: unknown) {
+      const value = request as { GetSliceDisplayEndpoint?: { viewer_public_key?: string } }
+      requestedViewerKey = value.GetSliceDisplayEndpoint?.viewer_public_key ?? null
+      return {
+        SliceDisplayEndpoint: {
+          endpoint: {
+            slice_id: "slice-1",
+            kind: "selkies",
+            url: DISPLAY_URL,
+            access: "tunnel",
+            stream_protocol: "chariox-display-v1",
+            stream_id: "stream-1",
+            peer_public_key: worker.publicKeyBase64,
+          },
+        },
+      } as TResponse
+    },
+  }
+  const stream = await openSelkiesDisplayStream({
+    client,
+    sliceId: "slice-1",
+    sessionId: "room-1",
+    attachmentId: "attachment-1",
+    webSocket: controlledWebSocket,
+  })
+  const socket = ControlledWebSocket.latest
+  assert.ok(socket)
+  assert.equal(requestedViewerKey, identity.publicKeyBase64)
+  assert.equal(stream.viewerPublicKey, identity.publicKeyBase64)
+
+  await stream.sendControl("START_VIDEO")
+  const sent = JSON.parse(new TextDecoder().decode(socket.sent[0]!))
+  assert.equal(sent.sender_public_key, identity.publicKeyBase64)
+  const sentFragment = JSON.parse(await decryptRelayPayload(worker.privateKey, sent, identity.publicKeyBase64))
+  assert.equal(sentFragment.sender, "viewer")
+  assert.equal(Buffer.from(sentFragment.data_base64, "base64").toString("utf8"), "START_VIDEO")
+
+  socket.emit("message", await encryptedFragment(stream, worker, textFragment(0, "same key consumed")), true)
+  const received = await stream.receive({ timeoutMs: 1_000 })
+  assert.equal(new TextDecoder().decode(received.data), "same key consumed")
+  await stream.close()
+  assert.equal(socket.closeCount, 1)
+  cliKeypair.privateKey.fill(0)
+})
+
+test("remote display requires a paired CLI key before allocating an endpoint", async () => {
+  let sends = 0
+  const client: DisplayKernelClient = {
+    isRelayTransport: () => true,
+    async send<TResponse>() {
+      sends += 1
+      return {} as TResponse
+    },
+  }
+
+  await assert.rejects(openSelkiesDisplayStream({
+    client,
+    sliceId: "slice-1",
+    sessionId: "room-1",
+    attachmentId: "attachment-1",
+    webSocket: controlledWebSocket,
+  }), /paired key-bound relay identity/)
+  assert.equal(sends, 0)
+})
 
 function binaryFragment(sequence: number, bytes = Buffer.from([4, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10])) {
   return {

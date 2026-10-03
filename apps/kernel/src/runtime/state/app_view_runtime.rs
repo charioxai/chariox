@@ -4,13 +4,16 @@
 //! owner through the same catalog, validation and durable path as agent calls.
 use super::KernelRuntimeState;
 use crate::{
+    error::DaemonError,
     local::{AppRequestErrorCode, LocalDaemonRequest, LocalDaemonResponse},
     runtime::{
+        app_call_errors,
         app_operation_budget::AppOperationBudget,
-        app_views::AppViewBinding,
+        app_views::{AppViewBinding, ViewCall},
+        app_worker::AppWorkerError,
         browser_controller_app_view::{
-            BrowserAppViewAsset, BrowserAppViewCall, BrowserAppViewCalls, BrowserAppViewError,
-            BrowserAppViewOpened, BrowserAppViewRequest,
+            AppViewPage, BrowserAppViewAsset, BrowserAppViewCall, BrowserAppViewCalls,
+            BrowserAppViewError, BrowserAppViewOpened, BrowserAppViewRequest,
         },
         command::KernelCommand,
     },
@@ -24,10 +27,9 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::time::Duration;
 
-const POLL_INTERVAL: Duration = Duration::from_millis(250);
 const COMMAND_RETRY: Duration = Duration::from_millis(100);
-/// An Open waits for a running Room command (bounded by the controller's
-/// 15 s command timeout); an answer is retried a few times.
+/// An Open or a Reload waits for a running Room command (bounded by the
+/// controller's 15 s command timeout); an answer is retried a few times.
 const OPEN_WAIT: Duration = Duration::from_secs(16);
 const RESPOND_ATTEMPTS: u32 = 5;
 /// A view's first call re-projects the Room, waiting this long for a busy slice.
@@ -35,25 +37,58 @@ const REPROJECT_WINDOW: Duration = Duration::from_secs(5);
 /// Consecutive failed polls before the session's views are dropped (for
 /// example after the Room environment went away).
 const MAX_POLL_FAILURES: u32 = 20;
+/// The page's agent panel request; answered by the kernel, not the App.
+const PANEL_METHOD: &str = "chariox.panel";
 
 impl KernelRuntimeState {
     pub(crate) async fn execute_app_view_request(
         &self,
         command: &KernelCommand,
         request: &LocalDaemonRequest,
-    ) -> Option<LocalDaemonResponse> {
-        let LocalDaemonRequest::OpenAppView(request) = request else {
-            return None;
+    ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
+        let owner = match request {
+            LocalDaemonRequest::OpenAppView(_) | LocalDaemonRequest::SetAppViewPanel(_) => {
+                match crate::runtime::app_control::owner(command) {
+                    Ok(owner) => owner,
+                    Err(code) => return Some(Ok(crate::runtime::app_control::failed(code))),
+                }
+            }
+            _ => return None,
         };
-        let owner = match crate::runtime::app_control::owner(command) {
-            Ok(owner) => owner,
-            Err(code) => return Some(failed(code)),
-        };
-        Some(
-            self.open_app_view(owner, &request.session_id, &request.installation_id)
+        Some(match request {
+            LocalDaemonRequest::OpenAppView(request) => {
+                self.open_app_view(owner, &request.session_id, &request.installation_id)
+                    .await
+            }
+            LocalDaemonRequest::SetAppViewPanel(request) => Ok(self
+                .set_app_view_panel(request)
                 .await
-                .unwrap_or_else(failed),
-        )
+                .unwrap_or_else(crate::runtime::app_control::failed)),
+            _ => return None,
+        })
+    }
+
+    /// The user's panel choice for an App's open views: it wins over the App.
+    async fn set_app_view_panel(
+        &self,
+        request: &crate::local::SetAppViewPanelRequest,
+    ) -> Result<LocalDaemonResponse, AppRequestErrorCode> {
+        let views = self.app_control().views().clone();
+        let user = views
+            .set_user_panel(
+                &request.session_id,
+                &request.installation_id,
+                request.placement,
+                request.minimized,
+                request.reset,
+            )
+            .ok_or(AppRequestErrorCode::NotFound)?;
+        self.publish_app_tabs(&request.session_id, &views).await;
+        Ok(LocalDaemonResponse::AppViewPanelSet {
+            installation_id: request.installation_id.clone(),
+            placement: user.placement,
+            minimized: user.minimized,
+        })
     }
 
     async fn open_app_view(
@@ -61,34 +96,38 @@ impl KernelRuntimeState {
         owner: String,
         session_id: &str,
         installation: &str,
-    ) -> Result<LocalDaemonResponse, AppRequestErrorCode> {
+    ) -> Result<LocalDaemonResponse, DaemonError> {
         let store = self.owned.durable_state_store.clone();
         let (view_owner, view_installation) = (owner.clone(), installation.to_owned());
         let view = tokio::task::spawn_blocking(move || {
             store.app_view_assets(&view_owner, &view_installation)
         })
         .await
-        .map_err(|_| AppRequestErrorCode::StorageUnavailable)?
-        .map_err(|code| {
-            tracing::warn!(code, "App view assets unavailable");
-            match code {
-                "app_view_too_large" => AppRequestErrorCode::LimitExceeded,
-                _ => AppRequestErrorCode::NotFound,
-            }
-        })?;
+        .map_err(|_| open_error("App storage is unavailable. Try again shortly."))?
+        .map_err(|error| open_error(error.message()))?;
         let generation = view.generation;
+        let panel = crate::runtime::app_views::PanelRequest::from_manifest(view.panel.as_ref());
+        let views = self.app_control().views().clone();
+        // The page's first layout already leaves its panel free.
+        let page = self
+            .room_environment_snapshot(session_id)
+            .ok()
+            .map(|environment| {
+                let layout = views.opening_layout(session_id, installation, panel);
+                environment.viewport.app_layout(layout, None).0
+            });
         let (entry, assets) = view_assets(view);
         let request = BrowserAppViewRequest::Open {
             origin_label: origin_label(&owner, installation),
             installation_id: installation.to_owned(),
             entry,
             assets,
+            page: page.map(|(width, height)| AppViewPage { width, height }),
         };
-        let opened: BrowserAppViewOpened = self
-            .app_view_command(session_id, request)
-            .await
-            .ok_or(AppRequestErrorCode::Conflict)?;
-        let views = self.app_control().views().clone();
+        let opened: BrowserAppViewOpened = self.app_view_command(session_id, request).await?;
+        if let Some(page) = page {
+            views.sent_page(session_id, &opened.target_id, page);
+        }
         if views.register(
             session_id,
             &opened.target_id,
@@ -96,6 +135,7 @@ impl KernelRuntimeState {
                 owner: owner.clone(),
                 installation: installation.to_owned(),
                 generation,
+                panel,
             },
         ) {
             let state = self.clone();
@@ -115,13 +155,13 @@ impl KernelRuntimeState {
         .unwrap_or(false);
         if !active {
             views.forget_installation(&owner, installation);
-            return Err(AppRequestErrorCode::NotFound);
+            return Err(open_error("The App release became unavailable while opening its view. Use /app status <installation-id> to check it before retrying."));
         }
         // Project the new Tab into the Room so viewers and agents see it.
         let _ = self
             .reconcile_browser_controller_environment(session_id)
             .await;
-        let bound_agent_id = self.foreground_app(session_id, &owner, installation).await;
+        let bound_agent_id = self.foreground_app(session_id, &opened.target_id).await;
         Ok(LocalDaemonResponse::AppViewOpened {
             installation_id: installation.to_owned(),
             target_id: opened.target_id,
@@ -131,15 +171,16 @@ impl KernelRuntimeState {
     }
 
     /// A view command either runs or is final, with two exceptions. An Open
-    /// takes the slice's operation slot, so it waits while another Room
-    /// command holds it (that rejection means it never ran; an Open is not
-    /// idempotent). An answer is idempotent, so any failure is retried.
+    /// or a Reload takes the slice's operation slot, so it waits while another
+    /// Room command holds it (that rejection means it never ran; an Open is
+    /// not idempotent, and a Reload refused this way would unbind a working
+    /// view). An answer is idempotent, so any failure is retried.
     async fn app_view_command<T: serde::de::DeserializeOwned>(
         &self,
         session_id: &str,
         request: BrowserAppViewRequest,
-    ) -> Option<T> {
-        let open = matches!(request, BrowserAppViewRequest::Open { .. });
+    ) -> Result<T, DaemonError> {
+        let open = waits_for_slot(&request);
         let respond = matches!(request, BrowserAppViewRequest::Respond { .. });
         let deadline = tokio::time::Instant::now() + OPEN_WAIT;
         let mut attempt = 0;
@@ -156,8 +197,9 @@ impl KernelRuntimeState {
             {
                 Ok(Response::AppView {
                     result: Some(value),
-                }) => return serde_json::from_value(value).ok(),
-                Ok(_) => return None,
+                }) => return serde_json::from_value(value)
+                    .map_err(|_| open_error("The Room browser returned an invalid App view response. Restart the Room Environment and try again.")),
+                Ok(_) => return Err(open_error("This Room has no browser controller available. Bind an Environment with /room bind <slice> and start it with /room start, then retry /app open.")),
                 Err(error)
                     if (open
                         && tokio::time::Instant::now() < deadline
@@ -168,7 +210,7 @@ impl KernelRuntimeState {
                 }
                 Err(error) => {
                     tracing::debug!(%error, "App view controller command failed");
-                    return None;
+                    return Err(open_error(&error.to_string()));
                 }
             }
         }
@@ -177,27 +219,65 @@ impl KernelRuntimeState {
     async fn pump_app_view_calls(self, session_id: String) {
         let views = self.app_control().views().clone();
         let mut failures = 0;
+        let mut polls = super::app_view_poll::AppViewPoll::new();
         while views.keep_pumping(&session_id) {
-            tokio::time::sleep(POLL_INTERVAL).await;
-            let polled_up_to = views.registrations(&session_id);
-            let Some(batch) = self
-                .app_view_command::<BrowserAppViewCalls>(&session_id, BrowserAppViewRequest::Calls)
-                .await
-            else {
-                failures += 1;
-                if failures >= MAX_POLL_FAILURES {
+            polls.tick().await;
+            if !views.cold_start_views(&session_id).is_empty() {
+                let Some(slice) = self.owned.slice_store.environment_slice(&session_id) else {
                     views.forget_session(&session_id);
+                    continue;
+                };
+                if slice.status != crate::slice::SliceStatus::Running {
+                    // An explicit stop retains intent while the worker is down.
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
                 }
-                continue;
+                if let Some(binding) = views.next_cold_start_attempt(&session_id) {
+                    match self.restore_cold_app_view(&session_id, &binding).await {
+                        Ok(())
+                        | Err(ColdAppRestoreError::Failed(
+                            AppRequestErrorCode::NotFound | AppRequestErrorCode::LimitExceeded,
+                        )) => views.finish_cold_start_view(&session_id, &binding),
+                        Err(ColdAppRestoreError::Busy) => {}
+                        Err(ColdAppRestoreError::Failed(_)) => {
+                            views.fail_cold_start_view(&session_id, &binding);
+                        }
+                    }
+                }
+                // Poll registered targets after every attempt, even if another
+                // restore failed. Their bindings already carry call authority.
+            }
+            let polled_up_to = views.registrations(&session_id);
+            let polled = self
+                .app_view_command::<BrowserAppViewCalls>(&session_id, BrowserAppViewRequest::Calls)
+                .await;
+            let batch = match polled {
+                Ok(batch) => batch,
+                // Both end fast polling; only a genuine failure spends the budget.
+                Err(error) if crate::runtime::app_views::slice_busy(&error.to_string()) => {
+                    polls.failed();
+                    continue;
+                }
+                Err(_) => {
+                    failures += 1;
+                    if failures >= MAX_POLL_FAILURES {
+                        views.forget_session(&session_id);
+                    }
+                    polls.failed();
+                    continue;
+                }
             };
             failures = 0;
+            polls.observed_calls(!batch.calls.is_empty());
             if let Some(open) = &batch.open_targets {
                 views.retain_open(&session_id, open, polled_up_to);
                 views.set_open_tabs(&session_id, open.len());
             }
-            if let Some(panels) = &batch.panels {
-                self.publish_app_tabs(&session_id, &views, panels).await;
-            }
+            self.reload_updated_app_views(&session_id, &views);
+            // App Tabs are always marked; an older controller, which does not
+            // lay pages out beside a panel, gets no panel.
+            views.set_app_panels(&session_id, batch.app_panels);
+            self.publish_app_tabs(&session_id, &views).await;
             // A view's first call means its document loaded: project the
             // Room again so the Tab shows the App's title and URL, not the
             // blank page it had when it opened.
@@ -234,64 +314,228 @@ impl KernelRuntimeState {
                 });
             }
             for call in batch.calls {
+                let tracked =
+                    views.track_call(&session_id, &call.target_id, call.document_id.clone());
                 let state = self.clone();
                 let session = session_id.clone();
-                tokio::spawn(async move { state.answer_app_view_call(session, call).await });
+                tokio::spawn(
+                    async move { state.answer_app_view_call(session, call, tracked).await },
+                );
+            }
+            // A call whose Tab closed, reloaded or navigated away is
+            // cancelled: the worker gets `cancel` and its slot is freed.
+            let cancelled = views.cancel_gone_calls(
+                &session_id,
+                batch.open_targets.as_deref(),
+                batch.documents.as_ref(),
+            );
+            if cancelled > 0 {
+                tracing::debug!(
+                    cancelled,
+                    "App view calls cancelled: their document is gone"
+                );
             }
         }
     }
 
-    /// Marks the Room's App view Tabs and their reserved panels. A panel is in
-    /// desktop pixels (the App's window is fullscreen) and names the focus
-    /// agent whose conversation the trusted terminal draws there.
+    async fn restore_cold_app_view(
+        &self,
+        session: &str,
+        binding: &AppViewBinding,
+    ) -> Result<(), ColdAppRestoreError> {
+        // Acquire before reading assets: a Running slice can still be held by
+        // slice.start while its attached agents relaunch. Admission refusals
+        // are downtime, and spend neither restore nor polling failure budgets.
+        self.ensure_browser_controller_process_started(session)
+            .await
+            .map_err(cold_restore_error)?;
+        let store = self.owned.durable_state_store.clone();
+        let (owner, installation) = (binding.owner.clone(), binding.installation.clone());
+        let view =
+            tokio::task::spawn_blocking(move || store.app_view_assets(&owner, &installation))
+                .await
+                .map_err(|_| AppRequestErrorCode::StorageUnavailable)?
+                .map_err(|error| match error {
+                    crate::durable_state::app_view_assets::AppViewAssetsError::TooLarge => {
+                        AppRequestErrorCode::LimitExceeded
+                    }
+                    _ => AppRequestErrorCode::StorageUnavailable,
+                })?;
+        let generation = view.generation;
+        let panel = crate::runtime::app_views::PanelRequest::from_manifest(view.panel.as_ref());
+        let views = self.app_control().views().clone();
+        // Lay the page out beside its panel from the start, as a normal Open.
+        let page = self
+            .room_environment_snapshot(session)
+            .ok()
+            .map(|environment| {
+                let layout = views.opening_layout(session, &binding.installation, panel);
+                environment.viewport.app_layout(layout, None).0
+            });
+        let (entry, assets) = view_assets(view);
+        let opened: BrowserAppViewOpened = self
+            .app_view_command(
+                session,
+                BrowserAppViewRequest::Open {
+                    origin_label: origin_label(&binding.owner, &binding.installation),
+                    installation_id: binding.installation.clone(),
+                    entry,
+                    assets,
+                    page: page.map(|(width, height)| AppViewPage { width, height }),
+                },
+            )
+            .await
+            .map_err(cold_restore_error)?;
+        if let Some(page) = page {
+            views.sent_page(session, &opened.target_id, page);
+        }
+        views.register(
+            session,
+            &opened.target_id,
+            AppViewBinding {
+                generation,
+                panel,
+                ..binding.clone()
+            },
+        );
+        // Match normal Open's uninstall race gate: an install may disappear
+        // while the browser command is in flight, after its assets were read.
+        let store = self.owned.durable_state_store.clone();
+        let (owner, installation) = (binding.owner.clone(), binding.installation.clone());
+        if !tokio::task::spawn_blocking(move || {
+            store.active_app_release(&owner, &installation).is_ok()
+        })
+        .await
+        .unwrap_or(false)
+        {
+            views.forget_installation(&binding.owner, &binding.installation);
+            return Err(AppRequestErrorCode::NotFound.into());
+        }
+        let _ = self.reconcile_browser_controller_environment(session).await;
+        Ok(())
+    }
+
+    /// Marks the Room's App view Tabs. The Room draws each one's panel beside
+    /// the App page, showing the session's focus agent.
+    ///
+    /// Each page gets its CSS size beside its panel when that changed: a
+    /// placement request, the user's choice or a viewport change.
     async fn publish_app_tabs(
         &self,
         session_id: &str,
         views: &crate::runtime::app_views::AppViews,
-        panels: &[crate::runtime::browser_controller_app_view::BrowserAppViewPanel],
     ) {
-        let (agent_id, scale) = if panels.is_empty() {
-            (None, 1)
-        } else {
-            (
-                self.focused_agent_id(session_id).await.ok().flatten(),
-                self.room_environment_snapshot(session_id)
-                    .map_or(1, |environment| environment.viewport.device_scale_factor),
-            )
+        let app_panels = views.app_panels(session_id);
+        let Ok(pages) =
+            self.set_room_environment_app_tabs(session_id, views.layouts(session_id), app_panels)
+        else {
+            return;
         };
-        let apps = views
-            .installations(session_id)
-            .into_iter()
-            .map(|(target, installation_id)| {
-                let panel = panels
-                    .iter()
-                    .find(|panel| panel.target_id == target)
-                    .map(|panel| crate::session::EnvironmentAppPanel {
-                        x: panel.x.saturating_mul(scale),
-                        y: panel.y.saturating_mul(scale),
-                        width: panel.width.saturating_mul(scale),
-                        height: panel.height.saturating_mul(scale),
-                        agent_id: agent_id.clone(),
-                    });
-                let app = crate::session::EnvironmentTabApp {
-                    installation_id,
-                    panel,
-                };
-                (target, app)
-            })
-            .collect();
-        if views.publish(session_id, &apps) {
-            let _ = self.set_room_environment_app_tabs(session_id, &apps);
+        if !app_panels {
+            return;
+        }
+        for (target_id, (width, height)) in views.changed_pages(session_id, &pages) {
+            let request = BrowserAppViewRequest::Layout {
+                target_id: target_id.clone(),
+                page: AppViewPage { width, height },
+            };
+            if self
+                .app_view_command::<Value>(session_id, request)
+                .await
+                .is_err()
+            {
+                views.forget_page(session_id, &target_id);
+            }
         }
     }
 
-    async fn answer_app_view_call(self, session_id: String, call: BrowserAppViewCall) {
+    /// `chariox.panel` from an App page: where it wants its agent panel
+    /// (`{placement: "right" | "bottom" | "none", size?}`), or with no
+    /// placement just the current layout. The user's choice still wins.
+    async fn request_app_panel(
+        &self,
+        session_id: &str,
+        target_id: &str,
+        params: Value,
+    ) -> Result<Value, BrowserAppViewError> {
+        let invalid = || {
+            view_error(
+                "INVALID_PANEL",
+                "A panel request is {placement: \"right\" | \"bottom\" | \"none\", size?: 120..1200}",
+            )
+        };
+        let views = self.app_control().views().clone();
+        if let Some(placement) = params.get("placement") {
+            let placement = match placement.as_str() {
+                Some("right") => Some(crate::session::AppPanelPlacement::Right),
+                Some("bottom") => Some(crate::session::AppPanelPlacement::Bottom),
+                Some("none") => None,
+                _ => return Err(invalid()),
+            };
+            let size = match params.get("size") {
+                None | Some(Value::Null) => None,
+                Some(size) => match size.as_u64() {
+                    Some(size) if placement.is_some() && (120..=1200).contains(&size) => {
+                        Some(size as u32)
+                    }
+                    _ => return Err(invalid()),
+                },
+            };
+            let request = crate::runtime::app_views::PanelRequest { placement, size };
+            if !views.request_panel(session_id, target_id, request) {
+                return Err(view_error(
+                    "APP_VIEW_UNBOUND",
+                    "This view is not bound to an App",
+                ));
+            }
+            self.publish_app_tabs(session_id, &views).await;
+        }
+        let layout = views
+            .layouts(session_id)
+            .remove(target_id)
+            .map(|(_, layout)| layout)
+            .unwrap_or_default();
+        Ok(serde_json::json!({
+            "placement": match layout.placement {
+                Some(crate::session::AppPanelPlacement::Right) => "right",
+                Some(crate::session::AppPanelPlacement::Bottom) => "bottom",
+                None => "none",
+            },
+            "minimized": layout.minimized,
+        }))
+    }
+
+    async fn answer_app_view_call(
+        self,
+        session_id: String,
+        call: BrowserAppViewCall,
+        mut tracked: ViewCall,
+    ) {
+        if tracked.is_cancelled() {
+            return;
+        }
         let views = self.app_control().views().clone();
         let unbound = || view_error("APP_VIEW_UNBOUND", "This view is not bound to an App");
-        let outcome = match views.binding(&session_id, &call.target_id) {
-            Some(binding) if binding.installation == call.installation_id => {
+        let outcome = match views.binding_state(&session_id, &call.target_id) {
+            // Bound to the new generation, but still showing the old page.
+            Some((binding, true)) if binding.installation == call.installation_id => {
+                Err(view_reloading())
+            }
+            Some((binding, false))
+                if binding.installation == call.installation_id && call.method == PANEL_METHOD =>
+            {
+                self.request_app_panel(&session_id, &call.target_id, call.params)
+                    .await
+            }
+            Some((binding, false)) if binding.installation == call.installation_id => {
                 match self
-                    .invoke_app_view_tool(&session_id, &binding, &call.method, call.params)
+                    .invoke_app_view_tool(
+                        &session_id,
+                        &binding,
+                        &call.method,
+                        call.params,
+                        &mut tracked,
+                    )
                     .await
                 {
                     // Built for an older generation: reload it with the current one.
@@ -330,6 +574,10 @@ impl KernelRuntimeState {
             },
             Some(_) => Err(unbound()),
         };
+        // Nobody is left to answer; the controller would not deliver it.
+        if tracked.is_cancelled() {
+            return;
+        }
         let (result, error) = match outcome {
             Ok(value) => (Some(value), None),
             Err(error) => (None, Some(error)),
@@ -347,6 +595,35 @@ impl KernelRuntimeState {
                 },
             )
             .await;
+    }
+
+    /// An update that committed while a view is open reloads the view onto
+    /// the new generation now. Until then the controller keeps serving the old
+    /// generation's files, so reloading the page would show the old release
+    /// again; only a call from the page would find it stale.
+    fn reload_updated_app_views(
+        &self,
+        session_id: &str,
+        views: &crate::runtime::app_views::AppViews,
+    ) {
+        let control = self.app_control();
+        let outdated = views.take_outdated(session_id, |binding| {
+            control
+                .active_app_lease(&binding.owner, &binding.installation)
+                .map(|lease| lease.catalog().generation())
+        });
+        for (target, binding) in outdated {
+            let state = self.clone();
+            let session = session_id.to_owned();
+            let views = views.clone();
+            tokio::spawn(async move {
+                // Its outcome is for a call; the reload is the point here.
+                let _ = state
+                    .reconnect_app_view(&session, &target, &binding.owner, &binding.installation)
+                    .await;
+                views.finish_refresh(&session, &target);
+            });
+        }
     }
 
     /// Binds the Tab to the installation's current generation, then reloads it
@@ -372,17 +649,21 @@ impl KernelRuntimeState {
             views.unbind(session_id, target_id);
             return Err(unbound());
         };
-        views.register(
+        // A view's concurrent calls each land here; one reload is enough.
+        if !views.claim_reconnect(
             session_id,
             target_id,
             AppViewBinding {
                 owner: owner.to_owned(),
                 installation: installation.to_owned(),
                 generation: view.generation,
+                panel: crate::runtime::app_views::PanelRequest::from_manifest(view.panel.as_ref()),
             },
-        );
+        ) {
+            return Err(view_reloading());
+        }
         let (entry, assets) = view_assets(view);
-        let reloaded: Option<Value> = self
+        let reloaded: Result<Value, DaemonError> = self
             .app_view_command(
                 session_id,
                 BrowserAppViewRequest::Reload {
@@ -392,14 +673,14 @@ impl KernelRuntimeState {
                 },
             )
             .await;
-        if reloaded.is_none() {
+        if reloaded.is_err() {
+            // Unbound before the mark goes, so no call runs in between.
             views.unbind(session_id, target_id);
+            views.finish_reconnect(session_id, target_id);
             return Err(unbound());
         }
-        Err(view_error(
-            "APP_VIEW_RELOADING",
-            "The App changed; its view is reloading",
-        ))
+        views.finish_reconnect(session_id, target_id);
+        Err(view_reloading())
     }
 
     /// The session's host, who owns the Room's reconnected views.
@@ -429,26 +710,50 @@ impl KernelRuntimeState {
         binding: &AppViewBinding,
         tool: &str,
         input: Value,
+        tracked: &mut ViewCall,
     ) -> Result<Value, BrowserAppViewError> {
         let unavailable = || view_error("APP_UNAVAILABLE", "The App is not running");
-        let lease = self
+        let lease = match self
             .app_lease_on_demand(&binding.owner, &binding.installation)
             .await
-            .map_err(|_| unavailable())?;
+        {
+            Ok(lease) => lease,
+            Err(_)
+                if self
+                    .app_updating(&binding.owner, &binding.installation)
+                    .await =>
+            {
+                return Err(coded(app_call_errors::updating()));
+            }
+            Err(_) => return Err(unavailable()),
+        };
         if lease.catalog().generation() != binding.generation {
             return Err(view_error(
                 "APP_VIEW_STALE",
                 "The App was updated; reopen its view",
             ));
         }
-        let tool = view_tool(lease.catalog().app_catalog(), tool)
-            .ok_or_else(|| view_error("UNKNOWN_TOOL", "The App declares no such tool"))?;
+        if matches!(tool, "host.clipboard_write" | "host.open_link") {
+            return crate::runtime::app_host_broker::AppHostBroker::new(
+                self.owned.durable_state_store.clone(),
+                binding.owner.clone(),
+                lease.catalog().clone(),
+                self.app_control().admission(),
+            )
+            .request(tool, input)
+            .await
+            .map_err(|error| view_error(&error.code, &error.message));
+        }
+        let tool = view_call_tool(lease.catalog(), binding.generation, tool)?;
         let slot = lease
             .reserve_call(Duration::from_secs(30))
-            .map_err(|error| view_error("APP_BUSY", &error.to_string()))?;
+            .map_err(view_call_error)?;
         slot.validate_input(&tool, &input)
-            .map_err(|error| view_error("INVALID_INPUT", &error.to_string()))?;
-        let permit = self.app_control().try_admit().map_err(|_| unavailable())?;
+            .map_err(|error| coded(app_call_errors::input_error(&error)))?;
+        let permit = self
+            .app_control()
+            .try_admit()
+            .map_err(|_| coded(app_call_errors::admission_busy()))?;
         let store = self.owned.durable_state_store.clone();
         let caller = view_caller(binding, session_id);
         let tool_name = tool;
@@ -458,12 +763,20 @@ impl KernelRuntimeState {
         })
         .await
         .map_err(|_| unavailable())?
-        .map_err(|error| view_error("APP_ERROR", &error.to_string()))?;
-        let reply = response
-            .receive()
+        .map_err(|error| coded(app_call_errors::enqueue_error(&error)))?;
+        // Dropping the pending reply makes the worker peer send `cancel`.
+        let reply = tokio::select! {
+            reply = response.receive() => reply
+                .map_err(|error| coded(app_call_errors::worker_call_error(&error)))?,
+            () = tracked.cancelled() => {
+                return Err(view_error("CANCELLED", "The calling view went away"));
+            }
+        };
+        let permit = self
+            .app_control()
+            .admit_reply(reply.remaining(crate::session::unix_epoch_ms()))
             .await
-            .map_err(|error| view_error("APP_ERROR", &error.to_string()))?;
-        let permit = self.app_control().try_admit().map_err(|_| unavailable())?;
+            .map_err(|_| coded(app_call_errors::reply_unrecorded()))?;
         let store = self.owned.durable_state_store.clone();
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
@@ -476,14 +789,10 @@ impl KernelRuntimeState {
 }
 
 /// The App's own error (e.g. CONFLICT from a stale edit) reaches its view;
-/// kernel-side failures keep a generic code.
+/// see `app_call_errors` for the kernel's codes.
 fn app_error(error: crate::durable_state::app_tools::AppToolsError) -> BrowserAppViewError {
-    match error {
-        crate::durable_state::app_tools::AppToolsError::Catalog(
-            chariox_app_runtime::app_catalog::CatalogError::Worker(remote),
-        ) => view_error(&remote.code, &remote.message),
-        error => view_error("APP_ERROR", &error.to_string()),
-    }
+    let (code, message) = crate::runtime::app_call_errors::tool_call_error(&error);
+    view_error(&code, &message)
 }
 
 /// A view call runs as the view's owner, whoever drives the Tab: the view is
@@ -511,10 +820,40 @@ fn hex_prefix(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+fn coded((code, message): (String, String)) -> BrowserAppViewError {
+    view_error(&code, &message)
+}
+
 fn view_error(code: &str, message: &str) -> BrowserAppViewError {
     BrowserAppViewError {
         code: code.to_owned(),
         message: message.to_owned(),
+    }
+}
+
+/// The tool a view's call runs. A view built for an older generation is stale
+/// before its tool is looked up: a tool the update removed or changed (an API
+/// mismatch) reloads the view instead of running on the new release.
+fn view_call_tool(
+    catalog: &chariox_app_runtime::app_outbox::EventCatalog,
+    view_generation: u64,
+    local: &str,
+) -> Result<String, BrowserAppViewError> {
+    if catalog.generation() != view_generation {
+        return Err(view_error(
+            "APP_VIEW_STALE",
+            "The App was updated; reopen its view",
+        ));
+    }
+    view_tool(catalog.app_catalog(), local)
+        .ok_or_else(|| view_error("UNKNOWN_TOOL", "The App declares no such tool"))
+}
+
+fn view_call_error(error: AppWorkerError) -> BrowserAppViewError {
+    match error {
+        AppWorkerError::Busy => view_error("APP_BUSY", "app_worker_busy; retry after 500 ms"),
+        AppWorkerError::Unavailable => view_error("APP_UNAVAILABLE", "The App is not running"),
+        error => view_error("APP_ERROR", &error.to_string()),
     }
 }
 
@@ -534,8 +873,26 @@ fn budget() -> AppOperationBudget {
     AppOperationBudget::from_supervisor(|| false)
 }
 
-fn failed(code: AppRequestErrorCode) -> LocalDaemonResponse {
-    crate::runtime::app_control::failed(code)
+fn open_error(message: &str) -> DaemonError {
+    DaemonError::AppViewUnavailable {
+        message: message.to_owned(),
+    }
+}
+
+fn view_reloading() -> BrowserAppViewError {
+    view_error(
+        "APP_VIEW_RELOADING",
+        "The App changed; its view is reloading",
+    )
+}
+
+/// Commands that take the slice's operation slot and, refused because another
+/// Room command held it, never ran: they wait for the slot.
+fn waits_for_slot(request: &BrowserAppViewRequest) -> bool {
+    matches!(
+        request,
+        BrowserAppViewRequest::Open { .. } | BrowserAppViewRequest::Reload { .. }
+    )
 }
 
 #[cfg(test)]
@@ -543,11 +900,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn app_open_errors_use_the_existing_nonretryable_request_error_envelope() {
+        let error = open_error("This Room has no browser controller available.");
+        let projected = crate::transport::kernel_protocol::map_kernel_error(&error);
+        assert_eq!(projected.code, "kernel_request_failed");
+        assert!(
+            !projected.retryable,
+            "rejected opens must not be replayed as transport failures"
+        );
+        assert!(projected
+            .message
+            .contains("no browser controller available"));
+    }
+
+    #[test]
+    fn only_busy_view_admission_asks_the_page_to_retry() {
+        let busy = view_call_error(AppWorkerError::Busy);
+        assert_eq!(busy.code, "APP_BUSY");
+        assert_eq!(busy.message, "app_worker_busy; retry after 500 ms");
+        let stopped = view_call_error(AppWorkerError::Unavailable);
+        assert_eq!(stopped.code, "APP_UNAVAILABLE");
+        assert_eq!(stopped.message, "The App is not running");
+        for error in [
+            AppWorkerError::Identity,
+            AppWorkerError::Deadline,
+            AppWorkerError::Invalid,
+        ] {
+            let failed = view_call_error(error);
+            assert_eq!(failed.code, "APP_ERROR");
+            assert!(!failed.message.contains("retry"));
+        }
+    }
+
+    #[test]
     fn view_calls_run_as_the_views_owner_in_its_room() {
         let binding = AppViewBinding {
             owner: "alice".into(),
             installation: "todo".into(),
             generation: 1,
+            panel: Default::default(),
         };
         let caller = view_caller(&binding, "session-1");
         assert!(matches!(&caller.actor, Actor::Human(owner) if owner == "alice"));
@@ -573,6 +964,56 @@ mod tests {
         assert_eq!(view_tool(catalog, &namespaced), None);
         drop(store);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_view_of_an_older_generation_is_stale_before_its_tool_is_looked_up() {
+        let root =
+            std::env::temp_dir().join(format!("chariox-view-stale-{:016x}", rand::random::<u64>()));
+        std::fs::create_dir(&root).unwrap();
+        let store =
+            crate::durable_state::DurableKernelStateStore::open_owned(root.join("kernel.sqlite"))
+                .unwrap();
+        let catalog = crate::durable_state::app_state::fixture_tool_catalog(&store);
+        let current = catalog.generation();
+        assert!(view_call_tool(&catalog, current, "echo").is_ok());
+        assert_eq!(
+            view_call_tool(&catalog, current, "missing")
+                .unwrap_err()
+                .code,
+            "UNKNOWN_TOOL"
+        );
+        // A view built for another generation, calling a tool this release
+        // lacks or has, never runs it here: it is stale and gets reloaded.
+        for tool in ["echo", "missing"] {
+            assert_eq!(
+                view_call_tool(&catalog, current + 1, tool)
+                    .unwrap_err()
+                    .code,
+                "APP_VIEW_STALE"
+            );
+        }
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_open_or_a_reload_waits_for_a_busy_slice() {
+        let reload = BrowserAppViewRequest::Reload {
+            target_id: "t1".into(),
+            entry: "index.html".into(),
+            assets: Vec::new(),
+        };
+        let open = BrowserAppViewRequest::Open {
+            origin_label: "a".into(),
+            installation_id: "app".into(),
+            entry: "index.html".into(),
+            assets: Vec::new(),
+            page: None,
+        };
+        assert!(waits_for_slot(&reload));
+        assert!(waits_for_slot(&open));
+        assert!(!waits_for_slot(&BrowserAppViewRequest::Calls));
     }
 
     #[test]
@@ -604,3 +1045,27 @@ fn view_assets(
         .collect();
     (view.entry, assets)
 }
+
+// Private recovery outcomes; no serialized App or transport contract changes.
+enum ColdAppRestoreError {
+    Busy,
+    Failed(AppRequestErrorCode),
+}
+
+impl From<AppRequestErrorCode> for ColdAppRestoreError {
+    fn from(code: AppRequestErrorCode) -> Self {
+        Self::Failed(code)
+    }
+}
+
+fn cold_restore_error(error: DaemonError) -> ColdAppRestoreError {
+    if crate::runtime::app_views::slice_busy(&error.to_string()) {
+        ColdAppRestoreError::Busy
+    } else {
+        ColdAppRestoreError::Failed(AppRequestErrorCode::Conflict)
+    }
+}
+
+#[cfg(test)]
+#[path = "app_view_cold_start_tests.rs"]
+mod cold_start_tests;

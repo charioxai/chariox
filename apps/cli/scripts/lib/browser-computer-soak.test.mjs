@@ -421,7 +421,7 @@ test("preflight and smoke receipts must be fresh and match clean source, image, 
 
 test("image provenance comes from matching engine digest plus verified signature and attestation", async () => {
   const digest = "sha256:" + "c".repeat(64)
-  const sourceRevision = "a".repeat(40)
+  const sourceRevision = "a".repeat(64)
   const calls = []
   const image = await resolveVerifiedImage({
     imageRef: "registry.example/chariox/slice:final",
@@ -506,6 +506,21 @@ test("the exercised container must be the exact verified image", async () => {
   assert.throws(() => assertCurrentContainerIdentity("abcdef1234567890", "999999999999"), /not the container executing/)
 })
 
+test("runtime-content labels bind to the computed source digest and reject a mismatch", async () => {
+  const image = { ...verifiedImage("c"), sourceRevision: "1".repeat(64) }
+  const source = { commit: "a".repeat(40), runtimeSourceRevision: image.sourceRevision }
+  const containerId = "b".repeat(64)
+  const exec = async () => ({ stdout: JSON.stringify({
+    Id: containerId, Image: image.engineImageId,
+    Config: { Image: image.identity, Labels: { "io.chariox.runtime-source-revision": image.sourceRevision } },
+    State: { Running: true },
+  }) })
+  const runtime = await inspectDigestBoundRuntime({ containerId, image, source }, { exec })
+  assert.equal(runtime.sourceRevision, source.runtimeSourceRevision)
+  await assert.rejects(inspectDigestBoundRuntime({ containerId, image, source: { ...source, runtimeSourceRevision: "2".repeat(64) } }, { exec }), /verified image source revision/)
+  await assert.rejects(inspectDigestBoundRuntime({ containerId, image, source: { commit: source.commit } }, { exec }), /verified image source revision/)
+})
+
 test("runtime commands and assets come only from the signed image filesystem", () => {
   const layout = verifiedRuntimeLayout()
   assert.deepEqual(layout, {
@@ -538,6 +553,7 @@ test("child environment is allowlisted and every evidence surface redacts secret
     DOCKER_HOST: "unix:///run/user/1000/docker.sock",
     CONTAINER_HOST: "unix:///run/user/1000/podman.sock",
     XDG_RUNTIME_DIR: "/run/user/1000",
+    CHARIOX_SOAK_SUPERVISOR_IDENTITY: '{"pid":1,"startedAtTicks":"100"}',
     GITHUB_TOKEN: "must-not-leak",
   }, {
     imageRef: "registry.example/chariox/slice:final",
@@ -547,6 +563,7 @@ test("child environment is allowlisted and every evidence surface redacts secret
   assert.equal(detached.DOCKER_HOST, "unix:///run/user/1000/docker.sock")
   assert.equal(detached.CONTAINER_HOST, "unix:///run/user/1000/podman.sock")
   assert.equal(detached.XDG_RUNTIME_DIR, "/run/user/1000")
+  assert.equal(detached.CHARIOX_SOAK_SUPERVISOR_IDENTITY, '{"pid":1,"startedAtTicks":"100"}')
   assert.equal(detached.GITHUB_TOKEN, undefined)
   const retained = redactEvidence({
     stdout: `token=${secret}`,
@@ -757,7 +774,7 @@ test("all helper subprocesses receive only the shared allowlisted environment", 
   assert.deepEqual(hostCalls[0].options.env, { PATH: "/usr/bin", LANG: "C.UTF-8" })
 
   const gitCalls = []
-  const replies = ["a".repeat(40), "b".repeat(40), "codex/test", ""]
+  const replies = ["a".repeat(40), "b".repeat(40), "codex/test", "", "d".repeat(64)]
   const identity = await captureSourceIdentity("/repo", {
     baseEnvironment: { PATH: "/usr/bin", LANG: "C.UTF-8", GITHUB_TOKEN: "leak" },
     exec: async (command, args, options) => {
@@ -765,9 +782,9 @@ test("all helper subprocesses receive only the shared allowlisted environment", 
       return { stdout: replies[gitCalls.length - 1] }
     },
   })
-  assert.deepEqual(identity, { commit: "a".repeat(40), tree: "b".repeat(40), branch: "codex/test", dirty: false })
-  assert.equal(gitCalls.length, 4)
-  assert.equal(gitCalls.every((call) => call.command === "git" && call.options.env.GITHUB_TOKEN === undefined), true)
+  assert.deepEqual(identity, { commit: "a".repeat(40), tree: "b".repeat(40), branch: "codex/test", dirty: false, runtimeSourceRevision: "d".repeat(64) })
+  assert.equal(gitCalls.length, 5)
+  assert.equal(gitCalls.every((call) => call.options.env.GITHUB_TOKEN === undefined), true)
 })
 
 test("post-spawn evidence or log-close failure rolls back the exact detached child", async () => {

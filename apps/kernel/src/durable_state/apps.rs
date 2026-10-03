@@ -217,6 +217,28 @@ impl DurableKernelStateStore {
         owned_installation(&registry, owner_id, installation_id)?;
         Ok(registry.journal(installation_id)?)
     }
+
+    /// Whether an approved update of the installation is under way: from the
+    /// owner's approval until it commits or aborts, the old generation drains
+    /// and the new one starts, so calls meet no running worker.
+    pub(crate) fn app_update_underway(
+        &self,
+        owner_id: &str,
+        installation_id: &str,
+    ) -> Result<bool, AppRegistryError> {
+        validate_owner(owner_id)?;
+        let mut connection = self.lock_connection("durable_state.read_app_update")?;
+        let registry = InstallationRegistry::new(&mut connection);
+        let Some(pending) =
+            owned_installation(&registry, owner_id, installation_id)?.pending_generation
+        else {
+            return Ok(false);
+        };
+        Ok(registry.journal(installation_id)?.iter().any(|record| {
+            record.token.generation == pending
+                && matches!(record.decision, CapabilityDecision::Approved { .. })
+        }))
+    }
 }
 
 pub(super) fn initialize(connection: &mut Connection) -> Result<(), DaemonError> {
@@ -346,8 +368,8 @@ fn validate_owner(owner_id: &str) -> Result<(), InstallationError> {
 }
 
 /// What an active release allowed ends with it: connection grants,
-/// automations and inbox routes. Runs after an uninstall and again when a
-/// reinstall stages, so a reinstall inherits none of them. Only an uninstalled
+/// file picks and grants, automations and inbox routes. Runs after an uninstall
+/// and again when a reinstall stages, so a reinstall inherits none of them. Only an uninstalled
 /// installation (inactive, keeping the release its data belongs to) is touched.
 pub(crate) fn forget_uninstalled(
     connection: &Connection,
@@ -365,6 +387,11 @@ pub(crate) fn forget_uninstalled(
     if uninstalled != Some(true) {
         return Ok(());
     }
+    super::app_file_grants::forget_inactive(connection, owner_id, installation_id)?;
+    connection.execute(
+        "DELETE FROM app_restore_receipts WHERE owner_id=?1 AND installation_id=?2",
+        rusqlite::params![owner_id, installation_id],
+    )?;
     super::app_connections::forget_inactive(connection, owner_id, installation_id)?;
     chariox_app_runtime::app_outbox::AppOutbox::disable_all_in(
         connection,
@@ -378,7 +405,7 @@ pub(crate) fn forget_uninstalled(
 /// release it kept: structured state, wakes, logs, and the file contents it was
 /// handed or offered. Its private storage (where a platform has one) is
 /// deleted by the supervisor first.
-const DATA_TABLES: [&str; 9] = [
+const DATA_TABLES: [&str; 10] = [
     "app_state_values",
     "app_state_heads",
     "app_state_snapshot_values",
@@ -388,6 +415,7 @@ const DATA_TABLES: [&str; 9] = [
     "app_file_grants",
     "app_file_picks",
     "app_file_exports",
+    "app_restore_receipts",
 ];
 
 fn forget_data(

@@ -197,10 +197,11 @@ Inside the CLI:
   - `/agent spawn [alias] [model] --machine <machine-ref> --dir <remote-directory>`
   - `/agent spawn <number_of_agents>`
   - `/agent delete [name-or-alias]`
-  - `/agent focus <id>`
+  - `/agent focus <name-or-alias>` moves the session's focus agent, for every client and the App panel
   - `/agent list`
   - `/agent cycle`
   - `Tab` cycles focus to the next session agent
+  - with no focus agent (every visible agent deleted), the prompt area says so and keeps a prompt until `/agent focus`, `/agent spawn` or an `@alias` names one
 - `/agent spawn --dir` sets the provider working directory at spawn time. Without `--machine`, the directory is resolved on the local/home machine. With `--machine`, the directory is interpreted on the worker machine and is required; Chariox does not currently change an existing agent's directory after spawn.
 - `/view <split|individual>` switches between the focused transcript view and the current split-pane response layout
 - deleting the currently attached session keeps the CLI process alive, clears the transcript/session chrome, renders a Chariox ASCII-art no-session landing state, returns the user to an unattached shell, and removes that session from future attach/list resolution

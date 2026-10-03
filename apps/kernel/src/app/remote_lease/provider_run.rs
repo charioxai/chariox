@@ -11,7 +11,44 @@ pub(crate) enum LeasedProviderRunMatch {
     LaunchRequired(LaunchProviderRequest),
 }
 
+fn native_runtime_catalog_refresh_pending_error() -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "remote runtime tool catalog reload",
+        message: "native_runtime_catalog_refresh_pending: the native provider must fetch the updated catalog before this prompt is admitted".into(),
+    }
+}
+
 impl<'a> RemoteLeaseRuntime<'a> {
+    /// Rejects a prompt before admission while the leased agent's native
+    /// provider run has not loaded `remote_extension_manifest`, the same
+    /// retryable rejection the provider-run match returns.
+    pub(crate) fn ensure_leased_native_runtime_catalog_loaded(
+        &self,
+        leased_agent_id: &str,
+        remote_extension_manifest: &crate::extension::RemoteExtensionManifest,
+    ) -> Result<(), DaemonError> {
+        let leased_agent = self.app.leased_agents.get(leased_agent_id).ok_or_else(|| {
+            DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            }
+        })?;
+        let refresh_pending = self
+            .app
+            .providers
+            .get_run_for_agent(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )
+            .is_some_and(|run| {
+                !run.client_interface().is_chariox()
+                    && !run.remote_extension_catalog_matches_launch(remote_extension_manifest)
+            });
+        if refresh_pending {
+            return Err(native_runtime_catalog_refresh_pending_error());
+        }
+        Ok(())
+    }
+
     pub(super) fn ensure_home_proxy_manifest_has_no_worker_collisions(
         &self,
         leased_agent: &LeasedAgent,
@@ -138,10 +175,31 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 && run.variant() == leased_agent.effort.as_deref()
         });
         if let Some(run) = existing.as_ref() {
+            // MP-08 / MP-10 / MP-11: Worker reuse resolves its own current values.
+            let session = self
+                .app
+                .sessions
+                .get_session(&leased_agent.backing_session_id)?;
+            let agent = self.app.agents.get_agent(&leased_agent.backing_agent_id)?;
+            let selection = crate::project_environment::attach_project_provider_environment(
+                self.app.config(),
+                &session,
+                Some(&agent),
+                LaunchProviderRequest::new(
+                    session.id(),
+                    &leased_agent.provider,
+                    &leased_agent.provider,
+                    &leased_agent.account_profile,
+                    leased_agent.model.as_deref().unwrap_or("default"),
+                )
+                .with_working_directory(std::path::PathBuf::from(session.worktree_id())),
+            )?;
+            let environment_matches = run.project_environment_revision()
+                == selection.project_environment_revision.as_deref();
             let mcp_matches = provider_run_mcp_set_matches(run, required_mcps)?;
             let catalog_matches =
                 run.remote_extension_catalog_matches_launch(remote_extension_manifest);
-            if existing_profile_matches && mcp_matches && catalog_matches {
+            if existing_profile_matches && environment_matches && mcp_matches && catalog_matches {
                 if run.remote_extension_manifest() != remote_extension_manifest {
                     let updated = self.app.providers.update_run_remote_extension_manifest(
                         run.id(),
@@ -175,10 +233,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 // The attached native terminal keeps this run identity. The
                 // existing metadata sync queues an in-place provider refresh;
                 // do not replace it with a managed run while refresh is pending.
-                return Err(DaemonError::LocalTransport {
-                    operation: "remote runtime tool catalog reload",
-                    message: "native_runtime_catalog_refresh_pending: the native provider must fetch the updated catalog before this prompt is admitted".into(),
-                });
+                return Err(native_runtime_catalog_refresh_pending_error());
             }
             if active && !mcp_matches {
                 return Err(DaemonError::LocalTransport {
@@ -209,6 +264,15 @@ impl<'a> RemoteLeaseRuntime<'a> {
             // change halfway through an active provider turn.
             if active {
                 return Ok(LeasedProviderRunMatch::Ready(run.id().to_string()));
+            }
+            if !environment_matches
+                && run.client_interface() == crate::provider::ProviderClientInterface::NativeTui
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "refresh native TUI Project environment",
+                    message: "restart the native provider TUI to load changed Project inputs"
+                        .into(),
+                });
             }
             let run_id = run.id().to_string();
             let _ = crate::app::provider_runtime::ProviderProcessTracker::new(self.app)

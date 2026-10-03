@@ -1,13 +1,8 @@
 /* Test-only health/startup behavior on the actual inherited SDK channel. */
 static int fixture_health_mode(const char* mode) {
-  return !strcmp(mode, "sdk_health") || !strcmp(mode, "sdk_bad_health") || !strcmp(mode, "sdk_migrate");
+  return !strncmp(mode, "sdk_lifecycle", 13) || !strcmp(mode, "sdk_health") || !strcmp(mode, "sdk_bad_health") || !strcmp(mode, "sdk_migrate");
 }
-static int fixture_health_parse(char response[8193], const char* event, char id[129]) {
-  if (strncmp(response, "{\"kind\":\"request\",", 18) ||
-      !strstr(response, "\"method\":\"lifecycle.dispatch\"")) return -1;
-  char expected[128];
-  const int count=snprintf(expected,sizeof(expected),"\"event\":\"%s\"",event);
-  if (count<0 || (size_t)count>=sizeof(expected) || !strstr(response,expected)) return -1;
+static int fixture_request_id(char response[8193], char id[129]) {
   const char* begin=strstr(response,"\"id\":\"");
   if (!begin) return -1;
   begin+=6;
@@ -19,6 +14,14 @@ static int fixture_health_parse(char response[8193], const char* event, char id[
   }
   memcpy(id,begin,(size_t)(end-begin));id[end-begin]=0;
   return 1;
+}
+static int fixture_health_parse(char response[8193], const char* event, char id[129]) {
+  if (strncmp(response, "{\"kind\":\"request\",", 18) ||
+      !strstr(response, "\"method\":\"lifecycle.dispatch\"")) return -1;
+  char expected[128];
+  const int count=snprintf(expected,sizeof(expected),"\"event\":\"%s\"",event);
+  if (count<0 || (size_t)count>=sizeof(expected) || !strstr(response,expected)) return -1;
+  return fixture_request_id(response,id);
 }
 static int fixture_health_id(char response[8193], const char* event, char id[129]) {
   if (fixture_sdk_receive(response,cx_monotonic_ms()+(!strcmp(event,"shutdown") ? 30000 : 5000))!=1) return -1;

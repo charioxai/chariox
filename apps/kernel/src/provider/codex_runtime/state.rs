@@ -36,16 +36,15 @@ pub struct CodexRuntimeState {
     endpoint: String,
     thread_id: String,
     thread_ready: bool,
-    developer_instructions_fingerprint: Option<String>,
-    context_hot_reload_enabled: bool,
-    turn_input_includes_hidden_context: bool,
     /// Read-only discovery must keep its permission and MCP policy when the
     /// event drain reconstructs a client for server requests.
     read_only_discovery_permissions: bool,
+    pub(super) ephemeral: bool,
     pub(super) socket: CodexSocket,
     pub(super) next_request_id: u64,
     pub(super) buffered_notifications: Vec<CodexNotification>,
     pub(super) active_turn_id: Option<String>,
+    pub(crate) native_approval_origin: Option<crate::session::NativeInteractionOrigin>,
     pub(super) turn_tracker: CodexTurnTracker,
     pub(super) authoritative_backfill_gate: CodexAuthoritativeBackfillGate,
     pub(super) text_items: BTreeMap<String, CodexTextTranscriptState>,
@@ -58,18 +57,6 @@ impl std::fmt::Debug for CodexRuntimeState {
             .field("endpoint", &self.endpoint)
             .field("thread_id", &self.thread_id)
             .field("thread_ready", &self.thread_ready)
-            .field(
-                "developer_instructions_fingerprint",
-                &self.developer_instructions_fingerprint,
-            )
-            .field(
-                "context_hot_reload_enabled",
-                &self.context_hot_reload_enabled,
-            )
-            .field(
-                "turn_input_includes_hidden_context",
-                &self.turn_input_includes_hidden_context,
-            )
             .field(
                 "read_only_discovery_permissions",
                 &self.read_only_discovery_permissions,
@@ -99,14 +86,13 @@ impl CodexRuntimeState {
             endpoint,
             thread_id,
             thread_ready: true,
-            developer_instructions_fingerprint: None,
-            context_hot_reload_enabled: false,
-            turn_input_includes_hidden_context: true,
             read_only_discovery_permissions: false,
+            ephemeral: false,
             socket,
             next_request_id,
             buffered_notifications: Vec::new(),
             active_turn_id: None,
+            native_approval_origin: None,
             turn_tracker: CodexTurnTracker::default(),
             authoritative_backfill_gate: CodexAuthoritativeBackfillGate::default(),
             text_items: BTreeMap::new(),
@@ -120,19 +106,17 @@ impl CodexRuntimeState {
         socket: CodexSocket,
         next_request_id: u64,
     ) -> Self {
-        let turn_input_includes_hidden_context = thread_id.is_some();
         Self {
             endpoint,
             thread_id: thread_id.unwrap_or_default(),
             thread_ready: false,
-            developer_instructions_fingerprint: None,
-            context_hot_reload_enabled: true,
-            turn_input_includes_hidden_context,
             read_only_discovery_permissions: false,
+            ephemeral: false,
             socket,
             next_request_id,
             buffered_notifications: Vec::new(),
             active_turn_id: None,
+            native_approval_origin: None,
             turn_tracker: CodexTurnTracker::default(),
             authoritative_backfill_gate: CodexAuthoritativeBackfillGate::default(),
             text_items: BTreeMap::new(),
@@ -156,18 +140,6 @@ impl CodexRuntimeState {
         self.thread_ready
     }
 
-    pub(super) fn developer_instructions_fingerprint(&self) -> Option<&str> {
-        self.developer_instructions_fingerprint.as_deref()
-    }
-
-    pub(super) fn context_hot_reload_enabled(&self) -> bool {
-        self.context_hot_reload_enabled
-    }
-
-    pub(super) fn turn_input_includes_hidden_context(&self) -> bool {
-        self.turn_input_includes_hidden_context
-    }
-
     pub(super) fn read_only_discovery_permissions(&self) -> bool {
         self.read_only_discovery_permissions
     }
@@ -176,31 +148,9 @@ impl CodexRuntimeState {
         self.read_only_discovery_permissions = enabled;
     }
 
-    pub(super) fn mark_thread_ready(
-        &mut self,
-        thread_id: impl Into<String>,
-        developer_instructions_fingerprint: Option<String>,
-    ) {
+    pub(super) fn mark_thread_ready(&mut self, thread_id: impl Into<String>) {
         self.thread_id = thread_id.into();
         self.thread_ready = true;
-        self.developer_instructions_fingerprint = developer_instructions_fingerprint;
-    }
-
-    pub(super) fn replace_thread(
-        &mut self,
-        thread_id: impl Into<String>,
-        developer_instructions_fingerprint: Option<String>,
-    ) {
-        self.thread_id = thread_id.into();
-        self.thread_ready = true;
-        self.developer_instructions_fingerprint = developer_instructions_fingerprint;
-        self.turn_input_includes_hidden_context = false;
-        self.buffered_notifications.clear();
-        self.active_turn_id = None;
-        self.turn_tracker = CodexTurnTracker::default();
-        self.authoritative_backfill_gate.reset();
-        self.text_items.clear();
-        self.tool_items.clear();
     }
 }
 

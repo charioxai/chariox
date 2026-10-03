@@ -8,7 +8,6 @@ use chariox_kernel::local::{
     SpawnAgentRequest, SubmitPromptRequest,
 };
 use chariox_kernel::runtime_transport::run_kernel_websocket_server_on_listener;
-use chariox_kernel::session::CreateSessionRequest;
 use chariox_kernel::{DaemonApp, DaemonConfig};
 use serde_json::json;
 use tokio::sync::oneshot;
@@ -17,6 +16,7 @@ use tokio::time::sleep;
 #[test]
 fn kernel_websocket_state_and_cancel_ack_while_structured_provider_io_is_slow() {
     crate::run_kernel_websocket_runtime_test(async {
+        let workspace = ExecutionWorkspace::new();
         let mut config = DaemonConfig::for_tests();
         let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
         config.kernel_websocket_port = kernel_websocket_port;
@@ -40,10 +40,7 @@ fn kernel_websocket_state_and_cancel_ack_while_structured_provider_io_is_slow() 
         let create_response = send_request(
             &mut socket,
             "create-session",
-            LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-                "workspace-structured-io-responsive",
-                "worktree-structured-io-responsive",
-            )),
+            LocalDaemonRequest::CreateSession(workspace.session_request()),
         )
         .await;
         let session = &response_variant(&create_response, "SessionCreated")["session"];

@@ -54,26 +54,55 @@ Wire control events never dispatch App event handlers.
 - `tools.register`, `events.register`, `lifecycle.on`: local handler registration.
 - `state.get`, `state.transaction`: structured state and atomic outgoing occurrences.
 - `files.atomicReplace`, `snapshot`, `import`, `export`: managed private-file operations.
+  A write to a full private data volume (512 MiB per installation) fails
+  `APP_STORAGE_FULL`; see [WIRE.md](WIRE.md).
 - `events.emit`, `status`, `retry`: durable occurrence operations. The kernel alone
   decides whether a receipt can be retried.
 - `http.request`: bounded HTTP broker request with optional opaque connection and
   operation references. There is no direct network fallback.
 - `host.notify`, `openLink`, `writeClipboard`, `pickFile`: authorized host actions.
 - `log.write`: bounded structured logging, kept per installation (last 1000, 50/s) and read with `app logs`.
+  The kernel redacts secret-shaped text (API keys, tokens, JWTs, private keys, `password=` values)
+  before storing an entry, as `[redacted:<kind>]`.
 - `schedule.set`, `cancel`, `list`, `onWake`: kernel-owned wakes. The kernel
   starts the App when a wake falls due and delivers it at least once, so the App
   does not stay running to wait. A user stop holds wakes until the App starts.
-  State transactions may commit wake changes.
+  State transactions may commit wake changes. A wake set while a tool call or
+  an incoming event is being handled keeps the App running when it is
+  delivered; one set from the wake handler or a timer does not.
 - `validation.request`, `status`: a pending operation reference returns promptly;
   an App cannot approve it or claim that an App-view click was human validation.
-- `outputs.request`, `cancel`: requests for declared information sets; the kernel
-  must check explicit consent and capture the task/agent/turn before delivery.
 - `paths`: the read-only package and private writable data/temporary roots supplied
   by the trusted worker. Ordinary private I/O continues to use `node:fs`.
+  On macOS, `fs.watch` and `fs/promises` `watch` on a **directory** poll every
+  250 ms: changes within one interval coalesce, directories themselves report
+  only `rename`, the returned watcher is not an `FSWatcher`, `fs/promises`
+  ignores `maxQueue`/`overflow`, and a watch over more than 4096 entries fails
+  with `ENOSPC`. File watches, `fs.watchFile` and Linux directory watches are
+  Node's own. Handle the watcher's `error` event: an unhandled one ends the
+  worker.
 
 The SDK does not expose transcripts, a second prompt area, provider credentials,
-raw kernel requests, or an approval-resolution method. Conversation placement
-belongs to the separate App-view/terminal integration.
+raw kernel requests, or an approval-resolution method.
+
+## Agent panel placement (kernel protocol 380)
+
+Chariox draws the session focus agent's pane beside every App view, in the
+trusted terminal. The App's page never sees its content; it only lays out in the
+space left for it. The App chooses where the panel sits:
+
+- Default, in the signed manifest: `"ui": {"entry": "ui/index.html",
+  "agentPanel": {"placement": "right" | "bottom" | "none", "size": 320}}`.
+  `size` is the width at the right or the height at the bottom, 120 to 1200 CSS
+  pixels, at most half the page; `none` shows no panel and takes no size.
+  Declaring it needs `minKernelProtocol` 380. Omitted: at the right.
+- At runtime, from the page: `await window.chariox.panel.set({placement:
+  "bottom", size: 280})` answers the resulting layout, `{placement, minimized}`.
+  `window.chariox.panel.get()` reads it. The page is resized to the space left
+  (a normal `resize` event).
+- The user may move the panel or minimize it to a bar at the bottom, and that
+  choice wins over the App's. Only the user can minimize it, and an App with no
+  panel cannot hide pending approvals: the terminal shows them in its chrome.
 
 Inline file and buffered HTTP bodies support at most 512 KiB. SDK 0.7 adds a
 separate streaming Fetch adapter over the kernel stream broker, including
@@ -83,6 +112,40 @@ contract and evidence limits are described in [FETCH.md](FETCH.md). The bounded
 workflow/agent asset methods and consented output callback registration also
 remain integration work. No broker operation is complete merely because its
 forwarding method exists here.
+
+## Durability
+
+An App's private files are ordinary `node:fs` files on its own data volume.
+What survives a crash:
+- **State transactions** (`state.transaction`, with their occurrences and
+  wakes) are committed by the kernel's database with full synchronous writes
+  before the call answers. They survive a crash of the App, the kernel or the
+  host, and power loss, as far as the host's disk honors a sync.
+- **`files.atomicReplace`** writes the new file, syncs it, renames it into
+  place and syncs its directory before it answers. The file is then the old or
+  the new version after any crash, never a mix. Use it for a raw file that must
+  survive power loss.
+- **Plain `node:fs` writes** are in the host's page cache when the call
+  returns. They survive the App or the kernel being killed, but not
+  necessarily a host crash or power loss.
+
+The runtime denies `fsync` and `fdatasync` in every form: `fs.fsyncSync`,
+`fs.fdatasyncSync`, `fs.fsync`, `fs.fdatasync`, `FileHandle.sync()` and
+`datasync()`. So do the forms built on them:
+- `writeFile`, `writeFileSync`, `appendFile` and `appendFileSync` with
+  `flush: true` write the data, then fail.
+- Write streams with `flush: true` (`fs.createWriteStream` and
+  `FileHandle#createWriteStream`) fail at close, after `'finish'`. Only
+  `'close'`, `'error'` and `finished()` observers see it.
+
+Each fails `ERR_ACCESS_DENIED`. The runtime's bootstrap denies them: Node's
+own guard varies across releases (the pinned 24.20 denies the sync and callback
+forms but not the `FileHandle` forms; some releases deny none, newer ones deny
+all), so denying every form gives an App one behavior on its own thread across
+runtime updates.
+A worker thread (`node:worker_threads`) keeps Node's own behavior.
+(Node's own fast path for `writeFileSync` of a UTF-8 string ignores `flush`
+without an error.)
 
 ## Worker integration
 
@@ -147,6 +210,20 @@ bytes, including occurrences for different automations. State and all receipts
 commit together. `events.retry` reconciles a current, due, kernel-classified
 retryable receipt; it never resets attempts, advances backoff or restarts terminal
 work. Actual workflow handoff remains a separate kernel operation.
+`events.automations()` returns the owner's automations of the App's events,
+each `{automationId, event, eventVersion, state, lastReceipt}` with `state`
+`active`, `paused`, `broken` or `disabled` and the latest retained receipt or
+null. It is read-only and never names the target workflow, so an App can tell
+its user to fix a broken or turned-off automation in Chariox. It is additive to SDK
+0.8.0: check `typeof chariox.events.automations === 'function'` and treat
+`METHOD_NOT_FOUND` as unknown, for runtimes and kernels that predate it.
+
+An installation's outbox holds at most 1024 occurrences waiting for delivery.
+When it is full, `events.emit` (or a state transaction with occurrences) fails
+with `LIMIT_EXCEEDED`, `retryable: true`, "App event outbox is full", and
+nothing in that call commits. It is backpressure: send the same envelope again
+after deliveries drain. The kernel also writes one warning to the App's log for
+each full backlog, so the owner sees it.
 The current outbox component accepts new occurrences up to 30 days old with at
 most five minutes of future clock skew. Already retained exact duplicates return
 their existing receipt; changed content conflicts. Terminal cleanup requires the
@@ -172,7 +249,13 @@ reached only with the `operationId` of an approved `validation.request`; the
 kernel consumes that single-use approval before sending, sends the approved
 parameters as the JSON body (the App passes none), and otherwise returns
 `VALIDATION_REQUIRED`. Effect routes use `POST`, `PUT` or `PATCH`, and the request
-may carry no header but `accept`. Opaque connections return explicit unsupported responses.
+may carry no header but `accept`. A spent approval then answers
+`VALIDATION_CONSUMED` to `validation.status`. If the effect's request may have
+reached the origin but no response arrived (reset, close, or a deadline before
+the response head), the call fails `APP_HTTP_OUTCOME_UNCERTAIN`: check the
+outcome before asking for a new approval. Any received response, including a
+gateway's 5xx, is returned as a response. See `WIRE.md`.
+Opaque connections return explicit unsupported responses.
 No provider account credentials, redirects, cookies, automatic decompression,
 raw sockets, or body retries are supplied by these methods.
 
@@ -186,6 +269,12 @@ write with unknown completion must never be retried. Always cancel a stream when
 finished or abandoning it. `http.request` is a 512 KiB buffered convenience using
 one original deadline, at most 30 seconds, across its component operations.
 This subset does not claim Fetch conformance.
+
+A failed HTTPS handshake (a bad, expired or wrong-host certificate, or a server
+limited to TLS 1.0/1.1) fails with `APP_HTTP_TLS`; DNS, connection and exchange
+failures use `APP_HTTP_NETWORK`. Through Fetch, the rejection is a `TypeError`
+whose `cause.code` carries the code. Earlier kernels report both as
+`APP_HTTP_NETWORK`. The codes are listed in [WIRE.md](WIRE.md).
 
 SDK 0.7 supplies `chariox.http.fetch` and the worker-global Fetch adapter above
 these operations. See [the supported Fetch contract](FETCH.md) for streaming,

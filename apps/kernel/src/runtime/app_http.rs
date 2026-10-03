@@ -50,6 +50,10 @@ pub(crate) enum HttpError {
     Tls,
     #[error("app_http_busy")]
     Busy,
+    /// A protected effect was sent, and its reply was lost: it may have
+    /// taken effect.
+    #[error("app_http_outcome_uncertain")]
+    OutcomeUncertain,
 }
 type Result<T> = std::result::Result<T, HttpError>;
 

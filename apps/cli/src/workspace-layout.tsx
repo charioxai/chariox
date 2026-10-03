@@ -57,10 +57,14 @@ export type WorkspaceLayoutProps = {
   onStatusIndicatorBoxRef: RefHandler
   onFooterSummaryBoxRef: RefHandler
   onHotkeysOverlayBoxRef: RefHandler
+  onKernelApprovalBannerRef: RefHandler
   onKernelApprovalBoxRef: RefHandler
 }
 
 export function WorkspaceLayout(props: WorkspaceLayoutProps) {
+  // Footer, interaction and transcript renderers keep the pane renderables, so
+  // the pane grid is built once instead of following every preferences update.
+  const paneRows = props.responsePaneRows()
   const palette = () => {
     props.themeRevision
     return theme
@@ -255,7 +259,7 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
           flexDirection="column"
           gap={0}
         >
-          <For each={props.responsePaneRows()}>
+          <For each={paneRows}>
             {(rowSlots, rowIndex) => (
               <>
                 {renderBorderRow(
@@ -294,6 +298,7 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
         </box>
       </box>
 
+      <box ref={props.onKernelApprovalBannerRef} flexShrink={0} flexDirection="column" visible={false} />
       <box
         flexShrink={0}
         overflow="visible"

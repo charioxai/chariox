@@ -5,6 +5,7 @@ import {
   applyProviderPreferenceDefaults,
   parseArgs,
   resolveConfiguredCloudRelayApiUrl,
+  terminalPairingLinkFromArgs,
 } from "./cli-options.js"
 
 test("parseArgs applies terminal pairing links", () => {
@@ -26,6 +27,12 @@ test("parseArgs applies terminal pairing links", () => {
     targetDaemonId: "kernel-1",
     targetDaemonAlias: "devbox",
   })
+})
+
+test("terminal pairing bootstrap retrieves only the pairing-link argument", () => {
+  const link = "chariox-terminal-pair-v1.fixture"
+  assert.equal(terminalPairingLinkFromArgs(["--session", "session-1", "--pairing-link", link]), link)
+  assert.equal(terminalPairingLinkFromArgs(["--session", "session-1"]), null)
 })
 
 test("parseArgs rejects invalid option combinations", () => {
@@ -90,10 +97,11 @@ test("parseArgs help lists remote runtime once next to kernel health", () => {
   assert.match(output, /\/extension sync-retry\s+retry home-proxy manifest projection after worker reconnect/)
   assert.match(output, /\/extension audit\s+show home extension audit events and denials for an agent/)
   assert.match(output, /\/notifications \.\.\.\s+discover, install, inspect, reconnect, and remove notification services/)
-  assert.match(output, /\/app list \[--after id\] \[--limit n\] list installed Apps/)
-  assert.match(output, /\/app status <id>\s+show an App installation/)
-  assert.match(output, /\/app journal <id>\s+show retained App updates/)
-  assert.doesNotMatch(output, /\/app (?:install|open|restart)\b/)
+  // The App lines come from the shared catalog (app-command-parity.test.ts).
+  assert.match(output, /\/app status INSTALLATION\s+show an App installation/)
+  assert.match(output, /\/app install "FILE\.cxapp"\s+install an App/)
+  assert.doesNotMatch(output, /\/app pack\b/)
+  assert.match(output, /chariox app create\|keygen\|.*\|install\|update\|list\|/)
   assert.match(output, /\/agent spawn \[a\] \[m\] \[--dir d\] \[--worktree d --branch b\] \[--machine r\|--kernel k\|--slice off\|new\|s\] \[--slice-display headless\|headed\] spawn a local, remote, or slice agent/)
   assert.match(output, /\/slice state \[s\]\s+show saved slice state and restart requirements/)
   assert.match(output, /\/slice save-state \[s\]\s+save slice state after shutdown or agent restart/)

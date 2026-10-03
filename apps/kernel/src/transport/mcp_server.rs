@@ -2,7 +2,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
+use http_body_util::{combinators::UnsyncBoxBody, BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::header::{AUTHORIZATION, CONTENT_TYPE, ORIGIN};
 use hyper::server::conn::http1;
@@ -18,10 +18,16 @@ use crate::runtime::router::CommandRouter;
 const DEFAULT_PROTOCOL_VERSION: &str = "2025-03-26";
 const JSON_RPC_VERSION: &str = "2.0";
 
+type HttpBody = UnsyncBoxBody<Bytes, Infallible>;
+
+mod catalog;
 mod catalog_stream;
 #[cfg(test)]
 mod catalog_stream_tests;
-type HttpBody = http_body_util::combinators::UnsyncBoxBody<Bytes, Infallible>;
+
+pub(crate) fn catalog_changed() {
+    catalog::changed();
+}
 
 pub(crate) async fn bind_mcp_http_server(
     router: &CommandRouter,
@@ -42,14 +48,20 @@ pub(crate) async fn run_mcp_http_server_on_listener(
     // Dropping/aborting this server closes notification streams as well as the
     // listener; streams never retain a strong CommandRouter indefinitely.
     let (_lifetime, shutdown) = tokio::sync::watch::channel(());
+    let mut catalogs = catalog::CatalogMonitor::new(&router);
+    let health = router.transport_health_store();
     loop {
-        let (stream, _) = listener
-            .accept()
-            .await
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "accept runtime mcp",
-                message: error.to_string(),
-            })?;
+        let admission =
+            super::listener_admission::accept_with_backoff(&listener, &health, "runtime mcp");
+        tokio::pin!(admission);
+        // Catalog refreshes must not reset an in-progress admission backoff.
+        let (stream, _) = loop {
+            tokio::select! {
+                accepted = &mut admission => break accepted,
+                _ = catalogs.changed() => { catalogs.refresh(&router); },
+            }
+        };
+        catalogs.observe_running(&router);
         let router = Arc::clone(&router);
         let shutdown = shutdown.clone();
         tokio::spawn(async move {
@@ -114,11 +126,60 @@ async fn handle_http_request_inner(
     }
 
     match *request.method() {
-        Method::GET => Ok(catalog_stream::open(router, request.headers(), shutdown)),
+        Method::GET => Ok(catalog_notification_stream(
+            router,
+            request.headers(),
+            shutdown,
+        )),
         Method::POST => handle_json_rpc_request(router, request).await,
         Method::DELETE => Ok(empty_response(StatusCode::METHOD_NOT_ALLOWED)),
         _ => Ok(empty_response(StatusCode::METHOD_NOT_ALLOWED)),
     }
+}
+
+/// One authenticated GET stream carries both invalidation sources. The
+/// run-scoped stream admits the connection (run identity, stream capacity,
+/// server shutdown) and signals runtime catalog refreshes; the registry stream
+/// compares this token's catalog after grant and registration changes. Both
+/// open with an immediate frame, delivered together, and the merged stream
+/// closes with the run-scoped one.
+fn catalog_notification_stream(
+    router: Arc<CommandRouter>,
+    headers: &hyper::HeaderMap,
+    shutdown: tokio::sync::watch::Receiver<()>,
+) -> Response<HttpBody> {
+    use futures_util::{stream, StreamExt};
+
+    let scoped = catalog_stream::open(Arc::clone(&router), headers, shutdown);
+    if scoped.status() != StatusCode::OK {
+        return scoped;
+    }
+    let registry = catalog::stream_response(router, headers);
+    if registry.status() != StatusCode::OK {
+        return scoped;
+    }
+    let (parts, scoped) = scoped.into_parts();
+    let scoped = http_body_util::BodyStream::new(scoped);
+    let registry = http_body_util::BodyStream::new(registry.into_body());
+    let body = stream::once(async move {
+        let ((scoped_opening, scoped), (registry_opening, registry)) =
+            futures_util::future::join(scoped.into_future(), registry.into_future()).await;
+        let mut opening = bytes::BytesMut::new();
+        for frame in [scoped_opening, registry_opening].into_iter().flatten() {
+            if let Ok(Ok(data)) = frame.map(hyper::body::Frame::into_data) {
+                opening.extend_from_slice(&data);
+            }
+        }
+        let rest = stream::select(
+            scoped.map(Some).chain(stream::once(async { None })),
+            registry.map(Some),
+        )
+        .take_while(|frame| std::future::ready(frame.is_some()))
+        .filter_map(std::future::ready);
+        stream::once(async move { Ok(hyper::body::Frame::data(opening.freeze())) }).chain(rest)
+    })
+    .flatten();
+    Response::from_parts(parts, http_body_util::StreamBody::new(body).boxed_unsync())
 }
 
 fn valid_runtime_origin(origin: &str) -> bool {
@@ -245,6 +306,7 @@ async fn handle_json_rpc_value(
                 .get("params")
                 .and_then(|params| params.get("protocolVersion"))
                 .and_then(Value::as_str)
+                .filter(|version| matches!(*version, "2025-03-26" | "2025-06-18" | "2025-11-25"))
                 .unwrap_or(DEFAULT_PROTOCOL_VERSION);
             Ok(json_response(
                 StatusCode::OK,
@@ -350,14 +412,37 @@ async fn handle_json_rpc_value(
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| serde_json::json!({}));
+            let previous_catalog = catalog::snapshot(&router, auth_token);
             let result = router
                 .dispatch_authenticated_runtime_tool_call(auth_token, tool_name, arguments)
                 .await;
             match result {
-                Ok(result) => {
-                    let (content, structured_content) = runtime_tool_content(result.payload);
+                // Claude Code's `--permission-prompt-tool` contract: the result
+                // is exactly one text block holding the JSON-stringified
+                // decision. No `structuredContent`: Claude Code may forward
+                // that in place of the text block.
+                Ok(result)
+                    if result.ok
+                        && tool_name == crate::transport::runtime_tools::PERMISSION_PROMPT_TOOL =>
+                {
                     Ok(json_response(
                         StatusCode::OK,
+                        serde_json::json!({
+                            "jsonrpc": JSON_RPC_VERSION,
+                            "id": id,
+                            "result": {
+                                "content": [{
+                                    "type": "text",
+                                    "text": result.payload.to_string(),
+                                }],
+                            }
+                        }),
+                    ))
+                }
+                Ok(result) => {
+                    let (content, structured_content) = runtime_tool_content(result.payload);
+                    Ok(catalog::tool_response(
+                        previous_catalog != catalog::snapshot(&router, auth_token),
                         serde_json::json!({
                             "jsonrpc": JSON_RPC_VERSION,
                             "id": id,
@@ -377,6 +462,10 @@ async fn handle_json_rpc_value(
 }
 
 fn runtime_tool_content(mut payload: Value) -> (Vec<Value>, Value) {
+    // MCP structuredContent is an object, while script results may be any JSON value.
+    if !payload.is_object() {
+        payload = serde_json::json!({ "result": payload });
+    }
     let image = payload.as_object_mut().and_then(|object| {
         let mime_type = object
             .get("mime_type")

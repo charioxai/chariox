@@ -110,6 +110,14 @@ pub struct BrokerRequest {
     pub params: serde_json::Value,
     pub deadline: Instant,
     pub cancellation: BrokerCancellation,
+    /// The kernel's own caller `actor` of each call the worker was handling
+    /// when it sent this request, never a request field: whom the App was
+    /// working for, for a trusted prompt such as a validation.
+    pub callers: Vec<serde_json::Value>,
+    /// Methods of the supervisor calls the worker had received and not yet
+    /// answered when this request arrived, distinct and sorted. This is the
+    /// invocation context the host observes; the worker cannot name it.
+    pub open_calls: Vec<String>,
 }
 
 pub type BrokerFuture =

@@ -9,10 +9,21 @@ mod materialization;
 mod package;
 mod reconfiguration;
 
+pub(super) use package::workflow_publication_release_inputs_digest;
 use package::{
     workflow_publication_package_archive_base64, workflow_publication_package_digest,
     workflow_publication_package_files, workflow_publication_package_version,
 };
+
+/// The App plan an export packages.
+pub(super) enum ExportAppPlan<'a> {
+    /// The publication's latest recorded plan, if any.
+    Latest,
+    /// This plan: the owner's current one, or a bound release's.
+    Plan(&'a serde_json::Value),
+    /// None: a release exported while the publication used no App.
+    NoApps,
+}
 
 impl KernelRuntimeOwnedState {
     pub(super) fn workflow_create_publication(
@@ -104,19 +115,21 @@ impl KernelRuntimeOwnedState {
         })
     }
 
-    /// Exports the publication's package; `apps_to_pin` is the App plan the
-    /// owner's first export packages, pinned by the caller once it succeeds.
+    /// Exports the publication's package with the App plan `apps` names.
     pub(super) fn workflow_export_publication_package(
         &self,
         request: crate::local::ExportWorkflowPublicationPackageRequest,
-        apps_to_pin: Option<&serde_json::Value>,
+        apps: ExportAppPlan<'_>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let mut publication = self
             .session_store
             .read()
             .resolve_workflow_publication_ref(&request.session_id, &request.publication_ref)?;
-        if let Some(plan) = apps_to_pin {
-            publication.pin_apps(plan.clone());
+        let no_apps = matches!(apps, ExportAppPlan::NoApps);
+        match apps {
+            ExportAppPlan::Latest => {}
+            ExportAppPlan::Plan(plan) => publication.use_apps(plan.clone()),
+            ExportAppPlan::NoApps => publication.clear_apps(),
         }
         let snapshot = self
             .session_store
@@ -144,8 +157,10 @@ impl KernelRuntimeOwnedState {
                 &workspaces,
             )?;
         // App grants and the owner's App automations feeding the publication
-        // both make it App-bound.
-        if publication.apps().is_none()
+        // both make it App-bound (a release exported before it used any App
+        // re-exports without one, for its bind's digest check).
+        if !no_apps
+            && publication.apps().is_none()
             && (!crate::workflow_publication_requirements::app_grant_uses(
                 &snapshot.workflow,
                 &snapshot.agents,
@@ -188,27 +203,27 @@ impl KernelRuntimeOwnedState {
         })
     }
 
-    /// Protocol 366: pins the App plan a successful export packaged. A plan
-    /// another export pinned meanwhile is kept, and this export fails.
-    pub(super) fn pin_workflow_publication_apps(
+    /// Protocols 377 and 378: records what a successful export packaged as
+    /// the release with its package digest: the inputs digest of its files
+    /// and, for an App-bound publication, the App plan.
+    pub(super) fn record_workflow_publication_release(
         &self,
         session_id: &str,
         publication_id: &str,
-        plan: serde_json::Value,
+        package_digest: &str,
+        package_files: &[crate::local::WorkflowPublicationPackageFile],
+        plan: Option<serde_json::Value>,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
-        let pinned = self.session_store.write().pin_workflow_publication_apps(
-            session_id,
-            publication_id,
-            plan.clone(),
-        )?;
-        if pinned.apps() != Some(&plan) {
-            return Err(DaemonError::LocalTransport {
-                operation: "export workflow publication package",
-                message: format!(
-                    "workflow trigger `{publication_id}` pinned another App plan meanwhile; export again"
-                ),
-            });
-        }
+        let inputs_digest = workflow_publication_release_inputs_digest(package_files)?;
+        self.session_store
+            .write()
+            .record_workflow_publication_release(
+                session_id,
+                publication_id,
+                package_digest,
+                &inputs_digest,
+                plan,
+            )?;
         self.session_snapshot_without_projection_update(session_id)
     }
 

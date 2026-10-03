@@ -16,6 +16,14 @@ let errorCode = null
 let terminalLaneLive = false
 let cleanupComplete = false
 
+// Linux exempts UID 0 from RLIMIT_NPROC. Drop only this isolated probe's
+// privileges before opening its lane or spawning children.
+if (mode === "process" && process.platform === "linux" && process.getuid() === 0) {
+  process.setgroups([])
+  process.setgid(65534)
+  process.setuid(65534)
+}
+
 try {
   const lane = await openTerminalLane()
   server = lane.server

@@ -49,7 +49,7 @@ pub(super) fn first_committed(
         Some(current)
             if token.base_generation > 0 && current.generation <= token.base_generation =>
         {
-            sql(tx.execute("UPDATE app_worker_lifecycle SET generation=?3,attempt=?4,phase='starting',desired_running=1,failure=NULL,updated_ms=?5,failures=0
+            sql(tx.execute("UPDATE app_worker_lifecycle SET generation=?3,attempt=?4,phase='starting',desired_running=1,dormant=0,failure=NULL,updated_ms=?5,failures=0
                 WHERE installation_id=?1 AND owner_id=?2", params![installation,owner,generation,attempt,now]))?;
         }
         Some(_) => return Err(LifecycleStoreError::Stale),
@@ -72,7 +72,8 @@ pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
         installation_id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,generation INTEGER NOT NULL CHECK(generation>=0),
         attempt TEXT NOT NULL,phase TEXT NOT NULL CHECK(phase IN ('starting','running','stopped','failed')),
         desired_running INTEGER NOT NULL CHECK(desired_running IN (0,1)),failure TEXT,updated_ms INTEGER NOT NULL CHECK(updated_ms>=0),
-        failures INTEGER NOT NULL DEFAULT 0 CHECK(failures>=0));")?;
+        failures INTEGER NOT NULL DEFAULT 0 CHECK(failures>=0),
+        dormant INTEGER NOT NULL DEFAULT 0 CHECK(dormant IN (0,1)));")?;
     let counted: bool = connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM pragma_table_info('app_worker_lifecycle') WHERE name='failures')",
         [],
@@ -83,12 +84,38 @@ pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
             "ALTER TABLE app_worker_lifecycle ADD COLUMN failures INTEGER NOT NULL DEFAULT 0 CHECK(failures>=0);",
         )?;
     }
+    let dormant: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('app_worker_lifecycle') WHERE name='dormant')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !dormant {
+        connection.execute_batch(
+            "ALTER TABLE app_worker_lifecycle ADD COLUMN dormant INTEGER NOT NULL DEFAULT 0 CHECK(dormant IN (0,1));",
+        )?;
+    }
+    Ok(())
+}
+
+/// Only the owning kernel, at its own start: no worker outlives the kernel
+/// that ran it, so a `running` row is left over from before a crash. It
+/// becomes `stopped` with its desired state kept, so recovery or the next call
+/// starts it again and status stops reporting a worker that does not exist.
+/// `starting` rows are kept: a pending first install resumes its exact claim.
+/// Never run this for another kernel's store (sibling stores are opened
+/// without the owner lock), whose workers may be alive.
+pub(super) fn reset_after_kernel_start(connection: &Connection) -> Result<()> {
+    let now = checked(crate::session::unix_epoch_ms())?;
+    sql(connection.execute(
+        "UPDATE app_worker_lifecycle SET phase='stopped',updated_ms=?1 WHERE phase='running'",
+        params![now],
+    ))?;
     Ok(())
 }
 
 /// A failed worker restarts on demand after 1, 4 and 16 seconds; a fourth
 /// failure in a row quarantines it until an explicit start.
-const RESTARTS: u32 = 3;
+pub(super) const RESTARTS: u32 = 3;
 /// A run this long before failing starts a new failure count.
 const HEALTHY_RUN_MS: u64 = 5 * 60 * 1000;
 
@@ -142,7 +169,7 @@ pub(super) fn apply(connection: &mut Connection, command: Command) -> Result<Rep
                 0
             };
             sql(tx.execute("INSERT INTO app_worker_lifecycle(installation_id,owner_id,generation,attempt,phase,desired_running,failure,updated_ms,failures)
-                VALUES(?1,?2,?3,?4,'starting',1,NULL,?5,?6) ON CONFLICT(installation_id) DO UPDATE SET owner_id=excluded.owner_id,generation=excluded.generation,attempt=excluded.attempt,phase='starting',desired_running=1,failure=NULL,updated_ms=excluded.updated_ms,failures=excluded.failures",
+                VALUES(?1,?2,?3,?4,'starting',1,NULL,?5,?6) ON CONFLICT(installation_id) DO UPDATE SET owner_id=excluded.owner_id,generation=excluded.generation,attempt=excluded.attempt,phase='starting',desired_running=1,dormant=0,failure=NULL,updated_ms=excluded.updated_ms,failures=excluded.failures",
                 params![installation,owner,checked(binding.token().generation)?,attempt,now,failures]))?;
             budget(&limit)?;
             sql(tx.commit())?;
@@ -225,8 +252,34 @@ pub(super) fn apply(connection: &mut Connection, command: Command) -> Result<Rep
             };
             // Manual stop is monotonic for this attempt, including a concurrently
             // finishing native startup or kernel-shutdown cleanup.
-            sql(tx.execute("UPDATE app_worker_lifecycle SET phase=?1,desired_running=?2,failure=?3,updated_ms=?4,failures=?8 WHERE installation_id=?5 AND owner_id=?6 AND attempt=?7",
-                params![phase.name(),i64::from(desired_running&&old.desired_running),failure,now,installation,owner,attempt,failures]))?;
+            sql(tx.execute("UPDATE app_worker_lifecycle SET phase=?1,desired_running=?2,failure=?3,updated_ms=?4,failures=?8,dormant=?9 WHERE installation_id=?5 AND owner_id=?6 AND attempt=?7",
+                params![phase.name(),i64::from(desired_running&&old.desired_running),failure,now,installation,owner,attempt,failures,i64::from(old.dormant && phase == WorkerPhase::Stopped && desired_running && old.desired_running)]))?;
+            budget(&limit)?;
+            sql(tx.commit())?;
+            Ok(Reply::Done)
+        }
+        Command::Suspend {
+            owner,
+            attempt,
+            binding,
+            trust,
+            budget: limit,
+        } => {
+            budget(&limit)?;
+            let tx = sql(connection.transaction_with_behavior(TransactionBehavior::Immediate))?;
+            binding
+                .require_active(&tx, &owner, &trust)
+                .map_err(|_| LifecycleStoreError::Stale)?;
+            let installation = &binding.token().installation_id;
+            let old = status(&tx, &owner, installation)?.ok_or(LifecycleStoreError::Stale)?;
+            if old.attempt != attempt || old.generation != binding.token().generation {
+                return Err(LifecycleStoreError::Stale);
+            }
+            if !old.desired_running || old.phase != WorkerPhase::Running {
+                return Err(LifecycleStoreError::Stopped);
+            }
+            sql(tx.execute("UPDATE app_worker_lifecycle SET dormant=1,updated_ms=?1 WHERE installation_id=?2 AND owner_id=?3 AND attempt=?4",
+                params![now,installation,owner,attempt]))?;
             budget(&limit)?;
             sql(tx.commit())?;
             Ok(Reply::Done)
@@ -244,9 +297,13 @@ pub(super) fn apply(connection: &mut Connection, command: Command) -> Result<Rep
             let generation = generation.ok_or(LifecycleStoreError::Stale)?;
             budget(&limit)?;
             sql(tx.execute("INSERT INTO app_worker_lifecycle(installation_id,owner_id,generation,attempt,phase,desired_running,failure,updated_ms)
-                VALUES(?1,?2,?3,'manual-stop','stopped',0,NULL,?4) ON CONFLICT(installation_id) DO UPDATE SET generation=excluded.generation,desired_running=0,updated_ms=excluded.updated_ms",params![installation,owner,generation,now]))?;
+                VALUES(?1,?2,?3,'manual-stop','stopped',0,NULL,?4) ON CONFLICT(installation_id) DO UPDATE SET generation=excluded.generation,desired_running=0,dormant=0,updated_ms=excluded.updated_ms",params![installation,owner,generation,now]))?;
             budget(&limit)?;
             sql(tx.commit())?;
+            Ok(Reply::Done)
+        }
+        Command::ResetAfterKernelStart => {
+            reset_after_kernel_start(connection)?;
             Ok(Reply::Done)
         }
         Command::FinishStop {
@@ -274,12 +331,12 @@ pub(super) fn status(
 ) -> Result<Option<WorkerStatus>> {
     identity(owner)?;
     identity(installation)?;
-    type Row = (i64, String, String, bool, Option<String>, i64, u32);
-    let value:Option<Row>=sql(connection.query_row("SELECT h.generation,h.attempt,h.phase,h.desired_running,h.failure,h.updated_ms,h.failures FROM app_worker_lifecycle h
-        JOIN app_installations i ON i.installation_id=h.installation_id AND i.owner_id=h.owner_id WHERE h.owner_id=?1 AND h.installation_id=?2",params![owner,installation],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional())?;
+    type Row = (i64, String, String, bool, Option<String>, i64, u32, bool);
+    let value:Option<Row>=sql(connection.query_row("SELECT h.generation,h.attempt,h.phase,h.desired_running,h.failure,h.updated_ms,h.failures,h.dormant FROM app_worker_lifecycle h
+        JOIN app_installations i ON i.installation_id=h.installation_id AND i.owner_id=h.owner_id WHERE h.owner_id=?1 AND h.installation_id=?2",params![owner,installation],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?))).optional())?;
     value
         .map(
-            |(generation, attempt, phase, desired_running, failure, updated, failures)| {
+            |(generation, attempt, phase, desired_running, failure, updated, failures, dormant)| {
                 Ok(WorkerStatus {
                     generation: u64::try_from(generation)
                         .map_err(|_| LifecycleStoreError::Storage)?,
@@ -292,6 +349,7 @@ pub(super) fn status(
                         _ => return Err(LifecycleStoreError::Storage),
                     },
                     desired_running,
+                    dormant,
                     failure,
                     updated_ms: u64::try_from(updated).map_err(|_| LifecycleStoreError::Storage)?,
                     failures,
@@ -305,7 +363,7 @@ pub(super) fn candidates(
     after: Option<(&str, &str)>,
 ) -> Result<Vec<(String, String)>> {
     let mut statement=sql(connection.prepare("SELECT i.owner_id,i.installation_id FROM app_installations i LEFT JOIN app_worker_lifecycle h ON h.installation_id=i.installation_id
-        WHERE i.active_json IS NOT NULL AND i.admission_paused=0 AND (h.installation_id IS NULL OR h.generation!=i.generation OR (h.desired_running=1 AND h.phase!='failed'))
+        WHERE i.active_json IS NOT NULL AND i.admission_paused=0 AND (h.installation_id IS NULL OR h.generation!=i.generation OR (h.desired_running=1 AND h.dormant=0 AND h.phase!='failed'))
         AND (?1 IS NULL OR (i.owner_id,i.installation_id)>(?1,?2)) ORDER BY i.owner_id,i.installation_id LIMIT 8"))?;
     let rows = sql(
         statement.query_map(params![after.map(|v| v.0), after.map(|v| v.1)], |row| {

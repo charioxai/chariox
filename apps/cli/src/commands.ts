@@ -1,9 +1,12 @@
+import { tokenizeShellLine } from "@chariox/kernel-client/shell-core"
+
 export type SessionCommandAction = "create" | "new" | "attach" | "list" | "ls" | "status" | "info" | "inspect" | "delete"
 
 export type ParsedSlashCommand =
   | { kind: "exit"; raw: string }
   | { kind: "waiting"; raw: string }
   | { kind: "stop"; raw: string }
+  | { kind: "approvals"; raw: string }
   | { kind: "attachment"; raw: string }
   | {
       kind: "session"
@@ -57,6 +60,7 @@ export type ParsedSlashCommand =
 export type SlashCommandHandlers = {
   onExit: () => Promise<unknown> | unknown
   onWaiting: () => Promise<unknown> | unknown
+  onApprovals: () => Promise<unknown> | unknown
   onStop: () => Promise<unknown> | unknown
   onAttachment: (command: Extract<ParsedSlashCommand, { kind: "attachment" }>) => Promise<unknown> | unknown
   onSession: (command: Extract<ParsedSlashCommand, { kind: "session" }>) => Promise<unknown> | unknown
@@ -106,6 +110,9 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
   }
   if (trimmed === "/waiting") {
     return { kind: "waiting", raw: trimmed }
+  }
+  if (trimmed === "/approvals") {
+    return { kind: "approvals", raw: trimmed }
   }
   if (trimmed === "/stop") {
     return { kind: "stop", raw: trimmed }
@@ -264,7 +271,12 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
     }
   }
   if (/^\/app(?:\s|$)/.test(trimmed)) {
-    return { kind: "app", raw: trimmed, args: trimmed.slice(4).trim().split(/\s+/).filter(Boolean) }
+    try {
+      return { kind: "app", raw: trimmed, args: tokenizeShellLine(trimmed.slice(4)) }
+    } catch {
+      // Keep incomplete input recognizable during editing; dispatch validates it.
+      return { kind: "app", raw: trimmed, args: trimmed.slice(4).trim().split(/\s+/).filter(Boolean) }
+    }
   }
   if (trimmed === "/notifications" || trimmed.startsWith("/notifications ")) {
     return {
@@ -362,9 +374,10 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
 
 export function sharedShellCommandForSlashCommand(input: string): string | null {
   const command = input.trim()
-  // Local file bytes and retained transfer IDs belong to this terminal controller.
-  if (/^\/app\s+(?:install|update|operation|cancel|dev)(?:\s|$)/.test(command)) return null
-  if (/^\/app(?:\s|$)/.test(command)) return command.slice(1)
+  // `/app` runs in this terminal's App handler, never the shared shell: the
+  // shell tokenizer strips the quotes of an inbox test's JSON payload. The
+  // handler (appSlashArgs) keeps that payload exact, like the web palette.
+  if (/^\/app(?:\s|$)/.test(command)) return null
   if (command === "/settings prompts" || command.startsWith("/settings prompts ")) {
     return command.slice(1)
   }
@@ -434,6 +447,9 @@ export async function executeSlashCommand(
       break
     case "waiting":
       await handlers.onWaiting()
+      break
+    case "approvals":
+      await handlers.onApprovals()
       break
     case "stop":
       await handlers.onStop()
@@ -552,6 +568,7 @@ export async function executeSlashCommand(
 
 export function shouldClearCommandCenterForSlashCommand(command: ParsedSlashCommand): boolean {
   switch (command.kind) {
+    case "approvals":
     case "provider":
     case "model":
     case "variant":

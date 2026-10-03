@@ -110,7 +110,14 @@ impl KernelRuntimeOwnedState {
             );
             self.mark_prompt_completion_recorded(provider_run_id);
         }
-        let released_claim = self.clear_prompt_activity(provider_run_id);
+        // Preserve this turn's original completion time. Activity cleanup
+        // clamps the aggregate idle time against other turns' later finishes.
+        let retry_observed_at_ms = self
+            .active_turns
+            .get(provider_run_id)
+            .filter(|turn| turn.prompt_id == completed.id())
+            .and_then(|turn| turn.completion_retry_observed_at_ms);
+        let released_claim = self.clear_prompt_activity_at(provider_run_id, retry_observed_at_ms);
         let _ = self.session_snapshot(session_id)?;
         Ok(OwnedPromptCompletion {
             completion: crate::session::PromptCompletion {
@@ -203,22 +210,6 @@ impl KernelRuntimeOwnedState {
             None,
             crate::git_observer::CompletedTurnSettlementStatus::Completed,
             None,
-        )
-    }
-
-    pub(super) fn fail_local_prompt_without_advance_with_termination(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-        provider_run_id: Option<&str>,
-        provider_termination: Option<crate::provider::ProviderRunTermination>,
-    ) -> Result<Option<OwnedPromptCompletion>, DaemonError> {
-        self.fail_local_prompt_without_advance_with_termination_if_matches(
-            session_id,
-            agent_id,
-            provider_run_id,
-            None,
-            provider_termination,
         )
     }
 
@@ -426,6 +417,17 @@ impl KernelRuntimeOwnedState {
                 ),
             _ => false,
         };
+        // MP-08/MP-10/MP-11: Project inputs require normal activation after the
+        // old turn settles. Never dispatch this queue head to an unvalidated process.
+        if self.project_prompt_provider_requires_resolution(&session, &provider_run) {
+            return self.finalize_local_completion_without_queued_advance(
+                session_id,
+                agent_id,
+                completed,
+                &provider_run_id,
+                released_workflow_claim,
+            );
+        }
         if !self.provider_account_allows_queued_prompt_advance(
             session_id,
             &target_agent,
@@ -439,10 +441,24 @@ impl KernelRuntimeOwnedState {
                 released_workflow_claim,
             );
         }
+        let _admission = match self.begin_managed_activity_admission() {
+            Ok(admission) => admission,
+            Err(_) => {
+                return self.finalize_local_completion_without_queued_advance(
+                    session_id,
+                    agent_id,
+                    completed,
+                    &provider_run_id,
+                    released_workflow_claim,
+                );
+            }
+        };
+        let activity_mutation = self.begin_managed_activity_mutation();
         let acquired_next_workflow_claim =
             match self.ensure_workflow_prompt_workspace_claim(session_id, next_queued_prompt) {
                 Ok(acquired) => acquired,
                 Err(DaemonError::WorkspaceClaimConflict { .. }) => {
+                    drop(activity_mutation);
                     return self.finalize_local_completion_without_queued_advance(
                         session_id,
                         agent_id,
@@ -462,6 +478,7 @@ impl KernelRuntimeOwnedState {
                 self.session_store.reserve_prompt_id(),
             )?
         else {
+            drop(activity_mutation);
             if acquired_next_workflow_claim == Some(true) {
                 self.release_workflow_node_workspace_claim(
                     session_id,
@@ -491,6 +508,15 @@ impl KernelRuntimeOwnedState {
                 dispatch: None,
             }));
         };
+        let (active_prompt, queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        self.mirror_prompt_owner_agent_state_with_activity_mutation(
+            session_id,
+            agent_id,
+            active_prompt,
+            queued_prompts,
+            activity_mutation,
+        )?;
         let source_attachment_id = self.promoted_prompt_source_attachment_id(
             session_id,
             started_next.source_attachment_id(),
@@ -512,12 +538,12 @@ impl KernelRuntimeOwnedState {
             &started_next,
             Some(prompt_sent_at_ms),
         );
-        let (active_prompt, queued_prompts) =
-            self.prompt_state_owner.state_parts(&session, agent_id);
-        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
+        // A substitute run serves only its own turn; the next one goes through
+        // the dispatcher, which moves it to the agent's configured profile.
         if self
             .provider_store
             .run_uses_structured_prompt_io(&provider_run)
+            && provider_run.turn_substitute().is_none()
         {
             let prompt_with_handoff = self.prompt_with_pending_context_handoff(
                 session_id,
@@ -528,8 +554,13 @@ impl KernelRuntimeOwnedState {
             );
             let granted_skill_context =
                 self.granted_skill_hidden_context(session_id, agent_id, &prompt_with_handoff)?;
-            let hidden_system_context =
-                join_hidden_context(started_next.hidden_system_context(), &granted_skill_context);
+            let hidden_system_context = join_hidden_context(
+                &self.hidden_context_with_failed_requests(
+                    agent_id,
+                    started_next.hidden_system_context(),
+                ),
+                &granted_skill_context,
+            );
             let (source_client_id, _source_user_id) = self.prompt_source_attribution(&started_next);
             let mode = crate::prompt_assembly::provider_turn_mode_for_prompt(
                 agent_id,
@@ -562,7 +593,6 @@ impl KernelRuntimeOwnedState {
                 let _ = self.clear_prompt_activity(&provider_run_id);
                 return Err(error);
             }
-            self.consume_pending_context_handoff(session_id, agent_id, &provider_run);
             self.note_prompt_started(&provider_run_id);
             let _ = self.session_snapshot(session_id)?;
             return Ok(Some(OwnedPromptCompletion {
@@ -675,6 +705,10 @@ impl KernelRuntimeOwnedState {
             );
     }
 }
+
+#[cfg(test)]
+#[path = "prompt_workspace_claim_conflict_tests.rs"]
+mod prompt_workspace_claim_conflict_tests;
 
 fn join_hidden_context(first: &str, second: &str) -> String {
     match (first.trim(), second.trim()) {

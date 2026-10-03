@@ -37,7 +37,8 @@ pub(crate) async fn execute_capability_request(
                                     context.worktree_root,
                                     request.working_directory,
                                 )
-                                .with_timeout_ms(request.timeout_ms.unwrap_or(5_000)),
+                                .with_timeout_ms(request.timeout_ms.unwrap_or(5_000))
+                                .with_environment(context.environment),
                             )
                             .map(|result| LocalDaemonResponse::ShellCommandCompleted { result })
                     })
@@ -149,7 +150,12 @@ pub(crate) async fn execute_capability_request(
                 .await;
             Some(match context {
                 Ok(context) => {
+                    let capture_guard = match store.capture_guard() {
+                        Ok(guard) => guard,
+                        Err(error) => return Some(Err(error)),
+                    };
                     spawn_capability("capture screenshot", health, move || {
+                        let _capture_guard = capture_guard;
                         ScreenshotCapabilityService::new()
                             .capture(CaptureScreenshotRequest::new(
                                 request.session_id,

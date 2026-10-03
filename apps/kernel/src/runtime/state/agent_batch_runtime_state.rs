@@ -51,9 +51,11 @@ impl KernelRuntimeState {
                     operation: "agents.spawn",
                     message: "batch spawn returned incomplete results".to_string(),
                 })?;
-            if let Some(last) = agents.last() {
+            // Worker-backed batches follow the same rule as local ones: a
+            // metaagent's new agents never take the focus.
+            if let Some(target) = crate::agent::new_agent_focus_target(&agents) {
                 self.owned
-                    .focus_agent(last.session_id(), last.id(), caller_user_id)?;
+                    .focus_agent(target.session_id(), target.id(), caller_user_id)?;
             }
             Ok(agents)
         }

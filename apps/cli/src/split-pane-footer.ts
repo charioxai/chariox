@@ -18,8 +18,6 @@ export type SplitPaneFooterAgent = {
   model: string | null
   effort?: string | null
   substitutes?: Array<{ provider: string; model: string; variant?: string | null; kernel_id?: string | null; worktree_id?: string | null }>
-  active_substitute_index?: number | null
-  last_substitution?: { reason: string } | null
   execution_mode?: "build" | "plan" | null
   permission_level?: "required" | "yolo" | null
   location_label?: string | null
@@ -141,22 +139,8 @@ function footerLocationPart(locationLabel: string | null | undefined): SplitPane
 
 function footerSubstitutePart(agent: SplitPaneFooterAgent): SplitPaneFooterPart | null {
   const substitutes = agent.substitutes ?? []
-  if (substitutes.length === 0 && !agent.last_substitution) {
+  if (substitutes.length === 0) {
     return null
-  }
-  const activeIndex = agent.active_substitute_index
-  if (typeof activeIndex === "number" && activeIndex >= 0 && substitutes[activeIndex]) {
-    const active = substitutes[activeIndex]
-    const label = [
-      nonBlank(active.provider),
-      nonBlank(active.model),
-      nonBlank(active.variant),
-    ].filter(Boolean).join("/")
-    return {
-      kind: "substitute",
-      text: label ? `sub ${activeIndex + 1}: ${label}` : `sub ${activeIndex + 1}`,
-      tone: "warning",
-    }
   }
   return {
     kind: "substitute",

@@ -241,6 +241,24 @@ fn linux_platform_contract_rejects_missing_foreign_or_executable_libraries() {
             validate(wrong_loader),
             Err(EnrollmentError::Contract)
         ));
+        // The loader is executed as each worker's interpreter; the libraries are not.
+        let loader = if target == "linux-x64" {
+            "platform/ld-linux-x86-64.so.2"
+        } else {
+            "platform/ld-linux-aarch64.so.1"
+        };
+        assert!(manifest::executable(loader));
+        let mut read_only_loader = inventory.clone();
+        read_only_loader["files"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|file| file["path"] == loader)
+            .unwrap()["executable"] = json!(false);
+        assert!(matches!(
+            validate(read_only_loader),
+            Err(EnrollmentError::Contract)
+        ));
         let mut executable_library = inventory.clone();
         executable_library["files"]
             .as_array_mut()

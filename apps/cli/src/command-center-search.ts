@@ -7,7 +7,10 @@ export function filterCommandCenterItems(items: CommandCenterItem[], query: stri
   return items
     .map((item) => ({ item, score: scoreCommandCenterItem(item, query) }))
     .filter((entry) => entry.score > 0)
-    .sort((left, right) => right.score - left.score || left.item.label.localeCompare(right.item.label))
+    // On a tie the shorter command wins, so "/app cancel" beats "/app publisher cancel".
+    .sort((left, right) => right.score - left.score
+      || commandWords(left.item) - commandWords(right.item)
+      || left.item.label.localeCompare(right.item.label))
     .map((entry) => entry.item)
     .slice(0, 20)
 }
@@ -31,4 +34,8 @@ function scoreCommandCenterItem(item: CommandCenterItem, query: string) {
     }
   }
   return score
+}
+
+function commandWords(item: CommandCenterItem) {
+  return item.value.trim().split(/\s+/).length
 }

@@ -68,6 +68,9 @@ pub struct AppInstallOperationRequest {
 pub enum AppInstallOperationPhase {
     Preparing,
     AwaitingApproval,
+    /// Protocol 381: approved and waiting to start, usually for a free App
+    /// worker slot (at most four Apps run at once).
+    Queued,
     Starting,
     Committed,
     Cancelled,
@@ -248,6 +251,8 @@ pub enum AppWorkerPhase {
     Dormant,
     Stopped,
     Failed,
+    /// Automatic restarts are exhausted; an explicit start clears quarantine.
+    Quarantined,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -408,6 +413,18 @@ pub struct GrantAppFileRequest {
     pub files: Vec<AppFileContents>,
 }
 
+/// Protocol 394: the owner ends an installation's file requests and the
+/// grants its App has not imported: all of them, or one request's
+/// (`operation_id`). The App reads them as `expired` and can no longer import
+/// them; files it already imported stay in its data.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RevokeAppFileGrantsRequest {
+    pub installation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
+}
+
 /// Protocol 355: the owner takes a copy of a file an App offered with
 /// `files.export`, once; the terminal decides where it is saved.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -448,6 +465,23 @@ pub struct OpenAppViewRequest {
     pub installation_id: String,
 }
 
+/// Protocol 380: the user's choice for an App's agent panel in this session:
+/// where it sits and whether it is minimized. It wins over the App's own
+/// placement; omitted fields keep their current value, and `reset` first
+/// drops the choice, handing the panel back to the App.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetAppViewPanelRequest {
+    pub session_id: String,
+    pub installation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<crate::session::AppPanelPlacement>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minimized: Option<bool>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reset: bool,
+}
+
 /// Protocol 361: the caller's App set.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -484,6 +518,9 @@ pub struct AppSetInstallation {
 pub struct PreviewDeploymentAppsRequest {
     pub session_id: String,
     pub publication_ref: String,
+    /// Protocol 377: also returns this release's recorded App plan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_digest: Option<String>,
 }
 
 /// Protocol 367: asks the owner once to deploy a workflow together with the
@@ -546,4 +583,30 @@ pub struct AppAutomationSummary {
     pub queue_id: String,
     pub scheduled: bool,
     pub status: AppAutomationStatus,
+}
+
+/// Protocol 409: a human accepts one pending clipboard/link request. The
+/// payload comes from the kernel, never from the accepting terminal.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcceptAppHostActionRequest {
+    pub session_id: String,
+    pub operation_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AppHostAction {
+    ClipboardWrite { text: String },
+    OpenLink { url: String },
+}
+
+/// Protocol 410: owner-scoped restore of one saved same-generation snapshot.
+/// The worker is drained and left stopped. No authority comes from the copy.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RestoreAppDataSnapshotRequest {
+    pub installation_id: String,
+    pub expected_generation: String,
+    pub snapshot_id: String,
 }

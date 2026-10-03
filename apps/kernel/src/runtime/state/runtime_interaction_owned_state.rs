@@ -1,5 +1,6 @@
 use super::*;
 
+mod agent_lifetime;
 mod maintenance;
 mod registration;
 #[cfg(test)]
@@ -55,6 +56,28 @@ impl KernelRuntimeOwnedState {
         Some((owner, interaction.kernel_operation_id()?.to_owned()))
     }
 
+    pub(super) fn update_provider_login_interaction(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        login: crate::session::RuntimeProviderLogin,
+    ) -> Result<(), DaemonError> {
+        let activity_mutation = self.begin_managed_activity_mutation();
+        let mut sessions = self.session_store.write();
+        let mut session = sessions.get_session(session_id)?;
+        let Some(interaction) = session.remove_active_interaction(interaction_id) else {
+            return Ok(());
+        };
+        session.add_active_interaction(interaction.with_provider_login(login));
+        sessions.restore_session(session);
+        activity_mutation.record();
+        drop(sessions);
+        self.session_snapshot(session_id)?;
+        self.terminal_stream
+            .notify_terminal_projection_change(session_id);
+        Ok(())
+    }
+
     /// `passkey_verified`: the answer proved the owner's presence (see
     /// `critical_approval_passkey`); a choice that requires the passkey is
     /// refused without it.
@@ -66,6 +89,46 @@ impl KernelRuntimeOwnedState {
         custom_reply: Option<&str>,
         caller_user_id: Option<&str>,
         passkey_verified: bool,
+    ) -> Result<(), DaemonError> {
+        self.resolve_runtime_interaction_inner(
+            session_id,
+            interaction_id,
+            choice_id,
+            custom_reply,
+            caller_user_id,
+            passkey_verified,
+            false,
+        )
+    }
+
+    /// The dedicated terminal take path competes with decline/expiry under
+    /// the same interaction mutation lock. No generic reply can take an offer.
+    pub(super) fn take_app_host_interaction(
+        &self,
+        session_id: &str,
+        operation_id: &str,
+        owner: &str,
+    ) -> Result<(), DaemonError> {
+        self.resolve_runtime_interaction_inner(
+            session_id,
+            &format!("app_host_{operation_id}"),
+            "accept_host_action",
+            None,
+            Some(owner),
+            false,
+            true,
+        )
+    }
+
+    fn resolve_runtime_interaction_inner(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        choice_id: &str,
+        custom_reply: Option<&str>,
+        caller_user_id: Option<&str>,
+        passkey_verified: bool,
+        take_host: bool,
     ) -> Result<(), DaemonError> {
         let _mutation = self
             .pending_interactions
@@ -99,6 +162,12 @@ impl KernelRuntimeOwnedState {
                 message: "interaction does not belong to the requested session".to_string(),
             });
         }
+        if !self.agent_interaction_is_live(&pending) {
+            self.withdraw_agent_interaction_locked(interaction_id, &pending)?;
+            return Err(interaction_error(
+                "Agent interaction was withdrawn because its turn or agent ended",
+            ));
+        }
         if pending
             .kernel_operation_owner
             .as_deref()
@@ -117,6 +186,14 @@ impl KernelRuntimeOwnedState {
         let activity_mutation = self.begin_managed_activity_mutation();
         let mut sessions = self.session_store.write();
         let mut session = sessions.get_session(session_id)?.clone();
+        if !self.agent_interaction_turn_is_live(&pending, &session) {
+            drop(sessions);
+            drop(activity_mutation);
+            self.withdraw_agent_interaction_locked(interaction_id, &pending)?;
+            return Err(interaction_error(
+                "Agent interaction was withdrawn because its turn ended",
+            ));
+        }
         let interaction = session
             .active_interactions()
             .iter()
@@ -136,7 +213,19 @@ impl KernelRuntimeOwnedState {
                 "approving this critical action needs your Chariox passkey",
             ));
         }
-        let resolved_reply = if let Some(choice) = interaction.choice(choice_id) {
+        if take_host
+            && (pending.kernel_operation_owner.as_deref() != caller_user_id
+                || !interaction.kernel_operation_id().is_some_and(|subject| {
+                    subject
+                        .strip_prefix("host_action:")
+                        .is_some_and(|operation| interaction_id == format!("app_host_{operation}"))
+                }))
+        {
+            return Err(interaction_error("Not an owner-bound App host offer"));
+        }
+        let resolved_reply = if take_host {
+            "accept_host_action".to_owned()
+        } else if let Some(choice) = interaction.choice(choice_id) {
             if let Some(reply) = custom_reply {
                 let custom_choice =
                     interaction
@@ -256,7 +345,7 @@ impl KernelRuntimeOwnedState {
             }),
         );
         let pending = {
-            let mut pending = self.pending_interactions.write();
+            let pending = self.pending_interactions.write();
             if !pending.get(interaction_id).is_some_and(|value| {
                 value.session_id == session_id
                     && value.belongs_to(&self.session_store)
@@ -267,12 +356,22 @@ impl KernelRuntimeOwnedState {
                 return Ok(());
             }
             pending
-                .remove(interaction_id)
+                .get(interaction_id)
                 .expect("checked pending interaction")
+                .clone()
         };
+        if !self.agent_interaction_is_live(&pending) {
+            return self.withdraw_agent_interaction_locked(interaction_id, &pending);
+        }
+        self.pending_interactions.write().remove(interaction_id);
         let activity_mutation = self.begin_managed_activity_mutation();
         let mut sessions = self.session_store.write();
         let mut session = sessions.get_session(session_id)?.clone();
+        if !self.agent_interaction_turn_is_live(&pending, &session) {
+            drop(sessions);
+            drop(activity_mutation);
+            return self.withdraw_agent_interaction_locked(interaction_id, &pending);
+        }
         let Some(interaction) = session.remove_active_interaction(interaction_id) else {
             return Ok(());
         };

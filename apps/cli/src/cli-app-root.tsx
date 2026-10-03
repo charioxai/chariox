@@ -1,3 +1,4 @@
+import { createAppHostTerminal } from "./app-host-action.js"
 import process from "node:process"
 import { AppDevLoop } from "./app-dev-loop.js"
 import { AppFileInstaller, formatInstallProgress } from "./app-install-file.js"
@@ -507,7 +508,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     clearTimer: clearTimeout,
     daemonDisconnected, working, anyPromptWork, anyTurnWork,
     submitting, focusedQueueDepth, fatalError, focusedActivePrompt,
-    statusLine, isAttached, workflowScreenShowing, workflowPromptState,
+    statusLine, isAttached, workflowScreenShowing, workflowPromptState, focusedAgentId,
     themeRevision, preferencesState, setPreferencesState, setPromptHistoryEntries,
     setPromptHistoryIndex, setPromptHistoryDraft, promptTextController, attachmentState,
     promptHistoryEntries, promptHistoryIndex, promptHistoryDraft, promptInputRefController,
@@ -666,6 +667,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   const applySessionState = sessionStateApplyController.apply
   const kernelApprovals = createCliKernelApprovalComposition({
     client, renderer, session: sessionState, dimensions, themeRevision,
+    attached: isAttached, flashFooter,
     connected: () => isAttached() && !daemonDisconnected(),
     currentFocus: currentFocusedRenderable,
     promptFocus: promptInputRefController.currentOrNull,
@@ -872,6 +874,8 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     handleSigint, handleStdinData, requestPromptStop, submitFocusedInteractionChoice,
     submitPrompt, submitWorkspaceShellCommand,
   } = createCliAppCommandRoutingComposition({
+    appHostTerminal: createAppHostTerminal(renderer),
+    lastViewedAppHostOperationId: kernelApprovals.lastViewedAppHostOperationId,
     client, options, appLogger, formatError, appFileInstaller, appDevLoop, appPublisherEnrollment,
     preferencesState, setPreferencesState, initialWorkspaceTarget, initialWorktreeTarget,
     pendingWorkspaceTarget, pendingWorktreeTarget, setPendingWorkspaceTarget, setPendingWorktreeTarget,
@@ -909,6 +913,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     closeWorkflowNodeInstructionsEditor: workflowActions.closeWorkflowNodeInstructionsEditor,
     focusedAgentInteraction, interactionChoiceStore, renderAgentInteractions, handleHotkeysToggleShortcut,
     handleKernelApprovalKey: kernelApprovals.handleKey,
+    openKernelApprovals: kernelApprovals.openFromCommand,
     kernelApprovalOwnsInput: kernelApprovals.ownsInput,
     dialogOverlayOpen, closeActiveDialogOverlay, activePrompt, handleCommandCenterKey,
     handleQueuedPromptKey: handleQueuedPromptStripKey,
@@ -1020,6 +1025,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       assignFooterSummaryBox={assignFooterSummaryBox}
       assignDialogOverlayBox={assignDialogOverlayBox}
       assignKernelApprovalBox={kernelApprovals.assignBox}
+      assignKernelApprovalBanner={kernelApprovals.assignBanner}
       kernelApprovalOwnsInput={kernelApprovals.ownsInput}
       handlePromptKeyDown={handlePromptKeyDown}
       handlePromptContentChange={handlePromptContentChange}

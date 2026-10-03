@@ -324,6 +324,7 @@ impl DaemonApp {
         diagnostics.log_summary();
         let reconciliation_started = Instant::now();
         self.recover_pending_slice_backup_restores()?;
+        self.reconcile_slice_backup_restore_acknowledgements()?;
         self.restore_normalized_workflow_runtime_state()?;
         self.reconcile_restored_default_project_workspaces()?;
         self.remove_restored_projects_without_visible_sessions()?;
@@ -331,6 +332,7 @@ impl DaemonApp {
         self.restore_local_kernel_external_provider_attachments();
         self.reconcile_restored_slice_agent_attachments()?;
         self.reconcile_restored_runtime_state_after_restart()?;
+        self.sessions.write().restore_room_environments()?;
         crate::logging::info_with_fields(
             "durable_state.restore",
             "restored durable kernel state",
@@ -408,11 +410,11 @@ impl DaemonApp {
                     &transaction.source_slice_id,
                     state,
                     crate::session::unix_epoch_ms(),
-                    crate::slice::SliceOperationStatus::Failed,
+                    crate::slice::SliceBackupRestoreResolution::RolledBack,
                     Some(
                         "interrupted backup restore rolled back during kernel startup".to_string(),
                     ),
-                    |slice, state| {
+                    |slice, state, acknowledgement| {
                         self.durable_state
                             .append_event(
                                 "slice.backup.restore.rolled_back",
@@ -421,16 +423,22 @@ impl DaemonApp {
                                     "transaction_id": &transaction.id,
                                     "slice": slice,
                                     "state": state,
+                                    "acknowledgement": acknowledgement,
                                 }),
                             )
                             .map(|_| ())
                     },
                 )
             })?;
-            crate::slice::cleanup_replaced_saved_state_generation(&transaction, &generation);
-            crate::slice::remove_local_docker_slice_backup_best_effort(
-                &transaction.rollback_backup,
-            );
+            // Startup recovery now references the existing rollback artifacts:
+            // retain them and prior generations rather than deleting live state.
+            // Acknowledgement reconciliation releases an unreferenced rollback.
+            if generation.state.image_ref != transaction.rollback_backup.image_ref
+                || generation.state.home_archive_path
+                    != transaction.rollback_backup.home_archive_path
+            {
+                crate::slice::cleanup_replaced_saved_state_generation(&transaction, &generation);
+            }
             crate::logging::warn_with_fields(
                 "slice.backup.restore",
                 "rolled back an interrupted slice backup restore during kernel startup",
@@ -441,6 +449,37 @@ impl DaemonApp {
             );
         }
         Ok(())
+    }
+
+    /// Retries broker acknowledgements owed by restores the kernel already
+    /// resolved, including before a crash. Failures stay durably pending.
+    fn reconcile_slice_backup_restore_acknowledgements(&self) -> Result<(), DaemonError> {
+        crate::slice::reconcile_local_docker_restore_acknowledgements(
+            &self.slices,
+            None,
+            crate::slice::acknowledge_protected_home_restore,
+            |acknowledgement| {
+                self.durable_state.with_projection_transition_lock(|| {
+                    self.slices.acknowledge_backup_restore_transactionally(
+                        &acknowledgement.transaction_id,
+                        |acknowledgement| {
+                            self.durable_state
+                                .append_event(
+                                    "slice.backup.restore.acknowledged",
+                                    Some(acknowledgement.transaction_id.clone()),
+                                    serde_json::json!({
+                                        "transaction_id": &acknowledgement.transaction_id,
+                                        "slice_id": &acknowledgement.source_slice_id,
+                                    }),
+                                )
+                                .map(|_| ())
+                        },
+                    )
+                })
+            },
+            crate::slice::remove_local_docker_slice_backup_best_effort,
+        )
+        .map(|_| ())
     }
 
     fn restore_normalized_workflow_runtime_state(&mut self) -> Result<(), DaemonError> {
@@ -672,20 +711,19 @@ impl DaemonApp {
     }
 
     fn reconcile_restored_slice_agent_attachments(&self) -> Result<(), DaemonError> {
-        let slices = self
-            .slices
-            .list()
-            .into_iter()
-            .map(|slice| (slice.id.clone(), slice))
-            .collect::<BTreeMap<_, _>>();
+        let slices = self.slices.list();
         let attachments = self
             .agents
             .list_agents()
             .into_iter()
             .filter_map(|agent| {
                 let remote = agent.remote_execution()?;
-                let slice_id = remote.worker_machine_id.strip_prefix("slice:")?.trim();
-                let slice = slices.get(slice_id)?;
+                let slice = crate::slice::recorded_slice_for_worker(
+                    self.config(),
+                    &slices,
+                    &remote.worker_kernel_id,
+                    &remote.worker_machine_id,
+                )?;
                 let session_missing = !slice
                     .session_ids
                     .iter()
@@ -780,6 +818,13 @@ impl DaemonApp {
                 .pending_slice_backup_restores
                 .into_iter()
                 .filter(|transaction| restored_slice_ids.contains(&transaction.source_slice_id))
+                .collect(),
+        );
+        self.slices.restore_pending_restore_acknowledgement_records(
+            snapshot
+                .pending_slice_backup_restore_acknowledgements
+                .into_iter()
+                .filter(|pending| restored_slice_ids.contains(&pending.source_slice_id))
                 .collect(),
         );
         let mut restored_agent_ids = std::collections::BTreeSet::<String>::new();
@@ -1593,9 +1638,32 @@ impl DaemonApp {
                         "state",
                         "durable_state.restore_slice_backup_restore_resolution_state",
                     )?;
-                    self.slices
-                        .replay_backup_restore_resolution(&transaction_id, slice, state);
+                    // Legacy resolutions predate durable acknowledgements.
+                    let acknowledgement = if event.payload.get("acknowledgement").is_some() {
+                        decode_durable_payload_field(
+                            &event,
+                            "acknowledgement",
+                            "durable_state.restore_slice_backup_restore_acknowledgement",
+                        )?
+                    } else {
+                        None
+                    };
+                    self.slices.replay_backup_restore_resolution(
+                        &transaction_id,
+                        slice,
+                        state,
+                        acknowledgement,
+                    );
                 }
+            }
+            "slice.backup.restore.acknowledged" => {
+                let transaction_id: String = decode_durable_payload_field(
+                    &event,
+                    "transaction_id",
+                    "durable_state.restore_slice_backup_restore_acknowledged",
+                )?;
+                self.slices
+                    .replay_backup_restore_acknowledged(&transaction_id);
             }
             "metaagent.event.recorded"
             | "metaagent.event.read"
@@ -1905,6 +1973,7 @@ mod tests {
                 &app.config().daemon_id,
                 &app.config().host_machine_id,
                 crate::slice::CreateSliceInput {
+                    source_slice_ref: None,
                     name: "restored-slice".to_string(),
                     backend: crate::slice::SliceBackendKind::LocalDocker,
                     os: "linux".to_string(),
@@ -1914,7 +1983,7 @@ mod tests {
                     worktree_id: None,
                     workspace_mount: None,
                     development: None,
-                    worker_kernel_ref: None,
+                    worker_kernel_ref: Some("worker-kernel".to_string()),
                     display_url: None,
                     provider_auth: Vec::new(),
                     from_saved_state: None,
@@ -2024,6 +2093,7 @@ mod tests {
                     &config.daemon_id,
                     &config.host_machine_id,
                     crate::slice::CreateSliceInput {
+                        source_slice_ref: None,
                         name: "transactional-slice".to_string(),
                         backend: crate::slice::SliceBackendKind::LocalDocker,
                         os: "linux".to_string(),
@@ -2096,6 +2166,7 @@ mod tests {
                 &config.daemon_id,
                 &config.host_machine_id,
                 crate::slice::CreateSliceInput {
+                    source_slice_ref: None,
                     name: "pending-restore".to_string(),
                     backend: crate::slice::SliceBackendKind::LocalDocker,
                     os: "linux".to_string(),
@@ -2247,3 +2318,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "durable_runtime_state/hosted_worker_tests.rs"]
+mod hosted_worker_tests;

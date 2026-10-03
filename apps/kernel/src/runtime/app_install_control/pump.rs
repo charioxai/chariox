@@ -42,6 +42,7 @@ impl AppInstallControl {
         let _guard = PumpGuard(&self.0.pumping);
         let mut prompts = Vec::new();
         let mut close = Vec::new();
+        let mut waits = Vec::new();
         {
             let mut state = self
                 .0
@@ -52,6 +53,8 @@ impl AppInstallControl {
                 return;
             }
             while state.requests.try_join_next().is_some() {}
+            while state.eviction.try_join_next().is_some() {}
+            let mut evict_for = None;
             for _ in 0..8 {
                 let Some(joined) = state.tasks.try_join_next_with_id() else {
                     break;
@@ -126,6 +129,17 @@ impl AppInstallControl {
                     Err(jobs::Error::Busy | jobs::Error::Storage) => {
                         entry.next = Instant::now() + RETRY
                     }
+                    // An installed App's first start at the live-worker limit
+                    // makes room as a user or on-demand start does, instead of
+                    // retrying until some worker happens to stop.
+                    Err(jobs::Error::LiveLimit) => {
+                        if let Some(first) = wait_for_slot(entry, Instant::now()) {
+                            if first {
+                                waits.push(key.clone());
+                            }
+                            evict_for.get_or_insert_with(|| key.0.clone());
+                        }
+                    }
                     Err(jobs::Error::Unknown) => {
                         entry.step = if entry.cancelled.load(Ordering::Acquire) {
                             Step::Stop
@@ -174,6 +188,17 @@ impl AppInstallControl {
                     }
                 }
             }
+            if let Some(owner) = evict_for {
+                // The one task that holds the runtime state: only while this
+                // eviction runs (a finished task drops its future), and
+                // shutdown joins it. The installing App has no live worker
+                // yet, so no target is spared. A pass that finds one running
+                // leaves it to finish.
+                let runtime = runtime.clone();
+                schedule_eviction(&mut state.eviction, async move {
+                    runtime.evict_idle_app(&owner, "").await
+                });
+            }
             state
                 .entries
                 .retain(|_, entry| entry.busy || !matches!(entry.step, Step::Done));
@@ -221,6 +246,13 @@ impl AppInstallControl {
         for (session, id) in close {
             let _ = runtime.timeout_runtime_interaction(&session, &id).await;
         }
+        for (owner, request_id) in waits {
+            crate::logging::info_with_fields(
+                "app.install",
+                "App install waits for a live worker slot; an idle worker is stopped if there is one",
+                serde_json::json!({ "owner_id": owner, "request_id": request_id }),
+            );
+        }
         for prompt in prompts {
             if self.0.stopped.load(Ordering::Acquire) {
                 break;
@@ -248,8 +280,10 @@ impl AppInstallControl {
                     "Install",
                 )
             };
-            let message=format!("{question}\n\n{}\n\nDeclared information sets are shown for review only. This decision does not grant information-set access.",
-                serde_json::to_string_pretty(prompt.challenge.review()).unwrap_or_default());
+            let message = format!(
+                "{question}\n\n{}",
+                serde_json::to_string_pretty(prompt.challenge.review()).unwrap_or_default()
+            );
             let interaction = RuntimeInteraction::for_kernel_operation(
                 prompt.challenge.interaction_id(),
                 format!("install:{}", prompt.challenge.installation_id()),
@@ -279,6 +313,7 @@ impl AppInstallControl {
                     } else {
                         match result {
                             Ok(receiver) => {
+                                entry.prompt_refused = false;
                                 entry.step = Step::Waiting {
                                     session: prompt.session.clone(),
                                     deadline: prompt.challenge.deadline(),
@@ -286,7 +321,23 @@ impl AppInstallControl {
                                     receiver,
                                 }
                             }
-                            Err(_) => {
+                            Err(error) => {
+                                // Retried until shown; say why once, or an
+                                // install waits for an approval nobody sees.
+                                if !entry.prompt_refused {
+                                    entry.prompt_refused = true;
+                                    crate::logging::warn_with_fields(
+                                        "app.install",
+                                        "App install approval could not be shown; retrying",
+                                        serde_json::json!({
+                                            "owner_id": prompt.key.0,
+                                            "request_id": prompt.key.1,
+                                            "session_id": prompt.session,
+                                            "installation_id": prompt.challenge.installation_id(),
+                                            "error": error.to_string(),
+                                        }),
+                                    );
+                                }
                                 entry.step = Step::Work;
                                 entry.next = Instant::now() + RETRY;
                             }
@@ -302,5 +353,64 @@ impl AppInstallControl {
                     .await;
             }
         }
+    }
+}
+
+/// A first start that met the live-worker limit retries later and, unless the
+/// install was cancelled meanwhile, wants an idle worker evicted. `Some(true)`
+/// the first time, so the wait is logged once; `None` wants no eviction.
+fn wait_for_slot(entry: &mut Entry, now: Instant) -> Option<bool> {
+    entry.next = now + RETRY;
+    if entry.cancelled.load(Ordering::Acquire) || !matches!(entry.step, Step::Start) {
+        return None;
+    }
+    Some(!std::mem::replace(&mut entry.waited_for_slot, true))
+}
+
+/// Stopping a worker joins its thread, so it never runs on the tick: one
+/// eviction at a time runs beside it, and a later pass schedules the next.
+fn schedule_eviction(
+    eviction: &mut JoinSet<()>,
+    task: impl std::future::Future<Output = ()> + Send + 'static,
+) -> bool {
+    if !eviction.is_empty() {
+        return false;
+    }
+    eviction.spawn(task);
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_start_at_the_live_limit_evicts_and_logs_once_unless_cancelled() {
+        let now = Instant::now();
+        let mut entry = Entry::new();
+        entry.step = Step::Start;
+        assert_eq!(wait_for_slot(&mut entry, now), Some(true));
+        assert_eq!(entry.next, now + RETRY);
+        assert_eq!(wait_for_slot(&mut entry, now), Some(false));
+        // A cancelled install never stops another App's worker.
+        entry.cancelled.store(true, Ordering::Release);
+        assert_eq!(wait_for_slot(&mut entry, now), None);
+        let mut stopping = Entry::new();
+        stopping.step = Step::Stop;
+        assert_eq!(wait_for_slot(&mut stopping, now), None);
+        assert_eq!(stopping.next, now + RETRY);
+    }
+
+    #[tokio::test]
+    async fn only_one_eviction_runs_at_a_time() {
+        let mut eviction = JoinSet::new();
+        let (release, wait) = oneshot::channel::<()>();
+        assert!(schedule_eviction(&mut eviction, async move {
+            let _ = wait.await;
+        }));
+        assert!(!schedule_eviction(&mut eviction, async {}));
+        release.send(()).unwrap();
+        while eviction.join_next().await.is_some() {}
+        assert!(schedule_eviction(&mut eviction, async {}));
     }
 }

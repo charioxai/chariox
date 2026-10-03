@@ -77,7 +77,7 @@ impl Enrollment {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum Request {
     Acquire {
@@ -91,6 +91,12 @@ pub(super) enum Request {
         #[serde(default)]
         committed_generation: Option<u64>,
     },
+    /// Trusted pre-bwrap child, on its parent kernel's already owned lease.
+    MapWorkerGroupsV1 {
+        pid: i32,
+        birth: u64,
+    },
+    VerifyWorkerGroupsV1,
     Release {
         lease: String,
     },
@@ -127,6 +133,13 @@ impl Request {
                 }
                 hex(cgroup_leaf.strip_prefix("app-").ok_or(Error::Invalid)?, 32)
             }
+            Self::MapWorkerGroupsV1 { pid, birth } => {
+                if *pid <= 1 || *birth == 0 {
+                    return Err(Error::Invalid);
+                }
+                Ok(())
+            }
+            Self::VerifyWorkerGroupsV1 => Ok(()),
             Self::Release { lease } => hex(lease, 32),
             Self::Delete {
                 owner,
@@ -428,13 +441,15 @@ mod capacity_tests {
     #[test]
     fn installed_fd_limit_covers_all_bounded_graph_leases_and_transient_work() {
         // Each live lease:40 signed graph files, runtime5 metadata/root/lease,
-        // release2 roots, installation1 directory, and bound cgroup4 files.
+        // release2 roots, installation1 directory, bound cgroup4 files,
+        // and mapped child procdir+pidfd2. Each client also pins its peer
+        // procdir, pidfd, executable and user namespace (4 descriptors).
         // The helper serializes operations. The128 transient/global descriptors
         // are reserved headroom for a <=24-level walk, new graph, formatter
         // and daemon root, not an assertion of a measured peak.
         let maximum = super::super::MAX_INSTALLATIONS
-            * (crate::runtime_enrollment::MAX_INVENTORY_FILES + 12)
-            + 64
+            * (crate::runtime_enrollment::MAX_INVENTORY_FILES + 14)
+            + 64 * 5
             + 16
             + 128;
         let unit = include_str!("../../../../../deploy/managed-kernel/chariox-app-storage.service");

@@ -77,6 +77,32 @@ Claude Code on macOS stores a live login in a profile-scoped Keychain service na
 
 Chariox must export the exact profile-scoped Keychain item automatically when materializing a linked or managed Claude account. It may use the legacy unscoped item only for the default profile. Reject empty or non-refreshable credentials before provisioning instead of copying them. For a manual runner drill outside the managed-context path, export the matching scoped item to a temporary local file, copy it into the runner credential profile home as `.claude/.credentials.json`, set mode `600`, verify with `HOME=<profile-home> claude auth status`, and delete the temporary local file. Never print the credential payload or commit it.
 
+## Key retention and rotation
+
+- Private signing keys and provider credentials are durable assets, never build
+  artifacts. Keep them outside repositories, worktrees, task scratch, evidence,
+  container layers, and compiler output. Use a dedicated `~/.chariox/keys/`
+  directory with mode 0700 and private files with mode 0600.
+- Before using a key, verify its public fingerprint against the approved public
+  inventory. Never print private material, put it in prompts/logs, or transfer it
+  to a builder or deployment target. Targets receive public verification pins only.
+- Before first use, create a separately protected backup and prove restoration
+  by deriving its public key and signing/verifying a synthetic challenge. Record
+  only public fingerprints, locations, owner, purpose, date, and backup scope.
+  A same-machine backup does not protect against disk or machine loss.
+- Before cleanup, inventory credentials and protected paths; exclude key stores,
+  backups, credential profiles, and shared reviewer state. Never recursively
+  delete a parent containing them. Stop if ownership or contents are unclear.
+- Key loss is not permission to substitute another key. Obtain explicit rotation
+  authorization, generate a new epoch, update reviewed public trust pins and
+  signing inputs, and test acceptance of the new key plus rejection of the old
+  key. Never edit an already signed artifact or claim rotation is deployed before
+  the consuming systems have been verified. Preserve public rotation history.
+- Keep host-specific key inventories, backup locations, and recovery gaps in
+  protected operator-local notes, not public repositories. Exclude all recorded
+  key and backup locations from artifact/worktree cleanup. Machine-loss recovery
+  remains unproven until an approved off-device backup has passed a restore test.
+
 ## Coding style
 
 Simple: be clean and minimalistic. Strive for simplest solution always.

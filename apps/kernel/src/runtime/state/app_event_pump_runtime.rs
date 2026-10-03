@@ -343,15 +343,19 @@ mod tests {
             )
         };
         assert!(gone(AppAutomationError::InvalidTarget));
-        assert!(gone(AppAutomationError::Storage(DaemonError::WorkflowEndpointNotFound {
-            session_id: "s".into(),
-            workflow_id: "w".into(),
-            endpoint_id: "e".into(),
-        })));
-        assert!(gone(AppAutomationError::Storage(DaemonError::WorkflowNotFound {
-            session_id: "s".into(),
-            workflow_id: "w".into(),
-        })));
+        assert!(gone(AppAutomationError::Storage(
+            DaemonError::WorkflowEndpointNotFound {
+                session_id: "s".into(),
+                workflow_id: "w".into(),
+                endpoint_id: "e".into(),
+            }
+        )));
+        assert!(gone(AppAutomationError::Storage(
+            DaemonError::WorkflowNotFound {
+                session_id: "s".into(),
+                workflow_id: "w".into(),
+            }
+        )));
         // A deleted queue fails queue resolution with an invalid graph reference.
         assert!(gone(AppAutomationError::Storage(
             DaemonError::InvalidWorkflowGraphReference {
@@ -362,8 +366,10 @@ mod tests {
             }
         )));
         assert!(!gone(AppAutomationError::TargetChanged));
-        assert!(!gone(AppAutomationError::Storage(DaemonError::SessionNotFound {
-            session_id: "s".into(),
-        })));
+        assert!(!gone(AppAutomationError::Storage(
+            DaemonError::SessionNotFound {
+                session_id: "s".into(),
+            }
+        )));
     }
 }

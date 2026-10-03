@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { chmod, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
@@ -72,6 +72,28 @@ test("source helper discovery uses module checkout and explicit target directory
   await writeFile(binary, "#!/bin/sh\nexit 0\n", { mode: 0o755 })
   // An explicitly selected checkout target takes precedence over installed tools.
   assert.equal(await locateAppPackageBinary({ CARGO_TARGET_DIR: target }, pathToFileURL(join(root, "apps/cli/dist/app-developer.js")).href), binary)
+})
+
+test("a compiled release executable uses the helper beside it; a source run never does", async (context) => {
+  const root = await mkdtemp(join(await realpath(tmpdir()), "chariox-app-release-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  await mkdir(join(root, "bin"))
+  const chariox = join(root, "bin/chariox")
+  const binary = join(root, "bin/chariox-app-package")
+  await writeFile(chariox, "", { mode: 0o755 })
+  await writeFile(binary, "#!/bin/sh\nexit 0\n", { mode: 0o755 })
+  await symlink(chariox, join(root, "chariox-link"))
+  const moduleUrl = pathToFileURL(join(root, "elsewhere/app-developer.js")).href
+  assert.equal(await locateAppPackageBinary({}, moduleUrl, { version: "0.2.0", executable: chariox }), binary)
+  // An installed symlink to the executable still finds the bundle's helper.
+  assert.equal(await locateAppPackageBinary({}, moduleUrl, { version: "0.2.0", executable: join(root, "chariox-link") }), binary)
+  // The explicit helper still wins.
+  const explicit = join(root, "explicit-helper")
+  await writeFile(explicit, "#!/bin/sh\nexit 0\n", { mode: 0o755 })
+  assert.equal(await locateAppPackageBinary({ CHARIOX_APP_PACKAGE_BIN: explicit }, moduleUrl, { version: "0.2.0", executable: chariox }), explicit)
+  // Run from source (no release version), Bun or Node's own directory is never searched.
+  const fromSource = await locateAppPackageBinary({}, moduleUrl, { version: undefined, executable: chariox }).catch((error: Error) => error)
+  assert.notEqual(fromSource, binary)
 })
 
 test("the dev loop packs through the same pack command and returns its verified identity", async () => {

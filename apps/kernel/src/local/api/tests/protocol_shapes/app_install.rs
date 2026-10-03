@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 
 #[test]
 fn install_operation_protocol_shapes_preserve_owner_decision_and_immediate_ack() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 383);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 410);
     let requests = vec![
         LocalDaemonRequest::BeginAppInstall(BeginAppInstallRequest {
             session_id: "session".into(),
@@ -22,6 +22,7 @@ fn install_operation_protocol_shapes_preserve_owner_decision_and_immediate_ack()
     let responses = vec![
         AppInstallOperationPhase::Preparing,
         AppInstallOperationPhase::AwaitingApproval,
+        AppInstallOperationPhase::Queued,
         AppInstallOperationPhase::Starting,
         AppInstallOperationPhase::Committed,
         AppInstallOperationPhase::Cancelled,
@@ -63,7 +64,7 @@ fn install_operation_protocol_shapes_preserve_owner_decision_and_immediate_ack()
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "44cf902e0e4d510b7525f148621c96bdcb8f2af6461a750ab81d17af7008034e"
+        "9385100cb1f127a83e7392ae22e0302cd5560157156745c1ff5ee2649c43b210"
     );
     for field in [
         "owner_id",

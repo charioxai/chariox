@@ -25,6 +25,63 @@ fn terminal_stream_store_isolates_session_lock_contention() {
     assert_eq!(store.input_records().len(), 1);
 }
 
+// MP-08 / MP-10: a subscriber must finish a bounded drain without another append.
+#[tokio::test]
+async fn terminal_stream_subscriber_delivers_three_mib_burst_in_order() {
+    let terminal = TerminalStreamStore::new();
+    let expected: Vec<u8> = (0..3 * 1024 * 1024)
+        .map(|index| (index % 251) as u8)
+        .collect();
+    for bytes in expected.chunks(16 * 1024) {
+        terminal.fan_out_output(
+            "session-burst",
+            "run-burst",
+            None,
+            TerminalOutputKind::ProviderOutput,
+            None,
+            vec!["subscriber".to_string()],
+            bytes,
+        );
+    }
+    let unrelated = terminal.attachment_change_sequence("session-burst", "other");
+    let mut delivered = Vec::new();
+    while delivered.len() < expected.len() {
+        // Capture before draining, as both local and relay subscribers do.
+        let sequence = terminal.attachment_change_sequence("session-burst", "subscriber");
+        for record in terminal.drain_output_records("session-burst", "subscriber") {
+            delivered.extend(record.bytes);
+        }
+        if delivered.len() < expected.len() {
+            tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                terminal.wait_for_attachment_change_after("session-burst", "subscriber", sequence),
+            )
+            .await
+            .expect("subscriber stalled with burst bytes still pending");
+            tokio::task::yield_now().await;
+        }
+    }
+    assert_eq!(
+        delivered, expected,
+        "all burst bytes arrive once and in order"
+    );
+    assert!(!terminal.has_pending_output_records("session-burst", "subscriber"));
+    assert_eq!(
+        terminal.attachment_change_sequence("session-burst", "other"),
+        unrelated
+    );
+    let settled = terminal.attachment_change_sequence("session-burst", "subscriber");
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(25),
+            terminal.wait_for_attachment_change_after("session-burst", "subscriber", settled),
+        )
+        .await
+        .is_err(),
+        "an empty drain must not create a busy subscription loop"
+    );
+}
+
 #[tokio::test]
 async fn terminal_stream_store_notifies_waiters_on_output() {
     let terminal = TerminalStreamStore::new();

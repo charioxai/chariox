@@ -1,6 +1,38 @@
 use super::*;
 
 #[test]
+fn runtime_start_and_reset_publish_browser_starting_health() {
+    let viewport = CanonicalViewport::new(1440, 900, 1, 1440, 900).unwrap();
+    let mut environment = RoomEnvironment::new("room-1", "environment-1", viewport).unwrap();
+    environment.start_runtime().unwrap();
+    for restarting in [false, true] {
+        if restarting {
+            environment.reset_runtime().unwrap();
+        }
+        let snapshot = environment.snapshot();
+        assert_eq!(snapshot.lifecycle, EnvironmentLifecycle::Starting);
+        for component in [
+            EnvironmentComponent::BrowserController,
+            EnvironmentComponent::Browser,
+        ] {
+            assert!(snapshot.health.iter().any(|health| {
+                health.component == component
+                    && health.state == EnvironmentComponentHealthState::Starting
+            }));
+        }
+        environment
+            .transition_to(EnvironmentLifecycle::Ready)
+            .unwrap();
+        environment
+            .transition_to(EnvironmentLifecycle::Stopping)
+            .unwrap();
+        environment
+            .transition_to(EnvironmentLifecycle::Stopped)
+            .unwrap();
+    }
+}
+
+#[test]
 fn lifecycle_preserves_identity_and_reset_invalidates_runtime_handles() {
     let viewport = CanonicalViewport::new(1440, 900, 2, 2880, 1800).unwrap();
     let mut environment = RoomEnvironment::new("room-1", "environment-1", viewport).unwrap();
@@ -280,7 +312,30 @@ fn controller_tab_reconciliation_preserves_identity_and_tracks_documents_and_foc
 
 #[test]
 fn app_view_tabs_carry_their_app_and_panel_and_changes_emit_tabs_changed() {
-    let mut environment = ready_environment();
+    let mut environment = ready_environment_with_agent();
+    environment.reconcile_controller_tabs(
+        vec![observed_tab("target-a", "loader-a1", "https://a.test", "A")],
+        Some("target-a"),
+    );
+    let tabs_changed = |environment: &RoomEnvironment, cursor| {
+        let EnvironmentReplay::Events { events, .. } = environment.events_after(cursor) else {
+            panic!("replay gap");
+        };
+        events
+            .iter()
+            .filter(|event| matches!(event.kind, EnvironmentEventKind::TabsChanged))
+            .count()
+    };
+    let right = super::AppPanelLayout {
+        placement: Some(super::AppPanelPlacement::Right),
+        ..Default::default()
+    };
+    let apps = std::collections::BTreeMap::from([(
+        "target-app".to_string(),
+        ("app_1".to_string(), right),
+    )]);
+    // Marked before the Room has projected the App's Tab: it is marked once it appears.
+    environment.set_app_tabs(apps.clone(), Some("agent-1".into()), true);
     environment.reconcile_controller_tabs(
         vec![
             observed_tab("target-a", "loader-a1", "https://a.test", "A"),
@@ -293,39 +348,125 @@ fn app_view_tabs_carry_their_app_and_panel_and_changes_emit_tabs_changed() {
         ],
         Some("target-app"),
     );
-    let cursor = environment.snapshot().event_cursor;
-    let app = super::EnvironmentTabApp {
-        installation_id: "app_1".into(),
-        panel: Some(super::EnvironmentAppPanel {
-            x: 880,
-            y: 0,
-            width: 400,
-            height: 800,
-            agent_id: Some("agent-1".into()),
-        }),
+    // 1440 CSS px at scale 1: a 380 px panel at the right, full height.
+    let panel = |agent: &str| super::EnvironmentAppPanel {
+        x: 1060,
+        y: 0,
+        width: 380,
+        height: 900,
+        agent_id: Some(agent.into()),
+        placement: super::AppPanelPlacement::Right,
+        minimized: false,
     };
-    let apps = std::collections::BTreeMap::from([("target-app".to_string(), app.clone())]);
-    environment.set_app_tabs(&apps);
-    environment.set_app_tabs(&apps);
-    let snapshot = environment.snapshot();
-    assert_eq!(
-        snapshot
+    let marker = |agent: &str| super::EnvironmentTabApp {
+        installation_id: "app_1".into(),
+        panel: Some(panel(agent)),
+    };
+    let apps_of = |environment: &RoomEnvironment| {
+        environment
+            .snapshot()
             .tabs
-            .iter()
-            .map(|tab| (tab.tab_id.as_str(), tab.app.clone()))
-            .collect::<Vec<_>>(),
-        vec![("tab-1", None), ("tab-2", Some(app))]
+            .into_iter()
+            .map(|tab| (tab.tab_id, tab.app))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        apps_of(&environment),
+        vec![
+            ("tab-1".into(), None),
+            ("tab-2".into(), Some(marker("agent-1")))
+        ]
     );
-    // One change, one event; an identical set emits nothing.
-    assert!(matches!(
-        environment.events_after(cursor),
-        EnvironmentReplay::Events { events, .. }
-            if matches!(events.as_slice(), [EnvironmentEvent {
-                kind: EnvironmentEventKind::TabsChanged,
-                ..
-            }])
-    ));
-    environment.set_app_tabs(&std::collections::BTreeMap::new());
+    // A focus change moves every panel at once: one change, one event.
+    let cursor = environment.snapshot().event_cursor;
+    environment.set_panel_agent(Some("agent-2".into()));
+    environment.set_panel_agent(Some("agent-2".into()));
+    environment.set_app_tabs(apps.clone(), Some("agent-2".into()), true);
+    assert_eq!(tabs_changed(&environment, cursor), 1);
+    assert_eq!(apps_of(&environment)[1].1, Some(marker("agent-2")));
+    // The panel follows the canonical viewport.
+    let revision = environment.snapshot().viewport.revision;
+    environment
+        .update_viewport(
+            "agent-1",
+            revision,
+            CanonicalViewport::new(900, 600, 2, 1800, 1200).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(
+        apps_of(&environment)[1].1.as_ref().unwrap().panel,
+        Some(super::EnvironmentAppPanel {
+            x: 1200,
+            y: 0,
+            width: 600,
+            height: 1200,
+            agent_id: Some("agent-2".into()),
+            placement: super::AppPanelPlacement::Right,
+            minimized: false,
+        })
+    );
+    // The App's own placement: bottom, minimized to a bar, or no panel. The
+    // page keeps the rest (900x600 CSS at scale 2).
+    let layout = |placement, size, minimized| {
+        std::collections::BTreeMap::from([(
+            "target-app".to_string(),
+            (
+                "app_1".to_string(),
+                super::AppPanelLayout {
+                    placement,
+                    size,
+                    minimized,
+                },
+            ),
+        )])
+    };
+    let bottom = Some(super::AppPanelPlacement::Bottom);
+    let pages = |environment: &RoomEnvironment| environment.app_page_sizes()["target-app"];
+    environment.set_app_tabs(
+        layout(bottom, Some(250), false),
+        Some("agent-2".into()),
+        true,
+    );
+    let panel = apps_of(&environment)[1]
+        .1
+        .as_ref()
+        .unwrap()
+        .panel
+        .clone()
+        .unwrap();
+    assert_eq!(
+        (panel.x, panel.y, panel.width, panel.height),
+        (0, 700, 1800, 500)
+    );
+    assert_eq!(pages(&environment), (900, 350));
+    environment.set_app_tabs(layout(bottom, None, true), Some("agent-2".into()), true);
+    let panel = apps_of(&environment)[1]
+        .1
+        .as_ref()
+        .unwrap()
+        .panel
+        .clone()
+        .unwrap();
+    assert!(panel.minimized);
+    assert_eq!((panel.y, panel.height), (1136, 64));
+    assert_eq!(pages(&environment), (900, 568));
+    environment.set_app_tabs(layout(None, None, false), Some("agent-2".into()), true);
+    assert_eq!(apps_of(&environment)[1].1.as_ref().unwrap().panel, None);
+    assert_eq!(pages(&environment), (900, 600));
+    // An older controller: the App Tab is still marked, without a panel.
+    environment.set_app_tabs(apps.clone(), Some("agent-2".into()), false);
+    assert_eq!(
+        apps_of(&environment)[1].1,
+        Some(super::EnvironmentTabApp {
+            installation_id: "app_1".into(),
+            panel: None,
+        })
+    );
+    environment.set_app_tabs(
+        std::collections::BTreeMap::new(),
+        Some("agent-2".into()),
+        true,
+    );
     assert!(environment
         .snapshot()
         .tabs
@@ -507,6 +648,54 @@ fn viewport_updates_are_actor_attributed_and_revision_guarded() {
         Err(EnvironmentError::StaleViewportRevision {
             expected: 2,
             actual: 1,
+        })
+    );
+}
+
+#[test]
+fn the_browser_bar_is_hidden_by_default_and_changes_once_per_request() {
+    let mut environment = ready_environment();
+    assert!(!environment.snapshot().browser_bar_visible);
+    let human = |id: &str| EnvironmentActor::new(id, EnvironmentActorKind::Human, id);
+    let cursor = environment.snapshot().event_cursor;
+    environment
+        .set_browser_bar_visible_as_actor(human("user-1"), true)
+        .expect("a member shows the bar");
+    environment
+        .set_browser_bar_visible_as_actor(human("user-1"), true)
+        .expect("showing it again is a no-op");
+    assert!(environment.snapshot().browser_bar_visible);
+    let EnvironmentReplay::Events { events, .. } = environment.events_after(cursor) else {
+        panic!("the events are within the replay window");
+    };
+    let changes: Vec<_> = events
+        .iter()
+        .filter(|event| matches!(event.kind, EnvironmentEventKind::TabsChanged))
+        .collect();
+    assert_eq!(changes.len(), 1);
+
+    // Like a viewport change, it waits while someone else drives the desktop.
+    environment
+        .request_takeover_as_actor(human("user-2"), InputTarget::Desktop)
+        .expect("user-2 takes the desktop");
+    assert_eq!(
+        environment.set_browser_bar_visible_as_actor(human("user-1"), false),
+        Err(EnvironmentError::InputOwnedByAnotherActor {
+            target: InputTarget::Desktop,
+            actor_id: "user-2".to_string(),
+        })
+    );
+    environment
+        .set_browser_bar_visible_as_actor(human("user-2"), false)
+        .expect("the desktop's owner may hide it");
+    assert!(!environment.snapshot().browser_bar_visible);
+
+    let viewport = CanonicalViewport::new(1440, 900, 1, 1440, 900).unwrap();
+    let mut stopped = RoomEnvironment::new("room-1", "environment-1", viewport).unwrap();
+    assert_eq!(
+        stopped.set_browser_bar_visible_as_actor(human("user-1"), true),
+        Err(EnvironmentError::EnvironmentNotReady {
+            lifecycle: EnvironmentLifecycle::Stopped,
         })
     );
 }
@@ -2431,7 +2620,7 @@ fn component_health_projects_safe_diagnostic_codes() {
             },
             EnvironmentComponentHealth {
                 component: EnvironmentComponent::Browser,
-                state: EnvironmentComponentHealthState::Unavailable,
+                state: EnvironmentComponentHealthState::Starting,
                 diagnostic_code: None,
             },
             EnvironmentComponentHealth {

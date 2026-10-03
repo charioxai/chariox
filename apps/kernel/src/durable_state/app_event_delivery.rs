@@ -39,6 +39,7 @@ pub(crate) enum AppEventDeliveryError {
 }
 impl From<rusqlite::Error> for AppEventDeliveryError {
     fn from(error: rusqlite::Error) -> Self {
+        super::storage_full::observe(&error);
         Self::Outbox(error.into())
     }
 }
@@ -183,6 +184,8 @@ fn apply(
             }
             Ok(receipt)
         }
+        // A full disk rolled the commit back: nothing to reconcile.
+        Err(error) if super::storage_full::observe(&error) => Err(error.into()),
         Err(error) => reconcile_commit(connection, prepared, error),
     }
 }
@@ -204,7 +207,7 @@ fn write(tx: &Transaction<'_>, prepared: &PreparedAppEvent, recovery: bool) -> R
             hot_entities: &prepared.encoded.hot_entities,
             workflow_runs: &prepared.encoded.workflow_runs,
             delivery_receipts: &prepared.encoded.delivery_receipts,
-            prompt_state_json: None,
+            prompt_state_jsons: &[],
         },
     )?;
     Ok(())

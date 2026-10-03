@@ -332,6 +332,32 @@ impl SessionStateStore {
         )
     }
 
+    pub(crate) fn set_room_browser_bar_visible_as_actor(
+        &self,
+        session_id: &str,
+        actor: super::EnvironmentActor,
+        visible: bool,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.write()
+            .set_room_browser_bar_visible_as_actor(session_id, actor, visible)
+    }
+
+    pub(crate) fn preview_update_room_environment_viewport_as_actor(
+        &self,
+        session_id: &str,
+        actor: super::EnvironmentActor,
+        expected_revision: u64,
+        viewport: CanonicalViewport,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.read()
+            .preview_update_room_environment_viewport_as_actor(
+                session_id,
+                actor,
+                expected_revision,
+                viewport,
+            )
+    }
+
     pub(crate) fn update_room_environment_viewport_as_actor(
         &self,
         session_id: &str,
@@ -389,9 +415,11 @@ impl SessionStateStore {
     pub(crate) fn set_room_environment_app_tabs(
         &self,
         session_id: &str,
-        apps: &std::collections::BTreeMap<String, super::EnvironmentTabApp>,
-    ) -> Result<(), EnvironmentError> {
-        self.write().set_room_environment_app_tabs(session_id, apps)
+        apps: std::collections::BTreeMap<String, (String, crate::session::AppPanelLayout)>,
+        app_panels: bool,
+    ) -> Result<std::collections::BTreeMap<String, (u32, u32)>, EnvironmentError> {
+        self.write()
+            .set_room_environment_app_tabs(session_id, apps, app_panels)
     }
 
     pub(crate) fn room_environment_controller_tab_binding(

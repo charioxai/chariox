@@ -68,6 +68,8 @@ pub struct LeasedAgent {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub projected_completion_keys: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    // Legacy relay field. Worker-local durable cursors replace this cache;
+    // any old keys are migrated on the first projection drain.
     pub projected_output_history_keys: Vec<String>,
     #[serde(skip)]
     pub projected_provider_run: Option<(String, crate::provider::ProviderRunState)>,
@@ -77,9 +79,31 @@ pub struct LeasedAgent {
     pub active_home_prompt_started_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub applied_home_steer_ids: Vec<String>,
+    /// In-memory projection of exact queued-steer receipts retained for wire
+    /// compatibility. DurableKernelStateStore is authoritative across worker
+    /// restarts so the home can reconcile a lost relay reply without replay.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub home_steer_receipts: Vec<LeasedPromptSteerReceipt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replayable_completion: Option<LeasedCompletionReplay>,
     pub created_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LeasedPromptSteerReceiptPhase {
+    Dispatching,
+    Accepted,
+    Rejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeasedPromptSteerReceipt {
+    pub steer_id: String,
+    pub target_home_prompt_id: String,
+    pub worker_provider_run_id: String,
+    pub execution_lease_id: String,
+    pub phase: LeasedPromptSteerReceiptPhase,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -152,6 +176,7 @@ impl LeasedAgent {
             active_home_prompt_id: None,
             active_home_prompt_started_at_ms: None,
             applied_home_steer_ids: Vec::new(),
+            home_steer_receipts: Vec::new(),
             replayable_completion: None,
             created_at_ms: unix_epoch_ms(),
         }

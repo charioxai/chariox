@@ -349,27 +349,9 @@ impl PendingStart {
     /// transaction. No request decoder receives a raw connection or this entry
     /// point. The transaction serializes the exact trust check with enqueueing;
     /// later cancellation cannot promise rollback of bytes already transmitted.
-    pub(super) fn start_current(
-        self,
-        transaction: &rusqlite::Transaction<'_>,
-        budget: &AppOperationBudget,
-    ) -> Result<String> {
-        let execution = budget.fork(|| false);
-        self.start_with(
-            transaction,
-            budget,
-            || Ok(()),
-            move |transport, target, exchange, stopped, lease, admitted| async move {
-                execution.check().map_err(|_| HttpError::Cancelled)?;
-                transport
-                    .run(target, exchange, stopped, lease, admitted)
-                    .await
-            },
-        )
-    }
-    // Private decomposition permits deterministic task/backpressure fixtures.
-    // Every start, including those fixtures, goes through the same exact writer
-    // trust/identity/budget fence below; production always uses HttpTransport.
+    /// Every start, including deterministic task/backpressure fixtures, goes
+    /// through the same writer trust/identity/budget fence below; production
+    /// always runs HttpTransport.
     fn start_with<F, Fut>(
         mut self,
         transaction: &rusqlite::Transaction<'_>,

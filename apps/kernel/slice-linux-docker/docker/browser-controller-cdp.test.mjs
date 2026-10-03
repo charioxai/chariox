@@ -16,6 +16,36 @@ const viewport = {
   desktop_pixel_height: 1440,
 };
 
+test("concurrent reads share connection initialization", async () => {
+  const ready = Promise.withResolvers();
+  const connection = new FakeConnection();
+  let opens = 0;
+  const browser = new BrowserCdpClient({ connectionFactory: async () => {
+    opens += 1;
+    await ready.promise;
+    return connection;
+  } });
+  const first = browser.ensureConnection();
+  const second = browser.ensureConnection();
+  ready.resolve();
+  const connections = await Promise.all([first, second]);
+  assert.equal(opens, 1);
+  assert.equal(connections[0], connections[1]);
+});
+
+test("concurrent reads share fully initialized target sessions", async () => {
+  const connection = new FakeConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  await browser.ensureConnection();
+  const [first, second] = await Promise.all([
+    browser.ensureTargetSession(connection, "target-a"),
+    browser.ensureTargetSession(connection, "target-a"),
+  ]);
+  assert.equal(first, second);
+  assert.equal(connection.calls.filter(call => call.method === "Target.attachToTarget").length, 1);
+  assert.equal(connection.calls.filter(call => call.method === "Page.enable").length, 1);
+});
+
 test("persistent browser connection returns page identities, focus, and applied viewport", async () => {
   const connection = new FakeConnection();
   let connectionCount = 0;
@@ -48,6 +78,8 @@ test("persistent browser connection returns page identities, focus, and applied 
     },
   ]);
   assert.equal(first.focused_target_id, "target-b");
+  assert.equal(connection.calls.filter(call => call.method === "Emulation.setDeviceMetricsOverride").length, 2,
+    "MP-08/MP-10 unchanged reconciliation must not resize either tab again");
   assert.deepEqual(first.viewport, viewport);
   assert.equal(
     connection.calls.filter((call) => call.method === "Target.attachToTarget").length,
@@ -95,6 +127,24 @@ test("persistent browser connection returns page identities, focus, and applied 
     "document.visibilityState === 'visible'",
     "active-tab focus must not disappear merely because the browser window loses OS focus",
   );
+});
+
+test("focus is read in a controller-owned isolated world a page cannot redefine", async () => {
+  const connection = new FakeConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  await browser.reconcile(viewport);
+  await browser.reconcile(viewport);
+  const worlds = connection.calls.filter((call) => call.method === "Page.createIsolatedWorld");
+  assert.deepEqual(
+    worlds.map((call) => [call.sessionId, call.params.frameId, call.params.worldName]),
+    [["session-a", "frame-a", "chariox-controller-focus"], ["session-b", "frame-b", "chariox-controller-focus"]],
+    "one world per document, reused by later polls",
+  );
+  const focusReads = connection.calls.filter(
+    (call) => call.method === "Runtime.evaluate" && call.params.expression === "document.visibilityState === 'visible'",
+  );
+  assert.equal(focusReads.length, 4);
+  assert.ok(focusReads.every((call) => typeof call.params.contextId === "number"), "never evaluated in the page's own world");
 });
 
 test("a Tab that closes while it is inspected drops out instead of failing the reconcile", async () => {
@@ -177,6 +227,61 @@ test("failed event subscription closes the connection before a clean reconnect",
 
   assert.equal(result.browser_generation, 2);
   assert.equal(result.event_cursor, 1);
+});
+
+test("App pages get a narrower viewport; the panel takes the rest", async () => {
+  const connection = new FakeConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  browser.appTabs = { apps: new Map([["session-a", { targetId: "target-a" }]]) };
+  const widths = () => new Map(connection.calls
+    .filter((call) => call.method === "Emulation.setDeviceMetricsOverride")
+    .map((call) => [call.sessionId, call.params.width]));
+  await browser.reconcile(viewport, { appPanelCssWidth: 380 });
+  assert.equal(widths().get("session-a"), 900);
+  // A page the kernel sized (bottom panel) keeps its width and loses height.
+  browser.appTabs.apps.get("session-a").page = { width: 1280, height: 460 };
+  await browser.reconcile(viewport, { appPanelCssWidth: 380 });
+  const last = connection.calls.filter((call) => call.method === "Emulation.setDeviceMetricsOverride" && call.sessionId === "session-a").at(-1).params;
+  assert.deepEqual([last.width, last.height], [1280, 460]);
+  // A size larger than the viewport is ignored.
+  browser.appTabs.apps.get("session-a").page = { width: 5000, height: 460 };
+  await browser.reconcile(viewport, { appPanelCssWidth: 380 });
+  assert.equal(widths().get("session-a"), 900);
+  browser.appTabs.apps.get("session-a").page = null;
+  assert.ok([...widths()].every(([session, width]) => session === "session-a" || width === 1280));
+  assert.equal(browser.appMetrics().width, 900);
+  // An older kernel sends no width, and a width that leaves no page is refused.
+  for (const appPanelCssWidth of [undefined, 1280]) {
+    await browser.reconcile(viewport, { appPanelCssWidth });
+    assert.equal(widths().get("session-a"), 1280);
+    assert.equal(browser.appMetrics(), null);
+  }
+});
+
+test("a reconnected browser applies the bar to windows whose ids an earlier browser used", async () => {
+  // Both browsers put target-a in window 1; the second starts it clipped.
+  const windowed = (state) => {
+    const connection = new FakeConnection();
+    connection.includeWorker = false;
+    connection.windows = { 1: state };
+    const send = connection.send.bind(connection);
+    connection.send = async (method, params = {}, sessionId) => {
+      if (method === "Browser.getWindowForTarget") return { windowId: params.targetId === "target-a" ? 1 : 2 };
+      if (method === "Browser.getWindowBounds") return { bounds: { windowState: connection.windows[params.windowId] ?? "fullscreen" } };
+      if (method === "Browser.setWindowBounds") connection.windows[params.windowId] = params.bounds.windowState;
+      return send(method, params, sessionId);
+    };
+    return connection;
+  };
+  const first = windowed("normal");
+  const second = windowed("normal");
+  const connections = [first, second];
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connections.shift() });
+  await browser.reconcile(viewport, { browserBarVisible: false });
+  assert.equal(first.windows[1], "fullscreen");
+  first.open = false; // Chromium was relaunched.
+  await browser.reconcile(viewport, { browserBarVisible: false });
+  assert.equal(second.windows[1], "fullscreen");
 });
 
 test("a failed cookie-writer fence release is never reused", async () => {
@@ -266,8 +371,8 @@ test("tab lifecycle operations stay document-bound and use browser target comman
     action: "close",
   });
   assert.deepEqual(
-    connection.calls.find((call) => call.method === "Target.activateTarget")?.params,
-    { targetId: "target-a" },
+    connection.calls.find((call) => call.method === "Page.bringToFront"),
+    { method: "Page.bringToFront", params: {}, sessionId: "session-a" },
   );
   assert.deepEqual(
     connection.calls.find((call) => call.method === "Target.closeTarget")?.params,
@@ -280,6 +385,29 @@ test("tab lifecycle operations stay document-bound and use browser target comman
   await assert.rejects(
     browser.manageTab({ target_id: "target-b", document_id: "loader-b", action: "detach" }),
     (error) => error.code === "browser_tab_action_invalid",
+  );
+});
+
+test("tab activation brings the selected page to front before focus is reconciled", async () => {
+  const connection = new PageActivationConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  const before = await browser.reconcile(viewport);
+  assert.equal(before.focused_target_id, "target-b");
+
+  await browser.manageTab({
+    target_id: "target-a",
+    document_id: "loader-a",
+    action: "activate",
+  });
+
+  const after = await browser.reconcile(viewport);
+  assert.equal(after.focused_target_id, "target-a");
+  assert.equal(
+    connection.calls.some(
+      (call) => call.method === "Page.bringToFront" && call.sessionId === "session-a",
+    ),
+    true,
+    "activation must use the selected page session so a subsequent focus read sees it",
   );
 });
 
@@ -570,6 +698,7 @@ test("download and upload requests stay target-bound and return no file paths", 
     downloadDirectory: "/safe/downloads",
     uploadRoots: ["/safe/uploads"],
     fileSystem,
+    stageUploads: async ({ files }) => ({ files, markExposed() {}, async discard() {} }),
   });
   await browser.reconcile(viewport);
 
@@ -952,9 +1081,42 @@ test("any command's new controller connection sweeps leftover App Tabs", async (
     browser, resourceInventory: async () => ({ browser_ids: ["browser-pid-fixture"], profile_ids: ["profile-sha256-fixture"] }),
   });
   assert.equal(response.ok, true, JSON.stringify(response.error));
-  await new Promise((resolve) => setImmediate(resolve));
   assert.ok(connection.closedTargetIds.has("app-left"), "the non-App command's connection ran the App sweep");
   assert.ok(!connection.closedTargetIds.has("target-a"));
+  // The sweep finishes before the command lists Tabs: a restored App window
+  // is never inspected while it closes (a slice restart's first reconcile).
+  assert.deepEqual(response.result.tabs.map((tab) => tab.target_id), ["target-a", "target-b"]);
+  assert.ok(!connection.calls.some((call) => call.method === "Target.attachToTarget" && call.params.targetId === "app-left"));
+});
+
+test("a command on a session that detaches fails at once, not at its timeout", async () => {
+  const socket = new FakeSocket();
+  const connection = new CdpConnection(socket, 60_000);
+  const closing = connection.send("Page.enable", {}, "session-a");
+  const other = connection.send("Page.enable", {}, "session-b");
+  socket.message({ method: "Target.detachedFromTarget", params: { sessionId: "session-a", targetId: "target-a" } });
+  await assert.rejects(closing, (error) => error.code === "browser_cdp_command_failed" && /Page\.enable: Target closed/.test(error.message));
+  socket.message({ id: JSON.parse(socket.sent[1]).id, result: {} });
+  assert.deepEqual(await other, {});
+  await connection.close();
+});
+
+test("a Tab that closes while its session starts drops out of the reconcile at once", async () => {
+  // Chromium does not answer the commands of a session whose target closed.
+  const socket = new ClosingTabSocket("target-a", "session-a");
+  const browser = new BrowserCdpClient({ connectionFactory: async () => new CdpConnection(socket, 60_000) });
+  const reconciled = await browser.reconcile(viewport);
+  assert.deepEqual(reconciled.tabs.map((tab) => tab.target_id), ["target-b"]);
+  await browser.close();
+});
+
+test("a Tab still listed after its session went away twice is left for the next reconcile", async () => {
+  const connection = new StillClosingConnection("session-a");
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  const reconciled = await browser.reconcile(viewport);
+  assert.deepEqual(reconciled.tabs.map((tab) => tab.target_id), ["target-b"]);
+  connection.closingSessionId = null;
+  assert.deepEqual((await browser.reconcile(viewport)).tabs.map((tab) => tab.target_id), ["target-a", "target-b"]);
 });
 
 class FakeConnection {
@@ -1029,6 +1191,10 @@ class FakeConnection {
         },
       };
     }
+    if (method === "Page.createIsolatedWorld") {
+      this.isolatedWorlds = (this.isolatedWorlds ?? 0) + 1;
+      return { executionContextId: 100 + this.isolatedWorlds };
+    }
     if (method === "Runtime.evaluate") {
       if (sessionId === "worker-session-a" && params.expression === "self.close()") {
         this.closedTargetIds.add("worker-a");
@@ -1038,6 +1204,44 @@ class FakeConnection {
     if (method === "DOM.resolveNode") return { object: { objectId: "file-object" } };
     if (method === "Runtime.callFunctionOn") return { result: { value: "file" } };
     return {};
+  }
+}
+
+class StillClosingConnection extends FakeConnection {
+  constructor(closingSessionId) {
+    super();
+    this.closingSessionId = closingSessionId;
+  }
+
+  async send(method, params = {}, sessionId) {
+    if (method === "Emulation.setDeviceMetricsOverride" && sessionId === this.closingSessionId) {
+      this.calls.push({ method, params, sessionId });
+      throw new Error(`${method}: Session with given id not found.`);
+    }
+    return super.send(method, params, sessionId);
+  }
+}
+
+class PageActivationConnection extends FakeConnection {
+  constructor() {
+    super();
+    this.focusedTargetId = "target-b";
+  }
+
+  async send(method, params = {}, sessionId) {
+    if (method === "Page.bringToFront") {
+      this.focusedTargetId = sessionId === "session-a" ? "target-a" : "target-b";
+      return super.send(method, params, sessionId);
+    }
+    if (method === "Runtime.evaluate" && params.expression === "document.visibilityState === 'visible'") {
+      this.calls.push({ method, params, sessionId });
+      return {
+        result: {
+          value: this.focusedTargetId === (sessionId === "session-a" ? "target-a" : "target-b"),
+        },
+      };
+    }
+    return super.send(method, params, sessionId);
   }
 }
 
@@ -1252,6 +1456,27 @@ class FakeSocket extends EventTarget {
   }
 }
 
+class ClosingTabSocket extends FakeSocket {
+  constructor(targetId, sessionId) {
+    super();
+    this.remote = new FakeConnection();
+    this.targetId = targetId;
+    this.sessionId = sessionId;
+  }
+
+  send(payload) {
+    super.send(payload);
+    const request = JSON.parse(payload);
+    if (request.method === "Page.enable" && request.sessionId === this.sessionId) {
+      this.remote.closedTargetIds.add(this.targetId);
+      this.message({ method: "Target.detachedFromTarget", params: { sessionId: this.sessionId, targetId: this.targetId } });
+      return;
+    }
+    void this.remote.send(request.method, request.params, request.sessionId)
+      .then((result) => this.message({ id: request.id, result }));
+  }
+}
+
 class DialogFaultSocket extends FakeSocket {
   constructor() {
     super();
@@ -1275,3 +1500,115 @@ class DialogFaultSocket extends FakeSocket {
       .then((result) => this.message({ id: request.id, result }));
   }
 }
+
+ test("canonical display refusal prevents CDP layout changes", async () => {
+  let connects = 0;
+  const browser = new BrowserCdpClient({
+    applyCanonicalDisplay: async () => { throw new Error("physical display refused"); },
+    connectionFactory: async () => { connects += 1; return new FakeConnection(); },
+  });
+  await assert.rejects(browser.reconcile(viewport), /physical display refused/);
+  assert.equal(connects, 0);
+  assert.equal(browser.appViewport, undefined);
+});
+
+test("closing the final page creates a blank page before closing the window", async () => {
+  const browser = new BrowserCdpClient();
+  const calls = [];
+  const connection = { async send(method, params) {
+    calls.push([method, params]);
+    if (method === "Target.getTargets") return { targetInfos: [{type:"page",targetId:"last"}] };
+    return {success:true,targetId:"blank"};
+  }};
+  await browser.closePageTarget(connection, "last");
+  assert.deepEqual(calls, [
+    ["Target.getTargets", undefined],
+    ["Target.createTarget", {url:"about:blank"}],
+    ["Target.closeTarget", {targetId:"last"}],
+  ]);
+});
+
+test("failed replacement leaves the last page open and releases the close queue", async () => {
+  const browser = new BrowserCdpClient();
+  let failure = true;
+  let closed = 0;
+  const connection = { async send(method) {
+    if (method === "Target.getTargets") return {targetInfos:[{type:"page",targetId:"last"}]};
+    if (method === "Target.createTarget" && failure) throw new Error("cannot create page");
+    if (method === "Target.closeTarget") closed++;
+    return {success:true};
+  }};
+  await assert.rejects(browser.closePageTarget(connection, "last"), /cannot create page/);
+  assert.equal(closed, 0);
+  failure = false;
+  await browser.closePageTarget(connection, "last");
+  assert.equal(closed, 1);
+});
+
+test("concurrent closes preserve a page after the final original tab closes", async () => {
+  const browser = new BrowserCdpClient();
+  const pages = new Set(["a", "b"]);
+  const connection = { async send(method, params) {
+    await new Promise(resolve => setImmediate(resolve));
+    if (method === "Target.getTargets") return {targetInfos:[...pages].map(targetId=>({type:"page",targetId}))};
+    if (method === "Target.createTarget") pages.add("blank");
+    if (method === "Target.closeTarget") pages.delete(params.targetId);
+    assert.ok(pages.size);
+    return {success:true};
+  }};
+  await Promise.all([browser.closePageTarget(connection,"a"),browser.closePageTarget(connection,"b")]);
+  assert.deepEqual([...pages], ["blank"]);
+});
+
+// MP-08/MP-10: a partially failed resize is never an observational preflight.
+test("failed viewport change invalidates concurrent reconciliation admission", async () => {
+  const connection = new FakeConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  await browser.reconcile(viewport);
+  assert.equal(browser.canReconcileConcurrently(viewport), true);
+  const send = connection.send.bind(connection);
+  connection.send = async (method, params, sessionId) => {
+    if (method === "Emulation.setDeviceMetricsOverride") throw new Error("resize failed");
+    return send(method, params, sessionId);
+  };
+  await assert.rejects(browser.reconcile({ ...viewport, css_width: 900 }), /resize failed/);
+  assert.equal(browser.canReconcileConcurrently(viewport), false);
+  await browser.close();
+});
+
+// The Room browser bar and App panel layout are applied with the viewport: a
+// change to either is never an observational preflight.
+test("browser bar and App panel changes are not admitted as concurrent reconciliation", async () => {
+  const browser = new BrowserCdpClient({ connectionFactory: async () => new FakeConnection() });
+  const layout = { browserBarVisible: false, appPanelCssWidth: 320 };
+  await browser.reconcile(viewport, layout);
+  assert.equal(browser.canReconcileConcurrently(viewport, layout), true);
+  assert.equal(browser.canReconcileConcurrently(viewport, { ...layout, browserBarVisible: true }), false);
+  assert.equal(browser.canReconcileConcurrently(viewport, { ...layout, appPanelCssWidth: 400 }), false);
+  assert.equal(browser.canReconcileConcurrently(viewport), false);
+  await browser.close();
+});
+
+test("a failed physical display apply withdraws concurrent reconciliation admission", async () => {
+  let refuse = false;
+  const browser = new BrowserCdpClient({
+    applyCanonicalDisplay: async () => { if (refuse) throw new Error("physical display refused"); },
+    connectionFactory: async () => new FakeConnection(),
+  });
+  await browser.reconcile(viewport);
+  assert.equal(browser.canReconcileConcurrently(viewport), true);
+  refuse = true;
+  await assert.rejects(browser.reconcile(viewport), /physical display refused/);
+  assert.equal(browser.canReconcileConcurrently(viewport), false);
+  await browser.close();
+});
+
+test("isolated-world focus keeps the physical visibility captured by input emulation", async () => {
+  const browser = new BrowserCdpClient({ connectionFactory: async () => new FakeConnection() });
+  assert.equal((await browser.reconcile(viewport)).focused_target_id, "target-b");
+  browser.inputCapture.visibilityBySession.set("session-b", { visible: false });
+  assert.equal((await browser.reconcile(viewport)).focused_target_id, null);
+  browser.inputCapture.visibilityBySession.delete("session-b");
+  assert.equal((await browser.reconcile(viewport)).focused_target_id, "target-b");
+  await browser.close();
+});

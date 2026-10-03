@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
 
+use super::data_volume_observation::read_admitted_data_volume;
 use super::release::{verify_managed_bootstrap_service_binding, VerifiedReleaseEvidence};
 use super::state::BootstrapConfig;
 
@@ -20,16 +21,24 @@ const MANAGED_BOOTSTRAP_WANTS_PATH: &str =
 const MAX_ID_BYTES: u64 = 128;
 const MAX_PROC_COMM_BYTES: u64 = 256;
 const MAX_PROC_STAT_BYTES: u64 = 4096;
+const DATA_VOLUME_OBSERVATION_PATH: &str = "/run/chariox-data-volume-observation/observation.json";
+const PROC_SELF_MOUNTINFO_PATH: &str = "/proc/self/mountinfo";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct ManagedKernelFreshnessEvidence {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) schema_version: Option<u32>,
     pub(super) linux_boot_id: String,
     pub(super) os_machine_id: String,
     pub(super) runtime_release_digest: String,
     pub(super) runtime_source_commit: String,
     pub(super) runtime_source_tree: String,
     pub(super) residue_checks: ManagedKernelResidueChecks,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) data_volume_serial: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) data_volume_size_gb: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,6 +73,8 @@ pub(super) struct FreshnessHostPaths {
     pub(super) proc_self_exe: PathBuf,
     pub(super) service_unit: PathBuf,
     pub(super) service_wants: PathBuf,
+    pub(super) data_volume_observation: PathBuf,
+    pub(super) mountinfo: PathBuf,
 }
 
 impl Default for FreshnessHostPaths {
@@ -75,6 +86,8 @@ impl Default for FreshnessHostPaths {
             proc_self_exe: PathBuf::from("/proc/self/exe"),
             service_unit: PathBuf::from(MANAGED_BOOTSTRAP_SERVICE_PATH),
             service_wants: PathBuf::from(MANAGED_BOOTSTRAP_WANTS_PATH),
+            data_volume_observation: PathBuf::from(DATA_VOLUME_OBSERVATION_PATH),
+            mountinfo: PathBuf::from(PROC_SELF_MOUNTINFO_PATH),
         }
     }
 }
@@ -87,17 +100,24 @@ pub(super) struct ProcessObservation {
     pub(super) executable_path: PathBuf,
 }
 
-pub(super) fn capture_freshness_evidence(
+pub(super) fn capture_freshness_evidence_with_volume(
     config: &BootstrapConfig,
     release: &VerifiedReleaseEvidence,
+    expected_data_volume: Option<(&str, u32)>,
 ) -> Result<ManagedKernelFreshnessEvidence, DaemonError> {
-    capture_freshness_evidence_with_paths(config, release, &FreshnessHostPaths::default())
+    capture_freshness_evidence_with_paths_and_volume(
+        config,
+        release,
+        &FreshnessHostPaths::default(),
+        expected_data_volume,
+    )
 }
 
-pub(super) fn capture_freshness_evidence_with_paths(
+fn capture_freshness_evidence_with_paths_and_volume(
     config: &BootstrapConfig,
     release: &VerifiedReleaseEvidence,
     paths: &FreshnessHostPaths,
+    expected_data_volume: Option<(&str, u32)>,
 ) -> Result<ManagedKernelFreshnessEvidence, DaemonError> {
     let linux_boot_id = read_linux_boot_id(&paths.boot_id)?;
     let os_machine_id = read_os_machine_id(&paths.machine_id)?;
@@ -105,8 +125,20 @@ pub(super) fn capture_freshness_evidence_with_paths(
     let processes = collect_process_observations(&paths.proc_root)?;
     validate_process_observations(&processes, std::process::id(), &release.active_release_path)?;
     validate_state_residue(config)?;
+    let data_volume = expected_data_volume
+        .map(|(serial, size_gb)| {
+            read_admitted_data_volume(
+                &paths.data_volume_observation,
+                &paths.mountinfo,
+                &linux_boot_id,
+                serial,
+                size_gb,
+            )
+        })
+        .transpose()?;
 
     Ok(ManagedKernelFreshnessEvidence {
+        schema_version: data_volume.as_ref().map(|_| 3),
         linux_boot_id,
         os_machine_id,
         runtime_release_digest: release.digest.clone(),
@@ -117,6 +149,8 @@ pub(super) fn capture_freshness_evidence_with_paths(
             old_processes_absent: true,
             old_state_absent: true,
         },
+        data_volume_serial: data_volume.as_ref().map(|value| value.serial.clone()),
+        data_volume_size_gb: data_volume.map(|value| value.size_gb),
     })
 }
 
@@ -267,7 +301,19 @@ pub(super) fn validate_freshness_evidence(
     evidence: &ManagedKernelFreshnessEvidence,
     expected_release_digest: &str,
 ) -> Result<(), DaemonError> {
-    if !is_linux_boot_id(&evidence.linux_boot_id)
+    let valid_volume_identity = match (
+        evidence.schema_version,
+        evidence.data_volume_serial.as_deref(),
+        evidence.data_volume_size_gb,
+    ) {
+        (None, None, None) => true,
+        (Some(3), Some(serial), Some(size_gb)) => {
+            valid_data_volume_serial(serial) && (10..=10_000).contains(&size_gb)
+        }
+        _ => false,
+    };
+    if !valid_volume_identity
+        || !is_linux_boot_id(&evidence.linux_boot_id)
         || !is_os_machine_id(&evidence.os_machine_id)
         || !is_release_digest(&evidence.runtime_release_digest)
         || evidence.runtime_release_digest != expected_release_digest
@@ -283,6 +329,15 @@ pub(super) fn validate_freshness_evidence(
         return Err(freshness_error("managed freshness evidence is invalid"));
     }
     Ok(())
+}
+
+fn valid_data_volume_serial(value: &str) -> bool {
+    (1..=16).contains(&value.len())
+        && value.bytes().all(|byte| byte.is_ascii_digit())
+        && value.as_bytes()[0] != b'0'
+        && value
+            .parse::<u64>()
+            .is_ok_and(|serial| serial > 0 && serial <= 9_007_199_254_740_991)
 }
 
 fn read_linux_boot_id(path: &Path) -> Result<String, DaemonError> {
@@ -588,8 +643,8 @@ mod tests {
 
     use super::{
         is_linux_boot_id, is_os_machine_id, is_release_digest, parse_parent_pid,
-        validate_old_generation_runtime_identity_report, validate_process_observations,
-        ManagedKernelFreshnessEvidence, ManagedKernelResidueChecks,
+        validate_freshness_evidence, validate_old_generation_runtime_identity_report,
+        validate_process_observations, ManagedKernelFreshnessEvidence, ManagedKernelResidueChecks,
         ManagedKernelRuntimeIdentityReport, ProcessObservation,
     };
     use crate::managed_bootstrap::release::VerifiedReleaseEvidence;
@@ -651,6 +706,7 @@ mod tests {
     #[test]
     fn freshness_wire_has_only_new_observations() {
         let evidence = ManagedKernelFreshnessEvidence {
+            schema_version: None,
             linux_boot_id: "01234567-89ab-cdef-0123-456789abcdef".to_string(),
             os_machine_id: "a".repeat(32),
             runtime_release_digest: format!("sha256:{}", "b".repeat(64)),
@@ -661,9 +717,15 @@ mod tests {
                 old_processes_absent: true,
                 old_state_absent: true,
             },
+            data_volume_serial: None,
+            data_volume_size_gb: None,
         };
-        let value: Value = serde_json::to_value(evidence).expect("freshness evidence serializes");
+        let value: Value =
+            serde_json::to_value(evidence.clone()).expect("freshness evidence serializes");
         assert_eq!(value["linuxBootId"], "01234567-89ab-cdef-0123-456789abcdef");
+        assert!(value.get("schemaVersion").is_none());
+        assert!(value.get("dataVolumeSerial").is_none());
+        assert!(value.get("dataVolumeSizeGb").is_none());
         assert!(value.get("providerRebuildActionId").is_none());
         assert!(value.get("oldKernelIdentityReport").is_none());
         assert!(value["residueChecks"].get("oldGenerationRetired").is_none());
@@ -678,6 +740,34 @@ mod tests {
                 .len(),
             3
         );
+    }
+
+    #[test]
+    fn path1_freshness_v3_requires_a_complete_valid_volume_identity() {
+        let mut evidence = ManagedKernelFreshnessEvidence {
+            schema_version: Some(3),
+            linux_boot_id: "01234567-89ab-cdef-0123-456789abcdef".to_string(),
+            os_machine_id: "a".repeat(32),
+            runtime_release_digest: format!("sha256:{}", "b".repeat(64)),
+            runtime_source_commit: "c".repeat(40),
+            runtime_source_tree: "d".repeat(40),
+            residue_checks: ManagedKernelResidueChecks {
+                old_services_absent: true,
+                old_processes_absent: true,
+                old_state_absent: true,
+            },
+            data_volume_serial: Some("12345".to_string()),
+            data_volume_size_gb: Some(10),
+        };
+        validate_freshness_evidence(&evidence, &evidence.runtime_release_digest)
+            .expect("complete volume evidence is valid");
+        let value: Value = serde_json::to_value(&evidence).expect("v3 evidence serializes");
+        assert_eq!(value["schemaVersion"], 3);
+        assert_eq!(value["dataVolumeSerial"], "12345");
+        assert_eq!(value["dataVolumeSizeGb"], 10);
+
+        evidence.data_volume_serial = None;
+        assert!(validate_freshness_evidence(&evidence, &evidence.runtime_release_digest).is_err());
     }
 
     #[test]
@@ -842,6 +932,8 @@ mod tests {
             proc_self_exe: proc_self_exe.clone(),
             service_unit,
             service_wants,
+            data_volume_observation: root.path().join("observation.json"),
+            mountinfo: root.path().join("proc/self/mountinfo"),
         };
         let release = VerifiedReleaseEvidence {
             digest: format!("sha256:{}", "b".repeat(64)),

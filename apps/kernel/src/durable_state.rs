@@ -4,7 +4,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -19,40 +19,50 @@ pub(crate) mod app_activation;
 pub(crate) mod app_active_release;
 pub(crate) mod app_automations;
 pub(crate) mod app_bindings;
+pub(crate) mod app_connections;
 pub(crate) mod app_event_delivery;
 pub(crate) mod app_event_maintenance;
-pub(crate) mod app_connections;
 pub(crate) mod app_file_exports;
 pub(crate) mod app_file_grants;
-pub(crate) mod app_inbox;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_files;
+pub(crate) mod app_host_actions;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_http;
+pub(crate) mod app_inbox;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_installation_operations;
 pub(crate) mod app_installation_staging;
+pub(crate) mod app_logs;
 pub(crate) mod app_publisher_operations;
 pub(crate) mod app_publishers;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_snapshot_restore;
 pub(crate) mod app_snapshots;
 pub(crate) mod app_state;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_tools;
-pub(crate) mod app_logs;
 pub(crate) mod app_validations;
+pub(crate) mod app_view_assets;
 pub(crate) mod app_wakes;
 pub(crate) mod app_worker_lifecycle;
-pub(crate) mod app_view_assets;
 pub(crate) mod apps;
 #[cfg(test)]
 mod apps_tests;
 pub(crate) mod browser_import;
 mod owner;
+pub(crate) mod room_environment;
+pub(crate) mod storage_full;
+pub(crate) mod worker_prompt_receipts;
+pub(crate) mod worker_steer_receipts;
 mod writer_fence;
 use writer_fence::fenced_writer_error;
 pub(crate) mod workflow_dispatch_intents;
 pub(crate) mod workflow_queue_start;
 pub(crate) mod workflow_runtime;
+
+pub(crate) const QUIESCENCE_STATE_SNAPSHOT_KIND: &str =
+    "managed_kernel.auto_stop_quiescence.changed";
 
 #[derive(Debug, Clone)]
 pub struct DurableKernelStateStore {
@@ -60,6 +70,7 @@ pub struct DurableKernelStateStore {
     connection: Arc<Mutex<Connection>>,
     writer: Arc<DurableStateWriter>,
     workflow_runtime_transition_lock: Arc<Mutex<()>>,
+    app_wake_changed: Arc<tokio::sync::Notify>,
     _owner: Option<Arc<fs::File>>,
 }
 
@@ -113,6 +124,13 @@ struct DurableStateWriter {
 #[derive(Debug, Default)]
 struct DurableWriterHealth {
     fatal: AtomicBool,
+    /// Set with `fatal` only when a commit's outcome is unknown, not at an
+    /// ordinary writer shutdown.
+    stopped_uncertain: AtomicBool,
+    /// Nonzero while the disk is full: when the writer first saw it.
+    storage_full_since_ms: AtomicU64,
+    /// The condition last reported to the owner.
+    announced: AtomicU8,
     committed_batches: AtomicU64,
     committed_records: AtomicU64,
     max_batch_records: AtomicU64,
@@ -160,12 +178,15 @@ enum DurableWriterRequest {
     AppPublisherOperation(Box<app_publisher_operations::PublisherOperationRequest>),
     VerifiedApp(Box<app_installation_staging::AppVerifiedInstallationRequest>),
     AppState(Box<app_state::AppStateRequest>),
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    AppRestore(Box<app_snapshot_restore::RestoreRequest>),
     AppWake(Box<app_wakes::AppWakeRequest>),
     AppInbox(Box<app_inbox::AppInboxRequest>),
     AppLog(Box<app_logs::AppLogRequest>),
     AppValidation(Box<app_validations::ValidationRequest>),
     AppFileGrant(Box<app_file_grants::FileGrantRequest>),
     AppFileExport(Box<app_file_exports::FileExportRequest>),
+    AppHostAction(Box<app_host_actions::HostActionRequest>),
     AppConnectionGrant(Box<app_connections::ConnectionGrantRequest>),
     AppBinding(Box<app_bindings::AppBindingRequest>),
     AppAutomation(Box<app_automations::AppAutomationRequest>),
@@ -186,11 +207,18 @@ enum DurableWriterRequest {
 
 #[derive(Debug)]
 enum DurableWriteOperation {
+    RoomEnvironment(room_environment::RoomEnvironmentWrite),
     BrowserImport(browser_import::ImportStateWrite),
     Event {
         event_id: String,
         kind: String,
         subject_id: Option<String>,
+        timestamp_ms: u64,
+        payload_json: String,
+    },
+    QuiescenceSnapshotEvent {
+        event_id: String,
+        subject_id: String,
         timestamp_ms: u64,
         payload_json: String,
     },
@@ -215,7 +243,7 @@ enum DurableWriteOperation {
         hot_entities: Vec<DurableWorkflowHotEntityWrite>,
         workflow_runs: Vec<DurableWorkflowRunWrite>,
         delivery_receipts: Vec<DurableDeliveryReceiptWrite>,
-        prompt_state_json: Option<String>,
+        prompt_state_jsons: Vec<String>,
     },
     WorkflowRuntimeMigration {
         owner_id: String,
@@ -302,6 +330,13 @@ impl DurableKernelStateStore {
         let owner = owner::acquire(&path)?;
         let mut store = Self::open(path)?;
         store._owner = Some(Arc::new(owner));
+        // Only this store's owning kernel may settle its own crashed workers.
+        store
+            .reset_app_workers_after_kernel_start()
+            .map_err(|_| DaemonError::LocalTransport {
+                operation: "durable_state.app_worker_restart",
+                message: "App worker lifecycle could not be reset after a kernel start".into(),
+            })?;
         Ok(store)
     }
 
@@ -340,6 +375,7 @@ impl DurableKernelStateStore {
                 operation: "durable_state.migrate",
                 message: error.to_string(),
             })?;
+        storage_full::initialize(&connection)?;
         apps::initialize(&mut connection)?;
         app_publishers::initialize(&mut connection)?;
         app_publisher_operations::initialize(&connection)?;
@@ -353,6 +389,7 @@ impl DurableKernelStateStore {
         })?;
         app_file_grants::initialize(&connection)
             .and_then(|()| app_file_exports::initialize(&connection))
+            .and_then(|()| app_host_actions::initialize(&connection))
             .and_then(|()| app_connections::initialize(&connection))
             .map_err(|_| DaemonError::LocalTransport {
                 operation: "durable_state.app_file_grants",
@@ -382,6 +419,7 @@ impl DurableKernelStateStore {
             connection: Arc::new(Mutex::new(connection)),
             writer: Arc::new(writer),
             workflow_runtime_transition_lock: Arc::new(Mutex::new(())),
+            app_wake_changed: Arc::new(tokio::sync::Notify::new()),
             _owner: None,
         })
     }
@@ -412,6 +450,36 @@ impl DurableKernelStateStore {
             event_id,
             kind,
             subject_id,
+            timestamp_ms,
+            payload,
+        })
+    }
+
+    pub(crate) fn append_quiescence_snapshot(
+        &self,
+        kernel_id: &str,
+        payload: serde_json::Value,
+    ) -> Result<DurableStateEvent, DaemonError> {
+        let timestamp_ms = unix_epoch_ms();
+        let event_id = format!("state_evt_{timestamp_ms}_{}", rand_suffix());
+        let payload_json =
+            serde_json::to_string(&payload).map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.encode_event",
+                message: error.to_string(),
+            })?;
+        let sequence = self
+            .writer
+            .execute(DurableWriteOperation::QuiescenceSnapshotEvent {
+                event_id: event_id.clone(),
+                subject_id: kernel_id.to_string(),
+                timestamp_ms,
+                payload_json,
+            })?;
+        Ok(DurableStateEvent {
+            sequence,
+            event_id,
+            kind: QUIESCENCE_STATE_SNAPSHOT_KIND.to_string(),
+            subject_id: Some(kernel_id.to_string()),
             timestamp_ms,
             payload,
         })
@@ -1404,8 +1472,16 @@ fn run_durable_writer(
         }
     }
     let _stopped = MarkStopped(health.clone());
+    let mut storage = storage_full::StorageProbe::new(&connection);
     let mut pending = None;
-    while let Some(first) = pending.take().or_else(|| receiver.recv().ok()) {
+    loop {
+        storage.after_request(&health);
+        let Some(first) = pending
+            .take()
+            .or_else(|| storage.next_request(&receiver, &mut connection, &health))
+        else {
+            break;
+        };
         if health.fatal.load(Ordering::Acquire) {
             break;
         }
@@ -1424,13 +1500,21 @@ fn run_durable_writer(
                     app_publisher_operations::execute(&mut connection, *request, &health.fatal),
                     app_event_delivery::WriterDisposition::Stop
                 ) {
-                    health.fatal.store(true, Ordering::Release);
+                    health.stop_uncertain("app_publisher_operation");
                     break;
                 }
                 continue;
             }
             DurableWriterRequest::VerifiedApp(request) => {
                 app_installation_staging::execute(&mut connection, *request);
+                continue;
+            }
+            #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+            DurableWriterRequest::AppRestore(request) => {
+                if app_snapshot_restore::execute(&mut connection, *request, &health.fatal) {
+                    health.fatal.store(true, Ordering::Release);
+                    break;
+                }
                 continue;
             }
             DurableWriterRequest::AppState(request) => {
@@ -1455,6 +1539,10 @@ fn run_durable_writer(
             }
             DurableWriterRequest::AppFileGrant(request) => {
                 app_file_grants::execute(&mut connection, *request);
+                continue;
+            }
+            DurableWriterRequest::AppHostAction(request) => {
+                app_host_actions::execute(&mut connection, *request);
                 continue;
             }
             DurableWriterRequest::AppFileExport(request) => {
@@ -1487,7 +1575,7 @@ fn run_durable_writer(
                     app_installation_operations::execute(&mut connection, *request),
                     app_event_delivery::WriterDisposition::Stop
                 ) {
-                    health.fatal.store(true, Ordering::Release);
+                    health.stop_uncertain("app_installation_operation");
                     break;
                 }
                 continue;
@@ -1516,7 +1604,7 @@ fn run_durable_writer(
                     app_event_delivery::execute(&mut connection, *request),
                     app_event_delivery::WriterDisposition::Stop
                 ) {
-                    health.fatal.store(true, Ordering::Release);
+                    health.stop_uncertain("app_event_queue");
                     // Drop queued replies and the receiver so stale sessions
                     // cannot overwrite an uncertain commit. Restart reloads
                     // authoritative state before the kernel accepts writes.
@@ -1529,7 +1617,7 @@ fn run_durable_writer(
                     workflow_queue_start::execute(&mut connection, *request),
                     app_event_delivery::WriterDisposition::Stop
                 ) {
-                    health.fatal.store(true, Ordering::Release);
+                    health.stop_uncertain("workflow_queue_start");
                     break;
                 }
                 continue;
@@ -1551,7 +1639,8 @@ fn run_durable_writer(
                     request @ (DurableWriterRequest::AppTools(_)
                     | DurableWriterRequest::AppFile(_)
                     | DurableWriterRequest::AppHttp(_)
-                    | DurableWriterRequest::AppInstallationOperation(_)),
+                    | DurableWriterRequest::AppInstallationOperation(_)
+                    | DurableWriterRequest::AppRestore(_)),
                 ) => {
                     pending = Some(request);
                     break;
@@ -1568,6 +1657,7 @@ fn run_durable_writer(
                     | DurableWriterRequest::AppValidation(_)
                     | DurableWriterRequest::AppFileGrant(_)
                     | DurableWriterRequest::AppFileExport(_)
+                    | DurableWriterRequest::AppHostAction(_)
                     | DurableWriterRequest::AppConnectionGrant(_)
                     | DurableWriterRequest::AppBinding(_)
                     | DurableWriterRequest::AppAutomation(_)
@@ -1600,6 +1690,7 @@ fn commit_durable_write_batch(
     let transaction = match connection.transaction() {
         Ok(transaction) => transaction,
         Err(error) => {
+            storage_full::observe(&error);
             send_durable_batch_error(batch, error.to_string());
             return;
         }
@@ -1612,6 +1703,9 @@ fn commit_durable_write_batch(
             break;
         }
         let result = match &request.operation {
+            DurableWriteOperation::RoomEnvironment(write) => {
+                room_environment::apply(&transaction, write)
+            }
             DurableWriteOperation::BrowserImport(write) => {
                 browser_import::apply(&transaction, write)
             }
@@ -1644,6 +1738,33 @@ fn commit_durable_write_batch(
                     }
                     Ok(sequence)
                 }),
+            DurableWriteOperation::QuiescenceSnapshotEvent {
+                event_id,
+                subject_id,
+                timestamp_ms,
+                payload_json,
+            } => transaction
+                .execute(
+                    "INSERT INTO durable_state_events (
+                        event_id, kind, subject_id, timestamp_ms, payload_json
+                    ) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        event_id,
+                        QUIESCENCE_STATE_SNAPSHOT_KIND,
+                        subject_id,
+                        *timestamp_ms as i64,
+                        payload_json
+                    ],
+                )
+                .and_then(|_| {
+                    let sequence = transaction.last_insert_rowid().max(0) as u64;
+                    transaction.execute(
+                        "DELETE FROM durable_state_events
+                         WHERE kind = ?1 AND subject_id = ?2 AND sequence < ?3",
+                        params![QUIESCENCE_STATE_SNAPSHOT_KIND, subject_id, sequence as i64],
+                    )?;
+                    Ok(sequence)
+                }),
             DurableWriteOperation::Snapshot {
                 sequence,
                 timestamp_ms,
@@ -1674,7 +1795,7 @@ fn commit_durable_write_batch(
                 hot_entities,
                 workflow_runs,
                 delivery_receipts,
-                prompt_state_json,
+                prompt_state_jsons,
             } => workflow_runtime::write_workflow_runtime_transition(
                 &transaction,
                 workflow_runtime::WorkflowRuntimeTransitionWrite {
@@ -1687,7 +1808,7 @@ fn commit_durable_write_batch(
                     hot_entities,
                     workflow_runs,
                     delivery_receipts,
-                    prompt_state_json: prompt_state_json.as_deref(),
+                    prompt_state_jsons,
                 },
             ),
             DurableWriteOperation::WorkflowRuntimeMigration {
@@ -1730,6 +1851,7 @@ fn commit_durable_write_batch(
         match result {
             Ok(sequence) => results.push(sequence),
             Err(error) => {
+                storage_full::observe(&error);
                 failure = Some(error.to_string());
                 break;
             }
@@ -1744,6 +1866,7 @@ fn commit_durable_write_batch(
         return;
     }
     if let Err(error) = transaction.commit() {
+        storage_full::observe(&error);
         send_durable_batch_error(batch, error.to_string());
         return;
     }
@@ -1874,6 +1997,18 @@ fn write_entity_checkpoint(
 }
 
 const DURABLE_STATE_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS app_restore_receipts (
+    owner_id TEXT NOT NULL,
+    installation_id TEXT PRIMARY KEY,
+    restore_id TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS durable_room_environments (
+    owner_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY (owner_id, session_id)
+);
+
 CREATE TABLE IF NOT EXISTS durable_browser_import (
     environment_id TEXT PRIMARY KEY,
     request_id TEXT NOT NULL,
@@ -2074,6 +2209,10 @@ fn rand_suffix() -> u64 {
     let mut rng = rand::thread_rng();
     rng.next_u64()
 }
+
+#[cfg(test)]
+#[path = "durable_state/quiescence_snapshot_retention_tests.rs"]
+mod quiescence_snapshot_retention_tests;
 
 #[cfg(test)]
 mod tests {

@@ -112,9 +112,11 @@ impl CommandRouter {
                     .await
                 })
             }
-            LocalDaemonRequest::RequestNativeProviderInteraction(request) => Box::pin(async move {
-                execute_native_provider_interaction_request(&self.runtime_state, request).await
-            }),
+            LocalDaemonRequest::RequestNativeProviderTurnInteraction(request) => {
+                Box::pin(async move {
+                    execute_native_provider_interaction_request(&self.runtime_state, request).await
+                })
+            }
             LocalDaemonRequest::LaunchProviderRun(request) => Box::pin(async move {
                 execute_provider_launch_command(&self.runtime_state, &command, request).await
             }),
@@ -363,7 +365,8 @@ impl CommandRouter {
                 .await
             }),
             request @ (LocalDaemonRequest::ListRemoteMachines(_)
-            | LocalDaemonRequest::ListRemoteMachineKernels(_)) => Box::pin(async move {
+            | LocalDaemonRequest::ListRemoteMachineKernels(_)
+            | LocalDaemonRequest::QueryFreshRemoteMachineKernels(_)) => Box::pin(async move {
                 execute_remote_relay_inventory_request(
                     Arc::clone(&self.relay_state),
                     self.config_projection.clone(),

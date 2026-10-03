@@ -7,7 +7,10 @@ use crate::error::DaemonError;
 use crate::runtime::app_operation_budget::{AppOperationBudget, AppOperationStopped};
 use chariox_app_runtime::{
     app_catalog::CatalogError,
-    app_outbox::{AppOutbox, EventCatalog, Occurrence, OutboxError, Receipt},
+    app_outbox::{
+        AppOutbox, AutomationConfiguration, EventCatalog, Occurrence, OutboxError, Receipt,
+        MAX_PENDING,
+    },
     managed_state::{
         ManagedStateStore, StateChanges, StateError, StateRecord, StateScope, Wake, WakeChange,
     },
@@ -37,11 +40,17 @@ pub(crate) enum AppStateOperation {
         changes: StateChanges,
         occurrences: Vec<Occurrence>,
         wakes: Vec<WakeChange>,
+        wakes_count_as_use: bool,
     },
     Emit(Occurrence),
     /// Kernel-owned wakes; see `managed_state::wakes`.
-    Schedule(Vec<WakeChange>),
+    Schedule {
+        wakes: Vec<WakeChange>,
+        wakes_count_as_use: bool,
+    },
     ScheduleList,
+    /// The App's own automations and their latest receipts (read-only).
+    Automations,
     Status {
         receipt_id: String,
     },
@@ -56,13 +65,29 @@ pub(crate) enum AppStateOperation {
     MigrationRewind,
 }
 impl AppStateOperation {
+    /// Records where the operation's wakes were armed: only a wake armed while
+    /// the App served a tool call or an inbound event counts as use when it
+    /// is delivered (owner decision 6). Other operations are unchanged.
+    pub(crate) fn armed_during_use(mut self, during_use: bool) -> Self {
+        if let Self::Transaction {
+            wakes_count_as_use, ..
+        }
+        | Self::Schedule {
+            wakes_count_as_use, ..
+        } = &mut self
+        {
+            *wakes_count_as_use = during_use;
+        }
+        self
+    }
     fn name(&self) -> &'static str {
         match self {
             Self::Get { .. } => "get",
             Self::Transaction { .. } => "transaction",
             Self::Emit(_) => "emit",
-            Self::Schedule(_) => "schedule",
+            Self::Schedule { .. } => "schedule",
             Self::ScheduleList => "schedule_list",
+            Self::Automations => "automations",
             Self::Status { .. } => "status",
             Self::Retry { .. } => "retry",
             Self::MigrationStep { .. } => "migration_step",
@@ -85,6 +110,7 @@ pub(crate) enum AppStateOutcome {
     },
     Receipt(Receipt),
     Wakes(Vec<Wake>),
+    Automations(Vec<(AutomationConfiguration, Option<Receipt>)>),
     /// The schema a rewound migration restarts from.
     Rewound(Option<u32>),
 }
@@ -94,6 +120,7 @@ pub(super) struct AppStateRequest {
     catalog: Arc<EventCatalog>,
     operation: AppStateOperation,
     budget: AppOperationBudget,
+    wake_changed: Arc<tokio::sync::Notify>,
     response: mpsc::Sender<Result<AppStateOutcome, AppStateError>>,
 }
 
@@ -144,6 +171,7 @@ impl DurableKernelStateStore {
                 catalog,
                 operation,
                 budget,
+                wake_changed: self.app_wake_changed.clone(),
                 response,
             })))?;
         receiver
@@ -183,6 +211,11 @@ pub(super) fn initialize(connection: &mut Connection) -> Result<(), DaemonError>
 }
 
 pub(super) fn execute(connection: &mut Connection, request: AppStateRequest) {
+    let changes_wakes = match &request.operation {
+        AppStateOperation::Schedule { wakes, .. }
+        | AppStateOperation::Transaction { wakes, .. } => !wakes.is_empty(),
+        _ => false,
+    };
     let result = apply(
         connection,
         &request.owner,
@@ -190,7 +223,62 @@ pub(super) fn execute(connection: &mut Connection, request: AppStateRequest) {
         request.operation,
         &request.budget,
     );
+    if let Err(
+        AppStateError::State(StateError::Database(error))
+        | AppStateError::Outbox(OutboxError::Database(error)),
+    ) = &result
+    {
+        super::storage_full::observe(error);
+    }
+    if matches!(result, Err(AppStateError::Outbox(OutboxError::Full))) {
+        // The refusal rolled its own transaction back; the owner's warning is
+        // a separate write, and a failure to write it changes nothing else.
+        let _ = warn_full_outbox(
+            connection,
+            &request.owner,
+            request.catalog.installation_id(),
+        );
+    }
+    if result.is_ok() && changes_wakes {
+        // Notify on the writer after commit, even if the caller was cancelled.
+        request.wake_changed.notify_one();
+    }
     let _ = request.response.send(result);
+}
+
+/// Tells the owner once per backlog that the App's event outbox is full: a
+/// new warning needs every event that was waiting at the last one to have
+/// left the outbox, so a steady refusal loop writes one notice, not one per
+/// refused event.
+fn warn_full_outbox(
+    connection: &mut Connection,
+    owner: &str,
+    installation: &str,
+) -> Result<(), OutboxError> {
+    const MARKER: &str = "outbox_full";
+    // Mostly reads that decide to write nothing; the writer's own connection
+    // takes the write lock only if it appends the notice.
+    let transaction = connection.transaction()?;
+    let oldest = AppOutbox::oldest_waiting_accepted_at_in(&transaction, owner, installation)?;
+    let warned =
+        super::app_logs::latest_kernel_notice_at_in(&transaction, owner, installation, MARKER)?;
+    if warned.is_some_and(|warned| oldest.is_some_and(|oldest| warned >= oldest)) {
+        return Ok(());
+    }
+    let mut fields = serde_json::Map::new();
+    fields.insert(MARKER.into(), true.into());
+    fields.insert("pending".into(), MAX_PENDING.into());
+    super::app_logs::append_kernel_notice_in(
+        &transaction,
+        owner,
+        installation,
+        crate::session::unix_epoch_ms(),
+        &format!(
+            "The App's event outbox is full: {MAX_PENDING} events are waiting for delivery, so its new events are refused until some are delivered. Check that its automations' workflow targets are running."
+        ),
+        fields,
+    )?;
+    Ok(transaction.commit()?)
 }
 
 fn apply(
@@ -235,18 +323,25 @@ fn apply(
             changes,
             occurrences,
             wakes,
+            wakes_count_as_use,
         } => {
             let revision = ManagedStateStore::apply_in(&mut transaction, scope, &changes)?;
             let receipts = events::accept(&mut transaction, catalog, owner, &occurrences)?;
-            ManagedStateStore::apply_wakes_in(&mut transaction, scope, &wakes)?;
+            ManagedStateStore::apply_wakes_in(&mut transaction, scope, &wakes, wakes_count_as_use)?;
             AppStateOutcome::Transaction { revision, receipts }
         }
-        AppStateOperation::Schedule(wakes) => {
-            ManagedStateStore::apply_wakes_in(&mut transaction, scope, &wakes)?;
+        AppStateOperation::Schedule {
+            wakes,
+            wakes_count_as_use,
+        } => {
+            ManagedStateStore::apply_wakes_in(&mut transaction, scope, &wakes, wakes_count_as_use)?;
             AppStateOutcome::Wakes(ManagedStateStore::wakes_in(&transaction, scope)?)
         }
         AppStateOperation::ScheduleList => {
             AppStateOutcome::Wakes(ManagedStateStore::wakes_in(&transaction, scope)?)
+        }
+        AppStateOperation::Automations => {
+            AppStateOutcome::Automations(AppOutbox::automations_in(&transaction, catalog, owner)?)
         }
         AppStateOperation::MigrationStep { to } => {
             ManagedStateStore::migration_step_in(&transaction, scope, to)?;
@@ -278,6 +373,17 @@ pub(crate) fn fixture_event_catalog(store: &DurableKernelStateStore) -> Arc<Even
     tests::catalog(store)
 }
 
+/// Another active installation of the fixture package, for an owner who
+/// already trusts its publisher (after `fixture_catalog`).
+#[cfg(test)]
+pub(crate) fn fixture_installation(
+    store: &DurableKernelStateStore,
+    owner: &str,
+    installation_id: &str,
+) {
+    tests::install_package(store, owner, installation_id, tests::package());
+}
+
 /// Installs `installed` for `owner` from a package that also declares the
 /// incoming event `received`; returns the package to stage its release.
 #[cfg(test)]
@@ -303,6 +409,37 @@ pub(crate) fn fixture_copy_installation(
 ) {
     tests::install_package(store, owner, installation_id, package);
     store.fixture_tag_app_installation(owner, installation_id, deployment_id);
+}
+
+/// The owner's installation updated to `package` (approved and committed).
+#[cfg(test)]
+pub(crate) fn fixture_update_installation(
+    store: &DurableKernelStateStore,
+    owner: &str,
+    installation_id: &str,
+    package: (Vec<u8>, chariox_app_package::TrustedPublisher),
+) {
+    tests::update_package(store, owner, installation_id, package);
+}
+
+/// The fixture inbox App at another version; `schema` > 0 declares data
+/// migrations.
+#[cfg(test)]
+pub(crate) fn fixture_inbox_package_version(
+    version: &str,
+    schema: u32,
+) -> (Vec<u8>, chariox_app_package::TrustedPublisher) {
+    tests::inbox_package_version(version, schema)
+}
+
+/// Another active installation of the event fixture package for `owner`.
+#[cfg(test)]
+pub(crate) fn fixture_event_installation(
+    store: &DurableKernelStateStore,
+    owner: &str,
+    installation_id: &str,
+) {
+    tests::install_package(store, owner, installation_id, tests::package());
 }
 
 #[cfg(test)]
@@ -342,4 +479,31 @@ pub(crate) fn fixture_tool_catalog(store: &DurableKernelStateStore) -> Arc<Event
 #[cfg(test)]
 pub(crate) fn fixture_tool_package() -> (Vec<u8>, chariox_app_package::TrustedPublisher) {
     tests::tool_package()
+}
+
+/// Stages the tool fixture's release again as an update of `installation`
+/// (at generation 1) and approves it, without starting it.
+#[cfg(test)]
+pub(crate) fn fixture_stage_approved_tool_update(
+    store: &DurableKernelStateStore,
+    installation: &str,
+) {
+    tests::stage_approved_update(store, "alice", installation, tests::tool_package())
+}
+
+#[cfg(test)]
+pub(crate) fn fixture_neighbour_catalog(store: &DurableKernelStateStore) -> Arc<EventCatalog> {
+    tests::install_package(store, "alice", "neighbour", tests::package())
+}
+
+#[cfg(test)]
+pub(crate) fn fixture_host_package() -> (Vec<u8>, chariox_app_package::TrustedPublisher) {
+    tests::host_package()
+}
+#[cfg(test)]
+pub(crate) fn fixture_event_catalog_from_package(
+    store: &DurableKernelStateStore,
+    package: (Vec<u8>, chariox_app_package::TrustedPublisher),
+) -> Arc<EventCatalog> {
+    tests::catalog_for_owner(store, "alice", package)
 }

@@ -96,9 +96,29 @@ export function createAppSdk({ transport, generation, paths, declarations = {}, 
   const lifecycle = registry(lifecycleNames, 'lifecycle event');
   let lifecycleBusy = false;
   let ready = false;
+  let active = false;
   let wakeHandler = null;
   const peer = new AppPeer({
     transport, generation, limits,
+    // The caller gets INVALID_OUTPUT (or HANDLER_FAILED for a malformed
+    // AppError); the App's own log tells its developer which handler did what.
+    // Before readiness the kernel admits no log.
+    onInvalidOutput(method, params, detail, code) {
+      if (!active) return;
+      const handler = method === 'tools.invoke' ? `Tool ${params.name}`
+        : method === 'events.deliver' ? `Event handler ${params.name}`
+          : method === 'schedule.wake' ? 'The wake handler'
+            : method === 'lifecycle.dispatch' ? `The ${params.event} lifecycle handler` : 'An App handler';
+      const what = code === 'INVALID_OUTPUT' ? 'returned a result that cannot be sent'
+        : 'threw an AppError that cannot be sent';
+      const fields = { code, method };
+      if (method === 'tools.invoke' || method === 'events.deliver') fields.name = params.name;
+      peer.request('log.write', {
+        level: 'error',
+        message: `${handler} ${what}, so that call failed with ${code}: ${detail}`,
+        fields,
+      }).catch(() => { /* the call's own error still reaches its caller */ });
+    },
     async handleRequest(method, params, context) {
       record(params, 'App invocation');
       switch (method) {
@@ -144,6 +164,7 @@ export function createAppSdk({ transport, generation, paths, declarations = {}, 
       status: (receiptId, options) => call('events.status', { receiptId: name(receiptId, 'receipt identity') }, options),
       occurrenceId,
       retry: (receiptId, options) => call('events.retry', { receiptId: name(receiptId, 'receipt identity') }, options),
+      automations: (options) => call('events.automations', {}, options),
     }),
     lifecycle: Object.freeze({ on: lifecycle.register }),
     state: Object.freeze({
@@ -221,10 +242,6 @@ export function createAppSdk({ transport, generation, paths, declarations = {}, 
       request: (request, options) => call('validation.request', record(request, 'human validation request'), options),
       status: (operationId, options) => call('validation.status', { operationId: name(operationId, 'operation identity') }, options),
     }),
-    outputs: Object.freeze({
-      request: (request, options) => call('outputs.request', record(request, 'information-set request'), options),
-      cancel: (requestId, options) => call('outputs.cancel', { requestId: name(requestId, 'output request identity') }, options),
-    }),
     async ready(options) {
       if (ready) throw new AppError('ALREADY_READY', 'App readiness already reported');
       if (!tools.complete() || !events.complete()) throw new AppError('MISSING_HANDLER', 'Declared App handlers are missing');
@@ -233,7 +250,9 @@ export function createAppSdk({ transport, generation, paths, declarations = {}, 
       tools.seal();
       events.seal();
       lifecycle.seal();
-      return call('worker.ready', { tools: tools.names(), events: events.names(), lifecycle: lifecycle.names() }, options);
+      const acknowledged = await call('worker.ready', { tools: tools.names(), events: events.names(), lifecycle: lifecycle.names() }, options);
+      active = true;
+      return acknowledged;
     },
     // Bootstrap-only data migration phase; never part of the App registration API.
     // The kernel admits only these state calls before readiness and scopes them

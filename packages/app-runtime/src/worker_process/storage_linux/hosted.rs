@@ -16,19 +16,7 @@ struct Context {
 }
 impl Context {
     fn open(suffix: &str) -> Self {
-        assert_eq!(std::env::var("GITHUB_ACTIONS").unwrap(), "true");
-        assert_eq!(
-            std::env::var("RUNNER_ENVIRONMENT").unwrap(),
-            "github-hosted"
-        );
-        assert_eq!(
-            std::env::var("GITHUB_REPOSITORY").unwrap(),
-            "charioxai/chariox"
-        );
-        assert_eq!(
-            std::env::var("CHARIOX_STORAGE_HOSTED").unwrap(),
-            "fixed-production-helper"
-        );
+        crate::storage_drill_fixture::require_dedicated_machine();
         let uid = unsafe { libc::geteuid() };
         assert_ne!(uid, 0);
         let config: Enrollment = serde_json::from_slice(&fs::read(CONFIG).unwrap()).unwrap();
@@ -53,7 +41,7 @@ impl Context {
             "hosted-owner",
             installation,
             generation,
-            committed,
+            Some(committed),
             &self.leaf,
         )
         .unwrap()

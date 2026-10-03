@@ -67,6 +67,26 @@ test("agent pane streaming commit reconciles auxiliary pane when updated entry i
   }])
 })
 
+test("agent pane streaming commit reconciles evicted siblings of a retained streamed entry", () => {
+  const harness = streamingCommitHarness({
+    split: true,
+    auxiliaryAgentIds: ["agent-2"],
+    trim: (_agentId, entries) => entries.filter((entry) => entry.id !== 1),
+  })
+  const currentEntries = [entry(1, "assistant", "older"), entry(2, "assistant", "stream")]
+
+  harness.controller.commitStreamingEntry("agent-2", currentEntries, [
+    currentEntries[0]!, entry(2, "assistant", "stream continued"),
+  ], 2)
+
+  assert.deepEqual(harness.updatedAuxiliary, [])
+  assert.deepEqual(harness.reconciledAuxiliary, [{
+    agentId: "agent-2",
+    currentEntries,
+    nextEntries: [displayEntry(2, "assistant", "stream continued")],
+  }])
+})
+
 function streamingCommitHarness(options: {
   split?: boolean
   primaryAgentId?: string | null

@@ -11,8 +11,10 @@ chariox-app-runtime-install cleanup --inventory-sha256 <inactive-inventory-sha25
 The executable requires real and effective UID 0 and has no output-path or
 environment override. Its only production destinations are
 `/usr/lib/chariox/app-runtimes/<inventory-sha256>` and
-`/etc/chariox/apps/runtime-enrollment.json`. macOS installation is unsupported;
-the private filesystem tests do not provide a production bypass.
+`/etc/chariox/apps/runtime-enrollment.json` on Linux, and
+`/Library/Application Support/Chariox/AppRuntimes/<inventory-sha256>` and
+`/Library/Application Support/Chariox/AppRuntime/runtime-enrollment.json` on
+macOS. The private filesystem tests do not provide a production bypass.
 
 One persistent installer lock serializes publication and recovery. All traversal
 and mutation uses anchored no-follow directory descriptors. The input owner's
@@ -22,7 +24,8 @@ copied graph again before publication. Copies stop at each signed size; the
 whole graph is at most 512 MiB. Publication also requires 128 MiB free reserve.
 At most eight generations are retained, including any inactive generations.
 
-Payload files are 0444, native executables 0555, and published directories 0555.
+Payload files are 0444; native executables and the Linux platform loader are
+0555, as are published directories.
 A staging root remains writable until exclusive rename, then it is sealed and
 the parent directory is synced. Enrollment is published only afterward by
 synced-file/atomic-rename/directory-sync. A new key or inventory increments the
@@ -43,7 +46,10 @@ than an acknowledgment of completed cleanup. Staging and retirement recovery
 never deletes unknown entries or follows links.
 
 The root installer/OS package must deliver this binary and supply the trusted
-key and expected digest from its release authority. Automatic OS packaging and
+key and expected digest from its release authority. For a local Linux kernel,
+`deploy/local-linux/install-root.sh` is that one root step: it runs this
+installer, then enrolls the App storage helper's owners, the bubblewrap
+AppArmor profile and lingering. Automatic OS packaging and
 signed macOS installation remain separate integration work. Unit fixtures use
 tiny signed files in a private external test directory, inject publication and
 cleanup interruptions, and run no privileged tools or native App code.

@@ -82,23 +82,43 @@ export default function register(chariox) {
     const text = kind === 'reaction_added'
       ? `:${event.reaction ?? 'reaction'}: on a message`
       : String(event.text ?? payload.text ?? '');
+    const context = replyContext(payload.reply_context);
     return {
       id: occurrenceId,
       kind,
       text: cut(text, 4000),
+      // Part of a thread (a reply, not its first message): the conversation
+      // continues there.
+      in_thread: Boolean(context?.thread_ts && context.thread_ts !== context.message_ts),
       channel: String(event.channel ?? item.channel ?? payload.reply_context?.channel_id ?? '').slice(0, 64),
       user: String(event.user ?? '').slice(0, 64),
       occurred_at: payload.occurred_at,
       // Opaque to the App: the generator binds it to the connection, so a
       // later reply goes to the same conversation.
-      reply_context: replyContext(payload.reply_context),
+      reply_context: context,
       connection_id: payload.source?.connection_id ?? null,
+      // Slack sends a mention in a channel both as a mention and as a channel
+      // message: the same channel and timestamp name the same message.
+      message: kind !== 'reaction_added' && event.channel && event.ts
+        ? `${String(event.channel).slice(0, 64)}:${String(event.ts).slice(0, 32)}` : null,
     };
+  }
+
+  // Whether Slack says this App itself acted: its bot user (from the event's
+  // authorizations) or its app id. Without that identity, any bot counts.
+  function ownEvent(metadata) {
+    const event = metadata?.event ?? {};
+    const bots = (Array.isArray(metadata?.authorizations) ? metadata.authorizations : [])
+      .filter(value => value?.is_bot && value.user_id).map(value => value.user_id);
+    const app = metadata?.api_app_id;
+    if (!bots.length && !app) return Boolean(event.bot_id) || event.subtype === 'bot_message';
+    return bots.includes(event.user)
+      || (Boolean(app) && (event.app_id === app || event.bot_profile?.app_id === app));
   }
 
   function occurrence(item) {
     const occurredAtMs = Number.isFinite(Date.parse(item.occurred_at)) ? Date.parse(item.occurred_at) : Date.now();
-    const where = item.channel ? ` in <#${item.channel}>` : '';
+    const where = `${item.in_thread ? ' in a thread' : ''}${item.channel ? ` in <#${item.channel}>` : ''}`;
     const who = item.user ? ` from <@${item.user}>` : '';
     return {
       automationId: AUTOMATION,
@@ -116,14 +136,29 @@ export default function register(chariox) {
   // Deliveries are at least once; the occurrence identity keeps a redelivered
   // Slack event from being stored or forwarded twice.
   async function receive(kind, { occurrenceId, payload }) {
+    // Edits, unfurls and deletions (hidden message events) are not new
+    // messages, and their text and author live elsewhere: they are not kept.
+    if (payload.metadata?.event?.hidden) return null;
     const accept = forward => change(items => {
       if (items.some(item => item.id === occurrenceId)) return undefined;
       const item = notification(kind, occurrenceId, payload);
+      // The other kind of a message already kept is not kept or forwarded
+      // again: one message, one notification, one workflow run. A mention
+      // arriving after its channel message marks it as a mention.
+      // A redelivered mention after a merge matches the merged item too.
+      const same = item.message ? items.findIndex(kept => kept.message === item.message) : -1;
+      if (same >= 0) {
+        if (kind !== 'mentioned' || items[same].kind === kind) return undefined;
+        items[same] = { ...items[same], kind };
+        return { merged: true };
+      }
       items.unshift(item);
       return item;
-    }, item => (forward ? { occurrences: [occurrence(item)] } : {}));
+    }, item => (forward && !item.merged ? { occurrences: [occurrence(item)] } : {}));
+    // This App's own messages and reactions are kept but start no run: a
+    // reply or reaction posted by an automation must not trigger it again.
     try {
-      await accept(true);
+      await accept(!ownEvent(payload.metadata));
     } catch (error) {
       if (!OPTIONAL_OCCURRENCE.has(error?.code)) throw error;
       await accept(false);
@@ -138,7 +173,7 @@ export default function register(chariox) {
       notifications: items
         .filter(item => !kind || item.kind === kind)
         .slice(0, limit)
-        .map(({ reply_context: _context, connection_id: _connection, ...item }) => ({
+        .map(({ reply_context: _context, connection_id: _connection, message: _message, ...item }) => ({
           ...item, can_reply: Boolean(_context && _connection),
         })),
     };
@@ -163,6 +198,9 @@ export default function register(chariox) {
   chariox.tools.register('reply', async ({ id, text, mode = 'thread', request_id: requestId }) => {
     if (!text.trim()) throw fail('INVALID_ARGUMENT', 'A reply needs some text');
     const item = await target(id);
+    // A message in a thread is answered in that thread: a channel post would
+    // split the conversation the person is having.
+    if (item.in_thread) mode = 'thread';
     const { accepted, result } = await chariox.connections.action({
       connectionId: item.connection_id,
       action: 'notification.reply',

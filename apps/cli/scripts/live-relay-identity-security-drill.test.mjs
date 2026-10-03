@@ -10,6 +10,16 @@ import { promisify } from "node:util"
 const execFile = promisify(execFileWithCallback)
 const scriptPath = fileURLToPath(new URL("./live-relay-identity-security-drill.mjs", import.meta.url))
 
+test("valid kernel fixture tokens bind the registered machine independently of daemon identity", async () => {
+  const { claims, daemonRegistration } = await import("./live-relay-identity-security-drill.mjs")
+  const tokenClaims = claims({ subject: "daemon-a", subjectKind: "kernel", realm: "realm-a",
+    actions: ["daemon_register"], machineId: "machine-a" })
+  const registration = daemonRegistration({ token: "fixture", daemonId: "daemon-a", machineId: "machine-a" }).registration
+  assert.equal(tokenClaims.subject, registration.daemon_id)
+  assert.equal(tokenClaims.machine_id, registration.machine_id)
+  assert.notEqual(tokenClaims.machine_id, tokenClaims.subject)
+})
+
 test("relay identity dry-run records the external binary and complete time/isolation contract", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "chariox-relay-identity-dry-run-"))
   const reportPath = path.join(root, "report.json")

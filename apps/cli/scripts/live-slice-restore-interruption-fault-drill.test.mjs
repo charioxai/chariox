@@ -16,11 +16,11 @@ test("slice restore interruption dry-run records an exact serial kernel command 
   try {
     await execFile(process.execPath, [scriptPath, "--dry-run", "--report", reportPath])
     const report = JSON.parse(await readFile(reportPath, "utf8"))
-    assert.equal(report.schema, "chariox.slice_restore_interruption_fault_drill.v1")
+    assert.equal(report.schema, "chariox.slice_restore_interruption_fault_drill.v2")
     assert.equal(report.status, "dry-run")
     assert.deepEqual(report.caseIds, [
-      "fault.restore-after-container-create",
-      "journal.intent-before-mutation",
+      "fault.interrupted-startup-recovery",
+      "journal.retained-pending-intent",
       "recovery.startup-rollback",
       "state.last-known-good",
       "cleanup.partial-runtime",

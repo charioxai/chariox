@@ -2,8 +2,9 @@
 
 This private production module prepares and recovers the writable filesystem
 roots needed by `PreparedWorker`. Its methods are blocking and intended for the
-worker ownership thread. The signed runtime factory has not been connected yet;
-this module does not authorize an App or launch one.
+worker ownership thread. `prepare_macos` uses it for developer runtimes; the
+kernel runs `recover_all_blocking` once per storage root before its first
+preparation. This module does not authorize an App or launch one.
 
 `StorageRoot::open` accepts an existing kernel-owned private directory. The
 kernel supplies the owner, installation, and generation to `prepare`; none is an
@@ -34,7 +35,10 @@ the fixed empty `data` and `tmp` mountpoints. The journal is bounded, written wi
 the existing descriptor-based atomic replacement/fsync helper, and records
 creation intent before a tool can create an image. File device/inode identities,
 the mountpoint identities, and discovered APFS UUIDs become durable before a
-worker can receive the roots. Paths and their ancestors must remain controlled
+worker can receive the roots. Device numbers are boot-local on macOS (a reboot
+can give the volume another `st_dev`), so a loaded journal's recorded devices are
+rebased to the installation directory's current one; the inode is the durable
+pin, and an entry on another filesystem still fails the identity check. Paths and their ancestors must remain controlled
 by the kernel installer; the App receives access to the mounted roots only.
 
 Every attach uses the fixed trusted `/usr/bin/hdiutil` with `-nomount`; mounting
@@ -73,9 +77,10 @@ reclamation. A crash during first creation can discard only the uncommitted
 image named by that private creation intent. Existing data with a committed UUID
 is never silently recreated when missing.
 
-Eight ordinary tests exercise parsing, identity checks, journal fsync recovery,
+Nine ordinary tests exercise parsing, identity checks, journal fsync recovery,
 interrupted temporary files, fixed command arguments, capacity accounting, and
-preserved recovery after an explicit cleanup attempt.
+preserved recovery after an explicit cleanup attempt, and identities that
+survive a reboot's new device number.
 They never call hdiutil or create a filesystem. The dedicated
 `app-storage-macos.yml` workflow executes ignored tests against this same module
 on a disposable GitHub macOS runner, using 64 MiB images for both roots. Its
@@ -110,8 +115,9 @@ inherit it; DiskImages service ownership must be observed before asserting that
 such a limit constrains image creation.
 
 In-flight tool/service
-ownership across a kernel crash also needs validation before factory integration;
-if FD inheritance cannot provide it, a trusted supervised guardian is required.
+ownership across a kernel crash remains an open macOS release gate (see
+`worker_process/README.md`); if FD inheritance cannot provide it, a trusted
+supervised guardian is required.
 This component does
 not yet establish worker integration, signed/hardened library validation,
 snapshot and rollback semantics, an installation-wide resource admission
@@ -123,3 +129,5 @@ mount options, and identity-based detach. Apple also describes fixed read/write
 images in [Disk Utility Help](https://support.apple.com/guide/disk-utility/create-a-disk-image-dskutl11888/mac)
 and the APFS tool model in its [archived APFS guide](https://developer.apple.com/library/archive/documentation/FileManagement/Conceptual/APFS_Guide/ToolsandAPIs/ToolsandAPIs.html).
 The hosted tool output is the compatibility gate for the current macOS release.
+
+Host-space refusals preserve the measured free bytes and required reserve through `WorkerError::HostDiskSpace`. Native worker preparation and the kernel lifecycle retain those numbers for the owner warning; other preparation failures retain their existing diagnostics.

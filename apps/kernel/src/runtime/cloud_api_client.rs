@@ -5,12 +5,20 @@ use crate::error::DaemonError;
 use crate::local::CloudRelayProfile;
 use crate::runtime::cloud_relay_control::CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS;
 
+mod account_client_token;
+pub(crate) use account_client_token::issue_cloud_account_client_runtime_token;
+
 mod http;
 pub(crate) use http::{
-    cloud_error_is_retryable, cloud_url_component, get_cloud_json, get_cloud_json_authenticated,
-    is_stale_cloud_link_error, normalize_cloud_api_url, post_cloud_json,
-    post_cloud_json_authenticated, post_cloud_json_dynamic,
+    cloud_error_is_retryable, cloud_url_component, delete_cloud_json_authenticated, get_cloud_json,
+    get_cloud_json_authenticated, is_stale_cloud_link_error, normalize_cloud_api_url,
+    post_cloud_acknowledged, post_cloud_json, post_cloud_json_authenticated,
+    post_cloud_json_dynamic, post_cloud_to_file,
 };
+mod pairing;
+pub(crate) use pairing::request_account_pairing_token;
+mod terminal_client;
+pub(crate) use terminal_client::{issue_cloud_terminal_client_token, CloudTerminalClientOptions};
 mod session_collaboration;
 pub(crate) use session_collaboration::{
     accept_cloud_session_invite, create_cloud_session_invite, list_cloud_collaborators,
@@ -270,6 +278,7 @@ pub(crate) async fn issue_cloud_slice_runtime_token(
             message: "hosted slice relay requires a machine credential".to_string(),
         });
     }
+    crate::slice::require_hosted_slice_worker_ref(slice_kernel_ref, &machine_id)?;
     let options = cloud_slice_runtime_token_options(machine_id, owner_kernel_id, worker_public_key);
     issue_cloud_runtime_token(profile, slice_kernel_ref, "kernel", options).await
 }
@@ -293,6 +302,7 @@ pub(crate) async fn issue_cloud_slice_recovery_token(
             message: "hosted slice recovery requires a machine credential".to_string(),
         });
     }
+    crate::slice::require_hosted_slice_worker_ref(slice_kernel_ref, &machine_id)?;
     issue_cloud_runtime_token(
         profile,
         slice_kernel_ref,
@@ -603,3 +613,6 @@ mod tests {
         assert!(options.public_key_thumbprint.is_some());
     }
 }
+
+#[cfg(test)]
+mod slice_tokens_test;

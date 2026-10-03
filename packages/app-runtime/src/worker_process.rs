@@ -1,20 +1,26 @@
 //! Blocking ownership of a native App worker and its existing SDK channel.
 //!
 //! Linux preparation consumes installed-runtime and verified-package leases,
-//! then provisions fixed storage, code views and the owned cgroup domain.
+//! then provisions fixed storage, code views and the owned cgroup domain. macOS
+//! preparation provisions private APFS storage for the Seatbelt launcher.
 //! A private type or a native identity reply does not establish confinement.
 //!
 //! Spawn, wait, shutdown and Drop are blocking. The kernel must own this handle
 //! on its bounded blocking service, never drop it on an async coordinator. A
 //! cancellation clone is nonblocking; cancellation does not release admission.
 
+mod host_disk;
 mod monitor;
 mod private_data;
+pub use host_disk::{HostDiskSpace, HOST_RESERVE_BYTES};
 pub use private_data::{
     PreparedDataReplace, PrivateData, PrivateDataError, TreeCopy, TreeFile, TreeLimits,
+    DATA_QUOTA_BYTES,
 };
 #[cfg(target_os = "linux")]
 mod platform_linux;
+#[cfg(target_os = "macos")]
+mod platform_macos;
 mod record;
 mod spawn;
 #[cfg(target_os = "linux")]
@@ -61,14 +67,15 @@ impl PreparedWorker {
     /// `migrate_from` is the data schema of a staged worker that first runs
     /// its release's migration steps from there (the kernel's open migration).
     /// `committed_generation` is the installation's committed generation: a
-    /// newer, staged worker starts on data the helper can roll back to.
+    /// newer, staged worker starts on data the helper can roll back to. `None`
+    /// means no release has been committed yet.
     #[cfg(target_os = "linux")]
     pub fn prepare_linux(
         runtime: crate::runtime_enrollment::EnrolledRuntime,
         release: crate::release_store::VerifiedReleaseLease,
         binding: &crate::installation::StageTrustBinding,
         migrate_from: Option<u32>,
-        committed_generation: u64,
+        committed_generation: Option<u64>,
     ) -> Result<Self, WorkerError> {
         platform_linux::prepare(
             runtime,
@@ -78,7 +85,55 @@ impl PreparedWorker {
             committed_generation,
         )
     }
+    /// macOS preparation. `storage_root` is the kernel-owned private storage
+    /// directory; the launcher applies Seatbelt to the derived canonical roots.
+    /// `committed_generation` is the installation's committed generation: it
+    /// may reuse storage last prepared for a newer, never-committed update.
+    #[cfg(target_os = "macos")]
+    pub fn prepare_macos(
+        runtime: crate::runtime_enrollment::EnrolledRuntime,
+        release: crate::release_store::VerifiedReleaseLease,
+        binding: &crate::installation::StageTrustBinding,
+        storage_root: &std::path::Path,
+        committed_generation: u64,
+        migrate_from: Option<u32>,
+    ) -> Result<Self, WorkerError> {
+        platform_macos::prepare(
+            runtime,
+            release,
+            binding,
+            storage_root,
+            committed_generation,
+            migrate_from,
+        )
+    }
+    /// Kernel startup recovery for macOS storage, before any worker of this
+    /// kernel is prepared: detaches volumes and clears interrupted creations.
+    /// The error is a stable code such as `app_storage_busy`, for diagnostics.
+    #[cfg(target_os = "macos")]
+    pub fn recover_macos_storage(storage_root: &std::path::Path) -> Result<(), &'static str> {
+        storage_macos::StorageRoot::open(storage_root)
+            .and_then(|root| root.recover_all_blocking())
+            .map_err(|error| error.code())
+    }
+    /// Deletes one installation's macOS storage once its workers are reaped:
+    /// the owner deleted the App's data. Deleting again finishes an interrupted
+    /// deletion. The error is a stable code such as `app_storage_busy`.
+    #[cfg(target_os = "macos")]
+    pub fn delete_macos_storage(
+        storage_root: &std::path::Path,
+        owner: &str,
+        installation: &str,
+    ) -> Result<(), &'static str> {
+        storage_macos::StorageRoot::open(storage_root)
+            .and_then(|root| root.delete_blocking(owner, installation))
+            .map_err(|error| error.code())
+    }
 }
+
+/// Each worker's memory limit on both platforms. macOS terminates a worker its
+/// monitor observes above it; Linux sets it as the worker cgroup's memory.max.
+pub const WORKER_MEMORY_LIMIT_BYTES: u64 = 512 * 1024 * 1024;
 
 /// The bootstrap's budget for all migration steps of one update; App startup
 /// then gets its normal budget.
@@ -110,7 +165,8 @@ trait ResourceDomain: Send {
         Err(WorkerError::Preparation)
     }
     /// Trusted setup only: Linux inherits cgroup.procs at FD5 and the pinned
-    /// bubblewrap executable at FD6. Both close before native App main. Ordinary
+    /// bubblewrap executable at FD6 and a borrowed storage lease at FD7. All
+    /// setup channels close before Bubblewrap exec. Ordinary
     /// workers and macOS Apple-tool launches retain the original FD0..4 ABI.
     fn setup_descriptors(&self) -> &[File] {
         &[]
@@ -127,6 +183,11 @@ trait ResourceDomain: Send {
         _now: Instant,
     ) -> Result<(), WorkerError> {
         Ok(())
+    }
+    /// The limit this domain enforced on a running worker that then exited
+    /// by itself (Linux: the cgroup's OOM kill at its memory limit), if any.
+    fn exit_failure(&mut self) -> Option<WorkerError> {
+        None
     }
     fn terminate(&mut self, launcher_pid: libc::pid_t);
     /// Must await an empty owned domain after the direct child is reaped,
@@ -172,6 +233,13 @@ impl WorkerLimits {
 pub enum WorkerError {
     #[error("app_worker_preparation")]
     Preparation,
+    /// The installation's private storage could not be prepared; the code
+    /// (e.g. `app_storage_capacity`) is stable and names no App path.
+    #[error("app_worker_storage:{0}")]
+    Storage(&'static str),
+    /// App storage would leave less than the host's reserve free.
+    #[error("app_worker_host_disk_space")]
+    HostDiskSpace(HostDiskSpace),
     #[error("app_worker_spawn")]
     Spawn,
     #[error("app_worker_startup_timeout")]
@@ -215,6 +283,24 @@ pub struct WorkerExit {
     pub stderr_tail: Vec<u8>,
 }
 
+/// The failure that ends a worker, published by its monitor before it kills
+/// and reaps the process. A call that loses the SDK channel meanwhile reads it
+/// to name the cause, such as the memory limit, instead of a disconnect.
+#[derive(Clone)]
+pub struct WorkerEnding(tokio::sync::watch::Receiver<Option<Option<WorkerError>>>);
+impl WorkerEnding {
+    /// Waits at most `bound` for the monitor's decision. None: the worker ended
+    /// without a failure, or its monitor has not decided yet.
+    pub async fn failure(&self, bound: Duration) -> Option<WorkerError> {
+        let mut decision = self.0.clone();
+        let decided = tokio::time::timeout(bound, decision.wait_for(Option::is_some)).await;
+        match decided {
+            Ok(Ok(failure)) => (*failure).flatten(),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct WorkerCancellation {
     cancelled: Arc<AtomicBool>,
@@ -233,6 +319,7 @@ pub struct WorkerProcess {
     release_digest: String,
     sdk: Option<UnixStream>,
     cancellation: WorkerCancellation,
+    ending: WorkerEnding,
     monitor: Option<JoinHandle<WorkerExit>>,
     // The monitor may finish or unwind before the kernel has drained callbacks.
     // Its wait owner shares this preparation; dropping Child must not drop pins.
@@ -276,13 +363,14 @@ impl WorkerProcess {
         let child = monitor::Child::new(pid, prepared.clone());
         drop((input, stdout_file, stderr_file, sdk_file, control_file));
         let (started_tx, started_rx) = mpsc::sync_channel(1);
+        let (ending_tx, ending) = tokio::sync::watch::channel(None);
         let cancelled = cancellation.cancelled.clone();
         let monitor = thread::Builder::new()
             .name("chariox-app-worker".into())
             .spawn(move || {
                 monitor::run(
                     child, control, stdout, stderr, wake_read, cancelled, record, ready, limits,
-                    deadline, started_tx,
+                    deadline, started_tx, ending_tx,
                 )
             })
             .map_err(|_| WorkerError::Spawn)?;
@@ -292,6 +380,7 @@ impl WorkerProcess {
             release_digest,
             sdk: Some(sdk),
             cancellation,
+            ending: WorkerEnding(ending),
             monitor: Some(monitor),
             _preparation: prepared,
         };
@@ -310,6 +399,10 @@ impl WorkerProcess {
 
     pub fn cancellation(&self) -> WorkerCancellation {
         self.cancellation.clone()
+    }
+
+    pub fn ending(&self) -> WorkerEnding {
+        self.ending.clone()
     }
 
     /// Identity captured from the private trusted preparation, never the App's

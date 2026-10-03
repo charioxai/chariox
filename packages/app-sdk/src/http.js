@@ -98,8 +98,12 @@ export function createHttp(call) {
       return { signal: controller.signal, timeoutMs: remaining };
     };
     let streamId;
+    let opening = false;
+    let answered = false;
     try {
-      ({ streamId } = await call('http.open', parameters, options()));
+      const openOptions = options();
+      opening = true;
+      ({ streamId } = await call('http.open', parameters, openOptions));
       id(streamId);
       const upload = async () => {
         if (body === undefined) return;
@@ -112,6 +116,7 @@ export function createHttp(call) {
       const download = async () => {
         let head;
         do { head = await http.headers(streamId, options()); } while (head.pending);
+        answered = true;
         const chunks = [];
         let total = 0;
         for (;;) {
@@ -129,6 +134,17 @@ export function createHttp(call) {
       };
       const outcomes = await Promise.all([upload(), download()]);
       return outcomes[1];
+    } catch (error) {
+      // The kernel spends an approved effect's approval before it answers the
+      // open, and then sends the effect. Giving up, or a stop by the kernel,
+      // before any response (even while the open is pending) is not a plain
+      // timeout: the origin may have acted. `validation.status` tells whether
+      // the approval was spent.
+      if (parameters.operationId !== undefined && opening && !answered
+        && ['DEADLINE_EXCEEDED', 'APP_OPERATION_STOPPED'].includes(error?.code)) {
+        throw new AppError('APP_HTTP_OUTCOME_UNCERTAIN', 'The approved effect was sent but no reply arrived in time; it may have taken effect. Check its outcome before requesting a new approval', { cause: error });
+      }
+      throw error;
     } finally {
       // Cancellation and cleanup are never sent with the already-aborted signal.
       // This does not retry any body operation, even if its completion was lost.

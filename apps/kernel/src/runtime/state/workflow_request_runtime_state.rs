@@ -1,3 +1,4 @@
+use super::workflow_publication_owned_state::ExportAppPlan;
 use super::*;
 
 impl KernelRuntimeState {
@@ -243,12 +244,12 @@ impl KernelRuntimeState {
                 (owned.workflow_get_publication(request), None)
             }
             LocalDaemonRequest::ExportWorkflowPublicationPackage(request) => {
-                // Protocol 366: a client export prepares the deployment; the
-                // owner's first one pins the App plan it packaged, only once
-                // the export succeeds.
+                // Protocol 377: each owner export packages the owner's current
+                // App plan, recorded as that release's plan once it succeeds,
+                // with the release's inputs digest (378).
                 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
                 let apps = match self
-                    .workflow_publication_apps_to_pin(
+                    .workflow_publication_apps_for_export(
                         &request.session_id,
                         &request.publication_ref,
                         &caller_user_id,
@@ -264,25 +265,32 @@ impl KernelRuntimeState {
                 )))]
                 let apps = None;
                 let session_id = request.session_id.clone();
-                let result = owned.workflow_export_publication_package(request, apps.as_ref());
-                let pinned = match (&result, apps) {
-                    (
-                        Ok(LocalDaemonResponse::WorkflowPublicationPackageExported {
-                            publication,
-                            ..
-                        }),
-                        Some(plan),
-                    ) => match owned.pin_workflow_publication_apps(
+                let result = owned.workflow_export_publication_package(
+                    request,
+                    apps.as_ref().map_or(
+                        super::workflow_publication_owned_state::ExportAppPlan::Latest,
+                        super::workflow_publication_owned_state::ExportAppPlan::Plan,
+                    ),
+                );
+                let recorded = match &result {
+                    Ok(LocalDaemonResponse::WorkflowPublicationPackageExported {
+                        publication,
+                        package_digest,
+                        package_files,
+                        ..
+                    }) => match owned.record_workflow_publication_release(
                         &session_id,
                         publication.id(),
-                        plan,
+                        package_digest,
+                        package_files,
+                        apps,
                     ) {
                         Ok(session) => Some(session),
                         Err(error) => return (Err(error), None),
                     },
                     _ => None,
                 };
-                (result, pinned)
+                (result, recorded)
             }
             LocalDaemonRequest::DisableWorkflowPublication(request) => {
                 let result = owned.workflow_disable_publication(request, &caller_user_id);

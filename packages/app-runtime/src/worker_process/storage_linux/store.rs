@@ -8,8 +8,7 @@ use super::{
     model::{
         self, Enrollment, Identity, Image, Journal, Owner, Request, Role, Snapshot, SNAPSHOT_IMAGE,
     },
-    mount, Error, Result, DATA_BYTES, HOST_RESERVE_BYTES, MAX_INSTALLATIONS, MAX_RESERVED_BYTES,
-    ROOT, TMP_BYTES,
+    mount, Error, Result, DATA_BYTES, MAX_INSTALLATIONS, MAX_RESERVED_BYTES, ROOT, TMP_BYTES,
 };
 use crate::private_fs::Dir;
 use serde::Serialize;
@@ -32,6 +31,7 @@ struct Live {
     journal: Journal,
     bound: Bound,
     code_sources: Option<super::code_sources::Sources>,
+    groups_mapped: Option<super::worker_groups::Mapping>,
 }
 #[derive(Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -66,6 +66,53 @@ impl Store {
         };
         store.recover_all()?;
         Ok(store)
+    }
+    pub fn map_worker_groups(
+        &mut self,
+        uid: u32,
+        lease: &str,
+        peer: &super::worker_groups::Peer,
+        pid: i32,
+        birth: u64,
+    ) -> Result<()> {
+        let owner = self.owners.get(&uid).ok_or(Error::Identity)?;
+        let live = self.live.get_mut(lease).ok_or(Error::Identity)?;
+        if live.journal.uid != uid || live.groups_mapped.is_some() {
+            return Err(Error::Identity);
+        }
+        live.bound.require_single_process(pid)?;
+        let sources = live.code_sources.as_ref().ok_or(Error::Identity)?;
+        let entry = sources
+            .runtime
+            .file("chariox-app-domain-entry")
+            .ok_or(Error::Identity)?;
+        let cgroup = format!(
+            "0::{}/{}\n",
+            owner
+                .cgroup_root
+                .strip_prefix("/sys/fs/cgroup")
+                .ok_or(Error::Identity)?,
+            live.journal.cgroup_leaf
+        );
+        live.groups_mapped = Some(super::worker_groups::map(
+            peer, owner, entry, &cgroup, pid, birth,
+        )?);
+        Ok(())
+    }
+    pub fn verify_worker_groups(
+        &self,
+        uid: u32,
+        lease: &str,
+        peer: &super::worker_groups::Peer,
+    ) -> Result<()> {
+        let live = self.live.get(lease).ok_or(Error::Identity)?;
+        if live.journal.uid != uid {
+            return Err(Error::Identity);
+        }
+        live.groups_mapped
+            .as_ref()
+            .ok_or(Error::Identity)?
+            .verify(peer)
     }
     pub fn enrolled(&self, uid: u32) -> bool {
         self.owners.contains_key(&uid)
@@ -193,6 +240,7 @@ impl Store {
                 journal,
                 bound,
                 code_sources: None,
+                groups_mapped: None,
             },
         );
         prepared
@@ -753,14 +801,7 @@ fn random_uuid() -> Result<String> {
 
 fn reserve(free: u64, promised: u64, allocated: u64) -> Result<()> {
     let missing = promised.checked_sub(allocated).ok_or(Error::Identity)?;
-    let needed = HOST_RESERVE_BYTES
-        .checked_add(missing)
-        .ok_or(Error::Capacity)?;
-    if free < needed {
-        Err(Error::Capacity)
-    } else {
-        Ok(())
-    }
+    crate::worker_process::HostDiskSpace::check(free, missing).map_err(Error::HostReserve)
 }
 #[cfg(test)]
 mod tests {
@@ -819,10 +860,15 @@ mod tests {
     }
     #[test]
     fn existing_directories_do_not_fabricate_disk_reservations() {
+        use crate::worker_process::{HostDiskSpace, HOST_RESERVE_BYTES};
         let promised = DATA_BYTES + TMP_BYTES;
+        // Short of the reserve: the owner is told what is free and needed.
         assert_eq!(
             reserve(HOST_RESERVE_BYTES, promised, DATA_BYTES),
-            Err(Error::Capacity)
+            Err(Error::HostReserve(HostDiskSpace {
+                free: HOST_RESERVE_BYTES,
+                needed: HOST_RESERVE_BYTES + TMP_BYTES,
+            }))
         );
         assert_eq!(
             reserve(HOST_RESERVE_BYTES + TMP_BYTES, promised, DATA_BYTES),
@@ -830,7 +876,10 @@ mod tests {
         );
         assert_eq!(
             reserve(HOST_RESERVE_BYTES + TMP_BYTES, promised, 0),
-            Err(Error::Capacity)
+            Err(Error::HostReserve(HostDiskSpace {
+                free: HOST_RESERVE_BYTES + TMP_BYTES,
+                needed: HOST_RESERVE_BYTES + promised,
+            }))
         );
         assert_eq!(reserve(HOST_RESERVE_BYTES + promised, promised, 0), Ok(()));
     }

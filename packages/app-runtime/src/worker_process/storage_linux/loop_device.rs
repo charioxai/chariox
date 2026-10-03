@@ -81,7 +81,9 @@ impl Device {
             if !(0..4096).contains(&minor) {
                 return Err(Error::Capacity);
             }
-            let file = open(minor as u32)?;
+            // Configured for writing: LOOP_CONFIGURE on a read-only descriptor
+            // would make the loop device read-only.
+            let file = open(minor as u32, Access::Write)?;
             let mut config: Configure = unsafe { std::mem::zeroed() };
             config.fd = image.as_raw_fd() as u32;
             config.block_size = 4096;
@@ -107,6 +109,14 @@ impl Device {
 
     /// Recovery scans a bounded kernel device inventory for the held image
     /// inode. A remembered /dev/loopN alone is never trusted, even for cleanup.
+    ///
+    /// The scan opens every loop device on the host read-only. udev watches
+    /// loop devices (`60-block.rules` `OPTIONS+="watch"`) and turns every close
+    /// of a descriptor opened for writing into a synthesized `change` event.
+    /// A scan that opened each device for writing sent udev one event per loop
+    /// device per scan; `detach` rescans every 20 ms, so a slow detach flooded
+    /// udevd, whose workers then held the very device being detached open and
+    /// kept its autoclear from ever completing.
     pub fn find(image: &Identity, capacity: u64) -> Result<Option<Self>> {
         let mut found = None;
         for (count, entry) in std::fs::read_dir("/sys/block")?.enumerate() {
@@ -122,7 +132,7 @@ impl Device {
             if minor >= 4096 || minor.to_string() != suffix {
                 return Err(Error::Identity);
             }
-            let file = open(minor)?;
+            let file = open(minor, Access::Read)?;
             let Some(info) = status(&file)? else {
                 continue;
             };
@@ -196,13 +206,21 @@ impl Device {
     }
 }
 
-fn open(minor: u32) -> Result<File> {
+/// How a loop device is opened. Only LOOP_CONFIGURE needs `Write`; status,
+/// LOOP_CLR_FD and the mount source (`/proc/self/fd/N` names the device, whose
+/// mount opens it itself) work on a read-only descriptor.
+#[derive(Clone, Copy, PartialEq)]
+enum Access {
+    Read,
+    Write,
+}
+fn open(minor: u32, access: Access) -> Result<File> {
     if minor >= 4096 {
         return Err(Error::Identity);
     }
     let file = OpenOptions::new()
         .read(true)
-        .write(true)
+        .write(access == Access::Write)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
         .open(format!("/dev/loop{minor}"))?;
     let metadata = file.metadata()?;
@@ -225,4 +243,66 @@ fn status(file: &File) -> Result<Option<Info>> {
         };
     }
     Ok(Some(info))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{io::Read, os::fd::FromRawFd};
+
+    /// The live incident (Linux candidate r2): recovery detaches rescanned
+    /// every loop device for writing every 20 ms, udevd fell behind on the
+    /// synthesized `change` events and its workers held the devices being
+    /// detached, so every release on the host failed and retried. A scan must
+    /// close every device it opened without having opened it for writing.
+    /// Run as root on a host with loop devices:
+    /// `cargo test -p chariox-app-runtime --lib -- --ignored a_scan_opens`.
+    #[test]
+    #[ignore = "needs root and at least one /dev/loopN"]
+    fn a_scan_opens_no_loop_device_for_writing() {
+        let inotify = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+        assert!(inotify >= 0);
+        let mut events = unsafe { File::from_raw_fd(inotify) };
+        let mut watched = 0;
+        for entry in std::fs::read_dir("/sys/block").unwrap() {
+            let name = entry.unwrap().file_name();
+            let Some(minor) = name.to_str().and_then(|name| name.strip_prefix("loop")) else {
+                continue;
+            };
+            let path = std::ffi::CString::new(format!("/dev/loop{minor}")).unwrap();
+            let mask = libc::IN_CLOSE_WRITE | libc::IN_CLOSE_NOWRITE;
+            if unsafe { libc::inotify_add_watch(inotify, path.as_ptr(), mask) } >= 0 {
+                watched += 1;
+            }
+        }
+        assert!(watched > 0, "no loop device to scan");
+        // No image has this identity: the scan visits every device.
+        let absent = Identity {
+            device: u64::MAX,
+            inode: u64::MAX,
+        };
+        assert!(Device::find(&absent, super::super::TMP_BYTES)
+            .unwrap()
+            .is_none());
+        let (mut writes, mut reads) = (0, 0);
+        let mut buffer = [0u8; 64 * 1024];
+        let count = events.read(&mut buffer).unwrap_or(0);
+        let mut offset = 0;
+        while offset + std::mem::size_of::<libc::inotify_event>() <= count {
+            let event: libc::inotify_event =
+                unsafe { std::ptr::read_unaligned(buffer[offset..].as_ptr().cast()) };
+            if event.mask & libc::IN_CLOSE_WRITE != 0 {
+                writes += 1;
+            }
+            if event.mask & libc::IN_CLOSE_NOWRITE != 0 {
+                reads += 1;
+            }
+            offset += std::mem::size_of::<libc::inotify_event>() + event.len as usize;
+        }
+        assert!(reads > 0, "the scan opened no loop device");
+        assert_eq!(
+            writes, 0,
+            "the scan opened {writes} loop devices for writing"
+        );
+    }
 }

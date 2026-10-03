@@ -9,7 +9,7 @@ fn local_request_api_queues_workflow_code_run_behind_active_meta_task() {
     let harness = LocalRouterTestHarness::new();
     let (session, agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-meta-queue", "worktree-meta-queue"),
+            harness.fixture_session_request("workspace-meta-queue"),
         ))
         .expect("session create should succeed")
     {
@@ -81,7 +81,7 @@ fn local_request_api_validates_and_applies_workflow_code() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-workflow-code", "worktree-workflow-code"),
+            harness.fixture_session_request("workspace-workflow-code"),
         ))
         .expect("session create should succeed")
     {
@@ -173,7 +173,8 @@ fn local_request_api_runs_workflow_code_with_generated_agent() {
         crate::session::unix_epoch_ms()
     ));
     let worktree_root = workspace_root.join("worktree");
-    std::fs::create_dir_all(&workspace_root).expect("temporary workspace should be created");
+    // Provider launch requires the session worktree itself to exist.
+    std::fs::create_dir_all(&worktree_root).expect("temporary worktree should be created");
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(

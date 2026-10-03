@@ -511,9 +511,15 @@ export async function handleCredentialSlashCommand(
     }
     if (vaultAction === "manage") {
       if (!deps.manageCredentialVault) return deps.flashFooter("credential vault manage is not available in this daemon", "error")
-      const result = await deps.manageCredentialVault()
+      let result: Awaited<ReturnType<typeof deps.manageCredentialVault>>
+      try {
+        result = await deps.manageCredentialVault()
+      } catch (error) {
+        if (isVaultPassphraseRejection(error)) deps.appendNotice(VAULT_FOLDED_PASSPHRASE_HINT)
+        throw error
+      }
       deps.appendNotice(JSON.stringify(result.status, null, 2))
-      deps.flashFooter(`vault ${result.action}`, "info")
+      deps.flashFooter(result.action === "passphrase_changed" ? "vault passphrase changed" : `vault ${result.action}`, "info")
       return
     }
     deps.flashFooter("usage: /credential vault status|lock|manage", "error")
@@ -527,6 +533,19 @@ export async function handleCredentialSlashCommand(
     return
   }
   deps.flashFooter("usage: /credential list | /credential show <id> | /credential set <vault-key> | /credential register <file.yaml> | /credential remove <id> | /credential vault status|lock|manage", "error")
+}
+
+/** Shown once when the kernel rejects a vault passphrase. Before the
+ * case-preserving input fix, the TUI stored A-Z in lower case and dropped
+ * spaces and emoji. The kernel still checks the passphrase exactly; nothing
+ * retries. */
+export const VAULT_FOLDED_PASSPHRASE_HINT =
+  "If you set this vault's passphrase in the Chariox terminal before the case-preserving input fix, try it with A-Z in lower case and without spaces or emoji, then change it: /credential vault manage, then Change passphrase."
+
+function isVaultPassphraseRejection(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return message.includes("failed to unlock Chariox vault")
+    || message.includes("current Chariox vault passphrase is incorrect")
 }
 
 export async function handleConnectorSlashCommand(

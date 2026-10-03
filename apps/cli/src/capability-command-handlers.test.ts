@@ -4,8 +4,10 @@ import test from "node:test"
 import type { AgentInstance } from "./cli-types.js"
 import { parseSlashCommand } from "./commands.js"
 import {
+  handleCredentialSlashCommand,
   handleExtensionSlashCommand,
   handleMcpSlashCommand,
+  VAULT_FOLDED_PASSPHRASE_HINT,
   type CapabilityCommandHandlerDeps,
 } from "./capability-command-handlers.js"
 
@@ -121,6 +123,31 @@ test("mcp slash command confirms active home-proxy shorthand grants", async () =
   assert.match(harness.notices[0] ?? "", /Confirm exposing mcp filesystem to remote agent agent-1/)
   assert.match(harness.notices[0] ?? "", /rerun: \/mcp grant agent-1 filesystem --confirm-home-proxy/)
   assert.deepEqual(harness.footers, ["error:confirmation required for home-proxy grant"])
+})
+
+test("a rejected vault passphrase adds the one-line recovery hint and still fails", async () => {
+  const command = parseSlashCommand("/credential vault manage") as Extract<ReturnType<typeof parseSlashCommand>, { kind: "credential" }>
+  for (const message of [
+    "failed to unlock Chariox vault; passphrase may be incorrect or the vault is corrupted",
+    "the current Chariox vault passphrase is incorrect; the passphrase is unchanged",
+  ]) {
+    const harness = capabilityHarness(agent())
+    harness.deps.manageCredentialVault = async () => { throw new Error(message) }
+    await assert.rejects(handleCredentialSlashCommand(harness.deps, command), { message })
+    assert.deepEqual(harness.notices, [VAULT_FOLDED_PASSPHRASE_HINT])
+  }
+  const cancelled = capabilityHarness(agent())
+  cancelled.deps.manageCredentialVault = async () => { throw new Error("Chariox vault unlock was cancelled") }
+  await assert.rejects(handleCredentialSlashCommand(cancelled.deps, command))
+  assert.deepEqual(cancelled.notices, [])
+  assert.match(VAULT_FOLDED_PASSPHRASE_HINT, /lower case and without spaces.*Change passphrase/)
+})
+
+test("a vault passphrase change reports its own outcome", async () => {
+  const harness = capabilityHarness(agent())
+  harness.deps.manageCredentialVault = async () => ({ action: "passphrase_changed", status: { unlocked: true } })
+  await handleCredentialSlashCommand(harness.deps, parseSlashCommand("/credential vault manage") as Extract<ReturnType<typeof parseSlashCommand>, { kind: "credential" }>)
+  assert.deepEqual(harness.footers, ["info:vault passphrase changed"])
 })
 
 function capabilityHarness(agent: AgentInstance, options: {

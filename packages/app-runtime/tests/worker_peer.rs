@@ -164,6 +164,127 @@ async fn tool_call_can_await_broker_work_on_the_same_channel_and_control_events_
 }
 
 #[tokio::test]
+async fn a_broker_request_names_the_callers_of_the_calls_in_progress() {
+    let (host, stream) = tokio::io::duplex(64 * 1024);
+    let (seen_tx, mut seen) = mpsc::channel(4);
+    let handler = broker(move |request| {
+        let seen = seen_tx.clone();
+        Box::pin(async move {
+            seen.send(request.callers).await.unwrap();
+            Ok(Value::Null)
+        })
+    });
+    let (peer, _events, task) = WorkerPeer::start(
+        Channel::new(host, "1".into(), Sender::Worker).unwrap(),
+        handler,
+        PeerLimits::default(),
+    )
+    .unwrap();
+    let agent = json!({"kind": "agent", "id": "agent-1"});
+    let owner = json!({"kind": "human", "id": "local"});
+    let context = |actor: &Value| json!({"room_id": "room", "operation_id": "op", "actor": actor});
+    let mut calls = Vec::new();
+    for actor in [Some(&agent), Some(&agent), Some(&owner), None] {
+        let slot = peer.reserve(BUDGET).unwrap();
+        calls.push(tokio::spawn(slot.request(
+            "tools.invoke",
+            json!({}),
+            actor.map(context),
+        )));
+    }
+    let mut worker = worker(stream);
+    let mut invocations = Vec::new();
+    for _ in 0..4 {
+        invocations.push(receive(&mut worker).await);
+    }
+    worker
+        .send(&request("sdk-1", "validation.request"), BUDGET)
+        .await
+        .unwrap();
+    receive(&mut worker).await;
+    let mut callers = seen.recv().await.unwrap();
+    callers.sort_by_key(|actor| actor["kind"].to_string());
+    // Each caller once, as the kernel named it; a call without context adds none.
+    assert_eq!(callers, [agent.clone(), owner.clone()]);
+    for invocation in &invocations {
+        worker
+            .send(&response(&id(invocation), json!({})), BUDGET)
+            .await
+            .unwrap();
+    }
+    for call in calls {
+        timeout(BUDGET, call).await.unwrap().unwrap().unwrap();
+    }
+    worker
+        .send(&request("sdk-2", "validation.request"), BUDGET)
+        .await
+        .unwrap();
+    receive(&mut worker).await;
+    assert_eq!(seen.recv().await.unwrap(), Vec::<Value>::new());
+    peer.close();
+    timeout(BUDGET, task.join()).await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn broker_requests_carry_the_calls_the_worker_had_open() {
+    let (host, stream) = tokio::io::duplex(64 * 1024);
+    let (seen_tx, mut seen) = mpsc::channel(4);
+    let handler = broker(move |request| {
+        let seen = seen_tx.clone();
+        Box::pin(async move {
+            seen.send(request.open_calls).await.unwrap();
+            Ok(Value::Null)
+        })
+    });
+    let (peer, _events, task) = WorkerPeer::start(
+        Channel::new(host, "1".into(), Sender::Worker).unwrap(),
+        handler,
+        PeerLimits::default(),
+    )
+    .unwrap();
+    let mut worker = worker(stream);
+    let arm = |id: &str| request(id, "schedule.set");
+    // Outside any call, as from an in-process timer.
+    worker.send(&arm("timer"), BUDGET).await.unwrap();
+    assert_eq!(seen.recv().await.unwrap(), Vec::<String>::new());
+    receive(&mut worker).await;
+    let tool = tokio::spawn(peer.reserve(BUDGET).unwrap().request(
+        "tools.invoke",
+        json!({"name":"remind","input":{}}),
+        None,
+    ));
+    let tool_request = receive(&mut worker).await;
+    let wake = tokio::spawn(peer.reserve(BUDGET).unwrap().request(
+        "schedule.wake",
+        json!({}),
+        None,
+    ));
+    let wake_request = receive(&mut worker).await;
+    worker.send(&arm("during"), BUDGET).await.unwrap();
+    assert_eq!(
+        seen.recv().await.unwrap(),
+        ["schedule.wake", "tools.invoke"]
+    );
+    receive(&mut worker).await;
+    // Once the tool call is answered, only the wake handler remains open.
+    worker
+        .send(&response(&id(&tool_request), json!(null)), BUDGET)
+        .await
+        .unwrap();
+    timeout(BUDGET, tool).await.unwrap().unwrap().unwrap();
+    worker.send(&arm("rearm"), BUDGET).await.unwrap();
+    assert_eq!(seen.recv().await.unwrap(), ["schedule.wake"]);
+    receive(&mut worker).await;
+    worker
+        .send(&response(&id(&wake_request), json!(null)), BUDGET)
+        .await
+        .unwrap();
+    timeout(BUDGET, wake).await.unwrap().unwrap().unwrap();
+    peer.close();
+    timeout(BUDGET, task.join()).await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn reservations_bound_admission_and_do_not_accept_forged_identity() {
     let (host, stream) = tokio::io::duplex(4096);
     let limits = PeerLimits {

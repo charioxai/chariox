@@ -114,26 +114,15 @@ impl Fixture {
 #[test]
 #[ignore = "dedicated hosted Linux root setup: installs tiny signed bytes, never executes them"]
 fn hosted_install_signed_graph_for_storage_views() {
-    assert_eq!(std::env::var("GITHUB_ACTIONS").unwrap(), "true");
-    assert_eq!(
-        std::env::var("RUNNER_ENVIRONMENT").unwrap(),
-        "github-hosted"
-    );
-    assert_eq!(
-        std::env::var("GITHUB_REPOSITORY").unwrap(),
-        "charioxai/chariox"
-    );
-    assert_eq!(
-        std::env::var("CHARIOX_STORAGE_HOSTED").unwrap(),
-        "fixed-production-helper"
-    );
+    crate::storage_drill_fixture::require_dedicated_machine();
     assert_eq!(unsafe { libc::getuid() }, 0);
     assert_eq!(unsafe { libc::geteuid() }, 0);
     // Refuse to overwrite any existing trust authority, even in a marked runner.
     assert!(!Path::new("/etc/chariox/apps/runtime-enrollment.json")
         .try_exists()
         .unwrap());
-    let fixture = Fixture::at("/var/lib/chariox-runtime-fixture".into());
+    let mut fixture = Fixture::at("/var/lib/chariox-runtime-fixture".into());
+    fixture.key = crate::storage_drill_fixture::signing_key([71; 32]);
     let source = fixture.source("hosted-storage-views-only");
     let receipt = RuntimeInstaller::install(
         &source.path,
@@ -148,6 +137,65 @@ fn hosted_install_signed_graph_for_storage_views() {
     println!("Installed tiny signed graph {} for storage mount verification only; no App/native code executed", receipt.inventory_sha256);
     // The copied production graph and external enrollment remain for the next
     // nonroot storage drill. Only this private source fixture is removed here.
+}
+/// The installer half of the macOS release order: codesign, then sign the
+/// inventory over the codesigned bytes, then install. A Mac produces the input
+/// (`CHARIOX_CODESIGNED_RUNTIME_EVIDENCE=<dir> node --test
+/// scripts/sign-app-runtime-release.test.mjs`); any host can run this check.
+#[test]
+#[ignore = "needs a codesigned macOS runtime made on a Mac; installs into private test roots"]
+fn codesigned_macos_runtime_installs_and_tampered_signed_code_is_refused() {
+    let evidence = PathBuf::from(std::env::var_os("CHARIOX_CODESIGNED_RUNTIME_EVIDENCE").unwrap());
+    let receipt: serde_json::Value =
+        serde_json::from_slice(&fs::read(evidence.join("release-receipt.json")).unwrap()).unwrap();
+    let target = receipt["target"].as_str().unwrap();
+    let digest = receipt["inventorySha256"].as_str().unwrap();
+    let key = super::super::decode_hex::<32>(receipt["publicKeyHex"].as_str().unwrap()).unwrap();
+    assert!(target.starts_with("darwin-"));
+    let source = evidence.join("runtime");
+    let install = |source: &Path| {
+        let mut fixture = Fixture::new();
+        fixture.roots.target = target.into();
+        let result = fixture.roots.install(source, key, digest, &mut |_| Ok(()));
+        (fixture, result)
+    };
+    let (fixture, installed) = install(&source);
+    assert_eq!(installed.unwrap().inventory_sha256, digest);
+    let copied = fixture.roots.runtimes.join(digest);
+    for name in [
+        "chariox-app-worker",
+        "libnode.137.dylib",
+        "libchariox-app-runtime.dylib",
+    ] {
+        assert_eq!(
+            fs::read(copied.join(name)).unwrap(),
+            fs::read(source.join(name)).unwrap()
+        );
+    }
+    // One flipped bit in signed code, at its signed size, is refused.
+    fn copy(from: &Path, to: &Path) {
+        fs::create_dir(to).unwrap();
+        for entry in fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let (from, to) = (entry.path(), to.join(entry.file_name()));
+            if entry.file_type().unwrap().is_dir() {
+                copy(&from, &to);
+            } else {
+                let bytes = fs::read(&from).unwrap();
+                let mode = fs::metadata(&from).unwrap().mode() & 0o777;
+                write(&to, &bytes, mode);
+            }
+        }
+    }
+    let tampered = fixture.root.join("tampered");
+    copy(&source, &tampered);
+    let library = tampered.join("libnode.137.dylib");
+    let mut bytes = fs::read(&library).unwrap();
+    let middle = bytes.len() / 2;
+    bytes[middle] ^= 1;
+    write(&library, &bytes, 0o444);
+    let (_refused, result) = install(&tampered);
+    assert!(matches!(result, Err(EnrollmentError::Identity)));
 }
 fn write(path: &Path, bytes: &[u8], mode: u32) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -198,6 +246,23 @@ fn copied_signed_graph_is_enrolled_sealed_and_retry_is_revision_idempotent() {
         fs::metadata(root.join("sdk/src/index.js")).unwrap().mode() & 0o777,
         0o444
     );
+    #[cfg(target_os = "linux")]
+    {
+        // The loader is each worker's ELF interpreter, so it is installed
+        // executable; the libraries beside it are not.
+        let loader = if cfg!(target_arch = "x86_64") {
+            "platform/ld-linux-x86-64.so.2"
+        } else {
+            "platform/ld-linux-aarch64.so.1"
+        };
+        for (path, mode) in [(loader, 0o555), ("platform/libc.so.6", 0o444)] {
+            assert_eq!(
+                fs::metadata(root.join(path)).unwrap().mode() & 0o777,
+                mode,
+                "{path}"
+            );
+        }
+    }
     assert_eq!(fixture.install(&source).unwrap().revision, 1);
     assert_eq!(
         fixture.current().public_key_hex,

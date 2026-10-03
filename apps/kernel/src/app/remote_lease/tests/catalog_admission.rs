@@ -20,6 +20,7 @@ fn catalog(revision: &str) -> RemoteExtensionManifest {
             timeout_sec: Some(30),
             version_hash: Some(revision.into()),
         }],
+        room_browser_available: false,
     }
 }
 

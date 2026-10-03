@@ -158,8 +158,123 @@ pub(super) fn install_package(
         .unwrap(),
     )
 }
+/// Updates the owner's installation to `package` as an approved update
+/// leaves it.
+pub(super) fn update_package(
+    store: &DurableKernelStateStore,
+    owner: &str,
+    installation_id: &str,
+    package_bytes: (Vec<u8>, TrustedPublisher),
+) {
+    let (bytes, publisher) = package_bytes;
+    let trust = store
+        .trusted_app_publisher(owner, "com.example", "state-key")
+        .unwrap();
+    let package = verify(
+        &bytes,
+        &VerificationPolicy::new(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, vec![publisher]),
+    )
+    .unwrap();
+    let candidate = VerifiedInstallCandidate::from_verified(&package, &trust).unwrap();
+    let expected_generation = store
+        .get_app_installation(owner, installation_id)
+        .unwrap()
+        .generation;
+    let AppRegistryOutcome::Update(record) = store
+        .mutate_verified_app_installation(
+            owner,
+            AppVerifiedInstallationMutation::Stage {
+                installation_id: installation_id.into(),
+                expected_generation,
+                candidate,
+                now_ms: 10,
+            },
+        )
+        .unwrap()
+    else {
+        panic!("expected stage")
+    };
+    for operation in [
+        AppRegistryMutation::Decide {
+            token: record.token.clone(),
+            decision: CapabilityDecision::Approved {
+                approval: CapabilityApproval {
+                    decision_id: "state-update".into(),
+                    authority_ref: "kernel-fixture".into(),
+                },
+            },
+            now_ms: 11,
+        },
+        AppRegistryMutation::Quiesce {
+            token: record.token.clone(),
+            now_ms: 12,
+        },
+        AppRegistryMutation::MarkPrepared {
+            token: record.token.clone(),
+            now_ms: 13,
+        },
+    ] {
+        store.mutate_app_installation(owner, operation).unwrap();
+    }
+    store
+        .mutate_verified_app_installation(
+            owner,
+            AppVerifiedInstallationMutation::Commit {
+                token: record.token,
+                now_ms: 14,
+            },
+        )
+        .unwrap();
+}
+pub(super) fn inbox_package_version(version: &str, schema: u32) -> (Vec<u8>, TrustedPublisher) {
+    package_build(false, false, version, schema, true, false)
+}
 pub(super) fn package() -> (Vec<u8>, TrustedPublisher) {
     package_with_tools(false)
+}
+pub(super) fn stage_approved_update(
+    store: &DurableKernelStateStore,
+    owner: &str,
+    installation_id: &str,
+    (bytes, publisher): (Vec<u8>, TrustedPublisher),
+) {
+    let trust = store
+        .trusted_app_publisher(owner, "com.example", "state-key")
+        .unwrap();
+    let package = verify(
+        &bytes,
+        &VerificationPolicy::new(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, vec![publisher]),
+    )
+    .unwrap();
+    let AppRegistryOutcome::Update(record) = store
+        .mutate_verified_app_installation(
+            owner,
+            AppVerifiedInstallationMutation::Stage {
+                installation_id: installation_id.into(),
+                expected_generation: 1,
+                candidate: VerifiedInstallCandidate::from_verified(&package, &trust).unwrap(),
+                now_ms: 10,
+            },
+        )
+        .unwrap()
+    else {
+        panic!("expected stage")
+    };
+    store
+        .mutate_app_installation(
+            owner,
+            AppRegistryMutation::Decide {
+                token: record.token,
+                decision: CapabilityDecision::Approved {
+                    approval: CapabilityApproval {
+                        decision_id: "update-grant".into(),
+                        authority_ref: "kernel-fixture".into(),
+                    },
+                },
+                now_ms: 11,
+            },
+        )
+        .unwrap();
 }
 pub(super) fn tool_package() -> (Vec<u8>, TrustedPublisher) {
     package_with_tools(true)
@@ -187,12 +302,15 @@ fn package_variant(
     version: &str,
     schema: u32,
 ) -> (Vec<u8>, TrustedPublisher) {
-    package_build(with_tools, with_network, version, schema, false)
+    package_build(with_tools, with_network, version, schema, false, false)
 }
 /// An App that also declares the incoming event `received` (a generator
 /// occurrence, or just `text`).
 pub(super) fn inbox_package() -> (Vec<u8>, TrustedPublisher) {
-    package_build(false, false, "1.0.0", 0, true)
+    package_build(false, false, "1.0.0", 0, true, false)
+}
+pub(super) fn host_package() -> (Vec<u8>, TrustedPublisher) {
+    package_build(false, false, "1.0.0", 0, false, true)
 }
 fn package_build(
     with_tools: bool,
@@ -200,6 +318,7 @@ fn package_build(
     version: &str,
     schema: u32,
     incoming: bool,
+    clipboard_write: bool,
 ) -> (Vec<u8>, TrustedPublisher) {
     let mut manifest: Manifest=serde_json::from_value(json!({
         "schema":"chariox.app.v1","appId":"com.example.state","version":version,
@@ -208,6 +327,9 @@ fn package_build(
         "resourcePolicy":"chariox.app.resources.v1","runtime":{"engine":"node","entry":"runtime/main.js"},
         "ui":{"entry":"ui/index.html"},"events":"schemas/events.json","capabilities":{}
     })).unwrap();
+    if clipboard_write {
+        manifest.capabilities.clipboard = vec![chariox_app_package::ClipboardAccess::Write];
+    }
     if with_network {
         manifest.capabilities.network = vec![chariox_app_package::NetworkDestination {
             origin: "https://api.example.com".into(),
@@ -226,23 +348,20 @@ fn package_build(
             "ui/index.html".into(),
             b"<!doctype html><title>State fixture</title>".to_vec(),
         ),
-        (
-            "schemas/events.json".into(),
-            {
-                let mut events = vec![json!({
-                    "name":"changed","direction":"outgoing","schemaVersion":1,
-                    "payloadSchema":{"type":"object","additionalProperties":false,
-                        "required":["text"],"properties":{"text":{"type":"string"}}}
-                })];
-                if incoming {
-                    events.push(json!({"name":"received","direction":"incoming",
+        ("schemas/events.json".into(), {
+            let mut events = vec![json!({
+                "name":"changed","direction":"outgoing","schemaVersion":1,
+                "payloadSchema":{"type":"object","additionalProperties":false,
+                    "required":["text"],"properties":{"text":{"type":"string"}}}
+            })];
+            if incoming {
+                events.push(json!({"name":"received","direction":"incoming",
                         "schemaVersion":1,"payloadSchema":{"type":"object","additionalProperties":false,
                         "properties":{"text":{"type":"string"},"source":{},"occurred_at":{"type":"string"},
                             "metadata":{},"artifacts":{"type":"array"},"reply_context":{}}}}));
-                }
-                serde_json::to_vec(&json!({ "events": events })).unwrap()
-            },
-        ),
+            }
+            serde_json::to_vec(&json!({ "events": events })).unwrap()
+        }),
     ]);
     if schema > 0 {
         manifest.migrations = Some(chariox_app_package::Migrations {
@@ -306,6 +425,7 @@ fn put(value: i32) -> AppStateOperation {
         .unwrap(),
         occurrences: Vec::new(),
         wakes: Vec::new(),
+        wakes_count_as_use: false,
     }
 }
 fn read() -> AppStateOperation {
@@ -485,6 +605,7 @@ fn cancelled_work_waiting_in_the_writer_queue_never_starts_a_state_change() {
     store
         .writer
         .enqueue(DurableWriterRequest::AppState(Box::new(AppStateRequest {
+            wake_changed: store.app_wake_changed.clone(),
             owner: "alice".into(),
             catalog: Arc::clone(&catalog),
             operation: put(9),
@@ -585,7 +706,12 @@ fn schedule_operations_commit_wakes_that_the_writer_reports_due_and_completes() 
         .execute_app_state(
             "alice",
             Arc::clone(&catalog),
-            AppStateOperation::Schedule(vec![set("later", 5_000), set("soon", 1_000)]),
+            // Armed during a tool call: delivering it counts as use.
+            AppStateOperation::Schedule {
+                wakes: vec![set("later", 5_000), set("soon", 1_000)],
+                wakes_count_as_use: false,
+            }
+            .armed_during_use(true),
             budget(),
         )
         .unwrap();
@@ -596,12 +722,18 @@ fn schedule_operations_commit_wakes_that_the_writer_reports_due_and_completes() 
         wakes.iter().map(|w| w.id.as_str()).collect::<Vec<_>>(),
         ["soon", "later"]
     );
+    assert!(!store.has_due_app_wakes("alice", "installed", 999));
+    assert!(store.has_due_app_wakes("alice", "installed", 1_000));
+    assert!(!store.has_due_app_wakes("bob", "installed", 1_000));
     // Another owner cannot schedule into this installation.
     assert!(store
         .execute_app_state(
             "bob",
             Arc::clone(&catalog),
-            AppStateOperation::Schedule(vec![set("forged", 1)]),
+            AppStateOperation::Schedule {
+                wakes: vec![set("forged", 1)],
+                wakes_count_as_use: false,
+            },
             budget(),
         )
         .is_err());
@@ -625,6 +757,7 @@ fn schedule_operations_commit_wakes_that_the_writer_reports_due_and_completes() 
     assert_eq!(due.len(), 1);
     assert_eq!(due[0].wake.id, "soon");
     assert_eq!(due[0].owner_id, "alice");
+    assert!(due[0].counts_as_use);
     // A failed delivery is retried later, and the App's log says why.
     store
         .app_wakes(AppWakeOperation::Failed {
@@ -641,7 +774,10 @@ fn schedule_operations_commit_wakes_that_the_writer_reports_due_and_completes() 
     assert_eq!(logs[0].fields["wake_id"], "soon");
     assert_eq!(logs[0].fields["attempt"], 1);
     assert_eq!(logs[0].fields["kernel"], true);
-    assert!(logs[0].fields["reason"].as_str().unwrap().contains("bad occurrence"));
+    assert!(logs[0].fields["reason"]
+        .as_str()
+        .unwrap()
+        .contains("bad occurrence"));
     assert_eq!(
         store
             .app_wakes(AppWakeOperation::Due {
@@ -663,4 +799,107 @@ fn schedule_operations_commit_wakes_that_the_writer_reports_due_and_completes() 
             .unwrap(),
         AppWakeOutcome::Due(Vec::new())
     );
+}
+
+fn failed_wake_settlement_after_change(replaced: bool) {
+    use crate::durable_state::app_wakes::{AppWakeOperation, AppWakeOutcome};
+    use chariox_app_runtime::managed_state::{Wake, WakeChange};
+
+    // Both retry and final-attempt deletion must identify an obsolete delivery.
+    for attempts in [0, 7] {
+        let fixture = Fixture::new();
+        let store = fixture.open();
+        let catalog = catalog(&store);
+        store
+            .execute_app_state(
+                "alice",
+                Arc::clone(&catalog),
+                AppStateOperation::Schedule {
+                    wakes: vec![WakeChange::Set(Wake {
+                        id: "scheduled".into(),
+                        due_at_ms: 1_000,
+                        revision: "old".into(),
+                    })],
+                    wakes_count_as_use: false,
+                },
+                budget(),
+            )
+            .unwrap();
+        let AppWakeOutcome::Due(mut due) = store
+            .app_wakes(AppWakeOperation::Due {
+                now_ms: 1_000,
+                limit: 1,
+            })
+            .unwrap()
+        else {
+            panic!("due wake");
+        };
+        let mut delivered = due.pop().unwrap();
+        let installation = delivered.installation_id.clone();
+        delivered.attempts = attempts;
+        let change = if replaced {
+            WakeChange::Set(Wake {
+                id: "scheduled".into(),
+                due_at_ms: 2_000,
+                revision: "new".into(),
+            })
+        } else {
+            WakeChange::Cancel {
+                id: "scheduled".into(),
+            }
+        };
+        store
+            .execute_app_state(
+                "alice",
+                Arc::clone(&catalog),
+                AppStateOperation::Schedule {
+                    wakes: vec![change],
+                    wakes_count_as_use: false,
+                },
+                budget(),
+            )
+            .unwrap();
+        store
+            .app_wakes(AppWakeOperation::Failed {
+                wake: delivered,
+                now_ms: 1_001,
+                reason: "handler failed".into(),
+            })
+            .unwrap();
+        let logs = store.app_logs("alice", &installation, 0, 8).unwrap();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(
+            logs[0].message,
+            "A failed wake was cancelled or replaced; no retry was scheduled"
+        );
+        assert_eq!(logs[0].fields["revision"], "old");
+        assert_eq!(logs[0].fields["due_at_ms"], 1_000);
+        let AppWakeOutcome::Due(current) = store
+            .app_wakes(AppWakeOperation::Due {
+                now_ms: 2_000,
+                limit: 8,
+            })
+            .unwrap()
+        else {
+            panic!("due wake");
+        };
+        if replaced {
+            assert_eq!(current.len(), 1);
+            assert_eq!(current[0].wake.revision, "new");
+            assert_eq!(current[0].wake.due_at_ms, 2_000);
+            assert_eq!(current[0].attempts, 0);
+        } else {
+            assert!(current.is_empty());
+        }
+    }
+}
+
+#[test]
+fn failed_wake_settlement_after_cancellation_is_obsolete() {
+    failed_wake_settlement_after_change(false);
+}
+
+#[test]
+fn failed_wake_settlement_after_replacement_is_obsolete() {
+    failed_wake_settlement_after_change(true);
 }

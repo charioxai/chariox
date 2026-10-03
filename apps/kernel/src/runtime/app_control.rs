@@ -11,9 +11,16 @@ use crate::local::*;
 use crate::runtime::command::{KernelCallerKind, KernelCommand, KernelCommandSource};
 use crate::session::DEFAULT_LOCAL_USER_ID;
 
+#[cfg(test)]
+mod fixture_storage;
 mod projection;
+mod request_receipts;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(crate) use fixture_storage::FixtureAppStorage;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod readiness;
 mod uploads;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod workers;
@@ -26,26 +33,53 @@ mod first_install;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) use first_install::FirstInstallControlError;
 
+/// See `AppControlService::admit_reply`.
+const REPLY_ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Wait briefly, but never past the call's own deadline.
+fn reply_wait(remaining: std::time::Duration) -> std::time::Duration {
+    remaining.min(REPLY_ADMISSION_WAIT)
+}
+
+async fn admit_within(
+    admission: &Arc<Semaphore>,
+    wait: std::time::Duration,
+) -> Result<tokio::sync::OwnedSemaphorePermit, AppRequestErrorCode> {
+    tokio::time::timeout(wait, Arc::clone(admission).acquire_owned())
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .ok_or(AppRequestErrorCode::Busy)
+}
+
 #[derive(Clone)]
 pub(crate) struct AppControlService {
     store: DurableKernelStateStore,
+    request_receipts: request_receipts::AppRequestReceipts,
     uploads: super::app_package_upload_control::AppPackageUploadControl,
     preparation: super::app_package_preparation::AppPackagePreparation,
     admission: Arc<Semaphore>,
     event_pump: super::app_event_pump::AppEventPump,
     wake_pump: super::app_wake_pump::AppWakePump,
+    wake_scheduler: Arc<Semaphore>,
     views: super::app_views::AppViews,
     validation_pump: super::app_wake_pump::AppWakePump,
     /// Shown prompts: operation → (owner, the session showing it once known).
     validation_prompts:
         Arc<std::sync::Mutex<std::collections::BTreeMap<String, (String, Option<String>)>>>,
     publishers: super::app_publisher_control::AppPublisherControl,
+    /// Agents with a delayed App catalog refresh pending (at most one each).
+    catalog_refreshes: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
     workers: workers::ActiveWorkers,
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
     lifecycle: super::app_lifecycle::AppLifecycleService,
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
     installs: super::app_install_control::AppInstallControl,
+    /// Tests only: the App storage uninstall deletes from, once a test gave
+    /// this kernel one; until then, the platform's.
+    #[cfg(test)]
+    fixture_storage: Arc<std::sync::OnceLock<FixtureAppStorage>>,
 }
 
 impl AppControlService {
@@ -78,7 +112,11 @@ impl AppControlService {
             admission.clone(),
             lifecycle.clone(),
         );
+        let request_receipts = request_receipts::AppRequestReceipts::new(
+            store.path().with_extension("app-command-results.jsonl"),
+        );
         Self {
+            request_receipts,
             preparation,
             #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
             installs,
@@ -87,15 +125,33 @@ impl AppControlService {
             admission,
             event_pump,
             wake_pump: Default::default(),
+            wake_scheduler: Arc::new(Semaphore::new(1)),
             views: Default::default(),
             validation_pump: Default::default(),
             validation_prompts: Default::default(),
             publishers,
+            catalog_refreshes: Default::default(),
             #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
             workers,
             #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
             lifecycle,
+            #[cfg(test)]
+            fixture_storage: Default::default(),
         }
+    }
+
+    /// Tests only: from now on this kernel deletes App storage from the
+    /// returned fixture instead of the platform's. Every call returns the same
+    /// fixture.
+    #[cfg(test)]
+    pub(crate) fn fixture_app_storage(&self) -> FixtureAppStorage {
+        self.fixture_storage.get_or_init(Default::default).clone()
+    }
+
+    /// Tests only: the fixture storage, once `fixture_app_storage` gave one.
+    #[cfg(test)]
+    pub(crate) fn fixture_storage(&self) -> Option<&FixtureAppStorage> {
+        self.fixture_storage.get()
     }
 
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -123,6 +179,11 @@ impl AppControlService {
 
     pub(crate) fn event_pump(&self) -> &super::app_event_pump::AppEventPump {
         &self.event_pump
+    }
+
+    /// Shared across runtime clones: only one deadline delivery lane may run.
+    pub(crate) fn reserve_wake_scheduler(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        self.wake_scheduler.clone().try_acquire_owned().ok()
     }
 
     pub(crate) fn wake_pump(&self) -> &super::app_wake_pump::AppWakePump {
@@ -187,12 +248,57 @@ impl AppControlService {
             .remove(operation_id);
     }
 
+    pub(crate) fn admission(&self) -> Arc<Semaphore> {
+        Arc::clone(&self.admission)
+    }
+
     pub(crate) fn try_admit(
         &self,
     ) -> Result<tokio::sync::OwnedSemaphorePermit, AppRequestErrorCode> {
         Arc::clone(&self.admission)
             .try_acquire_owned()
             .map_err(|_| AppRequestErrorCode::Busy)
+    }
+
+    /// Admission for recording a call the App already answered: it waits
+    /// briefly instead of failing at once, so momentary contention does not
+    /// throw away a completed call's result. It never waits past the call's
+    /// own deadline (`remaining`), after which the answer would be refused
+    /// as late although the App did answer.
+    pub(crate) async fn admit_reply(
+        &self,
+        remaining: std::time::Duration,
+    ) -> Result<tokio::sync::OwnedSemaphorePermit, AppRequestErrorCode> {
+        admit_within(&self.admission, reply_wait(remaining)).await
+    }
+
+    /// Waits for an App admission slot.
+    pub(crate) async fn admit(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        Arc::clone(&self.admission).acquire_owned().await.ok()
+    }
+
+    /// True when the caller should schedule the agent's delayed App catalog
+    /// refresh: none is pending yet.
+    pub(crate) fn begin_catalog_refresh(&self, agent: &str) -> bool {
+        self.catalog_refreshes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(agent.to_owned())
+    }
+
+    pub(crate) fn end_catalog_refresh(&self, agent: &str) {
+        self.catalog_refreshes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(agent);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn catalog_refresh_pending(&self, agent: &str) -> bool {
+        self.catalog_refreshes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(agent)
     }
 
     pub(crate) async fn execute(

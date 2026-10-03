@@ -89,15 +89,6 @@ impl AppHttpPolicy {
     pub(super) fn catalog(&self) -> &Arc<AppCatalog> {
         &self.catalog
     }
-    pub(super) fn require_current(
-        &self,
-        transaction: &rusqlite::Transaction<'_>,
-        trusted_owner: &str,
-    ) -> Result<()> {
-        self.catalog
-            .require_current(transaction, trusted_owner)
-            .map_err(|_| HttpError::Provenance)
-    }
     pub(super) fn anonymous_target(
         &self,
         url: &str,
@@ -194,6 +185,9 @@ impl Rules {
             || url.fragment().is_some()
         {
             return Err(HttpError::Invalid);
+        }
+        if let Some(url::Host::Domain(host)) = url.host() {
+            super::dns::absolute_name(host)?;
         }
         let (declared_method, method) = declared_method(method)?;
         let origin = url.origin().ascii_serialization();
@@ -369,5 +363,18 @@ pub(super) fn fixture_target() -> ApprovedTarget {
             "multipart/form-data; boundary=fixture".into(),
         )],
     )
+    .unwrap()
+}
+
+/// A GET target for `url`, whose origin is the only declared destination.
+#[cfg(test)]
+pub(super) fn fixture_get(url: &str) -> ApprovedTarget {
+    let origin = Url::parse(url).unwrap().origin().ascii_serialization();
+    Rules {
+        destinations: BTreeMap::from([(origin, BTreeSet::from([HttpMethod::Get]))]),
+        protected_origins: BTreeSet::new(),
+        protected_routes: BTreeMap::new(),
+    }
+    .target(url, "GET", &[])
     .unwrap()
 }

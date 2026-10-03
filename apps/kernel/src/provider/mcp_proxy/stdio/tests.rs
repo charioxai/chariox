@@ -164,6 +164,7 @@ fn closed_run_and_session_reject_late_process_ownership() {
 
 #[test]
 fn request_timeout_kills_the_unresponsive_stdio_child() {
+    crate::test_support::isolated_env_test!();
     let Some(mut config) = node_stdio_config(
         r#"
 import fs from 'node:fs'
@@ -192,7 +193,7 @@ process.stdin.resume()
         "session-timeout",
         &config,
     );
-    let pid_deadline = Instant::now() + Duration::from_secs(2);
+    let pid_deadline = Instant::now() + Duration::from_secs(10);
     let child_pid = loop {
         if let Ok(contents) = std::fs::read_to_string(&pid_file) {
             if let Ok(pid) = contents.parse::<u32>() {

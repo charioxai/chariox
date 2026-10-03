@@ -115,10 +115,11 @@ fn lazy_service_resumes_owner_bound_retries_and_retains_abort_status() {
         )
         .unwrap();
     assert_eq!(aborted.phase, UploadPhase::Aborted);
-    assert_eq!(aborted.expires_at_ms, first.expires_at_ms);
+    // The aborted receipt answers retries for a minute, not the upload's TTL.
+    assert_eq!(aborted.expires_at_ms, 40 + 60_000);
     assert_eq!(reopened.execute_at("alice", begin(), 50).unwrap(), aborted);
     let next = reopened
-        .execute_at("alice", begin(), first.expires_at_ms)
+        .execute_at("alice", begin(), aborted.expires_at_ms)
         .unwrap();
     assert_ne!(next.handle, first.handle);
 }

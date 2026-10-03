@@ -9,11 +9,14 @@ pub enum LocalDaemonResponse {
     AppInstallationsListed { installations: Vec<AppInstallationSummary>, next_cursor: Option<String>, },
     AppInstallation { installation: AppInstallationSummary, },
     AppInstallationJournal { installation_id: String, updates: Vec<AppUpdateSummary>, },
+    AppDataSnapshotRestored { installation_id: String, generation: String, snapshot_id: String, },
     AppRequestFailed { code: AppRequestErrorCode, },
     AppWorker { worker: AppWorkerSummary, },
     AppAutomations { installation_id: String, automations: Vec<AppAutomationSummary>, },
     AppAutomation { installation_id: String, automation: AppAutomationSummary, },
     AppViewOpened { installation_id: String, target_id: String, origin: String, bound_agent_id: Option<String>, },
+    /// The user's panel choice for the App's views in this session.
+    AppViewPanelSet { installation_id: String, placement: Option<crate::session::AppPanelPlacement>, minimized: bool, },
     AppLogs { installation_id: String, entries: Vec<AppLogEntrySummary>, },
     AppInboxRoutes { installation_id: String, routes: Vec<AppInboxRouteSummary>, },
     AppConnections { installation_id: String, connections: Vec<AppConnectionSummary>, },
@@ -22,11 +25,15 @@ pub enum LocalDaemonResponse {
     /// Protocol 367: a publication's App plan (`chariox.publication-apps.v1`,
     /// each App with its signed `capabilities`), `null` when it uses no App;
     /// `pinned` once a deployment preparation pinned it.
-    DeploymentAppsPreview { publication_id: String, pinned: bool, plan: Option<serde_json::Value>, },
+    DeploymentAppsPreview { publication_id: String, pinned: bool, plan: Option<serde_json::Value>, #[serde(default, skip_serializing_if = "Option::is_none")] release_plan: Option<serde_json::Value>, },
     /// Protocol 367: the owner's consent to a deployment's Apps.
     DeploymentAppsConsent { consent: DeploymentAppsConsent, },
     AppFileGranted { operation_id: String, files: u32, },
     AppFileExport { operation_id: String, name: String, contents_base64: String, },
+    /// Protocol 394: file requests ended (`requests`) and granted files the
+    /// App had not imported (`files`).
+    AppFileGrantsRevoked { installation_id: String, requests: u32, files: u32, },
+    AppHostActionAccepted { operation_id: String, action: AppHostAction, },
     AppInboxOccurrenceAccepted { installation_id: String, route_id: String, occurrence_id: String, duplicate: bool, },
     SessionCreated { session: RuntimeSession, agent: AgentInstance, },
     SessionAttached { attachment: RuntimeAttachment, },
@@ -56,6 +63,8 @@ pub enum LocalDaemonResponse {
     ProjectArchived { project: RuntimeProject, sessions: Vec<RuntimeSession>, },
     ProjectDeleted { project: RuntimeProject, sessions: Vec<RuntimeSession>, },
     ProjectRestored { project: RuntimeProject, sessions: Vec<RuntimeSession>, },
+    ProjectEnvironmentAdjustmentStarted { session_id: String, agent_id: String, },
+    ProjectEnvironmentManifest { manifest: Option<crate::project_environment::ProjectEnvironmentManifest>, },
     ProjectEnvironmentSetupStarted { status: ProjectEnvironmentSetupStatus, },
     ProjectEnvironmentSetupStatus { status: ProjectEnvironmentSetupStatus, },
     ProjectEnvironmentSetupCancelled { status: ProjectEnvironmentSetupStatus, },
@@ -178,12 +187,22 @@ pub enum LocalDaemonResponse {
     CredentialVaultLocked { status: crate::secret::CharioxVaultUnlockStatus, },
     CredentialVaultManaged { status: crate::secret::CharioxVaultUnlockStatus, action: String, },
     ManagedEnvironmentCatalog { catalog: ManagedEnvironmentCatalog, },
-    ManagedEnvironment { environment: ManagedEnvironmentSummary, },
+    DisposableWorker { allocation: DisposableWorkerAllocation, },
+    DisposableWorkerContextTransferPrepared { ticket: crate::managed_context::outbound_service::ManagedContextTransferTicket, },
+    ManagedEnvironmentKeptRunning { environment: ManagedEnvironmentSummary, },
+    ManagedEnvironment {
+        environment: ManagedEnvironmentSummary,
+        #[serde(default)]
+        operations: Vec<ManagedEnvironmentOperationSummary>,
+    },
     ManagedEnvironmentReimagePreflight { preflight: ManagedEnvironmentReimagePreflight, },
+    ManagedEnvironmentReimageReceipt { receipt: ManagedEnvironmentReimageReceipt, },
     ManagedEnvironmentContextTransferPrepared { ticket: crate::managed_context::outbound_service::ManagedContextTransferTicket, },
     ManagedEnvironmentCreated { result: ManagedEnvironmentResult, },
     ManagedEnvironmentLifecycleRequested { result: ManagedEnvironmentResult, },
     ManagedEnvironmentReimageRequested { result: ManagedEnvironmentReimageResult, },
+    ManagedEnvironmentReleaseUpdateRequested { update: ManagedEnvironmentReleaseUpdate, },
+    ManagedEnvironmentReleaseUpdateRead { update: Option<ManagedEnvironmentReleaseUpdate>, },
     ManagedEnvironmentPreReimageObserved { acknowledgement: ManagedEnvironmentPreReimageObservationAcknowledgement, },
     ManagedContextTransferStarted { status: crate::managed_context::outbound_service::ManagedContextOutboundOperationStatus, },
     ManagedContextTransferStatus { status: crate::managed_context::outbound_service::ManagedContextOutboundOperationStatus, },
@@ -206,6 +225,14 @@ pub enum LocalDaemonResponse {
     SliceBackupRestored { slice: SliceRecord, backup: crate::slice::SliceBackupRecord, },
     RemoteMachinesListed { machines: Vec<RemoteMachineRecord>, },
     RemoteMachineKernelsListed { machine_ref: String, kernels: Vec<RelayKernelPresence>, },
+    /// A direct current relay registration observation. This does not prove
+    /// historical heartbeat-ID absence or full MP-10 acceptance.
+    FreshRemoteMachineKernelsObserved {
+        machine_ref: String,
+        query_started_at_ms: u64,
+        query_completed_at_ms: u64,
+        kernels: Vec<RelayKernelPresence>,
+    },
     WaitingRoomInventory { snapshot: WaitingRoomInventorySnapshot, },
     WaitingRoomPublicSnapshot { snapshot: WaitingRoomPublicSnapshot, },
     ExternalProviderSessionsListed { page: ExternalProviderSessionPage, },
@@ -247,7 +274,12 @@ pub enum LocalDaemonResponse {
     PairingInviteCreated { invite: PairingInviteRecord, },
     PairingInviteJoined { pairing: PairingJoinRecord, },
     TerminalPairingLinkCreated { pairing: TerminalPairingLinkRecord, },
-    TerminalPairingLinkJoined { terminal: TerminalRecord, pairing: PairingJoinRecord, },
+    TerminalPairingLinkJoined {
+        terminal: TerminalRecord,
+        pairing: PairingJoinRecord,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        relay_token: Option<String>,
+    },
     TerminalsListed { terminals: Vec<TerminalRecord>, },
     PairedClientsListed { clients: Vec<PairedClientRecord>, },
     PairedClientRecorded { client: PairedClientRecord, },

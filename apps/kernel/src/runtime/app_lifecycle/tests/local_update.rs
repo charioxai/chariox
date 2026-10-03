@@ -10,7 +10,7 @@ use crate::durable_state::{
 use chariox_app_runtime::installation::VerifiedInstallCandidate;
 
 /// Stages release `version` of the fixture App as an update of `installation`.
-fn stage_update(
+pub(super) fn stage_update(
     store: &DurableKernelStateStore,
     installation: &str,
     request: &str,
@@ -134,8 +134,13 @@ fn an_update_drains_the_old_worker_and_commits_only_a_healthy_new_generation() {
             .is_some_and(|lease| lease.catalog().generation() == 1)
     });
 
+    let old = control.active_app_lease("alice", &id).unwrap();
+    assert!(!store.app_update_underway("alice", &id).unwrap());
     let update = stage_update(&store, &id, "good_update", "1.1.0", 0);
     assert_eq!(update.token.base_generation, 1);
+    // Approved and not yet committed: calls that find no worker are told the
+    // App is updating.
+    assert!(store.app_update_underway("alice", &id).unwrap());
     control
         .lifecycle()
         .start_first_blocking("alice", "good_update", runtime.handle().clone())
@@ -155,6 +160,12 @@ fn an_update_drains_the_old_worker_and_commits_only_a_healthy_new_generation() {
     let installation = store.get_app_installation("alice", &id).unwrap();
     assert_eq!(installation.generation, update.token.generation);
     assert_eq!(installation.active.unwrap().release.version, "1.1.0");
+    assert!(!store.app_update_underway("alice", &id).unwrap());
+    // A call still holding the drained generation hears that it was updated.
+    assert!(matches!(
+        old.reserve_call(Duration::from_secs(1)),
+        Err(crate::runtime::app_worker::AppWorkerError::Updating)
+    ));
     let worker = store.app_worker_status("alice", &id).unwrap().unwrap();
     assert_eq!(worker.generation, update.token.generation);
     assert_eq!(worker.phase, WorkerPhase::Running);
@@ -164,13 +175,19 @@ fn an_update_drains_the_old_worker_and_commits_only_a_healthy_new_generation() {
         let live = observations.iter().filter(|v| !v.was_reaped()).count();
         assert_eq!(live, 1);
     }
+    // A user stop is not an update.
+    let current = control.active_app_lease("alice", &id).unwrap();
     control.lifecycle().stop_blocking("alice", &id).unwrap();
+    assert!(matches!(
+        current.reserve_call(Duration::from_secs(1)),
+        Err(crate::runtime::app_worker::AppWorkerError::Unavailable)
+    ));
     assert!(all_reaped(&observations));
     control.lifecycle().shutdown_blocking().unwrap();
 }
 
 /// The installation's structured state as the kernel stored it.
-fn state_value(store: &DurableKernelStateStore, key: &str) -> Option<String> {
+pub(super) fn state_value(store: &DurableKernelStateStore, key: &str) -> Option<String> {
     use rusqlite::OptionalExtension;
     rusqlite::Connection::open(store.path())
         .unwrap()
@@ -183,7 +200,7 @@ fn state_value(store: &DurableKernelStateStore, key: &str) -> Option<String> {
         .unwrap()
 }
 
-fn installed(
+pub(super) fn installed(
     store: &DurableKernelStateStore,
     runtime: &tokio::runtime::Runtime,
 ) -> (AppControlService, Arc<Mutex<Vec<Observation>>>, String) {
@@ -451,13 +468,21 @@ fn an_update_breaks_only_automations_whose_event_schema_changed_and_logs_why() {
         )
         .unwrap();
     }
+    // A complete, current-contract row (valid identity, payload and
+    // invocation), so no maintenance sweep could fail it: only the update's
+    // break can.
     db.execute(
         "INSERT INTO app_outbox(owner_id,installation_id,receipt_id,automation_id,event_version,
            occurrence_id,occurred_at_ms,event_name,schema_digest,content_digest,automation_revision,
-           accepted_generation,accepted_at_ms,expires_at_ms,state,revision,attempts,next_attempt_at_ms)
-         VALUES('alice',?1,'receipt','stale',1,'occurrence',1,'changed',?2,?2,1,1,1,9007199254740991,
-           'accepted',1,0,0)",
-        rusqlite::params![id, "0".repeat(64)],
+           accepted_generation,accepted_at_ms,expires_at_ms,state,revision,attempts,next_attempt_at_ms,
+           payload_json,invocation_json)
+         VALUES('alice',?1,'receipt','stale',1,?3,100,'changed',?2,?2,1,1,100,9007199254740991,
+           'accepted',1,0,100,'{\"text\":\"pending\"}','{\"prompt\":\"Handle the event\",\"artifacts\":[]}')",
+        rusqlite::params![
+            id,
+            "0".repeat(64),
+            chariox_app_runtime::app_outbox::occurrence_id("pending", 100).unwrap()
+        ],
     )
     .unwrap();
     stage_update(&store, &id, "schema_update", "1.1.0", 0);
@@ -494,6 +519,15 @@ fn an_update_breaks_only_automations_whose_event_schema_changed_and_logs_why() {
         serde_json::from_str::<serde_json::Value>(&fields).unwrap(),
         serde_json::json!({"automation_id": "stale", "undelivered": 1, "kernel": true})
     );
+    // The undelivered event failed with its automation, in the commit.
+    let state: String = db
+        .query_row(
+            "SELECT state FROM app_outbox WHERE receipt_id='receipt'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(state, "failed");
     let logged: i64 = db
         .query_row(
             "SELECT COUNT(*) FROM app_logs WHERE message LIKE 'Automation same %'",
