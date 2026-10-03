@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import {spawn,execFile} from 'node:child_process'
 import {randomUUID,createHash} from 'node:crypto'
 import {createWriteStream} from 'node:fs'
-import {readFile,writeFile,appendFile,mkdir,mkdtemp,readdir,rm,stat,chown} from 'node:fs/promises'
+import {readFile,writeFile,appendFile,mkdir,mkdtemp,readdir,rm,stat,chmod} from 'node:fs/promises'
 import http from 'node:http'
 import net from 'node:net'
 import path from 'node:path'
@@ -32,9 +32,11 @@ const root=await mkdtemp(`${lane}/runtime-`),owned=[],slices=[],savedImages=new 
 let local,session,slice,environment,relayChild,kernelChild,fixture,webServer,webContainer,monitor,stage='provenance',interrupted=false,ocrRun=null
 const activeTuis=new Map()
 // The Web viewer container runs Chromium sandboxed as the slice image's non-root
-// user (uid 1001), so it owns only its own runtime and evidence directories.
+// user (uid 1001) and gets only its own runtime and evidence directories. Their
+// parents (the lane and the evidence root) are owner-only, so modes alone give
+// uid 1001 access without host chown; the host still reads and removes its files.
 const WEB_UID=1001,webRoot=`${root}/web`,webEvidence=`${evidence}/web`
-const writeWeb=async(name,value)=>{await writeFile(`${webRoot}/${name}`,JSON.stringify(value),{mode:0o600});await chown(`${webRoot}/${name}`,WEB_UID,WEB_UID)}
+const writeWeb=async(name,value)=>{await writeFile(`${webRoot}/${name}`,JSON.stringify(value));await chmod(`${webRoot}/${name}`,0o644)}
 const write=(name,value)=>writeFile(`${evidence}/${name}.json`,JSON.stringify({mpItems,...value},null,2)+'\n',{mode:0o600})
 const cmd=async(program,args,timeout=120000)=>{
  const started=Date.now()
@@ -220,7 +222,7 @@ try{
    res.setHeader('content-type',file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':file.endsWith('.html')?'text/html':file.endsWith('.svg')?'image/svg+xml':'application/octet-stream');res.end(await readFile(file))
   }catch{res.statusCode=500;res.end('loop fixture failed')}})
   const webPort=await freePort();await new Promise(resolve=>webServer.listen(webPort,'127.0.0.1',resolve))
-  for(const directory of [webRoot,webEvidence]){await mkdir(directory,{mode:0o700});await chown(directory,WEB_UID,WEB_UID)}
+  for(const directory of [webRoot,webEvidence]){await mkdir(directory,{recursive:true});await chmod(directory,0o777)}
   await writeWeb('web-config.json',{baseUrl:`http://127.0.0.1:${webPort}`,relayUrl:env.CHARIOX_RELAY_URL,daemonId,machineId,environmentId:environment.environment_id,target:`${session.id}:${session.agents[0].id}:${slice.id}`})
   webContainer=`${runId}-web`;await docker(['run','-d','--name',webContainer,'--user',`${WEB_UID}:${WEB_UID}`,'--security-opt',`seccomp=${repo}/apps/kernel/slice-linux-docker/chromium-seccomp.json`,'--label',`io.chariox.drill-run=${runId}`,'--network','host','--memory','1536m','--memory-swap','1536m','--cpus',process.env.LOOPS_WEB_CPUS??'1','--pids-limit','256','--mount',`type=bind,src=${cloud},dst=/cloud,readonly`,'--mount',`type=bind,src=${webRoot},dst=/runtime`,'--mount',`type=bind,src=${webEvidence},dst=/evidence`,'--mount',`type=bind,src=${repo}/apps/cli/scripts/lib/room-repetition-web.mjs,dst=/web.mjs,readonly`,'--mount',`type=bind,src=${repo}/apps/cli/scripts/lib/room-repetition-gates.mjs,dst=/room-repetition-gates.mjs,readonly`,'--entrypoint','node',image,'/web.mjs'])
   await wait(async()=>{const error=await readFile(`${webRoot}/web-error.json`,'utf8').catch(()=>null);if(error){const e=Error(JSON.parse(error).message);e.fatal=true;throw e}return JSON.parse(await readFile(`${webRoot}/web-ready.json`,'utf8').catch(()=>'null'))},'two Web viewers',120000)
