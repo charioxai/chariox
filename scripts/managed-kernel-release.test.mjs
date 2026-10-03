@@ -780,6 +780,11 @@ test("Path-1 bootstrap and data-volume artifacts are signed and selected by imag
   assert.doesNotMatch(path1Unit, /^UMask=/m, "Path-1 must inherit systemd's ordinary system-unit umask")
   for (const required of [
     "Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1",
+    "Wants=network-online.target chariox-app-storage.service",
+    "After=network-online.target chariox-rootless-docker.service chariox-app-storage.service",
+    "Delegate=cpu memory pids",
+    "DelegateSubgroup=supervisor",
+    "ExecStartPost=+/usr/libexec/chariox-app-storage --prepare-managed-domain",
     "Environment=HOME=/home/chariox",
     "Environment=CHARIOX_HOME=/home/chariox/.chariox",
     "Environment=CHARIOX_SLICE_DOCKER_BROKER_SOCKET=/var/lib/chariox-slice-share/.broker-private/control/control.sock",
@@ -1083,8 +1088,8 @@ test("Path-1 bootstrap and data-volume artifacts are signed and selected by imag
     "chariox-path1-managed-bootstrap.service",
     path1Unit,
     path1Unit.replace(
-      "After=network-online.target chariox-rootless-docker.service\n",
-      "After=network-online.target\n",
+      "After=network-online.target chariox-rootless-docker.service chariox-app-storage.service\n",
+      "After=network-online.target chariox-app-storage.service\n",
     ),
     /selected Path-1 managed bootstrap service must start after rootless Docker/,
   )

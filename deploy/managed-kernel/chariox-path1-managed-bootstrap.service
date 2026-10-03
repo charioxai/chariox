@@ -1,7 +1,7 @@
 [Unit]
 Description=Chariox Path-1 managed home kernel supervisor
-After=network-online.target chariox-rootless-docker.service
-Wants=network-online.target
+After=network-online.target chariox-rootless-docker.service chariox-app-storage.service
+Wants=network-online.target chariox-app-storage.service
 Requires=chariox-rootless-docker.service
 Conflicts=chariox-managed-bootstrap.service chariox-disposable-worker-bootstrap.service
 ConditionPathExists=/usr/local/bin/chariox-managed-bootstrap
@@ -27,6 +27,12 @@ Environment=CHARIOX_SLICE_DOCKER_BROKER_SOCKET=/var/lib/chariox-slice-share/.bro
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStartPre=-+/usr/bin/systemctl restart chariox-slice-broker.service
 ExecStart=/usr/local/bin/chariox-managed-bootstrap
+# Apps keep their own contained worker domain on this ordinary Path-1 host.
+# Prepare after systemd puts the supervisor in its child cgroup, so enabling
+# controllers does not prevent the main process from starting.
+Delegate=cpu memory pids
+DelegateSubgroup=supervisor
+ExecStartPost=+/usr/libexec/chariox-app-storage --prepare-managed-domain
 Restart=always
 RestartSec=2s
 RestartSteps=8
