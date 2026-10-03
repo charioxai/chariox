@@ -341,17 +341,11 @@ async fn ready_state_read_ignores_busy_but_degrades_positive_browser_loss() {
 #[tokio::test]
 async fn ready_state_read_recovers_pending_import() {
     let (state, room, _tool, _) = fixture().await;
-    let environment = state.room_environment_snapshot(&room).unwrap();
-    state
-        .owned
-        .durable_state_store
-        .begin_browser_import_recovery(
-            &environment.environment_id,
-            "11111111111111111111111111111111",
-            "local",
-            &room,
-        )
+    let guard = state
+        .begin_exclusive_browser_import(&room, "11111111111111111111111111111111", "local")
+        .await
         .unwrap();
+    drop(guard);
     assert!(state
         .ensure_browser_import_execution_allowed(&room)
         .is_err());
@@ -375,13 +369,7 @@ async fn ready_state_read_recovers_pending_import() {
 #[tokio::test]
 async fn ready_state_read_reacquires_lost_controller_lease() {
     let (state, room, _tool, _) = fixture().await;
-    state
-        .room_browser_controller_command(
-            &room,
-            crate::transport::room_browser_controller::RoomBrowserControllerCommand::Release,
-        )
-        .await
-        .unwrap();
+    state.stop_browser_controller_process(&room).await.unwrap();
     state.schedule_room_environment_health_refresh(&room);
     tokio::time::timeout(Duration::from_secs(5), async {
         while state.room_environment_snapshot(&room).unwrap().lifecycle != Lifecycle::Degraded {
