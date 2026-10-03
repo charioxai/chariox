@@ -6,8 +6,8 @@ mod types;
 
 pub use failed_requests::FailedRequest;
 pub(crate) use failed_requests::{failed_request_notice, failed_request_reason};
-pub use service::AgentService;
 pub(crate) use service::new_agent_focus_target;
+pub use service::AgentService;
 pub use service_store::AgentServiceStore;
 pub(crate) use service_store::ProviderResumeClearOutcome;
 pub use store::AgentStore;

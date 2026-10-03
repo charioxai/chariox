@@ -194,17 +194,19 @@ fn home_archive_stream_outer_failure_removes_owned_helper() {
     let mut options = super::super::tests::test_options();
     options.root = f.root.clone();
     super::super::snapshot_pause::begin(&record, &options, false).unwrap();
-    assert!(super::super::capture_preflight::with_test_verified_layout(|| {
-        archive_local_docker_home_volume(
-            &record,
-            &options,
-            &f.root.join("home.tar.zst"),
-            "state",
-            "test",
-            "test",
-        )
-    })
-    .is_err());
+    assert!(
+        super::super::capture_preflight::with_test_verified_layout(|| {
+            archive_local_docker_home_volume(
+                &record,
+                &options,
+                &f.root.join("home.tar.zst"),
+                "state",
+                "test",
+                "test",
+            )
+        })
+        .is_err()
+    );
     assert!(f
         .calls()
         .lines()

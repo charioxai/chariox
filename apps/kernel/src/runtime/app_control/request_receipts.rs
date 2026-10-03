@@ -108,7 +108,8 @@ impl AppRequestReceipts {
                     .await
                     .ok()
                     .and_then(|cached| {
-                        (*cached.response_value()).and_then(|value| serde_json::from_value(value).ok())
+                        (*cached.response_value())
+                            .and_then(|value| serde_json::from_value(value).ok())
                     })
                     .unwrap_or_else(failed),
                 Ok(CommandReservation::Conflict) => LocalDaemonResponse::AppRequestFailed {

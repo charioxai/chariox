@@ -64,15 +64,15 @@ pub(crate) use workflow_publication_app_copy::fixture_copy_request_id;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_deployment_consent_runtime;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_file_pick_runtime;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_foreground_runtime;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-mod app_view_poll;
+mod app_host_runtime;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_validation_pump_runtime;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-mod app_file_pick_runtime;
-#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-mod app_host_runtime;
+mod app_view_poll;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_view_runtime;
 mod computer_secret_input_runtime_state;
@@ -360,8 +360,8 @@ mod provider_launch_failure_runtime;
 mod provider_launch_owned_state;
 mod provider_launch_runtime;
 pub(crate) use provider_launch_runtime::ProviderLaunchStartOutcome;
-mod provider_liveness_runtime;
 mod claude_setup_token_capture;
+mod provider_liveness_runtime;
 pub(in crate::runtime) use claude_setup_token_capture::{
     SetupTokenScan, CLAUDE_SETUP_TOKEN_COLUMNS, CLAUDE_SETUP_TOKEN_ROWS,
 };

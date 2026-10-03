@@ -4,7 +4,10 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-use super::identity::{load_or_create_runtime_identity, load_retained_slice_identity, protected_slice_identity_required, persist_runtime_display_aliases};
+use super::identity::{
+    load_or_create_runtime_identity, load_retained_slice_identity, persist_runtime_display_aliases,
+    protected_slice_identity_required,
+};
 use super::{
     default_os_name, load_user_config_from_path, parse_kernel_runtime_role,
     parse_remote_lease_capacity,
@@ -18,7 +21,8 @@ impl DaemonConfig {
     pub fn load_from_env() -> Self {
         Self::load_from_env_with_identity_loader(|host, port| {
             if protected_slice_identity_required() {
-                load_retained_slice_identity(host, port).unwrap_or_else(|message| panic!("{message}"))
+                load_retained_slice_identity(host, port)
+                    .unwrap_or_else(|message| panic!("{message}"))
             } else {
                 load_or_create_runtime_identity(host, port)
             }

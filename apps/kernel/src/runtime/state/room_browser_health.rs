@@ -100,7 +100,11 @@ impl KernelRuntimeState {
         let room = session_id.to_owned();
         let query = tokio::spawn(async move {
             let result = runtime
-                .room_browser_controller_health_probe(&room, snapshot.viewport, snapshot.browser_bar_visible)
+                .room_browser_controller_health_probe(
+                    &room,
+                    snapshot.viewport,
+                    snapshot.browser_bar_visible,
+                )
                 .await;
             (guard, result)
         });

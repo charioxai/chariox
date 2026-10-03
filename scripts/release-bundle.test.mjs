@@ -271,7 +271,9 @@ test('install.sh --check accepts only the bundle and runtime signed by their key
   const releaseKey = createPrivateKey(await readFile(releaseKeyPath));
   await writeFile(join(options.output, 'manifest.sig'), sign(null, await readFile(manifestPath), releaseKey).toString('hex'));
   assert.match(check(releasePublic).stderr, /runtime-inventory\.sig does not verify with the runtime key in the signed manifest/);
-  await writeFile(join(options.output, 'runtime/sdk/src/index.js'), 'changed');
+  const sdkSource = join(options.output, 'runtime/sdk/src/index.js');
+  await chmod(sdkSource, 0o644);
+  await writeFile(sdkSource, 'changed');
   assert.match(check(releasePublic).stderr, /runtime\/sdk\/src\/index\.js does not match the signed manifest/);
   assert.match(execFileSync(join(options.output, 'install.sh'), ['--help'], { encoding: 'utf8' }), /usage: sudo \.\/install\.sh/);
 });

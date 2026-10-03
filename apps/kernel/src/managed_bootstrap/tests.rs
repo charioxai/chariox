@@ -2183,7 +2183,8 @@ fn managed_systemd_unit_keeps_bootstrap_and_kernel_in_one_hardened_cgroup() {
         );
     }
     assert_eq!(
-        unit.lines().find(|line| line.starts_with("RestrictAddressFamilies=")),
+        unit.lines()
+            .find(|line| line.starts_with("RestrictAddressFamilies=")),
         Some("RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK")
     );
     assert!(!unit.contains("cloud-final.service"));
