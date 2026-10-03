@@ -4,7 +4,8 @@ use std::time::{Duration, Instant};
 use crate::error::DaemonError;
 use crate::runtime::browser_controller_process::CONTROLLER_RESTARTED_BEFORE_OPERATION;
 use crate::session::{
-    agent_environment_actor_id, ActionAdmission, EnvironmentActionRequest, EnvironmentActionState,
+    agent_environment_actor_id, ActionAdmission, EnvironmentActionFailureCode,
+    EnvironmentActionOutcome, EnvironmentActionRequest, EnvironmentActionState,
     EnvironmentActionTerminal, EnvironmentError, RoomEnvironmentSnapshot,
 };
 use crate::transport::room_browser_controller::{
@@ -394,8 +395,27 @@ impl KernelRuntimeState {
         } else {
             EnvironmentActionTerminal::Failed
         };
-        self.finish_room_environment_action(session_id, &action_id, terminal)
-            .map_err(action_environment_error)?;
+        match self.finish_room_environment_action(session_id, &action_id, terminal) {
+            Ok(_) => {}
+            // Recovery owns process-loss finalization. Preserve the execution
+            // error when its failure was already recorded, without reopening it.
+            Err(EnvironmentError::ActionAlreadyTerminal {
+                state: EnvironmentActionState::Failed,
+                ..
+            }) if terminal == EnvironmentActionTerminal::Failed
+                && self
+                    .room_environment_snapshot(session_id)
+                    .is_ok_and(|room| {
+                        room.actions.iter().any(|action| {
+                            action.action_id == action_id
+                                && action.outcome
+                                    == Some(EnvironmentActionOutcome::Failed {
+                                        code: EnvironmentActionFailureCode::ProcessLost,
+                                    })
+                        })
+                    }) => {}
+            Err(error) => return Err(action_environment_error(error)),
+        }
         if controller_fenced {
             if let Err(recovery_error) = self
                 .recover_browser_controller_after_fence(session_id)
@@ -807,6 +827,95 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use tokio::sync::{oneshot, Mutex};
+
+    #[tokio::test]
+    async fn browser_mutation_preserves_only_errors_already_failed_by_recovery() {
+        crate::test_support::isolated_env_test!();
+
+        for (recovered, execution_outcome) in [
+            (true, EnvironmentActionTerminal::Failed),
+            (true, EnvironmentActionTerminal::Completed),
+            (false, EnvironmentActionTerminal::Failed),
+            (true, EnvironmentActionTerminal::Cancelled),
+        ] {
+            let room = TestRoom::new("recovery-completion");
+            let before = room
+                .runtime
+                .room_environment_snapshot(&room.session_id)
+                .unwrap();
+            let tab = &before.tabs[0];
+            let error = room
+                .runtime
+                .execute_browser_mutation_as_agent(
+                    &room.session_id,
+                    &room.agent_id,
+                    &tab.tab_id,
+                    tab.document_revision,
+                    "click",
+                    None,
+                    async {
+                        if recovered {
+                            room.runtime
+                                .begin_room_environment_browser_controller_recovery(
+                                    &room.session_id,
+                                )
+                                .unwrap();
+                        } else {
+                            let admitted = room
+                                .runtime
+                                .room_environment_snapshot(&room.session_id)
+                                .unwrap();
+                            room.runtime
+                                .finish_room_environment_action(
+                                    &room.session_id,
+                                    &admitted.actions.last().unwrap().action_id,
+                                    EnvironmentActionTerminal::Failed,
+                                )
+                                .unwrap();
+                        }
+                        match execution_outcome {
+                            EnvironmentActionTerminal::Failed => {
+                                Err::<(), _>(DaemonError::LocalTransport {
+                                    operation: "browser_controller.route",
+                                    message: CONTROLLER_RESTARTED_BEFORE_OPERATION.to_string(),
+                                })
+                            }
+                            EnvironmentActionTerminal::Cancelled => {
+                                Err(DaemonError::BrowserControllerActionCancelled {
+                                    controller_fenced: false,
+                                })
+                            }
+                            EnvironmentActionTerminal::Completed => Ok(()),
+                        }
+                    },
+                )
+                .await
+                .unwrap_err();
+            let expected = if recovered && execution_outcome == EnvironmentActionTerminal::Failed {
+                CONTROLLER_RESTARTED_BEFORE_OPERATION
+            } else {
+                "ActionAlreadyTerminal"
+            };
+            assert!(error.to_string().contains(expected), "{error}");
+            let after = room
+                .runtime
+                .room_environment_snapshot(&room.session_id)
+                .unwrap();
+            assert_eq!(after.actions.len(), before.actions.len() + 1);
+            let action = after.actions.last().unwrap();
+            assert_eq!(action.state, EnvironmentActionState::Failed);
+            assert_eq!(
+                action.outcome,
+                Some(EnvironmentActionOutcome::Failed {
+                    code: if recovered {
+                        EnvironmentActionFailureCode::ProcessLost
+                    } else {
+                        EnvironmentActionFailureCode::ControllerFailure
+                    },
+                })
+            );
+        }
+    }
 
     #[tokio::test]
     async fn completed_agent_computer_input_reconciles_enabled_browser_controller_tabs() {
