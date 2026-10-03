@@ -10,6 +10,10 @@ function refuse() { throw new Error("Verified local Docker DEV authority is unav
 
 export function validateLocalDevEnrollment(record, uid) {
   const keys = ["version", "topology", "ownerUid", "ownerGid", "engineId", "socket", "helperImageId", "workerImageId", "workerKernelHash", "workerRuntimeRevision", "sourceDigest", "sourceRoot", "controlRoot"]
+  if (record && Object.hasOwn(record, "providerSandboxCompatibility")) {
+    keys.push("providerSandboxCompatibility")
+    if (typeof record.providerSandboxCompatibility !== "boolean") refuse()
+  }
   if (!record || Object.keys(record).sort().join() !== keys.sort().join()
       || record.version !== 1 || record.topology !== "linux-local-rootful-dev"
       || !UINT(uid) || record.ownerUid !== uid || !UINT(record.ownerGid)
@@ -142,9 +146,8 @@ export function verifyLocalHelperTopology(enrollment, info) {
 // Runtime compatibility and installed-helper provenance are distinct pins.
 export function localDevRuntimeEnvironment(enrollment) {
   validateLocalDevEnrollment(enrollment, enrollment.ownerUid)
-  // Explicit local DEV enrollment grants the provider namespace compatibility
-  // required by the broker isolation probe. Ordinary local slices remain opt-in.
-  return {CHARIOX_SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY: "1",
+  // Older enrollments have no recorded acknowledgement and keep default profiles.
+  return {CHARIOX_SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY: enrollment.providerSandboxCompatibility === true ? "1" : "0",
     CHARIOX_SLICE_LOCAL_DEV_RUNTIME_REVISION: enrollment.workerRuntimeRevision,
     CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: enrollment.sourceDigest}
 }

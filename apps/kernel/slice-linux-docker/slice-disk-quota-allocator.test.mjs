@@ -211,6 +211,18 @@ test("reserve updates account for current use once and reject missing usage read
   assert.throws(() => reserve(paused.allocator, nextLimits), /stop the slice before changing/)
 })
 
+test("a refused limit change cannot rebind the home or consume project IDs", () => {
+  const f = fixture()
+  reserve(f.allocator)
+  const before = structuredClone(f.getState())
+  f.backend.projectUsageBytes = () => undefined
+  assert.throws(() => f.allocator.handle({protocolVersion: 1, operation: "reserve",
+    identity: {...identity, homeVolumeName: `${identity.containerName}-home-g${"e".repeat(32)}`},
+    limits: {...limits, persistentHomeBytes: limits.persistentHomeBytes * 2}}), /usage could not be read back/)
+  assert.deepEqual(f.getState(), before)
+  assert.deepEqual(f.calls, [])
+})
+
 test("home and writable-layer quotas are separately applied and both produce admission evidence", () => {
   const { allocator, calls } = fixture()
   reserve(allocator)

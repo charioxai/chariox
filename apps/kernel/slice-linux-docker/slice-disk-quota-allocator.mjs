@@ -245,16 +245,18 @@ export function createSliceDiskQuotaAllocator({ backend, stateStore }) {
       const existing = state.reservations[key]
       const probe = requireSupportedProbe()
       if (existing) {
-        bindHome(existing, request.identity, state)
-        if (
+        const limitsChanged =
           existing.limits.writableLayerBytes !== request.limits.writableLayerBytes ||
           existing.limits.persistentHomeBytes !== request.limits.persistentHomeBytes
-        ) {
+        if (limitsChanged) {
           const container = backend.inspectContainer(request.identity)
           if (container && !["created", "exited", "dead"].includes(container.state)) {
             fail("stop the slice before changing its disk quota limits")
           }
           reserveCapacity(state, request.identity, request.limits, probe)
+        }
+        bindHome(existing, request.identity, state)
+        if (limitsChanged) {
           existing.limits = { ...request.limits }
           persist(state)
         }

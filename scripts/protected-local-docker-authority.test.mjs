@@ -3,7 +3,7 @@ import assert from "node:assert/strict"
 import { validateLocalDevEnrollment, verifyLocalRootfulEngine } from "../apps/kernel/slice-linux-docker/protected-local-docker-authority.mjs"
 
 const hash = "a".repeat(64)
-const fresh = () => ({version: 1, topology: "linux-local-rootful-dev", ownerUid: 1000, ownerGid: 1000,
+const fresh = () => ({version: 1, topology: "linux-local-rootful-dev", providerSandboxCompatibility: true, ownerUid: 1000, ownerGid: 1000,
   engineId: "engine-test", socket: {path: "/run/docker.sock", dev: 1, ino: 2, uid: 0, gid: 107, mode: 0o660},
   helperImageId: `sha256:${hash}`, workerImageId: `sha256:${hash}`, workerKernelHash: hash, workerRuntimeRevision: "b".repeat(64),
   sourceDigest: `sha256:${hash}`, sourceRoot: `/usr/lib/chariox/slice-local-dev/${hash}`,
@@ -109,4 +109,41 @@ test("local DEV installer requires an explicit provider sandbox compatibility gr
   const result = spawnSync("python3", [installer.pathname], {encoding: "utf8"})
   assert.notEqual(result.status, 0)
   assert.match(result.stderr, /required:.*--allow-provider-sandbox-compatibility/)
+})
+
+test("local DEV compatibility requires a recorded boolean acknowledgement", async () => {
+  const {localDevRuntimeEnvironment} = await import("../apps/kernel/slice-linux-docker/protected-local-docker-authority.mjs")
+  const legacy = fresh()
+  delete legacy.providerSandboxCompatibility
+  assert.equal(localDevRuntimeEnvironment(legacy).CHARIOX_SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY, "0")
+  assert.equal(localDevRuntimeEnvironment({...fresh(), providerSandboxCompatibility: false}).CHARIOX_SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY, "0")
+  for (const value of ["true", 1, null, undefined]) {
+    assert.throws(() => localDevRuntimeEnvironment({...fresh(), providerSandboxCompatibility: value}), /authority is unavailable/)
+  }
+})
+
+test("the installer's serialized enrollment carries the acknowledgement into broker authority", async () => {
+  const {spawnSync} = await import("node:child_process")
+  const {localDevRuntimeEnvironment} = await import("../apps/kernel/slice-linux-docker/protected-local-docker-authority.mjs")
+  // Evaluate only the real enrollment expression against synthetic public pins;
+  // never execute the privileged installer or contact Docker.
+  const result = spawnSync("python3", ["-c", `
+import ast, json, pathlib, stat, sys
+from types import SimpleNamespace
+record = json.load(sys.stdin)
+tree = ast.parse(pathlib.Path(sys.argv[1]).read_text())
+expression = next(node.value for node in tree.body if isinstance(node, ast.Assign)
+    and any(isinstance(target, ast.Name) and target.id == 'record' for target in node.targets))
+a = SimpleNamespace(allow_provider_sandbox_compatibility=True, worker_image=record['workerImageId'],
+    worker_kernel_sha256=record['workerKernelHash'], worker_runtime_revision=record['workerRuntimeRevision'])
+user = SimpleNamespace(pw_uid=record['ownerUid'], pw_gid=record['ownerGid'])
+socket = SimpleNamespace(**{'st_' + key: record['socket'][key] for key in ['dev', 'ino', 'uid', 'gid', 'mode']})
+engine = {'ID': record['engineId']}
+helper, digest, root, layout = record['helperImageId'], record['sourceDigest'][7:], record['sourceRoot'], record['controlRoot']
+print(json.dumps(eval(compile(ast.Expression(expression), sys.argv[1], 'eval'))))
+`, new URL("../deploy/local-linux/install-local-docker-dev.py", import.meta.url).pathname],
+    {input: JSON.stringify(fresh()), encoding: "utf8"})
+  assert.equal(result.status, 0, result.stderr)
+  const enrollment = validateLocalDevEnrollment(JSON.parse(result.stdout), 1000)
+  assert.equal(localDevRuntimeEnvironment(enrollment).CHARIOX_SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY, "1")
 })

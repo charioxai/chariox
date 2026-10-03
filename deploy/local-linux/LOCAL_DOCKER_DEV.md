@@ -57,6 +57,10 @@ when the shipped setuid Bubblewrap helper runs. A DEV host must be selected with
 this complete grant in mind. The broker applies this grant only to
 its enrolled DEV workers; ordinary local slices still use
 `slices.linux.allow_provider_sandbox_compatibility = true` as a separate opt-in.
+The installer persists the acknowledgement as `providerSandboxCompatibility: true`
+in the root-owned enrollment. Older enrollments without that field keep default
+profiles; upgrading source alone never grants compatibility. Enabling it requires
+an explicitly acknowledged, reviewed enrollment update as described above.
 The isolation probe still runs and must succeed. On hosts restricting
 unprivileged user namespaces, load `chariox-slice-provider.apparmor` and start
 the home kernel with `CHARIOX_SLICE_APPARMOR_PROFILE=chariox-slice-provider`.
