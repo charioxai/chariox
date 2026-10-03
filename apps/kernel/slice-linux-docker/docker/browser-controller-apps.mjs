@@ -118,7 +118,7 @@ function assets(raw, entry) {
 }
 
 export class AppTabs {
-  constructor(browser) {
+  constructor(browser, { restoreGraceMs = 30_000 } = {}) {
     this.browser = browser;
     // Every new CDP connection sweeps App Tabs, even when no App command
     // arrives: interception ends with the old connection.
@@ -129,6 +129,8 @@ export class AppTabs {
     this.unsubscribe = null;
     this.fullscreenMaintenance = null;
     this.nextFullscreenCheck = 0;
+    this.restoreGraceMs = restoreGraceMs;
+    this.orphanRestores = new Map();
   }
 
   async open(params) {
@@ -162,9 +164,12 @@ export class AppTabs {
     const { targetInfos = [] } = await connection.send("Target.getTargets", {});
     const restored = targetInfos.find(target => target.type === "page" && placeholderOrigin(target.url) === origin);
     const { targetId } = restored ?? await connection.send("Target.createTarget", { url: "about:blank", newWindow: true });
+    clearTimeout(this.orphanRestores.get(targetId)?.timer);
+    this.orphanRestores.delete(targetId);
     const sessionId = await this.browser.ensureTargetSession(connection, targetId);
     this.apps.set(sessionId, { ...app, targetId, document: null, pending: new Set() });
     try {
+      if (restored) await connection.send("Target.activateTarget", { targetId });
       await this.fullscreen(connection, targetId);
       const metrics = this.browser.appMetrics?.(app.page);
       if (metrics) await connection.send("Emulation.setDeviceMetricsOverride", metrics, sessionId);
@@ -212,6 +217,7 @@ export class AppTabs {
   listen(connection) {
     if (this.connection === connection) return;
     this.unsubscribe?.();
+    for (const restore of this.orphanRestores.values()) clearTimeout(restore.timer);
     this.apps.clear();
     this.calls = [];
     this.swept = false;
@@ -223,6 +229,14 @@ export class AppTabs {
   }
 
   async handle(connection, message) {
+    if (this.connection !== connection) return;
+    if (["Target.targetCreated", "Target.targetInfoChanged"].includes(message?.method)
+      && placeholderOrigin(message.params?.targetInfo?.url)) {
+      // Chromium can finish restoring targets after the initial CDP sweep.
+      // Sweep this event's connection: it may still be the opening one.
+      this.swept = false;
+      await this.reconcile(connection);
+    }
     if (message?.method === "Target.targetCreated") {
       const opener = message.params?.targetInfo?.openerId;
       if (opener && [...this.apps.values()].some((app) => app.targetId === opener)) {
@@ -352,8 +366,25 @@ export class AppTabs {
     this.listen(connection);
     if (this.swept) return;
     const { targetInfos = [] } = await connection.send("Target.getTargets", {});
+    const present = new Set(targetInfos.map(target => target.targetId));
+    for (const [targetId, restore] of this.orphanRestores) {
+      if (!present.has(targetId)) {
+        clearTimeout(restore.timer);
+        this.orphanRestores.delete(targetId);
+      }
+    }
     const owned = new Set([...this.apps.values()].map((app) => app.targetId));
     for (const target of targetInfos) {
+      if (!owned.has(target.targetId) && placeholderOrigin(target.url)) {
+        const previous = this.orphanRestores.get(target.targetId);
+        clearTimeout(previous?.timer);
+        const deadline = previous?.deadline ?? Date.now() + this.restoreGraceMs;
+        const timer = setTimeout(() => {
+          void this.closeOrphanRestore(connection, target.targetId, target.url).catch(() => {});
+        }, Math.max(0, deadline - Date.now()));
+        timer.unref?.();
+        this.orphanRestores.set(target.targetId, { deadline, timer });
+      }
       let host = "";
       try { host = new URL(target.url).hostname; } catch {}
       if ((APP_HOST.test(host) || host.endsWith(LEGACY_APP_ORIGIN_SUFFIX)) && !owned.has(target.targetId)) {
@@ -361,6 +392,18 @@ export class AppTabs {
       }
     }
     this.swept = true;
+  }
+
+  async closeOrphanRestore(connection, targetId, url) {
+    if (this.connection !== connection) return;
+    if ([...this.apps.values()].some(app => app.targetId === targetId)) return;
+    const { targetInfos = [] } = await connection.send("Target.getTargets", {});
+    if (this.connection !== connection || !this.orphanRestores.has(targetId)
+      || [...this.apps.values()].some(app => app.targetId === targetId)) return;
+    if (targetInfos.some(target => target.targetId === targetId && target.url === url)) {
+      await this.browser.closePageTarget(connection, targetId);
+    }
+    this.orphanRestores.delete(targetId);
   }
 
   /** Drain pending view calls; the kernel answers each with `respond`. */

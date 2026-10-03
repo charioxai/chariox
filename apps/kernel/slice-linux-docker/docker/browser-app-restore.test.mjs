@@ -35,7 +35,7 @@ test("only exact App origins are placeholdered; a placeholder conveys no install
   assert.throws(() => appPlaceholder("https://evil.test"));
 });
 
-test("unsupported or incomplete sessions fail closed without partial profile writes", async () => {
+test("unsupported sessions fail closed without partial profile writes", async () => {
   const profile = await mkdtemp(path.join(os.tmpdir(), "chariox-app-restore-"));
   try {
     const directory = path.join(profile, "Default", "Sessions"); await mkdir(directory, {recursive:true});
@@ -47,7 +47,14 @@ test("unsupported or incomplete sessions fail closed without partial profile wri
     await rm(path.join(directory, "Session_2"));
     await prepareAppRestores(profile);
     assert.deepEqual(await readFile(file), blockAppRestores(bytes));
-    assert.throws(() => blockAppRestores(bytes.subarray(0, bytes.length - 1)), /Truncated/);
+    assert.deepEqual(blockAppRestores(bytes.subarray(0, bytes.length - 1)), header);
     assert.throws(() => blockAppRestores(Buffer.concat([Buffer.from("SNSS"), int(4)])), /Unsupported/);
   } finally { await rm(profile, {recursive:true, force:true}); }
+});
+
+test("a crash-truncated tail preserves and protects preceding complete App records", () => {
+  const complete = Buffer.concat([header, navigation("https://app.todo.invalid/")]);
+  for (const tail of [Buffer.from([20]), navigation("https://example.test").subarray(0, 12)]) {
+    assert.deepEqual(blockAppRestores(Buffer.concat([complete, tail])), blockAppRestores(complete));
+  }
 });

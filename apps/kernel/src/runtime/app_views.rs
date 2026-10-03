@@ -77,7 +77,7 @@ struct SessionViews {
     pumping: bool,
     /// Open views retained across an explicit slice stop, without old target
     /// authority. Re-open through verified assets once the slice is ready.
-    restoring: Vec<AppViewBinding>,
+    restoring: Vec<(AppViewBinding, u32)>,
     /// Tabs whose reconnection failed (a Room controller without reload, a
     /// transient Room failure, or a view the host does not own), with when:
     /// answered unbound until the cooldown passes.
@@ -173,10 +173,10 @@ impl AppViews {
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(views) = sessions.get_mut(session) {
             for (_, (binding, _)) in views.tabs.drain() {
-                if !views.restoring.iter().any(|old| {
+                if !views.restoring.iter().any(|(old, _)| {
                     old.owner == binding.owner && old.installation == binding.installation
                 }) {
-                    views.restoring.push(binding);
+                    views.restoring.push((binding, 0));
                 }
             }
             views.open_tabs = 0;
@@ -189,7 +189,26 @@ impl AppViews {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(session)
-            .map_or_else(Vec::new, |views| views.restoring.clone())
+            .map_or_else(Vec::new, |views| {
+                views
+                    .restoring
+                    .iter()
+                    .map(|(binding, _)| binding.clone())
+                    .collect()
+            })
+    }
+
+    /// One restore per poll, rotating past failures so they cannot starve
+    /// another view. Downtime does not call this or consume the three attempts.
+    pub(crate) fn next_cold_start_attempt(&self, session: &str) -> Option<AppViewBinding> {
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let views = sessions.get_mut(session)?;
+        views.restoring.retain(|(_, attempts)| *attempts < 3);
+        let (binding, attempts) = views.restoring.first_mut()?;
+        *attempts += 1;
+        let binding = binding.clone();
+        views.restoring.rotate_left(1);
+        Some(binding)
     }
 
     pub(crate) fn finish_cold_start_view(&self, session: &str, binding: &AppViewBinding) {
@@ -199,7 +218,7 @@ impl AppViews {
             .unwrap_or_else(|e| e.into_inner())
             .get_mut(session)
         {
-            views.restoring.retain(|old| {
+            views.restoring.retain(|(old, _)| {
                 old.owner != binding.owner || old.installation != binding.installation
             });
         }
@@ -433,9 +452,9 @@ impl AppViews {
     pub(crate) fn forget_installation(&self, owner: &str, installation: &str) {
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         for views in sessions.values_mut() {
-            views
-                .restoring
-                .retain(|binding| binding.owner != owner || binding.installation != installation);
+            views.restoring.retain(|(binding, _)| {
+                binding.owner != owner || binding.installation != installation
+            });
             views.tabs.retain(|_, (binding, _)| {
                 binding.owner != owner || binding.installation != installation
             });
@@ -627,6 +646,7 @@ impl AppViews {
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(views) = sessions.get_mut(session) {
             views.tabs.clear();
+            views.restoring.clear();
             views.open_tabs = 0;
             views.in_flight.clear();
         }
@@ -1070,6 +1090,48 @@ mod call_cancellation_tests {
 #[cfg(test)]
 mod reconnect_tests {
     use super::*;
+
+    #[test]
+    fn failed_restores_are_bounded_and_other_registered_views_keep_call_authority() {
+        let views = AppViews::default();
+        let binding = |installation: &str| AppViewBinding {
+            owner: "owner".into(),
+            installation: installation.into(),
+            generation: 1,
+            panel: PanelRequest::default(),
+        };
+        let bound = |target: &str| views.binding_state("room", target).map(|(binding, _)| binding);
+        views.register("room", "bad-old", binding("bad"));
+        views.register("room", "good-old", binding("good"));
+        views.suspend_for_cold_start("room");
+        let mut bad_attempts = 0;
+        let mut polls = 0;
+        while let Some(next) = views.next_cold_start_attempt("room") {
+            if next.installation == "good" {
+                views.register("room", "good-new", next.clone());
+                views.finish_cold_start_view("room", &next);
+            } else {
+                bad_attempts += 1; // Persistent controller/storage failure.
+            }
+            // The pump polls between attempts; a normal Open and recovered
+            // view retain their independent authority while another fails.
+            views.register("room", "manual", binding("manual"));
+            let up_to = views.registrations("room");
+            views.retain_open("room", &["manual".into(), "good-new".into()], up_to);
+            assert_eq!(bound("manual"), Some(binding("manual")));
+            assert!(bound("bad-old").is_none());
+            polls += 1;
+        }
+        assert_eq!(bad_attempts, 3);
+        assert_eq!(polls, 4);
+        assert_eq!(bound("good-new"), Some(binding("good")));
+        assert!(views.cold_start_views("room").is_empty());
+        assert!(views.keep_pumping("room"));
+        views.suspend_for_cold_start("room");
+        views.forget_session("room");
+        assert!(views.cold_start_views("room").is_empty());
+        assert!(!views.keep_pumping("room"));
+    }
 
     #[test]
     fn a_cold_slice_stop_keeps_only_open_view_intent_until_reauthorized() {
