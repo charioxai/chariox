@@ -855,15 +855,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
         home_agent_id: &str,
         workspace_id: Option<&str>,
     ) -> Result<LeasedProjectEnvironmentSetupTarget, DaemonError> {
-        if self.app.config.kernel_runtime_role
-            != crate::config::KernelRuntimeRole::RemoteLeaseWorker
-        {
-            return Err(DaemonError::LocalTransport {
-                operation: "prepare leased project environment setup",
-                message: "project environment setup is only executable by a lease worker"
-                    .to_string(),
-            });
-        }
+        // MP-08 / MP-10 / MP-11: placement does not decide setup admission.
+        // Ordinary kernels and slices execute their own authenticated leases.
         self.leased_project_target(
             leased_agent_id,
             home_session_id,
@@ -1401,6 +1394,7 @@ mod tests {
     use super::*;
     mod catalog_admission;
     mod profile_admission;
+    mod project_environment_setup;
 
     #[test]
     fn leased_profile_update_rejects_missing_account_without_retiring_provider() {
