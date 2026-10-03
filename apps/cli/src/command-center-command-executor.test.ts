@@ -1,6 +1,9 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
+import { createCommandCenterController } from "./command-center-controller.js"
+import { fallbackProviderCatalog } from "./provider-catalog.js"
+import { fallbackProviderCommandCatalogs } from "./provider-command-catalog.js"
 import { createCommandCenterCommandExecutor } from "./command-center-command-executor.js"
 
 test("command center command executor dispatches attachment commands with the raw input", async () => {
@@ -89,6 +92,7 @@ function createHarness(overrides: Partial<Parameters<typeof createCommandCenterC
   const deps: Parameters<typeof createCommandCenterCommandExecutor>[0] = {
     onExit: () => calls.push("exit"),
     onWaiting: () => calls.push("waiting"),
+    onApprovals: () => calls.push("approvals"),
     onStop: () => calls.push("stop"),
     handleAttachmentCommand: (raw) => calls.push(`attachment:${raw}`),
     onSession: (command) => calls.push(`session:${command.action ?? ""}`),
@@ -132,3 +136,48 @@ function createHarness(overrides: Partial<Parameters<typeof createCommandCenterC
     executor: createCommandCenterCommandExecutor(deps),
   }
 }
+
+test("command palette approvals reach the required UI handler without shell dispatch", async () => {
+  const h = createHarness({
+    handleSharedShellCommand: async () => { assert.fail("UI approvals sent to shared shell") },
+  })
+  await h.executor.execute("/approvals")
+  assert.deepEqual(h.calls, ["approvals"])
+  assert.deepEqual(h.flashes, [])
+})
+
+test("Enter and submit selection of approval suggestions clear the palette before opening", async () => {
+  for (const selection of ["abbreviated Enter", "exact Enter", "abbreviated submit"]) {
+    let prompt = selection === "exact Enter" ? "/approvals" : "/approv"
+    let opened = 0
+    const h = createHarness({
+      onApprovals: () => {
+        assert.equal(prompt, "")
+        assert.equal(palette.open(), false)
+        opened += 1
+      },
+      handleSharedShellCommand: async () => { assert.fail("approvals sent to shared shell") },
+    })
+    const palette = createCommandCenterController({
+      getCommandTree: () => [],
+      getProviderCatalog: fallbackProviderCatalog,
+      getProviderCommandCatalogs: fallbackProviderCommandCatalogs,
+      getCurrentProvider: () => "opencode",
+      getFocusedProvider: () => null,
+      getCurrentModel: () => "model",
+      getCurrentVariant: () => "high",
+      getPromptText: () => prompt,
+      replacePromptText: value => { prompt = value },
+      executeCommand: h.executor.execute,
+      onCommandError: error => { assert.fail(String(error)) },
+      render() {},
+    })
+    palette.sync()
+    assert.equal(palette.selectedItem()?.value, "/approvals")
+    if (selection === "abbreviated submit") assert.equal(palette.selectFromSubmit(), true)
+    else assert.equal(palette.handleKey({ name: "return" }), true)
+    await Promise.resolve()
+    assert.equal(opened, 1)
+    assert.deepEqual(h.flashes, [])
+  }
+})
