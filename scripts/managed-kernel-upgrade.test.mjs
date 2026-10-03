@@ -139,8 +139,8 @@ test("repository release policy admits reviewed predecessors and matches the run
   const policy = JSON.parse(policyBytes)
   const runtimeTypes = await readFile(join(repositoryRoot, "apps/kernel/src/local/api/types.rs"), "utf8")
   const runtimeProtocol = Number(runtimeTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+);/)[1])
-  // Release F's reciprocal set (343, 367..376) plus the current protocol; unreleased 377..409 are not admitted.
-  const admittedProtocols = [343, ...Array.from({ length: 10 }, (_, index) => 367 + index), runtimeProtocol]
+  // MP-07/MP-10: released F/G predecessors and Apps main410; unreleased379..409 remain refused.
+  const admittedProtocols = [343, ...Array.from({ length: 12 }, (_, index) => 367 + index), 410, runtimeProtocol]
   assert.deepEqual(policy, {
     schemaVersion: 1,
     protocol: runtimeProtocol,
@@ -161,7 +161,7 @@ test("repository release policy admits reviewed predecessors and matches the run
     }
   }
 
-  for (const unsupportedProtocol of [312, 325, 333, 339, 342, ...Array.from({ length: 23 }, (_, index) => 344 + index)]) {
+  for (const unsupportedProtocol of [312, 325, 333, 339, 342, ...Array.from({ length: 23 }, (_, index) => 344 + index), ...Array.from({ length: 31 }, (_, index) => 379 + index)]) {
     for (const [currentRoot, currentProtocol, targetRoot, targetProtocol] of [
       [current, unsupportedProtocol, target, runtimeProtocol],
       [target, runtimeProtocol, current, unsupportedProtocol],

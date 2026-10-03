@@ -126,6 +126,7 @@ import {
   cancelProviderLogin,
   sendProviderLoginInput,
   storeProviderSetupToken,
+  runProviderSetupToken,
   startProviderLogin,
   teardownProviderProcesses,
   updateSessionConfig,
@@ -161,7 +162,7 @@ import {
   updateMetaagentTask,
 } from "./session-api.js"
 import { SESSION_CONFIG_RESPONSE_LAYOUT_KEY } from "@chariox/kernel-client/session-config-projection"
-import { createAgentPromptScheduleRequest, setProviderAccountCredentialRequest } from "@chariox/kernel-client/ipc-requests"
+import { createAgentPromptScheduleRequest } from "@chariox/kernel-client/ipc-requests"
 import { formatSessionList } from "./sessions.js"
 import {
   createSlice,
@@ -544,13 +545,9 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     getProviderAuthStatus: (provider, accountProfile) => getProviderAuthStatus(client, provider, accountProfile),
     startProviderLogin: (provider, accountProfile, method) =>
       startProviderLogin(client, provider, accountProfile, method),
-    runProviderSetupToken: async (profile, replace) => {
-      const response = await client.send<Record<string, unknown>>(setProviderAccountCredentialRequest("claude", profile, "", replace, {
-        sessionId: sessionState().id,
-      }, true))
-      if (!("ProviderLoginStarted" in response)) throw new Error("kernel did not start Claude setup token capture")
-      return (response.ProviderLoginStarted as { login: import("./cli-types.js").ProviderLoginStart }).login
-    },
+    runProviderSetupToken: (profile, replace) => runProviderSetupToken(client, profile, replace, {
+      sessionId: sessionState().id,
+    }),
     getProviderLoginStatus: (loginId) => getProviderLoginStatus(client, loginId),
     sendProviderLoginInput: (loginId, dataBase64) => sendProviderLoginInput(client, loginId, dataBase64),
     cancelProviderLogin: (loginId) => cancelProviderLogin(client, loginId),
