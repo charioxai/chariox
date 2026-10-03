@@ -43,3 +43,6 @@ docs/artifacts/**/*.gif
 
 commands.txt
 gmail-view-email-sent-*.png
+
+# Python bytecode from local test runs (never part of the slice runtime-source revision)
+__pycache__/
