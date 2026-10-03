@@ -71,6 +71,9 @@ impl WorkerSpy {
                 tokio::pin!(stopped);
                 loop {
                     let stream = tokio::select! { _ = &mut stopped => break, accepted = listener.accept() => accepted.unwrap().0 };
+                    tokio::select! {
+                        _ = &mut stopped => break,
+                        _ = async {
                     let mut socket = accept_async(stream).await.unwrap();
                     match receive(&mut socket).await {
                         RelayEnvelope::ClientMetadataRequest { request_id, .. } => {
@@ -89,7 +92,9 @@ impl WorkerSpy {
                             let RelayEnvelope::DaemonPeerRequest { request_id, encrypted_request, .. } = receive(&mut socket).await else { panic!("expected peer request") };
                             let decoded = relay_crypto::decrypt_payload_for_private_key(&worker.relay_private_key, &encrypted_request).unwrap();
                             let request: RelayPeerRequest = serde_json::from_slice(&decoded.plaintext).unwrap();
-                            counter.fetch_add(1, Ordering::SeqCst);
+                            if !matches!(&request, RelayPeerRequest::DrainLeasedRuntimeProjection { .. }) {
+                                counter.fetch_add(1, Ordering::SeqCst);
+                            }
                             if matches!(&request, RelayPeerRequest::LaunchLeasedNativeProviderRun { leased_agent_id, .. } if leased_agent_id == "stale-agent") && worker_native_recovery.load(Ordering::SeqCst) {
                                 if first_native_launch {
                                     first_native_launch = false;
@@ -98,9 +103,10 @@ impl WorkerSpy {
                                 }
                                 send(&mut socket, RelayEnvelope::DaemonPeerResponse { request_id, from_daemon_id: worker_id.clone(), encrypted_response: None, error: Some(chariox_relay::protocol::RelayError { code: "execution_lease_not_found".into(), message: "fixture stale execution lease".into(), retryable: false }) }).await;
                                 let _ = socket.close(None).await;
-                                continue;
+                                return;
                             }
                             let response = match request {
+                                RelayPeerRequest::DrainLeasedRuntimeProjection { .. } => RelayPeerResponse::LeasedRuntimeProjectionDrained { event: None },
                                 RelayPeerRequest::DestroyLeasedAgent { leased_agent_id } => RelayPeerResponse::LeasedAgentDestroyed { leased_agent_id },
                                 RelayPeerRequest::DestroyExecutionLease { lease_id } => RelayPeerResponse::ExecutionLeaseDestroyed { lease_id },
                                 RelayPeerRequest::CreateExecutionLease { home_kernel_id, home_session_id, home_agent_id, home_agent_metaagent, owner_user_id } => {
@@ -161,6 +167,8 @@ impl WorkerSpy {
                         _ => panic!("unexpected relay request"),
                     }
                     let _ = socket.close(None).await;
+                        } => {}
+                    }
                 }
             });
         });

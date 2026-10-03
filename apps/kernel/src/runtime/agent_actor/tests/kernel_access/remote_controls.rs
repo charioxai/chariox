@@ -253,6 +253,9 @@ impl WorkerSpy {
                 tokio::pin!(stopped);
                 loop {
                     let stream = tokio::select! { _ = &mut stopped => break, accepted = listener.accept() => accepted.unwrap().0 };
+                    tokio::select! {
+                        _ = &mut stopped => break,
+                        _ = async {
                     let mut socket = accept_async(stream).await.unwrap();
                     let first = receive(&mut socket).await;
                     match first {
@@ -264,8 +267,11 @@ impl WorkerSpy {
                             let RelayEnvelope::DaemonPeerRequest { request_id, encrypted_request, .. } = receive(&mut socket).await else { panic!("expected peer request") };
                             let decoded = relay_crypto::decrypt_payload_for_private_key(&worker.relay_private_key, &encrypted_request).unwrap();
                             let request: RelayPeerRequest = serde_json::from_slice(&decoded.plaintext).unwrap();
-                            *counter.lock().unwrap() += 1;
+                            if !matches!(&request, RelayPeerRequest::DrainLeasedRuntimeProjection { .. }) {
+                                *counter.lock().unwrap() += 1;
+                            }
                             let response = match request {
+                                RelayPeerRequest::DrainLeasedRuntimeProjection { .. } => RelayPeerResponse::LeasedRuntimeProjectionDrained { event: None },
                                 RelayPeerRequest::CompleteLeasedPrompt { .. } => RelayPeerResponse::LeasedPromptCompleted {
                                     provider_run_id: Some("worker-run".into()), provider_diagnostic: None, provider_termination: None,
                                     git_observations: vec![], workspace_live_sync_change: None,
@@ -280,6 +286,8 @@ impl WorkerSpy {
                         _ => panic!("unexpected relay request"),
                     }
                     let _ = socket.close(None).await;
+                        } => {}
+                    }
                 }
             });
         });
