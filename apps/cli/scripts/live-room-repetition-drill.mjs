@@ -3,8 +3,8 @@
 import assert from 'node:assert/strict'
 import {spawn,execFile} from 'node:child_process'
 import {randomUUID,createHash} from 'node:crypto'
-import {createWriteStream} from 'node:fs'
-import {readFile,writeFile,appendFile,mkdir,mkdtemp,readdir,rm,stat,chmod,lstat,copyFile} from 'node:fs/promises'
+import {createWriteStream,constants as fsConstants} from 'node:fs'
+import {readFile,writeFile,appendFile,mkdir,mkdtemp,readdir,rm,stat,chmod,open} from 'node:fs/promises'
 import http from 'node:http'
 import net from 'node:net'
 import path from 'node:path'
@@ -38,10 +38,16 @@ const activeTuis=new Map()
 // Staged evidence is copied to the evidence root only after the viewer is gone.
 const WEB_UID=1001,webRoot=`${root}/web`,webStaging=`${root}/web-evidence`,webEvidence=`${evidence}/web`
 async function publishWebEvidence(){
+ if(webContainer)return
  const staged=await readdir(webStaging).catch(()=>[])
  if(!staged.length)return
  await mkdir(webEvidence,{recursive:true,mode:0o700})
- for(const name of staged){const source=path.join(webStaging,name);if((await lstat(source)).isFile())await copyFile(source,path.join(webEvidence,name))}
+ // Never follow a staged symlink, even if the viewer could still change the directory.
+ for(const name of staged){
+  const handle=await open(path.join(webStaging,name),fsConstants.O_RDONLY|fsConstants.O_NOFOLLOW).catch(()=>null)
+  if(!handle)continue
+  try{if((await handle.stat()).isFile())await writeFile(path.join(webEvidence,name),await handle.readFile(),{mode:0o600})}finally{await handle.close()}
+ }
 }
 const writeWeb=async(name,value)=>{await writeFile(`${webRoot}/${name}`,JSON.stringify(value));await chmod(`${webRoot}/${name}`,0o644)}
 const write=(name,value)=>writeFile(`${evidence}/${name}.json`,JSON.stringify({mpItems,...value},null,2)+'\n',{mode:0o600})
@@ -232,7 +238,13 @@ try{
   for(const directory of [webRoot,webStaging]){await mkdir(directory,{recursive:true});await chmod(directory,0o777)}
   await writeWeb('web-config.json',{baseUrl:`http://127.0.0.1:${webPort}`,relayUrl:env.CHARIOX_RELAY_URL,daemonId,machineId,environmentId:environment.environment_id,target:`${session.id}:${session.agents[0].id}:${slice.id}`})
   webContainer=`${runId}-web`;await docker(['run','-d','--name',webContainer,'--user',`${WEB_UID}:${WEB_UID}`,'--security-opt',`seccomp=${repo}/apps/kernel/slice-linux-docker/chromium-seccomp.json`,'--label',`io.chariox.drill-run=${runId}`,'--network','host','--memory','1536m','--memory-swap','1536m','--cpus',process.env.LOOPS_WEB_CPUS??'1','--pids-limit','256','--mount',`type=bind,src=${cloud},dst=/cloud,readonly`,'--mount',`type=bind,src=${webRoot},dst=/runtime`,'--mount',`type=bind,src=${webStaging},dst=/evidence`,'--mount',`type=bind,src=${repo}/apps/cli/scripts/lib/room-repetition-web.mjs,dst=/web.mjs,readonly`,'--mount',`type=bind,src=${repo}/apps/cli/scripts/lib/room-repetition-gates.mjs,dst=/room-repetition-gates.mjs,readonly`,'--entrypoint','node',image,'/web.mjs'])
-  await wait(async()=>{const error=await readFile(`${webRoot}/web-error.json`,'utf8').catch(()=>null);if(error){const e=Error(JSON.parse(error).message);e.fatal=true;throw e}return JSON.parse(await readFile(`${webRoot}/web-ready.json`,'utf8').catch(()=>'null'))},'two Web viewers',120000)
+  // The viewer runs as uid 1001, so /cloud and the two mounted scripts must be world-readable
+  // (an ordinary umask-022 checkout). A viewer that exits before reporting is fatal at once.
+  await wait(async()=>{const error=await readFile(`${webRoot}/web-error.json`,'utf8').catch(()=>null);if(error){const e=Error(JSON.parse(error).message);e.fatal=true;throw e}
+   const ready=JSON.parse(await readFile(`${webRoot}/web-ready.json`,'utf8').catch(()=>'null'));if(ready)return ready
+   const state=(await docker(['inspect','--format','{{.State.Status}} {{.State.ExitCode}}',webContainer]).catch(()=>'')).trim()
+   if(state.startsWith('exited')||state.startsWith('dead')){const logs=await cmd('sh',['-c','docker logs --tail 40 "$1" 2>&1','drill',webContainer]).catch(e=>e.message);const e=Error(`Web viewer stopped before it was ready (${state}): ${String(logs).slice(-1500)}`);e.fatal=true;throw e}
+   return null},'two Web viewers',120000)
   await write('concurrent',{room:await roomSnapshot(),worker:await observeWorker(),web:JSON.parse(await readFile(`${webRoot}/web-ready.json`,'utf8')),tuis:await Promise.all([...activeTuis.values()].map(t=>readAutomationSnapshot(t.automationSocket)))})
   // Generate an active browser/stream workload through a fixture-only CDP setup.
   await docker(['exec',cname(slice),'node','--input-type=module','-e',`const targets=await(await fetch('http://127.0.0.1:9222/json/list')).json();const target=targets.find(t=>t.type==='page');const ws=new WebSocket(target.webSocketDebuggerUrl);await new Promise(r=>ws.onopen=r);const reply=new Promise(r=>ws.onmessage=e=>r(JSON.parse(e.data)));ws.send(JSON.stringify({id:1,method:'Runtime.evaluate',params:{expression:"window.loopsTicks=0;setInterval(()=>{document.querySelector('h1').textContent='MP-08 MP-10 active browser tick '+(++window.loopsTicks)},250)",returnByValue:true}}));await reply;ws.close()`])
@@ -302,7 +314,8 @@ finally{
  if(slice){try{const log=await docker(['exec',cname(slice),'sh','-c',"cat /home/slice/.local/state/chariox/logs/*daemon*.ndjson /home/slice/.chariox/logs/*daemon*.ndjson /opt/chariox-slice/logs/*daemon*.ndjson 2>/dev/null; true"]);await writeFile(`${evidence}/worker-forwarder.log`,log.split('\n').filter(line=>line.includes('\"component\":\"display.')).join('\n')+'\n',{mode:0o600})}catch{}}
  clearInterval(monitor)
  for(const kind of [...activeTuis.keys()])await stopTui(kind).catch(e=>failures.push({stage:'cleanup-tui',error:e.message}))
- if(webContainer)await docker(['rm','-f',webContainer]).catch(e=>failures.push({stage:'cleanup-web',error:e.message}))
+ if(webContainer)await docker(['rm','-f',webContainer]).then(()=>{webContainer=null},e=>failures.push({stage:'cleanup-web',error:e.message}))
+ // Staged evidence is published only once the viewer container is gone.
  await publishWebEvidence().catch(e=>failures.push({stage:'cleanup-web-evidence',error:e.message}))
  if(webServer)await new Promise(resolve=>webServer.close(resolve))
  await fixture?.close().catch(()=>{})
