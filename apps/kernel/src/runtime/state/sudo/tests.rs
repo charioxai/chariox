@@ -1247,7 +1247,8 @@ async fn sudo_bound_turn_refuses_queued_steering_from_terminals_and_external_gra
                 authority,
             )
             .await
-            .unwrap_err();
+            .err()
+            .expect("sudo steering must be refused");
         assert!(error.to_string().contains("sudo"), "{error}");
         let (active, queued) = f
             .state
@@ -1299,7 +1300,34 @@ async fn sudo_bound_turn_refuses_messages_from_another_running_agent() {
             false,
         )
         .unwrap();
-    let result = f.state.handle_send_agent_message_runtime_tool(&session, &sender,
+    let launch =
+        LaunchProviderRequest::new(session.id(), "dev-stub", "dev-stub", "default", "default")
+            .with_agent_id(sender.id());
+    let mut sender_run = RuntimeProviderRun::new(
+        "ordinary-sender-run",
+        &launch,
+        ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::External,
+            process_label: "metadata-only".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: vec![],
+            pty_env: Default::default(),
+            pty_env_remove: vec![],
+            working_directory: Some(f._worktree.path().to_owned()),
+            structured_endpoint: None,
+        },
+    );
+    sender_run.mark_running();
+    sender_run.set_runtime_mcp_auth_token(Some("ordinary-sender-bearer".into()));
+    f.state
+        .owned
+        .provider_store
+        .write()
+        .insert_run_for_test(sender_run.clone());
+    f.state.owned.provider_run_projection.update(sender_run);
+    let result = f.state.dispatch_authenticated_runtime_tool_call(
+        "ordinary-sender-bearer", crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
         serde_json::json!({"agent": turn.agent_id, "message": "injected privileged instructions",
             "origin_prompt_id": "ordinary-sender"}),
     ).await;

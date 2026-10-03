@@ -633,6 +633,7 @@ mod human_consent_tests {
         .runtime_state();
         let request = LocalDaemonRequest::ResolveSession(crate::local::ResolveSessionRequest {
             session_ref: session.id().into(),
+            workspace_id: None,
         });
         let mut command = KernelCommand::from_local_request_with_source(
             "import",

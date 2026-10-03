@@ -827,15 +827,15 @@ impl ClassAuditKernel {
             );
         }
         let app = DaemonApp::bootstrap(config).expect("daemon should boot");
-        let session = crate::session::RuntimeSession::new(
+        let mut session = crate::session::RuntimeSession::new(
             format!("class-audit-{:016x}", rand::random::<u64>()),
             None,
             "workspace",
             "worktree",
             "machine",
             "kernel",
-        )
-        .with_owner_user_id(owner);
+        );
+        session.set_owner_user_id(owner);
         let session_id = session.id().to_owned();
         app.sessions_mut().restore_session(session);
         let durable = app.durable_state_store();

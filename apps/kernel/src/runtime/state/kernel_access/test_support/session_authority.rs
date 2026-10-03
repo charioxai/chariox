@@ -283,7 +283,8 @@ async fn kernel_access_grants_cannot_mint_durable_membership_or_scheduled_prompt
         .authorize_external_request(
             &grant,
             &LocalDaemonRequest::ResolveSession(crate::local::ResolveSessionRequest {
-                session_ref: session.id().into()
+                session_ref: session.id().into(),
+                workspace_id: None,
             })
         )
         .is_ok());
