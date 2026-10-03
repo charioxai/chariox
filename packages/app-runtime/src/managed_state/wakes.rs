@@ -9,6 +9,8 @@ pub const MAX_WAKES: usize = 256;
 pub const MAX_WAKE_CHANGES: usize = 16;
 const MAX_ATTEMPTS: u32 = 8;
 const RETRY_BASE_MS: u64 = 5_000;
+// Ignore stale callers and ordinary sub-second clock jitter.
+const CLOCK_ROLLBACK_TOLERANCE_MS: u64 = 1_000;
 
 /// A wake set by the App. `revision` is App-defined (for example a schedule
 /// revision) and is delivered back unchanged so stale wakes can be ignored.
@@ -159,15 +161,11 @@ pub fn due_wakes(connection: &Connection, now_ms: u64, limit: usize) -> Result<V
     // Reset deadlines before recording the correction. If an autocommit
     // caller crashes between the writes, recovery safely repeats the reset.
     // Both writes join an enclosing transaction when the caller has one.
-    connection.execute(
+    let reset = connection.execute(
         "UPDATE app_wakes SET next_attempt_at_ms=due_at_ms
          WHERE next_attempt_at_ms>due_at_ms
-           AND EXISTS(SELECT 1 FROM app_wake_clock WHERE last_poll_at_ms>?1)",
-        [now_ms as i64],
-    )?;
-    connection.execute(
-        "UPDATE app_wake_clock SET last_poll_at_ms=?1 WHERE singleton=1",
-        [now_ms as i64],
+           AND EXISTS(SELECT 1 FROM app_wake_clock WHERE last_poll_at_ms - ?1 >= ?2)",
+        [now_ms as i64, CLOCK_ROLLBACK_TOLERANCE_MS as i64],
     )?;
     let mut statement = connection.prepare(
         "SELECT owner_id,installation_id,wake_id,due_at_ms,revision,attempts FROM app_wakes
@@ -185,8 +183,17 @@ pub fn due_wakes(connection: &Connection, now_ms: u64, limit: usize) -> Result<V
             attempts: row.get::<_, i64>(5)?.max(0) as u32,
         })
     })?;
-    rows.collect::<std::result::Result<_, _>>()
-        .map_err(Into::into)
+    let due: Vec<_> = rows.collect::<std::result::Result<_, _>>()?;
+    drop(statement);
+    // A selected wake can acquire a retry deadline after this read. Otherwise
+    // stable pending retries need no new clock observation or durable write.
+    if !due.is_empty() || reset > 0 {
+        connection.execute(
+            "UPDATE app_wake_clock SET last_poll_at_ms=?1 WHERE singleton=1",
+            [now_ms as i64],
+        )?;
+    }
+    Ok(due)
 }
 
 /// Remove a delivered wake. A wake replaced since delivery began keeps its
