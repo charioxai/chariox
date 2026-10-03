@@ -33,11 +33,11 @@ mod controller_upload_recovery;
 mod controller_worker_mcp;
 mod display;
 mod lease_release;
+mod room_action_latency;
 mod room_home_local_slice;
 mod room_remote_agent_home_slice;
 mod room_secret;
 mod room_slice_cross_placement;
-mod room_action_latency;
 mod screenshot;
 mod session;
 

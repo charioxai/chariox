@@ -3,10 +3,12 @@ use futures_util::FutureExt;
 
 #[test]
 fn ready_room_state_reads_do_not_put_reconciliation_ahead_of_pointer_input() {
+    crate::test_support::isolated_env_test!();
     run_test(ready_state_reads_do_not_delay_pointer_input);
 }
 
 async fn ready_state_reads_do_not_delay_pointer_input() {
+    let _env_guard = crate::env_lock::lock();
     let mut fixture = LiveWorker::start_configured(true, true).await;
     let root = &fixture._worker_state.root;
     let hold = root.join("hold-room-read-reconcile");
@@ -23,6 +25,7 @@ async fn ready_state_reads_do_not_delay_pointer_input() {
     .unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let previous_screen_tool = std::env::var_os("CHARIOX_SLICE_SCREEN_TOOL");
     std::env::set_var("CHARIOX_SLICE_SCREEN_TOOL", &helper);
     let assertions = std::panic::AssertUnwindSafe(async {
         fixture.create_slice().await;
@@ -78,7 +81,10 @@ async fn ready_state_reads_do_not_delay_pointer_input() {
     }).catch_unwind().await;
     let _ = std::fs::remove_file(&hold);
     let _ = std::fs::remove_file(&pending);
-    std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL");
+    match previous_screen_tool {
+        Some(value) => std::env::set_var("CHARIOX_SLICE_SCREEN_TOOL", value),
+        None => std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL"),
+    }
     fixture.stop().await;
     if let Err(panic) = assertions {
         std::panic::resume_unwind(panic);
@@ -87,6 +93,7 @@ async fn ready_state_reads_do_not_delay_pointer_input() {
 
 #[test]
 fn ready_slice_state_reads_reacquire_lost_controller_lease() {
+    crate::test_support::isolated_env_test!();
     run_test(slice_state_reads_reacquire_lost_controller_lease);
 }
 
@@ -117,26 +124,26 @@ async fn slice_state_reads_reacquire_lost_controller_lease() {
             .stop_browser_controller_process(room)
             .await
             .unwrap();
-        let generation = fixture
-            .home
-            .runtime_state
-            .room_environment_snapshot(room)
-            .unwrap()
-            .runtime_generation;
-        fixture
-            .home
-            .runtime_state
-            .refresh_room_browser_health(room, generation)
-            .await;
-        let lost = fixture
-            .home
-            .runtime_state
-            .room_environment_snapshot(room)
-            .unwrap();
-        assert_eq!(
-            lost.lifecycle,
-            crate::session::EnvironmentLifecycle::Degraded
-        );
+        dispatch_json(
+            &fixture.home,
+            json!({"GetRoomEnvironmentState":{"session_id":room}}),
+        )
+        .await
+        .unwrap();
+        timeout(Duration::from_secs(3), async {
+            while fixture
+                .home
+                .runtime_state
+                .room_environment_snapshot(room)
+                .unwrap()
+                .lifecycle
+                != crate::session::EnvironmentLifecycle::Degraded
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("Ready reads must detect the lost worker lease");
         // The synthetic CDP connection marks Chromium closed on disconnect.
         // Production CDP close only drops its websocket, leaving Chromium live.
         let browser_state_path = fixture._worker_state.root.join("chromium-state.json");
@@ -187,6 +194,90 @@ async fn slice_state_reads_reacquire_lost_controller_lease() {
             .health
             .iter()
             .all(|h| h.state == crate::session::EnvironmentComponentHealthState::Ready));
+    })
+    .catch_unwind()
+    .await;
+    fixture.stop().await;
+    if let Err(panic) = assertions {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+#[test]
+fn ready_state_read_degrades_when_slice_relay_disconnects() {
+    crate::test_support::isolated_env_test!();
+    run_test(state_read_degrades_when_slice_relay_disconnects);
+}
+
+async fn state_read_degrades_when_slice_relay_disconnects() {
+    let mut fixture = LiveWorker::start_configured(true, true).await;
+    let assertions = std::panic::AssertUnwindSafe(async {
+        fixture.create_slice().await;
+        let room = fixture.rooms[0].clone();
+        dispatch_json(&fixture.home, bind(&room, "desktop"))
+            .await
+            .unwrap();
+        dispatch_json(
+            &fixture.home,
+            json!({"StartRoomEnvironment": {
+                "session_id":room,"viewport":{
+                    "css_width":1280,"css_height":800,"device_scale_factor":1,
+                    "desktop_pixel_width":1280,"desktop_pixel_height":800
+                }
+            }}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            fixture
+                .home
+                .runtime_state
+                .room_environment_snapshot(&room)
+                .unwrap()
+                .lifecycle,
+            crate::session::EnvironmentLifecycle::Ready
+        );
+        // Stop only this fixture's relay/connectors. The home Room still says
+        // Ready until its normal state read observes the definitive route loss.
+        fixture.stop().await;
+        dispatch_json(
+            &fixture.home,
+            json!({"GetRoomEnvironmentState":{"session_id":room}}),
+        )
+        .await
+        .unwrap();
+        timeout(Duration::from_secs(3), async {
+            while fixture
+                .home
+                .runtime_state
+                .room_environment_snapshot(&room)
+                .unwrap()
+                .lifecycle
+                != crate::session::EnvironmentLifecycle::Degraded
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("Ready reads must detect the disconnected slice relay");
+        let failed = fixture
+            .home
+            .runtime_state
+            .room_environment_snapshot(&room)
+            .unwrap();
+        let controller = failed
+            .health
+            .iter()
+            .find(|h| h.component == crate::session::EnvironmentComponent::BrowserController)
+            .unwrap();
+        assert_eq!(
+            controller.state,
+            crate::session::EnvironmentComponentHealthState::Unavailable
+        );
+        assert_eq!(
+            controller.diagnostic_code.as_deref(),
+            Some("browser_controller_unreachable")
+        );
     })
     .catch_unwind()
     .await;

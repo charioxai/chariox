@@ -129,9 +129,19 @@ impl KernelRuntimeState {
             {
                 Some("browser_controller_lease_lost")
             }
+            Err(error)
+                if super::room_browser_controller::is_room_slice_unreachable(&error)
+                    || matches!(&error, crate::error::DaemonError::RelayTransport { code, .. }
+                        if matches!(code.as_str(), "target_not_connected" | "target_disconnected" | "target_not_allowed"))
+                    || error
+                        .to_string()
+                        .contains("browser_controller_scope_denied") =>
+            {
+                Some("browser_controller_unreachable")
+            }
             // Reconcile shares a serial controller queue with foreground
             // commands and can wait on page dialogs. A timeout or route error
-            // is inconclusive; only positive debugger loss changes health.
+            // is inconclusive; only positive browser/controller loss changes health.
             Ok(_) | Err(_) => return,
         };
         self.observe_room_browser_health(session_id, generation, diagnostic);
@@ -162,22 +172,20 @@ impl KernelRuntimeState {
         } else {
             EnvironmentComponentHealthState::Ready
         };
-        let Some(browser) = snapshot
-            .health
-            .iter()
-            .find(|h| h.component == EnvironmentComponent::Browser)
-        else {
+        let component = if diagnostic == Some("browser_controller_unreachable") {
+            EnvironmentComponent::BrowserController
+        } else {
+            EnvironmentComponent::Browser
+        };
+        let Some(browser) = snapshot.health.iter().find(|h| h.component == component) else {
             return;
         };
         if browser.state == state && browser.diagnostic_code.as_deref() == diagnostic {
             return;
         }
-        let Ok(updated) = sessions.update_room_environment_component_health(
-            session_id,
-            EnvironmentComponent::Browser,
-            state,
-            diagnostic,
-        ) else {
+        let Ok(updated) = sessions
+            .update_room_environment_component_health(session_id, component, state, diagnostic)
+        else {
             return;
         };
         if diagnostic.is_some() && snapshot.lifecycle == EnvironmentLifecycle::Ready {
