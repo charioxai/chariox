@@ -278,6 +278,9 @@ fn refused_preparation(mode: Mode, timeout: bool) {
     assert_eq!(installation.generation, 1);
     assert!(!installation.admission_paused);
     assert_eq!(installation.pending_generation, None);
+    // Worker reaping precedes completion of the retained owner's teardown.
+    // A start during that gap correctly returns Existing; wait before requesting a fresh owner.
+    wait(|| !control.lifecycle().has_pending_owner("alice", &id));
     // The old generation can be used again after its normal failed-worker backoff.
     control
         .lifecycle()
