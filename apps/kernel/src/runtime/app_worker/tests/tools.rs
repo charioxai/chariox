@@ -156,3 +156,163 @@ fn cancellation_during_real_sqlite_writer_wait_never_reaches_sdk() {
     assert_eq!(observed.tool_invocations(), 0);
     owner.shutdown_blocking();
 }
+
+struct CallerFixture {
+    agents: crate::agent::AgentServiceStore,
+    prompts: crate::runtime::prompt_state::PromptStateOwner,
+    sessions: crate::session::SessionService,
+    session: crate::session::RuntimeSession,
+    agent_id: String,
+}
+impl CallerFixture {
+    fn new() -> Self {
+        use crate::agent::{AgentService, AgentServiceStore, CreateAgentRequest};
+        use crate::session::{CreateSessionRequest, PromptQueueItem, PromptStatus, SessionService};
+        let mut sessions = SessionService::new(&crate::config::DaemonConfig::for_tests());
+        let session = sessions
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .unwrap();
+        let agents = AgentServiceStore::new(AgentService::new());
+        let agent = agents
+            .create_agent(
+                CreateAgentRequest::new(session.id(), "dev-stub").with_worktree("worktree"),
+                &mut sessions,
+            )
+            .unwrap();
+        let prompts = crate::runtime::prompt_state::PromptStateOwner::default();
+        prompts
+            .submit_prepared_prompt(
+                &session,
+                PromptQueueItem::new(
+                    "native-turn",
+                    "attachment",
+                    agent.id(),
+                    "native handler cancellation",
+                    PromptStatus::Queued,
+                ),
+                false,
+            )
+            .unwrap();
+        Self {
+            agents,
+            prompts,
+            sessions,
+            session,
+            agent_id: agent.id().into(),
+        }
+    }
+    fn lifetime(&self) -> crate::runtime::state::app_call_lifetime::AppCallerLifetime {
+        crate::runtime::state::app_call_lifetime::AppCallerLifetime::new(
+            self.agents.clone(),
+            self.prompts.clone(),
+            self.session.clone(),
+            self.agent_id.clone(),
+        )
+    }
+}
+
+fn native_handler_lifetime_case(destroy: bool, supervised: bool) {
+    let scratch = Scratch::new();
+    let store = scratch.store();
+    let catalog = crate::durable_state::app_state::fixture_tool_catalog(&store);
+    let tool = catalog.app_catalog().tools().next().unwrap().name.clone();
+    let runtime = runtime();
+    let fixture = NativeFixture::compile().unwrap();
+    let (starting, mut events, observed) = start(
+        &fixture,
+        Mode::ToolEcho,
+        &runtime,
+        catalog,
+        broker(|_| Box::pin(async { Ok(Value::Null) })),
+    );
+    let (owner, handle) = activate(starting.await_registered_blocking(WAIT).unwrap(), &store);
+    event(&runtime, &mut events, "worker.fixture.ready_ack");
+    let lease = handle.lease("alice").unwrap();
+    let mut caller_fixture = CallerFixture::new();
+    let response = store
+        .enqueue_app_tool(
+            lease.reserve_call(WAIT).unwrap(),
+            &tool,
+            json!({"text":"hold-for-lifetime"}),
+            caller(),
+            budget(),
+        )
+        .unwrap();
+    let lifetime = caller_fixture.lifetime();
+    let mut waiting = runtime.spawn(async move {
+        if supervised {
+            lifetime.receive(response).await
+        } else {
+            response
+                .receive()
+                .await
+                .map_err(crate::runtime::state::app_call_lifetime::AppCallerResponseError::Worker)
+        }
+    });
+    event(&runtime, &mut events, "worker.fixture.tool_blocked");
+    if destroy {
+        caller_fixture
+            .agents
+            .destroy_agent(&caller_fixture.agent_id, &mut caller_fixture.sessions)
+            .unwrap();
+    } else {
+        caller_fixture
+            .prompts
+            .begin_cancelling_active_prompt(&caller_fixture.session, &caller_fixture.agent_id)
+            .unwrap();
+    }
+    if supervised {
+        let result = runtime
+            .block_on(async { tokio::time::timeout(WAIT, &mut waiting).await })
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            result,
+            Err(crate::runtime::state::app_call_lifetime::AppCallerResponseError::Cancelled)
+        ));
+    } else {
+        // Negative control: the old response wait remains pending after cancel,
+        // until its MCP/client future is explicitly dropped.
+        assert!(runtime
+            .block_on(async {
+                tokio::time::timeout(Duration::from_millis(100), &mut waiting).await
+            })
+            .is_err());
+        waiting.abort();
+        match runtime.block_on(waiting) {
+            Err(error) => assert!(error.is_cancelled()),
+            Ok(_) => panic!("unsupervised call must stop only when its client drops"),
+        }
+    }
+    event(&runtime, &mut events, "worker.fixture.tool_cancelled");
+    assert_eq!(observed.tool_invocations(), 1);
+    // Cancellation stopped only the handler. The same worker serves its next call.
+    let next = store
+        .enqueue_app_tool(
+            lease.reserve_call(WAIT).unwrap(),
+            &tool,
+            json!({"text":"healthy neighbour"}),
+            caller(),
+            budget(),
+        )
+        .unwrap();
+    let reply = runtime.block_on(next.receive()).unwrap();
+    assert_eq!(
+        store.accept_app_tool_reply(reply).unwrap(),
+        json!({"ok":true})
+    );
+    owner.shutdown_blocking();
+}
+
+#[test]
+fn app_caller_lifetime_native_handler_aborts_on_turn_cancel() {
+    native_handler_lifetime_case(false, true);
+}
+#[test]
+fn app_caller_lifetime_native_handler_aborts_on_agent_destroy() {
+    native_handler_lifetime_case(true, true);
+}
+#[test]
+fn app_caller_lifetime_native_unsupervised_control_needs_client_drop() {
+    native_handler_lifetime_case(false, false);
+}

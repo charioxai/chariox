@@ -6,7 +6,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-mod caller_lifetime;
+use crate::runtime::state::app_call_lifetime::AppCallerLifetime;
 
 struct CancelOnDrop(Arc<AtomicBool>);
 impl Drop for CancelOnDrop {
@@ -28,12 +28,13 @@ impl KernelRuntimeState {
         }
         // Capture before on-demand startup: a later turn must not keep this
         // accepted call alive after its original caller is cancelled.
-        let lifetime = caller_lifetime::AppCallerLifetime::capture(self, agent)?;
+        let lifetime = AppCallerLifetime::capture(self, agent)?;
         let cancelled = CancelOnDrop(Arc::new(AtomicBool::new(false)));
         let observe = cancelled.0.clone();
+        let admission_lifetime = lifetime.clone();
         let budget =
             crate::runtime::app_operation_budget::AppOperationBudget::from_supervisor(move || {
-                observe.load(Ordering::Acquire) || lifetime.cancelled()
+                observe.load(Ordering::Acquire) || admission_lifetime.cancelled()
             });
         let lease = self
             .app_lease_on_demand(agent.owner_user_id(), &tool.name)
@@ -79,7 +80,7 @@ impl KernelRuntimeState {
         .await
         .map_err(|_| unavailable())??;
         let (response, expected, tool, remote) = response;
-        let reply = response.receive().await.map_err(app_error)?;
+        let reply = lifetime.receive(response).await.map_err(app_error)?;
         let permit = self.app_control().try_admit().map_err(|_| unavailable())?;
         let owned = self.owned.clone();
         let payload = tokio::task::spawn_blocking(move || {

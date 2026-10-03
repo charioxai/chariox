@@ -118,6 +118,17 @@ static int fixture_sdk_tool(const struct cx_launch_record* record) {
     if (file < 0) return 114;
     const int failed = send_all(file, "1\n", 2) || fsync(file);
     if (close(file) || failed) return 115;
+    if (strstr(request, "\"text\":\"hold-for-lifetime\"")) {
+      /* Keep a real native handler pending until its exact wire cancel. */
+      char cancelled[8193], expected_id[160];
+      const int n = snprintf(expected_id, sizeof(expected_id), "\"id\":\"%.*s\"", (int)(end-id), id);
+      if (n < 0 || (size_t)n >= sizeof(expected_id) ||
+          fixture_sdk_event("worker.fixture.tool_blocked") != 1) return 118;
+      if (fixture_sdk_receive(cancelled, deadline) != 1 ||
+          !strstr(cancelled, "\"kind\":\"cancel\"") || !strstr(cancelled, expected_id)) return 119;
+      if (fixture_sdk_event("worker.fixture.tool_cancelled") != 1) return 120;
+      continue;
+    }
     char response[512];
     const int count = snprintf(response, sizeof(response),
         "{\"kind\":\"response\",\"version\":1,\"generation\":\"1\",\"id\":\"%.*s\",\"result\":{\"ok\":true}}",

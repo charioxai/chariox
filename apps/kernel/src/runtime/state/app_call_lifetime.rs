@@ -1,12 +1,14 @@
-use super::*;
+use super::KernelRuntimeState;
 use crate::agent::AgentServiceStore;
+use crate::error::DaemonError;
 use crate::runtime::prompt_state::PromptStateOwner;
 use crate::session::{PromptStatus, RuntimeSession};
 
 /// Retains the submission's caller, without retaining an agent-store guard.
 /// A turn-less call still belongs to its agent; a new turn cannot revive an
 /// older call. This is cancellation only, never an authorization grant.
-pub(super) struct AppCallerLifetime {
+#[derive(Clone)]
+pub(crate) struct AppCallerLifetime {
     agents: AgentServiceStore,
     prompts: PromptStateOwner,
     session: RuntimeSession,
@@ -15,7 +17,7 @@ pub(super) struct AppCallerLifetime {
 }
 
 impl AppCallerLifetime {
-    pub(super) fn capture(
+    pub(crate) fn capture(
         state: &KernelRuntimeState,
         agent: &crate::agent::AgentInstance,
     ) -> Result<Self, DaemonError> {
@@ -27,7 +29,7 @@ impl AppCallerLifetime {
         ))
     }
 
-    fn new(
+    pub(crate) fn new(
         agents: AgentServiceStore,
         prompts: PromptStateOwner,
         session: RuntimeSession,
@@ -45,26 +47,57 @@ impl AppCallerLifetime {
         }
     }
 
-    pub(super) fn cancelled(&self) -> bool {
-        match self
-            .agents
-            .agent_in_session_if_available(&self.agent_id, self.session.id())
-        {
-            Some(false) => return true,
-            // Enqueue may hold this same store's binding guard. Defer the
-            // lifetime poll, without extending the operation's fixed deadline.
-            None => return false,
-            Some(true) => {}
-        }
-        self.turn_id.as_ref().is_some_and(|expected| {
+    pub(crate) fn cancelled(&self) -> bool {
+        // Turn state is independent of the contended agent-store binding guard.
+        if self.turn_id.as_ref().is_some_and(|expected| {
             !self
                 .prompts
                 .active_prompt_for_agent_snapshot(&self.session, &self.agent_id)
                 .is_some_and(|prompt| {
-                    prompt.id() == expected && prompt.status() == PromptStatus::Running
+                    prompt.id() == expected
+                        && matches!(
+                            prompt.status(),
+                            PromptStatus::Queued
+                                | PromptStatus::Dispatching
+                                | PromptStatus::Running
+                        )
                 })
-        })
+        }) {
+            return true;
+        }
+        self.agents
+            .agent_in_session_if_available(&self.agent_id, self.session.id())
+            == Some(false)
     }
+
+    /// Admission ends before the handler does. Retain supervision for the
+    /// response wait; dropping that wait tells the peer to cancel the handler.
+    pub(crate) async fn receive(
+        self,
+        response: crate::runtime::app_worker::AppToolResponse,
+    ) -> Result<crate::runtime::app_worker::AppToolReply, AppCallerResponseError> {
+        let receive = response.receive();
+        tokio::pin!(receive);
+        let mut poll = tokio::time::interval(std::time::Duration::from_millis(20));
+        poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                biased;
+                _ = poll.tick() => {
+                    if self.cancelled() { return Err(AppCallerResponseError::Cancelled); }
+                }
+                reply = &mut receive => return reply.map_err(AppCallerResponseError::Worker),
+            }
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum AppCallerResponseError {
+    #[error("app_operation_cancelled")]
+    Cancelled,
+    #[error(transparent)]
+    Worker(crate::runtime::app_worker::AppWorkerError),
 }
 
 #[cfg(test)]
@@ -193,16 +226,51 @@ mod tests {
     }
 
     #[test]
+    fn app_caller_lifetime_dispatching_turn_remains_alive() {
+        let f = Fixture::new();
+        f.prompts
+            .submit_prepared_prompt(
+                &f.session,
+                PromptQueueItem::new(
+                    "queued",
+                    "attachment",
+                    &f.agent_id,
+                    "dispatch",
+                    PromptStatus::Queued,
+                ),
+                true,
+            )
+            .unwrap();
+        let dispatched = f
+            .prompts
+            .activate_next_queued_prompt_with_prompt_id(
+                &f.session,
+                &f.agent_id,
+                None,
+                "dispatch-turn".into(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(dispatched.status(), PromptStatus::Dispatching);
+        let lifetime = f.lifetime();
+        assert!(!lifetime.cancelled());
+        f.prompts
+            .begin_cancelling_active_prompt(&f.session, &f.agent_id)
+            .unwrap();
+        assert!(lifetime.cancelled());
+    }
+
+    #[test]
     fn app_caller_lifetime_binding_guard_does_not_deadlock_poll() {
         let f = Fixture::new();
         f.submit("turn-one");
         let lifetime = f.lifetime();
         let guard = f.agents.read();
         assert!(!lifetime.cancelled());
-        drop(guard);
         f.prompts
             .begin_cancelling_active_prompt(&f.session, &f.agent_id)
             .unwrap();
         assert!(lifetime.cancelled());
+        drop(guard);
     }
 }
