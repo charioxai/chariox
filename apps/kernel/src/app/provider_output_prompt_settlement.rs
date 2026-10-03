@@ -140,7 +140,11 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
         // Runtime MCP handlers may still be using this prompt after provider output
         // becomes quiet. Share the same activity guard as the runtime-owned path.
         if prompt.status() != PromptStatus::Cancelling
-            && self.app.runtime_tool_call_activity.active_count(provider_run_id) > 0
+            && self
+                .app
+                .runtime_tool_call_activity
+                .active_count(provider_run_id)
+                > 0
         {
             return Ok(());
         }

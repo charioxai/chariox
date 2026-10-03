@@ -1,8 +1,8 @@
 use super::*;
 
-mod cold_browser_start;
 mod browser_health;
 mod browser_isolation;
+mod cold_browser_start;
 
 struct TestBrowserControllerTool {
     root: std::path::PathBuf,

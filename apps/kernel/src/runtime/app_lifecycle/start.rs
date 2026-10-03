@@ -281,7 +281,11 @@ fn spawn(
         let committed = context
             .store
             .get_app_installation(binding.owner_id(), &binding.token().installation_id)
-            .map(|installation| installation.data_release().map(|release| release.generation))
+            .map(|installation| {
+                installation
+                    .data_release()
+                    .map(|release| release.generation)
+            })
             .map_err(preparation_failed(
                 &binding.token().installation_id,
                 binding.token().generation,
@@ -371,7 +375,12 @@ fn spawn(
             &binding.token().installation_id,
             binding.token().generation,
         )
-        .map_err(|_| failed("restore_generation", "app_restore_generation_conflict".into()))?;
+        .map_err(|_| {
+            failed(
+                "restore_generation",
+                "app_restore_generation_conflict".into(),
+            )
+        })?;
         let prepared = chariox_app_runtime::worker_process::PreparedWorker::prepare_macos(
             runtime,
             release,

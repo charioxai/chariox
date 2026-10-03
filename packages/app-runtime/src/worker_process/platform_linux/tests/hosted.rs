@@ -66,7 +66,9 @@ impl ResourceDomain for ObservedDomain {
             "runtime constructor ran before inspection/Continue"
         );
         self.0.leaf.verify_limits()?;
-        self.0.observer.verify(pid, &self.0.leaf.members()?, &self.0.leaf.path)
+        self.0
+            .observer
+            .verify(pid, &self.0.leaf.members()?, &self.0.leaf.path)
     }
     fn check_running(&mut self, pid: i32, now: Instant) -> Result<()> {
         self.0.check_running(pid, now)
@@ -113,13 +115,7 @@ fn hosted_native_worker_uses_production_cgroup_and_observer() {
         _release: None,
     };
     let prepared = PreparedWorker {
-        program: CString::new(
-            scratch
-                .join("bin/domain-raw-entry")
-                .to_str()
-                .unwrap(),
-        )
-        .unwrap(),
+        program: CString::new(scratch.join("bin/domain-raw-entry").to_str().unwrap()).unwrap(),
         arguments,
         record: LaunchRecord {
             generation: "7".into(),
@@ -216,13 +212,7 @@ fn hosted_entry_constrains_immediate_fork_before_parent_can_observe_it() {
     sdk.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
     let child_sdk = File::from(OwnedFd::from(child_sdk));
     let pid = spawn::launch(
-        &CString::new(
-            scratch
-                .join("bin/domain-raw-entry")
-                .to_str()
-                .unwrap(),
-        )
-        .unwrap(),
+        &CString::new(scratch.join("bin/domain-raw-entry").to_str().unwrap()).unwrap(),
         &[CString::new("domain-immediate-fork").unwrap()],
         &[
             &null,

@@ -966,15 +966,30 @@ fn app_host_copy_link_shapes_are_versioned_and_acceptance_cannot_supply_an_owner
 fn saved_snapshot_restore_protocol_410_shape_and_hash() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 410);
     let request = LocalDaemonRequest::RestoreAppDataSnapshot(RestoreAppDataSnapshotRequest {
-        installation_id: "todo".into(), expected_generation: "3".into(), snapshot_id: "snapshot-1".into(),
+        installation_id: "todo".into(),
+        expected_generation: "3".into(),
+        snapshot_id: "snapshot-1".into(),
     });
     let response = LocalDaemonResponse::AppDataSnapshotRestored {
-        installation_id: "todo".into(), generation: "3".into(), snapshot_id: "snapshot-1".into(),
+        installation_id: "todo".into(),
+        generation: "3".into(),
+        snapshot_id: "snapshot-1".into(),
     };
-    assert_eq!(serde_json::from_value::<LocalDaemonRequest>(serde_json::to_value(&request).unwrap()).unwrap(), request);
-    assert_eq!(serde_json::from_value::<LocalDaemonResponse>(serde_json::to_value(&response).unwrap()).unwrap(), response);
+    assert_eq!(
+        serde_json::from_value::<LocalDaemonRequest>(serde_json::to_value(&request).unwrap())
+            .unwrap(),
+        request
+    );
+    assert_eq!(
+        serde_json::from_value::<LocalDaemonResponse>(serde_json::to_value(&response).unwrap())
+            .unwrap(),
+        response
+    );
     let shape = serde_json::json!({"request": request, "response": response});
-    assert_eq!(format!("{:x}", Sha256::digest(serde_json::to_vec(&shape).unwrap())), "c99920b83d0bfc050c3a7696b300460fc65fbe017d1007179e8144cfdf450035");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&shape).unwrap())),
+        "c99920b83d0bfc050c3a7696b300460fc65fbe017d1007179e8144cfdf450035"
+    );
     for field in ["owner_id", "path", "grant_id", "state"] {
         let mut bad = shape["request"].clone();
         bad["RestoreAppDataSnapshot"][field] = serde_json::json!("foreign");

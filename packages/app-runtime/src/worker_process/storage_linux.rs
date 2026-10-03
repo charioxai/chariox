@@ -7,7 +7,6 @@ mod code_mounts;
 mod code_sources;
 mod files;
 mod formatter;
-mod worker_groups;
 #[cfg(test)]
 mod hosted;
 mod loop_device;
@@ -17,6 +16,7 @@ mod provision;
 mod server;
 mod store;
 mod wire;
+mod worker_groups;
 
 pub(super) use client::{delete, Lease};
 

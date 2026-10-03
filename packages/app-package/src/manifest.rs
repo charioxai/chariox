@@ -229,13 +229,9 @@ impl Manifest {
                 ));
             }
         }
-        for path in [
-            &self.tools,
-            &self.events,
-            &self.actions,
-        ]
-        .into_iter()
-        .flatten()
+        for path in [&self.tools, &self.events, &self.actions]
+            .into_iter()
+            .flatten()
         {
             validate_path(path, limits)?;
             if !path.starts_with("schemas/") || !path.ends_with(".json") {
@@ -317,14 +313,10 @@ impl Manifest {
     pub(crate) fn required_paths(&self) -> Vec<&str> {
         let mut paths = vec![self.runtime.entry.as_str(), self.ui.entry.as_str()];
         paths.extend(
-            [
-                &self.tools,
-                &self.events,
-                &self.actions,
-            ]
-            .into_iter()
-            .flatten()
-            .map(String::as_str),
+            [&self.tools, &self.events, &self.actions]
+                .into_iter()
+                .flatten()
+                .map(String::as_str),
         );
         if let Some(migrations) = &self.migrations {
             paths.extend(migrations.steps.iter().map(|step| step.entry.as_str()));

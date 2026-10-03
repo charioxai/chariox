@@ -837,7 +837,10 @@ async fn at_most_once_duplicates_wait_for_durable_settlement() {
     );
     drop(guard);
     completion.await.unwrap().unwrap();
-    assert_eq!(*duplicate.await.unwrap().response_value(), Some(success.clone()));
+    assert_eq!(
+        *duplicate.await.unwrap().response_value(),
+        Some(success.clone())
+    );
     let restored = CommandResultCache::new_at_most_once(path.clone()).unwrap();
     let replay = match restored
         .reserve_at_most_once("one", &fingerprint, serde_json::Value::Null)
@@ -882,7 +885,10 @@ async fn at_most_once_sync_failure_reports_unknown_to_every_caller() {
         )
         .await
         .is_err());
-    assert_eq!(*duplicate.await.unwrap().response_value(), Some(unknown.clone()));
+    assert_eq!(
+        *duplicate.await.unwrap().response_value(),
+        Some(unknown.clone())
+    );
     let replay = match cache
         .reserve_at_most_once("one", &fingerprint, unknown.clone())
         .await
