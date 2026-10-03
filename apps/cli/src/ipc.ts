@@ -11,11 +11,8 @@ export class LocalIpcClient extends KernelClient {
   private advertisedProtocol: AdvertisedProtocol | undefined
   private protocolLookup: Promise<AdvertisedProtocol> | undefined
 
-  constructor(...args: ConstructorParameters<typeof KernelClient>) {
-    super(...args)
-    this.onKernelEvent(event => {
-      if (event.event === "transport_closed") this.clearAdvertisedProtocol()
-    })
+  protected override onControlConnectionChanged(): void {
+    this.clearAdvertisedProtocol()
   }
 
   override async send<TResponse>(request: unknown): Promise<TResponse> {
@@ -63,6 +60,8 @@ export class LocalIpcClient extends KernelClient {
       const reply = await super.send<{ RelayStatus?: { status?: { daemon_id?: string } } }>({ RelayStatus: null })
       presence = presences.find(value => value.kernelId === reply.RelayStatus?.status?.daemon_id)
     }
+    // Unix requests have no persistent connection lifecycle. An in-place kernel
+    // restart can retain the previous advertisement until expiry (at most 30 s).
     return {
       version: presence?.protocolVersion,
       expiresAtMs: Math.min(now + localKernelPresenceFreshnessMs,
