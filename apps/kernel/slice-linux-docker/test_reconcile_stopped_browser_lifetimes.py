@@ -50,13 +50,27 @@ class Docker:
                 "StartedAt": str(self.reads) if self.change else "2026-09-27T00:00:00Z", "FinishedAt": "2026-09-27T01:00:00Z"}}]).encode()
         if args[0] == "cp" and args[-1] == "-":
             return self.data
-        if args[:3] == ("cp", "-a", "-"):
+        if args[:2] == ("cp", "-") and len(args) == 3:
             self.writes.append((args, data))
             return b""
         raise AssertionError(args)
 
 
 class ReconciliationTests(unittest.TestCase):
+    def test_proofs_keep_their_own_ownership_without_archive_mode(self):
+        # Docker 20.10 resolves `cp -a` against the host user database, where the
+        # slice image's named user does not exist, so the proof write failed.
+        docker = Docker()
+        result = module.reconcile(IDENTITY, LABELS, docker)
+        self.assertEqual(result["retired"], 1)
+        self.assertEqual([args for args, _ in docker.writes], [("cp", "-", IDENTITY + ":" + module.ROOT)])
+        with tarfile.open(fileobj=io.BytesIO(docker.writes[0][1])) as proof:
+            members = proof.getmembers()
+            self.assertEqual(sorted(member.name for member in members),
+                sorted([INSTANCE + ".retired.json", INSTANCE + ".container-retired.json"]))
+            for member in members:
+                self.assertEqual((member.uid, member.gid, member.mode & 0o777), (1001, 1001, 0o600))
+
     def test_missing_lifecycle_uses_head_status_not_docker_cli_error_rendering(self):
         for message in ("No such file or directory", "Could not find the file", "localized error"):
             docker = Docker()
