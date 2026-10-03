@@ -21,6 +21,7 @@ const MAX_PENDING_CALLS = 64;
 const MAX_CALL_BYTES = 512 * 1024;
 const MAX_ANSWERABLE_CALLS = 1024;
 const FULLSCREEN_CHECK_INTERVAL_MS = 250;
+const CALL_WAIT_MS = 250;
 const BINDING = "__charioxAppCall";
 export const APP_CSP = [
   "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline'",
@@ -125,6 +126,7 @@ export class AppTabs {
     browser.onConnected = (connection) => this.reconcile(connection).catch(() => {});
     this.apps = new Map(); // sessionId -> app
     this.calls = [];
+    this.callWaiters = new Set();
     this.connection = null;
     this.unsubscribe = null;
     this.fullscreenMaintenance = null;
@@ -220,6 +222,7 @@ export class AppTabs {
     for (const restore of this.orphanRestores.values()) clearTimeout(restore.timer);
     this.apps.clear();
     this.calls = [];
+    this.wakeCalls();
     this.swept = false;
     this.nextFullscreenCheck = 0;
     this.connection = connection;
@@ -246,6 +249,7 @@ export class AppTabs {
     }
     if (message?.method === "Target.detachedFromTarget") {
       this.apps.delete(message.params?.sessionId);
+      if (!this.apps.size) this.wakeCalls();
       return;
     }
     const app = this.apps.get(message?.sessionId);
@@ -307,6 +311,7 @@ export class AppTabs {
     this.calls.push({ installation_id: app.installation, target_id: app.targetId,
       document_id: documentId, call_id: call.id,
       method: call.method, params: call.params ?? {} });
+    this.wakeCalls();
   }
 
   // The Tab's current top-level document, when no navigation was seen yet
@@ -407,8 +412,28 @@ export class AppTabs {
   }
 
   /** Drain pending view calls; the kernel answers each with `respond`. */
+  wakeCalls() {
+    for (const wake of this.callWaiters) wake();
+  }
+
+  // Keep the existing RPC and batch shape. Enqueue wakes an outstanding drain;
+  // the bounded timeout still projects closed targets and maintains windows.
+  async waitForCalls() {
+    if (this.calls.length || !this.apps.size) return;
+    await new Promise((resolve) => {
+      const wake = () => {
+        clearTimeout(timer);
+        this.callWaiters.delete(wake);
+        resolve();
+      };
+      const timer = setTimeout(wake, CALL_WAIT_MS);
+      this.callWaiters.add(wake);
+    });
+  }
+
   async takeCalls() {
     await this.reconcile();
+    await this.waitForCalls();
     // A call whose Tab closed or moved to another document is not run.
     const current = new Map([...this.apps.values()].map((app) => [app.targetId, app.document]));
     const calls = this.calls.filter((call) => current.has(call.target_id)

@@ -32,6 +32,7 @@ use super::browser_controller_snapshot::BrowserControllerStructuredSnapshot;
 use super::browser_controller_tab::BrowserControllerTabResult;
 use crate::session::CanonicalViewport;
 
+mod app_view_bridge;
 mod cancellation;
 mod configuration_cancellation;
 mod lifecycle_cancellation;
@@ -184,7 +185,10 @@ pub(crate) trait BrowserControllerProcessBackend {
     ) -> Result<BrowserControllerPermissionResult, String> {
         Err("browser controller backend does not support permissions".to_string())
     }
-    fn app_view(&mut self, _request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest) -> Result<serde_json::Value, String> {
+    fn app_view(
+        &mut self,
+        _request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
+    ) -> Result<serde_json::Value, String> {
         Err("browser controller backend does not support App views".to_string())
     }
     fn poll_browser_events(
@@ -808,7 +812,10 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         Ok(result)
     }
 
-    fn app_view(&mut self, request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest) -> Result<serde_json::Value, String> {
+    fn app_view(
+        &mut self,
+        request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
+    ) -> Result<serde_json::Value, String> {
         let method = request.method();
         let timeout = self.timeout;
         self.request_serializable(method, &request.params(), timeout)?
@@ -1256,11 +1263,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
             .set_browser_permission(target_id, document_id, permission, setting)
     }
 
-    pub(crate) fn app_view(
-        &mut self,
-        session_id: &str,
-        request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
-    ) -> Result<serde_json::Value, String> {
+    fn require_app_view_lease(&self, session_id: &str) -> Result<(), String> {
         self.require_lease(session_id).map_err(|_| {
             match self.owner_session_id.as_deref() {
                 Some(owner) if owner != session_id => format!(
@@ -1268,7 +1271,15 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
                 ),
                 _ => "This Room's browser Environment is not started. Use /room start, then retry /app open <installation-id>.".to_owned(),
             }
-        })?;
+        })
+    }
+
+    pub(crate) fn app_view(
+        &mut self,
+        session_id: &str,
+        request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
+    ) -> Result<serde_json::Value, String> {
+        self.require_app_view_lease(session_id)?;
         self.supervisor.app_view(request)
     }
 
@@ -1560,6 +1571,13 @@ impl BrowserControllerProcessStore {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
+        if matches!(
+            request,
+            super::browser_controller_app_view::BrowserAppViewRequest::Calls
+                | super::browser_controller_app_view::BrowserAppViewRequest::Respond { .. }
+        ) {
+            return self.app_view_bridge(session_id, request);
+        }
         let mut ownership = ownership
             .lock()
             .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
@@ -1765,7 +1783,10 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
             .set_browser_permission(target_id, document_id, permission, setting)
     }
 
-    fn app_view(&mut self, request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest) -> Result<serde_json::Value, String> {
+    fn app_view(
+        &mut self,
+        request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
+    ) -> Result<serde_json::Value, String> {
         self.ensure_started_without_transparent_restart()?;
         self.backend.app_view(request)
     }
@@ -2288,6 +2309,62 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn app_view_idle_drain_does_not_hold_ownership_while_waiting() {
+        use crate::runtime::browser_controller_app_view::BrowserAppViewRequest;
+        let tool = TestTool::new(
+            r#"#!/bin/sh
+set -eu
+root=$1
+poll=
+while IFS= read -r request; do
+  id=${request#*:}
+  id=${id%%,*}
+  case "$request" in
+    *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
+    *'"method":"browser.app.calls"'*) poll=$id; : > "$root/drain-started" ;;
+    *'"method":"browser.app.respond"'*)
+      printf '{"id":%s,"ok":true,"result":{"delivered":true}}\n' "$id"
+      printf '{"id":%s,"ok":true,"result":{"calls":[]}}\n' "$poll" ;;
+    *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
+  esac
+done
+"#,
+        );
+        let store = BrowserControllerProcessStore::new(
+            tool.path(),
+            vec![tool.root.display().to_string()],
+            Duration::from_secs(3),
+        );
+        store.acquire("room").unwrap();
+        assert!(store
+            .app_view("other", &BrowserAppViewRequest::Calls)
+            .is_err());
+        let polling = store.clone();
+        let drain =
+            std::thread::spawn(move || polling.app_view("room", &BrowserAppViewRequest::Calls));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !tool.root.join("drain-started").exists() {
+            assert!(Instant::now() < deadline, "drain must reach the controller");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let reply = store
+            .app_view(
+                "room",
+                &BrowserAppViewRequest::Respond {
+                    target_id: "target".into(),
+                    call_id: "call".into(),
+                    result: Some(serde_json::json!(1)),
+                    error: None,
+                },
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(reply["delivered"], true);
+        assert!(drain.join().unwrap().is_ok());
+        store.release("room").unwrap();
     }
 
     fn responsive_controller_script() -> &'static str {

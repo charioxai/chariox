@@ -1,5 +1,5 @@
-//! Poll an idle App bridge at its existing cadence; a call buys a short
-//! active window. No page can request an indefinite faster polling lease.
+//! Fallback cadence for older controllers. Current controllers hold an idle
+//! drain until enqueue (or 250 ms), so the next tick is already due on timeout.
 use std::time::Duration;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
 
@@ -11,6 +11,7 @@ pub(super) struct AppViewPoll {
     ticks: Interval,
     active_until: Option<Instant>,
     active: bool,
+    last_poll: Instant,
 }
 
 impl AppViewPoll {
@@ -21,26 +22,34 @@ impl AppViewPoll {
             ticks,
             active_until: None,
             active: false,
+            last_poll: Instant::now(),
         }
     }
 
     pub(super) async fn tick(&mut self) {
         self.ticks.tick().await;
+        self.last_poll = Instant::now();
     }
 
     pub(super) fn observed_calls(&mut self, had_calls: bool) {
         let now = Instant::now();
         if had_calls {
             self.active_until = Some(now + ACTIVE_WINDOW);
+            // Re-arm the controller's enqueue wait immediately after dispatch.
+            self.active = true;
+            self.ticks = tokio::time::interval(ACTIVE_INTERVAL);
+            self.ticks
+                .set_missed_tick_behavior(MissedTickBehavior::Skip);
+            return;
         }
         let active = self.active_until.is_some_and(|until| now < until);
         if active != self.active {
             self.active = active;
-            self.reset(if active {
-                ACTIVE_INTERVAL
-            } else {
-                IDLE_INTERVAL
-            });
+            // Count the controller wait toward the fallback interval. Starting
+            // a new idle delay here would leave an unarmed 250 ms gap.
+            self.ticks = tokio::time::interval_at(self.last_poll + IDLE_INTERVAL, IDLE_INTERVAL);
+            self.ticks
+                .set_missed_tick_behavior(MissedTickBehavior::Skip);
         }
     }
 
@@ -81,6 +90,7 @@ mod tests {
         polls.tick().await;
         let began = Instant::now();
         polls.observed_calls(true);
+        polls.tick().await; // immediately re-arm the enqueue wait
         for n in 1..=40 {
             polls.tick().await;
             assert_eq!(Instant::now() - began, ACTIVE_INTERVAL * n);
@@ -95,12 +105,43 @@ mod tests {
         let mut polls = AppViewPoll::new();
         polls.tick().await;
         polls.observed_calls(true);
+        polls.tick().await;
         let began = Instant::now();
         tokio::time::advance(Duration::from_millis(251)).await;
         polls.tick().await;
         assert_eq!(Instant::now() - began, Duration::from_millis(251));
         polls.tick().await;
         assert_eq!(Instant::now() - began, Duration::from_millis(275));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn enqueue_response_rearms_immediately_and_timeout_leaves_fallback_due() {
+        let mut polls = AppViewPoll::new();
+        polls.tick().await;
+        // Current controller's empty wait consumes the whole idle interval.
+        tokio::time::advance(IDLE_INTERVAL).await;
+        polls.observed_calls(false);
+        let returned = Instant::now();
+        polls.tick().await;
+        assert_eq!(Instant::now(), returned);
+        // Enqueue may arrive at any point in the next outstanding request.
+        tokio::time::advance(Duration::from_millis(7)).await;
+        polls.observed_calls(true);
+        let returned = Instant::now();
+        polls.tick().await;
+        assert_eq!(Instant::now(), returned);
+        // An idle controller times out repeatedly until the fast window ends.
+        for _ in 0..5 {
+            tokio::time::advance(IDLE_INTERVAL).await;
+            polls.observed_calls(false);
+            let returned = Instant::now();
+            polls.tick().await;
+            assert_eq!(
+                Instant::now(),
+                returned,
+                "no gap when leaving the active window"
+            );
+        }
     }
 
     #[tokio::test(start_paused = true)]
