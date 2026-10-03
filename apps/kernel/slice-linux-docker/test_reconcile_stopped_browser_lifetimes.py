@@ -50,7 +50,7 @@ class Docker:
                 "StartedAt": str(self.reads) if self.change else "2026-09-27T00:00:00Z", "FinishedAt": "2026-09-27T01:00:00Z"}}]).encode()
         if args[0] == "cp" and args[-1] == "-":
             return self.data
-        if args[:2] == ("cp", "-"):
+        if args[:2] == ("cp", "-") and len(args) == 3:
             self.writes.append((args, data))
             return b""
         raise AssertionError(args)
