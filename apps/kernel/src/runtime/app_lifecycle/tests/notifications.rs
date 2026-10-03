@@ -227,6 +227,7 @@ fn prepare_update_flushes_old_state_before_fence_drain_and_snapshot() {
 }
 
 fn refused_preparation(mode: Mode, timeout: bool) {
+    crate::test_support::isolated_env_test!();
     let scratch = Scratch::new();
     let runtime = runtime();
     let store = scratch.store();

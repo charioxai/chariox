@@ -183,6 +183,26 @@ async fn native_wake_pressure_four_starts_four_calls() {
     })
     .await
     .unwrap();
+    // Native workers register over MCP before they can become ready.
+    let (stop, stopped) = oneshot::channel();
+    let server_router = router.clone();
+    let server = tokio::spawn(run_kernel_websocket_server_with_bound_listeners(
+        server_router,
+        TcpListener::from_std({
+            listener.set_nonblocking(true).unwrap();
+            listener
+        })
+        .unwrap(),
+        TcpListener::from_std({
+            mcp.set_nonblocking(true).unwrap();
+            mcp
+        })
+        .unwrap(),
+        None,
+        async {
+            let _ = stopped.await;
+        },
+    ));
     let mut starts = Vec::new();
     for id in &ids {
         let lifecycle = control.lifecycle().clone();
@@ -218,25 +238,6 @@ async fn native_wake_pressure_four_starts_four_calls() {
     })
     .await
     .unwrap();
-    let (stop, stopped) = oneshot::channel();
-    let server_router = router.clone();
-    let server = tokio::spawn(run_kernel_websocket_server_with_bound_listeners(
-        server_router,
-        TcpListener::from_std({
-            listener.set_nonblocking(true).unwrap();
-            listener
-        })
-        .unwrap(),
-        TcpListener::from_std({
-            mcp.set_nonblocking(true).unwrap();
-            mcp
-        })
-        .unwrap(),
-        None,
-        async {
-            let _ = stopped.await;
-        },
-    ));
     let mut growth = Vec::new();
     for id in &ids {
         growth.push(tokio::spawn(call(
