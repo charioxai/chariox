@@ -30,6 +30,8 @@ pub enum Mode {
     NoReport,
     BrokerCall,
     ToolEcho,
+    /// Records the first invocation without replying until cancelled.
+    ToolStall,
     Files,
     Http,
     HttpPaused,
@@ -49,6 +51,7 @@ impl Mode {
             Self::NoReport => "sdk_no_report",
             Self::BrokerCall => "sdk_broker_call",
             Self::ToolEcho => "sdk_tool",
+            Self::ToolStall => "sdk_tool_stall",
             Self::Files => "sdk_files",
             Self::Http => "sdk_http",
             Self::HttpPaused => "sdk_http_paused",
