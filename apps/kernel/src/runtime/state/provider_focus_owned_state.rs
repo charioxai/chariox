@@ -291,9 +291,10 @@ impl KernelRuntimeOwnedState {
         else {
             return Ok(false);
         };
-        Ok(prompt.durable_delivery_provider_run_id().map_or_else(
-            || session.active_provider_run_id() == Some(provider_run.id()),
-            |delivery_run_id| delivery_run_id == provider_run.id(),
-        ))
+        // MP-08/MP-10: an unbound active turn still owns its agent's run.
+        // A parallel agent can change the session pointer before delivery binds.
+        Ok(prompt
+            .durable_delivery_provider_run_id()
+            .is_none_or(|delivery_run_id| delivery_run_id == provider_run.id()))
     }
 }

@@ -382,6 +382,43 @@ async fn provider_switch_does_not_park_runs_with_active_prompts() {
         "launching another provider must not park a run that owns an active prompt",
     );
 
+    // MP-08/MP-10: another agent can repoint the session before this turn binds.
+    let first_prompt = app
+        .prompt_owner_active_prompt_for_agent(session.id(), first_agent.id())
+        .expect("first agent prompt should resolve")
+        .expect("first agent should have active work");
+    app.mark_active_prompt_delivery(
+        session.id(),
+        first_agent.id(),
+        first_prompt.id(),
+        crate::session::DurablePromptDeliveryPhase::Dispatching,
+        None,
+        None,
+    )
+    .expect("fixture should model an unbound in-flight turn");
+    assert_eq!(
+        app.sessions
+            .get_session(session.id())
+            .unwrap()
+            .active_provider_run_id(),
+        Some(second_run.id())
+    );
+    assert!(
+        app.provider_run_has_active_prompt(session.id(), &first_run)
+            .unwrap(),
+        "session focus on another run must not make an unbound agent turn idle"
+    );
+    let app = Arc::new(Mutex::new(app));
+    let state = owned_runtime_state(&app).await;
+    assert!(
+        state
+            .owned
+            .provider_run_has_active_prompt(session.id(), &first_run)
+            .unwrap(),
+        "kernel-owned lifecycle guard must protect the same unbound turn"
+    );
+    let mut app = app.lock().await;
+
     app.submit_prompt(
         session.id(),
         attachment.id(),
