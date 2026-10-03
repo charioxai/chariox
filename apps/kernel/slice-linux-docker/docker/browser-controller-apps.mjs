@@ -217,12 +217,19 @@ export class AppTabs {
   }
 
   async enqueueCall(app, payload, sessionId) {
-    if (typeof payload !== "string" || payload.length > MAX_CALL_BYTES || this.calls.length >= MAX_PENDING_CALLS) return;
+    if (typeof payload !== "string" || payload.length > MAX_CALL_BYTES) return;
     let call;
     try { call = JSON.parse(payload); } catch { return; }
     if (typeof call?.id !== "string" || typeof call.method !== "string" || call.method.length > 128) return;
     if (call.method === PANEL_METHOD) {
       await this.reservePanel(app, sessionId, call);
+      return;
+    }
+    // Refusing admission must settle the page's promise. Silently dropping
+    // overflow leaves Promise.all backlogs waiting forever, even after drain.
+    if (this.calls.length >= MAX_PENDING_CALLS) {
+      await this.resolve(sessionId, call.id, false, { code: "APP_BUSY",
+        message: `App view call queue is full (${MAX_PENDING_CALLS} pending calls); retry after 500 ms` });
       return;
     }
     this.calls.push({ installation_id: app.installation, target_id: app.targetId, call_id: call.id,

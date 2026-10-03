@@ -445,7 +445,7 @@ impl KernelRuntimeState {
             .ok_or_else(|| view_error("UNKNOWN_TOOL", "The App declares no such tool"))?;
         let slot = lease
             .reserve_call(Duration::from_secs(30))
-            .map_err(|error| view_error("APP_BUSY", &error.to_string()))?;
+            .map_err(|error| view_error("APP_BUSY", &format!("{error}; retry after 500 ms")))?;
         slot.validate_input(&tool, &input)
             .map_err(|error| view_error("INVALID_INPUT", &error.to_string()))?;
         let permit = self.app_control().try_admit().map_err(|_| unavailable())?;
