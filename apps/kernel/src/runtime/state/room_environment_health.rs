@@ -13,6 +13,23 @@ pub(super) struct RoomEnvironmentHealthProbes {
 }
 
 impl KernelRuntimeState {
+    #[cfg(test)]
+    pub(crate) async fn test_hold_room_environment_health_refresh(
+        &self,
+        session_id: &str,
+    ) -> tokio::sync::OwnedMutexGuard<Option<Instant>> {
+        let probe = self
+            .owned
+            .room_environment_health_probes
+            .rooms
+            .lock()
+            .expect("Room health probe lock poisoned")
+            .entry(session_id.into())
+            .or_default()
+            .clone();
+        probe.lock_owned().await
+    }
+
     pub(crate) fn schedule_room_environment_health_refresh(&self, session_id: &str) {
         let Ok(environment) = self.room_environment_snapshot(session_id) else {
             return;
