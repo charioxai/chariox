@@ -128,6 +128,22 @@ impl KernelRuntimeState {
             .computer_input_executions
             .capture_guard()
             .map_err(computer_observation_error)?;
+        // Preserve opaque-artifact ownership checks without reading old pixels.
+        let artifact_id = match &call {
+            RemoteRoomComputerObservationCall::Ocr { artifact_id }
+            | RemoteRoomComputerObservationCall::FindText { artifact_id, .. } => {
+                artifact_id.as_deref()
+            }
+            RemoteRoomComputerObservationCall::ScreenStatus => None,
+        };
+        if let Some(artifact_id) = artifact_id {
+            super::room_screenshot::load_room_screenshot_artifact(
+                &self.owned.config_projection.snapshot(),
+                session_id,
+                slice_id,
+                artifact_id,
+            )?;
+        }
         // Old/pre-redaction artifacts are never OCR sources. Re-capture fresh.
         let result = super::tool_dispatch::execute_room_computer_observation(
             call,

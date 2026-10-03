@@ -446,7 +446,7 @@ impl KernelRuntimeState {
     }
 }
 
-fn load_room_screenshot_artifact(
+pub(in crate::runtime::state) fn load_room_screenshot_artifact(
     config: &crate::config::DaemonConfig,
     session_id: &str,
     slice_id: &str,

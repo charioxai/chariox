@@ -38,7 +38,7 @@ async fn captures_and_reads_bound_worker_screenshot() {
     std::fs::write(&source, &expected).expect("screenshot fixture should write");
     std::fs::write(
         &helper,
-        "#!/bin/sh\nset -eu\ncase \"${1:-}\" in\n  screenshot) cp \"$CHARIOX_ROOM_SCREENSHOT_FIXTURE\" \"$2\" ;;\n  status) printf 'available=true\\nscreen=900x500\\nviewer=http://127.0.0.1:6080/vnc.html\\nmode=desktop\\n' ;;\n  ocr)\n    if [ \"$#\" -eq 2 ]; then cmp \"$2\" \"$CHARIOX_ROOM_SCREENSHOT_FIXTURE\"; fi\n    printf 'Direct home OCR 世界\\n'\n    ;;\n  find-text)\n    if [ \"$#\" -eq 3 ]; then cmp \"$3\" \"$CHARIOX_ROOM_SCREENSHOT_FIXTURE\"; fi\n    printf '%s\\n' '{\"text\":\"Direct home\",\"left\":100,\"top\":120,\"width\":200,\"height\":40,\"center_x\":200,\"center_y\":140}'\n    ;;\n  *) exit 2 ;;\nesac\n",
+        "#!/bin/sh\nset -eu\ncase \"${1:-}\" in protected-*) python3 -c 'import json,sys; p=json.load(sys.stdin); assert not p[\"unknown\"]; assert p[\"targets\"] or not p[\"values\"]' ;; esac\ncase \"${1:-}\" in\n  protected-screenshot) cp \"$CHARIOX_ROOM_SCREENSHOT_FIXTURE\" \"$2\" ;;\n  status) printf 'available=true\\nscreen=900x500\\nviewer=http://127.0.0.1:6080/vnc.html\\nmode=desktop\\n' ;;\n  protected-ocr)\n    printf 'Direct home OCR 世界\\n'\n    ;;\n  protected-find-text)\n    printf '%s\\n' '{\"text\":\"Direct home\",\"left\":100,\"top\":120,\"width\":200,\"height\":40,\"center_x\":200,\"center_y\":140}'\n    ;;\n  *) exit 2 ;;\nesac\n",
     )
     .expect("screenshot helper should write");
     #[cfg(unix)]

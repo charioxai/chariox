@@ -152,8 +152,8 @@ test("selection runs future quota-pattern files once and propagates a selected t
 
   assert.notEqual(result.status, 0, `a failing selected quota test must fail the package script\n${result.diagnostics}`)
   assert.match(output, /intentional selection failure/, result.diagnostics)
-  assert.match(output, /(?:#|ℹ)\s*tests 5\b/, result.diagnostics)
-  assert.match(output, /(?:#|ℹ)\s*pass 4\b/, result.diagnostics)
+  assert.match(output, /(?:#|ℹ)\s*tests 6\b/, result.diagnostics)
+  assert.match(output, /(?:#|ℹ)\s*pass 5\b/, result.diagnostics)
   assert.match(output, /(?:#|ℹ)\s*fail 1\b/, result.diagnostics)
   assert.match(output, /(?:#|ℹ)\s*skipped 0\b/, result.diagnostics)
   assert.deepEqual(
