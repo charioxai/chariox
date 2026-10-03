@@ -486,6 +486,119 @@ test("isolated-frame navigation rejects old references and preserves the parent 
   });
 });
 
+// MP-08/MP-10: structure-only password challenge, served locally. No service login.
+const passwordStepMarkup = `
+  <main><section><div><label>Enter your password
+    <input type="password" name="Passwd" autocomplete="current-password">
+  </label></div></section>
+  <div id="passwordNext"><button type="button">Next</button></div>
+  <output role="status"></output></main>
+  <script>
+    const input = document.querySelector('input');
+    const output = document.querySelector('output');
+    let edited = false;
+    input.addEventListener('input', () => { edited = input.value.length > 0; });
+    document.querySelector('button').addEventListener('click', () => {
+      output.textContent = edited ? 'accepted' : 'empty';
+    });
+  </script>`;
+
+for (const layout of ["page", "nested-frame", "shadow-root"]) {
+  test(`password step ${layout} fills a discovered opaque field and uses its separate Next button`, async () => {
+    await withPasswordStep(async (url) => {
+      await withController(async ({ page, request }) => {
+        await page.goto(url);
+        if (layout === "nested-frame") {
+          await page.setContent(`<iframe src="${url}"></iframe>`);
+        } else if (layout === "shadow-root") {
+          await page.evaluate(() => {
+            const main = document.querySelector('main');
+            const host = document.createElement('div');
+            host.attachShadow({ mode: 'open' }).append(main);
+            document.body.append(host);
+          });
+        }
+        const field = layout === "nested-frame"
+          ? page.frameLocator('iframe').getByLabel('Enter your password')
+          : page.getByLabel('Enter your password');
+        await field.waitFor();
+        const target = (await request("browser.reconcile", { viewport })).result.tabs[0];
+        const snapshot = await request("browser.snapshot", target);
+        const node = snapshot.result.accessibility_nodes.find((node) => node.role === "textbox" && node.name.trim() === "Enter your password");
+        assert.ok(node?.node_ref);
+        const result = await request("browser.action", {
+          ...target, node_ref: node.node_ref,
+          action: { kind: "fill", text: "local-password-canary", expected_document_url: url, submit: false },
+        });
+        assert.equal(result.ok, true, JSON.stringify(result.error));
+        assert.equal(await field.inputValue(), "local-password-canary");
+        assert.equal(JSON.stringify(result).includes("local-password-canary"), false);
+        const next = snapshot.result.accessibility_nodes.find((node) => node.role === "button" && node.name === "Next");
+        const clicked = await request("browser.action", { ...target, node_ref: next.node_ref, action: { kind: "click" } });
+        assert.equal(clicked.ok, true, JSON.stringify(clicked.error));
+        const scope = layout === "nested-frame" ? page.frameLocator('iframe') : page;
+        assert.equal(await scope.getByRole('status').innerText(), "accepted");
+      });
+    });
+  });
+}
+
+test("password step without a form rejects submit before inserting a secret with an actionable error", async () => {
+  await withPasswordStep(async (url) => {
+    await withController(async ({ page, request }) => {
+      await page.goto(url);
+      const target = (await request("browser.reconcile", { viewport })).result.tabs[0];
+      const snapshot = await request("browser.snapshot", target);
+      const node = snapshot.result.accessibility_nodes.find((node) => node.role === "textbox" && node.name.trim() === "Enter your password");
+      const result = await request("browser.action", {
+        ...target, node_ref: node.node_ref,
+        action: { kind: "fill", text: "local-password-canary", expected_document_url: url, submit: true },
+      });
+      assert.equal(result.ok, false);
+      assert.equal(result.error.code, "browser_submit_failed");
+      assert.match(result.error.message, /submit=false.*button/);
+      assert.equal(await page.getByLabel('Enter your password').inputValue(), "");
+      assert.equal(JSON.stringify(result).includes("local-password-canary"), false);
+    });
+  });
+});
+
+test("password step form controls cannot shadow native submit methods", async () => {
+  await withController(async ({ page, request }) => {
+    await page.setContent(`<form><label>Sample<input type="password"></label>
+      <input name="requestSubmit" type="hidden"><input name="submit" type="hidden">
+      <output role="status"></output></form>`);
+    await page.locator('form').evaluate((form) => {
+      form.addEventListener('submit', (event) => {
+        event.preventDefault();
+        form.querySelector('output').textContent = 'accepted';
+      });
+    });
+    const target = (await request("browser.reconcile", { viewport })).result.tabs[0];
+    const result = await request("browser.action", {
+      ...target, node_ref: fieldReference(await request("browser.snapshot", target)),
+      action: { kind: "fill", text: "local-password-canary", expected_document_url: page.url(), submit: true },
+    });
+    assert.equal(result.ok, true, JSON.stringify(result.error));
+    assert.equal(await page.getByRole('status').innerText(), 'accepted');
+    assert.equal(JSON.stringify(result).includes("local-password-canary"), false);
+  });
+});
+
+async function withPasswordStep(run) {
+  const server = createServer((request, response) => {
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end(passwordStepMarkup);
+  });
+  try {
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    await run(`http://127.0.0.1:${server.address().port}/v3/signin/challenge/pwd`);
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+}
+
 for (const transitionEvent of ["input", "change"]) {
   test(`secret fill rejects and remasks when a real ${transitionEvent} handler unmasks the field`, { timeout: 15_000 }, async () => {
     await withController(async ({ page, request }) => {
