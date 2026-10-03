@@ -45,6 +45,28 @@ impl KernelRuntimeState {
         let state = self.clone();
         let room = session_id.to_string();
         tokio::spawn(async move {
+            if environment.lifecycle == EnvironmentLifecycle::Ready
+                && matches!(
+                    state
+                        .owned
+                        .durable_state_store
+                        .browser_import_pending_for_room(&room),
+                    Ok(false)
+                )
+            {
+                // A Ready read needs only health, not controller acquisition
+                // or exclusive reconciliation. Reuse the periodic observer's
+                // shared admission, in-flight ownership and generation fence.
+                // Its receipt never projects tabs: a foreground mutation may
+                // have committed while this observation crossed the worker route.
+                // Timeouts/route errors remain inconclusive; positive debugger
+                // loss degrades the Room through the normal health owner.
+                state
+                    .refresh_room_browser_health(&room, environment.runtime_generation)
+                    .await;
+                *lease = Some(Instant::now());
+                return;
+            }
             if state
                 .ensure_browser_controller_process_started(&room)
                 .await

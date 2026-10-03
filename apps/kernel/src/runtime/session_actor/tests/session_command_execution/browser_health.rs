@@ -32,10 +32,19 @@ async fn fixture() -> (
     let script = std::fs::read_to_string(&tool.path).unwrap().replace(
         "printf 'reconcile\\n'",
         &format!(
-            "if [ -f '{}' ]; then printf '{{\"id\":%s,\"ok\":false,\"error\":{{\"code\":\"controller_busy\",\"message\":\"foreground command pending\"}}}}\\n' \"$id\"; continue; fi\nif [ -f '{}' ]; then sleep 6; fi\nprintf 'reconcile\\n'",
+            "if [ -f '{}' ]; then printf '{{\"id\":%s,\"ok\":false,\"error\":{{\"code\":\"controller_busy\",\"message\":\"foreground command pending\"}}}}\\n' \"$id\"; continue; fi\nif [ -f '{}' ]; then sleep 6; fi\nif [ -f '{}' ]; then sleep 2; fi\nprintf 'reconcile\\n'",
             tool.root.join("browser-busy").display(),
             tool.root.join("browser-slow").display(),
+            tool.root.join("browser-delayed").display(),
         ),
+    );
+    std::fs::write(&tool.path, script).unwrap();
+    let script = std::fs::read_to_string(&tool.path).unwrap().replace(
+        "    *'\"method\":\"shutdown\"'*)",
+        r#"    *'"method":"browser.cookies.recover"'*)
+      printf '{"id":%s,"ok":true,"result":{"status":"verified"}}\n' "$id"
+      ;;
+    *'"method":"shutdown"'*)"#,
     );
     std::fs::write(&tool.path, script).unwrap();
     let mut state = owned_runtime_state(&app).await;
@@ -275,4 +284,84 @@ async fn room_browser_health_probe_shares_controller_routes_and_yields_to_slice_
         "health must yield to actual slice lifecycle authority"
     );
     drop(lifecycle);
+}
+
+#[tokio::test]
+async fn ready_state_read_uses_health_only_and_preserves_foreground_tabs() {
+    let (state, room, tool, _) = fixture().await;
+    // The fixture's reconciliation always reports target-a. A foreground tab
+    // projection after dispatch must survive the asynchronous read receipt.
+    let before = std::fs::read_to_string(&tool.log).unwrap();
+    std::fs::write(tool.root.join("browser-delayed"), "").unwrap();
+    state.schedule_room_environment_health_refresh(&room);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    state
+        .reconcile_room_environment_controller_tabs(&room, Vec::new(), None)
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(9), async {
+        while std::fs::read_to_string(&tool.log).unwrap() == before {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    })
+    .await
+    .unwrap();
+    assert!(state
+        .room_environment_snapshot(&room)
+        .unwrap()
+        .tabs
+        .is_empty());
+}
+
+#[tokio::test]
+async fn ready_state_read_ignores_busy_but_degrades_positive_browser_loss() {
+    let (state, room, tool, _) = fixture().await;
+    std::fs::write(tool.root.join("browser-busy"), "").unwrap();
+    state.schedule_room_environment_health_refresh(&room);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        state.room_environment_snapshot(&room).unwrap().lifecycle,
+        Lifecycle::Ready
+    );
+    std::fs::remove_file(tool.root.join("browser-busy")).unwrap();
+    std::fs::write(tool.root.join("browser-exited"), "").unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            state.schedule_room_environment_health_refresh(&room);
+            if state.room_environment_snapshot(&room).unwrap().lifecycle == Lifecycle::Degraded {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn ready_state_read_recovers_pending_import() {
+    let (state, room, _tool, _) = fixture().await;
+    let guard = state
+        .begin_exclusive_browser_import(&room, "11111111111111111111111111111111", "local")
+        .await
+        .unwrap();
+    drop(guard);
+    assert!(state
+        .ensure_browser_import_execution_allowed(&room)
+        .is_err());
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            state.schedule_room_environment_health_refresh(&room);
+            if state.ensure_browser_import_execution_allowed(&room).is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        state.room_environment_snapshot(&room).unwrap().lifecycle,
+        Lifecycle::Ready
+    );
 }
