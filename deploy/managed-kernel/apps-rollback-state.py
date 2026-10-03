@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read only durable Apps footprints; uncertainty requires the explicit override."""
+"""Read durable Apps footprints, including initialized tables even with no rows."""
 import json
 import pathlib
 import sqlite3
@@ -42,6 +42,8 @@ def has_app_state(root):
             if not stat.S_ISREG(safe_metadata(database, root).st_mode):
                 raise ValueError("invalid kernel database")
             with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=5) as connection:
+                # Phase 1 initialization writes these tables before any App is
+                # installed. Initialized tables are part of the state boundary.
                 if connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name GLOB 'app_*' LIMIT 1").fetchone():
                     return True
     for directory in roots:

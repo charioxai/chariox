@@ -36,3 +36,31 @@ for (const kind of ["empty", "storage", "release", "tables", "corrupt", "redirec
     assert.equal(detect(root), kind === "empty" ? "absent" : "present")
   })
 }
+
+test("empty production Phase 1 App schema counts as state; a pre-Apps database does not", async t => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-apps-rollback-schema-"))
+  t.after(() => rm(root, {recursive: true, force: true}))
+  const database = join(root, "home/chariox/.chariox/state/kernel.db")
+  await mkdir(dirname(database), {recursive: true})
+  const sql = []
+  for (const module of ["installation.rs", "managed_state/migration.rs", "managed_state/store.rs"]) {
+    const source = await readFile(new URL(`../packages/app-runtime/src/${module}`, import.meta.url), "utf8")
+    // Execute the production initializer's SQL, including its exact constraints.
+    const statement = source.match(/execute_batch\(\s*"([\s\S]*?)",\s*\)/)?.[1]
+    assert.ok(statement); assert.ok(!statement.includes("\\"))
+    sql.push(statement)
+  }
+  const result = spawnSync("python3", ["-c", `import sqlite3,sys
+c=sqlite3.connect(sys.argv[1]); c.execute('CREATE TABLE sessions(id TEXT)'); c.commit(); c.close()
+`, database], {encoding: "utf8"})
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(detect(root), "absent", "pre-Apps tables alone do not trip the boundary")
+  const initialized = spawnSync("python3", ["-c", `import sqlite3,sys
+c=sqlite3.connect(sys.argv[1]); c.executescript(sys.stdin.read())
+assert c.execute('SELECT COUNT(*) FROM app_installations').fetchone()[0] == 0
+assert c.execute('SELECT COUNT(*) FROM app_state_migrations').fetchone()[0] == 0
+c.commit(); c.close()
+`, database], {input: sql.join("\n"), encoding: "utf8"})
+  assert.equal(initialized.status, 0, initialized.stderr)
+  assert.equal(detect(root), "present", "initialized App tables are a durable Phase 1 write, including with no rows")
+})

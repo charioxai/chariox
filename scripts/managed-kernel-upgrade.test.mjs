@@ -2045,10 +2045,17 @@ test("a failed overridden Apps downgrade restores the previous Apps release", as
     targetTransitionPolicy: {schemaVersion: 1, protocol: 410, upgradeFrom: [376, 410], rollbackTo: [376, 410]},
   })
   assert.equal(harness.run().status, 0)
+  const database = join(harness.installRoot, "home/chariox/.chariox/state/kernel.db")
+  await mkdir(dirname(database), {recursive: true})
+  const state = spawnSync("python3", ["-c", "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('CREATE TABLE app_state_migrations(installation_id TEXT)'); c.commit(); c.close()", database], {encoding: "utf8"})
+  assert.equal(state.status, 0, state.stderr)
+  const before = await readFile(database)
   await put(join(harness.state, "fail-health-once"), "fail\n")
   const downgrade = harness.run({}, ["--allow-apps-rollback", harness.current.rootfs,
     harness.target.digest, harness.current.digest, harness.trustedKey])
   assert.equal(downgrade.status, 1)
+  assert.match(downgrade.stderr, /WARNING:.*App state survival/)
+  assert.deepEqual(await readFile(database), before)
   assert.match(downgrade.stderr, /restored previous managed kernel release/)
   assert.equal(await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
     `releases/${harness.target.digest.slice("sha256:".length)}`)
