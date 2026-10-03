@@ -115,6 +115,24 @@ fn make_control(
     });
     (control, observations)
 }
+
+impl AppLifecycleService {
+    /// Native inbox fixture, on the same owner/registration/health path.
+    pub(crate) fn fixture_inbox_workers(&self) -> Arc<Mutex<Vec<Observation>>> {
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        *self.0.fixture.lock().unwrap() = Some(start::FixturePlatform {
+            native: Arc::new(NativeFixture::compile().unwrap()),
+            fail_health: false,
+            lifecycle: Some(
+                chariox_app_runtime::worker_process::test_fixture::Mode::LifecycleInbox,
+            ),
+            fail_migration: false,
+            stop_after_commit: false,
+            observations: observations.clone(),
+        });
+        observations
+    }
+}
 fn all_reaped(observations: &Mutex<Vec<Observation>>) -> bool {
     let observations = observations.lock().unwrap();
     !observations.is_empty()

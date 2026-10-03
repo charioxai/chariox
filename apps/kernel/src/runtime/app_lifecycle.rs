@@ -51,6 +51,9 @@ pub(crate) enum LifecycleError {
     LiveLimit,
     #[error("app_lifecycle_stopped")]
     Stopped,
+    /// Work must wait through backoff or for an explicit quarantine recovery.
+    #[error("app_lifecycle_restart_deferred")]
+    RestartDeferred,
     #[error("app_lifecycle_authority")]
     Authority,
     #[error("app_lifecycle_storage")]

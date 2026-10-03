@@ -203,7 +203,7 @@ fn cancelled_claim_cannot_replace_a_durable_attempt() {
 }
 
 #[test]
-fn start_gate_refuses_a_failed_current_generation_but_not_an_older_one() {
+fn start_gate_defers_a_failed_current_generation_but_not_an_older_one() {
     let fixture = Fixture::new();
     let store = fixture.open();
     fixture_event_catalog(&store);
@@ -223,7 +223,7 @@ fn start_gate_refuses_a_failed_current_generation_but_not_an_older_one() {
         .unwrap();
     assert_eq!(
         store.app_worker_start_gate("alice", "installed").unwrap(),
-        StartGate::Refused
+        StartGate::RestartDeferred
     );
     // A row left by an older generation (the App was since updated) does not
     // fence the current one.

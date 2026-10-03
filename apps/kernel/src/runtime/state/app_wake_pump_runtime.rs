@@ -30,14 +30,14 @@ const IDLE_AFTER_MS: u64 = 10 * 60_000;
 /// Outcome of one on-demand start request for an installation.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Start {
-    /// Starting, already starting, or admission busy: wait without an attempt.
+    /// Starting, admission busy, restart backoff or quarantine: wait without an attempt.
     Pending,
     /// Every live worker slot is taken: wait without an attempt while the
     /// pass makes room, as a tool call does, by stopping an idle worker.
     AtLiveLimit,
     /// The user stopped the App: keep work without spending attempts.
     UserStopped,
-    /// Failed generation, revocation or inactive installation: bounded attempts.
+    /// Revocation, inactive installation or another start failure: bounded attempts.
     Refused,
 }
 
@@ -394,7 +394,9 @@ impl KernelRuntimeState {
                     let (owner, installation) = key(item);
                     match lifecycle.start_on_demand_blocking(&owner, &installation, handle.clone())
                     {
-                        Ok(_) | Err(LifecycleError::Busy) => Start::Pending,
+                        Ok(_) | Err(LifecycleError::Busy | LifecycleError::RestartDeferred) => {
+                            Start::Pending
+                        }
                         Err(LifecycleError::LiveLimit) => Start::AtLiveLimit,
                         Err(LifecycleError::Stopped) => Start::UserStopped,
                         Err(_) => {
