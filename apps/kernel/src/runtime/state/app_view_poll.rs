@@ -1,5 +1,5 @@
 //! Fallback cadence for older controllers. Current controllers hold an idle
-//! drain until enqueue (or 250 ms), so the next tick is already due on timeout.
+//! drain until enqueue (or 250 ms). A page cannot drive drains faster than 25 ms.
 use std::time::Duration;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
 
@@ -35,9 +35,11 @@ impl AppViewPoll {
         let now = Instant::now();
         if had_calls {
             self.active_until = Some(now + ACTIVE_WINDOW);
-            // Re-arm the controller's enqueue wait immediately after dispatch.
+            // A long enqueue wait re-arms immediately; a queued backlog keeps
+            // the 25 ms floor measured from the previous request's start.
             self.active = true;
-            self.ticks = tokio::time::interval(ACTIVE_INTERVAL);
+            self.ticks =
+                tokio::time::interval_at(self.last_poll + ACTIVE_INTERVAL, ACTIVE_INTERVAL);
             self.ticks
                 .set_missed_tick_behavior(MissedTickBehavior::Skip);
             return;
@@ -90,7 +92,6 @@ mod tests {
         polls.tick().await;
         let began = Instant::now();
         polls.observed_calls(true);
-        polls.tick().await; // immediately re-arm the enqueue wait
         for n in 1..=40 {
             polls.tick().await;
             assert_eq!(Instant::now() - began, ACTIVE_INTERVAL * n);
@@ -125,7 +126,7 @@ mod tests {
         polls.tick().await;
         assert_eq!(Instant::now(), returned);
         // Enqueue may arrive at any point in the next outstanding request.
-        tokio::time::advance(Duration::from_millis(7)).await;
+        tokio::time::advance(Duration::from_millis(37)).await;
         polls.observed_calls(true);
         let returned = Instant::now();
         polls.tick().await;
@@ -141,6 +142,18 @@ mod tests {
                 returned,
                 "no gap when leaving the active window"
             );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn continuous_backlog_cannot_remove_the_active_poll_floor() {
+        let mut polls = AppViewPoll::new();
+        polls.tick().await;
+        for _ in 0..100 {
+            let previous = Instant::now();
+            polls.observed_calls(true);
+            polls.tick().await;
+            assert_eq!(Instant::now() - previous, ACTIVE_INTERVAL);
         }
     }
 

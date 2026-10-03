@@ -40,6 +40,7 @@ mod pending_action;
 mod pending_mutation;
 mod pending_responses;
 mod reconciliation;
+mod unlocked_request;
 use self::pending_mutation::BrowserTabMutationLanes;
 pub(crate) use configuration_cancellation::BrowserConfiguration;
 #[cfg(test)]
@@ -1355,6 +1356,7 @@ pub(crate) struct BrowserControllerProcessStore {
     executions: cancellation::BrowserActionExecutions,
     tab_mutation_barrier: Arc<RwLock<()>>,
     tab_mutation_lanes: BrowserTabMutationLanes,
+    app_view_replies: Arc<Mutex<()>>,
 }
 
 impl BrowserControllerProcessStore {
@@ -1457,24 +1459,7 @@ impl BrowserControllerProcessStore {
                 .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
             ownership.require_lease(session_id)?;
             let supervisor = &mut ownership.supervisor;
-            // A health RPC is a controller barrier. While controller responses
-            // are in flight, inspect process liveness without queuing it.
-            // Recovery still requires reconciliation before fresh references.
-            let responses_pending = supervisor
-                .backend
-                .process
-                .as_ref()
-                .map(|process| process.pending_responses.is_empty().map(|empty| !empty))
-                .transpose()?
-                .unwrap_or(false);
-            let exited = supervisor.backend.take_exited_process()?.is_some();
-            if !responses_pending || exited {
-                supervisor.ensure_started_without_transparent_restart()?;
-            } else if supervisor.recovery_pending
-                || supervisor.snapshot.state != BrowserControllerProcessState::Ready
-            {
-                return Err(CONTROLLER_RESTARTED_BEFORE_OPERATION.to_string());
-            }
+            supervisor.prepare_unlocked_request()?;
             let pending = supervisor
                 .backend
                 .begin_snapshot_read(target_id, document_id)?;
@@ -2266,13 +2251,13 @@ mod tests {
         store.shutdown().expect("clean up failed controller");
     }
 
-    struct TestTool {
-        root: PathBuf,
+    pub(super) struct TestTool {
+        pub(super) root: PathBuf,
         path: PathBuf,
     }
 
     impl TestTool {
-        fn new(script: &str) -> Self {
+        pub(super) fn new(script: &str) -> Self {
             static SEQUENCE: AtomicU64 = AtomicU64::new(0);
             let nonce = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -2300,7 +2285,7 @@ mod tests {
             Self { root, path }
         }
 
-        fn path(&self) -> &Path {
+        pub(super) fn path(&self) -> &Path {
             &self.path
         }
     }
@@ -2309,62 +2294,6 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
         }
-    }
-
-    #[test]
-    fn app_view_idle_drain_does_not_hold_ownership_while_waiting() {
-        use crate::runtime::browser_controller_app_view::BrowserAppViewRequest;
-        let tool = TestTool::new(
-            r#"#!/bin/sh
-set -eu
-root=$1
-poll=
-while IFS= read -r request; do
-  id=${request#*:}
-  id=${id%%,*}
-  case "$request" in
-    *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
-    *'"method":"browser.app.calls"'*) poll=$id; : > "$root/drain-started" ;;
-    *'"method":"browser.app.respond"'*)
-      printf '{"id":%s,"ok":true,"result":{"delivered":true}}\n' "$id"
-      printf '{"id":%s,"ok":true,"result":{"calls":[]}}\n' "$poll" ;;
-    *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
-  esac
-done
-"#,
-        );
-        let store = BrowserControllerProcessStore::new(
-            tool.path(),
-            vec![tool.root.display().to_string()],
-            Duration::from_secs(3),
-        );
-        store.acquire("room").unwrap();
-        assert!(store
-            .app_view("other", &BrowserAppViewRequest::Calls)
-            .is_err());
-        let polling = store.clone();
-        let drain =
-            std::thread::spawn(move || polling.app_view("room", &BrowserAppViewRequest::Calls));
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while !tool.root.join("drain-started").exists() {
-            assert!(Instant::now() < deadline, "drain must reach the controller");
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        let reply = store
-            .app_view(
-                "room",
-                &BrowserAppViewRequest::Respond {
-                    target_id: "target".into(),
-                    call_id: "call".into(),
-                    result: Some(serde_json::json!(1)),
-                    error: None,
-                },
-            )
-            .unwrap()
-            .unwrap();
-        assert_eq!(reply["delivered"], true);
-        assert!(drain.join().unwrap().is_ok());
-        store.release("room").unwrap();
     }
 
     fn responsive_controller_script() -> &'static str {
