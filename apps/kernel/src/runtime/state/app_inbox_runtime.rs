@@ -150,11 +150,14 @@ impl KernelRuntimeState {
         if due.is_empty() {
             return;
         }
-        let (deliver, planned) = self
+        let Ok((deliver, planned)) = self
             .plan_app_delivery(due, now_ms, |item: &InboxItem| {
                 (item.owner_id.clone(), item.installation_id.clone())
             })
-            .await;
+            .await
+        else {
+            return;
+        };
         let mut records: Vec<_> = planned
             .into_iter()
             .map(|(item, settle)| record(item.sequence, settle, 0, now_ms))

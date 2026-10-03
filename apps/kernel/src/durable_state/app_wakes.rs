@@ -41,6 +41,24 @@ impl std::fmt::Debug for AppWakeRequest {
 }
 
 impl DurableKernelStateStore {
+    /// Due work keeps a worker busy through delivery/settlement, including the
+    /// interval before its lease is touched. Fail closed if storage is unhealthy.
+    pub(crate) fn has_due_app_wakes(&self, owner: &str, installation: &str, now_ms: u64) -> bool {
+        (|| {
+            self.require_writer_healthy().ok()?;
+            let connection = self.lock_connection("durable_state.busy_app_wake").ok()?;
+            connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM app_wakes WHERE owner_id=?1
+                 AND installation_id=?2 AND next_attempt_at_ms<=?3)",
+                    rusqlite::params![owner, installation, now_ms.min(i64::MAX as u64) as i64],
+                    |row| row.get::<_, bool>(0),
+                )
+                .ok()
+        })()
+        .unwrap_or(true)
+    }
+
     /// Wait for the durable deadline or a committed schedule change. The one
     /// scheduler reads again after notifications and periodically rechecks wall
     /// time so a clock correction cannot strand a monotonic sleep (#764).

@@ -7,6 +7,9 @@ use crate::runtime::app_lifecycle::LifecycleError;
 use chariox_app_runtime::managed_state::DueWake;
 use std::{collections::BTreeMap, time::Duration};
 
+mod cadence;
+use cadence::WakeCadence;
+
 pub(super) const PAGE: usize = 8;
 /// A wake delivered this long after its due time is reported as overdue.
 const OVERDUE_AFTER_MS: u64 = 60_000;
@@ -101,9 +104,13 @@ impl KernelRuntimeState {
         let Some(_scheduler) = self.app_control().reserve_wake_scheduler() else {
             return;
         };
+        let mut cadence = WakeCadence::default();
         loop {
             self.owned.durable_state_store.wait_for_app_wake().await;
-            if !self.app_wake_pass(crate::session::unix_epoch_ms()).await {
+            if !self
+                .app_wake_pass(crate::session::unix_epoch_ms(), &mut cadence)
+                .await
+            {
                 // A transient read/settlement error must not spin on the same
                 // durable item or race its outstanding writer work.
                 tokio::time::sleep(Duration::from_secs(1)).await;
@@ -179,13 +186,18 @@ impl KernelRuntimeState {
                             lease.idle_ms(crate::session::unix_epoch_ms()) >= IDLE_AFTER_MS
                         })
                         && !store.has_deliverable_app_events(&owner, &installation)
+                        && !store.has_due_app_wakes(
+                            &owner,
+                            &installation,
+                            crate::session::unix_epoch_ms(),
+                        )
                 })
             })
             .await;
         }
     }
 
-    async fn app_wake_pass(&self, now_ms: u64) -> bool {
+    async fn app_wake_pass(&self, now_ms: u64, cadence: &mut WakeCadence) -> bool {
         let store = self.owned.durable_state_store.clone();
         let due = tokio::task::spawn_blocking(move || {
             store.app_wakes(AppWakeOperation::Due {
@@ -197,15 +209,20 @@ impl KernelRuntimeState {
         let Ok(Ok(AppWakeOutcome::Due(due))) = due else {
             return false;
         };
-        let (deliver, planned) = self
+        let (due, mut records) = cadence.split(due, now_ms, std::time::Instant::now());
+        let Ok((deliver, planned)) = self
             .plan_app_delivery(due, now_ms, |wake| {
                 (wake.owner_id.clone(), wake.installation_id.clone())
             })
-            .await;
-        let mut records: Vec<_> = planned
-            .into_iter()
-            .map(|(wake, settle)| wake_record(wake, settle, now_ms, "the App could not start"))
-            .collect();
+            .await
+        else {
+            return false;
+        };
+        records.extend(
+            planned
+                .into_iter()
+                .map(|(wake, settle)| wake_record(wake, settle, now_ms, "the App could not start")),
+        );
         let control = self.app_control().clone();
         for wake in deliver {
             let overdue = now_ms.saturating_sub(wake.wake.due_at_ms) > OVERDUE_AFTER_MS;
@@ -219,6 +236,7 @@ impl KernelRuntimeState {
                 });
                 continue;
             };
+            cadence.record_attempt(&wake, std::time::Instant::now());
             let delivered = lease
                 .deliver_wake(&wake.wake, overdue, DELIVERY_TIMEOUT)
                 .await;
@@ -257,7 +275,7 @@ impl KernelRuntimeState {
         due: Vec<T>,
         now_ms: u64,
         key: fn(&T) -> (String, String),
-    ) -> (Vec<T>, Vec<(T, Settle)>) {
+    ) -> Result<(Vec<T>, Vec<(T, Settle)>), tokio::task::JoinError> {
         let planning = self.app_control().clone();
         let handle = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
@@ -287,7 +305,6 @@ impl KernelRuntimeState {
             )
         })
         .await
-        .unwrap_or_default()
     }
 
     /// Whether an update of the installation is staged (not yet committed or
@@ -310,6 +327,21 @@ mod tests {
     use super::*;
     use chariox_app_runtime::managed_state::Wake;
     use std::cell::RefCell;
+
+    #[tokio::test]
+    async fn app_wake_planning_panic_is_reported_for_backoff() {
+        use crate::{app::DaemonApp, runtime::router::CommandRouter, DaemonConfig};
+        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        let router = CommandRouter::with_interactive_capacity(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            4,
+        );
+        let result = router
+            .runtime_state()
+            .plan_app_delivery(vec![()], 1, |_| panic!("injected planning panic"))
+            .await;
+        assert!(result.unwrap_err().is_panic());
+    }
 
     fn due(installation: &str, id: &str) -> DueWake {
         DueWake {
@@ -375,7 +407,12 @@ mod tests {
         assert_eq!(records.len(), 2);
         assert!(records.iter().all(|(_, settle)| *settle == Settle::Failed));
         assert!(matches!(
-            wake_record(due("a", "w"), Settle::Failed, 100, "the App could not start"),
+            wake_record(
+                due("a", "w"),
+                Settle::Failed,
+                100,
+                "the App could not start"
+            ),
             AppWakeOperation::Failed { now_ms: 100, .. }
         ));
     }
