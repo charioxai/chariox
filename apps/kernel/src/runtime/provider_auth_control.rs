@@ -158,6 +158,9 @@ async fn start_terminal_provider_auth(
                 "terminal_setup_token".to_string()
             }
             crate::runtime::state::ProviderAuthProcessOperation::Login => "terminal".to_string(),
+            crate::runtime::state::ProviderAuthProcessOperation::SetupToken => {
+                "terminal_setup_token".to_string()
+            }
             crate::runtime::state::ProviderAuthProcessOperation::Logout => {
                 "terminal_logout".to_string()
             }

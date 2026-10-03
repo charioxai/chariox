@@ -282,6 +282,7 @@ pub(super) async fn start(
         state: ProviderLoginProcessState::Running,
         backend: ProviderLoginProcessBackend::Terminal,
         operation: ProviderAuthProcessOperation::SetupToken,
+        setup_token: None,
         output:
             b"Complete Claude browser authorization; the setup token will be captured privately.\n"
                 .to_vec(),
