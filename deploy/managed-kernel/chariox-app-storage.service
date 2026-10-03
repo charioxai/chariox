@@ -1,6 +1,6 @@
 [Unit]
 Description=Chariox private App storage helper
-Before=chariox-managed-bootstrap.service
+Before=chariox-managed-bootstrap.service chariox-path1-managed-bootstrap.service
 ConditionPathExists=/etc/chariox/app-storage.json
 StartLimitIntervalSec=0
 

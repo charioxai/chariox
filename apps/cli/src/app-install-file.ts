@@ -360,7 +360,7 @@ const installFailures: Record<string, string> = {
 /** Friendly text for an operation's kernel failure code; unknown codes are shown only when well-formed. */
 export function formatInstallFailure(failure: string): string {
   if (Object.hasOwn(installFailures, failure)) return installFailures[failure]!
-  return (/^app_(?:install|update)_[a-z_]{1,96}$/.test(failure) ? `Kernel failure: ${failure}.` : "The kernel could not complete the App operation.")
+  return (/^app_(?:install|update|lifecycle)_[a-z_]{1,96}$/.test(failure) ? `Kernel failure: ${failure}.` : "The kernel could not complete the App operation.")
 }
 
 export function formatInstallOperation(value: AppInstallOperationSummary): string {
