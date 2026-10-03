@@ -1,9 +1,12 @@
 import test from "node:test"
-import {spawnSync} from "node:child_process"
+import {spawn, spawnSync} from "node:child_process"
+import {closeSync, mkdtempSync, openSync, rmSync, writeFileSync} from "node:fs"
+import {tmpdir} from "node:os"
+import {join} from "node:path"
 import {fileURLToPath} from "node:url"
 import assert from "node:assert/strict"
 import {verifyLocalHomeInventory, requireSafeLocalHomeVolume} from "../apps/kernel/slice-linux-docker/protected-local-home-scan.mjs"
-import {RestoreRefusal, requireRestoreVolumeReserve, verifyFreshRestoreTarget} from "../apps/kernel/slice-linux-docker/protected-home-restore.mjs"
+import {RestoreRefusal, extractCompressedArchive, requireRestoreVolumeReserve, validateCompressedArchive, verifyFreshRestoreTarget} from "../apps/kernel/slice-linux-docker/protected-home-restore.mjs"
 
 test("local inventory defers only transient metadata until quiescence", () => {
   const transient = Buffer.from(".config/chromium/SingletonSocket\0l\0/tmp/chrome-socket\0" + "700\0")
@@ -50,4 +53,30 @@ test("a refused protected home restore names the failed check without private pa
     "Saved slice home restore was refused (restore arguments are invalid); existing identity and saved state are preserved")
   assert.throws(() => verifyFreshRestoreTarget({Config: {Labels: {}}}, "helper", "volume", Buffer.alloc(0)),
     (error) => error instanceof RestoreRefusal && error.reason === "restore target is not a fresh, empty, owned home volume")
+})
+
+test("a failing restore child is reported by its own exit, not by the broken pipe into it", async () => {
+  const root = mkdtempSync(join(tmpdir(), "chariox-restore-reason-"))
+  const archive = join(root, "home.tar.zst")
+  writeFileSync(archive, Buffer.alloc(8 * 1024 * 1024, 7))
+  // Docker stands in as `cat`; the validator or extraction exits at once without
+  // reading, so the stream into it breaks while it is exiting.
+  const exits = (status) => (command, args, options) => command === "/usr/bin/docker" && args.includes("zstd")
+    ? spawn("cat", [], {stdio: options.stdio})
+    : spawn("/bin/sh", ["-c", `exit ${status}`], {stdio: options.stdio})
+  // A destroyed read stream may close the shared descriptor, so each attempt opens its own.
+  const attempt = async (run) => {
+    const fd = openSync(archive, "r")
+    try { return await run(fd) } finally { try { closeSync(fd) } catch {} }
+  }
+  try {
+    for (let round = 0; round < 5; round++) {
+      await assert.rejects(attempt(fd => validateCompressedArchive(fd, "helper", {}, () => {}, exits(3))),
+        (error) => error instanceof RestoreRefusal && error.reason === "archive validation exited with status 3")
+      await assert.rejects(attempt(fd => extractCompressedArchive(fd, "helper", {}, () => {}, exits(2))),
+        (error) => error instanceof RestoreRefusal && error.reason === "archive extraction exited with status 2")
+    }
+  } finally {
+    rmSync(root, {recursive: true, force: true})
+  }
 })

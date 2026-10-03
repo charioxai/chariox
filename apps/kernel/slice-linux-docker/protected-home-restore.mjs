@@ -6,7 +6,7 @@ import { pipeline } from "node:stream/promises"
 import { DURABLE_LAYOUT_ROOT, verifiedProtectedAuthority } from "./protected-authority.mjs"
 import { createHomeGenerationStore } from "./protected-home-generation.mjs"
 
-// Reasons name the failed check only; they never carry archive contents or private paths.
+// Refusal reasons name the failed check only; they never carry archive contents or paths.
 export class RestoreRefusal extends Error {
   constructor(reason) {
     super(`Saved slice home cannot be restored safely: ${reason}; existing identity and saved state are preserved`)
@@ -28,26 +28,55 @@ function waitForChild(child, label) {
       : reject(new RestoreRefusal(`${label} exited with ${signal ?? `status ${code}`}`)))
   })
 }
-export async function validateCompressedArchive(fd, helper, environment, abort = () => {}) {
-  const decoder = spawn("/usr/bin/docker", ["exec", "-i", "-u", "root", helper, "zstd", "-dc"],
-    {env: environment, stdio: ["pipe", "pipe", "ignore"]})
-  const validator = spawn("/usr/bin/python3", [join(dirname(fileURLToPath(import.meta.url)), "validate-home-archive.py")],
-    {env: {PATH: "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1"}, stdio: ["pipe", "ignore", "ignore"]})
-  const children = [decoder, validator]
-  const completion = [waitForChild(decoder, "archive decompression"), waitForChild(validator, "archive validation")]
+// A failing child usually first surfaces as its stdin pipe breaking (EPIPE) or
+// closing early. Report the child's own exit instead, never blame a child for a
+// kill issued here, and name deadlines and external stops as such.
+async function streamThroughChildren(children, streams, {deadlineMs, deadlineReason, abort, stopReason = () => undefined}) {
+  const killed = new Set()
+  const kill = () => {
+    for (const {child} of children) {
+      if (child.exitCode === null && child.signalCode === null) { killed.add(child); child.kill("SIGKILL") }
+    }
+  }
   let timedOut = false
-  const timer = setTimeout(() => { timedOut = true; abort(); children.forEach(child => child.kill("SIGKILL")) }, 10 * 60_000)
+  const timer = setTimeout(() => { timedOut = true; abort(); kill() }, deadlineMs)
+  const exits = children.map(({child, label}) => waitForChild(child, label))
+  let failure
   try {
-    await Promise.all([pipeline(createReadStream("unused", {fd, autoClose: false, start: 0}), decoder.stdin),
-      pipeline(decoder.stdout, validator.stdin), ...completion])
+    await Promise.all([...streams, ...exits])
   } catch (error) {
-    if (timedOut) refuse("archive validation exceeded 10 minutes")
-    throw error
+    failure = error
   } finally {
     clearTimeout(timer)
-    children.forEach(child => { if (child.exitCode === null) child.kill("SIGKILL") })
-    await Promise.allSettled(completion)
+    kill()
   }
+  const settled = await Promise.allSettled([...streams, ...exits])
+  if (!failure) return
+  if (timedOut) refuse(deadlineReason)
+  const stopped = stopReason()
+  if (stopped) refuse(stopped)
+  // A child that had already exited keeps its own status even if a kill was sent
+  // to it; only a SIGKILL this helper sent is not the child's failure. An upstream
+  // SIGPIPE is a consequence, so the furthest-downstream real failure wins.
+  const failed = children.map(({child}, index) => ({child, result: settled[streams.length + index]}))
+    .filter(({child, result}) => result.status === "rejected"
+      && !(killed.has(child) && child.signalCode === "SIGKILL"))
+    .reverse()
+  const own = failed.find(({child}) => child.signalCode !== "SIGPIPE") ?? failed[0]
+  if (own) throw own.result.reason
+  if (failure instanceof RestoreRefusal) throw failure
+  refuse(`archive stream to ${children.at(-1).label} failed (${failure?.code ?? "stream error"})`)
+}
+export async function validateCompressedArchive(fd, helper, environment, abort = () => {}, spawnProcess = spawn) {
+  const decoder = spawnProcess("/usr/bin/docker", ["exec", "-i", "-u", "root", helper, "zstd", "-dc"],
+    {env: environment, stdio: ["pipe", "pipe", "ignore"]})
+  const validator = spawnProcess("/usr/bin/python3", [join(dirname(fileURLToPath(import.meta.url)), "validate-home-archive.py")],
+    {env: {PATH: "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1"}, stdio: ["pipe", "ignore", "ignore"]})
+  await streamThroughChildren(
+    [{child: decoder, label: "archive decompression"}, {child: validator, label: "archive validation"}],
+    [pipeline(createReadStream("unused", {fd, autoClose: false, start: 0}), decoder.stdin),
+      pipeline(decoder.stdout, validator.stdin)],
+    {deadlineMs: 10 * 60_000, deadlineReason: "archive validation exceeded 10 minutes", abort})
 }
 export function requireRestoreVolumeReserve(docker, helper, reserveBytes = 10n * 1024n ** 3n) {
   const result = docker(["exec", "-u", "root", helper, "/usr/bin/stat", "-f", "-c", "%a %S", "/home-dst"])
@@ -57,32 +86,36 @@ export function requireRestoreVolumeReserve(docker, helper, reserveBytes = 10n *
   if (blockSize <= 0n) refuse("restore volume free space is unreadable")
   if (available * blockSize < reserveBytes) refuse(`restore volume has less than ${reserveBytes / 1024n ** 2n} MiB free`)
 }
-async function extractCompressedArchive(fd, helper, environment, abort) {
-  const child = spawn("/usr/bin/docker", ["exec", "-i", "-u", "root", helper,
+export async function extractCompressedArchive(fd, helper, environment, abort, spawnProcess = spawn) {
+  const child = spawnProcess("/usr/bin/docker", ["exec", "-i", "-u", "root", helper,
     "tar", "--zstd", "--no-same-owner", "--no-same-permissions", "-xf", "-", "-C", "/home-dst"],
     {env: environment, stdio: ["pipe", "ignore", "ignore"]})
-  const completion = waitForChild(child, "archive extraction")
   let stopReason
-  const stop = reason => { stopReason ??= reason; abort(); child.kill("SIGKILL") }
-  const timer = setTimeout(() => stop("archive extraction exceeded 10 minutes"), 10 * 60_000)
   const reserve = setInterval(() => {
     try {
       requireRestoreVolumeReserve(args => spawnSync("/usr/bin/docker", args, {env: environment, timeout: 5_000, maxBuffer: 1024}), helper)
-    } catch (error) { stop(`during extraction, ${error.reason ?? "the restore volume reserve check failed"}`) }
+    } catch (error) {
+      stopReason ??= `during extraction, ${error.reason ?? "the restore volume reserve check failed"}`
+      abort()
+      child.kill("SIGKILL")
+    }
   }, 200)
-  try { await Promise.all([pipeline(createReadStream("unused", {fd, autoClose: false, start: 0}), child.stdin), completion]) }
-  catch (error) {
-    if (stopReason) refuse(stopReason)
-    throw error
+  try {
+    await streamThroughChildren([{child, label: "archive extraction"}],
+      [pipeline(createReadStream("unused", {fd, autoClose: false, start: 0}), child.stdin)],
+      {deadlineMs: 10 * 60_000, deadlineReason: "archive extraction exceeded 10 minutes", abort, stopReason: () => stopReason})
+  } finally {
+    clearInterval(reserve)
   }
-  finally { clearTimeout(timer); clearInterval(reserve); if (child.exitCode === null) child.kill("SIGKILL"); await Promise.allSettled([completion]) }
 }
 
 if (process.argv[1]?.endsWith("/protected-home-restore.mjs")) {
   let fd
   let abort = () => {}
   let succeeded = false
-  const onSignal = () => { abort(); process.exitCode = 1 }
+  let signalReason
+  // The provisioner's outer deadline and broker cancellation arrive as signals.
+  const onSignal = signal => { signalReason ??= `restore was stopped by ${signal}`; abort(); process.exitCode = 1 }
   try {
     const [helper, volume, archive] = process.argv.slice(2)
     const container = process.env.CHARIOX_SLICE_NAME
@@ -127,8 +160,10 @@ if (process.argv[1]?.endsWith("/protected-home-restore.mjs")) {
     })
     succeeded = true
   } catch (error) {
-    // Name the failed check for the operator; other errors keep only their bounded message.
-    const reason = error instanceof RestoreRefusal ? error.reason : String(error?.message ?? error).slice(0, 300)
+    // Name the failed check for the operator. Other errors keep only their bounded
+    // message, which can name a kernel-layout path but never archive contents.
+    const reason = signalReason
+      ?? (error instanceof RestoreRefusal ? error.reason : String(error?.message ?? error).slice(0, 300))
     console.error(`Saved slice home restore was refused (${reason}); existing identity and saved state are preserved`)
     process.exitCode = 1
   } finally {
