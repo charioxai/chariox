@@ -33,12 +33,20 @@ impl RoomEnvironmentWorkerBinding {
 
     pub(super) fn validate(&self, machine_id: &str) -> Result<(), DaemonError> {
         let key = crate::transport::relay_crypto::decode_public_key(&self.home_public_key);
+        // Protected boot has already verified the retained machine/kernel keys.
+        // Its machine ID is not the legacy slice:<id> alias; the provisioner
+        // supplies the slice record ID separately in both fresh and restored boots.
+        let matches_slice = if super::identity::protected_slice_identity_required() {
+            std::env::var("CHARIOX_SLICE_ID").as_deref() == Ok(self.slice_id.as_str())
+        } else {
+            machine_id == format!("slice:{}", self.slice_id)
+        };
         if [&self.home_kernel_id, &self.session_id, &self.slice_id]
             .iter()
             .any(|value| value.is_empty() || value.trim() != value.as_str())
             || !matches!(key, Ok(ref public_key)
                 if crate::transport::relay_crypto::encode_public_key(public_key) == self.home_public_key)
-            || machine_id != format!("slice:{}", self.slice_id)
+            || !matches_slice
         {
             return Err(DaemonError::InvalidConfig {
                 field: "room_environment_worker_binding",
