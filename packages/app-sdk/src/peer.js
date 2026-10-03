@@ -186,7 +186,7 @@ export class AppPeer {
   }
 }
 
-const PEER_BUSY_CAUSES = ['app_pending_capacity_full', 'app_handler_capacity_full'];
+const PEER_BUSY_CAUSES = ['app_pending_capacity_full', 'app_handler_capacity_full', 'app_broker_capacity_full'];
 const BUSY_RETRY_AFTER_MS = 500;
 
 function busyMessage(cause) {
@@ -201,6 +201,9 @@ function peerBusyError(cause) {
 function responseError(error) {
   // The worker wire carries only code/message/retryable. Reconstruct local
   // metadata for our exact capacity refusals, never for an arbitrary App error.
+  if (error.code === 'BUSY' && error.retryable === true && error.message === 'Kernel App broker capacity is full') {
+    return peerBusyError('app_broker_capacity_full');
+  }
   if (error.code === 'APP_BUSY' && error.retryable === true) {
     const cause = PEER_BUSY_CAUSES.find((cause) => error.message === busyMessage(cause));
     if (cause) return peerBusyError(cause);

@@ -100,10 +100,15 @@ remaining execution and OS resource budget.
 The 16 executing-handler limit intentionally stays below the kernel's 64
 pending-call limit to preserve the worker's execution and resource bounds.
 SDK peer refusals use `APP_BUSY` and `retryable: true`; their message names
-`app_handler_capacity_full` or `app_pending_capacity_full` and says
+`app_handler_capacity_full`, `app_pending_capacity_full` or
+`app_broker_capacity_full` and says
 `retry after 500 ms`. Refused calls never start and are not automatically retried.
 SDK-local errors also expose that string as `cause` and `500` as `retryAfterMs`;
 the SDK reconstructs those properties only for its exact capacity messages.
+The SDK also normalizes the kernel's exact retryable `BUSY` error with message
+`Kernel App broker capacity is full` to local `APP_BUSY` with the broker cause.
+Other errors retain their code/message, including lifecycle-overlap `BUSY`;
+callers should inspect `retryable` before considering a retry for those errors.
 Neither property is serialized: the error envelope above is unchanged. The App
 view page's existing `code`/`message` projection retains the cause and hint in
 the message, but does not expose those SDK properties or `retryable`.

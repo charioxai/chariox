@@ -91,19 +91,43 @@ test('an 80-call framed backlog completes or returns retryable APP_BUSY with cap
       BUSY: 0, timeouts: 0, maxHandlers: 16, maxPending: 64, recovered: true }));
   });
 
-test('arbitrary remote APP_BUSY errors retain their message without invented capacity metadata', async () => {
+test('the exact retryable kernel broker capacity refusal becomes SDK APP_BUSY', async () => {
   const transport = fakeTransport();
   const peer = new AppPeer({ transport, generation });
   const pending = peer.request('state.get', {});
   transport.receive(envelope({ kind: 'response', id: transport.sent[0].id,
-    error: { code: 'APP_BUSY', message: 'custom App refusal', retryable: true } }));
-  await assert.rejects(pending, (error) => {
-    assert.equal(error.message, 'custom App refusal');
-    assert.equal(error.retryable, true);
-    assert.equal(error.cause, undefined);
-    assert.equal(error.retryAfterMs, undefined);
-    return true;
-  });
+    error: { code: 'BUSY', message: 'Kernel App broker capacity is full', retryable: true } }));
+  await assert.rejects(pending, { code: 'APP_BUSY', retryable: true,
+    cause: 'app_broker_capacity_full', retryAfterMs: 500,
+    message: 'app_broker_capacity_full; retry after 500 ms' });
+  assert.equal(transport.sent.length, 1, 'no automatic retry');
+  const next = peer.request('state.get', {});
+  transport.receive(response(transport.sent[1].id, 'recovered'));
+  assert.equal(await next, 'recovered');
+  peer.close();
+});
+
+test('arbitrary or nonretryable remote busy errors keep their code/message without capacity metadata', async () => {
+  const transport = fakeTransport();
+  const peer = new AppPeer({ transport, generation });
+  for (const remote of [
+    { code: 'APP_BUSY', message: 'custom App refusal', retryable: true },
+    { code: 'BUSY', message: 'An App lifecycle handler is still running', retryable: true },
+    { code: 'BUSY', message: 'Kernel App broker capacity is full', retryable: false },
+    { code: 'BUSY', message: 'Kernel App broker capacity is full' },
+    { code: 'APP_BUSY', message: 'app_handler_capacity_full; retry after 500 ms', retryable: false },
+  ]) {
+    const pending = peer.request('state.get', {});
+    transport.receive(envelope({ kind: 'response', id: transport.sent.at(-1).id, error: remote }));
+    await assert.rejects(pending, (error) => {
+      assert.equal(error.code, remote.code);
+      assert.equal(error.message, remote.message);
+      assert.equal(error.retryable, remote.retryable === true);
+      assert.equal(error.cause, undefined);
+      assert.equal(error.retryAfterMs, undefined);
+      return true;
+    });
+  }
   peer.close();
 });
 
