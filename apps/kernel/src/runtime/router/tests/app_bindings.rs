@@ -367,7 +367,7 @@ async fn a_foreground_app_binds_the_focus_agent_follows_focus_and_uninstall_unbi
 #[tokio::test]
 async fn uninstall_keeps_missing_binding_visible_without_tools_or_a_reinstall_regrant() {
     let fixture = Fixture::new();
-    let (app, router, _session, agent, _auth) =
+    let (app, router, session, agent, _auth) =
         fixture.router(crate::provider::AgentPermissionLevel::Yolo);
     let state = &router.runtime_state;
     state
@@ -408,8 +408,118 @@ async fn uninstall_keeps_missing_binding_visible_without_tools_or_a_reinstall_re
         .app_extension_tools_for_agent(&bound, &std::collections::BTreeSet::new())
         .unwrap()
         .is_empty());
-    // BeginAppUpdate uses this gate before asking approval for a reinstall.
-    // Its old binding must be removed before the App can become active again.
-    state.unbind_if_uninstalled("alice", "installed").await;
-    assert!(!granted(&app, &agent).await);
+    // Exercise the actual reinstall request and its approval boundary, rather
+    // than invoking the helper directly: skipping the gate must fail this test.
+    use base64::Engine;
+    use sha2::Digest;
+    let (bytes, publisher) =
+        crate::durable_state::app_state::fixture_release_package("1.0.1", 0, false);
+    let verified = chariox_app_package::verify(
+        &bytes,
+        &chariox_app_package::VerificationPolicy::new(
+            crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+            vec![publisher],
+        ),
+    )
+    .unwrap();
+    let digest = format!("sha256:{:x}", sha2::Sha256::digest(&bytes));
+    let dispatch = |request: LocalDaemonRequest, id: &str| {
+        let mut command = KernelCommand::from_local_request(id.to_owned(), None, None, &request);
+        command.caller.user_id = Some("alice".into());
+        async { router.dispatch(command, request).await.unwrap() }
+    };
+    let upload = dispatch(
+        LocalDaemonRequest::BeginAppPackageUpload(crate::local::BeginAppPackageUploadRequest {
+            request_id: "missing-binding-upload".into(),
+            expected_size: bytes.len() as u64,
+            sha256: digest.clone(),
+        }),
+        "missing-binding-upload",
+    )
+    .await;
+    let LocalDaemonResponse::AppPackageUploadStatus { upload } = upload else {
+        panic!("upload")
+    };
+    let result = dispatch(
+        LocalDaemonRequest::PutAppPackageUploadChunk(
+            crate::local::PutAppPackageUploadChunkRequest {
+                handle: upload.handle.clone(),
+                offset: 0,
+                data_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+                chunk_sha256: digest,
+            },
+        ),
+        "missing-binding-chunk",
+    )
+    .await;
+    assert!(matches!(
+        result,
+        LocalDaemonResponse::AppPackageUploadStatus { .. }
+    ));
+    let current = store
+        .get_app_installation("alice", "installed")
+        .unwrap()
+        .generation;
+    let update = dispatch(
+        LocalDaemonRequest::BeginAppUpdate(crate::local::BeginAppUpdateRequest {
+            session_id: session.clone(),
+            request_id: "missing-binding-reinstall".into(),
+            installation_id: "installed".into(),
+            expected_generation: current.to_string(),
+            upload_handle: upload.handle,
+            expected_package_digest: verified.package_digest().into(),
+        }),
+        "missing-binding-reinstall",
+    )
+    .await;
+    let LocalDaemonResponse::AppInstallOperationStatus { operation } = update else {
+        panic!("reinstall did not begin: {update:?}")
+    };
+    assert_eq!(
+        operation.phase,
+        crate::local::AppInstallOperationPhase::Preparing
+    );
+    assert!(
+        !granted(&app, &agent).await,
+        "reinstall retained the old grant before approval"
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(8), async {
+        loop {
+            state.app_control().installs().pump(state).await;
+            let response = dispatch(
+                LocalDaemonRequest::GetAppInstallOperation(
+                    crate::local::AppInstallOperationRequest {
+                        request_id: "missing-binding-reinstall".into(),
+                    },
+                ),
+                "missing-binding-status",
+            )
+            .await;
+            let LocalDaemonResponse::AppInstallOperationStatus { operation } = response else {
+                panic!("reinstall status: {response:?}")
+            };
+            assert!(!granted(&app, &agent).await);
+            assert!(store
+                .get_app_installation("alice", "installed")
+                .unwrap()
+                .active
+                .is_none());
+            if operation.phase == crate::local::AppInstallOperationPhase::AwaitingApproval {
+                break;
+            }
+            assert_eq!(
+                operation.phase,
+                crate::local::AppInstallOperationPhase::Preparing,
+                "{operation:?}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("reinstall reaches approval with no old grant");
+    let control = state.app_control().installs().clone();
+    let handle = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || control.shutdown_blocking(handle))
+        .await
+        .unwrap();
 }

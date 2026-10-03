@@ -343,7 +343,7 @@ async function handleWorkflowNodeExtensionsCommand(
     if (!deps.getAppInstallation) return `app:${grant.name} · App status unavailable`
     try {
       const installation = await deps.getAppInstallation(grant.name)
-      const label = installation?.app_id ?? grant.name
+      const label = installation ? `${grant.name} (${installation.app_id})` : grant.name
       return installation?.active_release
         ? `app:${label} · ${installation.active_release.version}`
         : `app:${label} · Missing App binding. Reinstall the App, then bind it to this agent in Extensions. Revoke the old binding if you choose another installation.`

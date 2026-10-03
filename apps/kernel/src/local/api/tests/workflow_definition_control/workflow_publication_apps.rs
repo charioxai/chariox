@@ -199,7 +199,19 @@ fn an_app_granted_to_a_workflow_agent_is_pinned_and_packaged() {
     let (after, after_files) = export(&harness, &graph, publication.id()).expect("re-export");
     assert_eq!(after, digest);
     assert_eq!(after_files, files);
-    // Uninstalling revoked the grant: a new trigger has no App.
+    // A new release refuses the retained missing binding until explicitly revoked.
+    let missing = publish(&harness, &graph, "todo-grant-missing", "ingress");
+    let error = export(&harness, &graph, missing.id()).expect_err("missing App binding");
+    assert!(error.to_string().contains("is not installed"), "{error}");
+    harness
+        .dispatch(LocalDaemonRequest::RevokeAgentExtension(
+            crate::local::RevokeAgentExtensionRequest {
+                agent_ref: graph.agent_id.clone(),
+                kind: crate::local::ExtensionKind::App,
+                name: "installed".into(),
+            },
+        ))
+        .expect("explicitly revoke the missing binding");
     let later = publish(&harness, &graph, "todo-grant-2", "ingress");
     let (_, later_files) = export(&harness, &graph, later.id()).expect("export");
     assert!(later_files.iter().all(|file| file.path != "apps.json"));
