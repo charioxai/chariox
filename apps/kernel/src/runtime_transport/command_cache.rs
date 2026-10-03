@@ -16,6 +16,7 @@ use crate::runtime::command::KernelCommand;
 use crate::transport::kernel_protocol::{KernelOutgoingFrame, KernelTransportError};
 
 mod at_most_once;
+pub(crate) use at_most_once::is_receipt_capacity_error;
 
 pub(crate) const COMMAND_RESULT_CACHE_LIMIT: usize = 512;
 const COMMAND_RESULT_CACHE_MAX_MEMORY_BYTES: u64 = 128 * 1024 * 1024;
