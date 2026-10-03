@@ -2,6 +2,43 @@ diff --git a/index-0wbvecnk.js b/index-0wbvecnk.js
 index 0c926100cef4bfc551c0656416278cbc5a1213b3..f31439bd9c1cd2f7e62a29e96e352768f58e6104 100644
 --- a/index-0wbvecnk.js
 +++ b/index-0wbvecnk.js
+@@ -13684,6 +13684,10 @@
+   }
+   setText(text) {
+     this.guard();
++    if (text.length === 0 && this._byteSize === 0) {
++      this.clear();
++      return;
++    }
+     this._textBytes = this.lib.encoder.encode(text);
+     if (this._memId === undefined) {
+       this._memId = this.lib.textBufferRegisterMemBuffer(this.bufferPtr, this._textBytes, false);
+@@ -13718,7 +13722,13 @@
+   }
+   setStyledText(text) {
+     this.guard();
+-    this.lib.textBufferSetStyledText(this.bufferPtr, text.chunks);
++    // Clearing an empty native rope allocates another arena node. Empty
++    // render-tree updates must not accumulate nodes in a long-lived buffer.
++    if (this._byteSize !== 0 || text.chunks.some((chunk) => chunk.text.length > 0)) {
++      this.lib.textBufferSetStyledText(this.bufferPtr, text.chunks);
++    } else if (text.chunks.length > 0) {
++      this.lib.textBufferClearAllHighlights(this.bufferPtr);
++    }
+     this._length = this.lib.textBufferGetLength(this.bufferPtr);
+     this._byteSize = this.lib.textBufferGetByteSize(this.bufferPtr);
+     this._lineInfo = undefined;
+@@ -13822,7 +13832,9 @@
+   }
+   clear() {
+     this.guard();
+-    this.lib.textBufferClear(this.bufferPtr);
++    if (this._byteSize !== 0) {
++      this.lib.textBufferClear(this.bufferPtr);
++    }
+     this._length = 0;
+     this._byteSize = 0;
+     this._lineInfo = undefined;
 @@ -14842,6 +14842,7 @@ class Renderable extends BaseRenderable {
          obj.parent = null;
          this._ctx.unregisterLifecyclePass(obj);
