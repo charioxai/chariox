@@ -322,3 +322,16 @@ the receipt's grant binding (schema 2) covers the machine's identity, not its
 release, so an updated machine starts normally. Cloud authorizes the target
 release and records it once the machine reports it; an update Cloud did not
 authorize leaves Cloud's release record unchanged.
+
+Deliberate managed rollback from local protocol 410 or later to a pre-Apps
+protocol is blocked when durable Phase 1 state exists: installed App releases,
+App storage, App tables or migrations. Initialized App tables count even when
+empty: opening the 410 kernel database writes the Phase 1 schema, so an ordinary
+410 host that has started its kernel requires the override for deliberate
+downgrade even if no App was installed. Empty enrollment/storage roots alone do
+not block a host whose database has not acquired App tables. Unreadable, corrupt or redirected state requires the override.
+An operator may pass `--allow-apps-rollback` before the positional arguments to
+`upgrade-image.sh`; this warns about unproven App state recovery and still
+requires signed reciprocal transition policy. Preserve a state backup first.
+Automatic recovery of a failed upgrade remains the existing transaction path
+and does not pass through this deliberate rollback gate.
