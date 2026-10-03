@@ -1,7 +1,7 @@
 [Unit]
 Description=Provision host-wide Chariox Docker admission lock inodes
 DefaultDependencies=no
-After=local-fs.target
+After=local-fs.target systemd-tmpfiles-setup.service
 Before=basic.target chariox-managed-bootstrap.service
 
 [Service]
