@@ -158,11 +158,14 @@ impl KernelRuntimeState {
         }
         let page = due.len();
         let mut delivered_count = 0;
-        let (deliver, planned, at_live_limit) = self
+        let Ok((deliver, planned, at_live_limit)) = self
             .plan_app_delivery(due, now_ms, |item: &InboxItem| {
                 (item.owner_id.clone(), item.installation_id.clone())
             })
-            .await;
+            .await
+        else {
+            return Default::default();
+        };
         let mut records: Vec<_> = planned
             .into_iter()
             .map(|(item, settle)| {

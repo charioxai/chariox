@@ -722,6 +722,9 @@ fn schedule_operations_commit_wakes_that_the_writer_reports_due_and_completes() 
         wakes.iter().map(|w| w.id.as_str()).collect::<Vec<_>>(),
         ["soon", "later"]
     );
+    assert!(!store.has_due_app_wakes("alice", "installed", 999));
+    assert!(store.has_due_app_wakes("alice", "installed", 1_000));
+    assert!(!store.has_due_app_wakes("bob", "installed", 1_000));
     // Another owner cannot schedule into this installation.
     assert!(store
         .execute_app_state(
