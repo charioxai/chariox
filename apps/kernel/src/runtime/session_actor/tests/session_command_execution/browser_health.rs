@@ -232,7 +232,10 @@ async fn room_browser_health_probe_shares_controller_routes_and_yields_to_slice_
     let command =
         crate::transport::room_browser_controller::RoomBrowserControllerCommand::Reconcile {
             viewport: state.room_environment_snapshot(&room).unwrap().viewport,
-            browser_bar_visible: state.room_environment_snapshot(&room).unwrap().browser_bar_visible,
+            browser_bar_visible: state
+                .room_environment_snapshot(&room)
+                .unwrap()
+                .browser_bar_visible,
         };
     let probe = state
         .admit_room_browser_controller_route(&room, &slice.id, &command, true, None)
@@ -272,4 +275,56 @@ async fn room_browser_health_probe_shares_controller_routes_and_yields_to_slice_
         "health must yield to actual slice lifecycle authority"
     );
     drop(lifecycle);
+}
+
+#[tokio::test]
+async fn ready_state_read_uses_health_only_and_preserves_foreground_tabs() {
+    let (state, room, tool, _) = fixture().await;
+    // The fixture's reconciliation always reports target-a. A foreground tab
+    // projection after dispatch must survive the asynchronous read receipt.
+    let before = std::fs::read_to_string(&tool.log).unwrap();
+    std::fs::write(tool.root.join("browser-slow"), "").unwrap();
+    state.schedule_room_environment_health_refresh(&room);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    state
+        .reconcile_room_environment_controller_tabs(&room, Vec::new(), None)
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(9), async {
+        while std::fs::read_to_string(&tool.log).unwrap() == before {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    })
+    .await
+    .unwrap();
+    assert!(state
+        .room_environment_snapshot(&room)
+        .unwrap()
+        .tabs
+        .is_empty());
+}
+
+#[tokio::test]
+async fn ready_state_read_ignores_busy_but_degrades_positive_browser_loss() {
+    let (state, room, tool, _) = fixture().await;
+    std::fs::write(tool.root.join("browser-busy"), "").unwrap();
+    state.schedule_room_environment_health_refresh(&room);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        state.room_environment_snapshot(&room).unwrap().lifecycle,
+        Lifecycle::Ready
+    );
+    std::fs::remove_file(tool.root.join("browser-busy")).unwrap();
+    std::fs::write(tool.root.join("browser-exited"), "").unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            state.schedule_room_environment_health_refresh(&room);
+            if state.room_environment_snapshot(&room).unwrap().lifecycle == Lifecycle::Degraded {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
 }

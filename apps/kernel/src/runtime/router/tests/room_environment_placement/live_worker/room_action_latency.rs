@@ -47,7 +47,7 @@ async fn ready_state_reads_do_not_delay_pointer_input() {
             assert_eq!(read["RoomEnvironmentState"]["environment"]["lifecycle"], "ready");
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
-        assert!(pending.exists(), "Ready reads must still observe browser tabs");
+        assert!(pending.exists(), "Ready reads must still observe browser health");
         let result = timeout(Duration::from_secs(1), dispatch_json(&fixture.home, json!({"SubmitRoomEnvironmentAction":{
             "session_id":room,"runtime_generation":environment["runtime_generation"],
             "viewport_revision":environment["viewport"]["revision"],

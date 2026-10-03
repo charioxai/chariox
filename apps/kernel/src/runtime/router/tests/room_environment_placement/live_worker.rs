@@ -38,7 +38,6 @@ mod room_remote_agent_home_slice;
 mod room_secret;
 mod room_slice_cross_placement;
 mod room_action_latency;
-mod room_action_latency_drill;
 mod screenshot;
 mod session;
 
