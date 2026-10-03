@@ -99,10 +99,9 @@ async fn run_case(case: Case) {
             Vec::new(),
         )
         .unwrap();
-    assert!(matches!(
-        first,
-        crate::session::PromptSubmissionOutcome::Started { .. }
-    ));
+    let crate::session::PromptSubmissionOutcome::Started { prompt: first } = first else {
+        panic!("first ordinary turn must start");
+    };
     let second = app
         .submit_prompt(
             session.id(),
@@ -117,24 +116,7 @@ async fn run_case(case: Case) {
     };
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        loop {
-            runtime.owned.reap_structured_prompt_jobs();
-            if runtime
-                .owned
-                .provider_store
-                .get_run_for_agent(session.id(), agent.id())
-                .unwrap()
-                .provider_session_id()
-                .is_some()
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
+    wait_for_prompt_delivery(&runtime, session.id(), agent.id(), first.id()).await;
     let first_run = runtime
         .owned
         .provider_store
@@ -175,15 +157,26 @@ async fn run_case(case: Case) {
             .push((session.id().to_string(), agent.id().to_string()));
         runtime.spawn_workflow_prompt_dispatches(dispatches);
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            while runtime
-                .owned
-                .session_store
-                .get_session(session.id())
-                .unwrap()
-                .active_prompt_for_agent(agent.id())
-                .is_none()
-            {
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            loop {
+                let sequence = runtime
+                    .owned
+                    .session_projection
+                    .session_change_sequence(session.id());
+                if runtime
+                    .owned
+                    .session_store
+                    .get_session(session.id())
+                    .unwrap()
+                    .active_prompt_for_agent(agent.id())
+                    .is_some()
+                {
+                    break;
+                }
+                runtime
+                    .owned
+                    .session_projection
+                    .wait_for_session_change_after(session.id(), sequence)
+                    .await;
             }
         })
         .await
@@ -200,6 +193,10 @@ async fn run_case(case: Case) {
     } else if matches!(case, Case::VaultCancellation) {
         let cancel = async {
             loop {
+                let sequence = runtime
+                    .owned
+                    .session_projection
+                    .session_change_sequence(session.id());
                 let state = runtime
                     .owned
                     .session_store
@@ -224,7 +221,11 @@ async fn run_case(case: Case) {
                         .unwrap();
                     break;
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                runtime
+                    .owned
+                    .session_projection
+                    .wait_for_session_change_after(session.id(), sequence)
+                    .await;
             }
         };
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -266,14 +267,7 @@ async fn run_case(case: Case) {
         assert!(runtime
             .owned
             .operational_history_store
-            .load_prompt_settlement_event(
-                session.id(),
-                agent.id(),
-                match first {
-                    crate::session::PromptSubmissionOutcome::Started { ref prompt } => prompt.id(),
-                    _ => unreachable!(),
-                }
-            )
+            .load_prompt_settlement_event(session.id(), agent.id(), first.id())
             .unwrap()
             .is_some());
         return;
@@ -299,24 +293,9 @@ async fn run_case(case: Case) {
         refreshed.project_environment_revision(),
         first_run.project_environment_revision()
     );
-    // Drive only the existing kernel/provider mailbox, without launching a model.
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        loop {
-            runtime.owned.reap_structured_prompt_jobs();
-            let state: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(fixture.with_extension("json")).unwrap())
-                    .unwrap();
-            if state["threads"]["native-thread-1"]
-                .as_array()
-                .is_some_and(|turns| turns.len() == 2)
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
+    // The fixture writes its state before acknowledging turn/start. Waiting for
+    // durable delivery avoids reading its JSON while write_text truncates it.
+    wait_for_prompt_delivery(&runtime, session.id(), agent.id(), queued.id()).await;
     app.lock()
         .await
         .end_agent_provider_run(session.id(), agent.id())
@@ -329,6 +308,11 @@ async fn run_case(case: Case) {
         "no blank conversation may be created"
     );
     let turns = native["threads"]["native-thread-1"].as_array().unwrap();
+    assert_eq!(
+        turns.len(),
+        2,
+        "both native turns must be delivered exactly once"
+    );
     assert_eq!(turns[0]["project_label"], "before");
     assert_eq!(turns[1]["project_label"], "after");
     assert_eq!(
@@ -336,6 +320,39 @@ async fn run_case(case: Case) {
         "the second turn must retain the first native turn"
     );
     assert_eq!(native["resumes"], serde_json::json!(["native-thread-1"]));
+}
+
+async fn wait_for_prompt_delivery(
+    runtime: &KernelRuntimeState,
+    session_id: &str,
+    agent_id: &str,
+    prompt_id: &str,
+) {
+    let completions = runtime.owned.provider_store.run_actor_completion_signal();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            // Capture before draining/checking so an early completion cannot be lost.
+            let sequence = completions.sequence();
+            runtime.owned.reap_structured_prompt_jobs();
+            if runtime
+                .owned
+                .session_store
+                .get_session(session_id)
+                .unwrap()
+                .active_prompt_for_agent(agent_id)
+                .is_some_and(|prompt| {
+                    prompt.id() == prompt_id
+                        && prompt.durable_delivery_phase()
+                            == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+                })
+            {
+                break;
+            }
+            completions.wait_for_change_after(sequence).await;
+        }
+    })
+    .await
+    .expect("provider must acknowledge delivery of the matching native turn");
 }
 
 fn save_manifest(app: &DaemonApp, session: &crate::session::RuntimeSession) {
