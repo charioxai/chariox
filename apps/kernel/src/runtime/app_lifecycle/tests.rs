@@ -527,6 +527,7 @@ fn shutdown_reports_failed_stop_persistence_and_retains_it_for_retry() {
     assert!(!status.desired_running);
 }
 
+mod dormancy;
 #[path = "tests/first_install.rs"]
 mod first_install;
 mod local_update;

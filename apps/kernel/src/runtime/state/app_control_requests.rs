@@ -612,7 +612,7 @@ fn worker_phase(status: &WorkerStatus, dormant: bool) -> AppWorkerPhase {
     match status.phase {
         WorkerPhase::Starting => AppWorkerPhase::Starting,
         WorkerPhase::Running => AppWorkerPhase::Running,
-        WorkerPhase::Stopped if dormant => AppWorkerPhase::Dormant,
+        WorkerPhase::Stopped if dormant || status.dormant => AppWorkerPhase::Dormant,
         WorkerPhase::Stopped => AppWorkerPhase::Stopped,
         WorkerPhase::Failed if status.is_quarantined() => AppWorkerPhase::Quarantined,
         WorkerPhase::Failed => AppWorkerPhase::Failed,
@@ -705,6 +705,7 @@ mod tests {
             attempt: "attempt".into(),
             phase,
             desired_running: true,
+            dormant: false,
             failure: None,
             updated_ms: 1,
             failures,
@@ -721,6 +722,9 @@ mod tests {
             worker_phase(&status(WorkerPhase::Stopped, 0), false),
             AppWorkerPhase::Stopped
         );
+        let mut restored = status(WorkerPhase::Stopped, 0);
+        restored.dormant = true;
+        assert_eq!(worker_phase(&restored, false), AppWorkerPhase::Dormant);
         assert_eq!(
             worker_phase(&status(WorkerPhase::Running, 0), true),
             AppWorkerPhase::Running

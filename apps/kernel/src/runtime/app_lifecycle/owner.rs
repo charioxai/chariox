@@ -50,7 +50,7 @@ impl Drop for Completion {
 }
 /// An accepted start waits its turn for one of `slots` instead of refusing
 /// Busy. A stop or kernel shutdown wakes and ends the wait.
-fn queue(control: &Control, slots: &Arc<Semaphore>) -> Result<OwnedSemaphorePermit> {
+pub(super) fn queue(control: &Control, slots: &Arc<Semaphore>) -> Result<OwnedSemaphorePermit> {
     loop {
         if control.stopped() {
             return Err(LifecycleError::Stopped);

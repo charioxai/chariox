@@ -56,8 +56,11 @@ own timers and broker calls do not count as use, and neither does a wake it
 armed from its own wake handler, lifecycle handler or timer (owner decision 6):
 such a wake is still delivered on time, and a worker that has served only such
 wakes since it started stops once they are delivered. The kernel attributes a
-wake to the calls the worker had open when its arming request arrived. A kernel
-restart starts enabled Apps once, then they idle-stop again.
+wake to the calls the worker had open when its arming request arrived. Idle
+suspension is committed on the kernel writer before the worker stops.
+A kernel restart retains that dormancy: only due work (wakes or inbox), a tool
+call, or an explicit start starts an idle-stopped App. Previously running Apps
+retain their normal restart intent; manual stops remain disabled.
 
 A user stop persists `desired_running = false` and ends dormant on-demand use. Graceful kernel shutdown retains
 the previous restart intent. Restart recovery scans eight installations per

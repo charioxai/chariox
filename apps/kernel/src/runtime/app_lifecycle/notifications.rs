@@ -203,6 +203,12 @@ pub(super) fn serve(
                         .map_err(|_| LifecycleError::Notification)?;
                     callback_settled = true;
                     if let Some(reservation) = reservation {
+                        // Commit before stopping: a crash after suspension must
+                        // leave this App dormant, rather than booting it again.
+                        let _operation = owner::queue(&context.control, &context.admission)?;
+                        context
+                            .store
+                            .suspend_app_worker(admission, context.control.budget())?;
                         context.control.cancel_idle()?;
                         if !reservation.commit() {
                             return Err(LifecycleError::Stopped);

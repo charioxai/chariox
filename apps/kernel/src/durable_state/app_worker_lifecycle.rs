@@ -53,6 +53,8 @@ pub(crate) struct WorkerStatus {
     pub(crate) attempt: String,
     pub(crate) phase: WorkerPhase,
     pub(crate) desired_running: bool,
+    /// Idle suspension survives owning-kernel restart; use may still start it.
+    pub(crate) dormant: bool,
     pub(crate) failure: Option<String>,
     pub(crate) updated_ms: u64,
     /// Consecutive failures since the last explicit start, install or update,
@@ -130,6 +132,13 @@ enum Command {
         budget: AppOperationBudget,
     },
     Verify {
+        owner: String,
+        attempt: String,
+        binding: StageTrustBinding,
+        trust: TrustedPublisherSnapshot,
+        budget: AppOperationBudget,
+    },
+    Suspend {
         owner: String,
         attempt: String,
         binding: StageTrustBinding,
@@ -214,6 +223,22 @@ impl DurableKernelStateStore {
             phase,
             desired_running,
             failure: failure.map(str::to_owned),
+            budget,
+        })?;
+        Ok(())
+    }
+    /// Persist idle suspension before withdrawing the worker. Exact admission
+    /// fencing prevents a stale owner from suspending a replacement attempt.
+    pub(crate) fn suspend_app_worker(
+        &self,
+        admission: &ActiveStartAdmission,
+        budget: AppOperationBudget,
+    ) -> Result<()> {
+        self.worker_lifecycle(Command::Suspend {
+            owner: admission.owner.clone(),
+            attempt: admission.attempt.clone(),
+            binding: admission.binding.clone(),
+            trust: admission.trust.clone(),
             budget,
         })?;
         Ok(())
