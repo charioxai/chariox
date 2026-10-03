@@ -372,3 +372,88 @@ async fn expiry_compaction_fences_legacy_kernels_and_preserves_the_fence_on_rewr
         read_persistent_results_with_receipt_fence(&journal.0, cache.retention, false).is_err()
     );
 }
+
+#[tokio::test]
+async fn failed_marker_append_can_retry_before_restart_without_corrupting_the_journal() {
+    let journal = Journal::new();
+    let cache = journal.cache(1);
+    accept(&cache, "old").await;
+    settle(&cache, "old").await;
+    drop(cache);
+    journal.age();
+    let cache = journal.cache(1);
+    let mut retention = cache.receipt_retention.lock().await;
+    let error = retention.expire_with_write(&journal.0, "old", |file, bytes| {
+        file.write_all(&bytes[..64])?;
+        Err(io::Error::other("injected newline append failure"))
+    });
+    assert!(error.is_err());
+    assert_eq!(
+        fs::metadata(ReceiptRetention::marker_path(&journal.0))
+            .unwrap()
+            .len(),
+        0
+    );
+    drop(retention);
+    accept(&cache, "new").await;
+    settle(&cache, "new").await;
+    drop(cache);
+    let cache = journal.cache(1);
+    replay(&cache, "new").await;
+    assert!(cache
+        .reserve_at_most_once("old", &fingerprint(), Value::Null)
+        .await
+        .is_err_and(|e| at_most_once::is_receipt_expired_error(&e)));
+}
+
+#[tokio::test]
+async fn torn_final_marker_is_recovered_before_a_second_eviction_and_restart() {
+    for torn_bytes in [1, 32, 64] {
+        let journal = Journal::new();
+        let cache = journal.cache(1);
+        accept(&cache, "old").await;
+        settle(&cache, "old").await;
+        drop(cache);
+        journal.age();
+        let intact = format!("{}\n", ReceiptRetention::identity("historic"));
+        let marker = ReceiptRetention::identity("old");
+        fs::write(
+            ReceiptRetention::marker_path(&journal.0),
+            format!("{intact}{}", &marker[..torn_bytes]),
+        )
+        .unwrap();
+        let cache = journal.cache(1);
+        replay(&cache, "old").await; // Torn eviction never removed its response.
+        assert_eq!(
+            fs::read_to_string(ReceiptRetention::marker_path(&journal.0)).unwrap(),
+            intact
+        );
+        accept(&cache, "new").await;
+        settle(&cache, "new").await;
+        drop(cache);
+        let cache = journal.cache(1);
+        replay(&cache, "new").await;
+        assert!(cache
+            .reserve_at_most_once("old", &fingerprint(), Value::Null)
+            .await
+            .is_err_and(|e| at_most_once::is_receipt_expired_error(&e)));
+    }
+}
+
+#[test]
+fn marker_storage_bound_returns_typed_capacity_without_writing_a_marker() {
+    let journal = Journal::new();
+    let path = ReceiptRetention::marker_path(&journal.0);
+    fs::File::create(&path)
+        .unwrap()
+        .set_len(COMMAND_RESULT_CACHE_MAX_BYTES)
+        .unwrap();
+    let mut retention = ReceiptRetention::default();
+    let error = retention.expire(&journal.0, "new").unwrap_err();
+    assert!(at_most_once::is_receipt_capacity_error(&error));
+    assert!(!retention.contains("new"));
+    assert_eq!(
+        fs::metadata(&path).unwrap().len(),
+        COMMAND_RESULT_CACHE_MAX_BYTES
+    );
+}

@@ -4,7 +4,9 @@ use std::collections::BTreeSet;
 
 #[derive(Debug, Default)]
 pub(super) struct ReceiptRetention {
-    expired: BTreeSet<String>,
+    // Compact fixed-size digests have a separate bound: at most 50 MiB / 65 entries.
+    expired: BTreeSet<[u8; 32]>,
+    append_unavailable: bool,
 }
 
 impl ReceiptRetention {
@@ -34,37 +36,78 @@ impl ReceiptRetention {
             ));
         }
         let mut expired = BTreeSet::new();
-        for line in io::BufReader::new(&file).lines() {
-            let line = line?;
-            if line.len() != 64
-                || !line
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        let mut reader = io::BufReader::new(&file);
+        let mut offset = 0;
+        loop {
+            let mut line = Vec::new();
+            if reader.read_until(b'\n', &mut line)? == 0 {
+                break;
+            }
+            if line.last() != Some(&b'\n') {
+                // Payload removal requires a complete, synced marker. A torn
+                // final append therefore still has its durable payload receipt.
+                file.set_len(offset)?;
+                break;
+            }
+            if line.len() != 65
+                || !line[..64]
+                    .iter()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
             {
                 return Err(io::Error::other("corrupt expired receipt marker"));
             }
-            expired.insert(line);
+            let digest = std::array::from_fn(|index| {
+                u8::from_str_radix(
+                    std::str::from_utf8(&line[index * 2..index * 2 + 2]).unwrap(),
+                    16,
+                )
+                .unwrap()
+            });
+            expired.insert(digest);
+            offset += line.len() as u64;
         }
         // A process crash may leave readable marker bytes which were never
         // synced. Make them durable before recovery removes any payload receipt.
         sync(&file, &path)?;
-        Ok(Self { expired })
+        Ok(Self {
+            expired,
+            append_unavailable: false,
+        })
     }
 
     pub(super) fn marker_path(path: &PathBuf) -> PathBuf {
         path.with_extension("expired")
     }
 
-    fn identity(command_id: &str) -> String {
+    fn digest(command_id: &str) -> [u8; 32] {
         use sha2::{Digest, Sha256};
-        format!("{:x}", Sha256::digest(command_id.as_bytes()))
+        Sha256::digest(command_id.as_bytes()).into()
+    }
+
+    fn identity(command_id: &str) -> String {
+        Self::digest(command_id)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
     }
 
     pub(super) fn contains(&self, command_id: &str) -> bool {
-        self.expired.contains(&Self::identity(command_id))
+        self.expired.contains(&Self::digest(command_id))
     }
 
     pub(super) fn expire(&mut self, path: &PathBuf, command_id: &str) -> io::Result<()> {
+        self.expire_with_write(path, command_id, |file, bytes| file.write_all(bytes))
+    }
+
+    fn expire_with_write(
+        &mut self,
+        path: &PathBuf,
+        command_id: &str,
+        write: impl FnOnce(&mut fs::File, &[u8]) -> io::Result<()>,
+    ) -> io::Result<()> {
+        if self.append_unavailable {
+            return Err(io::Error::other("expiry marker append needs recovery"));
+        }
         let marker = Self::identity(command_id);
         let path = Self::marker_path(path);
         if let Some(parent) = path.parent() {
@@ -75,12 +118,23 @@ impl ReceiptRetention {
             .append(true)
             .open(&path)?;
         // Refuse new work rather than discard a replay fence at the storage bound.
-        if file.metadata()?.len().saturating_add(65) > COMMAND_RESULT_CACHE_MAX_BYTES {
-            return Err(io::Error::other("expired receipt marker capacity reached"));
+        let before = file.metadata()?.len();
+        if before.saturating_add(65) > COMMAND_RESULT_CACHE_MAX_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::OutOfMemory,
+                at_most_once::ReceiptCapacityError,
+            ));
         }
         // An ambiguous write must fail closed in this process too.
-        self.expired.insert(marker.clone());
-        writeln!(file, "{marker}")?;
+        self.expired.insert(Self::digest(command_id));
+        if let Err(error) = write(&mut file, format!("{marker}\n").as_bytes()) {
+            // Restore the append boundary before allowing another eviction. If
+            // that fails, wait for startup's torn-tail recovery, failing closed.
+            if file.set_len(before).and_then(|()| file.sync_all()).is_err() {
+                self.append_unavailable = true;
+            }
+            return Err(error);
+        }
         file.sync_all()?;
         if let Some(parent) = path.parent() {
             fs::File::open(parent)?.sync_all()?;
