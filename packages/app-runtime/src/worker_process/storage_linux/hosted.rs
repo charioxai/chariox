@@ -27,7 +27,10 @@ impl Context {
             .find(|owner| owner.uid == uid)
             .unwrap()
             .cgroup_root;
-        assert_eq!(root, super::provision::APPS);
+        assert!(matches!(
+            root.as_str(),
+            super::provision::APPS | super::provision::PATH1_APPS
+        ));
         let leaf = format!("app-{suffix}");
         let cgroup = PathBuf::from(root).join(&leaf);
         fs::create_dir(&cgroup).unwrap();

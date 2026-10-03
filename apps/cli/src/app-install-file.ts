@@ -322,6 +322,7 @@ function operation(reply: Record<string, unknown>, request: string): AppInstallO
 }
 
 const installFailures: Record<string, string> = {
+  app_lifecycle_notification: "The App did not complete preparation for the update; the installed version is unchanged (app_lifecycle_notification).",
   app_install_publisher_not_enrolled: "This publisher must be enrolled in the kernel before installation.",
   app_install_publisher_revoked: "This publisher has been revoked in the kernel.",
   app_install_package_rejected: "The kernel rejected the package contents.",

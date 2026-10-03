@@ -14,7 +14,8 @@ use std::{
     path::Path,
 };
 pub(super) const APPS: &str = "/sys/fs/cgroup/system.slice/chariox-managed-bootstrap.service/apps";
-const PATH1_APPS: &str = "/sys/fs/cgroup/system.slice/chariox-path1-managed-bootstrap.service/apps";
+pub(super) const PATH1_APPS: &str =
+    "/sys/fs/cgroup/system.slice/chariox-path1-managed-bootstrap.service/apps";
 
 // The caller cannot select a unit. Match only systemd's actual root post-start
 // control process, then require the enrollment for that exact topology.

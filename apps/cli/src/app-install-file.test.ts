@@ -533,7 +533,11 @@ test("release and upload failures render their own messages; inherited keys fall
 
 // Both standalone CLI and /app in the TUI use this operation formatter.
 test("lifecycle update failures retain their kernel cause in operation output", () => {
-  for (const failure of ["app_lifecycle_notification", "app_lifecycle_registration", "app_lifecycle_health", "app_lifecycle_preparation"]) {
+  const preparation = formatInstallFailure("app_lifecycle_notification")
+  assert.match(preparation, /did not complete preparation/)
+  assert.match(preparation, /installed version is unchanged/)
+  assert.match(formatInstallOperation({ request_id: "lifecycle-update", phase: "failed", installation_id: "installed", generation: "2", package_digest: `sha256:${"a".repeat(64)}`, interaction_id: null, failure: "app_lifecycle_notification" }), /app_lifecycle_notification/)
+  for (const failure of ["app_lifecycle_registration", "app_lifecycle_health", "app_lifecycle_preparation"]) {
     assert.equal(formatInstallFailure(failure), `Kernel failure: ${failure}.`)
     assert.match(formatInstallOperation({ request_id: "lifecycle-update", phase: "failed", installation_id: "installed", generation: "2", package_digest: `sha256:${"a".repeat(64)}`, interaction_id: null, failure }), new RegExp(failure))
   }
