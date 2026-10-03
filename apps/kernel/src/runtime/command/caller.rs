@@ -112,3 +112,21 @@ pub(crate) fn command_caller_user_id(command: &KernelCommand) -> String {
         .clone()
         .unwrap_or_else(|| DEFAULT_LOCAL_USER_ID.to_string())
 }
+
+impl KernelCommand {
+    /// This identity was supplied by the local transport or authenticated relay
+    /// admission. It is never read from an interaction's response payload.
+    pub(crate) fn is_terminal_caller(&self) -> bool {
+        self.caller.metaagent_id.is_none()
+            && match (&self.source, &self.caller.caller_kind) {
+                (
+                    KernelCommandSource::LocalCli | KernelCommandSource::LocalIpc,
+                    KernelCallerKind::LocalClient,
+                ) => true,
+                (KernelCommandSource::RelayClient, KernelCallerKind::RemoteClient) => {
+                    self.caller.user_id.is_some()
+                }
+                _ => false,
+            }
+    }
+}

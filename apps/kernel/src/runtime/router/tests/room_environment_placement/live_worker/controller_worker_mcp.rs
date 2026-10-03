@@ -1638,6 +1638,7 @@ async fn launch_leased_room_provider(
 
 #[test]
 fn worker_computer_tools_use_home_room_authority() {
+    crate::test_support::isolated_env_test!();
     std::thread::Builder::new()
         .stack_size(64 * 1024 * 1024)
         .spawn(|| {
@@ -1791,7 +1792,7 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
     let spawned = dispatch_json(
         &fixture.home,
         json!({"SpawnAgent": {
-            "session_id":room, "provider":"managed-dev-stub", "model":"default",
+            "session_id":room, "provider":"managed-dev-stub", "model":"native-tui-idle",
             "slice_ref":"desktop", "worktree_placement":placement
         }}),
     )
@@ -1825,14 +1826,15 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
             daemon_id: Some(remote_execution.worker_kernel_id.clone()),
             daemon_alias: None,
         },
-        RelayPeerRequest::SubmitLeasedPrompt {
+        RelayPeerRequest::LaunchLeasedNativeProviderRun {
             leased_agent_id,
-            expected_profile,
-            prompt: "launch the worker provider for the computer secret test".to_string(),
-            hidden_system_context: String::new(),
-            attachments: Vec::new(),
-            workflow_context: None,
-            git_context: None,
+            adapter_key: "managed-dev-stub".to_string(),
+            provider: "managed-dev-stub".to_string(),
+            account_profile: expected_profile.account_profile,
+            model: "native-tui-idle".to_string(),
+            variant: None,
+            structured_endpoint: None,
+            provider_session_id: None,
             required_mcps: Vec::new(),
             required_skills: None,
             remote_extension_manifest: Default::default(),
@@ -1841,13 +1843,10 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
     )
     .await
     .expect("launch the worker provider through the relay");
-    let RelayPeerResponse::LeasedPromptSubmitted {
-        provider_run_id: worker_provider_run_id,
-        ..
-    } = response
-    else {
-        panic!("unexpected leased prompt response: {response:?}")
+    let RelayPeerResponse::LeasedNativeProviderRunLaunched { provider_run } = response else {
+        panic!("unexpected leased provider response: {response:?}")
     };
+    let worker_provider_run_id = provider_run.id().to_string();
     fixture
         .home
         .app
@@ -2514,7 +2513,7 @@ pub(super) async fn check(fixture: &LiveWorker, placement: Value) {
         json!({"SpawnAgent": {
             "session_id":room,
             "provider":"managed-dev-stub",
-            "model":"runtime-mcp-idle",
+            "model":"native-tui-idle",
             "slice_ref":"desktop",
             "worktree_placement":placement
         }}),
@@ -2551,14 +2550,15 @@ pub(super) async fn check(fixture: &LiveWorker, placement: Value) {
                 daemon_id: Some("environment-worker".to_string()),
                 daemon_alias: None,
             },
-            RelayPeerRequest::SubmitLeasedPrompt {
+            RelayPeerRequest::LaunchLeasedNativeProviderRun {
                 leased_agent_id: leased_agent_id.clone(),
-                expected_profile,
-                prompt: "launch the worker provider for the runtime MCP drill".to_string(),
-                hidden_system_context: String::new(),
-                attachments: Vec::new(),
-                workflow_context: None,
-                git_context: None,
+                adapter_key: "managed-dev-stub".to_string(),
+                provider: "managed-dev-stub".to_string(),
+                account_profile: expected_profile.account_profile,
+                model: "native-tui-idle".to_string(),
+                variant: None,
+                structured_endpoint: None,
+                provider_session_id: None,
                 required_mcps: Vec::new(),
                 required_skills: None,
                 remote_extension_manifest: Default::default(),
@@ -2566,14 +2566,11 @@ pub(super) async fn check(fixture: &LiveWorker, placement: Value) {
             },
         )
         .await
-        .expect("submit the leased prompt through the authenticated relay");
-        let RelayPeerResponse::LeasedPromptSubmitted {
-            provider_run_id: worker_provider_run_id,
-            ..
-        } = response
-        else {
-            panic!("unexpected leased prompt response: {response:?}")
+        .expect("launch the idle leased provider through the authenticated relay");
+        let RelayPeerResponse::LeasedNativeProviderRunLaunched { provider_run } = response else {
+            panic!("unexpected leased provider response: {response:?}")
         };
+        let worker_provider_run_id = provider_run.id().to_string();
         fixture
             .home
             .app
@@ -2683,7 +2680,7 @@ pub(super) async fn check(fixture: &LiveWorker, placement: Value) {
             assert_eq!(
                 run.state(),
                 crate::provider::ProviderRunState::Running,
-                "runtime MCP keepalive must retain the worker provider through navigation"
+                "the idle worker provider must remain running through navigation"
             );
         }
 

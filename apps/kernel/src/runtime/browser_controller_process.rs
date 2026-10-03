@@ -136,6 +136,7 @@ pub(crate) trait BrowserControllerProcessBackend {
     fn reconcile_browser(
         &mut self,
         _viewport: &CanonicalViewport,
+        _browser_bar_visible: bool,
     ) -> Result<BrowserControllerBrowserSnapshot, String> {
         Err("browser controller backend does not support browser reconciliation".to_string())
     }
@@ -182,6 +183,9 @@ pub(crate) trait BrowserControllerProcessBackend {
         _setting: BrowserPermissionSetting,
     ) -> Result<BrowserControllerPermissionResult, String> {
         Err("browser controller backend does not support permissions".to_string())
+    }
+    fn app_view(&mut self, _request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest) -> Result<serde_json::Value, String> {
+        Err("browser controller backend does not support App views".to_string())
     }
     fn poll_browser_events(
         &mut self,
@@ -327,6 +331,10 @@ impl BrowserControllerProcessStdioBackend {
                     .and_then(serde_json::Value::as_u64)
                     .unwrap_or(0),
             ))
+        } else if method == "browser.reconcile" {
+            // Physical display verification includes bounded streamer readback
+            // and rollback. Do not kill its controller during that cleanup.
+            self.timeout.max(Duration::from_secs(45))
         } else {
             self.timeout
         };
@@ -565,6 +573,13 @@ struct BrowserControllerRpcRequest<'a, P> {
     params: &'a P,
 }
 
+/// How a controller error names its code in the error text, which reaches
+/// the home kernel unchanged through the relay; a caller that classifies
+/// controller errors (a Room start's retry) matches this marker.
+pub(crate) fn controller_error_marker(code: &str) -> String {
+    format!("failed with {code}:")
+}
+
 impl BrowserControllerRpcResponse {
     fn into_result<T: DeserializeOwned>(self, method: &str) -> Result<T, String> {
         if !self.ok {
@@ -573,8 +588,9 @@ impl BrowserControllerRpcResponse {
                 message: "browser controller returned an unspecified error".to_string(),
             });
             return Err(format!(
-                "browser controller `{method}` failed with {}: {}",
-                error.code, error.message
+                "browser controller `{method}` {} {}",
+                controller_error_marker(&error.code),
+                error.message
             ));
         }
         let result = self
@@ -677,18 +693,11 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
     fn reconcile_browser(
         &mut self,
         viewport: &CanonicalViewport,
+        browser_bar_visible: bool,
     ) -> Result<BrowserControllerBrowserSnapshot, String> {
         let response = self.request(
             "browser.reconcile",
-            serde_json::json!({
-                "viewport": {
-                    "css_width": viewport.css_width,
-                    "css_height": viewport.css_height,
-                    "device_scale_factor": viewport.device_scale_factor,
-                    "desktop_pixel_width": viewport.desktop_pixel_width,
-                    "desktop_pixel_height": viewport.desktop_pixel_height,
-                }
-            }),
+            browser_reconcile_params(viewport, browser_bar_visible),
         )?;
         let snapshot =
             response.into_result::<BrowserControllerBrowserSnapshot>("browser.reconcile")?;
@@ -797,6 +806,13 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
             response.into_result::<BrowserControllerPermissionResult>("browser.permission")?;
         result.validate(target_id, document_id, permission, setting)?;
         Ok(result)
+    }
+
+    fn app_view(&mut self, request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest) -> Result<serde_json::Value, String> {
+        let method = request.method();
+        let timeout = self.timeout;
+        self.request_serializable(method, &request.params(), timeout)?
+            .into_result(method)
     }
 
     fn poll_browser_events(
@@ -1088,11 +1104,33 @@ fn kill_child(child: &mut Child) {
     let _ = child.wait();
 }
 
+/// `browser.reconcile` parameters for both the barrier and observation paths.
+fn browser_reconcile_params(
+    viewport: &CanonicalViewport,
+    browser_bar_visible: bool,
+) -> serde_json::Value {
+    serde_json::json!({
+        "viewport": {
+            "css_width": viewport.css_width,
+            "css_height": viewport.css_height,
+            "device_scale_factor": viewport.device_scale_factor,
+            "desktop_pixel_width": viewport.desktop_pixel_width,
+            "desktop_pixel_height": viewport.desktop_pixel_height,
+        },
+        "browser_bar_visible": browser_bar_visible,
+        // App pages lay out left of the trusted conversation panel.
+        "app_panel_css_width": viewport.app_panel_css_width(),
+    })
+}
+
 pub(crate) struct BrowserControllerProcessSupervisor<B> {
     backend: B,
     snapshot: BrowserControllerProcessSnapshot,
     recovery_pending: bool,
     reconciled_viewport: Option<CanonicalViewport>,
+    /// Window mode of the last barrier reconcile. Toggling the browser bar
+    /// changes every window, so it cannot take the observation path.
+    reconciled_browser_bar_visible: bool,
 }
 
 type StdioOwnership = BrowserControllerProcessOwnership<BrowserControllerProcessStdioBackend>;
@@ -1150,9 +1188,11 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
         &mut self,
         session_id: &str,
         viewport: &CanonicalViewport,
+        browser_bar_visible: bool,
     ) -> Result<BrowserControllerReconciliation, String> {
         self.require_lease(session_id)?;
-        self.supervisor.reconcile_browser(viewport)
+        self.supervisor
+            .reconcile_browser(viewport, browser_bar_visible)
     }
 
     #[cfg(test)]
@@ -1214,6 +1254,22 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
         self.require_lease(session_id)?;
         self.supervisor
             .set_browser_permission(target_id, document_id, permission, setting)
+    }
+
+    pub(crate) fn app_view(
+        &mut self,
+        session_id: &str,
+        request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
+    ) -> Result<serde_json::Value, String> {
+        self.require_lease(session_id).map_err(|_| {
+            match self.owner_session_id.as_deref() {
+                Some(owner) if owner != session_id => format!(
+                    "This browser Environment belongs to Room {owner}, not Room {session_id}. Attach to that Room and use /app open <installation-id>, then /room view; or bind a separate Environment to this Room with /room bind <slice>."
+                ),
+                _ => "This Room's browser Environment is not started. Use /room start, then retry /app open <installation-id>.".to_owned(),
+            }
+        })?;
+        self.supervisor.app_view(request)
     }
 
     pub(crate) fn poll_browser_events(
@@ -1370,8 +1426,9 @@ impl BrowserControllerProcessStore {
         &self,
         session_id: &str,
         viewport: &CanonicalViewport,
+        browser_bar_visible: bool,
     ) -> Result<Option<BrowserControllerReconciliation>, String> {
-        self.reconcile_browser_observation(session_id, viewport)
+        self.reconcile_browser_observation(session_id, viewport, browser_bar_visible)
     }
 
     pub(crate) fn capture_browser_snapshot(
@@ -1495,6 +1552,20 @@ impl BrowserControllerProcessStore {
             .map(Some)
     }
 
+    pub(crate) fn app_view(
+        &self,
+        session_id: &str,
+        request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let Some(ownership) = &self.ownership else {
+            return Ok(None);
+        };
+        let mut ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        ownership.app_view(session_id, request).map(Some)
+    }
+
     pub(crate) fn poll_browser_events(
         &self,
         session_id: &str,
@@ -1566,6 +1637,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
             },
             recovery_pending: false,
             reconciled_viewport: None,
+            reconciled_browser_bar_visible: false,
         }
     }
 
@@ -1625,11 +1697,15 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
     fn reconcile_browser(
         &mut self,
         viewport: &CanonicalViewport,
+        browser_bar_visible: bool,
     ) -> Result<BrowserControllerReconciliation, String> {
         let process = self.ensure_started()?.clone();
-        let browser = self.backend.reconcile_browser(viewport)?;
+        let browser = self
+            .backend
+            .reconcile_browser(viewport, browser_bar_visible)?;
         self.recovery_pending = false;
         self.reconciled_viewport = Some(viewport.clone());
+        self.reconciled_browser_bar_visible = browser_bar_visible;
         Ok(BrowserControllerReconciliation { process, browser })
     }
 
@@ -1687,6 +1763,11 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         self.ensure_started_without_transparent_restart()?;
         self.backend
             .set_browser_permission(target_id, document_id, permission, setting)
+    }
+
+    fn app_view(&mut self, request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest) -> Result<serde_json::Value, String> {
+        self.ensure_started_without_transparent_restart()?;
+        self.backend.app_view(request)
     }
 
     fn poll_browser_events(
@@ -1798,16 +1879,16 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
 mod tests {
     use std::collections::VecDeque;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use super::{
         BrowserControllerBrowserSnapshot, BrowserControllerProcessBackend,
-        BrowserControllerProcessHealth, BrowserControllerProcessState,
-        BrowserControllerProcessStdioBackend, BrowserControllerProcessStore,
-        BrowserControllerProcessSupervisor, CONTROLLER_RESTARTED_BEFORE_OPERATION,
+        BrowserControllerProcessHealth, BrowserControllerProcessOwnership,
+        BrowserControllerProcessState, BrowserControllerProcessStdioBackend,
+        BrowserControllerProcessStore, BrowserControllerProcessSupervisor,
+        CONTROLLER_RESTARTED_BEFORE_OPERATION,
     };
     use crate::runtime::browser_controller_action::{BrowserDialogAction, BrowserLocatorAction};
     use crate::session::CanonicalViewport;
@@ -2034,6 +2115,40 @@ mod tests {
     }
 
     #[test]
+    fn app_open_reports_the_environment_owner_and_how_to_view_it() {
+        let mut ownership = BrowserControllerProcessOwnership::new(FakeBackend::default());
+        ownership.owner_session_id = Some("room-1".to_owned());
+        ownership.leased = true;
+        let error = ownership
+            .app_view(
+                "room-2",
+                &crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Calls,
+            )
+            .unwrap_err();
+        assert!(error.contains("belongs to Room room-1, not Room room-2"));
+        assert!(error.contains("/app open <installation-id>"));
+        assert!(error.contains("/room view"));
+        assert_eq!(ownership.owner_session_id.as_deref(), Some("room-1"));
+        assert!(
+            ownership.leased,
+            "failed open must leave the owner's browser alone"
+        );
+    }
+
+    #[test]
+    fn app_open_in_an_unstarted_environment_explains_how_to_start_it() {
+        let mut ownership = BrowserControllerProcessOwnership::new(FakeBackend::default());
+        let error = ownership
+            .app_view(
+                "room-1",
+                &crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Calls,
+            )
+            .unwrap_err();
+        assert!(error.contains("not started"));
+        assert!(error.contains("/room start"));
+    }
+
+    #[test]
     fn physical_browser_binding_survives_release_and_shutdown() {
         let tool = TestTool::new(responsive_controller_script());
         let store = BrowserControllerProcessStore::new(
@@ -2148,11 +2263,19 @@ mod tests {
                 std::process::id()
             ));
             fs::create_dir_all(&root).expect("create test tool root");
+            let source = root.join("controller-tool.source");
+            fs::write(&source, script).expect("write test tool source");
+            // Install the executable from a child process: a writable fd held
+            // by this multi-threaded test process could leak into another
+            // test's fork and make exec fail with ETXTBSY.
             let path = root.join("controller-tool.sh");
-            fs::write(&path, script).expect("write test tool");
-            let mut permissions = fs::metadata(&path).expect("tool metadata").permissions();
-            permissions.set_mode(0o700);
-            fs::set_permissions(&path, permissions).expect("make test tool executable");
+            let installed = std::process::Command::new("install")
+                .args(["-m", "700"])
+                .arg(&source)
+                .arg(&path)
+                .status()
+                .expect("run install for test tool");
+            assert!(installed.success(), "install test tool: {installed}");
             Self { root, path }
         }
 
@@ -2229,10 +2352,10 @@ mod tests {
         );
         let viewport = CanonicalViewport::new(1280, 720, 1, 1280, 720).unwrap();
 
-        assert!(store.reconcile_browser("room-1", &viewport).is_err());
+        assert!(store.reconcile_browser("room-1", &viewport, false).is_err());
         store.acquire("room-1").expect("Room acquires controller");
         let reconciliation = store
-            .reconcile_browser("room-1", &viewport)
+            .reconcile_browser("room-1", &viewport, false)
             .expect("browser reconciles")
             .expect("controller is enabled");
 
@@ -2504,7 +2627,7 @@ done
         let started = std::time::Instant::now();
         let error = backend.start().expect_err("health request must time out");
 
-        assert!(error.contains("timed out"));
+        assert!(error.contains("timed out"), "{error}");
         assert!(started.elapsed() < Duration::from_secs(2));
         assert_eq!(
             backend

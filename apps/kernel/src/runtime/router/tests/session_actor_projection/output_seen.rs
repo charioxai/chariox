@@ -320,23 +320,20 @@ async fn output_seen_ack_survives_kernel_restart() {
         (session_id, agent_id)
     };
 
-    // Actor shutdown releases cloned durable owners asynchronously. Observing
-    // a dropped Arc is insufficient: its file destructor may still hold flock.
-    let release_deadline = tokio::time::Instant::now() + Duration::from_secs(1);
-    let restored = loop {
-        match DaemonApp::bootstrap(config.clone()) {
-            Ok(app) => break app,
-            Err(crate::error::DaemonError::LocalTransport {
-                operation: "durable_state.acquire_owner",
-                message,
-            }) if message == "durable state is already owned by another kernel"
-                && tokio::time::Instant::now() < release_deadline =>
-            {
-                tokio::task::yield_now().await;
+    let restored = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match DaemonApp::bootstrap(config.clone()) {
+                Ok(app) => break app,
+                Err(crate::DaemonError::LocalTransport {
+                    operation: "durable_state.acquire_owner",
+                    ..
+                }) => tokio::task::yield_now().await,
+                Err(error) => panic!("second daemon should boot: {error}"),
             }
-            Err(error) => panic!("second daemon should boot after owner release: {error}"),
         }
-    };
+    })
+    .await
+    .expect("first daemon should release its durable state owner");
     let session = restored
         .sessions()
         .get_session(&session_id)

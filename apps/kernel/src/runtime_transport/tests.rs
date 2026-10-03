@@ -456,6 +456,76 @@ async fn kernel_websocket_replies_to_ping_frames() {
 }
 
 #[tokio::test]
+async fn kernel_websocket_refuses_browser_origins_with_or_without_local_auth() {
+    for token in [None, Some("kernel-origin-auth-sentinel")] {
+        let listener = StdTcpListener::bind("127.0.0.1:0").expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        let mcp_listener =
+            StdTcpListener::bind("127.0.0.1:0").expect("runtime MCP listener should bind");
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(daemon_config_for_runtime_mcp_listener(&mcp_listener))
+                .expect("daemon should boot"),
+        ));
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            run_kernel_websocket_server_on_listeners_with_auth(
+                app,
+                listener,
+                mcp_listener,
+                token.map(Arc::<str>::from),
+                async {
+                    let _ = shutdown_rx.await;
+                },
+            )
+            .await
+        });
+        let request = |origin: Option<&'static str>| {
+            let mut request = format!("ws://{addr}")
+                .into_client_request()
+                .expect("request should build");
+            if let Some(token) = token {
+                request.headers_mut().insert(
+                    AUTHORIZATION,
+                    HeaderValue::from_str(&format!("Bearer {token}")).expect("header"),
+                );
+            }
+            if let Some(origin) = origin {
+                request
+                    .headers_mut()
+                    .insert("origin", HeaderValue::from_static(origin));
+            }
+            request
+        };
+
+        // A page in the owner's browser (any origin, even loopback) is refused.
+        for origin in ["https://example.test", "http://127.0.0.1:4351", "null"] {
+            match connect_async(request(Some(origin)))
+                .await
+                .expect_err("a browser origin should be refused")
+            {
+                WebSocketError::Http(response) => {
+                    assert_eq!(response.status(), StatusCode::FORBIDDEN, "{origin}")
+                }
+                other => panic!("expected HTTP forbidden handshake, got {other}"),
+            }
+        }
+        // Kernel clients send no Origin and still connect.
+        let (mut socket, _) = connect_async(request(None))
+            .await
+            .expect("a client without Origin should connect");
+        socket.close(None).await.expect("close should send");
+
+        shutdown_tx
+            .send(())
+            .expect("server should still be running");
+        server
+            .await
+            .expect("server task should join")
+            .expect("server should exit cleanly");
+    }
+}
+
+#[tokio::test]
 async fn kernel_websocket_auth_rejects_missing_or_wrong_tokens_before_accepting_requests() {
     let listener = StdTcpListener::bind("127.0.0.1:0").expect("listener should bind");
     let addr = listener.local_addr().expect("listener should have addr");
@@ -537,7 +607,8 @@ async fn kernel_websocket_auth_rejects_missing_or_wrong_tokens_before_accepting_
 
 #[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
-async fn slice_state_save_acknowledgement_replays_without_a_second_dispatch() {
+async fn unsupported_slice_save_refusal_replays_without_backend_side_effects() {
+    crate::test_support::isolated_env_test!();
     use std::os::unix::fs::PermissionsExt;
 
     let _environment = crate::env_lock::lock();
@@ -635,14 +706,14 @@ exit 0
     timeout(Duration::from_secs(5), async {
         loop {
             let cache = std::fs::read_to_string(&command_cache_path).unwrap_or_default();
-            if cache.contains(command_id) && docker_commit_count(&docker_log) == 1 {
+            if cache.contains(command_id) {
                 break;
             }
             sleep(Duration::from_millis(10)).await;
         }
     })
     .await
-    .expect("first save should complete after its response is lost");
+    .expect("first refusal should persist after its response is lost");
 
     let same_process = dispatch_transport_test_request(
         Arc::clone(&runtime),
@@ -654,8 +725,10 @@ exit 0
     )
     .await
     .expect("same-process retry should reply");
-    let same_process_generation = slice_saved_generation(&same_process);
-    assert_eq!(docker_commit_count(&docker_log), 1);
+    let same_process_refusal = slice_capture_refusal(&same_process);
+    assert_eq!(docker_commit_count(&docker_log), 0);
+    assert!(std::fs::read_to_string(&docker_log).unwrap_or_default().is_empty(),
+        "unsupported capture must not invoke Docker before or after replay");
 
     drop(runtime);
     let restarted_runtime = Arc::new(
@@ -675,9 +748,11 @@ exit 0
     )
     .await
     .expect("restart retry should reply");
-    let restart_generation = slice_saved_generation(&after_restart);
-    assert_eq!(restart_generation, same_process_generation);
-    assert_eq!(docker_commit_count(&docker_log), 1);
+    let restart_refusal = slice_capture_refusal(&after_restart);
+    assert_eq!(restart_refusal, same_process_refusal);
+    assert_eq!(docker_commit_count(&docker_log), 0);
+    assert!(std::fs::read_to_string(&docker_log).unwrap_or_default().is_empty(),
+        "unsupported capture must not invoke Docker before or after replay");
 
     let conflicting = dispatch_transport_test_request(
         Arc::clone(&restarted_runtime),
@@ -700,7 +775,9 @@ exit 0
         error.expect("conflicting retry should fail").code,
         "duplicate_command_conflict"
     );
-    assert_eq!(docker_commit_count(&docker_log), 1);
+    assert_eq!(docker_commit_count(&docker_log), 0);
+    assert!(std::fs::read_to_string(&docker_log).unwrap_or_default().is_empty(),
+        "unsupported capture must not invoke Docker before or after replay");
 
     drop(restarted_runtime);
     drop(router);
@@ -710,14 +787,13 @@ exit 0
     println!(
         "CHARIOX_SLICE_SAVE_ACK_LOSS_PROBE:{}",
         serde_json::json!({
-            "schema": "chariox.slice_save_ack_loss_probe.v1",
+            "schema": "chariox.slice_save_ack_loss_probe.v2",
             "sameProcessReplay": true,
             "restartReplay": true,
-            "savedStateRefPreserved": true,
+            "unsupportedCaptureRefusalPreserved": true,
             "conflictingReuseRejected": true,
-            "backendSaveCount": 1,
-            "savedStateRef": same_process_generation.0,
-            "homeArchiveGeneration": same_process_generation.1,
+            "backendSaveCount": 0,
+            "successfulSaveReplayStillRequiresProtectedLiveFixture": true,
             "cleanupComplete": true
         })
     );
@@ -725,35 +801,19 @@ exit 0
 
 #[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
-async fn slice_backup_restore_interruption_after_container_creation_rolls_back_on_restart() {
+async fn slice_pending_backup_restore_interruption_rolls_back_on_restart() {
+    crate::test_support::isolated_env_test!();
     use sha2::{Digest as _, Sha256};
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::process::ExitStatusExt;
 
-    const TEST_NAME: &str = "runtime_transport::tests::slice_backup_restore_interruption_after_container_creation_rolls_back_on_restart";
+    const TEST_NAME: &str = "runtime_transport::tests::slice_pending_backup_restore_interruption_rolls_back_on_restart";
     const CHILD_ROOT_ENV: &str = "CHARIOX_RESTORE_INTERRUPTION_CHILD_ROOT";
     if let Some(root) = std::env::var_os(CHILD_ROOT_ENV) {
         let root = PathBuf::from(root);
         let config = restore_interruption_config(&root);
-        let app = Arc::new(Mutex::new(
-            DaemonApp::bootstrap(config).expect("child kernel should restore its seeded state"),
-        ));
-        let router = CommandRouter::with_interactive_capacity(
-            app,
-            crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
-        );
-        let request = LocalDaemonRequest::RestoreSliceBackup(RestoreSliceBackupRequest {
-            slice_ref: "restore-interruption".to_string(),
-            backup_ref: "restore-target".to_string(),
-        });
-        let command = KernelCommand::from_local_request(
-            "restore-interruption-command",
-            None,
-            Some("restore-interruption-drill".to_string()),
-            &request,
-        );
-        let result = router.dispatch(command, request).await;
-        panic!("restore-interruption child survived its injected SIGKILL: {result:?}");
+        let result = DaemonApp::bootstrap(config);
+        panic!("pending-restore child survived its injected recovery SIGKILL: {}", result.is_ok());
     }
 
     let _environment = crate::env_lock::lock();
@@ -888,8 +948,35 @@ exit 0
     )
     .expect("target manifest should write");
     runtime
-        .save_slice_backup_record(target_backup)
+        .save_slice_backup_record(target_backup.clone())
         .expect("target backup should persist");
+    // This fixture exercises recovery of a legitimate preexisting durable
+    // transaction, not acceptance of a new capture on an unsupported layout.
+    // Successful protected capture and post-target-creation interruption remain
+    // separate live validation obligations.
+    let rollback_dir = root.path().join("rollback-backup");
+    std::fs::create_dir_all(&rollback_dir).expect("rollback directory should create");
+    let rollback_archive = rollback_dir.join("home.tar.zst");
+    let rollback_manifest = rollback_dir.join("manifest.json");
+    let rollback_home = b"prior-home-generation";
+    std::fs::write(&rollback_archive, rollback_home).expect("rollback archive should write");
+    let rollback_backup = crate::slice::SliceBackupRecord {
+        id: "restore-rollback-fixture".to_string(),
+        name: "restore-rollback-fixture".to_string(),
+        image_ref: "chariox-slice-backup:restore-rollback-fixture".to_string(),
+        home_archive_path: rollback_archive.display().to_string(),
+        manifest_path: rollback_manifest.display().to_string(),
+        size_bytes: Some(rollback_home.len() as u64),
+        home_archive_sha256: Some(format!("{:x}", Sha256::digest(rollback_home))),
+        image_id: Some(format!("sha256:{}", "2".repeat(64))),
+        ..target_backup.clone()
+    };
+    std::fs::write(&rollback_manifest, serde_json::to_vec_pretty(&rollback_backup)
+        .expect("rollback manifest should encode")).expect("rollback manifest should write");
+    runtime.begin_slice_backup_restore(crate::slice::SliceBackupRestoreTransactionRecord {
+        id: "restore-interruption-fixture".to_string(), source_slice_id: slice.id.clone(),
+        target_backup, rollback_backup, previous_saved_state: None, started_at_ms: 3,
+    }).expect("preexisting restore intent should persist");
     drop(runtime);
     drop(router);
     drop(app);
@@ -914,14 +1001,14 @@ exit 0
     assert_eq!(
         child.status.signal(),
         Some(libc::SIGKILL),
-        "child must die at the injected post-create boundary: stdout={} stderr={}",
+        "child must die at the injected startup recovery boundary: stdout={} stderr={}",
         String::from_utf8_lossy(&child.stdout),
         String::from_utf8_lossy(&child.stderr),
     );
     assert!(interruption_marker.exists(), "fault boundary must trigger");
     assert!(
         partial_runtime.exists(),
-        "target replacement must exist at interruption"
+        "partial recovery runtime must exist at interruption"
     );
 
     let interrupted_store =
@@ -1076,8 +1163,8 @@ exit 0
         transaction.rollback_backup.image_ref
     );
     assert!(
-        !Path::new(&transaction.rollback_backup.manifest_path).exists(),
-        "resolved rollback manifest must be reclaimed",
+        Path::new(&transaction.rollback_backup.manifest_path).exists(),
+        "published rollback state must retain its referenced manifest",
     );
     let provisioner_calls =
         std::fs::read_to_string(&provisioner_log).expect("provisioner calls should read");
@@ -1087,12 +1174,13 @@ exit 0
             .filter(|line| line.starts_with("restore-state "))
             .count(),
         2,
-        "only the interrupted target and startup rollback should restore: {provisioner_calls}",
+        "only interrupted recovery and resumed recovery should restore: {provisioner_calls}",
     );
     let docker_calls = std::fs::read_to_string(&docker_log).expect("Docker calls should read");
-    assert!(docker_calls
+    assert!(!docker_calls
         .lines()
-        .any(|line| { line == format!("image rm -f {}", transaction.rollback_backup.image_ref) }));
+        .any(|line| { line == format!("image rm -f {}", transaction.rollback_backup.image_ref) }),
+        "published rollback image must not be garbage collected");
 
     let recovered_state_ref = recovered_state.id.clone();
     drop(durable);
@@ -1105,8 +1193,9 @@ exit 0
     println!(
         "CHARIOX_SLICE_RESTORE_INTERRUPTION_PROBE:{}",
         serde_json::json!({
-            "schema": "chariox.slice_restore_interruption_probe.v1",
-            "childInterruptedAfterReplacement": true,
+            "schema": "chariox.slice_restore_interruption_probe.v2",
+            "childInterruptedDuringStartupRecovery": true,
+            "postTargetCreationInterruptionStillRequiresProtectedLiveFixture": true,
             "durableIntentSurvived": true,
             "rollbackRestoredOnRestart": true,
             "partialRuntimeRemoved": true,
@@ -1120,8 +1209,216 @@ exit 0
 }
 
 #[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn slice_pending_backup_restore_acknowledgement_survives_crash_and_broker_outage() {
+    let _environment = crate::env_lock::lock();
+    let root = RuntimeTransportTempDir::new("slice-restore-acknowledgement");
+    let config = restore_interruption_config(root.path());
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(config.clone()).expect("seed kernel should boot"),
+    ));
+    let router = CommandRouter::with_interactive_capacity(
+        Arc::clone(&app),
+        crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+    );
+    let runtime = router.runtime_state();
+    let slice = runtime
+        .create_slice(CreateSliceRequest {
+            name: "restore-acknowledgement".to_string(),
+            backend: SliceBackendKind::LocalDocker,
+            os: "linux".to_string(),
+            display_mode: SliceDisplayMode::Headless,
+            display_backend: Default::default(),
+            workspace_id: None,
+            worktree_id: None,
+            workspace_mount: Some("/workspace".to_string()),
+            development: None,
+            worker_kernel_ref: None,
+            display_url: None,
+            provider_auth: Vec::new(),
+            from_saved_state: None,
+            base: Some(SliceCreateBase::Clean),
+            source_slice_ref: None,
+        })
+        .await
+        .expect("slice seed should persist");
+    let backup = |id: &str| crate::slice::SliceBackupRecord {
+        id: id.to_string(),
+        name: id.to_string(),
+        source_slice_id: slice.id.clone(),
+        source_state_id: "restore-acknowledgement".to_string(),
+        image_ref: format!("chariox-slice-backup:{id}"),
+        home_archive_path: root
+            .path()
+            .join(id)
+            .join("home.tar.zst")
+            .display()
+            .to_string(),
+        manifest_path: root
+            .path()
+            .join(id)
+            .join("manifest.json")
+            .display()
+            .to_string(),
+        created_at_ms: 2,
+        size_bytes: Some(1),
+        home_archive_sha256: Some("a".repeat(64)),
+        image_id: Some(format!("sha256:{}", "b".repeat(64))),
+    };
+    let transaction = |id: &str| crate::slice::SliceBackupRestoreTransactionRecord {
+        id: id.to_string(),
+        source_slice_id: slice.id.clone(),
+        target_backup: backup(&format!("{id}-target")),
+        rollback_backup: backup(&format!("{id}-rollback")),
+        previous_saved_state: None,
+        started_at_ms: 3,
+    };
+    let state = |id: &str| crate::slice::SliceSavedStateRecord {
+        id: id.to_string(),
+        slice_name: slice.name.clone(),
+        source_slice_id: slice.id.clone(),
+        backend: SliceBackendKind::LocalDocker,
+        os: "linux".to_string(),
+        image_ref: format!("chariox-slice-state:{id}"),
+        home_archive_path: root
+            .path()
+            .join(format!("{id}.tar.zst"))
+            .display()
+            .to_string(),
+        manifest_path: root.path().join(format!("{id}.json")).display().to_string(),
+        created_at_ms: 4,
+        updated_at_ms: 4,
+        size_bytes: Some(1),
+        last_operation: Some("backup.restore".to_string()),
+        last_operation_status: Some(crate::slice::SliceOperationStatus::Completed),
+        last_error: None,
+    };
+    let first = transaction("restore-first");
+    let second = transaction("restore-second");
+    let owed = crate::slice::SliceBackupRestoreAcknowledgementRecord {
+        transaction_id: first.id.clone(),
+        source_slice_id: slice.id.clone(),
+        home_archive_path: first.target_backup.home_archive_path.clone(),
+        retained_rollback_backup: None,
+    };
+    runtime
+        .begin_slice_backup_restore(first.clone())
+        .expect("first restore intent should persist");
+    // Fault boundary: the kernel durably resolves the restore and dies before
+    // acknowledging publication to the broker.
+    runtime
+        .resolve_slice_backup_restore(
+            &first,
+            state("restored-first"),
+            crate::slice::SliceBackupRestoreResolution::Restored,
+        )
+        .expect("first restore should commit");
+    let error = runtime
+        .begin_slice_backup_restore(second.clone())
+        .expect_err("the next restore must wait for the owed acknowledgement");
+    assert!(error.to_string().contains(&first.id), "{error}");
+    drop(runtime);
+    drop(router);
+    drop(app);
+
+    let crashed = crate::durable_state::DurableKernelStateStore::open(config.durable_state_path())
+        .expect("crashed durable state should remain readable");
+    let committed = crashed
+        .load_events_by_kind("slice.backup.restore.committed")
+        .expect("commit events should read");
+    assert_eq!(committed.len(), 1);
+    assert_eq!(
+        committed[0].payload["acknowledgement"],
+        serde_json::to_value(&owed).expect("acknowledgement should encode"),
+        "the owed acknowledgement commits atomically with the resolution",
+    );
+    assert!(crashed
+        .load_events_by_kind("slice.backup.restore.acknowledged")
+        .expect("acknowledgement events should read")
+        .is_empty());
+    drop(crashed);
+
+    // Restart while the managed broker is unavailable: startup continues, the
+    // committed restore stays committed, and the acknowledgement stays owed.
+    let broker_outage = RuntimeTransportEnvGuard::set(
+        "CHARIOX_SLICE_DOCKER_BROKER_REQUIRED",
+        std::ffi::OsStr::new("1"),
+    );
+    let blocked = DaemonApp::bootstrap(config.clone())
+        .expect("a broker outage must not prevent kernel startup");
+    assert_eq!(
+        blocked.slices().list_pending_restore_acknowledgements(),
+        vec![owed.clone()]
+    );
+    assert_eq!(
+        blocked
+            .slices()
+            .resolve(&slice.id)
+            .expect("slice should remain visible")
+            .saved_state_ref
+            .as_deref(),
+        Some("restored-first"),
+        "a committed restore must never be rolled back",
+    );
+    assert!(blocked.slices().list_pending_backup_restores().is_empty());
+    let error = blocked
+        .slices()
+        .begin_backup_restore_transactionally(second.clone(), |_| Ok(()))
+        .expect_err("the next restore must wait for the owed acknowledgement");
+    assert!(error.to_string().contains(&first.id), "{error}");
+    drop(blocked);
+    drop(broker_outage);
+
+    // Restart with the broker repaired: reconciliation acknowledges, and the
+    // next restore starts and commits.
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(config.clone()).expect("kernel should restart"),
+    ));
+    let router = CommandRouter::with_interactive_capacity(
+        Arc::clone(&app),
+        crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+    );
+    let runtime = router.runtime_state();
+    assert!(runtime
+        .reconcile_slice_backup_restore_acknowledgements(None)
+        .expect("reconciliation should run")
+        .is_empty());
+    runtime
+        .begin_slice_backup_restore(second.clone())
+        .expect("the next restore should start after acknowledgement");
+    let restored = runtime
+        .resolve_slice_backup_restore(
+            &second,
+            state("restored-second"),
+            crate::slice::SliceBackupRestoreResolution::Restored,
+        )
+        .expect("the next restore should commit");
+    assert_eq!(restored.saved_state_ref.as_deref(), Some("restored-second"));
+    assert!(runtime
+        .reconcile_slice_backup_restore_acknowledgements(Some(&slice.id))
+        .expect("reconciliation should run")
+        .is_empty());
+    drop(runtime);
+    drop(router);
+    drop(app);
+    let durable = crate::durable_state::DurableKernelStateStore::open(config.durable_state_path())
+        .expect("durable state should remain readable");
+    let acknowledged = durable
+        .load_events_by_kind("slice.backup.restore.acknowledged")
+        .expect("acknowledgement events should read");
+    assert_eq!(
+        acknowledged
+            .iter()
+            .map(|event| event.payload["transaction_id"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>(),
+        vec![first.id.as_str(), second.id.as_str()],
+    );
+}
+
+#[cfg(unix)]
 #[test]
 fn room_takeover_response_loss_and_reconnect_retain_human_input_authority() {
+    crate::test_support::isolated_env_test!();
     let test_thread = std::thread::Builder::new()
         .name("room-takeover-reconnect".to_string())
         .stack_size(32 * 1024 * 1024)
@@ -1434,32 +1731,15 @@ async fn dispatch_transport_test_request(
 }
 
 #[cfg(unix)]
-fn slice_saved_generation(frame: &KernelOutgoingFrame) -> (String, String) {
-    let KernelOutgoingFrame::Response {
-        response, error, ..
-    } = frame
-    else {
-        panic!("slice save should return a response")
+fn slice_capture_refusal(frame: &KernelOutgoingFrame) -> serde_json::Value {
+    let KernelOutgoingFrame::Response { response, error, .. } = frame else {
+        panic!("slice refusal should return a response")
     };
-    assert!(error.is_none(), "slice save should succeed: {error:?}");
-    let payload = response
-        .as_ref()
-        .as_ref()
-        .and_then(|value| value.get("SliceStateSaved"))
-        .expect("slice save payload should be present");
-    let state = payload
-        .get("state")
-        .expect("slice save state should be present");
-    (
-        state["id"]
-            .as_str()
-            .expect("saved-state ref should be present")
-            .to_string(),
-        state["home_archive_path"]
-            .as_str()
-            .expect("saved-state archive generation should be present")
-            .to_string(),
-    )
+    assert!(response.is_none(), "unsupported capture must not publish saved state");
+    let error = error.as_ref().expect("unsupported capture must refuse");
+    let value = serde_json::to_value(error).expect("refusal should encode");
+    assert!(value.to_string().contains("storage layout"));
+    value
 }
 
 #[cfg(unix)]
@@ -1589,3 +1869,155 @@ fn write_private_test_file(path: &Path, value: &str) {
     file.write_all(value.as_bytes())
         .expect("private test file should be written");
 }
+
+fn decode_error_reply(payload: serde_json::Value) -> (String, KernelTransportError) {
+    let payload = serde_json::to_vec(&payload).expect("payload should serialize");
+    let error = serde_json::from_slice::<KernelIncomingFrame>(&payload)
+        .expect_err("payload should fail typed decoding");
+    match incoming_frame_decode_error(&payload, &error) {
+        KernelOutgoingFrame::Response {
+            request_id,
+            response,
+            error,
+        } => {
+            assert!(response.is_none());
+            (
+                request_id,
+                error.expect("decode failure should carry an error"),
+            )
+        }
+        other => panic!("expected response frame, got {other:?}"),
+    }
+}
+
+#[test]
+fn malformed_local_request_replies_with_its_request_id() {
+    let (request_id, error) = decode_error_reply(serde_json::json!({
+        "type": "request",
+        "request_id": "req-missing-fields",
+        "request": {
+            "StartRoomEnvironment": {
+                "session_id": "session-1",
+                "viewport": {
+                    "css_width": 1280,
+                    "css_height": 800,
+                    "device_scale_factor": 1
+                }
+            }
+        }
+    }));
+    assert_eq!(request_id, "req-missing-fields");
+    assert_eq!(error.code, "invalid_request");
+    assert!(
+        error.message.starts_with("invalid request: "),
+        "{}",
+        error.message
+    );
+    assert!(!error.retryable);
+
+    let (request_id, error) = decode_error_reply(serde_json::json!({
+        "type": "request",
+        "request_id": "req-unknown-variant",
+        "request": { "SetKernelConfigValue": { "key": "k", "value": "v" } }
+    }));
+    assert_eq!(request_id, "req-unknown-variant");
+    assert_eq!(error.code, "invalid_request");
+}
+
+#[test]
+fn undecodable_frame_without_request_id_replies_as_invalid_frame() {
+    let payload = b"not json";
+    let error = serde_json::from_slice::<KernelIncomingFrame>(payload).expect_err("not json");
+    match incoming_frame_decode_error(payload, &error) {
+        KernelOutgoingFrame::Response {
+            request_id, error, ..
+        } => {
+            assert_eq!(request_id, "unknown");
+            assert_eq!(error.expect("error").code, "invalid_frame");
+        }
+        other => panic!("expected response frame, got {other:?}"),
+    }
+}
+
+/// A schedule committed after the transport pump falls asleep must be processed
+/// at its deadline, without any client traffic or a five-second idle sweep.
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn app_wake_deadline_interrupts_idle_transport_without_client_traffic() {
+    use crate::durable_state::{
+        app_state::AppStateOperation,
+        app_wakes::{AppWakeOperation, AppWakeOutcome},
+    };
+    use crate::runtime::app_operation_budget::AppOperationBudget;
+    use chariox_app_runtime::managed_state::{Wake, WakeChange};
+    let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+    let mcp = StdTcpListener::bind("127.0.0.1:0").unwrap();
+    let app = DaemonApp::bootstrap(daemon_config_for_runtime_mcp_listener(&mcp)).unwrap();
+    let store = app.durable_state_store();
+    let catalog = crate::durable_state::app_state::fixture_event_catalog(&store);
+    let (stop, stopped) = oneshot::channel();
+    let server = tokio::spawn(run_kernel_websocket_server_on_listeners_with_auth(
+        Arc::new(Mutex::new(app)),
+        listener,
+        mcp,
+        None,
+        async {
+            let _ = stopped.await;
+        },
+    ));
+    // Let the initial transport pass finish before scheduling anything.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let due = crate::session::unix_epoch_ms() + 150;
+    let registration = store.clone();
+    tokio::task::spawn_blocking(move || {
+        registration.execute_app_state(
+            "alice",
+            catalog,
+            AppStateOperation::Schedule { wakes: vec![WakeChange::Set(Wake {
+                id: "deadline".into(),
+                due_at_ms: due,
+                revision: "r1".into(),
+            })], wakes_count_as_use: false },
+            AppOperationBudget::fixture(TokioInstant::now() + Duration::from_secs(5), || false),
+        )
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let probe = store.clone();
+    // No package was staged: the scheduler must record its bounded failed
+    // start and defer the wake, rather than leave it due for the idle sweep.
+    let result = timeout(Duration::from_millis(700), async {
+        loop {
+            let probe = probe.clone();
+            let due = tokio::task::spawn_blocking(move || {
+                probe.app_wakes(AppWakeOperation::Due {
+                    now_ms: crate::session::unix_epoch_ms(),
+                    limit: 8,
+                })
+            })
+            .await
+            .unwrap()
+            .unwrap();
+            if matches!(due, AppWakeOutcome::Due(items) if items.is_empty()) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    stop.send(()).unwrap();
+    timeout(Duration::from_secs(5), server)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(
+        result.is_ok(),
+        "due App wake waited for coarse transport reconciliation"
+    );
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+mod wake_pressure;

@@ -3,8 +3,47 @@ pub mod agent_actor;
 pub(crate) mod agent_control_executor;
 pub mod agent_prompt_service;
 pub(crate) mod agent_utility_executor;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_backend_broker;
+pub(crate) mod app_control;
+pub(crate) mod app_event_pump;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_file_grant_broker;
+pub(crate) mod app_host_broker;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_files_broker;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_snapshot_broker;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_snapshot_restore;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_connection_broker;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_log_broker;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_validation_broker;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_http;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_install_control;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_call_errors;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_lifecycle;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_on_demand;
+pub(crate) mod app_views;
 pub(crate) mod app_lock;
+pub(crate) mod app_operation_budget;
+mod app_package_preparation;
+mod app_package_upload_control;
+pub(crate) mod app_publisher_control;
+mod app_state_broker;
+pub(crate) mod app_wake_pump;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_worker;
 pub(crate) mod browser_controller_action;
+pub(crate) mod browser_controller_app_view;
 pub(crate) mod browser_controller_compatibility;
 pub(crate) mod browser_controller_event;
 pub(crate) mod browser_controller_file_transfer;
@@ -12,6 +51,7 @@ pub(crate) mod browser_controller_history;
 pub(crate) mod browser_controller_permission;
 pub(crate) mod browser_controller_process;
 pub(crate) mod browser_controller_snapshot;
+pub(crate) mod room_tab_outline;
 pub(crate) mod browser_controller_tab;
 pub(crate) mod browser_import_admission;
 pub(crate) mod browser_import_payload;
@@ -66,6 +106,7 @@ pub mod projection;
 pub(crate) mod prompt_settings_executor;
 pub mod prompt_state;
 pub(crate) mod provider_account_control;
+mod claude_setup_token_login;
 pub(crate) mod provider_auth_control;
 pub(crate) mod provider_capability_import;
 pub(crate) mod provider_catalog_control;
@@ -81,6 +122,7 @@ pub(crate) mod response_redaction;
 pub mod router;
 pub(crate) mod runtime_lane_cleanup;
 pub(crate) mod runtime_mcp_proxy_dispatcher;
+pub(crate) mod runtime_tool_catalog;
 pub(crate) mod semantic_recall_utility;
 pub mod session_actor;
 pub(crate) mod session_collaboration_executor;

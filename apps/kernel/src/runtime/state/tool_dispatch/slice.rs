@@ -1775,6 +1775,7 @@ mod tests {
 
     #[tokio::test]
     async fn slice_screen_command_times_out() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-slice-timeout-test-{}",

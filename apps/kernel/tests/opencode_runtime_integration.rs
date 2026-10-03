@@ -29,8 +29,9 @@ fn shared_opencode_endpoint_keeps_prompt_queue_running_without_managed_process()
 
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = app
-        .sessions_mut()
+    // Phase 1: the session is created with its default agent, which holds focus;
+    // attaching a client creates no agent.
+    let (session, _default_agent) = app
         .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
@@ -128,8 +129,9 @@ fn shared_opencode_idle_status_completes_the_prompt_without_hot_polling() {
 
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = app
-        .sessions_mut()
+    // Phase 1: the session is created with its default agent, which holds focus;
+    // attaching a client creates no agent.
+    let (session, _default_agent) = app
         .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
@@ -227,8 +229,9 @@ fn event_stream_disconnect_reconnects_without_restarting_the_provider_run() {
 
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = app
-        .sessions_mut()
+    // Phase 1: the session is created with its default agent, which holds focus;
+    // attaching a client creates no agent.
+    let (session, _default_agent) = app
         .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
@@ -306,8 +309,9 @@ fn event_stream_reconnect_retries_temporary_http_failures_without_restarting_the
 
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = app
-        .sessions_mut()
+    // Phase 1: the session is created with its default agent, which holds focus;
+    // attaching a client creates no agent.
+    let (session, _default_agent) = app
         .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
@@ -390,8 +394,9 @@ fn external_opencode_endpoint_accepts_prompts_and_streams_output() {
 
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = app
-        .sessions_mut()
+    // Phase 1: the session is created with its default agent, which holds focus;
+    // attaching a client creates no agent.
+    let (session, _default_agent) = app
         .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
@@ -742,8 +747,9 @@ fn opencode_event_stream_does_not_depend_on_session_status_polling() {
 
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = app
-        .sessions_mut()
+    // Phase 1: the session is created with its default agent, which holds focus;
+    // attaching a client creates no agent.
+    let (session, _default_agent) = app
         .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
@@ -832,8 +838,9 @@ fn shared_opencode_tool_activity_keeps_prompt_alive_until_explicit_idle_after_fo
 
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = app
-        .sessions_mut()
+    // Phase 1: the session is created with its default agent, which holds focus;
+    // attaching a client creates no agent.
+    let (session, _default_agent) = app
         .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app

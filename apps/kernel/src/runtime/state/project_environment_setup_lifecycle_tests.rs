@@ -97,12 +97,14 @@ impl Drop for WorkerCommandGateCleanup {
 #[cfg(unix)]
 #[tokio::test]
 async fn public_setup_lifecycle_validates_supplied_definition_through_worker_boundary() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle(DefinitionScenario::Supplied).await;
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn public_setup_lifecycle_runs_on_an_ordinary_local_worker_without_cloud_receipt() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle_at_role(
         DefinitionScenario::Supplied,
         KernelRuntimeRole::General,
@@ -113,6 +115,7 @@ async fn public_setup_lifecycle_runs_on_an_ordinary_local_worker_without_cloud_r
 #[cfg(unix)]
 #[tokio::test]
 async fn public_setup_resolves_ordinary_worker_and_platform_from_selected_agent() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle_with_failure_timing(
         DefinitionScenario::Supplied,
         true,
@@ -128,18 +131,21 @@ async fn public_setup_resolves_ordinary_worker_and_platform_from_selected_agent(
 #[cfg(unix)]
 #[tokio::test]
 async fn public_setup_lifecycle_generates_definition_through_worker_boundary() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle(DefinitionScenario::Generated).await;
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn public_setup_lifecycle_reuses_unchanged_recipe_and_lockfile_inputs_without_utility() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle(DefinitionScenario::SuppliedInputReuse).await;
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn public_setup_lifecycle_repairs_stale_and_missing_inputs_before_ready() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle(DefinitionScenario::SuppliedStaleInputs).await;
     exercise_public_setup_lifecycle(DefinitionScenario::SuppliedMissingInputs).await;
 }
@@ -147,30 +153,35 @@ async fn public_setup_lifecycle_repairs_stale_and_missing_inputs_before_ready() 
 #[cfg(unix)]
 #[tokio::test]
 async fn public_setup_lifecycle_repairs_legacy_unattested_definition_before_ready() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle(DefinitionScenario::SuppliedLegacyUnattested).await;
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn public_setup_lifecycle_repairs_definition_for_followup_worker_without_utility() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle(DefinitionScenario::SuppliedSetupFailure).await;
 }
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn public_setup_cancellation_restores_ordinary_provider_without_retry() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle_with_options(DefinitionScenario::Supplied, false, None).await;
 }
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn pr364_generated_validation_failure_restores_previous_provider_snapshot() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle_with_candidate_failure(CandidateFailureMode::Validation).await;
 }
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn pr364_generated_validation_cancellation_restores_previous_provider_snapshot() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle_with_candidate_failure(CandidateFailureMode::Cancellation)
         .await;
 }
@@ -178,6 +189,7 @@ async fn pr364_generated_validation_cancellation_restores_previous_provider_snap
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn pr364_public_setup_second_restart_spawn_failure_restores_the_previous_provider_child() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle_with_second_restart_failure(
         ProviderLifecycleFailureStage::Spawn,
     )
@@ -187,6 +199,7 @@ async fn pr364_public_setup_second_restart_spawn_failure_restores_the_previous_p
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn pr364_public_setup_second_restart_binding_failure_restores_the_previous_provider_child() {
+    crate::test_support::isolated_env_test!();
     exercise_public_setup_lifecycle_with_second_restart_failure(
         ProviderLifecycleFailureStage::Bind,
     )
@@ -1135,9 +1148,12 @@ async fn exercise_public_setup_lifecycle_with_failure_timing(
                 workspace.join("setup-started").exists(),
                 "a reusable definition must be applied by the worker before validation"
             );
+            // Every setup attempt restarts the provider into discovery mode and
+            // back, which the fixture records; only a prompt means the utility
+            // agent was invoked.
             assert!(
                 utility_prompt_requests(&provider_fixture.trace_entries()).is_empty(),
-                "a passing reusable definition must not issue a utility prompt: {}",
+                "a passing reusable definition must not invoke the utility agent: {}",
                 provider_fixture.diagnostics()
             );
         }
@@ -1707,6 +1723,7 @@ async fn run_persisted_definition_on_fresh_worker(
 #[cfg(unix)]
 #[test]
 fn public_setup_status_transport_recovery_and_missing_dispatch_replay_preserve_operation() {
+    crate::test_support::isolated_env_test!();
     std::thread::Builder::new()
         .name("project-environment-setup-transport-recovery".to_string())
         .stack_size(8 * 1024 * 1024)
@@ -4559,6 +4576,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
 #[cfg(unix)]
 #[test]
 fn stale_binding_recovery_retry_is_ordered_with_concurrent_cancel() {
+    crate::test_support::isolated_env_test!();
     std::thread::Builder::new()
         .name("project-environment-stale-binding-cancel".to_string())
         .stack_size(8 * 1024 * 1024)
@@ -6046,6 +6064,21 @@ struct UtilityProviderState {
     trace: Vec<String>,
 }
 
+/// Utility prompts recorded by the provider fixture, without the health,
+/// config, session and event requests of each provider restart.
+#[cfg(unix)]
+fn utility_prompt_requests(trace: &[String]) -> Vec<String> {
+    trace
+        .iter()
+        .filter(|entry| {
+            entry.strip_prefix("POST ").is_some_and(|path| {
+                path.starts_with("/session/") && path.ends_with("/prompt_async")
+            })
+        })
+        .cloned()
+        .collect()
+}
+
 #[cfg(unix)]
 impl UtilityProviderState {
     fn record(&mut self, entry: impl Into<String>) {
@@ -6160,19 +6193,6 @@ impl UtilityProviderFixture {
 }
 
 #[cfg(unix)]
-fn utility_prompt_requests(trace: &[String]) -> Vec<String> {
-    trace
-        .iter()
-        .filter(|entry| {
-            entry.strip_prefix("POST ").is_some_and(|path| {
-                path.starts_with("/session/") && path.ends_with("/prompt_async")
-            })
-        })
-        .cloned()
-        .collect()
-}
-
-#[cfg(unix)]
 #[test]
 fn utility_prompt_trace_filter_counts_only_actual_prompt_posts() {
     let ordinary_provider_chatter = vec![
@@ -6208,6 +6228,7 @@ impl Drop for UtilityProviderFixture {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn pr364_opencode_discovery_rejects_source_mcp_and_restores_ordinary_config() {
+    crate::test_support::isolated_env_test!();
     let _environment_lock = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!(
         "chariox-opencode-discovery-mcp-lifecycle-{}-{}",
@@ -6328,6 +6349,9 @@ async fn pr364_opencode_discovery_rejects_source_mcp_and_restores_ordinary_confi
     .to_string();
 
     let mut config = DaemonConfig::for_tests();
+    // The worker kernel home owns preparation state. As in production, it is
+    // this worker's CHARIOX_HOME, not the per-test state directory.
+    config.user_config_path = home.join("config.toml");
     config.daemon_id = "worker-kernel".into();
     config.host_machine_id = "worker-machine".into();
     config.relay_public_key = "worker-public-key".into();

@@ -1796,6 +1796,7 @@ Prefer `slice_find_text` before clicking text in the browser or GUI because it r
 
     #[test]
     fn slice_kernels_include_slice_template() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_lock::lock();
         std::env::set_var("CHARIOX_MACHINE_ID", "slice:test");
         std::env::remove_var("CHARIOX_SLICE_MACHINE_ID");
@@ -2140,6 +2141,7 @@ Prefer `slice_find_text` before clicking text in the browser or GUI because it r
 
     #[test]
     fn scheduled_prompt_context_uses_the_markdown_catalog() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_lock::lock();
         let home = temp_prompt_root("configured-scheduled-prompt");
         let root = home.join("prompts");

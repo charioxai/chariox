@@ -185,6 +185,40 @@ impl RoomEnvironmentRegistry {
         Ok(environment.snapshot())
     }
 
+    pub(crate) fn set_browser_bar_visible_as_actor(
+        &mut self,
+        session_id: &str,
+        actor: EnvironmentActor,
+        visible: bool,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        let environment = self
+            .environments_by_session
+            .get_mut(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        environment.set_browser_bar_visible_as_actor(actor, visible)?;
+        Ok(environment.snapshot())
+    }
+
+    pub(crate) fn preview_update_viewport_as_actor(
+        &self,
+        session_id: &str,
+        actor: EnvironmentActor,
+        expected_revision: u64,
+        viewport: CanonicalViewport,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        let mut environment = self
+            .environments_by_session
+            .get(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?
+            .clone();
+        environment.update_viewport_as_actor(actor, expected_revision, viewport)?;
+        Ok(environment.snapshot())
+    }
+
     pub(crate) fn update_viewport_as_actor(
         &mut self,
         session_id: &str,
@@ -254,6 +288,30 @@ impl RoomEnvironmentRegistry {
             })?;
         environment.reconcile_controller_tabs(tabs, focused_runtime_target_id);
         Ok(environment.snapshot())
+    }
+
+    pub(crate) fn set_app_tabs(
+        &mut self,
+        session_id: &str,
+        apps: std::collections::BTreeMap<String, (String, crate::session::AppPanelLayout)>,
+        agent_id: Option<String>,
+        app_panels: bool,
+    ) -> Result<std::collections::BTreeMap<String, (u32, u32)>, EnvironmentError> {
+        let environment = self
+            .environments_by_session
+            .get_mut(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        environment.set_app_tabs(apps, agent_id, app_panels);
+        Ok(environment.app_page_sizes())
+    }
+
+    /// A session without a Room has no App panels to update.
+    pub(crate) fn set_panel_agent(&mut self, session_id: &str, agent_id: Option<String>) {
+        if let Some(environment) = self.environments_by_session.get_mut(session_id) {
+            environment.set_panel_agent(agent_id);
+        }
     }
 
     pub(crate) fn controller_tab_binding(

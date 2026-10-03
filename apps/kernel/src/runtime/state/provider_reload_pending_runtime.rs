@@ -3,55 +3,48 @@
 use super::*;
 
 impl KernelRuntimeState {
-    pub(super) fn remember_pending_provider_reload(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-        reason: &str,
-    ) {
-        self.remember_pending_provider_reload_inner(session_id, agent_id, reason, false);
-    }
-
+    /// A runtime tool catalog change keeps its typed cause in the same idle
+    /// queue as launch-input changes, so a merged reload still forces it.
     pub(super) fn remember_pending_provider_catalog_reload(
         &self,
         session_id: &str,
         agent_id: &str,
     ) {
-        self.remember_pending_provider_reload_inner(
+        self.remember_pending_provider_reload(
             session_id,
             agent_id,
-            "runtime tool catalog",
-            true,
+            ProviderReloadReason::RuntimeToolCatalog,
         );
     }
 
-    fn remember_pending_provider_reload_inner(
+    pub(super) fn remember_pending_provider_reload(
         &self,
         session_id: &str,
         agent_id: &str,
-        reason: &str,
-        force_catalog_reload: bool,
+        reason: ProviderReloadReason,
     ) {
         let mut pending = self.owned.pending_provider_reloads.write();
-        if let Some(existing) = pending.get_mut(agent_id) {
-            existing.force_catalog_reload |= force_catalog_reload;
-            return;
-        }
+        let reason = pending
+            .get(agent_id)
+            .map_or(reason.clone(), |previous| reason.merge(&previous.reason));
         pending.insert(
             agent_id.to_string(),
             PendingProviderReload {
                 session_id: session_id.to_string(),
                 agent_id: agent_id.to_string(),
-                reason: reason.to_string(),
-                force_catalog_reload,
+                reason,
             },
         );
+        let poller = self.owned.pending_provider_reloads.pollers.claim(agent_id);
         drop(pending);
+        let Some(mut poller) = poller else {
+            return;
+        };
         let state = self.clone();
         let session_id = session_id.to_string();
         let agent_id = agent_id.to_string();
         tokio::spawn(async move {
-            for _ in 0..240 {
+            while poller.next().await {
                 let is_idle = state
                     .owned
                     .session_store
@@ -71,21 +64,20 @@ impl KernelRuntimeState {
                     };
                     if let Some(pending) = pending {
                         match state
-                            .reload_agent_provider_if_idle_inner(
+                            .reload_agent_provider_if_idle_for_reason(
                                 &pending.session_id,
                                 &pending.agent_id,
                                 &pending.reason,
-                                pending.force_catalog_reload,
                             )
                             .await
                         {
                             Ok(ProviderReloadOutcome::Deferred) => {
-                                state.remember_pending_provider_reload_inner(
-                                    &pending.session_id,
-                                    &pending.agent_id,
-                                    &pending.reason,
-                                    pending.force_catalog_reload,
-                                );
+                                let mut queued = state.owned.pending_provider_reloads.write();
+                                if let Some(newer) = queued.get_mut(&agent_id) {
+                                    newer.reason = newer.reason.clone().merge(&pending.reason);
+                                } else {
+                                    queued.insert(agent_id.clone(), pending);
+                                }
                             }
                             Ok(_) => {}
                             Err(error) => {
@@ -101,9 +93,23 @@ impl KernelRuntimeState {
                             }
                         }
                     }
+                }
+                let queued = state.owned.pending_provider_reloads.write();
+                if !queued.contains_key(&agent_id) {
+                    poller.release();
                     return;
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            // Leave the pending reason available for a later explicit change;
+            // a Deferred attempt never starts a replacement polling budget.
+            let queued = state.owned.pending_provider_reloads.write();
+            poller.release();
+            if queued.contains_key(&agent_id) {
+                crate::logging::warn_with_fields(
+                    "daemon.provider",
+                    "pending provider reload polling expired",
+                    serde_json::json!({"session_id": session_id, "agent_id": agent_id}),
+                );
             }
         });
     }

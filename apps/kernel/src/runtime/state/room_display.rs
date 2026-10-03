@@ -66,11 +66,17 @@ impl KernelRuntimeState {
                 "Room Environment Selkies display is not running",
             ));
         }
-        let _guard = self.owned.slice_store.guard_environment_use(
-            &slice.id,
-            Some(&session_id),
-            "environment.display.open",
-        )?;
+        let _guard = self
+            .owned
+            .slice_store
+            .queue_environment_use(&slice.id, Some(&session_id), "environment.display.open")
+            .await?;
+        let slice = self.resolve_slice(&slice.id)?;
+        if slice.status != SliceStatus::Running {
+            return Err(display_error(
+                "Room Environment Selkies display is not running",
+            ));
+        }
         let config = self.owned.config_projection.snapshot();
         let config = config.slice_relay_override(&slice).unwrap_or(config);
         let target = ClientTarget {

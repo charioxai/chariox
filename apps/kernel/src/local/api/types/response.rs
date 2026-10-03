@@ -3,6 +3,38 @@ use super::*;
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonResponse {
+    AppPublisherEnrollmentStatus { operation: AppPublisherEnrollmentSummary, },
+    AppInstallOperationStatus { operation: AppInstallOperationSummary, },
+    AppPackageUploadStatus { upload: AppPackageUploadSummary, },
+    AppInstallationsListed { installations: Vec<AppInstallationSummary>, next_cursor: Option<String>, },
+    AppInstallation { installation: AppInstallationSummary, },
+    AppInstallationJournal { installation_id: String, updates: Vec<AppUpdateSummary>, },
+    AppDataSnapshotRestored { installation_id: String, generation: String, snapshot_id: String, },
+    AppRequestFailed { code: AppRequestErrorCode, },
+    AppWorker { worker: AppWorkerSummary, },
+    AppAutomations { installation_id: String, automations: Vec<AppAutomationSummary>, },
+    AppAutomation { installation_id: String, automation: AppAutomationSummary, },
+    AppViewOpened { installation_id: String, target_id: String, origin: String, bound_agent_id: Option<String>, },
+    /// The user's panel choice for the App's views in this session.
+    AppViewPanelSet { installation_id: String, placement: Option<crate::session::AppPanelPlacement>, minimized: bool, },
+    AppLogs { installation_id: String, entries: Vec<AppLogEntrySummary>, },
+    AppInboxRoutes { installation_id: String, routes: Vec<AppInboxRouteSummary>, },
+    AppConnections { installation_id: String, connections: Vec<AppConnectionSummary>, },
+    /// Protocol 361: the caller's active installations and their configuration.
+    AppSet { schema: String, installations: Vec<AppSetInstallation>, },
+    /// Protocol 367: a publication's App plan (`chariox.publication-apps.v1`,
+    /// each App with its signed `capabilities`), `null` when it uses no App;
+    /// `pinned` once a deployment preparation pinned it.
+    DeploymentAppsPreview { publication_id: String, pinned: bool, plan: Option<serde_json::Value>, #[serde(default, skip_serializing_if = "Option::is_none")] release_plan: Option<serde_json::Value>, },
+    /// Protocol 367: the owner's consent to a deployment's Apps.
+    DeploymentAppsConsent { consent: DeploymentAppsConsent, },
+    AppFileGranted { operation_id: String, files: u32, },
+    AppFileExport { operation_id: String, name: String, contents_base64: String, },
+    /// Protocol 394: file requests ended (`requests`) and granted files the
+    /// App had not imported (`files`).
+    AppFileGrantsRevoked { installation_id: String, requests: u32, files: u32, },
+    AppHostActionAccepted { operation_id: String, action: AppHostAction, },
+    AppInboxOccurrenceAccepted { installation_id: String, route_id: String, occurrence_id: String, duplicate: bool, },
     SessionCreated { session: RuntimeSession, agent: AgentInstance, },
     SessionAttached { attachment: RuntimeAttachment, },
     SessionDetached { attachment: RuntimeAttachment, },
@@ -49,6 +81,7 @@ pub enum LocalDaemonResponse {
     BrowserImportConsent { request_id: String, status: BrowserImportConsentStatus, },
     RoomEnvironmentSlice { binding: Option<RoomEnvironmentSliceBinding>, },
     RoomEnvironmentResourceInventory { inventory: RoomEnvironmentResourceInventory, },
+    RoomEnvironmentTabAccessibility { accessibility: RoomEnvironmentTabAccessibility, },
     RoomEnvironmentScreenshotCaptured { artifact: RoomEnvironmentScreenshotArtifact, },
     RoomEnvironmentScreenshotChunk { chunk: RoomEnvironmentScreenshotChunk, },
     RoomEnvironmentEvents { replay: crate::session::EnvironmentReplay, },
@@ -376,6 +409,7 @@ pub enum LocalDaemonResponse {
     AgentExtensionRevoked { agent: AgentInstance, },
     AgentsListed { agents: Vec<AgentInstance>, },
     WorkflowCreated { workflow: WorkflowDefinition, session: RuntimeSession, },
+    AgentWorkflowCreated { workflow: WorkflowDefinition, endpoint: crate::session::WorkflowEndpointDefinition, session: RuntimeSession, },
     WorkflowCodeValidated { result: crate::workflow_code::WorkflowCodeCompileResult, },
     WorkflowCodeApplied { result: crate::workflow_code::WorkflowCodeCompileAndApplyResult, session: RuntimeSession, },
     WorkflowCodeRun { result: crate::workflow_code::WorkflowCodeRunResult, session: RuntimeSession, },
@@ -443,13 +477,8 @@ pub enum LocalDaemonResponse {
     },
     EventConnectionResourcesPage { page: EventGeneratorResourcePage, },
     EventConnectionTested { result: chariox_event_protocol::AegsConnectionTestEventResponse, },
-    EventConnectionDependencies { connection_id: String, dependencies: Vec<WorkflowEventBindingDependency>, },
-    EventConnectionRemoved { connection: EventConnection, deactivated_bindings: Vec<WorkflowEventBindingDependency>, },
-    WorkflowEventBindingCreated { binding: crate::session::WorkflowEventBinding, session: RuntimeSession, },
-    WorkflowEventBindingsListed { bindings: Vec<crate::session::WorkflowEventBinding>, },
-    WorkflowEventBindingUpdated { binding: crate::session::WorkflowEventBinding, session: RuntimeSession, },
-    WorkflowEventBindingTransferred { binding: crate::session::WorkflowEventBinding, session: RuntimeSession, },
-    WorkflowEventBindingTested { delivery_id: String, queued_prompt_id: String, duplicate: bool, session: RuntimeSession, },
+    EventConnectionDependencies { connection_id: String, dependencies: Vec<EventConnectionDependency>, },
+    EventConnectionRemoved { connection: EventConnection, },
     EventDeliveryStatus { status: EventDeliveryStatus, },
     WorkflowPublication { publication: WorkflowPublicationDefinition, },
     WorkflowPublicationPackageExported {

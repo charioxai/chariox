@@ -3,6 +3,7 @@
 
 import http.client
 import importlib.util
+import importlib.resources
 import socketserver
 import threading
 import os
@@ -32,6 +33,38 @@ class FakeProcess:
 
 
 class SelkiesStopTests(unittest.TestCase):
+    def test_cold_start_serves_installed_frontend_without_copying_it(self):
+        # Selkies copies its packaged frontend before opening the health port
+        # unless web-root points at the already-installed files. Cold VM disks
+        # can make that copy exceed our readiness deadline.
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            frontend = root / "frontend"
+            frontend.mkdir()
+            (frontend / "index.html").write_text("installed frontend")
+            child = mock.Mock(pid=os.getpid())
+            child.poll.return_value = None
+            launched = []
+
+            def spawn(command, **kwargs):
+                launched.extend(command)
+                return child
+
+            def ready(_record):
+                return f"--web-root={frontend}" in launched
+
+            with mock.patch.object(importlib.resources, "files", return_value=frontend), \
+                 mock.patch.object(LIFECYCLE.subprocess, "Popen", side_effect=spawn), \
+                 mock.patch.object(LIFECYCLE, "healthy", side_effect=ready), \
+                 mock.patch.object(LIFECYCLE.time, "monotonic", side_effect=range(0, 100, 5)), \
+                 mock.patch.object(LIFECYCLE.time, "sleep"), \
+                 mock.patch.object(LIFECYCLE.urllib.request, "urlopen") as request:
+                request.return_value.__enter__.return_value.status = 200
+                result = LIFECYCLE.start(root, port=6080, display=":99")
+
+            self.assertTrue(result["available"])
+            self.assertEqual((frontend / "index.html").read_text(), "installed frontend")
+
     def test_new_records_use_stable_identity_and_ignore_timestamp_for_generation(self):
         record = LIFECYCLE.process_record(LIFECYCLE.psutil.Process())
         self.assertIsNotNone(LIFECYCLE.owned_process(record))

@@ -13,11 +13,16 @@ export type InteractionChoiceSubmissionDecision = {
 
 export type InteractionChoiceKeyEvent = {
   name: string
+  /** The text the terminal typed. Unlike `name`, it keeps letter case. */
+  sequence?: string
   eventType?: string
   ctrl?: boolean
   meta?: boolean
   alt?: boolean
+  shift?: boolean
 }
+
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/
 
 export type InteractionChoiceKeyAction = {
   action: "ignore"
@@ -75,7 +80,7 @@ export function resolveInteractionChoiceSubmission(options: {
       return { action: "unavailable" }
     }
     const minLength = customChoice.min_length ?? 1
-    if (options.customReply.length < minLength) {
+    if (Array.from(options.customReply).length < minLength) {
       return { action: "edit_custom" }
     }
   }
@@ -99,17 +104,57 @@ export function nextInteractionChoiceIndex(options: {
   return (options.currentIndex + options.delta + count) % count
 }
 
+/** Appends typed or pasted text, up to `maxLength` characters (code points,
+ * as the kernel counts them). */
 export function appendInteractionCustomReply(options: {
   current: string
   input: string
   maxLength?: number | null | undefined
 }): string {
   const maxLength = options.maxLength ?? 2000
-  return options.current.length < maxLength ? `${options.current}${options.input}` : options.current
+  const characters = Array.from(options.current)
+  for (const character of options.input) {
+    if (characters.length >= maxLength) break
+    characters.push(character)
+  }
+  return characters.join("")
 }
 
+/** Removes the last character, never half of a surrogate pair. */
 export function deleteInteractionCustomReply(current: string): string {
-  return current.slice(0, -1)
+  return Array.from(current).slice(0, -1).join("")
+}
+
+/** The text a key press types into a custom reply, exactly as typed.
+ *
+ * A key's `name` is the lower-case key name ("a" for both a and A), so a
+ * custom reply, which may be a vault passphrase, must use the typed
+ * `sequence`: it keeps letter case, shifted symbols and Unicode. A key whose
+ * sequence is an escape sequence (the kitty protocol without associated text)
+ * falls back to its single-character name, upper-cased with Shift. Keys that
+ * type nothing, and Ctrl/Alt/Meta chords, give "". */
+export function interactionCustomReplyKeyText(event: InteractionChoiceKeyEvent): string {
+  if (event.ctrl || event.meta || event.alt) {
+    return ""
+  }
+  if (event.sequence && !CONTROL_CHARACTERS.test(event.sequence)) {
+    return event.sequence
+  }
+  if (event.name === "space") {
+    return " "
+  }
+  if (Array.from(event.name).length !== 1 || CONTROL_CHARACTERS.test(event.name)) {
+    return ""
+  }
+  return event.shift ? event.name.toLocaleUpperCase() : event.name
+}
+
+/** The text a paste adds to a custom reply: the pasted text without its
+ * trailing line break, or null when it holds a line break or another control
+ * character (a custom reply is one line, and Enter submits it). */
+export function interactionCustomReplyPasteText(text: string): string | null {
+  const line = text.replace(/(?:\r\n|\r|\n)+$/, "")
+  return CONTROL_CHARACTERS.test(line) ? null : line
 }
 
 export function shouldEditCustomInteractionOnEnter(options: {
@@ -147,8 +192,9 @@ export function resolveInteractionChoiceKeyAction(options: {
     if (event.name === "return" || event.name === "enter") {
       return { action: "submit", choiceIndex: customIndex, consumeEvent: true }
     }
-    if (!event.ctrl && !event.meta && !event.alt && event.name.length === 1) {
-      return { action: "append_custom_reply", input: event.name, consumeEvent: true }
+    const input = interactionCustomReplyKeyText(event)
+    if (input) {
+      return { action: "append_custom_reply", input, consumeEvent: true }
     }
     return { action: "handled", consumeEvent: false }
   }

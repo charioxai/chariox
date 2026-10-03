@@ -1,15 +1,26 @@
 #!/usr/bin/env node
 
+import { retireProtectedQuotaHomes } from "./protected-home-retirement.mjs"
+import { recordCapturedImageProof } from "./protected-image-proof.mjs"
+import { requireSafeHomeVolume as requireSafeManagedHomeVolume } from "./protected-home-preflight.mjs"
+import { requireSafeLocalHomeVolume } from "./protected-local-home-scan.mjs"
+import { createManagedLayoutController } from "./protected-managed-layout.mjs"
+import { LEGACY_CAPTURE_NOTICE } from "./legacy-release-f-layout.mjs"
+import { localDevRuntimeEnvironment } from "./protected-local-docker-authority.mjs"
+import { verifiedProtectedAuthority } from "./protected-authority.mjs"
+import { recordManagedImageProof } from "./protected-image-proof.mjs"
+import { DURABLE_LAYOUT_ROOT } from "./protected-first-boot.mjs"
 import { dockerControlPolicy, runBrokerCommand } from "./managed-broker-command.mjs"
 
 import { spawnSync } from "node:child_process"
 import { isPositiveDockerCpuLimit } from "./docker-cpu-policy.mjs"
 import { isDockerImageReference } from "./docker-image-reference.mjs"
-import { HOME_ARCHIVE_PROGRESS_TIMEOUT_MS, capturePrivateHomeArchive, homeArchiveMetadataMatches } from "./managed-home-archive-stream.mjs"
+import { HOME_ARCHIVE_PROGRESS_TIMEOUT_MS, homeArchiveMetadataMatches } from "./managed-home-archive-stream.mjs"
 import { createHash } from "node:crypto"
 import { digestPinnedHomeArchive } from "./managed-home-archive-digest.mjs"
 import {
   chmodSync,
+  chownSync,
   closeSync,
   constants,
   existsSync,
@@ -47,6 +58,7 @@ const MAX_CREDENTIAL_BYTES = 2 * 1024 * 1024
 const MAX_CREDENTIAL_TOTAL_BYTES = 8 * 1024 * 1024
 const LINUX_O_PATH = 0x200000
 const PROVIDER_ACCOUNT_CREDENTIAL_PATH = /^\/home\/slice\/\.chariox\/daemon\/provider-accounts\/[A-Za-z0-9-]+\/(?:codex\/[A-Za-z0-9-]+\/codex\/auth\.json|opencode\/[A-Za-z0-9-]+\/data\/opencode\/auth\.json)$/
+const PROTECTED_PROVIDER_ACCOUNT_CREDENTIAL_PATH = /^\/var\/lib\/chariox\/slice-private\/provider-accounts\/[A-Za-z0-9-]+\/(?:codex\/[A-Za-z0-9-]+\/codex\/auth\.json|opencode\/[A-Za-z0-9-]+\/data\/opencode\/auth\.json)$/
 const SHARE_ROOT_INPUT = resolve(process.env.CHARIOX_SLICE_DOCKER_SHARE_ROOT ?? "/var/lib/chariox-slice-share")
 const SHARE_ROOT = existsSync(SHARE_ROOT_INPUT) ? realpathSync(SHARE_ROOT_INPUT) : SHARE_ROOT_INPUT
 const SOCKET_PATH = process.env.CHARIOX_SLICE_DOCKER_BROKER_SOCKET ?? "/var/lib/chariox-slice-share/.broker-private/control/control.sock"
@@ -84,7 +96,23 @@ function signedBuildContextDigest() {
   return artifact.sha256
 }
 
-const SIGNED_BUILD_CONTEXT_DIGEST = signedBuildContextDigest()
+const LOCAL_AUTHORITY = process.env.CHARIOX_SLICE_LOCAL_DEV_OWNER_UID === undefined
+  ? undefined : verifiedProtectedAuthority()
+const VERIFIED_BUILD_CONTEXT_DIGEST = LOCAL_AUTHORITY?.sourceDigest ?? signedBuildContextDigest()
+const protectedLayouts = createManagedLayoutController({
+  root: DURABLE_LAYOUT_ROOT, sourceDigest: process.platform === "linux" && process.getuid() === 0
+    && (LOCAL_AUTHORITY ? DOCKER_HOST === "unix:///run/docker.sock"
+      : DOCKER_HOST === "unix:///run/chariox-docker/docker.sock") ? VERIFIED_BUILD_CONTEXT_DIGEST : undefined,
+  dataOwner: () => {
+    const authority = verifiedProtectedAuthority()
+    if (DOCKER_HOST !== (authority.kind === "linux-local-rootful-dev"
+        ? "unix:///run/docker.sock" : "unix:///run/chariox-docker/docker.sock")) fail("protected slice Docker authority mismatch")
+    return authority.dataUid
+  },
+  docker: args => spawnSync("/usr/bin/docker", args, {
+    env: dockerEnvironment(), encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 60_000,
+  }),
+})
 const persistentHandleDescriptors = new Map()
 let persistentHandleRecords
 const ACTIONS = new Set([
@@ -231,7 +259,12 @@ function isDiskAdmissionHelper(value) {
 const SLICE_RUNTIME_LOG_SCRIPT = `
 set -eu
 found=0
-for file in /opt/chariox-slice/logs/*.log /home/slice/.local/state/chariox/logs/*.ndjson; do
+case "$2" in
+  protected) runtime=/var/lib/chariox/slice-private/runtime/logs; kernel=/var/lib/chariox/slice-private/kernel/logs ;;
+  legacy) runtime=/opt/chariox-slice/logs; kernel=/home/slice/.local/state/chariox/logs ;;
+  *) exit 64 ;;
+esac
+for file in "$runtime"/*.log "$kernel"/*.ndjson; do
   [ -f "$file" ] || continue
   found=1
   printf '\\n=== %s ===\\n' "$file"
@@ -277,7 +310,7 @@ function validateDockerExec(args) {
     args[2] === "slice" &&
     command.length === 3 &&
     exactArguments(command.slice(0, 2), ["test", "-s"]) &&
-    PROVIDER_ACCOUNT_CREDENTIAL_PATH.test(command[2])
+    (PROVIDER_ACCOUNT_CREDENTIAL_PATH.test(command[2]) || PROTECTED_PROVIDER_ACCOUNT_CREDENTIAL_PATH.test(command[2]))
   ) return
   if (args[2] === "slice" && exactArguments(command, ["gh", "auth", "token", "--hostname", "github.com"])) return
   if (
@@ -319,12 +352,13 @@ function validateDockerExec(args) {
   ) return
   if (
     args[2] === "slice" &&
-    command.length === 5 &&
+    command.length === 6 &&
     command[0] === "sh" &&
     command[1] === "-c" &&
     command[2] === SLICE_RUNTIME_LOG_SCRIPT &&
     command[3] === "slice-runtime-logs" &&
-    /^[0-9]{1,4}$/.test(command[4])
+    /^[0-9]{1,4}$/.test(command[4]) &&
+    new Set(["legacy", "protected"]).has(command[5])
   ) return
   fail("Docker exec command shape is not allowed")
 }
@@ -657,6 +691,22 @@ function validateRequest(request) {
     validateProvisioner(request.action, request.environment, request.files)
     return
   }
+  if (request?.kind === "provider_auth_layout") {
+    exactKeys(request, ["kind", "container"], "provider auth layout request")
+    validateSliceContainer(request.container, "provider auth layout container")
+    return
+  }
+  if (request?.kind === "capture_preflight") {
+    exactKeys(request, ["kind", "container"], "slice capture preflight request")
+    validateResource(request.container, "slice capture container")
+    return
+  }
+  if (request?.kind === "home_restore_resolve") {
+    exactKeys(request, ["kind", "container", "path"], "home restore resolution")
+    validateSliceContainer(request.container, "home restore container")
+    managedHomeArchiveCoordinates(request.path)
+    return
+  }
   if (request?.kind === "home_archive_capture") {
     exactKeys(request, ["kind", "container", "scope", "id"], "home archive capture request")
     validateResource(request.container, "home archive container")
@@ -717,6 +767,12 @@ function artifactDirectory(scope, id) {
 }
 
 async function captureHomeArchive(request) {
+  // Capture only a verified protected or explicitly retained release F legacy
+  // layout, with its exact home quiesced.
+  const owner = request.container.match(/^(chariox-slice-[A-Za-z0-9_.:-]+)-home-archive-[0-9]+$/)?.[1]
+  if (!owner) fail("slice home capture helper ownership is invalid")
+  const layout = protectedLayouts.captureLayout(owner)
+  protectedLayouts.requireQuiescedHome(owner)
   const scopeRoot = artifactScopeRoot(request.scope)
   mkdirSync(scopeRoot, { recursive: true, mode: 0o700 })
   chmodSync(scopeRoot, 0o700)
@@ -728,12 +784,24 @@ async function captureHomeArchive(request) {
   chmodSync(staging, 0o700)
   const staged = join(staging, "home.tar.zst")
   try {
-    const { sizeBytes: expectedSize, sha256: digest } = await capturePrivateHomeArchive({
-      command: "/usr/bin/docker",
-      args: ["exec", "-u", "root", request.container, "tar", "--zstd", "-C", "/home-src", "-cf", "-", "."],
-      env: dockerEnvironment(),
-      destination: staged,
-    })
+    // The verified helper streams its read-only home straight into private
+    // broker state; the capture module bounds size, free space and duration.
+    // Lease loss settles its process group like any other broker producer.
+    const captured = await spawnBounded(process.execPath,
+      [join(dirname(fileURLToPath(import.meta.url)), "protected-home-capture.mjs"), request.container, layout.homeVolume, staged,
+        ...(layout.layoutKind === "legacy-release-f" ? ["legacy-release-f"] : [])],
+      {env: dockerEnvironment(), maxBuffer: 64 * 1024,
+        ...(layout.layoutKind === "legacy-release-f" ? {} : {timeout: 11 * 60_000})})
+    if (captured.status !== 0) fail("slice home capture was refused; existing saved state is preserved")
+    const result = JSON.parse(captured.stdout.toString("utf8"))
+    exactKeys(result, ["sizeBytes", "sha256"], "protected home capture result")
+    const expectedSize = result.sizeBytes
+    const digest = result.sha256
+    const metadata = lstatSync(staged)
+    if (!Number.isSafeInteger(expectedSize) || expectedSize <= 0
+        || !/^[a-f0-9]{64}$/.test(digest) || !metadata.isFile() || metadata.isSymbolicLink()
+        || metadata.nlink !== 1 || metadata.size !== expectedSize || metadata.uid !== process.getuid()
+        || (metadata.mode & 0o077) !== 0) fail("captured slice home archive is invalid")
     const stagedMetadata = join(staging, "metadata.json")
     const metadataFd = openSync(
       stagedMetadata,
@@ -759,6 +827,7 @@ async function captureHomeArchive(request) {
     fsyncDirectory(identityRoot)
     fsyncDirectory(scopeRoot)
     const finalPath = join(destination, "home.tar.zst")
+    protectedLayouts.recordCapture(owner, digest)
     return { path: finalPath, sizeBytes: expectedSize, sha256: digest }
   } finally {
     rmSync(staging, { recursive: true, force: true })
@@ -1202,7 +1271,11 @@ function dockerEnvironment() {
 function expectedProvisionerMounts(environment) {
   const container = environment.CHARIOX_SLICE_NAME
   const mode = environment.CHARIOX_SLICE_WORKSPACE_MOUNT_MODE ?? "rw"
-  const mounts = []
+  const mounts = environment.CHARIOX_SLICE_PRIVATE_HOST_ROOT
+    ? [
+      {destination: "/var/lib/chariox/slice-private", source: environment.CHARIOX_SLICE_PRIVATE_HOST_ROOT, rw: true},
+      {destination: "/home/slice/.local/share/pki/nssdb", source: join(environment.CHARIOX_SLICE_PRIVATE_HOST_ROOT, "nssdb"), rw: true},
+    ] : []
   if (environment.CHARIOX_SLICE_WORKSPACE) {
     const targets = ["/workspace"]
     const mountCount = Number(environment.CHARIOX_SLICE_DEVELOPMENT_MOUNT_COUNT ?? "0")
@@ -1230,13 +1303,13 @@ function expectedProvisionerMounts(environment) {
 
 function recordedContainerMounts(container) {
   loadPersistentHandles()
-  return persistentHandleRecords
+  return [...protectedLayouts.privateMounts(container), ...persistentHandleRecords
     .filter((record) => record.container === container)
     .flatMap((record) => record.targets.map((destination) => ({
       destination,
       rw: record.rw,
       source: join(HANDLE_ROOT, record.handle),
-    })))
+    })))]
 }
 
 function normalizedMounts(mounts) {
@@ -1439,6 +1512,13 @@ function prepareDocker(args) {
   const prepared = [...args]
   const descriptors = []
   let output
+  if (prepared[0] === "create" && prepared.length === 20) {
+    const suffix = /-(?:disk-admission-[a-f0-9]{16}|home-archive-[0-9]{1,20})$/.exec(prepared[2])
+    if (suffix) {
+      const container = prepared[2].slice(0, suffix.index)
+      prepared[16] = `${protectedLayouts.homeVolume(container)}:/home-src:ro`
+    }
+  }
   if (prepared[0] === "cp") {
     const hostIndex = prepared[1].includes(":") ? 2 : 1
     const hostPath = prepared[hostIndex]
@@ -1453,10 +1533,34 @@ function prepareDocker(args) {
 
 async function prepareProvisioner(request) {
   const environment = { ...request.environment }
+  if (LOCAL_AUTHORITY) {
+    environment.CHARIOX_SLICE_LOCAL_DEV_OWNER_UID = String(LOCAL_AUTHORITY.enrollment.ownerUid)
+    environment.CHARIOX_SLICE_LOCAL_DEV_HELPER_NAME = process.env.CHARIOX_SLICE_LOCAL_DEV_HELPER_NAME
+    environment.CHARIOX_SLICE_LOCAL_DEV_SOCKET_IDENTITY = process.env.CHARIOX_SLICE_LOCAL_DEV_SOCKET_IDENTITY
+    environment.CHARIOX_SLICE_OWNED_WORKSPACE = "1"
+    environment.CHARIOX_SLICE_BUILD_IMAGE = "never"
+    // Saved images also refresh their worker runtime from the enrolled base.
+    environment.CHARIOX_SLICE_BASE_IMAGE = LOCAL_AUTHORITY.enrollment.workerImageId
+    if (["provision", "restore-state"].includes(request.action) && !environment.CHARIOX_SLICE_SAVED_HOME_ARCHIVE) {
+      const requested = environment.CHARIOX_SLICE_DOCKER_IMAGE
+      if (requested && !["chariox-slice-linux:0.1.0", LOCAL_AUTHORITY.enrollment.workerImageId].includes(requested)) fail("Local DEV worker image must match its installed enrollment")
+      environment.CHARIOX_SLICE_DOCKER_IMAGE = LOCAL_AUTHORITY.enrollment.workerImageId
+    }
+  } else if (!environment.CHARIOX_SLICE_WORKSPACE) {
+    // Without a development publication the provisioner would bind the signed
+    // build context as /workspace; a managed slice gets its own volume instead.
+    environment.CHARIOX_SLICE_OWNED_WORKSPACE = "1"
+  }
+  const privateRoot = protectedLayouts.prepare(request.action, environment)
+  if (privateRoot) {
+    environment.CHARIOX_SLICE_PRIVATE_HOST_ROOT = privateRoot
+    environment.CHARIOX_SLICE_HOME_VOLUME = protectedLayouts.homeVolume(environment.CHARIOX_SLICE_NAME)
+  }
   const descriptors = []
   const handles = new Set()
   const newHandles = new Set()
   let inputDirectory
+  let restoreDigest
   try {
     const provisionsContainer = new Set(["provision", "restore-state"]).has(request.action)
     if (provisionsContainer) {
@@ -1505,6 +1609,7 @@ async function prepareProvisioner(request) {
           descriptors.push(pinned.archive.fd, pinned.directory.fd)
           environment[name] = pinned.archive.path
           environment.CHARIOX_SLICE_BROKER_SAVED_HOME_ARCHIVE_DIR = pinned.directory.path
+          restoreDigest = pinned.metadata.sha256
         } else {
           descriptors.push(pinned.fd)
           environment[name] = pinned.path
@@ -1531,6 +1636,7 @@ async function prepareProvisioner(request) {
       handles.add(persistent.handle)
       if (persistent.created) newHandles.add(persistent.handle)
     }
+    if (restoreDigest) protectedLayouts.beginRestore(environment, restoreDigest, request.action)
     if (request.action === "import-provider-auth") {
       mkdirSync(BROKER_INPUT_ROOT, { recursive: true, mode: 0o700 })
       chmodSync(BROKER_INPUT_ROOT, 0o700)
@@ -1565,6 +1671,31 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
   process.on(signal, () => { brokerLifetime.abort() })
 }
 
+function inspectDockerObject(kind, reference) {
+  const result = spawnSync("/usr/bin/docker", [kind, "inspect", reference],
+    {env: dockerEnvironment(), encoding: "utf8", timeout: 30_000, maxBuffer: 1024 * 1024})
+  if (result.status !== 0) fail("managed slice capture provenance is unavailable")
+  const records = JSON.parse(result.stdout)
+  if (!Array.isArray(records) || records.length !== 1) fail("managed slice capture provenance is unavailable")
+  return records[0]
+}
+
+function seedLocalDevWorkerProof() {
+  if (!LOCAL_AUTHORITY) return
+  const enrollment = LOCAL_AUTHORITY.enrollment
+  const image = inspectDockerObject("image", enrollment.workerImageId)
+  if (image.Id !== enrollment.workerImageId || image.Config?.User !== "slice"
+      || image.Config?.Labels?.["io.chariox.runtime-source-revision"] !== enrollment.workerRuntimeRevision) fail("Local DEV worker image identity mismatch")
+  const runtime = spawnSync("/usr/bin/docker", ["run", "--rm", "--read-only", "--network", "none",
+    "--cap-drop", "ALL", "--memory", "64m", "--pids-limit", "16", "--user", "0:0",
+    "--entrypoint", "/usr/bin/sha256sum", enrollment.workerImageId, "/opt/chariox-slice/bin/chariox-kernel"],
+    {env: dockerEnvironment(), encoding: "utf8", maxBuffer: 1024, timeout: 30_000})
+  if (runtime.status !== 0 || runtime.stdout.trim().split(/\s+/)[0] !== enrollment.workerKernelHash) fail("Local DEV runtime image hash mismatch")
+  // Root-installed explicit DEV enrollment is this proof's authority. It makes
+  // no managed signature claim. The same image/lineage checks protect capture.
+  recordManagedImageProof(protectedLayouts.imageRoot, enrollment.sourceDigest, image, enrollment.workerKernelHash)
+}
+
 function spawnBounded(command, args, options) {
   return runBrokerCommand(command, args, { ...options, signal: brokerLifetime.signal, logRoot: join(BROKER_OUTPUT_ROOT, "logs") })
 }
@@ -1589,7 +1720,71 @@ function provisionerQuotaRequest(environment) {
 
 async function execute(request) {
   validateRequest(request)
+  // Release F's disk-quota allocator, its coordination root and start-admission
+  // proofs exist only on managed hosts. The Phase 1 local DEV broker has none of
+  // them, so its slices stay unbounded and bypass that coordination; it refuses
+  // quota limits and never provisions or starts a quota-marked slice.
+  const quotaCoordinated = !LOCAL_AUTHORITY
+  if (LOCAL_AUTHORITY) {
+    verifiedProtectedAuthority()
+    if (request.kind === "provisioner" && (request.environment.CHARIOX_SLICE_WORKSPACE
+        || Number(request.environment.CHARIOX_SLICE_DEVELOPMENT_MOUNT_COUNT ?? "0") !== 0)) {
+      fail("Local protected DEV slices do not support host workspace or development mounts")
+    }
+    if (request.kind === "provisioner" && (request.environment.CHARIOX_SLICE_DISK_LAYER_MB !== undefined
+        || request.environment.CHARIOX_SLICE_DISK_HOME_MB !== undefined)) {
+      fail("Local protected DEV slices do not support managed disk quotas")
+    }
+    const unadmittedSlice = request.kind === "docker" && ["start", "unpause"].includes(request.args[0])
+      ? request.args[1]
+      : request.kind === "provisioner" && ["provision", "restore-state", "recover"].includes(request.action)
+        ? request.environment.CHARIOX_SLICE_NAME
+        : undefined
+    if (unadmittedSlice && diskQuotaMarkerPresent(unadmittedSlice)) {
+      fail("a disk-quota slice cannot run without the managed quota allocator")
+    }
+  }
+  if (request.kind === "docker" && request.args[0] === "exec"
+      && PROTECTED_PROVIDER_ACCOUNT_CREDENTIAL_PATH.test(request.args.at(-1))) {
+    protectedLayouts.preflight(request.args[3])
+  }
+  if (request.kind === "docker" && request.args[0] === "exec" && request.args[7] === "slice-runtime-logs") {
+    const protectedLayout = protectedLayouts.providerAuthProtected(request.args[3])
+    if (request.args[9] !== (protectedLayout ? "protected" : "legacy")) fail("slice runtime log layout does not match verified container")
+  }
+  let commitSource
+  let commitParent
+  let legacyCommit = false
+  if (request.kind === "docker" && request.args[0] === "commit") {
+    const layout = protectedLayouts.captureLayout(request.args[1])
+    legacyCommit = layout.layoutKind === "legacy-release-f"
+    protectedLayouts.requireQuiescedHome(request.args[1])
+    if (!legacyCommit) requireSafeHomeVolume({volume: layout.homeVolume,
+      docker: args => spawnSync("/usr/bin/docker", args, {env: dockerEnvironment(), timeout: 30_000, maxBuffer: 8 * 1024 * 1024})})
+    commitSource = inspectDockerObject("container", request.args[1])
+    commitParent = inspectDockerObject("image", commitSource.Image)
+  }
+  if (request.kind === "provider_auth_layout") {
+    const protectedLayout = protectedLayouts.providerAuthProtected(request.container)
+    return {status: 0, stdoutBase64: Buffer.from(JSON.stringify({protectedLayout})).toString("base64"), stderrBase64: ""}
+  }
+  if (request.kind === "capture_preflight") {
+    const layout = protectedLayouts.captureLayout(request.container)
+    if (layout.layoutKind === "legacy-release-f") {
+      return {status: 0, stdoutBase64: "", stderrBase64: Buffer.from(LEGACY_CAPTURE_NOTICE).toString("base64")}
+    }
+    requireSafeHomeVolume({volume: layout.homeVolume, quiesced: false,
+      docker: args => spawnSync("/usr/bin/docker", args, {env: dockerEnvironment(), timeout: 30_000, maxBuffer: 8 * 1024 * 1024})})
+    return {status: 0, stdoutBase64: "", stderrBase64: ""}
+  }
+  if (request.kind === "home_restore_resolve") {
+    const {archive, directory, metadata} = await inspectManagedHomeArchive(request.path)
+    try { protectedLayouts.resolveRestore(request.container, metadata.sha256) }
+    finally { closeSync(archive.fd); closeSync(directory.fd) }
+    return {status: 0, stdoutBase64: "", stderrBase64: ""}
+  }
   let releaseDiskQuota = false
+  let retainedQuotaHomes = []
   let unboundedQuotaIdentity
   let unboundedQuotaStatusVerified = false
   if (request.kind === "home_archive_capture") {
@@ -1615,8 +1810,13 @@ async function execute(request) {
       fail("managed slice start has no broker-owned stable mount record")
     }
   }
+  if (request.kind === "provisioner" && ["provision", "restore-state", "recover", "destroy"].includes(request.action)) {
+    // Quota requests must use the broker's retained home, not a kernel default
+    // that predates a protected restore generation.
+    request.environment.CHARIOX_SLICE_HOME_VOLUME = protectedLayouts.homeVolume(request.environment.CHARIOX_SLICE_NAME)
+  }
   let boundedLimits
-  if (request.kind === "provisioner" && ["provision", "restore-state", "recover"].includes(request.action)) {
+  if (quotaCoordinated && request.kind === "provisioner" && ["provision", "restore-state", "recover"].includes(request.action)) {
     const quota = provisionerQuotaRequest(request.environment)
     unboundedQuotaIdentity = quota.identity
     if (quota.limits) {
@@ -1648,7 +1848,7 @@ async function execute(request) {
       }
     }
   }
-  if (request.kind === "provisioner" && request.action === "destroy") {
+  if (quotaCoordinated && request.kind === "provisioner" && request.action === "destroy") {
     const quota = provisionerQuotaRequest(request.environment)
     releaseDiskQuota = diskQuotaMarkerPresent(quota.identity.containerName)
     try {
@@ -1661,6 +1861,7 @@ async function execute(request) {
     } catch (error) {
       if (!new Set(["ENOENT", "ECONNREFUSED"]).has(error?.code)) releaseDiskQuota = true
     }
+    if (releaseDiskQuota) retainedQuotaHomes = protectedLayouts.retainedHomeVolumes(quota.identity.containerName)
   }
   let prepared
   try {
@@ -1678,8 +1879,13 @@ async function execute(request) {
           PATH: "/usr/local/bin:/usr/bin:/bin",
           DOCKER_HOST,
           ...prepared.environment,
-          ...(SIGNED_BUILD_CONTEXT_DIGEST
-            ? { CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: SIGNED_BUILD_CONTEXT_DIGEST }
+          ...(LOCAL_AUTHORITY ? {CHARIOX_SLICE_LOCAL_DEV_OWNER_UID: String(LOCAL_AUTHORITY.enrollment.ownerUid),
+            CHARIOX_SLICE_LOCAL_DEV_HELPER_NAME: process.env.CHARIOX_SLICE_LOCAL_DEV_HELPER_NAME,
+            CHARIOX_SLICE_BUILD_IMAGE: "never",
+            ...localDevRuntimeEnvironment(LOCAL_AUTHORITY.enrollment)} : {}),
+          ...(VERIFIED_BUILD_CONTEXT_DIGEST
+            ? { CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: VERIFIED_BUILD_CONTEXT_DIGEST,
+              ...(protectedLayouts.trusted ? {CHARIOX_SLICE_PROTECTED_IMAGE_PROOF_ROOT: protectedLayouts.imageRoot} : {}) }
             : {}),
         }
       return spawnBounded(command, args, {
@@ -1688,8 +1894,8 @@ async function execute(request) {
       })
     }
     const containerName = request.kind === "docker" ? request.args[1] : undefined
-    const isDockerStartOrUnpause = request.kind === "docker" && ["start", "unpause"].includes(request.args[0])
-    const isQuotaProvision = request.kind === "provisioner" && ["provision", "restore-state", "recover"].includes(request.action)
+    const isDockerStartOrUnpause = request.kind === "docker" && ["start", "unpause"].includes(request.args[0]) && quotaCoordinated
+    const isQuotaProvision = request.kind === "provisioner" && ["provision", "restore-state", "recover"].includes(request.action) && quotaCoordinated
     const result = isDockerStartOrUnpause
       ? await sliceDiskQuotaCoordinator.withContainerLock(containerName, async (lock) => runWithSliceDiskQuotaAdmission({
         containerName,
@@ -1764,7 +1970,7 @@ async function execute(request) {
             const provisioned = await runPrepared()
             if (provisioned.status === 0 && unboundedQuotaStatusVerified && durableUnboundedState) {
               await rememberBrokerUnboundedQuotaProof(
-                unboundedQuotaIdentity,
+                sliceDiskQuotaIdentityFromEnvironment(prepared.environment),
                 request.environment.CHARIOX_SLICE_NAME,
                 lock,
               )
@@ -1773,17 +1979,27 @@ async function execute(request) {
           },
         )
       : await runPrepared()
+    if (commitSource && result.status === 0) {
+      const captured = inspectDockerObject("image", request.args[2])
+      if (legacyCommit) protectedLayouts.recordLegacyImage(request.args[1], commitParent, commitSource, captured)
+      else recordCapturedImageProof(protectedLayouts.imageRoot, VERIFIED_BUILD_CONTEXT_DIGEST,
+        commitParent, commitSource, captured)
+    }
     if (request.kind === "docker" && prepared.output && result.status === 0) {
       publishStagedOutput(prepared.output)
     }
     if (request.kind === "provisioner" && request.action === "destroy" && result.status === 0) {
-      const identity = sliceDiskQuotaIdentityFromEnvironment(request.environment)
-      await sliceDiskQuotaCoordinator.withContainerLock(identity.containerName, (lock) => {
-        sliceDiskQuotaCoordinator.revokeUnboundedProof(lock, identity)
-      })
+      if (quotaCoordinated) {
+        const identity = sliceDiskQuotaIdentityFromEnvironment(request.environment)
+        await sliceDiskQuotaCoordinator.withContainerLock(identity.containerName, (lock) => {
+          sliceDiskQuotaCoordinator.revokeUnboundedProof(lock, identity)
+        })
+      }
       releasePersistentHandles(request.environment.CHARIOX_SLICE_NAME)
       if (releaseDiskQuota) {
         const quota = provisionerQuotaRequest(request.environment)
+        retireProtectedQuotaHomes(retainedQuotaHomes, quota.identity,
+          args => spawnControl("/usr/bin/docker", args, {env: dockerEnvironment(), timeout: 30_000, maxBuffer: 1024 * 1024}))
         await requestSliceDiskQuota({
           protocolVersion: 1,
           operation: "release",
@@ -1793,6 +2009,7 @@ async function execute(request) {
     }
     if (request.kind === "provisioner" && new Set(["provision", "restore-state"]).has(request.action)) {
       if (result.status === 0) {
+        protectedLayouts.complete(prepared.environment)
         removePersistentHandles(
           (record) => record.container === request.environment.CHARIOX_SLICE_NAME && !prepared.handles.has(record.handle),
         )
@@ -1806,7 +2023,7 @@ async function execute(request) {
       stderrBase64: (result.stderr ?? Buffer.from(result.error?.message ?? "")).toString("base64"),
     }
     if (result.status === 0 && boundedLimits) {
-      const quota = provisionerQuotaRequest(request.environment)
+      const quota = provisionerQuotaRequest(prepared.environment)
       const verified = await requestSliceDiskQuota({
         protocolVersion: 1,
         operation: "verify",
@@ -1865,6 +2082,7 @@ if (process.argv[2] === "--validate-request") {
     process.stdout.write(`${responsePayload(response).toString()}\n`)
   }
 } else {
+  seedLocalDevWorkerProof()
   rmSync(BROKER_INPUT_ROOT, { recursive: true, force: true })
   mkdirSync(BROKER_INPUT_ROOT, { recursive: true, mode: 0o700 })
   const outputMetadata = lstatSync(BROKER_OUTPUT_ROOT)
@@ -1929,11 +2147,21 @@ if (process.argv[2] === "--validate-request") {
       }
     })
   })
-  server.listen(SOCKET_PATH, () => chmodSync(SOCKET_PATH, 0o660))
+  server.listen(SOCKET_PATH, () => {
+    if (LOCAL_AUTHORITY) {
+      chownSync(SOCKET_PATH, LOCAL_AUTHORITY.enrollment.ownerUid, LOCAL_AUTHORITY.enrollment.ownerGid)
+      chmodSync(SOCKET_PATH, 0o600)
+    } else chmodSync(SOCKET_PATH, 0o660)
+  })
   setTimeout(() => {
     if (!accepted) {
       server.close()
       rmSync(SOCKET_PATH, { force: true })
     }
   }, 6000).unref()
+}
+
+function requireSafeHomeVolume(options) {
+  if (LOCAL_AUTHORITY) return requireSafeLocalHomeVolume({...options, enrollment: LOCAL_AUTHORITY.enrollment})
+  return requireSafeManagedHomeVolume(options)
 }

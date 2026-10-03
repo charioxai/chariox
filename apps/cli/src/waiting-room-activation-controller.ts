@@ -214,7 +214,7 @@ export function createWaitingRoomActivationController(
       }
       const count = await deps.loadOlderExternalProviderSessions()
       deps.flashFooter(
-        count > 0 ? `loaded ${count} older unattached agent${count === 1 ? "" : "s"}` : "no older unattached agents available",
+        count > 0 ? `loaded ${count} older saved conversation${count === 1 ? "" : "s"}` : "no older saved conversations available",
         "info",
       )
       return true

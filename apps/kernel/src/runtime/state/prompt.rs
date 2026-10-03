@@ -110,8 +110,8 @@ impl KernelRuntimeOwnedState {
             );
             self.mark_prompt_completion_recorded(provider_run_id);
         }
-        // A delayed durable retry must retain the original completion time;
-        // ordinary cleanup still samples the current time under the activity lock.
+        // Preserve this turn's original completion time. Activity cleanup
+        // clamps the aggregate idle time against other turns' later finishes.
         let retry_observed_at_ms = self
             .active_turns
             .get(provider_run_id)
@@ -538,9 +538,12 @@ impl KernelRuntimeOwnedState {
             &started_next,
             Some(prompt_sent_at_ms),
         );
+        // A substitute run serves only its own turn; the next one goes through
+        // the dispatcher, which moves it to the agent's configured profile.
         if self
             .provider_store
             .run_uses_structured_prompt_io(&provider_run)
+            && provider_run.turn_substitute().is_none()
         {
             let prompt_with_handoff = self.prompt_with_pending_context_handoff(
                 session_id,
@@ -551,8 +554,13 @@ impl KernelRuntimeOwnedState {
             );
             let granted_skill_context =
                 self.granted_skill_hidden_context(session_id, agent_id, &prompt_with_handoff)?;
-            let hidden_system_context =
-                join_hidden_context(started_next.hidden_system_context(), &granted_skill_context);
+            let hidden_system_context = join_hidden_context(
+                &self.hidden_context_with_failed_requests(
+                    agent_id,
+                    started_next.hidden_system_context(),
+                ),
+                &granted_skill_context,
+            );
             let (source_client_id, _source_user_id) = self.prompt_source_attribution(&started_next);
             let mode = crate::prompt_assembly::provider_turn_mode_for_prompt(
                 agent_id,
@@ -585,7 +593,6 @@ impl KernelRuntimeOwnedState {
                 let _ = self.clear_prompt_activity(&provider_run_id);
                 return Err(error);
             }
-            self.consume_pending_context_handoff(session_id, agent_id, &provider_run);
             self.note_prompt_started(&provider_run_id);
             let _ = self.session_snapshot(session_id)?;
             return Ok(Some(OwnedPromptCompletion {

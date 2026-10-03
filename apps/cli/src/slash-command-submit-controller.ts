@@ -21,6 +21,7 @@ export type SlashCommandSubmitControllerDeps = {
   formatError?: (error: unknown) => string
   onExit: () => Promise<unknown> | unknown
   onWaiting: () => Promise<unknown> | unknown
+  onApprovals: () => unknown
   onStop: () => Promise<unknown> | unknown
   handleAttachmentCommand: (raw: string) => Promise<unknown> | unknown
   handleSessionCommand: (command: SlashCommand<"session">) => Promise<boolean> | boolean
@@ -46,6 +47,7 @@ export type SlashCommandSubmitControllerDeps = {
   handleWorktreeCommand: (command: SlashCommand<"worktree">) => Promise<unknown> | unknown
   handleWorkflowCommand: (command: SlashCommand<"workflow">) => Promise<unknown> | unknown
   handleNotificationsCommand?: (command: SlashCommand<"notifications">) => Promise<unknown> | unknown
+  handleAppCommand?: (command: SlashCommand<"app">) => Promise<unknown> | unknown
   handleSettingsCommand?: (command: SlashCommand<"settings">) => Promise<unknown> | unknown
   handleLoopCommand: (command: SlashCommand<"loop">) => Promise<unknown> | unknown
   handleGoalCommand: (command: SlashCommand<"goal">) => Promise<unknown> | unknown
@@ -107,7 +109,7 @@ export function createSlashCommandSubmitController(
       if (slashCommand && deps.isAttached()) {
         deps.recordPromptAreaHistoryEntry(deps.getSessionId(), rawPrompt)
       }
-      if (slashCommand && deps.handleSharedShellCommand) {
+      if (slashCommand && slashCommand.kind !== "approvals" && deps.handleSharedShellCommand) {
         try {
           if (await deps.handleSharedShellCommand(rawPrompt)) {
             clearHandledCommandUi(slashCommand)
@@ -119,13 +121,14 @@ export function createSlashCommandSubmitController(
           return slashCommand
         }
       }
-      const clearBeforeHandler = slashCommand?.kind === "exit"
+      const clearBeforeHandler = slashCommand?.kind === "exit" || slashCommand?.kind === "approvals"
       if (clearBeforeHandler) {
         clearHandledCommandUi(slashCommand)
       }
       const handledCommand = await executeSlashCommand(rawPrompt, {
         onExit: deps.onExit,
         onWaiting: deps.onWaiting,
+        onApprovals: deps.onApprovals,
         onStop: deps.onStop,
         onAttachment: async (command) => {
           try {
@@ -169,6 +172,9 @@ export function createSlashCommandSubmitController(
         onWorkflow: (command) => runWithFooterError(deps.handleWorkflowCommand, command),
         ...(deps.handleNotificationsCommand
           ? { onNotifications: (command: SlashCommand<"notifications">) => runWithFooterError(deps.handleNotificationsCommand!, command) }
+          : {}),
+        ...(deps.handleAppCommand
+          ? { onApp: (command: SlashCommand<"app">) => runWithFooterError(deps.handleAppCommand!, command) }
           : {}),
         ...(deps.handleSettingsCommand
           ? { onSettings: (command: SlashCommand<"settings">) => runWithFooterError(deps.handleSettingsCommand!, command) }

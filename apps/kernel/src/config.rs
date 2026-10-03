@@ -34,6 +34,7 @@ pub use credentials::{
 #[cfg(test)]
 use identity::{generate_identity_suffix, RuntimeIdentity};
 pub(crate) use identity::{load_or_create_managed_runtime_identity, ManagedRuntimeIdentity};
+pub use identity::prepare_protected_slice_identity;
 #[cfg(test)]
 use persisted_daemon::PersistedDaemonConfig;
 #[cfg(test)]
@@ -161,8 +162,8 @@ pub struct DaemonConfig {
     pub relay_request_timeout_ms: u64,
     pub accept_remote_leases: bool,
     pub kernel_runtime_role: KernelRuntimeRole,
-    /// Maximum concurrent remote execution leases accepted by this kernel.
-    /// `None` preserves the ordinary remote-worker behavior of no fixed limit.
+    /// Optional operator limit on leased turns running at once; further turns
+    /// wait for a slot. Idle leased agents never count. `None` means no limit.
     pub remote_lease_capacity: Option<usize>,
     pub lease_worker_home_caller: Option<LeaseWorkerHomeCaller>,
     lease_worker_home_caller_parse_error: bool,
@@ -350,6 +351,7 @@ impl DaemonConfig {
                 .display()
                 .to_string(),
         );
+        config.user_config_path = config.durable_state_path().with_file_name("config.toml");
         config.user_config.workflow.max_queues_per_workflow = Some(10);
         config.user_config.providers.workspace_live_sync =
             crate::config::WorkspaceLiveSyncConfig::from_mode(

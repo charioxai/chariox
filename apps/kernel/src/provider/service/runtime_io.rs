@@ -430,6 +430,11 @@ impl ProviderProcessService {
     }
 
     #[cfg(test)]
+    pub(crate) fn use_manual_output_polls_for_tests(&self) {
+        self.run_actor_mailbox.use_manual_output_polls_for_tests();
+    }
+
+    #[cfg(test)]
     pub(crate) fn push_finished_structured_output_poll_for_test(
         &mut self,
         provider_run_id: String,

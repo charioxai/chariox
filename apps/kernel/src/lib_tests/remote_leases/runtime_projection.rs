@@ -315,20 +315,22 @@ fn remote_workflow_completion_preserves_worker_provider_failure_diagnostic() {
         "next review",
         PromptStatus::Queued,
     );
+    assert!(outcome.provider_failed);
     assert!(
         matches!(
             app.prompt_owner_submit_prepared_prompt(session.id(), followup, false)
                 .unwrap(),
-            PromptSubmissionOutcome::Queued { .. }
+            PromptSubmissionOutcome::Started { .. }
         ),
-        "failure settlement must reserve admission until substitute reconciliation finishes"
+        "a leased turn is not rerun on a substitute, so settlement holds no admission"
     );
-    drop(outcome);
 }
 
 #[test]
 fn remote_runtime_projection_records_output_and_completion_on_home_session() {
-    let worktree = crate::test_support::TestWorktree::new("remote-runtime-projection");
+    let worktree = crate::test_support::TestWorktree::new(
+        "remote_runtime_projection_records_output_and_completion_on_home_session",
+    );
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -571,7 +573,9 @@ fn remote_runtime_projection_preserves_authoritative_provider_termination() {
 
 #[test]
 fn stale_remote_completion_replay_does_not_complete_the_next_prompt() {
-    let worktree = crate::test_support::TestWorktree::new("remote-runtime-projection");
+    let worktree = crate::test_support::TestWorktree::new(
+        "stale_remote_completion_replay_does_not_complete_the_next_prompt",
+    );
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)

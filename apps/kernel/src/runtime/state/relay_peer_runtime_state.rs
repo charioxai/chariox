@@ -44,6 +44,7 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         agent_id: &str,
+        origin: &crate::session::NativeInteractionOrigin,
     ) -> Result<
         Option<(
             crate::config::DaemonConfig,
@@ -54,11 +55,49 @@ impl KernelRuntimeState {
     > {
         let session_id = session_id.to_string();
         let agent_id = agent_id.to_string();
+        let origin = origin.clone();
         self.with_app_side_effect(move |app| {
+            // Freeze the home identity only while the backing prompt still matches
+            // the producer's identity. Never map a delayed request onto a new turn.
+            if let crate::session::NativeInteractionOrigin::Prompt { prompt_id, .. } = &origin {
+                if app
+                    .prompt_owner_active_prompt_for_agent(&session_id, &agent_id)?
+                    .is_none_or(|prompt| prompt.id() != prompt_id)
+                {
+                    return Ok(None);
+                }
+            }
+            if let crate::session::NativeInteractionOrigin::NativeTurn { native_turn_id, .. } =
+                &origin
+            {
+                if app
+                    .active_turns
+                    .get(origin.provider_run_id())
+                    .is_none_or(|turn| {
+                        turn.prompt_id != *native_turn_id
+                            && turn
+                                .external_observed_id
+                                .as_ref()
+                                .is_none_or(|id| id.provider_turn_id != *native_turn_id)
+                    })
+                {
+                    return Ok(None);
+                }
+            }
+            if let crate::session::NativeInteractionOrigin::NativeTurn { .. } = &origin {
+                if let Some(turn) = app.active_turns.get(origin.provider_run_id()) {
+                    if app
+                        .prompt_owner_active_prompt_for_agent(&session_id, &agent_id)?
+                        .is_some_and(|prompt| prompt.id() != turn.prompt_id)
+                    {
+                        return Ok(None);
+                    }
+                }
+            }
             let target = RemoteLeaseRuntime::new(app).native_interaction_context_for_backing_agent(
                 &session_id,
                 &agent_id,
-                "unknown",
+                origin.provider_run_id(),
             );
             Ok::<_, DaemonError>(
                 target.map(|(daemon_id, context)| (app.config().clone(), daemon_id, context)),
@@ -335,10 +374,21 @@ impl KernelRuntimeState {
             runtime.update_leased_agent_remote_extension_manifest(
                 &leased_agent_id,
                 remote_extension_manifest,
+            )?;
+            let run_id = runtime.leased_agent_provider_run_id(&leased_agent_id)?;
+            Ok::<_, DaemonError>(
+                run_id
+                    .and_then(|id| app.providers().get_run(&id).ok())
+                    .filter(|run| {
+                        !run.client_interface().is_chariox()
+                            && !run.remote_extension_catalog_matches_launch(
+                                run.remote_extension_manifest(),
+                            )
+                    }),
             )
         };
         #[cfg(test)]
-        if let Some(observer) = self.take_capability_push_lock_observer_for_test() {
+        let native = if let Some(observer) = self.take_capability_push_lock_observer_for_test() {
             use std::future::Future;
             let mut observer = Some(observer);
             let mut lock = Box::pin(self.app.lock());
@@ -350,9 +400,24 @@ impl KernelRuntimeState {
                 result
             })
             .await;
-            return operation(&mut app);
+            operation(&mut app)?
+        } else {
+            self.with_app_side_effect(operation).await?
+        };
+        #[cfg(not(test))]
+        let native = self.with_app_side_effect(operation).await?;
+        if let Some(run) = native {
+            if let Some(agent_id) = run.agent_instance_id() {
+                // A manifest may be granted during its own active turn. Reuse
+                // the idle queue so the metadata ACK cannot deadlock that turn.
+                self.remember_pending_provider_reload(
+                    run.session_id(),
+                    agent_id,
+                    ProviderReloadReason::RuntimeToolCatalog,
+                );
+            }
         }
-        self.with_app_side_effect(operation).await
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -531,17 +596,45 @@ impl KernelRuntimeState {
             .filter(|prompt_id| !prompt_id.trim().is_empty());
         let begin_leased_agent_id = leased_agent_id.clone();
         let begin_home_prompt_id = home_prompt_id.clone();
+        let begin_manifest = remote_extension_manifest.clone();
         let existing_receipt = self
             .with_app_side_effect(move |app| {
                 let mut runtime = RemoteLeaseRuntime::new(app);
                 runtime.consume_leased_agent_authorization(&begin_leased_agent_id)?;
-                if let Some(home_prompt_id) = begin_home_prompt_id.as_deref() {
-                    runtime.begin_leased_prompt_receipt(&begin_leased_agent_id, home_prompt_id)
-                } else {
-                    Ok(None)
+                let Some(home_prompt_id) = begin_home_prompt_id.as_deref() else {
+                    return Ok(None);
+                };
+                // A native provider that has not loaded the current runtime tool
+                // catalog rejects before admission. Check it before a receipt
+                // exists, so the home's bounded retry can resubmit this same
+                // prompt after the refresh instead of meeting a rejection fence.
+                if !runtime.leased_prompt_receipt_recorded(&begin_leased_agent_id, home_prompt_id) {
+                    runtime.ensure_leased_native_runtime_catalog_loaded(
+                        &begin_leased_agent_id,
+                        &begin_manifest,
+                    )?;
                 }
+                runtime.begin_leased_prompt_receipt(&begin_leased_agent_id, home_prompt_id)
             })
-            .await?;
+            .await;
+        let existing_receipt = match existing_receipt {
+            Err(
+                error @ DaemonError::LocalTransport {
+                    operation: "remote runtime tool catalog reload",
+                    ..
+                },
+            ) if super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_retry_transport(&error) => {
+                // Prompt admission also repairs a missed manifest-sync message;
+                // this only queues the same idle refresh, never the prompt.
+                self.update_relay_leased_agent_remote_extension_manifest(
+                    &leased_agent_id,
+                    remote_extension_manifest.clone(),
+                )
+                .await?;
+                return Err(error);
+            }
+            result => result?,
+        };
         let new_receipt = home_prompt_id.is_some() && existing_receipt.is_none();
         if let Some(receipt) = existing_receipt.as_ref() {
             match receipt.receipt.phase {
@@ -623,6 +716,8 @@ impl KernelRuntimeState {
             });
         }
 
+        let refresh_lease = leased_agent_id.clone();
+        let refresh_manifest = remote_extension_manifest.clone();
         let leased_agent_for_prepare = leased_agent_id.clone();
         let prompt_for_prepare = prompt.clone();
         let context_for_prepare = home_prompt_id.clone();
@@ -651,6 +746,23 @@ impl KernelRuntimeState {
                         home_prompt_id,
                         WorkerPromptReceiptPhase::Rejected,
                         None,
+                    )
+                    .await?;
+                }
+                if matches!(
+                    &error,
+                    DaemonError::LocalTransport {
+                        operation: "remote runtime tool catalog reload",
+                        ..
+                    }
+                ) && super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_retry_transport(&error)
+                {
+                    // Prompt admission also repairs a missed manifest-sync message.
+                    // The preceding preparation validated the lease and collisions;
+                    // this only queues the same idle refresh, never the prompt.
+                    self.update_relay_leased_agent_remote_extension_manifest(
+                        &refresh_lease,
+                        refresh_manifest,
                     )
                     .await?;
                 }
@@ -1272,10 +1384,9 @@ impl KernelRuntimeState {
         });
         let session_id = session_id.to_string();
         let agent_id = agent_id.to_string();
-        let provider_run_id = provider_run_id.to_string();
         let projection_session_id = session_id.clone();
         let projection_agent_id = agent_id.clone();
-        let projection_provider_run_id = provider_run_id.clone();
+        let projection_provider_run_id = provider_run_id.to_string();
         let outcome = self
             .with_app_side_effect(move |app| {
                 RemoteLeaseRuntime::new(app).project_remote_runtime_projection(
@@ -1296,15 +1407,8 @@ impl KernelRuntimeState {
         for intent in outcome.remote_dispatches {
             self.spawn_remote_prompt_dispatch(intent.dispatch);
         }
-        if let Some(failure) = outcome.provider_failure {
-            self.finish_remote_provider_failure(
-                &session_id,
-                &agent_id,
-                &provider_run_id,
-                &outcome.completions,
-                failure,
-            )
-            .await?;
+        if outcome.provider_failed {
+            self.finish_remote_provider_failure(&session_id, &outcome.completions)?;
         }
         for completion in outcome.completions {
             self.inject_metaagent_turn_completion_event(&session_id, &agent_id, &completion)?;

@@ -151,6 +151,33 @@ impl super::KernelRuntimeOwnedState {
         );
     }
 
+    /// A turn substitute runs in a new provider session, and the configured
+    /// profile's own session never sees the substitute's turn. Each side of
+    /// that boundary gets the conversation, even when the profiles differ only
+    /// in effort.
+    pub(super) fn prepare_turn_substitute_context_handoff(
+        &self,
+        source_run: &RuntimeProviderRun,
+        target_provider_run_id: Option<&str>,
+        target_provider: &str,
+        target_account_profile: &str,
+        target_model: Option<&str>,
+    ) {
+        let Some(agent_id) = source_run.agent_instance_id() else {
+            return;
+        };
+        self.prepare_provider_switch_context_handoff_for_target(
+            source_run,
+            source_run.session_id(),
+            agent_id,
+            agent_id,
+            target_provider_run_id,
+            target_provider,
+            target_account_profile,
+            target_model,
+        );
+    }
+
     pub(super) fn prepare_agent_fork_context_handoff(
         &self,
         source_run: &RuntimeProviderRun,

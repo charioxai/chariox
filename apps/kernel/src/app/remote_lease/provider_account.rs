@@ -526,6 +526,7 @@ exit 2
     #[cfg(unix)]
     #[test]
     fn failed_default_materialization_restores_the_exact_previous_default() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-remote-opencode-default-rollback-{}-{}",
@@ -591,6 +592,7 @@ exit 2
     #[cfg(unix)]
     #[test]
     fn opencode_materialization_requires_native_authentication_before_acknowledgement() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-remote-opencode-auth-{}-{}",
@@ -692,6 +694,7 @@ exit 2
     #[cfg(unix)]
     #[test]
     fn old_format_failed_opencode_replica_retries_without_erasing_worker_files() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-old-format-opencode-retry-{}-{}",
@@ -858,6 +861,7 @@ exit 2
     #[cfg(unix)]
     #[test]
     fn old_format_opencode_replica_without_provider_parent_can_retry() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-old-format-opencode-missing-parent-{}-{}",
@@ -951,6 +955,7 @@ exit 2
     #[cfg(unix)]
     #[test]
     fn old_format_authenticated_opencode_revalidates_replaced_root() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-old-format-opencode-replaced-root-{}-{}",

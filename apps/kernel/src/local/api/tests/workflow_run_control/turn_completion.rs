@@ -424,7 +424,9 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
 }
 
 fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_warns_inner() {
-    let worktree = crate::test_support::TestWorktree::new("workflow-mailbox");
+    let worktree = crate::test_support::TestWorktree::new(
+        "local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_warns_inner",
+    );
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(

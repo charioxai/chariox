@@ -2376,6 +2376,11 @@ done
         let testdata = root.join("testdata");
         std::fs::create_dir_all(&scripts).expect("script directory should exist");
         std::fs::create_dir_all(&testdata).expect("application fixture directory should exist");
+        // Production passes the canonical worker workspace; on macOS temp_dir()
+        // is behind a /var symlink.
+        let root = root
+            .canonicalize()
+            .expect("script fixture root should resolve");
         let fixture_contents = b"application test fixture, not an SSH credential\n";
         std::fs::write(testdata.join("private_key.pem"), fixture_contents)
             .expect("application private_key fixture should exist");

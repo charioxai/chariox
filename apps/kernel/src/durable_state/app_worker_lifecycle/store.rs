@@ -1,0 +1,369 @@
+use super::*;
+use chariox_app_runtime::{
+    installation::InstallationRegistry, publisher_trust::PublisherTrustRegistry,
+};
+use rusqlite::{params, OptionalExtension, TransactionBehavior};
+
+fn sql<T>(result: rusqlite::Result<T>) -> Result<T> {
+    result.map_err(|_| LifecycleStoreError::Storage)
+}
+fn checked(value: u64) -> Result<i64> {
+    i64::try_from(value).map_err(|_| LifecycleStoreError::Stale)
+}
+fn identity(value: &str) -> Result<()> {
+    if value.is_empty() || value.len() > 128 || value.chars().any(char::is_control) {
+        Err(LifecycleStoreError::Stale)
+    } else {
+        Ok(())
+    }
+}
+fn budget(value: &AppOperationBudget) -> Result<()> {
+    value.check().map_err(|_| LifecycleStoreError::Stopped)
+}
+pub(super) fn first_committed(
+    tx: &rusqlite::Transaction<'_>,
+    owner: &str,
+    attempt: &str,
+    binding: &StageTrustBinding,
+    trust: &TrustedPublisherSnapshot,
+) -> Result<ActiveStartAdmission> {
+    identity(owner)?;
+    identity(attempt)?;
+    binding
+        .require_active(tx, owner, trust)
+        .map_err(|_| LifecycleStoreError::Stale)?;
+    let token = binding.token();
+    let installation = &token.installation_id;
+    let generation = checked(token.generation)?;
+    let now = checked(crate::session::unix_epoch_ms())?;
+    match status(tx, owner, installation)? {
+        // Reconciling this same commit.
+        Some(current)
+            if current.generation == token.generation
+                && current.attempt == attempt
+                && current.phase == WorkerPhase::Starting
+                && current.desired_running => {}
+        // A local update moves the installation's worker to the new generation.
+        // A reinstall's base is the uninstall generation; its worker last ran
+        // an older one. The registry has already fenced the base generation.
+        Some(current)
+            if token.base_generation > 0 && current.generation <= token.base_generation =>
+        {
+            sql(tx.execute("UPDATE app_worker_lifecycle SET generation=?3,attempt=?4,phase='starting',desired_running=1,failure=NULL,updated_ms=?5,failures=0
+                WHERE installation_id=?1 AND owner_id=?2", params![installation,owner,generation,attempt,now]))?;
+        }
+        Some(_) => return Err(LifecycleStoreError::Stale),
+        // A first install, or an update of an installation never started.
+        None => {
+            sql(tx.execute("INSERT INTO app_worker_lifecycle(installation_id,owner_id,generation,attempt,phase,desired_running,failure,updated_ms)
+                VALUES(?1,?2,?3,?4,'starting',1,NULL,?5)", params![installation,owner,generation,attempt,now]))?;
+        }
+    }
+    Ok(ActiveStartAdmission {
+        owner: owner.into(),
+        installation: installation.into(),
+        attempt: attempt.into(),
+        binding: binding.clone(),
+        trust: trust.clone(),
+    })
+}
+pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS app_worker_lifecycle (
+        installation_id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,generation INTEGER NOT NULL CHECK(generation>=0),
+        attempt TEXT NOT NULL,phase TEXT NOT NULL CHECK(phase IN ('starting','running','stopped','failed')),
+        desired_running INTEGER NOT NULL CHECK(desired_running IN (0,1)),failure TEXT,updated_ms INTEGER NOT NULL CHECK(updated_ms>=0),
+        failures INTEGER NOT NULL DEFAULT 0 CHECK(failures>=0));")?;
+    let counted: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('app_worker_lifecycle') WHERE name='failures')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !counted {
+        connection.execute_batch(
+            "ALTER TABLE app_worker_lifecycle ADD COLUMN failures INTEGER NOT NULL DEFAULT 0 CHECK(failures>=0);",
+        )?;
+    }
+    Ok(())
+}
+
+/// Only the owning kernel, at its own start: no worker outlives the kernel
+/// that ran it, so a `running` row is left over from before a crash. It
+/// becomes `stopped` with its desired state kept, so recovery or the next call
+/// starts it again and status stops reporting a worker that does not exist.
+/// `starting` rows are kept: a pending first install resumes its exact claim.
+/// Never run this for another kernel's store (sibling stores are opened
+/// without the owner lock), whose workers may be alive.
+pub(super) fn reset_after_kernel_start(connection: &Connection) -> Result<()> {
+    let now = checked(crate::session::unix_epoch_ms())?;
+    sql(connection.execute(
+        "UPDATE app_worker_lifecycle SET phase='stopped',updated_ms=?1 WHERE phase='running'",
+        params![now],
+    ))?;
+    Ok(())
+}
+
+/// A failed worker restarts on demand after 1, 4 and 16 seconds; a fourth
+/// failure in a row quarantines it until an explicit start.
+pub(super) const RESTARTS: u32 = 3;
+/// A run this long before failing starts a new failure count.
+const HEALTHY_RUN_MS: u64 = 5 * 60 * 1000;
+
+/// Whether an on-demand start may restart this failed worker now.
+pub(super) fn restart_allowed(status: &WorkerStatus, now_ms: u64) -> bool {
+    if status.failures > RESTARTS {
+        return false;
+    }
+    let backoff_ms = 1000 << (2 * (status.failures.max(1) - 1));
+    now_ms >= status.updated_ms.saturating_add(backoff_ms)
+}
+pub(super) fn apply(connection: &mut Connection, command: Command) -> Result<Reply> {
+    let now = checked(crate::session::unix_epoch_ms())?;
+    match command {
+        Command::Claim {
+            owner,
+            installation,
+            attempt,
+            recovery,
+            budget: limit,
+        } => {
+            identity(&owner)?;
+            identity(&installation)?;
+            identity(&attempt)?;
+            budget(&limit)?;
+            let binding = InstallationRegistry::new(connection)
+                .active_trust(&owner, &installation)
+                .map_err(|_| LifecycleStoreError::Stale)?;
+            let trust = PublisherTrustRegistry::new(connection)
+                .trusted_publisher(&owner, binding.publisher_id(), binding.key_id())
+                .map_err(|_| LifecycleStoreError::Stale)?;
+            let tx = sql(connection.transaction_with_behavior(TransactionBehavior::Immediate))?;
+            binding
+                .require_active(&tx, &owner, &trust)
+                .map_err(|_| LifecycleStoreError::Stale)?;
+            budget(&limit)?;
+            let old = status(&tx, &owner, &installation)?
+                .filter(|old| old.generation == binding.token().generation);
+            if recovery
+                && old.as_ref().is_some_and(|old| {
+                    !old.desired_running
+                        || (old.phase == WorkerPhase::Failed && !restart_allowed(old, now as u64))
+                })
+            {
+                return Err(LifecycleStoreError::Stopped);
+            }
+            // An explicit start clears the failure count; a restart keeps it.
+            let failures = if recovery {
+                old.map_or(0, |old| old.failures)
+            } else {
+                0
+            };
+            sql(tx.execute("INSERT INTO app_worker_lifecycle(installation_id,owner_id,generation,attempt,phase,desired_running,failure,updated_ms,failures)
+                VALUES(?1,?2,?3,?4,'starting',1,NULL,?5,?6) ON CONFLICT(installation_id) DO UPDATE SET owner_id=excluded.owner_id,generation=excluded.generation,attempt=excluded.attempt,phase='starting',desired_running=1,failure=NULL,updated_ms=excluded.updated_ms,failures=excluded.failures",
+                params![installation,owner,checked(binding.token().generation)?,attempt,now,failures]))?;
+            budget(&limit)?;
+            sql(tx.commit())?;
+            Ok(Reply::Admitted(ActiveStartAdmission {
+                owner,
+                installation,
+                attempt,
+                binding,
+                trust,
+            }))
+        }
+        Command::Verify {
+            owner,
+            attempt,
+            binding,
+            trust,
+            budget: limit,
+        } => {
+            budget(&limit)?;
+            let tx = sql(connection.transaction_with_behavior(TransactionBehavior::Immediate))?;
+            binding
+                .require_active(&tx, &owner, &trust)
+                .map_err(|_| LifecycleStoreError::Stale)?;
+            budget(&limit)?;
+            let current = status(&tx, &owner, &binding.token().installation_id)?
+                .ok_or(LifecycleStoreError::Stale)?;
+            if current.attempt != attempt
+                || !current.desired_running
+                || !matches!(current.phase, WorkerPhase::Starting | WorkerPhase::Running)
+            {
+                return Err(LifecycleStoreError::Stopped);
+            }
+            sql(tx.commit())?;
+            Ok(Reply::Done)
+        }
+        Command::Transition {
+            owner,
+            installation,
+            attempt,
+            binding,
+            trust,
+            phase,
+            desired_running,
+            failure,
+            budget: limit,
+        } => {
+            budget(&limit)?;
+            if failure.as_ref().is_some_and(|v| {
+                v.len() > 96 || !v.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            }) {
+                return Err(LifecycleStoreError::Stale);
+            }
+            let tx = sql(connection.transaction_with_behavior(TransactionBehavior::Immediate))?;
+            budget(&limit)?;
+            let old = status(&tx, &owner, &installation)?.ok_or(LifecycleStoreError::Stale)?;
+            if old.attempt != attempt || old.generation != binding.token().generation {
+                return Err(LifecycleStoreError::Stale);
+            }
+            if phase == WorkerPhase::Running
+                && (!old.desired_running || old.phase != WorkerPhase::Starting)
+            {
+                return Err(LifecycleStoreError::Stopped);
+            }
+            if phase == WorkerPhase::Running {
+                binding
+                    .require_active(&tx, &owner, &trust)
+                    .map_err(|_| LifecycleStoreError::Stale)?;
+            }
+            // A failure counts toward the restart policy; one after a long
+            // healthy run starts a new count.
+            let failures = match phase {
+                WorkerPhase::Failed
+                    if old.phase == WorkerPhase::Running
+                        && (now as u64).saturating_sub(old.updated_ms) >= HEALTHY_RUN_MS =>
+                {
+                    1
+                }
+                WorkerPhase::Failed => old.failures.saturating_add(1),
+                _ => old.failures,
+            };
+            // Manual stop is monotonic for this attempt, including a concurrently
+            // finishing native startup or kernel-shutdown cleanup.
+            sql(tx.execute("UPDATE app_worker_lifecycle SET phase=?1,desired_running=?2,failure=?3,updated_ms=?4,failures=?8 WHERE installation_id=?5 AND owner_id=?6 AND attempt=?7",
+                params![phase.name(),i64::from(desired_running&&old.desired_running),failure,now,installation,owner,attempt,failures]))?;
+            budget(&limit)?;
+            sql(tx.commit())?;
+            Ok(Reply::Done)
+        }
+        Command::Stop {
+            owner,
+            installation,
+            budget: limit,
+        } => {
+            identity(&owner)?;
+            identity(&installation)?;
+            budget(&limit)?;
+            let tx = sql(connection.transaction_with_behavior(TransactionBehavior::Immediate))?;
+            let generation:Option<i64>=sql(tx.query_row("SELECT generation FROM app_installations WHERE installation_id=?1 AND owner_id=?2",params![installation,owner],|row|row.get(0)).optional())?;
+            let generation = generation.ok_or(LifecycleStoreError::Stale)?;
+            budget(&limit)?;
+            sql(tx.execute("INSERT INTO app_worker_lifecycle(installation_id,owner_id,generation,attempt,phase,desired_running,failure,updated_ms)
+                VALUES(?1,?2,?3,'manual-stop','stopped',0,NULL,?4) ON CONFLICT(installation_id) DO UPDATE SET generation=excluded.generation,desired_running=0,updated_ms=excluded.updated_ms",params![installation,owner,generation,now]))?;
+            budget(&limit)?;
+            sql(tx.commit())?;
+            Ok(Reply::Done)
+        }
+        Command::ResetAfterKernelStart => {
+            reset_after_kernel_start(connection)?;
+            Ok(Reply::Done)
+        }
+        Command::FinishStop {
+            owner,
+            installation,
+            budget: limit,
+        } => {
+            budget(&limit)?;
+            let tx = sql(connection.transaction_with_behavior(TransactionBehavior::Immediate))?;
+            let old = status(&tx, &owner, &installation)?.ok_or(LifecycleStoreError::Stale)?;
+            if old.desired_running {
+                return Err(LifecycleStoreError::Stale);
+            }
+            sql(tx.execute("UPDATE app_worker_lifecycle SET phase='stopped',updated_ms=?1 WHERE installation_id=?2 AND owner_id=?3 AND desired_running=0",params![now,installation,owner]))?;
+            budget(&limit)?;
+            sql(tx.commit())?;
+            Ok(Reply::Done)
+        }
+    }
+}
+pub(super) fn status(
+    connection: &Connection,
+    owner: &str,
+    installation: &str,
+) -> Result<Option<WorkerStatus>> {
+    identity(owner)?;
+    identity(installation)?;
+    type Row = (i64, String, String, bool, Option<String>, i64, u32);
+    let value:Option<Row>=sql(connection.query_row("SELECT h.generation,h.attempt,h.phase,h.desired_running,h.failure,h.updated_ms,h.failures FROM app_worker_lifecycle h
+        JOIN app_installations i ON i.installation_id=h.installation_id AND i.owner_id=h.owner_id WHERE h.owner_id=?1 AND h.installation_id=?2",params![owner,installation],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional())?;
+    value
+        .map(
+            |(generation, attempt, phase, desired_running, failure, updated, failures)| {
+                Ok(WorkerStatus {
+                    generation: u64::try_from(generation)
+                        .map_err(|_| LifecycleStoreError::Storage)?,
+                    attempt,
+                    phase: match phase.as_str() {
+                        "starting" => WorkerPhase::Starting,
+                        "running" => WorkerPhase::Running,
+                        "stopped" => WorkerPhase::Stopped,
+                        "failed" => WorkerPhase::Failed,
+                        _ => return Err(LifecycleStoreError::Storage),
+                    },
+                    desired_running,
+                    failure,
+                    updated_ms: u64::try_from(updated).map_err(|_| LifecycleStoreError::Storage)?,
+                    failures,
+                })
+            },
+        )
+        .transpose()
+}
+pub(super) fn candidates(
+    connection: &Connection,
+    after: Option<(&str, &str)>,
+) -> Result<Vec<(String, String)>> {
+    let mut statement=sql(connection.prepare("SELECT i.owner_id,i.installation_id FROM app_installations i LEFT JOIN app_worker_lifecycle h ON h.installation_id=i.installation_id
+        WHERE i.active_json IS NOT NULL AND i.admission_paused=0 AND (h.installation_id IS NULL OR h.generation!=i.generation OR (h.desired_running=1 AND h.phase!='failed'))
+        AND (?1 IS NULL OR (i.owner_id,i.installation_id)>(?1,?2)) ORDER BY i.owner_id,i.installation_id LIMIT 8"))?;
+    let rows = sql(
+        statement.query_map(params![after.map(|v| v.0), after.map(|v| v.1)], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        }),
+    )?;
+    sql(rows.collect())
+}
+
+/// Read-only mirror of the active start claim's admission and recovery fence.
+pub(super) fn start_gate(
+    connection: &mut Connection,
+    owner: &str,
+    installation: &str,
+) -> Result<StartGate> {
+    identity(owner)?;
+    identity(installation)?;
+    let Ok(binding) = InstallationRegistry::new(connection).active_trust(owner, installation)
+    else {
+        return Ok(StartGate::Refused);
+    };
+    if PublisherTrustRegistry::new(connection)
+        .trusted_publisher(owner, binding.publisher_id(), binding.key_id())
+        .is_err()
+    {
+        return Ok(StartGate::Refused);
+    }
+    Ok(match status(connection, owner, installation)? {
+        Some(old) if old.generation == binding.token().generation && !old.desired_running => {
+            StartGate::UserStopped
+        }
+        Some(old)
+            if old.generation == binding.token().generation
+                && old.phase == WorkerPhase::Failed
+                && !restart_allowed(&old, crate::session::unix_epoch_ms()) =>
+        {
+            StartGate::Refused
+        }
+        _ => StartGate::Allowed,
+    })
+}

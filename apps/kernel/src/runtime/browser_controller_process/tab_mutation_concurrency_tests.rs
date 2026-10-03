@@ -280,7 +280,10 @@ fn lifecycle_recovery_and_duplicate_execution_replay_without_redispatch() {
 fn unchanged_reconciliation_and_acquire_do_not_drain_independent_mutation() {
     let fixture = Fixture::new();
     let viewport = CanonicalViewport::new(1280, 800, 1, 1280, 800).unwrap();
-    fixture.store.reconcile_browser("room", &viewport).unwrap();
+    fixture
+        .store
+        .reconcile_browser("room", &viewport, false)
+        .unwrap();
     let first_store = fixture.store.clone();
     let first = std::thread::spawn(move || navigate(first_store, FIRST, "tab-a", "first"));
     assert!(fixture.wait_for("first-a-started", Duration::from_secs(1)));
@@ -289,7 +292,7 @@ fn unchanged_reconciliation_and_acquire_do_not_drain_independent_mutation() {
     let read = std::thread::spawn(move || {
         let result = store
             .acquire("room")
-            .and_then(|_| store.reconcile_browser("room", &viewport));
+            .and_then(|_| store.reconcile_browser("room", &viewport, false));
         tx.send(result.is_ok()).unwrap();
         result
     });

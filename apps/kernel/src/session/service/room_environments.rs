@@ -157,6 +157,41 @@ impl SessionService {
         })
     }
 
+    pub(crate) fn set_room_browser_bar_visible_as_actor(
+        &mut self,
+        session_id: &str,
+        actor: EnvironmentActor,
+        visible: bool,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
+        self.room_environments
+            .set_browser_bar_visible_as_actor(session_id, actor, visible)
+    }
+
+    pub(crate) fn preview_update_room_environment_viewport_as_actor(
+        &self,
+        session_id: &str,
+        actor: EnvironmentActor,
+        expected_revision: u64,
+        viewport: CanonicalViewport,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
+        self.room_environments.preview_update_viewport_as_actor(
+            session_id,
+            actor,
+            expected_revision,
+            viewport,
+        )
+    }
+
     pub(crate) fn update_room_environment_viewport_as_actor(
         &mut self,
         session_id: &str,
@@ -227,6 +262,24 @@ impl SessionService {
         self.mutate_room_environment(session_id, |environments| {
             environments.reconcile_controller_tabs(session_id, tabs, focused_runtime_target_id)
         })
+    }
+
+    pub(crate) fn set_room_environment_app_tabs(
+        &mut self,
+        session_id: &str,
+        apps: std::collections::BTreeMap<String, (String, crate::session::AppPanelLayout)>,
+        app_panels: bool,
+    ) -> Result<std::collections::BTreeMap<String, (u32, u32)>, EnvironmentError> {
+        // Read under the same lock as every focus change, so a poll never
+        // puts back an agent the focus just moved away from.
+        let Some(session) = self.store.get(session_id) else {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        };
+        let agent_id = session.focused_agent_id().map(str::to_owned);
+        self.room_environments
+            .set_app_tabs(session_id, apps, agent_id, app_panels)
     }
 
     pub(crate) fn room_environment_controller_tab_binding(

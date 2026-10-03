@@ -42,14 +42,22 @@ mod workspace_write_fence;
 #[cfg(test)]
 pub(crate) use account_credential::provider_account_credential_id;
 pub(crate) use account_credential::{
-    provider_account_credential_uses_vault, resolve_provider_account_credentials,
-    resolve_provider_account_credentials_for_launch, store_provider_account_credential,
-    validate_provider_account_credential_input, CLAUDE_OAUTH_TOKEN_ENV,
+    launch_uses_vault_credential, provider_account_credential_registered,
+    provider_account_credential_uses_vault,
+    resolve_provider_account_credentials, resolve_provider_account_credentials_for_launch,
+    store_provider_account_credential, validate_provider_account_credential_input,
+    CLAUDE_OAUTH_TOKEN_ENV,
 };
-pub(crate) use claude::ensure_claude_native_hidden_context_fits;
 pub(crate) use claude::probe_claude_account_usage;
 pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
+pub(crate) use claude::{
+    ensure_claude_native_hidden_context_fits, CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS,
+    CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
+};
+#[cfg(test)]
+pub(crate) use claude_runtime::claude_runtime_tool_wait_pending;
 pub(crate) use claude_runtime::ClaudeRuntimeState;
+pub(crate) use claude_runtime::{begin_claude_runtime_tool_wait, ClaudeRuntimeToolWait};
 #[cfg(test)]
 pub(crate) use claude_runtime::{
     drain_claude_events, initialize_claude_runtime, submit_claude_prompt,
@@ -76,6 +84,7 @@ pub(crate) use external_observation::{
     observed_role, text_from_content, ExternalProviderObservationPolicy,
     ObservedExternalProviderTurn, ObservedExternalProviderTurnRole,
 };
+pub(crate) use launch_contract::TurnSubstitute;
 pub use launch_contract::{
     canonical_external_provider_session_id, canonical_profile_external_provider_session_id,
     default_provider_control_capabilities, external_provider_import_model,
@@ -116,7 +125,8 @@ pub use opencode_client::{
 pub use process_info::{ProviderProcessInfo, ProviderProcessStatus};
 pub(crate) use prompt_signals::{
     classify_provider_substitutable_failure_text, classify_provider_terminal_failure_output_text,
-    classify_provider_terminal_failure_text, claude_native_stop_failure, provider_retry_status,
+    classify_provider_terminal_failure_text, claude_native_stop_failure,
+    provider_coded_failure_text, provider_retry_status, provider_turn_failure_reason,
     PROVIDER_CONNECTION_RETRY_MERGE_KEY,
 };
 pub use prompt_signals::{
@@ -135,7 +145,9 @@ pub(crate) use runtime_run::{
 pub use runtime_run::{ProviderRunTokenUsage, RuntimeProviderRun};
 pub use service::{ProviderProcessService, ProviderProcessServiceStore};
 pub(crate) use service::{ProviderRunLivenessReconciliation, ProviderRuntimeBinding};
-pub(crate) use termination::{provider_launch_failure_diagnostic, sanitize_provider_diagnostic};
+pub(crate) use termination::{
+    provider_launch_failure_diagnostic, redact_provider_diagnostic, sanitize_provider_diagnostic,
+};
 pub use termination::{ProviderRunTermination, ProviderRunTerminationCategory};
 pub(crate) use types::provider_workspace_live_sync_mode_for_session;
 pub use types::{
@@ -178,6 +190,17 @@ pub(crate) fn provider_run_is_claude_headless(run: &RuntimeProviderRun) -> bool 
 pub(crate) fn provider_run_uses_claude_native_bridge(run: &RuntimeProviderRun) -> bool {
     run.adapter_key() == "claude"
         && (!run.client_interface().is_chariox() || provider_run_is_claude_headless(run))
+}
+
+/// Claude `-p` runs in Build mode with the `Required` level route tool
+/// approvals through the runtime MCP `chariox.permission_prompt` tool, as
+/// their launch flags say; native TUI runs use the hook instead. Other runs
+/// neither list nor answer it.
+pub(crate) fn provider_run_uses_claude_permission_prompt_tool(run: &RuntimeProviderRun) -> bool {
+    run.adapter_key() == "claude"
+        && provider_run_uses_structured_prompt_io(run)
+        && run.execution_mode() == AgentExecutionMode::Build
+        && run.permission_level() == AgentPermissionLevel::Required
 }
 
 pub(crate) fn provider_run_uses_structured_prompt_io(run: &RuntimeProviderRun) -> bool {

@@ -3,6 +3,7 @@ use futures_util::FutureExt;
 
 #[test]
 fn worker_browser_and_user_display_share_the_bound_room_environment() {
+    crate::test_support::isolated_env_test!();
     run_test(check_worker_browser_and_user_display_share_the_bound_room_environment);
 }
 
@@ -154,6 +155,7 @@ async fn check_worker_browser_and_user_display_share_the_bound_room_environment(
 
 #[test]
 fn hosted_service_cannot_claim_a_room_display_grant() {
+    crate::test_support::isolated_env_test!();
     run_test(rejects_hosted_service);
 }
 
@@ -191,6 +193,7 @@ async fn rejects_hosted_service() {
 
 #[test]
 fn remote_kernel_cannot_claim_a_room_display_grant() {
+    crate::test_support::isolated_env_test!();
     run_test(rejects_remote_kernel);
 }
 
@@ -226,6 +229,7 @@ async fn rejects_remote_kernel() {
 
 #[test]
 fn remote_client_display_grant_requires_its_authenticated_viewer_key() {
+    crate::test_support::isolated_env_test!();
     run_test(rejects_remote_client_key_mismatch);
 }
 
@@ -267,6 +271,7 @@ async fn rejects_remote_client_key_mismatch() {
 
 #[test]
 fn remote_client_with_its_authenticated_viewer_key_can_open_the_room_display() {
+    crate::test_support::isolated_env_test!();
     run_test(admits_remote_client_with_matching_key);
 }
 
@@ -305,6 +310,7 @@ async fn admits_remote_client_with_matching_key() {
 
 #[test]
 fn room_display_grant_rejects_a_different_attachment_owner() {
+    crate::test_support::isolated_env_test!();
     run_test(rejects_different_attachment_owner);
 }
 
@@ -340,6 +346,7 @@ async fn rejects_different_attachment_owner() {
 
 #[test]
 fn worker_rejects_room_display_open_from_the_wrong_home_binding() {
+    crate::test_support::isolated_env_test!();
     run_test(rejects_wrong_worker_binding);
 }
 
@@ -369,6 +376,7 @@ async fn rejects_wrong_worker_binding() {
 
 #[test]
 fn selkies_display_does_not_accept_the_legacy_unscoped_endpoint_request() {
+    crate::test_support::isolated_env_test!();
     run_test(rejects_unscoped_selkies_request);
 }
 
@@ -389,6 +397,7 @@ async fn rejects_unscoped_selkies_request() {
 
 #[test]
 fn room_display_grant_rejects_an_attachment_from_another_room() {
+    crate::test_support::isolated_env_test!();
     run_test(rejects_cross_room_attachment);
 }
 

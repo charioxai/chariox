@@ -5,10 +5,13 @@ import {
   cancelRoomEnvironmentActionRequest,
   getRoomEnvironmentSliceRequest,
   getRoomEnvironmentStateRequest,
+  getRoomEnvironmentTabAccessibilityRequest,
   listRoomEnvironmentActionHistoryRequest,
   releaseRoomEnvironmentInputRequest,
   requestRoomEnvironmentInputTakeoverRequest,
   retryRoomEnvironmentRequest,
+  roomBrowserBarMinimumProtocolVersion,
+  setRoomBrowserBarRequest,
   roomEnvironmentActionCancellationMinimumProtocolVersion,
   roomEnvironmentActionHistoryMinimumProtocolVersion,
   roomEnvironmentBrowserHistoryMinimumProtocolVersion,
@@ -19,6 +22,7 @@ import {
   roomEnvironmentLifecycleMinimumProtocolVersion,
   roomEnvironmentSliceBindingMinimumProtocolVersion,
   roomEnvironmentStateMinimumProtocolVersion,
+  roomEnvironmentTabAccessibilityMinimumProtocolVersion,
   saveSliceStateRequest,
   startRoomEnvironmentRequest,
   stopRoomEnvironmentRequest,
@@ -36,6 +40,8 @@ import type {
   RoomEnvironmentSliceResponse,
   RoomEnvironmentSnapshot,
   RoomEnvironmentStateResponse,
+  RoomEnvironmentTabAccessibility,
+  RoomEnvironmentTabAccessibilityResponse,
   RoomEnvironmentTakeoverUpdatedResponse,
   RoomEnvironmentUpdatedResponse,
   SliceRecord,
@@ -93,7 +99,7 @@ export async function handleRoomSlashCommand(
   command: RoomCommand,
 ): Promise<void> {
   const [subcommand] = command.args
-  if (subcommand && !["status", "show", "actions", "start", "stop", "retry", "reconnect", "view", "screenshot", "browser", "takeover", "release", "cancel", "save", "bind"].includes(subcommand)) {
+  if (subcommand && !["status", "show", "actions", "start", "stop", "retry", "reconnect", "view", "screenshot", "browser", "takeover", "release", "cancel", "save", "bind", "read", "bar"].includes(subcommand)) {
     deps.flashFooter(roomCommandUsage(), "error")
     return
   }
@@ -103,6 +109,7 @@ export async function handleRoomSlashCommand(
   let actionHistory: { limit: number; beforeSequence: number | null } | undefined
   let browserCommand: RoomBrowserCommand | undefined
   let saveMode: "restart_agents" | "shutdown" | undefined
+  let barVisible: boolean | undefined
   if (subcommand === "bind") {
     if (command.args.length !== 2 || !command.args[1]?.trim()) {
       deps.flashFooter("usage: /room bind SLICE", "error")
@@ -142,6 +149,17 @@ export async function handleRoomSlashCommand(
       return
     }
     browserCommand = parsedBrowserCommand
+  } else if (subcommand === "read") {
+    if (command.args.length > 2) {
+      deps.flashFooter("usage: /room read [TAB_ID]", "error")
+      return
+    }
+  } else if (subcommand === "bar") {
+    if (command.args.length !== 2 || !["show", "hide"].includes(command.args[1] ?? "")) {
+      deps.flashFooter(roomBarUsage(), "error")
+      return
+    }
+    barVisible = command.args[1] === "show"
   } else if (subcommand === "save") {
     if (command.args.length !== 2 || !command.args[1] || !["restart", "shutdown"].includes(command.args[1])) {
       deps.flashFooter(roomSaveUsage(), "error")
@@ -270,6 +288,42 @@ export async function handleRoomSlashCommand(
       formatRoomEnvironmentStatus(environment),
       formatSliceViewerAvailability(viewer.availability),
     ].join("\n"))
+    return
+  }
+  if (subcommand === "read") {
+    const stateResponse = await sendWithProtocolMinimum<RoomEnvironmentStateResponse>(
+      deps.send,
+      getRoomEnvironmentStateRequest(sessionId),
+      {
+        capability: "Room environment status",
+        requestVariant: "GetRoomEnvironmentState",
+        minimumProtocolVersion: roomEnvironmentStateMinimumProtocolVersion,
+      },
+    )
+    const environment = stateResponse?.RoomEnvironmentState?.environment
+    if (!environment) throw new Error("Room Environment state response is malformed")
+    const tabId = command.args[1]
+      ?? environment.focused_tab_id
+      ?? environment.tabs.find((tab) => tab.focused)?.tab_id
+    if (!tabId) {
+      deps.flashFooter("Room browser has no focused tab; run /room status and retry with a tab ID", "error")
+      return
+    }
+    const response = await sendWithProtocolMinimum<RoomEnvironmentTabAccessibilityResponse>(
+      deps.send,
+      getRoomEnvironmentTabAccessibilityRequest(sessionId, tabId),
+      {
+        capability: "Room Tab outline",
+        requestVariant: "GetRoomEnvironmentTabAccessibility",
+        minimumProtocolVersion: roomEnvironmentTabAccessibilityMinimumProtocolVersion,
+      },
+    )
+    const accessibility = response?.RoomEnvironmentTabAccessibility?.accessibility
+    if (!accessibility || accessibility.tab_id !== tabId) {
+      throw new Error("Room Tab outline response is malformed or belongs to another Tab")
+    }
+    const title = environment.tabs.find((tab) => tab.tab_id === tabId)?.title || "Untitled"
+    deps.appendNotice(formatRoomTabOutline(title, accessibility))
     return
   }
   if (subcommand === "actions") {
@@ -412,6 +466,24 @@ export async function handleRoomSlashCommand(
     deps.appendNotice(`Room action ${actionId} ${formatCancellationOutcome(outcome)}\n${formatRoomEnvironmentStatus(environment)}`)
     return
   }
+  if (subcommand === "bar") {
+    if (barVisible === undefined) throw new Error("Room browser bar state is missing")
+    const response = await sendWithProtocolMinimum<RoomEnvironmentUpdatedResponse>(
+      deps.send,
+      setRoomBrowserBarRequest(sessionId, barVisible),
+      {
+        capability: "Room browser bar",
+        requestVariant: "SetRoomBrowserBar",
+        minimumProtocolVersion: roomBrowserBarMinimumProtocolVersion,
+      },
+    )
+    if (!response || typeof response !== "object" || !("RoomEnvironmentUpdated" in response)) {
+      throw new Error("Room browser bar response is malformed")
+    }
+    const environment = response.RoomEnvironmentUpdated.environment
+    deps.appendNotice(`Room browser bar ${environment.browser_bar_visible ? "shown: ordinary Tabs keep Chromium's tab strip and address bar" : "hidden: ordinary Tabs cover the Room screen, like App views"}\n${formatRoomEnvironmentStatus(environment)}`)
+    return
+  }
   if (subcommand === "save") {
     if (!saveMode) throw new Error("Room Environment save mode is missing")
     const bindingResponse = await sendWithProtocolMinimum<RoomEnvironmentSliceResponse>(
@@ -534,8 +606,30 @@ function isU32(value: number): boolean {
   return Number.isSafeInteger(value) && value > 0 && value <= 0xffff_ffff
 }
 
+// The Tab's page as indented text: one line per node a reader announces.
+export function formatRoomTabOutline(title: string, accessibility: RoomEnvironmentTabAccessibility): string {
+  const depth = new Map<string, number>()
+  const lines = accessibility.nodes.map((node) => {
+    const level = node.parent_ref === undefined ? 0 : (depth.get(node.parent_ref) ?? -1) + 1
+    depth.set(node.element_ref, level)
+    const states = [...(node.states ?? []), node.focused ? "focused" : "", node.disabled ? "disabled" : ""].filter(Boolean)
+    return [
+      `${"  ".repeat(level)}${node.role}`,
+      node.name ? ` ${JSON.stringify(node.name)}` : "",
+      node.value ? ` = ${JSON.stringify(node.value)}` : "",
+      node.description ? ` (${node.description})` : "",
+      states.length > 0 ? ` [${states.join(", ")}]` : "",
+    ].join("")
+  })
+  return [
+    `Page outline of ${title} (tab ${accessibility.tab_id}, revision ${accessibility.document_revision}):`,
+    ...(lines.length > 0 ? lines : ["(no readable content)"]),
+    ...(accessibility.truncated ? ["… the page is longer; this outline is shortened."] : []),
+  ].join("\n")
+}
+
 function roomCommandUsage(): string {
-  return "usage: /room status|bind SLICE|actions [LIMIT] [BEFORE_SEQUENCE]|start [WIDTHxHEIGHT] [SCALE]|stop|retry|reconnect|view|screenshot|browser back|forward|reload|close [TAB_ID]|activate TAB_ID|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown"
+  return "usage: /room status|read [TAB_ID]|bind SLICE|actions [LIMIT] [BEFORE_SEQUENCE]|start [WIDTHxHEIGHT] [SCALE]|stop|retry|reconnect|view|screenshot|browser back|forward|reload|close [TAB_ID]|activate TAB_ID|bar show|hide|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown"
 }
 
 function roomActionsUsage(): string {
@@ -560,6 +654,10 @@ function roomCancelUsage(): string {
 
 function roomSaveUsage(): string {
   return "usage: /room save restart|shutdown"
+}
+
+function roomBarUsage(): string {
+  return "usage: /room bar show|hide"
 }
 
 function formatCancellationOutcome(outcome: RoomEnvironmentActionCancellationOutcome): string {

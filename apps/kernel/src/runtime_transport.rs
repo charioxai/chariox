@@ -13,7 +13,7 @@ use tokio::sync::{mpsc, Mutex, OwnedSemaphorePermit, Semaphore, TryAcquireError}
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tokio_tungstenite::{
-    accept_async, accept_hdr_async,
+    accept_hdr_async,
     tungstenite::{
         handshake::server::ErrorResponse,
         http::StatusCode,
@@ -37,6 +37,7 @@ mod local_presence;
 
 pub(crate) mod command_cache;
 mod outgoing;
+mod socket_options;
 mod subscriptions;
 
 pub(crate) use command_cache::COMMAND_RESULT_CACHE_LIMIT;
@@ -660,9 +661,15 @@ where
                 _ = pump_router.wait_for_transport_runtime_pump_change_after(change_sequence) => {}
                 _ = pump_router.wait_for_pty_output_change_after(pty_output_sequence) => {}
                 _ = pump_router.wait_for_provider_run_actor_completion_after(provider_actor_completion_sequence) => {}
+                _ = pump_router.wait_for_started_app_refreshes() => {}
             }
         }
     });
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    let app_wake_task = {
+        let runtime = router.runtime_state().clone();
+        tokio::spawn(async move { runtime.run_app_wake_scheduler().await })
+    };
     let mut durable_snapshot_task = durable_snapshot_scheduler.map(|scheduler| {
         tokio::spawn(scheduler.run(Duration::from_millis(DURABLE_SNAPSHOT_POLL_INTERVAL_MS)))
     });
@@ -699,6 +706,8 @@ where
                 }
                 drop(_restart_recovery_task);
                 pump_task.abort();
+                #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+                app_wake_task.abort();
                 if let Some(task) = durable_snapshot_task.take() {
                     task.abort();
                 }
@@ -709,6 +718,9 @@ where
             (stream, _) = crate::transport::listener_admission::accept_with_backoff(
                 &listener, &transport_health, "kernel websocket",
             ) => {
+                let Some(stream) = socket_options::configure(stream) else {
+                    continue;
+                };
                 let runtime = Arc::clone(&runtime);
                 let router = Arc::clone(&router);
                 let inbound_request_admission = inbound_request_admission.clone();
@@ -788,29 +800,36 @@ async fn handle_kernel_connection(
     local_auth_token: Option<Arc<str>>,
     stream: tokio::net::TcpStream,
 ) -> Result<(), DaemonError> {
-    let socket = if let Some(expected_token) = local_auth_token {
-        accept_hdr_async(
-            stream,
-            move |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
-                  response| {
-                if kernel_local_authorization_matches(
-                    request
-                        .headers()
-                        .get("authorization")
-                        .and_then(|value| value.to_str().ok()),
-                    &expected_token,
-                ) {
-                    return Ok(response);
-                }
-                let mut error = ErrorResponse::new(Some("Unauthorized".to_string()));
-                *error.status_mut() = StatusCode::UNAUTHORIZED;
-                Err(error)
-            },
-        )
-        .await
-    } else {
-        accept_async(stream).await
-    }
+    let socket = accept_hdr_async(
+        stream,
+        move |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+            // Browsers always send Origin; no kernel client does (the browser
+            // reaches the kernel through the relay). Refusing it keeps web
+            // pages on this machine from driving the kernel over loopback,
+            // including answering the owner's decisions.
+            if request.headers().contains_key("origin") {
+                let mut error = ErrorResponse::new(Some("Forbidden".to_string()));
+                *error.status_mut() = StatusCode::FORBIDDEN;
+                return Err(error);
+            }
+            let Some(expected_token) = local_auth_token.as_deref() else {
+                return Ok(response);
+            };
+            if kernel_local_authorization_matches(
+                request
+                    .headers()
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok()),
+                expected_token,
+            ) {
+                return Ok(response);
+            }
+            let mut error = ErrorResponse::new(Some("Unauthorized".to_string()));
+            *error.status_mut() = StatusCode::UNAUTHORIZED;
+            Err(error)
+        },
+    )
+    .await
     .map_err(|error| DaemonError::LocalTransport {
         operation: "accept kernel websocket handshake",
         message: error.to_string(),
@@ -1076,6 +1095,38 @@ where
     writer.send(Message::Text(payload.into())).await.is_ok()
 }
 
+/// Builds the error reply for a frame that failed typed decoding. When the
+/// payload is still a JSON object carrying a `request_id` (e.g. a request whose
+/// `LocalDaemonRequest` body is malformed or names an unknown variant), the reply
+/// echoes that id so the client can reject the pending request instead of
+/// waiting for its own timeout.
+fn incoming_frame_decode_error(payload: &[u8], error: &serde_json::Error) -> KernelOutgoingFrame {
+    let request_id = serde_json::from_slice::<Value>(payload)
+        .ok()
+        .and_then(|value| value.get("request_id")?.as_str().map(str::to_owned));
+    let (request_id, code, message) = match request_id {
+        Some(request_id) => (
+            request_id,
+            "invalid_request",
+            format!("invalid request: {error}"),
+        ),
+        None => (
+            "unknown".to_string(),
+            "invalid_frame",
+            format!("invalid kernel transport payload: {error}"),
+        ),
+    };
+    KernelOutgoingFrame::Response {
+        request_id,
+        response: Box::new(None),
+        error: Some(KernelTransportError {
+            code: code.to_string(),
+            message,
+            retryable: false,
+        }),
+    }
+}
+
 async fn handle_incoming_payload(
     runtime: &Arc<KernelTransportRuntime>,
     router: &Arc<CommandRouter>,
@@ -1095,15 +1146,7 @@ async fn handle_incoming_payload(
                 close_tx,
                 close_requested,
                 &runtime.transport_health,
-                KernelOutgoingFrame::Response {
-                    request_id: "unknown".to_string(),
-                    response: Box::new(None),
-                    error: Some(KernelTransportError {
-                        code: "invalid_frame".to_string(),
-                        message: format!("invalid kernel transport payload: {error}"),
-                        retryable: false,
-                    }),
-                },
+                incoming_frame_decode_error(payload, &error),
                 None,
                 None,
             );
@@ -1176,7 +1219,7 @@ async fn handle_incoming_payload(
                                 &transport_health,
                                 KernelOutgoingFrame::Response {
                                     request_id,
-                                    response: cached.response,
+                                    response: cached.response_value(),
                                     error: cached.error,
                                 },
                                 session_id.as_deref(),

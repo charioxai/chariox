@@ -72,6 +72,21 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
     use KernelCommandPriority::{Background, Interactive, Normal};
 
     match request {
+        LocalDaemonRequest::BeginAppPublisherEnrollment(request) => {
+            LocalRequestMetadata::new("app.publisher.begin", Interactive).optional_session(
+                (request.session_id.len() <= 128).then_some(request.session_id.as_str()),
+            )
+        }
+        LocalDaemonRequest::BeginAppInstall(request) => {
+            LocalRequestMetadata::new("app.install.begin", Interactive).optional_session(
+                (request.session_id.len() <= 128).then_some(request.session_id.as_str()),
+            )
+        }
+        LocalDaemonRequest::BeginAppUpdate(request) => {
+            LocalRequestMetadata::new("app.update.begin", Interactive).optional_session(
+                (request.session_id.len() <= 128).then_some(request.session_id.as_str()),
+            )
+        }
         LocalDaemonRequest::PrepareBrowserImport(request) => {
             LocalRequestMetadata::new("browser.import.prepare", Interactive)
                 .session(&request.selection.session_id)
@@ -106,6 +121,10 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         }
         LocalDaemonRequest::GetRoomEnvironmentResourceInventory(request) => {
             LocalRequestMetadata::new("environment.resource_inventory.get", Normal)
+                .session(&request.session_id)
+        }
+        LocalDaemonRequest::GetRoomEnvironmentTabAccessibility(request) => {
+            LocalRequestMetadata::new("environment.tab.accessibility.get", Normal)
                 .session(&request.session_id)
         }
         LocalDaemonRequest::CaptureRoomEnvironmentScreenshot(request) => {
@@ -322,6 +341,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
                 .attachment(&request.attachment_id)
         }
+        LocalDaemonRequest::AcceptAppHostAction(request) => {
+            LocalRequestMetadata::new("app.host.accept", Interactive).session(&request.session_id)
+        }
         LocalDaemonRequest::RespondToInteraction(request) => {
             LocalRequestMetadata::new("interaction.respond", Interactive)
                 .session(&request.session_id)
@@ -337,7 +359,7 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
                 .agent(&request.agent_id)
         }
-        LocalDaemonRequest::RequestNativeProviderInteraction(request) => {
+        LocalDaemonRequest::RequestNativeProviderTurnInteraction(request) => {
             LocalRequestMetadata::new("native_provider.interaction.request", Normal)
                 .session(&request.session_id)
                 .agent(&request.agent_id)
@@ -534,6 +556,44 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
 
 fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
     match request {
+        LocalDaemonRequest::BeginAppPublisherEnrollment(_) => "app.publisher.begin",
+        LocalDaemonRequest::GetAppPublisherEnrollment(_) => "app.publisher.status",
+        LocalDaemonRequest::CancelAppPublisherEnrollment(_) => "app.publisher.cancel",
+        LocalDaemonRequest::ListAppInstallations(_) => "app.list",
+        LocalDaemonRequest::BeginAppInstall(_) => "app.install.begin",
+        LocalDaemonRequest::BeginAppUpdate(_) => "app.update.begin",
+        LocalDaemonRequest::GetAppInstallOperation(_) => "app.install.status",
+        LocalDaemonRequest::CancelAppInstallOperation(_) => "app.install.cancel",
+        LocalDaemonRequest::BeginAppPackageUpload(_) => "app.package_upload.begin",
+        LocalDaemonRequest::PutAppPackageUploadChunk(_) => "app.package_upload.chunk",
+        LocalDaemonRequest::GetAppPackageUpload(_) => "app.package_upload.status",
+        LocalDaemonRequest::AbortAppPackageUpload(_) => "app.package_upload.abort",
+        LocalDaemonRequest::GetAppInstallation(_) => "app.status",
+        LocalDaemonRequest::GetAppInstallationJournal(_) => "app.journal",
+        LocalDaemonRequest::GetAppWorker(_) => "app.worker.status",
+        LocalDaemonRequest::ControlAppWorker(_) => "app.worker.control",
+        LocalDaemonRequest::ListAppAutomations(_) => "app.automation.list",
+        LocalDaemonRequest::ConfigureAppAutomation(_) => "app.automation.configure",
+        LocalDaemonRequest::DisableAppAutomation(_) => "app.automation.disable",
+        LocalDaemonRequest::OpenAppView(_) => "app.view.open",
+        LocalDaemonRequest::SetAppViewPanel(_) => "app.view.panel",
+        LocalDaemonRequest::UninstallApp(_) => "app.uninstall",
+        LocalDaemonRequest::RestoreAppDataSnapshot(_) => "app.snapshot.restore",
+        LocalDaemonRequest::GetAppLogs(_) => "app.logs",
+        LocalDaemonRequest::CreateAppInboxRoute(_) => "app.inbox.route.create",
+        LocalDaemonRequest::RemoveAppInboxRoute(_) => "app.inbox.route.remove",
+        LocalDaemonRequest::ListAppInboxRoutes(_) => "app.inbox.route.list",
+        LocalDaemonRequest::GrantAppConnection(_) => "app.connection.grant",
+        LocalDaemonRequest::GetAppSet(_) => "app.set",
+        LocalDaemonRequest::PreviewDeploymentApps(_) => "app.deployment.preview",
+        LocalDaemonRequest::PrepareDeploymentApps(_) => "app.deployment.prepare",
+        LocalDaemonRequest::RevokeAppConnection(_) => "app.connection.revoke",
+        LocalDaemonRequest::ListAppConnections(_) => "app.connection.list",
+        LocalDaemonRequest::TestAppInboxRoute(_) => "app.inbox.route.test",
+        LocalDaemonRequest::GrantAppFile(_) => "app.file.grant",
+        LocalDaemonRequest::SaveAppFileExport(_) => "app.file.save",
+        LocalDaemonRequest::RevokeAppFileGrants(_) => "app.file.revoke",
+        LocalDaemonRequest::AcceptAppHostAction(_) => "app.host.accept",
         LocalDaemonRequest::CreateSession(_) => "session.create",
         LocalDaemonRequest::ListProjects(_) => "project.list",
         LocalDaemonRequest::GetProjectEnvironmentManifest(_) => "project.environment_manifest.get",
@@ -576,6 +636,9 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::GetRoomEnvironmentResourceInventory(_) => {
             "environment.resource_inventory.get"
         }
+        LocalDaemonRequest::GetRoomEnvironmentTabAccessibility(_) => {
+            "environment.tab.accessibility.get"
+        }
         LocalDaemonRequest::BindRoomEnvironmentSlice(_) => "environment.slice.bind",
         LocalDaemonRequest::CaptureRoomEnvironmentScreenshot(_) => "environment.screenshot.capture",
         LocalDaemonRequest::ReadRoomEnvironmentScreenshotChunk(_) => "environment.screenshot.read",
@@ -586,6 +649,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::RetryRoomEnvironment(_) => "environment.retry",
         LocalDaemonRequest::UpdateRoomEnvironmentViewport(_) => "environment.viewport.update",
         LocalDaemonRequest::UpdateRoomEnvironmentPointer(_) => "environment.pointer.update",
+        LocalDaemonRequest::SetRoomBrowserBar(_) => "environment.browser_bar.set",
         LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(_) => "environment.input.takeover",
         LocalDaemonRequest::ReleaseRoomEnvironmentInput(_) => "environment.input.release",
         LocalDaemonRequest::SubmitRoomEnvironmentAction(_) => "environment.action.submit",
@@ -770,7 +834,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::RequestCredentialEnrollmentInteraction(_) => {
             "credential_enrollment.interaction.request"
         }
-        LocalDaemonRequest::RequestNativeProviderInteraction(_) => {
+        LocalDaemonRequest::RequestNativeProviderTurnInteraction(_) => {
             "native_provider.interaction.request"
         }
         LocalDaemonRequest::CompletePrompt(_) => "prompt.complete",
@@ -807,6 +871,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ListHomeExtensionAudit(_) => "agent.extension.audit",
         LocalDaemonRequest::ListAgents(_) => "agent.list",
         LocalDaemonRequest::CreateWorkflow(_) => "workflow.create",
+        LocalDaemonRequest::CreateAgentWorkflow(_) => "workflow.create_from_agent",
         LocalDaemonRequest::ValidateWorkflowCode(_) => "workflow_code.validate",
         LocalDaemonRequest::ApplyWorkflowCode(_) => "workflow_code.apply",
         LocalDaemonRequest::ApplyWorkflowCodeArtifact(_) => "workflow_code_artifact.apply",
@@ -870,11 +935,6 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
             "event_connection.dependencies.list"
         }
         LocalDaemonRequest::RemoveEventConnection(_) => "event_connection.remove",
-        LocalDaemonRequest::CreateWorkflowEventBinding(_) => "workflow_event_binding.create",
-        LocalDaemonRequest::ListWorkflowEventBindings(_) => "workflow_event_binding.list",
-        LocalDaemonRequest::SetWorkflowEventBindingStatus(_) => "workflow_event_binding.status.set",
-        LocalDaemonRequest::TransferWorkflowEventBinding(_) => "workflow_event_binding.transfer",
-        LocalDaemonRequest::TestWorkflowEventBinding(_) => "workflow_event_binding.test",
         LocalDaemonRequest::GetEventDeliveryStatus(_) => "event_delivery.status",
         LocalDaemonRequest::ControlWorkflowPublicationRuntime(_) => {
             "workflow_publication.runtime.control"

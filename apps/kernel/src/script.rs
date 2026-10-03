@@ -520,6 +520,7 @@ mod tests {
 
     #[test]
     fn managed_user_isolation_preserves_repository_scoped_scripts_and_environments() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let isolation_root = temp_root("chariox-script-managed-isolation");
         std::env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", &isolation_root);

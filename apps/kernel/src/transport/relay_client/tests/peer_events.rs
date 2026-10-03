@@ -31,9 +31,8 @@ fn drain_leased_runtime_projection_protocol_shape_is_stable() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn incoming_peer_events_project_runtime_to_the_home_session() {
-    let fixture_worktree_0 = crate::test_support::TestWorktree::new(
-        "incoming_peer_events_project_runtime_to_the_home_session",
-    );
+    crate::test_support::isolated_env_test!();
+    let worktree = crate::test_support::TestWorktree::new("home");
     let _relay_test_guard = relay_client_test_guard().await;
     let _env_guard = crate::env_lock::lock();
     let temp_home = std::env::temp_dir().join(format!(
@@ -52,7 +51,7 @@ async fn incoming_peer_events_project_runtime_to_the_home_session() {
         let mut app = app.lock().await;
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(
-                fixture_worktree_0
+                worktree
                     .session_request()
                     .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
             )
@@ -259,23 +258,6 @@ async fn forwarded_native_interactions_resolve_back_to_worker_over_temporary_con
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace-home", "worktree-home"))
             .expect("home session should be created");
-        app.agents
-            .bind_remote_execution(
-                agent.id(),
-                crate::agent::RemoteAgentBinding {
-                    worker_kernel_id: "daemon-worker".into(),
-                    worker_machine_id: "machine-worker".into(),
-                    execution_lease_id: "lease-test".into(),
-                    leased_agent_id: "leased-agent-test".into(),
-                    active_worker_provider_run_id: Some("provider-run-test".into()),
-                    relay_url: None,
-                    relay_token: None,
-                    relay_peer_protocol_version: Some(
-                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-                    ),
-                },
-            )
-            .unwrap();
         (session.id().to_string(), agent.id().to_string())
     };
     let interaction = crate::session::RuntimeInteraction::new(
@@ -309,11 +291,41 @@ async fn forwarded_native_interactions_resolve_back_to_worker_over_temporary_con
         None,
         None,
     );
+    let interaction = interaction.with_native_origin(Some(
+        crate::session::NativeInteractionOrigin::ProviderStartup {
+            provider_run_id: "provider-run-test".into(),
+        },
+    ));
+    {
+        let app = app_home.lock().await;
+        app.agents
+            .bind_remote_execution(
+                &home_agent_id,
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: "daemon-worker".into(),
+                    worker_machine_id: "machine-worker".into(),
+                    execution_lease_id: "execution-lease-test".into(),
+                    leased_agent_id: "leased-agent-test".into(),
+                    active_worker_provider_run_id: None,
+                    relay_url: None,
+                    relay_token: None,
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
+                },
+            )
+            .unwrap();
+        assert!(app
+            .providers
+            .get_run_for_agent(&home_session_id, &home_agent_id)
+            .is_none());
+    }
     let context = crate::transport::relay_peer::RemoteNativeInteractionContext {
         home_session_id: home_session_id.clone(),
         home_agent_id: home_agent_id.clone(),
         leased_agent_id: "leased-agent-test".to_string(),
         worker_provider_run_id: "provider-run-test".to_string(),
+        home_prompt_id: None,
     };
 
     let worker_request = {
@@ -325,7 +337,7 @@ async fn forwarded_native_interactions_resolve_back_to_worker_over_temporary_con
                     daemon_id: Some("daemon-home".to_string()),
                     daemon_alias: None,
                 },
-                RelayPeerRequest::ForwardNativeInteraction {
+                RelayPeerRequest::ForwardNativeTurnInteraction {
                     context,
                     interaction,
                 },
@@ -360,6 +372,8 @@ async fn forwarded_native_interactions_resolve_back_to_worker_over_temporary_con
             interaction_id,
             choice_id: "allow_once".to_string(),
             custom_reply: None,
+            passkey: None,
+            passkey_remember_minutes: None,
         });
     let provider_runtime_lanes = {
         let app = app_home.lock().await;

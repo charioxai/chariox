@@ -190,6 +190,7 @@ async fn mcp_tools_list_exposes_slice_tools_only_for_slice_provider_tokens() {
 #[cfg(unix)]
 #[test]
 fn mcp_tools_call_dispatches_slice_screen_fallbacks_inside_slice_kernel() {
+    crate::test_support::isolated_env_test!();
     run_mcp_server_large_stack_test(
         "mcp-tools-call-dispatches-slice-screen-fallbacks",
         mcp_tools_call_dispatches_slice_screen_fallbacks_inside_slice_kernel_inner,
@@ -526,6 +527,7 @@ async fn assert_local_computer_observation_validation(
 #[cfg(unix)]
 #[test]
 fn mcp_browser_status_uses_the_room_owned_controller_instead_of_one_shot_cdp() {
+    crate::test_support::isolated_env_test!();
     run_mcp_server_large_stack_test(
         "mcp-browser-tools-use-the-room-owned-controller",
         mcp_browser_status_uses_the_room_owned_controller_instead_of_one_shot_cdp_inner,
@@ -1223,7 +1225,23 @@ done
     );
     assert!(recovered_actor_ids
         .contains(crate::session::agent_environment_actor_id(&agent_id).as_str()));
-    assert_eq!(recovered_environment.actions.len(), 7);
+    // slice_browser_status/find are recorded as non-mutating Room observations.
+    assert_eq!(
+        recovered_environment
+            .actions
+            .iter()
+            .map(|action| action.kind.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "browser_status",
+            "browser_find",
+            "fill",
+            "click",
+            "submit",
+            "secret_input",
+            "browser_status"
+        ]
+    );
     assert!(recovered_environment
         .actions
         .iter()

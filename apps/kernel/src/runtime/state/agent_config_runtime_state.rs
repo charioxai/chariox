@@ -1,5 +1,7 @@
 use super::*;
 
+mod app_bindings;
+
 impl KernelRuntimeState {
     pub(crate) async fn grant_agent_extension(
         &self,
@@ -15,6 +17,9 @@ impl KernelRuntimeState {
             .extension_grants()
             .to_vec();
         match grant.kind {
+            crate::extension::ExtensionKind::App => {
+                self.grant_agent_app(agent_ref, grant, caller_user_id).await
+            }
             crate::extension::ExtensionKind::Mcp => {
                 self.grant_agent_mcp(agent_ref, grant.name, caller_user_id)
                     .await
@@ -139,7 +144,9 @@ impl KernelRuntimeState {
                         reserved.extend(connector.allowed_operation_tool_names(max_safety));
                     }
                 }
-                crate::extension::ExtensionKind::Mcp | crate::extension::ExtensionKind::Skill => {}
+                crate::extension::ExtensionKind::Mcp
+                | crate::extension::ExtensionKind::Skill
+                | crate::extension::ExtensionKind::App => {}
             }
         }
         let proposed_names = match proposed.kind {
@@ -155,9 +162,9 @@ impl KernelRuntimeState {
                     crate::connector::ConnectorSafety::parse(proposed.max_safety.as_deref())?;
                 connector.allowed_operation_tool_names(max_safety)
             }
-            crate::extension::ExtensionKind::Mcp | crate::extension::ExtensionKind::Skill => {
-                Vec::new()
-            }
+            crate::extension::ExtensionKind::Mcp
+            | crate::extension::ExtensionKind::Skill
+            | crate::extension::ExtensionKind::App => Vec::new(),
         };
         for name in proposed_names {
             if reserved.contains(&name) {
@@ -186,6 +193,9 @@ impl KernelRuntimeState {
             .extension_grants()
             .to_vec();
         match kind {
+            crate::extension::ExtensionKind::App => {
+                self.revoke_agent_app(agent_ref, name, caller_user_id).await
+            }
             crate::extension::ExtensionKind::Mcp => {
                 self.revoke_agent_mcp(agent_ref, name, caller_user_id).await
             }
@@ -1095,63 +1105,13 @@ impl KernelRuntimeState {
                 agent_id: agent_id.to_string(),
             });
         }
-        if original.remote_execution().is_some() {
-            if let Some(target) =
-                super::remote_agent_profile_runtime::substitute_target(&original, &action)?
-            {
-                if !super::remote_agent_profile_runtime::same_execution_profile(&original, &target)
-                {
-                    return self
-                        .update_remote_agent_substitute(original, action, target)
-                        .await;
-                }
-            }
-        }
-        let profile_transition = if original.remote_execution().is_some() {
-            Some(
-                self.owned
-                    .prompt_state_owner
-                    .claim_agent_profile_list_edit(
-                        &self.owned.session_store.get_session(session_id)?,
-                        agent_id,
-                    )?,
-            )
-        } else {
-            None
-        };
-        let result = async {
-            let (agent, retired_run) = self.owned.update_agent_substitutes(
-                session_id,
-                agent_id,
-                caller_user_id,
-                action,
-            )?;
-            if let Some(provider_run_id) = retired_run {
-                let (_, process_key) = self
-                    .with_app_side_effect(|app| {
-                        crate::app::ProviderLaunchProcessRuntime::new(app)
-                            .remove_run(&provider_run_id)
-                    })
-                    .await
-                    .unwrap_or((false, None));
-                self.owned
-                    .remove_provider_process_tracking_for_run(&provider_run_id, process_key);
-            }
-            self.append_agent_durable_event("agent.updated", &agent, None)
-                .await?;
-            self.invalidate_workflow_copies_after_source_agent_change(session_id, agent_id)?;
-            Ok(agent)
-        }
-        .await;
-        if let Some(claim) = profile_transition {
-            let finish = self
-                .finish_remote_agent_profile_transition(session_id, agent_id, claim)
-                .await;
-            if result.is_ok() {
-                finish?;
-            }
-        }
-        result
+        let agent =
+            self.owned
+                .update_agent_substitutes(session_id, agent_id, caller_user_id, action)?;
+        self.append_agent_durable_event("agent.updated", &agent, None)
+            .await?;
+        self.invalidate_workflow_copies_after_source_agent_change(session_id, agent_id)?;
+        Ok(agent)
     }
 
     pub(crate) async fn ensure_agent_owner(

@@ -3,6 +3,7 @@ use futures_util::FutureExt;
 
 #[test]
 fn bound_worker_applies_authenticated_mouse_and_keyboard_input_without_a_browser_controller() {
+    crate::test_support::isolated_env_test!();
     run_test(applies_authenticated_mouse_and_keyboard_input_without_a_browser_controller);
 }
 
@@ -13,6 +14,7 @@ async fn applies_authenticated_mouse_and_keyboard_input_without_a_browser_contro
     worker_state.config.host_machine_id = "slice:slice-1".to_string();
     worker_state.config.room_environment_worker_binding =
         Some(crate::config::RoomEnvironmentWorkerBinding {
+            provisioned_slice_id: None,
             home_kernel_id: "home-kernel".to_string(),
             home_public_key: home.relay_public_key.clone(),
             session_id: "room-1".to_string(),
@@ -154,6 +156,7 @@ async fn applies_authenticated_mouse_and_keyboard_input_without_a_browser_contro
 
 #[test]
 fn room_environment_cancels_worker_computer_input_over_the_relay_before_takeover() {
+    crate::test_support::isolated_env_test!();
     run_test(cancels_worker_computer_input_over_the_relay_before_takeover);
 }
 
@@ -338,6 +341,7 @@ async fn withholds_capture_during_secret_input() {
             home_public_key: home.relay_public_key.clone(),
             session_id: "room-1".to_string(),
             slice_id: "slice-1".to_string(),
+            provisioned_slice_id: None,
         });
     std::fs::create_dir_all(&worker_state.root).unwrap();
     let script = worker_state.root.join("secret-screen.sh");

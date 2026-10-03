@@ -196,12 +196,10 @@ fn append_native_provider_output_does_not_refresh_session_projection() {
 }
 
 async fn append_native_provider_output_does_not_refresh_session_projection_inner() {
-    let fixture_worktree_0 = crate::test_support::TestWorktree::new(
-        "append_native_provider_output_does_not_refresh_session_projection_inner",
-    );
+    let worktree = crate::test_support::TestWorktree::new("append-native-provider-output");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(fixture_worktree_0.session_request())
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let session_id = session.id().to_string();
     let attachment = crate::app::KernelSessionService::new(&mut app)
@@ -266,12 +264,10 @@ async fn append_native_provider_output_does_not_refresh_session_projection_inner
 
 #[tokio::test]
 async fn terminal_output_with_active_run_does_not_wait_for_busy_provider_runtime_lane() {
-    let fixture_worktree_0 = crate::test_support::TestWorktree::new(
-        "terminal_output_with_active_run_does_not_wait_for_busy_provider_runtime_lane",
-    );
+    let worktree = crate::test_support::TestWorktree::new("terminal-output-with-active");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(fixture_worktree_0.session_request())
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let session_id = session.id().to_string();
     let attachment = crate::app::KernelSessionService::new(&mut app)
@@ -338,12 +334,10 @@ async fn terminal_output_with_active_run_does_not_wait_for_busy_provider_runtime
 
 #[tokio::test]
 async fn background_output_pump_enters_provider_runtime_lane() {
-    let fixture_worktree_0 = crate::test_support::TestWorktree::new(
-        "background_output_pump_enters_provider_runtime_lane",
-    );
+    let worktree = crate::test_support::TestWorktree::new("background-output-pump-enters");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(fixture_worktree_0.session_request())
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let provider_run_id = launch_test_provider(
         &mut app,
@@ -381,12 +375,10 @@ async fn background_output_pump_enters_provider_runtime_lane() {
 
 #[tokio::test]
 async fn terminal_output_with_active_run_drains_buffer_before_provider_lane() {
-    let fixture_worktree_0 = crate::test_support::TestWorktree::new(
-        "terminal_output_with_active_run_drains_buffer_before_provider_lane",
-    );
+    let worktree = crate::test_support::TestWorktree::new("terminal-output-with-active");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(fixture_worktree_0.session_request())
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let session_id = session.id().to_string();
     let attachment = crate::app::KernelSessionService::new(&mut app)

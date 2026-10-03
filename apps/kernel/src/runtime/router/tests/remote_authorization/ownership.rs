@@ -9,13 +9,13 @@ fn remote_owned_session_objects_record_caller_user() {
 }
 
 async fn remote_owned_session_objects_record_caller_user_inner() {
+    let worktree = crate::test_support::TestWorktree::new(
+        "remote_owned_session_objects_record_caller_user_inner",
+    );
     let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let session = app
         .sessions_mut()
-        .create_session(CreateSessionRequest::new(
-            "workspace-ownership",
-            "worktree-ownership",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let session_id = session.id().to_string();
     let (_, invite) = app
@@ -195,14 +195,14 @@ async fn remote_owned_session_objects_record_caller_user_inner() {
 
 #[tokio::test]
 async fn remote_created_session_records_caller_as_owner_and_default_agent_owner() {
+    let worktree = crate::test_support::TestWorktree::new(
+        "remote_created_session_records_caller_as_owner_and_default_agent_owner",
+    );
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
     ));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
-    let create_session = LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-        "workspace-remote-session-owner",
-        "worktree-remote-session-owner",
-    ));
+    let create_session = LocalDaemonRequest::CreateSession(worktree.session_request());
 
     let (session, agent) = match router
         .dispatch(
@@ -231,13 +231,13 @@ fn remote_user_cannot_control_other_users_agents_or_endpoint() {
 }
 
 async fn remote_user_cannot_control_other_users_agents_or_endpoint_inner() {
+    let worktree = crate::test_support::TestWorktree::new(
+        "remote_user_cannot_control_other_users_agents_or_endpoint_inner",
+    );
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let session = app
         .sessions_mut()
-        .create_session(CreateSessionRequest::new(
-            "workspace-authz",
-            "worktree-authz",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let session_id = session.id().to_string();
     let local_agent = spawn_test_agent(&mut app, &session_id, "local-owned", "dev-stub");

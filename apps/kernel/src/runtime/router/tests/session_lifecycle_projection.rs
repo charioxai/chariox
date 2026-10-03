@@ -82,9 +82,12 @@ async fn session_runtime_publishes_attach_and_focus_projection_without_router_sn
 
 #[tokio::test]
 async fn agent_lifecycle_refresh_uses_published_projection_without_app_lock() {
+    let worktree = crate::test_support::TestWorktree::new(
+        "agent_lifecycle_refresh_uses_published_projection_without_app_lock",
+    );
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let session_id = session.id().to_string();
     let app = Arc::new(Mutex::new(app));
@@ -615,14 +618,16 @@ async fn spawn_agent_rejects_slice_from_another_worktree() {
 
 #[tokio::test]
 async fn delete_session_uses_owned_runtime_state_without_app_lock() {
+    let worktree = crate::test_support::TestWorktree::new(
+        "delete_session_uses_owned_runtime_state_without_app_lock",
+    );
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
     ));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
 
-    let create_request = LocalDaemonRequest::CreateSession(
-        CreateSessionRequest::new("workspace-delete-projection", "worktree").with_alias("doomed"),
-    );
+    let create_request =
+        LocalDaemonRequest::CreateSession(worktree.session_request().with_alias("doomed"));
     let create_command = KernelCommand::from_local_request(
         "cmd-delete-projection-create",
         None,
@@ -641,7 +646,7 @@ async fn delete_session_uses_owned_runtime_state_without_app_lock() {
     let app_guard = app.lock().await;
     let delete_request = LocalDaemonRequest::DeleteSession(DeleteSessionRequest {
         session_ref: "doomed".to_string(),
-        workspace_id: Some("workspace-delete-projection".to_string()),
+        workspace_id: Some(worktree.path().display().to_string()),
     });
     let delete_command =
         KernelCommand::from_local_request("cmd-delete-projection", None, None, &delete_request);
@@ -671,8 +676,10 @@ async fn ended_session_can_be_deleted_by_exact_id_without_becoming_resolvable() 
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
     ));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+    // Session paths must be real absolute directories (Apps Phase 1 validation).
+    let worktree = crate::test_support::TestWorktree::new("ended-delete");
     let create_request = LocalDaemonRequest::CreateSession(
-        CreateSessionRequest::new("workspace-ended-delete", "worktree").with_alias("ended-delete"),
+        worktree.session_request().with_alias("ended-delete"),
     );
     let create_command =
         KernelCommand::from_local_request("cmd-ended-delete-create", None, None, &create_request);
@@ -1043,4 +1050,59 @@ fn create_router_test_slice(
             },
         )
         .expect("slice should be created")
+}
+
+#[tokio::test]
+async fn a_page_load_never_brings_back_an_agent_a_person_deleted() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, only_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    // No provider has run yet: the session is still `Created`.
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    let attach = |client_id: &str| {
+        let request = attach_request(&session_id, client_id);
+        let command = KernelCommand::from_local_request(client_id, None, None, &request);
+        (command, request)
+    };
+
+    let (command, request) = attach("cli-zero-focus-tui");
+    router
+        .dispatch(command, request)
+        .await
+        .expect("the TUI should attach");
+    router
+        .runtime_state
+        .destroy_agent(only_agent.id(), DEFAULT_LOCAL_USER_ID)
+        .await
+        .expect("the person deletes the session's only agent");
+
+    // A web page loads the session: it attaches as a new client.
+    let (command, request) = attach("web-zero-focus-load");
+    router
+        .dispatch(command, request)
+        .await
+        .expect("the web client should attach");
+
+    let state_request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+        session_id: session_id.clone(),
+    });
+    let state_command =
+        KernelCommand::from_local_request("zero-focus-state", None, None, &state_request);
+    match router
+        .dispatch(state_command, state_request)
+        .await
+        .expect("state should resolve")
+    {
+        LocalDaemonResponse::SessionState { session, .. } => {
+            assert_eq!(session.status(), crate::session::SessionStatus::Created);
+            assert!(
+                session.agents().is_empty(),
+                "attaching must not spawn an agent"
+            );
+            assert_eq!(session.focused_agent_id(), None);
+        }
+        _ => panic!("unexpected session state response"),
+    }
 }

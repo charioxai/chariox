@@ -68,6 +68,8 @@ pub struct LeasedAgent {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub projected_completion_keys: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    // Legacy relay field. Worker-local durable cursors replace this cache;
+    // any old keys are migrated on the first projection drain.
     pub projected_output_history_keys: Vec<String>,
     #[serde(skip)]
     pub projected_provider_run: Option<(String, crate::provider::ProviderRunState)>,
@@ -123,17 +125,6 @@ pub struct RemoteWorkflowTurnContext {
     pub workflow_run_id: String,
     pub workflow_node_run_id: String,
     pub delivery_token: String,
-    /// Capability snapshot selected by the home workflow event binding.
-    /// Older peers default to disabled, preserving the safe behavior.
-    #[serde(default)]
-    pub event_reply_enabled: bool,
-    /// Whether this event run may request bounded provider context. This is
-    /// independent from reply mode and defaults off for older peers.
-    #[serde(default)]
-    pub event_context_enabled: bool,
-    /// Whether this event run has at least one catalog-validated action.
-    #[serde(default)]
-    pub event_actions_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

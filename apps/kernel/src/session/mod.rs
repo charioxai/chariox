@@ -8,6 +8,7 @@ mod prompt_runtime;
 mod queued_metaagent_task;
 mod room_environment;
 mod runtime_interactions;
+pub use runtime_interactions::NativeInteractionOrigin;
 mod runtime_project;
 mod runtime_session;
 mod runtime_worktrees;
@@ -53,7 +54,7 @@ pub use room_environment::{
     EnvironmentComponentHealth, EnvironmentComponentHealthState, EnvironmentError,
     EnvironmentEvent, EnvironmentEventKind, EnvironmentLifecycle, EnvironmentMode,
     EnvironmentPointer, EnvironmentPointerButton, EnvironmentPointerPosition, EnvironmentReplay,
-    EnvironmentTab, InputOwnership, InputTarget, PendingInputTakeover, RoomEnvironment,
+    AppPanelLayout, AppPanelPlacement, EnvironmentAppPanel, EnvironmentTab, EnvironmentTabApp, InputOwnership, InputTarget, PendingInputTakeover, RoomEnvironment,
     RoomEnvironmentSnapshot, TakeoverOutcome,
 };
 pub(crate) use room_environment::{
@@ -78,16 +79,18 @@ pub use types::{
     PromptDetachEffect, PromptOrigin, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
     QueuedMetaagentTask, RuntimeInteraction, RuntimeInteractionChoice,
     RuntimeInteractionChoiceStyle, RuntimeInteractionCustomChoice, RuntimeInteractionInputKind,
-    RuntimeInteractionKind, RuntimeInteractionLevel, RuntimeProviderLogin, RuntimeSession,
-    RuntimeWorktreeAssignment, SchedulerState, SessionAgentDefaults,
-    SessionCollaborationAgentCounts, SessionConfigState, SessionExecutionMode, SessionInvite,
-    SessionMember, SessionStatus, WorkflowArtifactRef, WorkflowCanvasLayout,
-    WorkflowCanvasLayoutPatch, WorkflowCanvasPoint, WorkflowCodeSourceBinding,
-    WorkflowCodeSourceOrigin, WorkflowCompletionSnapshot, WorkflowConsole, WorkflowConsoleEntry,
-    WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEdgeEndpointSide,
-    WorkflowEndpointDefinition, WorkflowFailureEvent, WorkflowFailureKind, WorkflowFailurePolicy,
-    WorkflowFailurePolicyMode, WorkflowHandoffPayload, WorkflowIntermediateOutput, WorkflowMessage,
-    WorkflowNodeDefinition, WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowNodeThinkingTrace,
+    RuntimeInteractionKind, RuntimeInteractionLevel, RuntimeInteractionSubject,
+    RuntimeProviderLogin, RuntimeSession, RuntimeWorktreeAssignment, SchedulerState,
+    SessionAgentDefaults, SessionCollaborationAgentCounts, SessionConfigState,
+    SessionExecutionMode, SessionInvite, SessionMember, SessionStatus, WorkflowArtifactRef,
+    WorkflowCanvasLayout, WorkflowCanvasLayoutPatch, WorkflowCanvasPoint,
+    WorkflowCodeSourceBinding, WorkflowCodeSourceOrigin, WorkflowCompletionSnapshot,
+    WorkflowConsole, WorkflowConsoleEntry, WorkflowDefinition, WorkflowEdgeDefinition,
+    WorkflowEdgeEndpointSide, WorkflowEndpointDefinition, WorkflowFailureEvent,
+    WorkflowFailureKind, WorkflowFailurePolicy, WorkflowFailurePolicyMode, WorkflowHandoffPayload,
+    WorkflowIntermediateOutput, WorkflowMessage, WorkflowNodeDefinition, WorkflowNodeRun,
+    WorkflowNodeRunStatus, WorkflowNodeThinkingTrace, WorkflowOrigin, WorkflowOriginReason,
+    WorkflowOriginSurface,
     WorkflowOutputPayload, WorkflowPromptQueueDefinition, WorkflowPublicationDefinition,
     WorkflowPublicationInvocationEnvelope, WorkflowQueuedPrompt, WorkflowQueuedPromptSource,
     WorkflowQueuedPromptStatus, WorkflowRun, WorkflowRunOutputSubmission, WorkflowRunStatus,
@@ -116,7 +119,7 @@ pub use workflow_instances::{
     WorkflowEndpointRuntimeInstance, WorkflowEndpointRuntimeInstanceStatus,
 };
 pub use workflow_publication::{
-    WorkflowEventBinding, WorkflowEventBindingStatus, WorkflowEventDeliveryReceipt,
+    WorkflowEventDeliveryReceipt,
     WorkflowPublicationRuntimeMaterialization, WorkflowPublicationSnapshot,
     WorkflowPublicationSourceSessionSnapshot, WORKFLOW_PUBLICATION_KIND_EVENT_BASED,
     WORKFLOW_PUBLICATION_KIND_INGRESS, WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY,
@@ -135,3 +138,5 @@ pub(crate) fn is_zero(value: &usize) -> bool {
 pub use agent_prompt_scheduling::{
     AgentPromptSchedule, AgentPromptScheduleDispatch, AgentPromptScheduleKind,
 };
+
+pub(crate) use service::{PreparedWorkflowQueueRun, WorkflowQueueRun};

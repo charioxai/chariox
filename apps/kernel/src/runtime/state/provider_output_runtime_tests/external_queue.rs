@@ -600,3 +600,246 @@ async fn external_active_prompt_rejects_queued_prompt_steering() {
         &queued_prompt_id,
     );
 }
+
+#[tokio::test]
+async fn late_launch_completion_preserves_active_local_prompt_and_queued_successor() {
+    let worktree = crate::test_support::TestWorktree::new("late-launch-active-local");
+    let mut app =
+        DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "late-launch-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("client should attach");
+    // Prepare a real idle managed provider, but deliberately hold its launch
+    // completion until the ordinary prompt owner has an active turn and a queue.
+    let started = app
+        .start_provider_launch(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "native-tui-idle",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider launch should start");
+    assert_eq!(
+        started.run.state(),
+        crate::provider::ProviderRunState::Starting
+    );
+    let mut admitted = Vec::new();
+    for (id, prompt, force_queue) in [
+        ("late-launch-active", "active local prompt", false),
+        ("late-launch-queued", "queued local successor", true),
+    ] {
+        let item = crate::session::PromptQueueItem::new(
+            id,
+            attachment.id(),
+            agent.id(),
+            prompt,
+            crate::session::PromptStatus::Queued,
+        );
+        let outcome = app
+            .prompt_owner_submit_prepared_prompt(session.id(), item, force_queue)
+            .expect("ordinary prompt admission should succeed");
+        assert_eq!(
+            matches!(
+                outcome,
+                crate::session::PromptSubmissionOutcome::Queued { .. }
+            ),
+            force_queue
+        );
+        let accepted = match outcome {
+            crate::session::PromptSubmissionOutcome::Started { prompt }
+            | crate::session::PromptSubmissionOutcome::Queued { prompt } => prompt,
+        };
+        admitted.push(accepted.id().to_string());
+    }
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime.finish_provider_launch(&started, None).await;
+    let run = runtime
+        .owned
+        .provider_store
+        .get_run(started.run.id())
+        .expect("run remains queryable");
+    let snapshot = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session remains queryable");
+    // Always reap this test's real idle shell, even when the regression is red.
+    app.lock()
+        .await
+        .teardown_provider_processes(None, true)
+        .expect("fixture cleanup");
+    assert_eq!(
+        run.state(),
+        crate::provider::ProviderRunState::Running,
+        "queue occupancy is not a provider initialization failure"
+    );
+    assert_eq!(
+        snapshot.active_prompt_for_agent(agent.id()).map(|p| p.id()),
+        Some(admitted[0].as_str())
+    );
+    let queued = snapshot
+        .queued_prompts_for_agent(agent.id())
+        .expect("queue exists");
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].id(), admitted[1]);
+    assert!(runtime
+        .owned
+        .complete_local_prompt_without_advance(session.id(), agent.id(), Some(started.run.id()),)
+        .expect("active turn should complete normally")
+        .is_some());
+    let dispatch = runtime
+        .owned
+        .advance_next_queued_prompt_dispatch(session.id(), agent.id(), started.run.id())
+        .expect("deferred successor should remain eligible")
+        .expect("completed active turn should release the queued successor");
+    assert_eq!(dispatch.prompt, "queued local successor");
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(started.run.id())
+            .unwrap()
+            .state(),
+        crate::provider::ProviderRunState::Running
+    );
+}
+
+#[tokio::test]
+async fn losing_queue_claim_does_not_release_the_winning_workflow_workspace_claim() {
+    let worktree = crate::test_support::TestWorktree::new("queue-workspace-claim-contention");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "native-tui-idle",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .unwrap();
+    let workflow = app
+        .sessions_mut()
+        .create_workflow(session.id(), Some("claim-retention".to_string()))
+        .unwrap();
+    let node = app
+        .sessions_mut()
+        .add_workflow_node(session.id(), workflow.id(), agent.id())
+        .unwrap();
+    let endpoint = app
+        .sessions_mut()
+        .create_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            node.id(),
+            Some("entry".to_string()),
+        )
+        .unwrap();
+    let workflow_run = app
+        .sessions_mut()
+        .invoke_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            endpoint.id(),
+            Some("one turn".to_string()),
+        )
+        .unwrap();
+    let node_run_id = workflow_run.node_runs()[0].id().to_string();
+    app.sessions_mut()
+        .prepare_workflow_turn(
+            session.id(),
+            workflow_run.id(),
+            &node_run_id,
+            format!("workflow-ack:{node_run_id}"),
+            "claimed workflow turn".to_string(),
+            None,
+            None,
+        )
+        .unwrap();
+    let queued = crate::session::PromptQueueItem::new(
+        "claim-retention-queued",
+        crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run.id()),
+        agent.id(),
+        "claimed workflow turn",
+        crate::session::PromptStatus::Queued,
+    )
+    .with_workflow_context(workflow_run.id(), &node_run_id);
+    let crate::session::PromptSubmissionOutcome::Queued { prompt: observed } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), queued, true)
+        .unwrap()
+    else {
+        panic!("workflow turn must start queued");
+    };
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let winner = runtime
+        .owned
+        .advance_next_queued_prompt_dispatch(session.id(), agent.id(), run.id())
+        .expect("winning dispatcher succeeds")
+        .expect("queued workflow turn is claimed");
+    let claim_id =
+        runtime
+            .owned
+            .workflow_dispatch_claim_id(session.id(), workflow_run.id(), &node_run_id);
+    let before_loser = runtime.owned.prompt_workspace_claims.contains(&claim_id);
+    let mut loser_prepared = false;
+    // The loser retained the same observed head before the winner activated it.
+    // Its preparation must not acquire (or later release) the winner's claim.
+    let loser = runtime
+        .owned
+        .prompt_state_owner
+        .try_activate_next_queued_prompt_with_prompt_id(
+            &session,
+            agent.id(),
+            observed.id(),
+            "losing-dispatch".to_string(),
+            |prompt| {
+                loser_prepared = true;
+                runtime
+                    .owned
+                    .ensure_workflow_prompt_workspace_claim(session.id(), prompt)?;
+                Ok(())
+            },
+        )
+        .expect("a losing opportunistic claim is ordinary contention");
+    let after_loser = runtime.owned.prompt_workspace_claims.contains(&claim_id);
+    let active = runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent_snapshot(&session, agent.id());
+    runtime.owned.release_workflow_node_workspace_claim(
+        session.id(),
+        workflow_run.id(),
+        &node_run_id,
+    );
+    app.lock()
+        .await
+        .teardown_provider_processes(None, true)
+        .unwrap();
+    assert!(
+        before_loser && after_loser,
+        "the winning workflow retains its actual workspace claim"
+    );
+    assert!(
+        !loser_prepared,
+        "only the eligible queue winner may prepare a workspace claim"
+    );
+    assert!(loser.is_none());
+    assert_eq!(active.unwrap().id(), winner.prompt_id);
+}

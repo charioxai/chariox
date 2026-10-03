@@ -274,49 +274,6 @@ impl RuntimeSession {
         Ok(())
     }
 
-    pub fn create_workflow_event_binding(
-        &mut self,
-        binding: WorkflowEventBinding,
-    ) -> WorkflowEventBinding {
-        self.workflow_publication_state
-            .workflow_event_bindings
-            .push(binding.clone());
-        binding
-    }
-
-    pub fn workflow_event_binding(&self, binding_id: &str) -> Option<&WorkflowEventBinding> {
-        self.workflow_publication_state
-            .workflow_event_bindings
-            .iter()
-            .find(|binding| binding.id == binding_id)
-    }
-
-    pub fn workflow_event_binding_mut(
-        &mut self,
-        binding_id: &str,
-    ) -> Option<&mut WorkflowEventBinding> {
-        self.workflow_publication_state
-            .workflow_event_bindings
-            .iter_mut()
-            .find(|binding| binding.id == binding_id)
-    }
-
-    pub fn remove_workflow_event_binding(
-        &mut self,
-        binding_id: &str,
-    ) -> Option<WorkflowEventBinding> {
-        let index = self
-            .workflow_publication_state
-            .workflow_event_bindings
-            .iter()
-            .position(|binding| binding.id == binding_id)?;
-        Some(
-            self.workflow_publication_state
-                .workflow_event_bindings
-                .remove(index),
-        )
-    }
-
     pub fn record_workflow_event_delivery_receipt(
         &mut self,
         receipt: WorkflowEventDeliveryReceipt,

@@ -239,6 +239,7 @@ fn attached_remote_agent_resume_state_is_not_observed_from_home_provider_files()
 
 #[test]
 fn session_bounded_refresh_imports_history_without_runtime_activity() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let codex_home = temp_root("codex-attach-catchup");
     let previous_codex_home = env::var_os("CODEX_HOME");
@@ -355,6 +356,7 @@ fn session_bounded_refresh_imports_history_without_runtime_activity() {
 
 #[test]
 fn discovery_content_change_refreshes_attached_imported_history() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let root = temp_root("opencode-discovery-content-refresh");
     let previous_home = env::var_os("HOME");
@@ -560,6 +562,7 @@ fn discovery_content_change_refreshes_attached_imported_history() {
 
 #[test]
 fn codex_discovery_content_change_refreshes_attached_imported_history() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let root = temp_root("codex-discovery-content-refresh");
     let previous_home = env::var_os("HOME");
@@ -663,6 +666,7 @@ fn codex_discovery_content_change_refreshes_attached_imported_history() {
 
 #[test]
 fn unchanged_discovery_signature_refreshes_attached_imported_history() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let root = temp_root("codex-unchanged-signature-attached-refresh");
     let previous_home = env::var_os("HOME");

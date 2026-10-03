@@ -1123,6 +1123,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn ordinary_managed_pty_preserves_selected_ssh_bindings_while_discovery_scrubs_them() {
+        crate::test_support::isolated_env_test!();
         let _environment = crate::env_lock::lock();
         let previous_git_ssh_command = std::env::var_os("GIT_SSH_COMMAND");
         let previous_ssh_auth_sock = std::env::var_os("SSH_AUTH_SOCK");

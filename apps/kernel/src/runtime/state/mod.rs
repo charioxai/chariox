@@ -35,9 +35,50 @@ use workspace_live_sync::*;
 mod workspace_live_sync_workspace_context;
 use workspace_live_sync_workspace_context::*;
 mod context_handoff;
+mod failed_request_owned_state;
 use context_handoff::*;
+mod app_automation_owned_state;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_connection_runtime;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_control_requests;
+mod app_event_delivery_owned_state;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_event_pump_runtime;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_inbox_runtime;
+mod app_runtime_state;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_set_runtime;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_wake_pump_runtime;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod workflow_publication_app_copy;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod workflow_publication_apps_runtime;
+#[cfg(all(
+    test,
+    any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))
+))]
+pub(crate) use workflow_publication_app_copy::fixture_copy_request_id;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_deployment_consent_runtime;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_foreground_runtime;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_view_poll;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_validation_pump_runtime;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_file_pick_runtime;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_host_runtime;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_view_runtime;
 mod computer_secret_input_runtime_state;
 mod config_runtime_state;
+mod critical_approval_passkey;
+mod native_catalog_refresh;
 mod project_environment_export;
 mod project_environment_files;
 mod project_environment_manifest;
@@ -69,6 +110,7 @@ mod provider_reload_pending_runtime;
 mod provider_run_read_state;
 mod publication_activation;
 mod room_browser_controller;
+mod room_browser_controller_admission;
 mod room_browser_manifest_sync;
 mod room_computer_observation;
 mod room_display;
@@ -77,7 +119,7 @@ mod room_environment_placement;
 mod room_environment_state;
 mod room_screenshot;
 mod runtime_tool_call_activity;
-use runtime_tool_call_activity::RuntimeToolCallActivity;
+pub(crate) use runtime_tool_call_activity::RuntimeToolCallActivity;
 
 #[derive(Clone)]
 pub(crate) struct KernelRuntimeState {
@@ -90,6 +132,8 @@ pub(crate) struct KernelRuntimeState {
 
 #[derive(Clone)]
 struct KernelRuntimeOwnedState {
+    app_control: crate::runtime::app_control::AppControlService,
+    critical_approval_passkeys: critical_approval_passkey::CriticalApprovalPasskeys,
     config_projection: crate::runtime::projection::DaemonConfigProjectionStore,
     session_store: SessionStateStore,
     agent_store: AgentServiceStore,
@@ -102,6 +146,7 @@ struct KernelRuntimeOwnedState {
     >,
     workflow_provider_launch_lock: Arc<std::sync::Mutex<()>>,
     workflow_instance_provision_lock: Arc<std::sync::Mutex<()>>,
+    workflow_entry_claims: workflow_queue_durable::WorkflowEntryClaims,
     publication_activation: Arc<publication_activation::PublicationActivation>,
     provider_process_tracking: ProviderProcessTrackingStore,
     provider_launch_failure_retries: ProviderLaunchFailureRetryStore,
@@ -114,6 +159,8 @@ struct KernelRuntimeOwnedState {
     environment_execution_gates: environment_execution_gate::EnvironmentExecutionGates,
     computer_input_executions:
         crate::runtime::computer_input_execution::ComputerInputExecutionStore,
+    room_browser_health_inflight: Arc<std::sync::Mutex<BTreeSet<String>>>,
+    next_room_browser_health_at_ms: Arc<AtomicU64>,
     room_environment_health_probes: Arc<room_environment_health::RoomEnvironmentHealthProbes>,
     browser_controller_generations:
         Arc<std::sync::Mutex<BTreeMap<String, (u64, bool)>>>,
@@ -288,6 +335,8 @@ mod owned;
 mod pending_runtime_state;
 mod remote_agent_profile_runtime;
 mod remote_profile_account_runtime;
+mod room_browser_health;
+pub(in crate::runtime) use pending_runtime_state::PendingInteractionResolution;
 use pending_runtime_state::*;
 mod local_prompt_dispatch_runtime;
 mod local_prompt_submission_owned_state;
@@ -312,16 +361,22 @@ mod provider_launch_owned_state;
 mod provider_launch_runtime;
 pub(crate) use provider_launch_runtime::ProviderLaunchStartOutcome;
 mod provider_liveness_runtime;
+mod claude_setup_token_capture;
+pub(in crate::runtime) use claude_setup_token_capture::{
+    SetupTokenScan, CLAUDE_SETUP_TOKEN_COLUMNS, CLAUDE_SETUP_TOKEN_ROWS,
+};
+mod claude_setup_token_vault;
+pub(in crate::runtime) use claude_setup_token_vault::ClaudeSetupTokenStoreOutcome;
 mod provider_login_state;
 pub(in crate::runtime) use provider_login_state::{
-    ProviderAuthProcessOperation, ProviderLoginProcessBackend, ProviderLoginProcessRecord,
-    ProviderLoginProcessStore, PROVIDER_LOGIN_TIMEOUT_MS,
+    ClaudeSetupTokenLogin, ClaudeSetupTokenVaultPrompt, ProviderAuthProcessOperation,
+    ProviderLoginProcessBackend, ProviderLoginProcessRecord, ProviderLoginProcessStore,
+    PROVIDER_LOGIN_TIMEOUT_MS,
 };
 mod provider_mcp_continuation_runtime;
 mod provider_output_runtime;
 mod provider_process_runtime_state;
 pub(crate) use provider_process_runtime_state::*;
-mod agent_substitute_transition_owned_state;
 mod project_environment_setup;
 mod provider_auth_recovery;
 #[cfg(test)]
@@ -366,6 +421,7 @@ mod transport_runtime_state;
 mod workflow;
 mod workflow_access_owned_state;
 mod workflow_admin;
+mod workflow_agent_owned_state;
 mod workflow_artifact_request_runtime_state;
 mod workflow_blocked_claim_retry;
 mod workflow_claim_release;
@@ -383,6 +439,7 @@ mod workflow_node_owned_state;
 mod workflow_output_tool;
 mod workflow_prompt_dispatches;
 mod workflow_prompt_queue_owned_state;
+mod workflow_queue_durable;
 use workflow_prompt_dispatches::*;
 mod workflow_prompt_failure_owned_state;
 pub(crate) mod workflow_publication_endpoint_runtime;
@@ -399,10 +456,6 @@ mod workflow_turn_admin_owned_state;
 mod workflow_turn_prompt_owned_state;
 
 impl KernelRuntimeState {
-    pub(crate) fn session_store(&self) -> &SessionStateStore {
-        &self.owned.session_store
-    }
-
     pub(crate) fn event_connection_registry(
         &self,
     ) -> &crate::event_connection::EventConnectionRegistry {
@@ -525,7 +578,9 @@ impl KernelRuntimeState {
             relay_state,
             legacy_workflow_history,
             agent_runtime_projection,
+            app_control,
             managed_kernel_registration,
+            runtime_tool_call_activity,
         ) = {
             let started = Instant::now();
             loop {
@@ -537,7 +592,9 @@ impl KernelRuntimeState {
                         app.relay_client_state(),
                         app.legacy_workflow_history_store(),
                         app.agent_runtime_projection_store(),
+                        app.app_control_service(),
                         app.managed_kernel_registration(),
+                        app.runtime_tool_call_activity.clone(),
                     );
                 }
                 if started.elapsed() >= Duration::from_secs(5) {
@@ -637,6 +694,11 @@ impl KernelRuntimeState {
             leased_agent_operations: leased_agent_operations::LeasedAgentOperations::default(),
             detached_workflow_provider_launches: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             owned: KernelRuntimeOwnedState {
+                app_control,
+                critical_approval_passkeys:
+                    critical_approval_passkey::CriticalApprovalPasskeys::new(
+                        &config_projection.snapshot().user_config.credential_vault,
+                    ),
                 config_projection,
                 session_store,
                 agent_store,
@@ -647,6 +709,7 @@ impl KernelRuntimeState {
                 )),
                 workflow_provider_launch_lock: Arc::new(std::sync::Mutex::new(())),
                 workflow_instance_provision_lock: Arc::new(std::sync::Mutex::new(())),
+                workflow_entry_claims: workflow_queue_durable::WorkflowEntryClaims::default(),
                 publication_activation,
                 provider_process_tracking,
                 provider_launch_failure_retries,
@@ -660,6 +723,8 @@ impl KernelRuntimeState {
                 environment_execution_gates: Default::default(),
                 computer_input_executions:
                     crate::runtime::computer_input_execution::ComputerInputExecutionStore::default(),
+                room_browser_health_inflight: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
+                next_room_browser_health_at_ms: Arc::new(AtomicU64::new(0)),
                 room_environment_health_probes: Arc::new(room_environment_health::RoomEnvironmentHealthProbes::default()),
                 browser_controller_generations: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
                 session_projection,
@@ -726,7 +791,7 @@ impl KernelRuntimeState {
                 agent_message_idempotency: Arc::new(Mutex::new(
                     AgentMessageIdempotencyStore::default(),
                 )),
-                runtime_tool_call_activity: RuntimeToolCallActivity::default(),
+                runtime_tool_call_activity,
                 next_provider_process_gc_at_ms: Arc::new(AtomicU64::new(0)),
                 relay_state,
                 remote_prompt_projection_drains: Arc::new(std::sync::Mutex::new(BTreeMap::new())),

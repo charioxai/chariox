@@ -440,6 +440,7 @@ mod tests {
 
     #[test]
     fn opencode_adapter_resolves_override_and_uses_working_directory() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let executable = std::env::temp_dir().join(format!(
             "chariox-opencode-adapter-test-{}",
@@ -489,6 +490,7 @@ mod tests {
 
     #[test]
     fn ordinary_opencode_adapter_scrubs_path1_supervisor_controls_only() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let root =
             std::env::temp_dir().join(format!("chariox-registry-path1-env-{}", std::process::id()));
@@ -661,6 +663,7 @@ mod tests {
 
     #[test]
     fn ordinary_provider_adapter_does_not_reexpose_live_sync_roots() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-registry-ordinary-preflight-{}",
@@ -710,6 +713,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn official_opencode_adapter_reaches_filtered_managed_child_reexposure() {
+        crate::test_support::isolated_env_test!();
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
         let _guard = crate::env_lock::lock();

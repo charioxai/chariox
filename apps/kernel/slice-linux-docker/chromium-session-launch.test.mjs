@@ -8,8 +8,11 @@ import { fileURLToPath } from "node:url"
 
 const script = fileURLToPath(new URL("./docker/slice-screen.sh", import.meta.url))
 
-for (const session of [undefined, null, "Sessions/Session_1", "Last Session", "Current Session", "Cookies"]) {
-  test(`URL recovery ${session ? `restores ${session}` : session === null ? "restores a profile without tab-session files" : "uses a fresh profile"} without treating the URL as flags`, async () => {
+// "fresh" has no profile yet; "no tab sessions" keeps a profile without them.
+for (const scenario of ["fresh", "no tab sessions", "Sessions/Session_1", "Last Session", "Current Session", "Cookies", "truncated", "encrypted", "malformed"]) {
+  const session = scenario === "fresh" ? undefined : scenario === "no tab sessions" ? null
+    : ["truncated", "encrypted", "malformed"].includes(scenario) ? "Sessions/Session_1" : scenario;
+  test(`URL recovery ${scenario} launches Chromium without treating the URL as flags`, async () => {
     const root = await mkdtemp(join(tmpdir(), "chariox-chromium-launch-"))
     try {
       const bin = join(root, "bin")
@@ -17,7 +20,12 @@ for (const session of [undefined, null, "Sessions/Session_1", "Last Session", "C
       const argsFile = join(root, "args.json")
       await mkdir(bin)
       if (session !== undefined) await mkdir(join(profile, "Default", "Sessions"), { recursive: true })
-      if (session) await writeFile(join(profile, "Default", session), "saved-session-fixture")
+      const header = Buffer.from("534e535303000000", "hex")
+      const saved = scenario === "truncated" ? Buffer.concat([header, Buffer.from([20, 0, 6])])
+        : scenario === "encrypted" ? Buffer.from("534e535304000000", "hex")
+        : scenario === "malformed" ? Buffer.concat([header, Buffer.from([1, 0, 6])]) : header;
+      if (session) await writeFile(join(profile, "Default", session), saved)
+      await writeFile(join(root, "browser-app-restore.mjs"), await readFile(new URL("./docker/browser-app-restore.mjs", import.meta.url)))
       // MP-08/MP-10: argv-only fixture substitutes process ownership as well
       // as Chromium. Real child retirement is tested by the lifecycle suite.
       await writeFile(join(root, "browser-lifecycle.py"),
@@ -50,13 +58,28 @@ require('node:fs').writeFileSync(process.env.CHARIOX_TEST_ARGS, JSON.stringify(p
       const separator = args.indexOf("--")
       assert.ok(separator > 0)
       assert.deepEqual(args.slice(separator), ["--", url])
-      assert.equal(args.includes("--restore-last-session"), session !== undefined)
+      const quarantined = ["encrypted", "malformed"].includes(scenario);
+      assert.equal(args.includes("--restore-last-session"), session !== undefined && !quarantined)
       assert.ok(args.includes("--new-window"))
       assert.ok(args.includes(`--user-data-dir=${profile}`))
       assert.equal(args.slice(0, separator).includes("--no-sandbox"), false)
       assert.equal(args.some(arg => arg.startsWith("--unsafely-treat-insecure-origin-as-secure")), false)
-      if (session) assert.equal(await readFile(join(profile, "Default", session), "utf8"), "saved-session-fixture")
+      if (quarantined) {
+        await assert.rejects(readFile(join(profile, "Default", session)), {code:"ENOENT"});
+        const { readdir } = await import("node:fs/promises");
+        const backup = (await readdir(join(profile, "Default"))).find(name => name.startsWith("chariox-unrestorable-"));
+        assert.deepEqual(await readFile(join(profile, "Default", backup, "Session_1")), saved);
+      } else if (session) assert.deepEqual(await readFile(join(profile, "Default", session)), header)
     } finally {
+      try {
+        const pid = Number(await readFile(join(root, "logs/chromium-supervisor.pid"), "utf8"));
+        process.kill(pid, "SIGTERM");
+        for (let n=0;n<40;n++) {
+          try { await readFile(join(root, "logs/chromium-supervisor.pid")); }
+          catch { break; }
+          await new Promise(resolve=>setTimeout(resolve,50));
+        }
+      } catch {}
       await rm(root, { recursive: true, force: true })
     }
   })

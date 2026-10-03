@@ -1,5 +1,8 @@
 //! Inbound browser/client relay request dispatch to the kernel command router.
 
+#[cfg(test)]
+mod app_tests;
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -24,7 +27,7 @@ use super::sender_identity::{
     validate_browser_import_sender,
 };
 
-const MAX_BROWSER_IMPORT_ENCRYPTED_BYTES: usize = 768 * 1024;
+pub(super) const MAX_BROWSER_IMPORT_ENCRYPTED_BYTES: usize = 768 * 1024;
 const MAX_ACTIVE_BROWSER_IMPORT_DELIVERIES: usize = 32;
 static ACTIVE_BROWSER_IMPORT_DELIVERIES: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
@@ -473,7 +476,9 @@ async fn dispatch_relay_client_request(
         {
             CommandReservation::Wait(wait_rx) => {
                 return match wait_rx.await {
-                    Ok(cached) => cached_relay_dispatch_outcome(cached.response, cached.error),
+                    Ok(cached) => {
+                        cached_relay_dispatch_outcome(cached.response_value(), cached.error)
+                    }
                     Err(_) => RelayDispatchOutcome::RelayError(relay_error(
                         "duplicate_command_unavailable",
                         "original duplicate command result was unavailable",
@@ -549,6 +554,28 @@ mod tests {
     use crate::agent::{AgentInstance, GridPosition, RemoteAgentBinding};
     use crate::local::LocalDaemonResponse;
     use base64::Engine;
+
+    #[test]
+    fn the_largest_app_file_answer_fits_one_relayed_request() {
+        use crate::durable_state::app_file_grants::{MAX_FILES, MAX_TOTAL_BYTES};
+        let share = MAX_TOTAL_BYTES / MAX_FILES;
+        let files = (0..MAX_FILES)
+            .map(|index| crate::local::AppFileContents {
+                name: format!("{index}{}", "n".repeat(254)),
+                contents_base64: base64::engine::general_purpose::STANDARD.encode(vec![0u8; share]),
+            })
+            .collect();
+        let request =
+            crate::local::LocalDaemonRequest::GrantAppFile(crate::local::GrantAppFileRequest {
+                session_id: "s".repeat(128),
+                operation_id: "o".repeat(128),
+                files,
+            });
+        let plaintext =
+            serde_json::json!({ "command_id": "c".repeat(128), "request": request }).to_string();
+        // AES-GCM adds a 16-byte tag to the plaintext.
+        assert!(plaintext.len() + 16 <= super::MAX_BROWSER_IMPORT_ENCRYPTED_BYTES);
+    }
 
     #[test]
     fn pre_reimage_observation_uses_the_normal_encrypted_daemon_request_envelope() {

@@ -212,6 +212,95 @@ pub(crate) fn classify_provider_substitutable_failure_text(
     ))
 }
 
+/// Kernel framing for a turn failure that carries the provider's structured
+/// error code. Adapters build it only from protocol fields, never from
+/// assistant text. Claude's native `StopFailure` frame has the same shape.
+pub(crate) fn provider_coded_failure_text(provider: &str, code: &str, message: &str) -> String {
+    format!("{provider} error [{code}]: {message}")
+}
+
+/// Why a provider failed a turn, for the notice that reruns the turn on a
+/// substitute. Every provider failure reruns it; this only names the cause:
+/// the provider's structured code, then a process termination, then a known
+/// limit phrase, then the provider's own words.
+pub(crate) fn provider_turn_failure_reason(
+    adapter_key: &str,
+    message: &str,
+    termination: Option<&super::ProviderRunTermination>,
+) -> String {
+    // The reason is published in notices and history, so it is built only
+    // from redacted text that still reads like the provider's message.
+    let detail = super::redact_provider_diagnostic(message);
+    let detail = detail
+        .strip_prefix("Provider prompt dispatch failed: ")
+        .unwrap_or(&detail);
+    if let Some(code) = provider_failure_code(detail) {
+        return format!("{} ({code})", provider_failure_code_description(code));
+    }
+    if let Some(termination) = termination.filter(|termination| {
+        termination.category != super::ProviderRunTerminationCategory::ExplicitProviderError
+    }) {
+        return super::redact_provider_diagnostic(&termination.reason);
+    }
+    let detail = detail
+        .strip_prefix("Provider reported a substitutable resource limit: ")
+        .unwrap_or(detail);
+    let snippet = bounded_reason_snippet(detail);
+    if snippet.is_empty() {
+        return "provider reported an error".to_string();
+    }
+    if classify_provider_substitutable_failure_text(adapter_key, detail).is_some() {
+        return format!("usage or rate limit: {snippet}");
+    }
+    snippet
+}
+
+fn provider_failure_code(detail: &str) -> Option<&str> {
+    ["Codex error [", "Claude StopFailure ["]
+        .into_iter()
+        .find_map(|prefix| {
+            let (code, _) = detail.strip_prefix(prefix)?.split_once("]: ")?;
+            (!code.is_empty()
+                && code
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'))
+            .then_some(code)
+        })
+}
+
+fn provider_failure_code_description(code: &str) -> &'static str {
+    match code {
+        "server_overloaded" => "model at capacity",
+        "usage_limit_exceeded" => "usage limit reached",
+        "rate_limit_exceeded" | "rate_limit" => "rate limited",
+        "session_budget_exceeded" => "session budget exhausted",
+        "billing_error" => "billing or credit limit",
+        "context_window_exceeded" => "context window exceeded",
+        "max_output_tokens" => "output token limit reached",
+        "internal_server_error" | "server_error" => "provider server error",
+        "unauthorized" | "authentication_failed" => "authentication failed",
+        "oauth_org_not_allowed" => "organization not allowed",
+        "bad_request" | "invalid_request" => "request rejected",
+        "model_not_found" => "model not found",
+        "http_connection_failed" | "response_stream_connection_failed" => "connection failed",
+        "response_stream_disconnected" => "stream disconnected",
+        "response_too_many_failed_attempts" => "retries exhausted",
+        "cyber_policy" | "misalignment_policy_violation" => "blocked by provider policy",
+        "sandbox_error" => "sandbox error",
+        _ => "provider error",
+    }
+}
+
+fn bounded_reason_snippet(text: &str) -> String {
+    let mut snippet = compact_provider_error_snippet(text);
+    const MAX_CHARS: usize = 200;
+    if snippet.chars().count() > MAX_CHARS {
+        snippet = snippet.chars().take(MAX_CHARS).collect::<String>();
+        snippet.push_str("...");
+    }
+    snippet
+}
+
 fn provider_normalized_text_reports_resource_limit(normalized: &str) -> bool {
     let quota_or_billing = normalized.contains("insufficient_quota")
         || normalized.contains("quota exceeded")
@@ -296,8 +385,102 @@ mod tests {
     use super::{
         classify_provider_substitutable_failure_text,
         classify_provider_terminal_failure_output_text, classify_provider_terminal_failure_text,
-        claude_native_stop_failure, provider_retry_status,
+        claude_native_stop_failure, provider_retry_status, provider_turn_failure_reason,
     };
+    use crate::provider::ProviderRunTermination;
+
+    #[test]
+    fn turn_failure_reason_names_the_structured_code_first() {
+        assert_eq!(
+            provider_turn_failure_reason(
+                "codex",
+                "Provider prompt dispatch failed: Codex error [server_overloaded]: \
+                 Selected model is at capacity. Please try a different model.",
+                None,
+            ),
+            "model at capacity (server_overloaded)"
+        );
+        assert_eq!(
+            provider_turn_failure_reason(
+                "codex",
+                "Codex error [usage_limit_exceeded]: You've hit your usage limit.",
+                None,
+            ),
+            "usage limit reached (usage_limit_exceeded)"
+        );
+        let stop_failure = claude_native_stop_failure(&serde_json::json!({
+            "hook_event_name": "StopFailure",
+            "error": "rate_limit",
+            "last_assistant_message": "You've hit your session limit"
+        }))
+        .unwrap();
+        assert_eq!(
+            provider_turn_failure_reason("claude", &stop_failure, None),
+            "rate limited (rate_limit)"
+        );
+        assert_eq!(
+            provider_turn_failure_reason("codex", "Codex error [someNewCode]: x", None),
+            "provider error (someNewCode)"
+        );
+    }
+
+    #[test]
+    fn turn_failure_reason_falls_back_to_exit_limit_text_and_provider_words() {
+        assert_eq!(
+            provider_turn_failure_reason(
+                "codex",
+                "Provider run `run-1` ended unexpectedly: provider process exited with status 1.",
+                Some(&ProviderRunTermination::process_exit(1, 1)),
+            ),
+            "provider process exited with status 1"
+        );
+        assert_eq!(
+            provider_turn_failure_reason(
+                "opencode",
+                "Insufficient balance. Manage your billing here.",
+                None
+            ),
+            "usage or rate limit: Insufficient balance. Manage your billing here."
+        );
+        assert_eq!(
+            provider_turn_failure_reason("codex", "  stream disconnected  ", None),
+            "stream disconnected"
+        );
+        assert_eq!(
+            provider_turn_failure_reason("codex", "", None),
+            "provider reported an error"
+        );
+        assert!(
+            provider_turn_failure_reason(
+                "codex",
+                "The reviewer wrote Codex error [server_overloaded]: here",
+                None,
+            )
+            .starts_with("The reviewer wrote"),
+            "a code is read only from the kernel's leading frame"
+        );
+    }
+
+    #[test]
+    fn turn_failure_reason_never_carries_credentials() {
+        let reason = provider_turn_failure_reason(
+            "codex",
+            "Provider prompt dispatch failed: upstream failed \
+             Authorization: Bearer sk-live-0123456789abcdef",
+            None,
+        );
+        assert!(reason.starts_with("upstream failed"), "{reason}");
+        assert!(!reason.contains("sk-live-0123456789abcdef"), "{reason}");
+        assert_eq!(
+            provider_turn_failure_reason(
+                "claude",
+                "You've used 90% of your limit · resets 10:40pm (Europe/Madrid)",
+                None,
+            ),
+            "You've used 90% of your limit · resets 10:40pm (Europe/Madrid)",
+            "the reason keeps the provider's punctuation"
+        );
+    }
 
     #[test]
     fn retry_status_uses_one_provider_neutral_message_shape() {

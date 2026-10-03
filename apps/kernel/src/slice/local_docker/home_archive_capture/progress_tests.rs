@@ -178,7 +178,9 @@ exit 0
         &fixture.root.join("engine.lock"),
         || {
             with_test_progress_timeout(Duration::from_millis(70), || {
-                super::super::state::save_local_docker_slice_state_live(&record, &options)
+                super::super::capture_preflight::with_test_verified_layout(|| {
+                    super::super::state::save_local_docker_slice_state_live(&record, &options)
+                })
             })
         },
     );

@@ -145,7 +145,7 @@ test("paired disk-cap user-config fields are covered by local-daemon protocol 37
   const runtimeVersion = Number(rust.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+)/)?.[1])
   const clientVersion = Number(client.match(/LOCAL_DAEMON_PROTOCOL_VERSION = (\d+)/)?.[1])
   const snapshotVersion = Number(snapshot.match(/assert_eq!\(LOCAL_DAEMON_PROTOCOL_VERSION, (\d+)\)/)?.[1])
-  assert.equal(runtimeVersion, 376)
+  assert.ok(runtimeVersion >= 376)
   assert.equal(clientVersion, runtimeVersion)
   assert.equal(snapshotVersion, runtimeVersion)
   assert.match(snapshot, /disk_layer_mb/)

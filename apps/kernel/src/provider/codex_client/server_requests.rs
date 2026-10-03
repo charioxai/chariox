@@ -181,6 +181,7 @@ impl CodexClient {
         );
         let body = command_execution_approval_body(&params);
         self.request_native_permission_interaction(
+            &params,
             "codex-command-approval",
             Some("Command approval required".to_string()),
             body,
@@ -210,6 +211,7 @@ impl CodexClient {
         );
         let body = file_change_approval_body(&params);
         self.request_native_permission_interaction(
+            &params,
             "codex-file-change-approval",
             Some("File change approval required".to_string()),
             body,
@@ -239,6 +241,7 @@ impl CodexClient {
         );
         let body = exec_command_review_body(&params);
         self.request_native_review_interaction(
+            &params,
             "codex-exec-command-approval",
             Some("Command approval required".to_string()),
             body,
@@ -268,6 +271,7 @@ impl CodexClient {
         );
         let body = apply_patch_review_body(&params);
         self.request_native_review_interaction(
+            &params,
             "codex-apply-patch-approval",
             Some("File change approval required".to_string()),
             body,
@@ -275,8 +279,35 @@ impl CodexClient {
         )
     }
 
+    fn native_approval_origin_for_request(
+        &self,
+        params: &Value,
+    ) -> Option<crate::session::NativeInteractionOrigin> {
+        let turn_id = params
+            .get("turnId")
+            .or_else(|| params.get("turn_id"))
+            .and_then(Value::as_str);
+        if self
+            .native_approval_turn_id
+            .as_deref()
+            .is_some_and(|expected| turn_id != Some(expected))
+        {
+            return None;
+        }
+        if self.native_approval_turn_id.is_some() {
+            return self.native_approval_origin.clone();
+        }
+        turn_id.filter(|id| !id.is_empty()).map(|id| {
+            crate::session::NativeInteractionOrigin::NativeTurn {
+                provider_run_id: self.provider_run_id.clone(),
+                native_turn_id: id.into(),
+            }
+        })
+    }
+
     fn request_native_permission_interaction(
         &self,
+        params: &Value,
         prefix: &str,
         title: Option<String>,
         message: String,
@@ -297,7 +328,9 @@ impl CodexClient {
                 "missing agent context for native permission prompt".to_string(),
             )
         })?;
-        let interaction = codex_permission_interaction(prefix, title, message, level, agent_id);
+        let origin = self.native_approval_origin_for_request(params);
+        let interaction = codex_permission_interaction(prefix, title, message, level, agent_id)
+            .with_native_origin(origin);
         let resolution = bridge.request_blocking(session_id, interaction)?;
         crate::logging::info_with_fields(
             "daemon.provider.codex",
@@ -315,6 +348,7 @@ impl CodexClient {
 
     fn request_native_review_interaction(
         &self,
+        params: &Value,
         prefix: &str,
         title: Option<String>,
         message: String,
@@ -335,7 +369,9 @@ impl CodexClient {
                 "missing agent context for native approval prompt".to_string(),
             )
         })?;
-        let interaction = codex_permission_interaction(prefix, title, message, level, agent_id);
+        let origin = self.native_approval_origin_for_request(params);
+        let interaction = codex_permission_interaction(prefix, title, message, level, agent_id)
+            .with_native_origin(origin);
         let resolution = bridge.request_blocking(session_id, interaction)?;
         crate::logging::info_with_fields(
             "daemon.provider.codex",
@@ -455,6 +491,19 @@ fn codex_permission_interaction(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn approval_lifetime_withdrawn_codex_permission_is_declined() {
+        let resolution = crate::provider::ProviderNativeInteractionResolution {
+            status: "timed_out".into(),
+            choice_id: None,
+            reply: None,
+        };
+        assert_eq!(
+            CodexClient::codex_v2_approval_decision(&resolution),
+            json!({"decision": "decline"})
+        );
+    }
+
     use serde_json::json;
 
     use super::{CodexClient, JsonRpcMessage};
@@ -511,5 +560,45 @@ mod tests {
                 "_meta": null,
             })
         );
+    }
+}
+
+#[cfg(test)]
+mod approval_origin_tests {
+    use super::*;
+    #[test]
+    fn approval_lifetime_codex_buffered_request_keeps_actor_prompt_and_refuses_other_turns() {
+        let origin = crate::session::NativeInteractionOrigin::Prompt {
+            provider_run_id: "run".into(),
+            prompt_id: "prompt-A".into(),
+        };
+        let client = CodexClient::new("run", "ws://127.0.0.1:1")
+            .unwrap()
+            .with_native_approval_context(Some(origin.clone()), Some("provider-turn-A".into()));
+        assert_eq!(
+            client.native_approval_origin_for_request(&json!({"turnId":"provider-turn-A"})),
+            Some(origin)
+        );
+        assert_eq!(
+            client.native_approval_origin_for_request(&json!({"turnId":"provider-turn-B"})),
+            None
+        );
+        assert_eq!(
+            client.native_approval_origin_for_request(&json!({"callId":"legacy-without-turn"})),
+            None
+        );
+    }
+    #[test]
+    fn approval_lifetime_codex_native_request_uses_provider_identity_without_current_prompt_capture(
+    ) {
+        let client = CodexClient::new("run", "ws://127.0.0.1:1").unwrap();
+        assert_eq!(
+            client.native_approval_origin_for_request(&json!({"turnId":"native-A"})),
+            Some(crate::session::NativeInteractionOrigin::NativeTurn {
+                provider_run_id: "run".into(),
+                native_turn_id: "native-A".into()
+            })
+        );
+        assert_eq!(client.native_approval_origin_for_request(&json!({})), None);
     }
 }

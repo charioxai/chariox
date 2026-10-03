@@ -154,10 +154,7 @@ impl CodexClient {
         if let Some(model) = model {
             params["model"] = json!(model);
         }
-        if let Some(developer_instructions) = developer_instructions
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
+        if let Some(developer_instructions) = developer_instructions.map(str::trim) {
             params["developerInstructions"] = json!(developer_instructions);
         }
         self.send_request_buffering_notifications(

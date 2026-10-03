@@ -146,6 +146,8 @@ fn assert_external_active_prompt_and_queued_chariox_prompt(
     );
 }
 
+mod app_quiet_tool_guard;
+mod approval_lifetime;
 mod browser_import_execution_gate;
 mod cleanup_liveness;
 mod completion_settlement;
@@ -155,6 +157,7 @@ mod external_queue;
 mod history_projection;
 mod large_codex_resume;
 mod leased_output;
+mod mcp_catalog_reload;
 #[cfg(unix)]
 mod project_queued_environment;
 mod prompt_cancellation;
@@ -225,6 +228,8 @@ fn native_client_codex_runs_keep_structured_output_authority() {
     assert!(!provider_run_allows_quiet_pty_settlement(&run));
 }
 
+mod file_pick_revocation;
+
 // MP-08/MP-10: capability continuations survive the requesting client's detach.
 #[tokio::test]
 async fn mcp_catalog_continuation_uses_kernel_attachment_after_client_detach() {
@@ -255,9 +260,9 @@ async fn mcp_catalog_continuation_uses_kernel_attachment_after_client_detach() {
     let continuation = PendingMcpContinuation {
         session_id: session.id().into(),
         agent_id: agent.id().into(),
-
         mcp_name: "mid_session_script".into(),
         previous_prompt: "invoke the granted script".into(),
+        reload_reason: ProviderReloadReason::RuntimeToolCatalog,
     };
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;

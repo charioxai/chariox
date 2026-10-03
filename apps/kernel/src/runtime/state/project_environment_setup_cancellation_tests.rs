@@ -5,18 +5,21 @@ use crate::local::{CancelProjectEnvironmentSetupRequest, RetryProjectEnvironment
 #[cfg(unix)]
 #[tokio::test]
 async fn cancel_request_stops_in_flight_worker_validation() {
+    crate::test_support::isolated_env_test!();
     exercise_cancel_request(CancellationScenario::Local).await;
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn retry_request_cannot_revive_cancelled_worker_validation() {
+    crate::test_support::isolated_env_test!();
     exercise_cancel_request(CancellationScenario::Retry).await;
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn unreachable_worker_cannot_acknowledge_cancellation_or_allow_retry() {
+    crate::test_support::isolated_env_test!();
     exercise_cancel_request(CancellationScenario::UnreachableWorker).await;
 }
 

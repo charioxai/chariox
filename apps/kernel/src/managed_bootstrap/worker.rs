@@ -919,6 +919,7 @@ mod tests {
 
     #[test]
     fn worker_config_keeps_process_home_and_defaults_receipt_to_control_state() {
+        crate::test_support::isolated_env_test!();
         let _lock = crate::env_lock::lock();
         let names = [
             "HOME",
@@ -964,6 +965,7 @@ mod tests {
 
     #[test]
     fn disposable_worker_entry_requires_explicit_path1_topology() {
+        crate::test_support::isolated_env_test!();
         let _lock = crate::env_lock::lock();
         let previous = env::var_os(MANAGED_PROVIDER_TOPOLOGY_ENV);
 
@@ -989,6 +991,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn disposable_worker_spawn_uses_ordinary_kernel_and_scrubs_parent_state() {
+        crate::test_support::isolated_env_test!();
         use std::os::unix::fs::PermissionsExt;
         use std::os::unix::net::UnixStream;
 
@@ -1057,11 +1060,10 @@ mod tests {
             "CHARIOX_MACHINE_ID",
             "CHARIOX_MANAGED_BOOTSTRAP_PATH",
         ];
-        let previous = names
-            .iter()
-            .map(|name| (*name, env::var_os(name)))
-            .collect::<Vec<_>>();
-        let _restore_env = WorkerTestEnvironmentRestore(previous);
+        // Restores the parent environment and the broker lease even if an
+        // assertion fails, so a failure here cannot leak broker or managed
+        // state into later tests in the process.
+        let saved_env = WorkerSpawnTestEnv::capture(&names);
         env::set_var("HOME", &config.process_home);
         env::set_var("CHARIOX_WORKER_ISOLATION_PROBE_MARKER", &marker);
         env::set_var(MANAGED_PROVIDER_TOPOLOGY_ENV, "path1");
@@ -1225,7 +1227,7 @@ mod tests {
         assert!(broker_observed.contains("fd_cloexec=true\n"));
         assert!(broker_observed.contains("broker_round_trip=true\n"));
         assert!(broker_observed.contains("provider_fd_inherited=false\n"));
-        super::super::supervisor::clear_test_broker_lease();
+        drop(saved_env);
         drop(broker_peer);
 
         assert!(config.process_home.join("ordinary-worker-write").is_file());
@@ -1370,8 +1372,16 @@ mod tests {
             );
         }
         for name in PATH1_SHARED_HOST_SELECTOR_ENVS {
+            // Without a broker lease, spawn_with_broker_lease marks the child
+            // broker-required (fail closed) instead of inheriting the parent's
+            // value; every other selector must be scrubbed.
+            let expected = if *name == "CHARIOX_SLICE_DOCKER_BROKER_REQUIRED" {
+                "1"
+            } else {
+                "<unset>"
+            };
             assert!(
-                observed.contains(&format!("{name}=<unset>\n")),
+                observed.contains(&format!("{name}={expected}\n")),
                 "restart child inherited {name}: {observed}"
             );
         }
@@ -1530,6 +1540,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn confirmation_retry_revalidates_the_installed_worker_profile() {
+        crate::test_support::isolated_env_test!();
         use std::sync::Mutex;
         struct Cloud {
             calls: Mutex<usize>,
@@ -1607,6 +1618,7 @@ mod tests {
 
     #[test]
     fn active_bootstrap_retries_same_identity_and_resumes_confirmed_without_exchange() {
+        crate::test_support::isolated_env_test!();
         use std::sync::Mutex;
         struct Cloud(Mutex<Vec<serde_json::Value>>);
         impl WorkerCloudClient for Cloud {
@@ -1692,6 +1704,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn confirmed_disposable_worker_materializes_selected_project_via_public_context_transfer()
     {
+        crate::test_support::isolated_env_test!();
         use std::sync::{Arc, Mutex as StdMutex};
 
         use chariox_relay::{RelayConfig, RelayServer};
@@ -2251,6 +2264,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test(flavor = "current_thread")]
     async fn authenticated_peer_worker_setup_preserves_attempt_two_and_rejects_replays() {
+        crate::test_support::isolated_env_test!();
         use crate::app::DaemonApp;
         use crate::config::KernelRuntimeRole;
         use crate::transport::relay_client::send_authenticated_peer_request_for_test;
@@ -2898,13 +2912,31 @@ mod tests {
         }
     }
 
-    struct WorkerTestEnvironmentRestore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+    /// Parent environment for the disposable-worker spawn probe. Dropping it
+    /// restores the environment and clears the test broker lease, including
+    /// when the test unwinds.
+    #[cfg(target_os = "linux")]
+    struct WorkerSpawnTestEnv(Vec<(&'static str, Option<std::ffi::OsString>)>);
 
-    impl Drop for WorkerTestEnvironmentRestore {
+    #[cfg(target_os = "linux")]
+    impl WorkerSpawnTestEnv {
+        fn capture(names: &[&'static str]) -> Self {
+            Self(
+                names
+                    .iter()
+                    .map(|name| (*name, env::var_os(name)))
+                    .collect(),
+            )
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Drop for WorkerSpawnTestEnv {
         fn drop(&mut self) {
             for (name, value) in std::mem::take(&mut self.0) {
                 restore_worker_test_env(name, value);
             }
+            super::super::supervisor::clear_test_broker_lease();
         }
     }
 

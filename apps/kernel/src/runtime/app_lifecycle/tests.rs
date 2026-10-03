@@ -1,0 +1,1128 @@
+use super::*;
+use crate::{
+    durable_state::{
+        app_publishers::AppPublisherMutation,
+        app_state::{fixture_event_catalog, fixture_event_installation, fixture_event_package},
+    },
+    runtime::app_control::AppControlService,
+};
+use chariox_app_package::{verify, VerificationPolicy};
+use chariox_app_runtime::{
+    publisher_trust::TrustDecision,
+    release_store::{ReleaseStore, StageBudget},
+    worker_process::test_fixture::{Fixture as NativeFixture, Observation},
+};
+use std::{
+    fs,
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
+};
+use tokio::runtime::{Builder, Runtime};
+
+struct Scratch(PathBuf);
+impl Scratch {
+    fn new() -> Self {
+        let path = fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!(
+                "chariox-app-lifecycle-{:016x}",
+                rand::random::<u64>()
+            ));
+        fs::create_dir(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        Self(path)
+    }
+    fn store(&self) -> DurableKernelStateStore {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match DurableKernelStateStore::open_owned(self.0.join("kernel.sqlite")) {
+                Ok(store) => return store,
+                Err(crate::error::DaemonError::LocalTransport {
+                    operation: "durable_state.acquire_owner",
+                    ..
+                }) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+                Err(error) => panic!("released lifecycle fixture should reopen: {error}"),
+            }
+        }
+    }
+}
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        fn writable(path: &Path) {
+            if fs::symlink_metadata(path).is_ok_and(|v| v.is_dir()) {
+                let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o700));
+                if let Ok(entries) = fs::read_dir(path) {
+                    for entry in entries.flatten() {
+                        writable(&entry.path());
+                    }
+                }
+            }
+        }
+        writable(&self.0);
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+fn runtime() -> Runtime {
+    Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap()
+}
+#[track_caller]
+fn wait(mut predicate: impl FnMut() -> bool) {
+    // Native startup and registration have 15-second production budgets.
+    // Await the durable lifecycle result without imposing a shorter fixture deadline.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !predicate() {
+        assert!(Instant::now() < deadline, "lifecycle condition timed out");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+fn stage(store: &DurableKernelStateStore) {
+    let (bytes, publisher) = fixture_event_package();
+    let verified = verify(
+        &bytes,
+        &VerificationPolicy::new(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, vec![publisher]),
+    )
+    .unwrap();
+    ReleaseStore::open_or_create(store.path())
+        .unwrap()
+        .stage(
+            &verified,
+            &bytes,
+            StageBudget {
+                max_stage_bytes: 1024 * 1024,
+                reserved_bytes: 1024 * 1024,
+                host_reserve_bytes: 1024 * 1024,
+            },
+        )
+        .unwrap();
+}
+fn make_control(
+    store: &DurableKernelStateStore,
+    native: Arc<NativeFixture>,
+) -> (AppControlService, Arc<Mutex<Vec<Observation>>>) {
+    let control = AppControlService::new(store.clone());
+    let observations = Arc::new(Mutex::new(Vec::new()));
+    *control.lifecycle().0.fixture.lock().unwrap() = Some(start::FixturePlatform {
+        native,
+        fail_health: false,
+        lifecycle: None,
+        fail_migration: false,
+        stop_after_commit: false,
+        observations: observations.clone(),
+    });
+    (control, observations)
+}
+fn all_reaped(observations: &Mutex<Vec<Observation>>) -> bool {
+    let observations = observations.lock().unwrap();
+    !observations.is_empty()
+        && observations
+            .iter()
+            .all(|v| v.was_reaped() && v.lease_was_dropped())
+}
+
+#[test]
+fn recovery_starts_without_view_serializes_restart_and_preserves_manual_stop_after_reopen() {
+    let scratch = Scratch::new();
+    let executor = runtime();
+    let native = Arc::new(NativeFixture::compile().unwrap());
+    let store = scratch.store();
+    fixture_event_catalog(&store);
+    stage(&store);
+    let (control, observations) = make_control(&store, native.clone());
+    let service = control.lifecycle();
+    // This is the daemon's real recovery entry, with no terminal/App view.
+    service.schedule_recovery(executor.handle().clone());
+    wait(|| control.active_app_lease("alice", "installed").is_some());
+    let running = store
+        .app_worker_status("alice", "installed")
+        .unwrap()
+        .unwrap();
+    assert_eq!(running.phase, WorkerPhase::Running);
+    assert_eq!(
+        service
+            .start_active_blocking("alice", "installed", executor.handle().clone())
+            .unwrap(),
+        StartDisposition::Existing {
+            attempt: running.attempt
+        }
+    );
+    assert_eq!(observations.lock().unwrap().len(), 1);
+    let old = control.active_app_lease("alice", "installed").unwrap();
+    let mut permits = None;
+    wait(|| {
+        permits = service.0.admission.clone().try_acquire_many_owned(8).ok();
+        permits.is_some()
+    });
+    let mut locked = rusqlite::Connection::open(store.path()).unwrap();
+    locked.busy_timeout(Duration::from_secs(2)).unwrap();
+    let transaction = locked
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
+    assert!(matches!(
+        service.stop_blocking("alice", "installed"),
+        Err(LifecycleError::Busy)
+    ));
+    assert!(
+        old.is_stopped(),
+        "stop must withdraw callable handles before shared admission or SQLite waits"
+    );
+    drop(permits);
+    transaction.rollback().unwrap();
+    drop(locked);
+    service.stop_blocking("alice", "installed").unwrap();
+    assert!(old.is_stopped());
+    assert!(all_reaped(&observations));
+    assert!(control.active_app_lease("alice", "installed").is_none());
+    let stopped = store
+        .app_worker_status("alice", "installed")
+        .unwrap()
+        .unwrap();
+    assert_eq!(stopped.phase, WorkerPhase::Stopped);
+    assert!(!stopped.desired_running);
+    service
+        .start_active_blocking("alice", "installed", executor.handle().clone())
+        .unwrap();
+    wait(|| control.active_app_lease("alice", "installed").is_some());
+    assert_eq!(observations.lock().unwrap().len(), 2);
+    // Kernel shutdown is distinct from a user stop: retain restart intent,
+    // while every caller returns only after the same actual reap completes.
+    let first = service.clone();
+    let second = service.clone();
+    std::thread::scope(|scope| {
+        scope.spawn(move || first.shutdown_blocking().unwrap());
+        scope.spawn(move || second.shutdown_blocking().unwrap());
+    });
+    assert!(all_reaped(&observations));
+    assert!(
+        store
+            .app_worker_status("alice", "installed")
+            .unwrap()
+            .unwrap()
+            .desired_running
+    );
+    drop(old);
+    drop(service);
+    drop(control);
+    drop(executor);
+    drop(store);
+    let store = scratch.store();
+    let executor = runtime();
+    let (control, restarted) = make_control(&store, native);
+    control
+        .lifecycle()
+        .schedule_recovery(executor.handle().clone());
+    wait(|| control.active_app_lease("alice", "installed").is_some());
+    assert_eq!(restarted.lock().unwrap().len(), 1);
+    control
+        .lifecycle()
+        .stop_blocking("alice", "installed")
+        .unwrap();
+    control.lifecycle().shutdown_blocking().unwrap();
+    drop(control);
+    drop(executor);
+    drop(store);
+    let store = scratch.store();
+    assert!(store
+        .app_worker_recovery_candidates(None)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn revocation_stops_actual_owner_and_failed_generation_does_not_autoregrant() {
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let store = scratch.store();
+    fixture_event_catalog(&store);
+    stage(&store);
+    let (control, observations) = make_control(&store, Arc::new(NativeFixture::compile().unwrap()));
+    control
+        .lifecycle()
+        .start_active_blocking("alice", "installed", runtime.handle().clone())
+        .unwrap();
+    wait(|| control.active_app_lease("alice", "installed").is_some());
+    let lease = control.active_app_lease("alice", "installed").unwrap();
+    store
+        .mutate_app_publisher(
+            "alice",
+            AppPublisherMutation::Revoke {
+                publisher_id: "com.example".into(),
+                key_id: "state-key".into(),
+                expected_revision: 1,
+                decision: TrustDecision {
+                    decision_id: "revoke-live".into(),
+                    authority_ref: "kernel-test".into(),
+                },
+                now_ms: 2,
+            },
+        )
+        .unwrap();
+    wait(|| {
+        store
+            .app_worker_status("alice", "installed")
+            .unwrap()
+            .is_some_and(|s| s.phase == WorkerPhase::Failed)
+    });
+    assert!(lease.is_stopped());
+    assert!(all_reaped(&observations));
+    assert!(store
+        .app_worker_recovery_candidates(None)
+        .unwrap()
+        .is_empty());
+    control.lifecycle().shutdown_blocking().unwrap();
+}
+
+#[test]
+fn per_installation_operation_guard_and_shared_admission_prevent_duplicate_preparation() {
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let store = scratch.store();
+    fixture_event_catalog(&store);
+    let control = AppControlService::new(store.clone());
+    let service = control.lifecycle();
+    let gate = service
+        .0
+        .operation(("alice".into(), "installed".into()))
+        .unwrap();
+    assert!(matches!(
+        service.start_active_blocking("alice", "installed", runtime.handle().clone()),
+        Err(LifecycleError::Busy)
+    ));
+    assert!(matches!(
+        service.stop_blocking("alice", "installed"),
+        Err(LifecycleError::Busy)
+    ));
+    drop(gate);
+    let permits = service
+        .0
+        .admission
+        .clone()
+        .try_acquire_many_owned(8)
+        .unwrap();
+    // Saturated shared admission no longer refuses: the start is accepted and
+    // its owner waits for a slot before its claim or any preparation.
+    assert!(matches!(
+        service.start_active_blocking("alice", "installed", runtime.handle().clone()),
+        Ok(StartDisposition::Starting { .. })
+    ));
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(store
+        .app_worker_status("alice", "installed")
+        .unwrap()
+        .is_none());
+    drop(permits);
+    // No verified stored archive exists. Failure must precede any worker
+    // publication; the durable row explains why the generation is not running.
+    wait(|| {
+        store
+            .app_worker_status("alice", "installed")
+            .unwrap()
+            .is_some_and(|v| v.phase == WorkerPhase::Failed)
+    });
+    assert!(control.active_app_lease("alice", "installed").is_none());
+    wait(|| service.0.live.available_permits() == LIVE_LIMIT);
+    // Only a full live-worker set reports LiveLimit, the one Busy cause that
+    // stopping an idle worker can relieve.
+    let live = service
+        .0
+        .live
+        .clone()
+        .try_acquire_many_owned(LIVE_LIMIT as u32)
+        .unwrap();
+    assert!(matches!(
+        service.start_active_blocking("alice", "installed", runtime.handle().clone()),
+        Err(LifecycleError::LiveLimit)
+    ));
+    drop(live);
+    service.shutdown_blocking().unwrap();
+    assert_eq!(service.0.live.available_permits(), LIVE_LIMIT);
+    assert_eq!(service.0.preparation.available_permits(), 1);
+    assert_eq!(service.0.admission.available_permits(), 8);
+}
+
+#[test]
+fn concurrent_starts_queue_for_the_preparation_slot_instead_of_refusing_busy() {
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let store = scratch.store();
+    fixture_event_catalog(&store);
+    for installation in ["second", "third"] {
+        fixture_event_installation(&store, "alice", installation);
+    }
+    stage(&store);
+    let (control, observations) = make_control(&store, Arc::new(NativeFixture::compile().unwrap()));
+    let service = control.lifecycle();
+    // Another App is preparing: it holds the single preparation slot.
+    let preparing = service.0.preparation.clone().try_acquire_owned().unwrap();
+    let installations = ["installed", "second", "third"];
+    for installation in installations {
+        assert!(matches!(
+            service.start_active_blocking("alice", installation, runtime.handle().clone()),
+            Ok(StartDisposition::Starting { .. })
+        ));
+    }
+    // Every start is claimed and queued; none prepares a worker yet.
+    wait(|| {
+        installations.iter().all(|installation| {
+            store
+                .app_worker_status("alice", installation)
+                .unwrap()
+                .is_some_and(|v| v.phase == WorkerPhase::Starting)
+        })
+    });
+    assert!(observations.lock().unwrap().is_empty());
+    // A stop ends a queued start without preparing it.
+    service.stop_blocking("alice", "third").unwrap();
+    let stopped = store.app_worker_status("alice", "third").unwrap().unwrap();
+    assert_eq!(stopped.phase, WorkerPhase::Stopped);
+    assert!(!stopped.desired_running);
+    drop(preparing);
+    wait(|| {
+        ["installed", "second"]
+            .iter()
+            .all(|installation| control.active_app_lease("alice", installation).is_some())
+    });
+    assert_eq!(observations.lock().unwrap().len(), 2);
+    assert!(control.active_app_lease("alice", "third").is_none());
+    service.shutdown_blocking().unwrap();
+    assert!(all_reaped(&observations));
+    assert_eq!(service.0.live.available_permits(), LIVE_LIMIT);
+    assert_eq!(service.0.preparation.available_permits(), 1);
+    assert_eq!(service.0.admission.available_permits(), 8);
+}
+
+#[test]
+fn one_saturated_stop_during_initial_claim_survives_recovery_and_reopen() {
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let store = scratch.store();
+    fixture_event_catalog(&store);
+    let control = AppControlService::new(store.clone());
+    let service = control.lifecycle();
+    let (entered, received) = std::sync::mpsc::channel();
+    let entered = Mutex::new(Some(entered));
+    *service.0.claim_checkpoint.lock().unwrap() = Some(Arc::new(move || {
+        // The writer has dequeued Claim and sampled cancellation=false. Its
+        // next BEGIN IMMEDIATE is blocked by the actual held SQLite writer.
+        if let Some(sender) = entered.lock().unwrap().take() {
+            sender.send(()).unwrap();
+        }
+    }));
+    let others = service
+        .0
+        .admission
+        .clone()
+        .try_acquire_many_owned(7)
+        .unwrap();
+    let mut blocked = rusqlite::Connection::open(store.path()).unwrap();
+    let transaction = blocked
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
+    service
+        .start_active_blocking("alice", "installed", runtime.handle().clone())
+        .unwrap();
+    received.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(service.0.admission.available_permits(), 0);
+    // Exactly one user stop. Busy cannot discard the stop merely because the
+    // initial claim itself owns the eighth permit and no worker exists yet.
+    assert!(matches!(
+        service.stop_blocking("alice", "installed"),
+        Err(LifecycleError::Busy)
+    ));
+    drop(transaction);
+    drop(others);
+    wait(|| {
+        store
+            .app_worker_status("alice", "installed")
+            .unwrap()
+            .is_some_and(|status| status.phase == WorkerPhase::Stopped && !status.desired_running)
+    });
+    service.schedule_recovery(runtime.handle().clone());
+    wait(|| !service.0.maintenance.lock().unwrap().running);
+    assert!(control.active_app_lease("alice", "installed").is_none());
+    assert!(store
+        .app_worker_recovery_candidates(None)
+        .unwrap()
+        .is_empty());
+    service.shutdown_blocking().unwrap();
+    drop(control);
+    drop(store);
+    let reopened = scratch.store();
+    assert!(
+        !reopened
+            .app_worker_status("alice", "installed")
+            .unwrap()
+            .unwrap()
+            .desired_running
+    );
+    assert!(reopened
+        .app_worker_recovery_candidates(None)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn shutdown_reports_failed_stop_persistence_and_retains_it_for_retry() {
+    let scratch = Scratch::new();
+    let store = scratch.store();
+    fixture_event_catalog(&store);
+    let control = AppControlService::new(store.clone());
+    let service = control.lifecycle();
+    store
+        .claim_active_app_start(
+            "alice",
+            "installed",
+            "finished",
+            false,
+            AppOperationBudget::from_supervisor(|| false),
+        )
+        .unwrap();
+    // Represents an already joined owner; no test process or unchecked native
+    // preparation is constructed. The durable Starting row predates its stop.
+    let cancellation = Arc::new(Control::new());
+    cancellation.cancel(true);
+    cancellation.complete();
+    service.0.entries.lock().unwrap().insert(
+        ("alice".into(), "installed".into()),
+        Arc::new(Entry {
+            attempt: "finished".into(),
+            control: cancellation.clone(),
+            thread: Mutex::new(None),
+        }),
+    );
+    let database = rusqlite::Connection::open(store.path()).unwrap();
+    database
+        .execute_batch(
+            "CREATE TRIGGER fail_manual_stop BEFORE UPDATE ON app_worker_lifecycle
+        BEGIN SELECT RAISE(ABORT,'fixture stop persistence failure'); END;",
+        )
+        .unwrap();
+    assert!(matches!(
+        service.shutdown_blocking(),
+        Err(LifecycleError::Storage)
+    ));
+    assert!(cancellation.pending_manual_stop());
+    assert_eq!(service.0.entries.lock().unwrap().len(), 1);
+    assert!(
+        store
+            .app_worker_status("alice", "installed")
+            .unwrap()
+            .unwrap()
+            .desired_running
+    );
+    database
+        .execute_batch("DROP TRIGGER fail_manual_stop;")
+        .unwrap();
+    service.shutdown_blocking().unwrap();
+    assert!(!cancellation.pending_manual_stop());
+    assert!(service.0.entries.lock().unwrap().is_empty());
+    let status = store
+        .app_worker_status("alice", "installed")
+        .unwrap()
+        .unwrap();
+    assert_eq!(status.phase, WorkerPhase::Stopped);
+    assert!(!status.desired_running);
+}
+
+#[path = "tests/first_install.rs"]
+mod first_install;
+mod local_update;
+mod notifications;
+
+#[test]
+fn stale_manual_stop_selection_cannot_stop_a_foreground_replacement() {
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let store = scratch.store();
+    fixture_event_catalog(&store);
+    stage(&store);
+    let (control, observations) = make_control(&store, Arc::new(NativeFixture::compile().unwrap()));
+    let service = control.lifecycle();
+    store
+        .claim_active_app_start(
+            "alice",
+            "installed",
+            "old_finished",
+            false,
+            AppOperationBudget::from_supervisor(|| false),
+        )
+        .unwrap();
+    let old = Arc::new(Control::new());
+    old.cancel(true);
+    old.complete();
+    service.0.entries.lock().unwrap().insert(
+        ("alice".into(), "installed".into()),
+        Arc::new(Entry {
+            attempt: "old_finished".into(),
+            control: old.clone(),
+            thread: Mutex::new(None),
+        }),
+    );
+    let (selected, selection) = std::sync::mpsc::channel();
+    let (resume, resumed) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        let retry = scope.spawn(move || {
+            service.fixture_persist_pending_manual_stops(|validated| {
+                if !validated {
+                    selected.send(()).unwrap();
+                    resumed.recv_timeout(Duration::from_secs(6)).unwrap();
+                }
+            })
+        });
+        selection.recv_timeout(Duration::from_secs(5)).unwrap();
+        // The retry retained the old candidate. A complete foreground stop and
+        // new real worker now win before the retry can acquire its operation.
+        service.stop_blocking("alice", "installed").unwrap();
+        service
+            .start_active_blocking("alice", "installed", runtime.handle().clone())
+            .unwrap();
+        wait(|| control.active_app_lease("alice", "installed").is_some());
+        let replacement = store
+            .app_worker_status("alice", "installed")
+            .unwrap()
+            .unwrap();
+        assert_ne!(replacement.attempt, "old_finished");
+        resume.send(()).unwrap();
+        retry.join().unwrap();
+        assert_eq!(
+            store
+                .app_worker_status("alice", "installed")
+                .unwrap()
+                .unwrap(),
+            replacement
+        );
+        assert!(replacement.desired_running);
+        assert!(control.active_app_lease("alice", "installed").is_some());
+    });
+    service.stop_blocking("alice", "installed").unwrap();
+    service.shutdown_blocking().unwrap();
+    assert!(all_reaped(&observations));
+}
+
+#[test]
+fn validated_manual_stop_retry_holds_foreground_gate_until_durable_completion() {
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let store = scratch.store();
+    fixture_event_catalog(&store);
+    stage(&store);
+    let (control, observations) = make_control(&store, Arc::new(NativeFixture::compile().unwrap()));
+    let service = control.lifecycle();
+    store
+        .claim_active_app_start(
+            "alice",
+            "installed",
+            "old_finished",
+            false,
+            AppOperationBudget::from_supervisor(|| false),
+        )
+        .unwrap();
+    let old = Arc::new(Control::new());
+    old.cancel(true);
+    old.complete();
+    service.0.entries.lock().unwrap().insert(
+        ("alice".into(), "installed".into()),
+        Arc::new(Entry {
+            attempt: "old_finished".into(),
+            control: old.clone(),
+            thread: Mutex::new(None),
+        }),
+    );
+    let (selected, selection) = std::sync::mpsc::channel();
+    let (resume, resumed) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        let retry = scope.spawn(move || {
+            service.fixture_persist_pending_manual_stops(|validated| {
+                if validated {
+                    selected.send(()).unwrap();
+                    resumed.recv_timeout(Duration::from_secs(6)).unwrap();
+                }
+            })
+        });
+        selection.recv_timeout(Duration::from_secs(5)).unwrap();
+        // Retry passed its pending/identity checks with the same operation
+        // guard held. Neither foreground stop nor start may replace that owner
+        // before these already-admitted stop writes finish.
+        assert!(matches!(
+            service.stop_blocking("alice", "installed"),
+            Err(LifecycleError::Busy)
+        ));
+        assert!(matches!(
+            service.start_active_blocking("alice", "installed", runtime.handle().clone()),
+            Err(LifecycleError::Busy)
+        ));
+        resume.send(()).unwrap();
+        retry.join().unwrap();
+        let stopped = store
+            .app_worker_status("alice", "installed")
+            .unwrap()
+            .unwrap();
+        assert_eq!(stopped.phase, WorkerPhase::Stopped);
+        assert!(!stopped.desired_running);
+        service
+            .start_active_blocking("alice", "installed", runtime.handle().clone())
+            .unwrap();
+        wait(|| control.active_app_lease("alice", "installed").is_some());
+        let replacement = store
+            .app_worker_status("alice", "installed")
+            .unwrap()
+            .unwrap();
+        assert_ne!(replacement.attempt, "old_finished");
+        assert_eq!(
+            store
+                .app_worker_status("alice", "installed")
+                .unwrap()
+                .unwrap(),
+            replacement
+        );
+        assert!(replacement.desired_running);
+        assert!(control.active_app_lease("alice", "installed").is_some());
+    });
+    service.stop_blocking("alice", "installed").unwrap();
+    service.shutdown_blocking().unwrap();
+    assert!(all_reaped(&observations));
+}
+
+#[test]
+fn on_demand_start_respects_user_stop_explicit_start_and_revocation() {
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let store = scratch.store();
+    fixture_event_catalog(&store);
+    stage(&store);
+    let (control, _observations) =
+        make_control(&store, Arc::new(NativeFixture::compile().unwrap()));
+    let service = control.lifecycle();
+    // A never-started active installation may start on demand.
+    service
+        .start_on_demand_blocking("alice", "installed", runtime.handle().clone())
+        .unwrap();
+    wait(|| control.active_app_lease("alice", "installed").is_some());
+    // A user stop is not overridden by use.
+    service.stop_blocking("alice", "installed").unwrap();
+    assert!(matches!(
+        service.start_on_demand_blocking("alice", "installed", runtime.handle().clone()),
+        Err(LifecycleError::Stopped)
+    ));
+    // An explicit start re-enables on-demand use; after a user stop it is a
+    // new start (the control request reports it as `starting`).
+    assert!(matches!(
+        service.start_active_blocking("alice", "installed", runtime.handle().clone()),
+        Ok(crate::runtime::app_lifecycle::StartDisposition::Starting { .. })
+    ));
+    wait(|| control.active_app_lease("alice", "installed").is_some());
+    service.stop_blocking("alice", "installed").unwrap();
+    service
+        .start_active_blocking("alice", "installed", runtime.handle().clone())
+        .unwrap();
+    wait(|| control.active_app_lease("alice", "installed").is_some());
+    // A revoked publisher is refused synchronously, not left pending.
+    store
+        .mutate_app_publisher(
+            "alice",
+            AppPublisherMutation::Revoke {
+                publisher_id: "com.example".into(),
+                key_id: "state-key".into(),
+                expected_revision: 1,
+                decision: TrustDecision {
+                    decision_id: "revoke-on-demand".into(),
+                    authority_ref: "kernel-test".into(),
+                },
+                now_ms: 2,
+            },
+        )
+        .unwrap();
+    wait(|| control.active_app_lease("alice", "installed").is_none());
+    assert!(matches!(
+        service.start_on_demand_blocking("alice", "installed", runtime.handle().clone()),
+        Err(LifecycleError::Authority)
+    ));
+    assert!(matches!(
+        service.start_on_demand_blocking("bob", "installed", runtime.handle().clone()),
+        Err(LifecycleError::Authority)
+    ));
+    service.shutdown_blocking().unwrap();
+}
+
+#[test]
+fn idle_stop_keeps_the_catalog_dormant_skips_recovery_and_restarts_on_demand() {
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let native = Arc::new(NativeFixture::compile().unwrap());
+    let store = scratch.store();
+    fixture_event_catalog(&store);
+    stage(&store);
+    let (control, observations) = make_control(&store, native.clone());
+    let service = control.lifecycle();
+    service.schedule_recovery(runtime.handle().clone());
+    wait(|| control.active_app_lease("alice", "installed").is_some());
+    let lease = control.active_app_lease("alice", "installed").unwrap();
+    let catalog = lease.catalog().clone();
+    drop(lease);
+    // Use that arrives before the guarded recheck keeps the worker running.
+    service
+        .idle_stop_blocking("alice", catalog.clone(), || false)
+        .unwrap();
+    assert!(control.active_app_lease("alice", "installed").is_some());
+    assert!(!control.is_app_dormant("alice", "installed"));
+    service
+        .idle_stop_blocking("alice", catalog, || true)
+        .unwrap();
+    wait(|| all_reaped(&observations));
+    assert!(control.active_app_lease("alice", "installed").is_none());
+    assert!(control.is_app_dormant("alice", "installed"));
+    assert_eq!(control.dormant_app_catalogs("alice").len(), 1);
+    assert!(control.dormant_app_catalogs("bob").is_empty());
+    // Idle stop keeps restart intent; recovery leaves the dormant App stopped.
+    let status = store
+        .app_worker_status("alice", "installed")
+        .unwrap()
+        .unwrap();
+    assert_eq!(status.phase, WorkerPhase::Stopped);
+    assert!(status.desired_running);
+    service.0.maintenance.lock().unwrap().next = Instant::now();
+    service.schedule_recovery(runtime.handle().clone());
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(control.active_app_lease("alice", "installed").is_none());
+    assert_eq!(observations.lock().unwrap().len(), 1);
+    // The production on-demand path starts it again; publication clears dormancy.
+    service
+        .start_on_demand_blocking("alice", "installed", runtime.handle().clone())
+        .unwrap();
+    wait(|| control.active_app_lease("alice", "installed").is_some());
+    assert!(!control.is_app_dormant("alice", "installed"));
+    // A manual stop ends on-demand use.
+    service.stop_blocking("alice", "installed").unwrap();
+    assert!(!control.is_app_dormant("alice", "installed"));
+    service.shutdown_blocking().unwrap();
+}
+
+#[test]
+fn a_stop_while_queued_for_the_claim_is_recorded_under_a_slot_without_waiting_for_one() {
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let store = scratch.store();
+    fixture_event_catalog(&store);
+    stage(&store);
+    let (control, observations) = make_control(&store, Arc::new(NativeFixture::compile().unwrap()));
+    let service = control.lifecycle();
+    let permits = service
+        .0
+        .admission
+        .clone()
+        .try_acquire_many_owned(8)
+        .unwrap();
+    assert!(matches!(
+        service.start_active_blocking("alice", "installed", runtime.handle().clone()),
+        Ok(StartDisposition::Starting { .. })
+    ));
+    // The stop cannot join a writer operation, but it ends the queued start.
+    // With no free slot the owner does not write, and does not wait for one.
+    assert!(matches!(
+        service.stop_blocking("alice", "installed"),
+        Err(LifecycleError::Busy)
+    ));
+    // A start right after the stop is Busy too, while the stopped owner may
+    // still be draining (the manual flag is set before the stop returns).
+    assert!(matches!(
+        service.start_active_blocking("alice", "installed", runtime.handle().clone()),
+        Err(LifecycleError::Busy)
+    ));
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(store
+        .app_worker_status("alice", "installed")
+        .unwrap()
+        .is_none_or(|v| v.phase != WorkerPhase::Stopped));
+    // Once the owner has finished, a start before the stop is recorded is
+    // still refused as Busy, not reported as running and then undone.
+    assert!(matches!(
+        service.start_active_blocking("alice", "installed", runtime.handle().clone()),
+        Err(LifecycleError::Busy)
+    ));
+    drop(permits);
+    // Maintenance persists the pending stop under its own slot, once the
+    // owner has finished.
+    wait(|| {
+        service.fixture_persist_pending_manual_stops(|_| {});
+        store
+            .app_worker_status("alice", "installed")
+            .unwrap()
+            .is_some_and(|v| v.phase == WorkerPhase::Stopped && !v.desired_running)
+    });
+    assert!(observations.lock().unwrap().is_empty());
+    assert!(control.active_app_lease("alice", "installed").is_none());
+    service.shutdown_blocking().unwrap();
+    assert_eq!(service.0.live.available_permits(), LIVE_LIMIT);
+    assert_eq!(service.0.preparation.available_permits(), 1);
+    assert_eq!(service.0.admission.available_permits(), 8);
+}
+
+#[test]
+fn an_idle_stop_keeps_a_worker_whose_wake_was_admitted_after_its_idle_check() {
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let native = Arc::new(NativeFixture::compile().unwrap());
+    let store = scratch.store();
+    fixture_event_catalog(&store);
+    stage(&store);
+    let (control, observations) = make_control(&store, native.clone());
+    let service = control.lifecycle();
+    service.schedule_recovery(runtime.handle().clone());
+    wait(|| control.active_app_lease("alice", "installed").is_some());
+    let lease = control.active_app_lease("alice", "installed").unwrap();
+    let catalog = lease.catalog().clone();
+    // An eviction or idle stop reads the worker as idle, then the wake pump
+    // admits a wake before the stop drains it: the worker keeps running.
+    let delivery = std::cell::RefCell::new(None);
+    assert!(matches!(
+        service.idle_stop_blocking("alice", catalog.clone(), || {
+            *delivery.borrow_mut() = Some(lease.fixture_hold_delivery());
+            true
+        }),
+        Err(LifecycleError::Busy)
+    ));
+    assert!(control.active_app_lease("alice", "installed").is_some());
+    assert!(!control.is_app_dormant("alice", "installed"));
+    // While the wake is in its handler, nothing reads the worker as idle.
+    assert_eq!(lease.idle_ms(u64::MAX), 0);
+    drop(delivery.into_inner());
+    // Once it settles, the stop proceeds; a wake arriving now is refused
+    // before anything reaches the App, so it waits without an attempt.
+    service
+        .idle_stop_blocking("alice", catalog, || true)
+        .unwrap();
+    let wake = chariox_app_runtime::managed_state::Wake {
+        id: "late".into(),
+        due_at_ms: 1,
+        revision: String::new(),
+    };
+    assert!(matches!(
+        runtime.block_on(lease.deliver_wake(&wake, false, false, Duration::from_secs(1))),
+        Err(crate::runtime::app_worker::DeliveryError::NotAdmitted)
+    ));
+    drop(lease);
+    wait(|| all_reaped(&observations));
+    assert!(control.active_app_lease("alice", "installed").is_none());
+    assert!(control.is_app_dormant("alice", "installed"));
+    service.shutdown_blocking().unwrap();
+}
+
+fn assert_call_waits_at_start_checkpoint(checkpoint: StartCheckpoint) {
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let store = scratch.store();
+    fixture_event_catalog(&store);
+    stage(&store);
+    let (control, observations) = make_control(&store, Arc::new(NativeFixture::compile().unwrap()));
+    let (entered, received) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let released = Mutex::new(released);
+    *control.lifecycle().0.start_checkpoint.lock().unwrap() = Some(Arc::new(move |at| {
+        if at == checkpoint {
+            entered.send(()).unwrap();
+            let _ = released
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5));
+        }
+    }));
+    control
+        .lifecycle()
+        .start_active_blocking("alice", "installed", runtime.handle().clone())
+        .unwrap();
+    received.recv_timeout(Duration::from_secs(5)).unwrap();
+    let phase = store
+        .app_worker_status("alice", "installed")
+        .unwrap()
+        .map(|row| row.phase);
+    assert_eq!(
+        phase,
+        match checkpoint {
+            StartCheckpoint::BeforeClaim => None,
+            StartCheckpoint::BeforePublication => Some(WorkerPhase::Running),
+        }
+    );
+    assert!(control.active_app_lease("alice", "installed").is_none());
+    runtime.block_on(async {
+        let call = control.wait_for_app_lease(
+            "alice",
+            "installed",
+            tokio::time::Instant::now() + Duration::from_secs(3),
+        );
+        tokio::pin!(call);
+        // Poll the real call path while the lifecycle owner is held on either
+        // side of the durable Starting phase. It must remain pending.
+        tokio::select! {
+            biased;
+            _ = &mut call => panic!("accepted start returned before callable publication"),
+            _ = tokio::time::sleep(Duration::from_millis(200)) => {}
+        }
+        release.send(()).unwrap();
+        assert!(call.await.is_some());
+    });
+    control
+        .lifecycle()
+        .stop_blocking("alice", "installed")
+        .unwrap();
+    let after_stop = runtime.block_on(control.wait_for_app_lease(
+        "alice",
+        "installed",
+        tokio::time::Instant::now() + Duration::from_secs(3),
+    ));
+    assert!(after_stop.is_none());
+    control.lifecycle().shutdown_blocking().unwrap();
+    assert!(all_reaped(&observations));
+}
+
+#[test]
+fn callable_readiness_waits_before_durable_start_claim() {
+    assert_call_waits_at_start_checkpoint(StartCheckpoint::BeforeClaim);
+}
+
+#[test]
+fn callable_readiness_waits_after_running_before_publication() {
+    assert_call_waits_at_start_checkpoint(StartCheckpoint::BeforePublication);
+}
+
+#[test]
+fn callable_readiness_refuses_terminal_start_failure() {
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let store = scratch.store();
+    fixture_event_catalog(&store);
+    // No staged release: the accepted start fails preparation permanently.
+    let control = AppControlService::new(store.clone());
+    control
+        .lifecycle()
+        .start_active_blocking("alice", "installed", runtime.handle().clone())
+        .unwrap();
+    wait(|| {
+        store
+            .app_worker_status("alice", "installed")
+            .unwrap()
+            .is_some_and(|row| row.phase == WorkerPhase::Failed)
+    });
+    let lease = runtime.block_on(async {
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            control.wait_for_app_lease(
+                "alice",
+                "installed",
+                tokio::time::Instant::now() + Duration::from_secs(20),
+            ),
+        )
+        .await
+        .expect("terminal failure must refuse promptly")
+    });
+    assert!(lease.is_none());
+    control.lifecycle().shutdown_blocking().unwrap();
+}
+mod admission;
+mod snapshot_restore;
+
+#[test]
+fn full_receipt_journal_stops_and_reaps_a_live_worker() {
+    use crate::local::{
+        AppRequestErrorCode, AppWorkerAction, ControlAppWorkerRequest, LocalDaemonRequest,
+        LocalDaemonResponse,
+    };
+    use crate::runtime::command::KernelCommand;
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let store = scratch.store();
+    fixture_event_catalog(&store);
+    stage(&store);
+    let (control, observations) = make_control(&store, Arc::new(NativeFixture::compile().unwrap()));
+    control
+        .lifecycle()
+        .start_active_blocking("alice", "installed", runtime.handle().clone())
+        .unwrap();
+    wait(|| control.active_app_lease("alice", "installed").is_some());
+    let old = control.active_app_lease("alice", "installed").unwrap();
+    let restart = LocalDaemonRequest::ControlAppWorker(ControlAppWorkerRequest {
+        installation_id: "installed".into(),
+        action: AppWorkerAction::Restart,
+    });
+    runtime.block_on(async {
+        for n in 0..crate::runtime_transport::COMMAND_RESULT_CACHE_LIMIT {
+            let command =
+                KernelCommand::from_local_request(format!("fill-{n}"), None, None, &restart);
+            assert_eq!(
+                control
+                    .execute_once("alice", &command, &restart, || async {
+                        LocalDaemonResponse::AppRequestFailed {
+                            code: AppRequestErrorCode::Busy,
+                        }
+                    })
+                    .await,
+                LocalDaemonResponse::AppRequestFailed {
+                    code: AppRequestErrorCode::Busy
+                }
+            );
+        }
+        let stop = LocalDaemonRequest::ControlAppWorker(ControlAppWorkerRequest {
+            installation_id: "installed".into(),
+            action: AppWorkerAction::Stop,
+        });
+        let command = KernelCommand::from_local_request("stop-full", None, None, &stop);
+        let started = Instant::now();
+        let service = control.lifecycle().clone();
+        let result = control
+            .execute_once("alice", &command, &stop, move || async move {
+                tokio::task::spawn_blocking(move || service.stop_blocking("alice", "installed"))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                LocalDaemonResponse::AppWorker {
+                    worker: crate::local::AppWorkerSummary {
+                        installation_id: "installed".into(),
+                        phase: crate::local::AppWorkerPhase::Stopped,
+                        enabled: false,
+                        failure: None,
+                        updated_at_ms: None,
+                    },
+                }
+            })
+            .await;
+        if std::env::var_os("CHARIOX_RECEIPT_STOP_TIMING").is_some() {
+            eprintln!(
+                "receipt_capacity_stop_ms={:.3}",
+                started.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+        assert_eq!(
+            result,
+            LocalDaemonResponse::AppWorker {
+                worker: crate::local::AppWorkerSummary {
+                    installation_id: "installed".into(),
+                    phase: crate::local::AppWorkerPhase::Stopped,
+                    enabled: false,
+                    failure: None,
+                    updated_at_ms: None
+                }
+            }
+        );
+    });
+    assert!(old.is_stopped());
+    assert!(all_reaped(&observations));
+    assert!(control.active_app_lease("alice", "installed").is_none());
+    let stopped = store
+        .app_worker_status("alice", "installed")
+        .unwrap()
+        .unwrap();
+    assert_eq!(stopped.phase, WorkerPhase::Stopped);
+    assert!(!stopped.desired_running);
+    drop(control);
+    drop(store);
+    let reopened = scratch.store();
+    assert!(
+        !reopened
+            .app_worker_status("alice", "installed")
+            .unwrap()
+            .unwrap()
+            .desired_running
+    );
+}

@@ -88,8 +88,7 @@ function formatAgentLabel(agent: RuntimeSession["agents"][number]): string {
 }
 
 function formatAgentProvider(agent: RuntimeSession["agents"][number]): string {
-  const provider = agent.primary_provider ?? agent.provider
-  const model = agent.primary_model ?? agent.model
+  const { provider, model } = agent
   if (!model) {
     return provider
   }

@@ -318,7 +318,19 @@ pub async fn wait_for_event(
     socket: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
     event_name: &str,
 ) -> Value {
-    let deadline = Duration::from_secs(5);
+    wait_for_event_with_timeout(socket, event_name, Duration::from_secs(5)).await
+}
+
+/// Session subscriptions heartbeat every 5 s (`WATCH_INTERVAL_MS * HEARTBEAT_INTERVAL_TICKS`)
+/// and emit the first heartbeat immediately on subscribe. Waiting for a *later* heartbeat
+/// therefore needs a budget longer than one interval, or it races the kernel's clock.
+pub const SUBSCRIPTION_HEARTBEAT_BUDGET: Duration = Duration::from_secs(10);
+
+pub async fn wait_for_event_with_timeout(
+    socket: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
+    event_name: &str,
+    deadline: Duration,
+) -> Value {
     timeout(deadline, async {
         loop {
             let frame = next_json_frame(socket).await;
@@ -328,7 +340,37 @@ pub async fn wait_for_event(
         }
     })
     .await
-    .expect("timed out waiting for kernel websocket event")
+    .unwrap_or_else(|_| {
+        panic!("timed out waiting for kernel websocket event `{event_name}` after {deadline:?}")
+    })
+}
+
+/// Collect the first event of each name, in whatever order the kernel emits them.
+pub async fn wait_for_events(
+    socket: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
+    event_names: &[&str],
+) -> BTreeMap<String, Value> {
+    let deadline = Duration::from_secs(5);
+    timeout(deadline, async {
+        let mut events = BTreeMap::new();
+        while events.len() < event_names.len() {
+            let frame = next_json_frame(socket).await;
+            if frame["type"] != "event" {
+                continue;
+            }
+            let Some(event_name) = frame["event"]["event"].as_str() else {
+                continue;
+            };
+            if event_names.contains(&event_name) && !events.contains_key(event_name) {
+                events.insert(event_name.to_string(), frame);
+            }
+        }
+        events
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!("timed out waiting for kernel websocket events {event_names:?} after {deadline:?}")
+    })
 }
 
 pub async fn next_json_frame(socket: &mut WebSocketStream<MaybeTlsStream<TcpStream>>) -> Value {
@@ -386,19 +428,15 @@ pub fn response_variant<'a>(frame: &'a Value, variant: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("expected response variant `{variant}`, got: {frame}"))
 }
 
-// MP-08/MP-10: workflow launch preflight requires an existing workspace;
-// opaque labels are suitable for transport-only fixtures, not provider execution.
+// session.create (and every launch preflight) requires workspace/worktree ids to
+// be existing absolute directories, so fixtures own a real temporary directory
+// that is removed when the fixture drops. `new()` adds a Git repository for
+// workflow/provider execution; `directory()` is enough for transport-only tests.
 pub struct ExecutionWorkspace(std::path::PathBuf);
 
 impl ExecutionWorkspace {
     pub fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "chariox-websocket-execution-{}-{:016x}",
-            std::process::id(),
-            rand::random::<u64>()
-        ));
-        std::fs::create_dir(&root).expect("create isolated workflow workspace");
-        let workspace = Self(root);
+        let workspace = Self::directory("execution");
         for args in [
             vec!["init", "--quiet"],
             vec![
@@ -423,9 +461,26 @@ impl ExecutionWorkspace {
         workspace
     }
 
+    /// A plain (non-Git) isolated directory, unique per call.
+    pub fn directory(label: &str) -> Self {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-websocket-{label}-{}-{:016x}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir(&root).expect("create isolated session workspace");
+        Self(root)
+    }
+
+    /// The absolute directory path used as the session workspace/worktree id.
+    pub fn path(&self) -> &str {
+        self.0
+            .to_str()
+            .expect("temporary workspace path should be UTF-8")
+    }
+
     pub fn session_request(&self) -> chariox_kernel::session::CreateSessionRequest {
-        let root = self.0.display().to_string();
-        chariox_kernel::session::CreateSessionRequest::new(&root, &root)
+        chariox_kernel::session::CreateSessionRequest::new(self.path(), self.path())
     }
 }
 

@@ -24,7 +24,12 @@ const ownerPublicKey = Buffer.concat([Buffer.from([4]), Buffer.alloc(64, 1)]).to
 const sliceRuntimeLogScript = `
 set -eu
 found=0
-for file in /opt/chariox-slice/logs/*.log /home/slice/.local/state/chariox/logs/*.ndjson; do
+case "$2" in
+  protected) runtime=/var/lib/chariox/slice-private/runtime/logs; kernel=/var/lib/chariox/slice-private/kernel/logs ;;
+  legacy) runtime=/opt/chariox-slice/logs; kernel=/home/slice/.local/state/chariox/logs ;;
+  *) exit 64 ;;
+esac
+for file in "$runtime"/*.log "$kernel"/*.ndjson; do
   [ -f "$file" ] || continue
   found=1
   printf '\\n=== %s ===\\n' "$file"
@@ -421,6 +426,7 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
     sliceRuntimeLogScript,
     "slice-runtime-logs",
     "200",
+    "legacy",
   ]
   const localDockerSource = await readFile(
     join(repositoryRoot, "apps/kernel/src/slice/local_docker.rs"),
@@ -440,6 +446,10 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
   assert.equal(canonicalRuntimeLogScript, sliceRuntimeLogScript)
   assert.equal(brokerRuntimeLogScriptLiteral, canonicalTemplateLiteral)
   assert.equal(validate({ kind: "docker", args: runtimeLogs }, share).status, 0)
+  const protectedRuntimeLogs = [...runtimeLogs.slice(0, -1), "protected"]
+  assert.equal(validate({ kind: "docker", args: protectedRuntimeLogs }, share).status, 0)
+  assert.equal(validate({ kind: "docker", args: [...runtimeLogs.slice(0, -1), "/private/arbitrary"] }, share).status, 1)
+
   const injectedRuntimeLogs = validate({
     kind: "docker",
     args: runtimeLogs.map((argument, index) => (
@@ -686,7 +696,7 @@ test("managed slice broker rejects symlink escapes from the shared root", async 
   assert.match(result.stderr, /resolves outside|symbolic link/)
 })
 
-test("managed slice broker projects the signed context digest to its provisioner", async (context) => {
+test("managed slice broker projects the signed context digest and gates build proofs on layout trust", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-broker-digest-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const share = join(root, "share")
@@ -701,7 +711,10 @@ test("managed slice broker projects the signed context digest to its provisioner
     }],
   }))
   const provisioner = join(root, "provisioner.sh")
-  await writeFile(provisioner, "#!/bin/sh\nprintf '%s' \"$CHARIOX_SLICE_BUILD_CONTEXT_DIGEST\"\n")
+  await writeFile(provisioner, `#!${process.execPath}
+process.stdout.write(JSON.stringify({digest: process.env.CHARIOX_SLICE_BUILD_CONTEXT_DIGEST,
+ proofRoot: process.env.CHARIOX_SLICE_PROTECTED_IMAGE_PROOF_ROOT}))
+`)
   await chmod(provisioner, 0o755)
   const request = {
     kind: "provisioner",
@@ -717,22 +730,29 @@ test("managed slice broker projects the signed context digest to its provisioner
     },
     files: [],
   }
-  const result = spawnSync(process.execPath, [broker, "--stdio"], {
-    input: `${JSON.stringify(request)}\n`,
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      CHARIOX_SLICE_DOCKER_SHARE_ROOT: share,
-      CHARIOX_MANAGED_RELEASE_MANIFEST: manifest,
-      CHARIOX_SLICE_DOCKER_PROVISIONER: provisioner,
-      CHARIOX_SLICE_DOCKER_HANDLE_ROOT: join(root, "handles"),
-      CHARIOX_SLICE_DOCKER_HANDLE_STATE: join(root, "handles.json"),
-    },
-  })
-  assert.equal(result.status, 0, result.stderr)
-  const response = JSON.parse(result.stdout)
-  assert.equal(response.status, 0, Buffer.from(response.stderrBase64, "base64").toString())
-  assert.equal(Buffer.from(response.stdoutBase64, "base64").toString(), digest)
+  for (const dockerHost of ["unix:///run/chariox-docker/docker.sock", "unix:///synthetic/untrusted.sock"]) {
+    const result = spawnSync(process.execPath, [broker, "--stdio"], {
+      input: `${JSON.stringify(request)}\n`,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        DOCKER_HOST: dockerHost,
+        CHARIOX_SLICE_DOCKER_SHARE_ROOT: share,
+        CHARIOX_MANAGED_RELEASE_MANIFEST: manifest,
+        CHARIOX_SLICE_DOCKER_PROVISIONER: provisioner,
+        CHARIOX_SLICE_DOCKER_HANDLE_ROOT: join(root, "handles"),
+        CHARIOX_SLICE_DOCKER_HANDLE_STATE: join(root, "handles.json"),
+      },
+    })
+    assert.equal(result.status, 0, result.stderr)
+    const response = JSON.parse(result.stdout)
+    assert.equal(response.status, 0, Buffer.from(response.stderrBase64, "base64").toString())
+    const environment = JSON.parse(Buffer.from(response.stdoutBase64, "base64").toString())
+    assert.equal(environment.digest, digest)
+    const trusted = process.platform === "linux" && process.getuid() === 0 && dockerHost === "unix:///run/chariox-docker/docker.sock"
+    assert.equal(environment.proofRoot !== undefined, trusted)
+  }
+
 })
 
 test("managed slice broker materializes bounded credential bytes privately", async (context) => {
@@ -969,6 +989,47 @@ cat "$CHARIOX_SLICE_WORKSPACE_SOURCE/value"
   assert.equal(Buffer.from(response.stdoutBase64, "base64").toString(), "safe")
 })
 
+test("managed slice broker gives a slice without a workspace its own volume, not the build context", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-broker-owned-workspace-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const share = join(root, "share")
+  await mkdir(share)
+  const provisioner = join(root, "provisioner.sh")
+  await writeFile(provisioner, "#!/bin/sh\nprintf '%s' \"${CHARIOX_SLICE_OWNED_WORKSPACE:-unset}\"\n")
+  await chmod(provisioner, 0o755)
+  const dockerHost = await missingBrokerDockerFixture(context, root, "chariox-slice-dev")
+  const result = spawnSync(process.execPath, [broker, "--stdio"], {
+    input: `${JSON.stringify({
+      kind: "provisioner",
+      // The broker projects the owned workspace for every provisioner action.
+      // Quota provisioning is exercised separately; this owned fake must not
+      // reach the quota allocator or real Docker.
+      action: "stop",
+      environment: {
+        CHARIOX_SLICE_NAME: "chariox-slice-dev",
+        CHARIOX_SLICE_ID: "slice-dev",
+        CHARIOX_SLICE_HOME_VOLUME: "chariox-slice-dev-home",
+        CHARIOX_SLICE_OWNER_KERNEL_ID: "kernel-dev",
+        CHARIOX_SLICE_OWNER_MACHINE_ID: "machine-dev",
+      },
+      files: [],
+    })}\n`,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      DOCKER_HOST: dockerHost,
+      CHARIOX_SLICE_DOCKER_SHARE_ROOT: share,
+      CHARIOX_SLICE_DOCKER_PROVISIONER: provisioner,
+      CHARIOX_SLICE_DOCKER_HANDLE_ROOT: join(root, "handles"),
+      CHARIOX_SLICE_DOCKER_HANDLE_STATE: join(root, "handles.json"),
+    },
+  })
+  assert.equal(result.status, 0, result.stderr)
+  const response = JSON.parse(result.stdout.trim())
+  assert.equal(response.status, 0, Buffer.from(response.stderrBase64, "base64").toString())
+  assert.equal(Buffer.from(response.stdoutBase64, "base64").toString(), "1")
+})
+
 test("MP-08 MP-11 broker verbose success preserves the next request", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-broker-output-"))
   context.after(() => rm(root, { recursive: true, force: true }))
@@ -1051,6 +1112,29 @@ test("managed slice broker removes its endpoint after the supervisor claims it",
 })
 
 
+test("runtime log script selects protected and legacy roots without mixing them", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-log-layout-"))
+  try {
+    for (const directory of ["protected-runtime", "protected-kernel", "legacy-runtime", "legacy-kernel"]) {
+      await mkdir(join(root, directory))
+      await writeFile(join(root, directory, directory.endsWith("runtime") ? "synthetic.log" : "synthetic.ndjson"), directory + "\n")
+    }
+    const script = sliceRuntimeLogScript
+      .replaceAll("/var/lib/chariox/slice-private/runtime/logs", join(root, "protected-runtime"))
+      .replaceAll("/var/lib/chariox/slice-private/kernel/logs", join(root, "protected-kernel"))
+      .replaceAll("/opt/chariox-slice/logs", join(root, "legacy-runtime"))
+      .replaceAll("/home/slice/.local/state/chariox/logs", join(root, "legacy-kernel"))
+    for (const layout of ["protected", "legacy"]) {
+      const result = spawnSync("sh", ["-c", script, "slice-runtime-logs", "200", layout], {encoding: "utf8"})
+      assert.equal(result.status, 0, result.stderr)
+      assert.match(result.stdout, new RegExp(layout + "-runtime"))
+      assert.match(result.stdout, new RegExp(layout + "-kernel"))
+      assert(!result.stdout.includes(layout === "protected" ? "legacy-" : "protected-"))
+    }
+  } finally { await rm(root, {recursive: true, force: true}) } // Only newly created synthetic logs.
+})
+
+
 test("MP-08 MP-10 MP-11 all provisioner requests use common owned lifetime", async () => {
   const source = await readFile(broker, "utf8")
   const spawnSource = source.slice(source.indexOf("function spawnBounded("), source.indexOf("\nfunction provisionerQuotaRequest("))
@@ -1060,7 +1144,10 @@ test("MP-08 MP-10 MP-11 all provisioner requests use common owned lifetime", asy
   let cleaned = 0
   const execute = runInNewContext(`${spawnSource}\n${executeSource}\nexecute`, {
     ...archivePolicy, process, Buffer, Set,
-    PROVISIONER: process.execPath, DOCKER_HOST: "unix:///synthetic/unused", SIGNED_BUILD_CONTEXT_DIGEST: "", MAX_OUTPUT_BYTES: 1024,
+    PROVISIONER: process.execPath, DOCKER_HOST: "unix:///synthetic/unused", MAX_OUTPUT_BYTES: 1024,
+    // Phase 1 managed authority: no Local DEV enrollment, no verified build
+    // context, and an accepting protected-layout controller.
+    LOCAL_AUTHORITY: undefined, VERIFIED_BUILD_CONTEXT_DIGEST: "", protectedLayouts: { homeVolume: name => `${name}-home`, complete: () => {} },
     validateRequest: () => {},
     provisionerQuotaRequest: () => ({ identity: { containerName: "synthetic-owned" } }),
     diskQuotaMarkerPresent: () => false,
@@ -1098,6 +1185,83 @@ test("MP-08 MP-10 MP-11 all provisioner requests use common owned lifetime", asy
   }
   assert.equal(prepared, 7)
   assert.equal(cleaned, prepared, "prepared filesystem handles settle on each completed request")
+})
+
+test("Phase 1 local DEV broker runs unbounded slices without release F's managed quota coordination", async () => {
+  const source = await readFile(broker, "utf8")
+  const spawnSource = source.slice(source.indexOf("function spawnBounded("), source.indexOf("\nfunction provisionerQuotaRequest("))
+  const executeSource = source.slice(source.indexOf("async function execute(request)"), source.indexOf("\nfunction errorResponse("))
+  // A local DEV host has no quota allocator, coordination root or admission
+  // proofs: any use of them is a failure of this topology.
+  const quotaUse = []
+  const managedOnly = name => () => { quotaUse.push(name); throw new Error(`${name} exists only on managed hosts`) }
+  const markers = new Set()
+  const commands = []
+  const released = []
+  let authorityChecks = 0
+  const execute = runInNewContext(`${spawnSource}\n${executeSource}\nexecute`, {
+    ...archivePolicy, process, Buffer, Set,
+    PROVISIONER: process.execPath, DOCKER_HOST: "unix:///run/docker.sock", MAX_OUTPUT_BYTES: 1024,
+    LOCAL_AUTHORITY: { enrollment: { ownerUid: 1000 } },
+    verifiedProtectedAuthority: () => { authorityChecks++ },
+    localDevRuntimeEnvironment: () => ({CHARIOX_SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY: "1"}),
+    VERIFIED_BUILD_CONTEXT_DIGEST: "", protectedLayouts: { homeVolume: name => `${name}-home`, complete: () => {} },
+    validateRequest: () => {},
+    fail: message => { throw new Error(message) },
+    diskQuotaMarkerPresent: name => markers.has(name),
+    provisionerQuotaRequest: managedOnly("provisionerQuotaRequest"),
+    requestSliceDiskQuota: managedOnly("requestSliceDiskQuota"),
+    runWithSliceDiskQuotaAdmission: managedOnly("runWithSliceDiskQuotaAdmission"),
+    sliceDiskQuotaIdentityFromEnvironment: managedOnly("sliceDiskQuotaIdentityFromEnvironment"),
+    sliceDiskQuotaCoordinator: new Proxy({}, { get: (_target, name) => managedOnly(`sliceDiskQuotaCoordinator.${String(name)}`) }),
+    prepareProvisioner: async request => ({ environment: request.environment, descriptors: [], handles: new Set(), newHandles: new Set() }),
+    prepareDocker: args => ({ args: [...args], descriptors: [] }),
+    dockerControlPolicy: () => ({}),
+    dockerEnvironment: () => ({ PATH: "/usr/bin:/bin" }),
+    recordedContainerMounts: () => [{ destination: "/workspace", rw: true, source: "/synthetic/handle" }],
+    requireExactContainerMounts: () => true,
+    isDiskAdmissionHelper: () => false,
+    publishStagedOutput: () => {}, releasePersistentHandles: name => { released.push(name) },
+    cleanupPrepared: () => {}, removePersistentHandles: () => {},
+    brokerLifetime: new AbortController(), BROKER_OUTPUT_ROOT: "/synthetic/logs", join,
+    runBrokerCommand: async (command, args, options) => {
+      commands.push([command, ...args])
+      if (command === process.execPath) assert.equal(options.env.CHARIOX_SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY, "1", "enrolled DEV grant overrides the kernel default")
+      return spawnSync(process.execPath, ["-e", "process.stdout.write('ran')"], options)
+    },
+  })
+  const slice = "chariox-slice-local"
+  const requests = [
+    ...["provision", "restore-state", "recover", "destroy"].map(action => ({ kind: "provisioner", action, files: [], environment: { CHARIOX_SLICE_NAME: slice, CHARIOX_SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY: "0" } })),
+    { kind: "docker", args: ["start", slice] },
+    { kind: "docker", args: ["unpause", slice] },
+  ]
+  for (const request of requests) {
+    const response = await execute(request)
+    const label = request.kind === "docker" ? request.args[0] : request.action
+    assert.equal(response.status, 0, `${label} runs without managed quota coordination`)
+    assert.equal(Buffer.from(response.stdoutBase64, "base64").toString(), "ran")
+  }
+  assert.deepEqual(commands.map(command => command.at(-1)), ["provision", "restore-state", "recover", "destroy", slice, slice])
+  assert.deepEqual(released, [slice], "destroy still releases the slice's stable handles")
+  assert.deepEqual(quotaUse, [])
+
+  // Without an allocator the local broker can neither reserve quotas nor admit
+  // a slice that carries a quota marker: both fail before any command runs.
+  await assert.rejects(execute({ kind: "provisioner", action: "provision", files: [], environment: {
+    CHARIOX_SLICE_NAME: slice, CHARIOX_SLICE_DISK_LAYER_MB: "1024", CHARIOX_SLICE_DISK_HOME_MB: "2048",
+  } }), /do not support managed disk quotas/)
+  markers.add("chariox-slice-marked")
+  for (const request of [
+    { kind: "docker", args: ["start", "chariox-slice-marked"] },
+    { kind: "docker", args: ["unpause", "chariox-slice-marked"] },
+    { kind: "provisioner", action: "recover", files: [], environment: { CHARIOX_SLICE_NAME: "chariox-slice-marked" } },
+  ]) {
+    await assert.rejects(execute(request), /cannot run without the managed quota allocator/)
+  }
+  assert.equal(commands.length, requests.length)
+  assert.deepEqual(quotaUse, [])
+  assert.equal(authorityChecks, requests.length + 4, "every local request re-verifies its enrolled authority")
 })
 
 
@@ -1219,4 +1383,73 @@ test("MP-08 MP-11 broker admits documented nondefault slice tuning", async conte
  for(const [name,values] of Object.entries({CHARIOX_SLICE_DOCKER_PIDS_LIMIT:["0","-1","2147483648","1.5"],CHARIOX_SLICE_DOCKER_NOFILE_LIMIT:["0","1023","1048577","bad"],CHARIOX_SLICE_MIN_FREE_MB:["-1","4294967296","bad"]})) {
   for(const value of values) assert.notEqual(validate({kind:"provisioner",action:"recover",environment:{...environment,[name]:value},files:[]},root).status,0,`${name} ${value}`)
  }
+})
+
+test("quota admission uses the retained generation and final evidence uses the prepared restore generation", async () => {
+  const source = await readFile(broker, "utf8")
+  const spawnSource = source.slice(source.indexOf("function spawnBounded("), source.indexOf("\nfunction provisionerQuotaRequest("))
+  const executeSource = source.slice(source.indexOf("async function execute(request)"), source.indexOf("\nfunction errorResponse("))
+  const container = "chariox-slice-generation"
+  const retained = `${container}-home-g${"a".repeat(32)}`
+  const restored = `${container}-home-g${"b".repeat(32)}`
+  const quotas = [], environments = []
+  const execute = runInNewContext(`${spawnSource}\n${executeSource}\nexecute`, {
+    ...archivePolicy, process, Buffer, Set, join,
+    PROVISIONER: "/synthetic/provisioner", DOCKER_HOST: "unix:///synthetic", MAX_OUTPUT_BYTES: 1024,
+    LOCAL_AUTHORITY: undefined, VERIFIED_BUILD_CONTEXT_DIGEST: "", brokerLifetime: new AbortController(), BROKER_OUTPUT_ROOT: "/synthetic",
+    protectedLayouts: {homeVolume: () => retained, complete: () => {}},
+    validateRequest: () => {}, diskQuotaMarkerPresent: () => false,
+    provisionerQuotaRequest: environment => ({identity: {containerName: container, homeVolumeName: environment.CHARIOX_SLICE_HOME_VOLUME}, limits: {persistentHomeBytes: 2048, writableLayerBytes: 1024}}),
+    requestSliceDiskQuota: async request => {quotas.push(request); return {evidence: {checked: true}}},
+    sliceDiskQuotaCoordinator: {withContainerLock: async (_name, run) => run({}), assertBounded: async () => {}},
+    prepareProvisioner: async request => ({environment: {...request.environment, CHARIOX_SLICE_HOME_VOLUME: restored}, handles: new Set(), newHandles: new Set()}),
+    runBrokerCommand: async (_command, _args, options) => {environments.push(options.env); return {status: 0, stdout: Buffer.from("ran"), stderr: Buffer.alloc(0)}},
+    cleanupPrepared: () => {}, removePersistentHandles: () => {},
+  })
+  const result = await execute({kind: "provisioner", action: "restore-state", environment: {CHARIOX_SLICE_NAME: container, CHARIOX_SLICE_HOME_VOLUME: `${container}-home`}})
+  assert.equal(result.status, 0)
+  assert.deepEqual(quotas.map(q => [q.operation, q.identity.homeVolumeName]), [["reserve", retained], ["verify", restored]])
+  assert.equal(environments[0].CHARIOX_SLICE_HOME_VOLUME, restored)
+})
+
+test("quota destroy retires retained generations after current-home removal even without a marker", async () => {
+  const {retireProtectedQuotaHomes} = await import("../apps/kernel/slice-linux-docker/protected-home-retirement.mjs")
+  const source = await readFile(broker, "utf8")
+  const spawnSource = source.slice(source.indexOf("function spawnBounded("), source.indexOf("\nfunction provisionerQuotaRequest("))
+  const executeSource = source.slice(source.indexOf("async function execute(request)"), source.indexOf("\nfunction errorResponse("))
+  const identity = {containerName: "chariox-slice-retirement", sliceId: "retirement", ownerKernelId: "kernel", ownerMachineId: "machine"}
+  const oldHome = `${identity.containerName}-home`
+  const currentHome = `${oldHome}-g${"e".repeat(32)}`
+  identity.homeVolumeName = currentHome
+  const remaining = new Set([oldHome, currentHome]), events = []
+  const execute = runInNewContext(`${spawnSource}\n${executeSource}\nexecute`, {
+    ...archivePolicy, process, Buffer, Set, join,
+    PROVISIONER: "/synthetic/provisioner", DOCKER_HOST: "unix:///synthetic", MAX_OUTPUT_BYTES: 1024,
+    LOCAL_AUTHORITY: undefined, VERIFIED_BUILD_CONTEXT_DIGEST: "", brokerLifetime: new AbortController(), BROKER_OUTPUT_ROOT: "/synthetic",
+    protectedLayouts: {homeVolume: () => currentHome, retainedHomeVolumes: () => [oldHome, currentHome]},
+    validateRequest: () => {}, diskQuotaMarkerPresent: () => false,
+    provisionerQuotaRequest: () => ({identity}), sliceDiskQuotaIdentityFromEnvironment: () => identity,
+    requestSliceDiskQuota: async request => {
+      events.push(request.operation)
+      if (request.operation === "status") return {bounded: true}
+      assert.equal(remaining.size, 0, "owned retained homes must be retired before quota release")
+      return {released: true}
+    },
+    sliceDiskQuotaCoordinator: {withContainerLock: async (_name, run) => run({}), revokeUnboundedProof: () => {}},
+    prepareProvisioner: async request => ({environment: request.environment, handles: new Set(), newHandles: new Set()}),
+    runBrokerCommand: async () => {remaining.delete(currentHome); return {status: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0)}},
+    spawnControl: (_command, args) => {
+      if (!remaining.has(args[2])) return {status: 1, stderr: `Error: No such volume: ${args[2]}\n`}
+      if (args[1] === "inspect") return {status: 0, stdout: JSON.stringify([{Name: args[2], Driver: "local", Labels: {
+        "io.chariox.slice.id": identity.sliceId, "io.chariox.slice.owner-kernel-id": identity.ownerKernelId,
+        "io.chariox.slice.owner-machine-id": identity.ownerMachineId,
+      }}])}
+      assert.equal(args[1], "rm"); remaining.delete(args[2]); events.push("retire"); return {status: 0}
+    },
+    retireProtectedQuotaHomes, dockerEnvironment: () => ({}),
+    releasePersistentHandles: () => {}, cleanupPrepared: () => {}, removePersistentHandles: () => {},
+  })
+  const result = await execute({kind: "provisioner", action: "destroy", environment: {CHARIOX_SLICE_NAME: identity.containerName}})
+  assert.equal(result.status, 0)
+  assert.deepEqual(events, ["status", "retire", "release"])
 })

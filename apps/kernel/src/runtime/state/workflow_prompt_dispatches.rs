@@ -18,6 +18,7 @@ pub(super) struct WorkflowPromptDispatches {
 }
 
 impl WorkflowPromptDispatches {
+    #[cfg(test)]
     pub(super) fn is_empty(&self) -> bool {
         self.project_queue_promotions.is_empty()
             && self.local.is_empty()

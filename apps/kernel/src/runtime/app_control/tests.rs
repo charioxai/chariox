@@ -1,0 +1,293 @@
+use super::*;
+use crate::durable_state::apps::{AppRegistryMutation, AppRegistryOutcome};
+use crate::runtime::command::KernelCaller;
+use chariox_app_runtime::installation::{CapabilityApproval, ReleaseMetadata};
+
+fn seed(store: &DurableKernelStateStore, owner: &str, id: &str) {
+    let result = store
+        .mutate_app_installation(
+            owner,
+            AppRegistryMutation::CreateAndStage {
+                installation_id: id.into(),
+                release: ReleaseMetadata {
+                    app_id: "com.chariox.todo".into(),
+                    version: "1.0.0".into(),
+                    publisher_id: "publisher".into(),
+                    package_digest: format!("sha256:{:064x}", 1),
+                    schema_version: 1,
+                    capabilities_digest: format!("sha256:{:064x}", 2),
+                    catalog_digest: format!("sha256:{:064x}", 3),
+                    view_digest: format!("sha256:{:064x}", 4),
+                },
+                now_ms: 1,
+            },
+        )
+        .unwrap();
+    let AppRegistryOutcome::Update(record) = result else {
+        panic!("expected update")
+    };
+    store
+        .mutate_app_installation(
+            owner,
+            AppRegistryMutation::Decide {
+                token: record.token,
+                decision: CapabilityDecision::Approved {
+                    approval: CapabilityApproval {
+                        decision_id: "private-decision".into(),
+                        authority_ref: "private-authority".into(),
+                    },
+                },
+                now_ms: 2,
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn app_control_shared_router_projects_only_the_authenticated_owners_installations() {
+    let harness = crate::local::test_support::LocalRouterTestHarness::new();
+    harness.with_app(|app| {
+        seed(&app.durable_state_store(), "alice", "todo-alice");
+        seed(&app.durable_state_store(), "bob", "todo-bob");
+    });
+    let list = LocalDaemonRequest::ListAppInstallations(ListAppInstallationsRequest {
+        after: None,
+        limit: Some(1),
+    });
+    let local = harness.dispatch_as_user("alice", list.clone()).unwrap();
+    let mut remote = KernelCaller::for_source(&KernelCommandSource::RelayClient);
+    remote.user_id = Some("alice".into());
+    remote.client_id = Some("paired-client".into());
+    // Round-trip the same wire shape used by local and relayed terminal requests.
+    let relayed = serde_json::from_slice(&serde_json::to_vec(&list).unwrap()).unwrap();
+    assert_eq!(
+        harness
+            .dispatch_with_caller(relayed, remote.clone())
+            .unwrap(),
+        local
+    );
+    let LocalDaemonResponse::AppInstallationsListed {
+        installations,
+        next_cursor,
+    } = local
+    else {
+        panic!("wrong response")
+    };
+    assert_eq!(installations.len(), 1);
+    assert_eq!(installations[0].installation_id, "todo-alice");
+    assert_eq!(installations[0].generation, "0");
+    assert_eq!(installations[0].pending_generation.as_deref(), Some("1"));
+    assert_eq!(next_cursor, None);
+    for request in [
+        LocalDaemonRequest::GetAppInstallation(AppInstallationRequest {
+            installation_id: "todo-bob".into(),
+        }),
+        LocalDaemonRequest::GetAppInstallationJournal(AppInstallationRequest {
+            installation_id: "todo-bob".into(),
+        }),
+    ] {
+        assert_eq!(
+            harness
+                .dispatch_with_caller(request, remote.clone())
+                .unwrap(),
+            failed(AppRequestErrorCode::NotFound)
+        );
+    }
+    let journal = harness
+        .dispatch_as_user(
+            "alice",
+            LocalDaemonRequest::GetAppInstallationJournal(AppInstallationRequest {
+                installation_id: "todo-alice".into(),
+            }),
+        )
+        .unwrap();
+    let json = serde_json::to_string(&journal).unwrap();
+    assert!(json.contains("approved"));
+    assert!(!json.contains("private-decision") && !json.contains("private-authority"));
+    let unknown = KernelCaller::for_source(&KernelCommandSource::RelayClient);
+    assert_eq!(
+        harness.dispatch_with_caller(list, unknown).unwrap(),
+        failed(AppRequestErrorCode::Unauthorized)
+    );
+}
+
+#[test]
+fn app_control_rejects_unverified_remote_and_oversized_or_forged_identity() {
+    assert_eq!(
+        registry_error(AppRegistryError::Registry(InstallationError::Invalid(
+            "negative stored generation"
+        ))),
+        AppRequestErrorCode::StorageUnavailable
+    );
+    let request = LocalDaemonRequest::ListAppInstallations(ListAppInstallationsRequest {
+        after: None,
+        limit: None,
+    });
+    for source in [
+        KernelCommandSource::RelayClient,
+        KernelCommandSource::RelayPeer,
+        KernelCommandSource::DaemonBackground,
+    ] {
+        let mut command =
+            KernelCommand::from_local_request_with_source("id", source, None, None, &request);
+        assert_eq!(owner(&command), Err(AppRequestErrorCode::Unauthorized));
+        command.caller.user_id = Some("x".repeat(129));
+        assert_eq!(owner(&command), Err(AppRequestErrorCode::Unauthorized));
+    }
+    let local = KernelCommand::from_local_request("id", None, None, &request);
+    assert_eq!(owner(&local).unwrap(), DEFAULT_LOCAL_USER_ID);
+    assert!(serde_json::from_str::<LocalDaemonRequest>(
+        r#"{"ListAppInstallations":{"owner_id":"other"}}"#
+    )
+    .is_err());
+}
+
+#[tokio::test]
+async fn app_control_admission_is_bounded_and_invalid_pages_do_not_read() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-app-control-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    {
+        let store = DurableKernelStateStore::open_owned(root.join("kernel.db")).unwrap();
+        let service = AppControlService::new(store);
+        let request = LocalDaemonRequest::ListAppInstallations(ListAppInstallationsRequest {
+            after: None,
+            limit: Some(101),
+        });
+        let command = KernelCommand::from_local_request("id", None, None, &request);
+        assert_eq!(
+            service.execute(&command, &request).await,
+            Some(failed(AppRequestErrorCode::InvalidRequest))
+        );
+        let permit = service.admission.acquire_many(8).await.unwrap();
+        assert_eq!(
+            service.execute(&command, &request).await,
+            Some(failed(AppRequestErrorCode::Busy))
+        );
+        drop(permit);
+        assert_eq!(
+            service.execute(&command, &request).await,
+            Some(failed(AppRequestErrorCode::InvalidRequest))
+        );
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn app_upload_chunk_payload_is_bounded_before_clone_and_absent_from_audit_and_debug() {
+    use super::uploads;
+    use crate::runtime::app_package_upload_control::MAX_ENCODED_UPLOAD_CHUNK_BYTES;
+    let mut chunk = PutAppPackageUploadChunkRequest {
+        handle: format!("upload_{}", "a".repeat(64)),
+        offset: 0,
+        data_base64: "c2VjcmV0LWJ1bmRsZS1jb250ZW50".into(),
+        chunk_sha256: format!("sha256:{:064x}", 1),
+    };
+    let request = LocalDaemonRequest::PutAppPackageUploadChunk(chunk.clone());
+    let command = KernelCommand::from_local_request("chunk", None, None, &request);
+    let encoded = serde_json::to_string(&command).unwrap();
+    assert!(!encoded.contains(&chunk.data_base64));
+    assert!(!encoded.contains("data_base64"));
+    assert!(!format!("{request:?}").contains(&chunk.data_base64));
+    assert_eq!(
+        command.payload["PutAppPackageUploadChunk"]["encoded_bytes"],
+        chunk.data_base64.len()
+    );
+    chunk.data_base64 = "A".repeat(MAX_ENCODED_UPLOAD_CHUNK_BYTES + 1);
+    assert!(matches!(
+        uploads::command(&LocalDaemonRequest::PutAppPackageUploadChunk(chunk)),
+        Err(AppRequestErrorCode::LimitExceeded)
+    ));
+}
+
+#[test]
+fn a_shown_prompt_remembers_its_session_until_it_ends() {
+    let path = std::env::temp_dir().join(format!(
+        "chariox-app-control-{:016x}",
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir(&path).unwrap();
+    let store =
+        crate::durable_state::DurableKernelStateStore::open_owned(path.join("kernel.sqlite"))
+            .unwrap();
+    let control = AppControlService::new(store);
+    assert!(control.begin_validation_prompt("op", "alice"));
+    assert!(!control.begin_validation_prompt("op", "alice"));
+    assert_eq!(control.validation_prompt_session("op"), None);
+    control.show_validation_prompt("op", "session-a");
+    assert_eq!(
+        control.validation_prompt_session("op").as_deref(),
+        Some("session-a")
+    );
+    control.end_validation_prompt("op");
+    assert_eq!(control.validation_prompt_session("op"), None);
+    control.show_validation_prompt("op", "session-b");
+    assert_eq!(control.validation_prompt_session("op"), None);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[tokio::test]
+async fn a_reply_waits_briefly_for_full_admission_but_never_past_its_deadline() {
+    use std::time::{Duration, Instant};
+    assert_eq!(reply_wait(Duration::from_secs(30)), REPLY_ADMISSION_WAIT);
+    assert_eq!(
+        reply_wait(Duration::from_millis(200)),
+        Duration::from_millis(200)
+    );
+    assert_eq!(reply_wait(Duration::ZERO), Duration::ZERO);
+    let root = std::env::temp_dir().join(format!(
+        "chariox-app-admission-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let store = DurableKernelStateStore::open_owned(root.join("kernel.db")).unwrap();
+    let service = AppControlService::new(store);
+    let mut held: Vec<_> = (0..8).map(|_| service.try_admit().unwrap()).collect();
+    // Full before a call: refused at once, as busy (the call sites map it to
+    // APP_BUSY, never "The App is not running").
+    assert!(matches!(
+        service.try_admit(),
+        Err(AppRequestErrorCode::Busy)
+    ));
+    // Full after the App answered: the reply waits, and records once a
+    // permit frees within the wait.
+    let freed = held.pop().unwrap();
+    let release = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(freed);
+    });
+    held.push(service.admit_reply(Duration::from_secs(30)).await.unwrap());
+    release.await.unwrap();
+    // Still full: busy by the call's deadline, never a hang.
+    let started = Instant::now();
+    assert!(service
+        .admit_reply(Duration::from_millis(100))
+        .await
+        .is_err());
+    assert!(started.elapsed() < Duration::from_secs(2));
+    drop(held);
+    drop(service);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn saved_snapshot_restore_shared_router_authenticates_local_and_relay_owners() {
+    let harness = crate::local::test_support::LocalRouterTestHarness::new();
+    harness.with_app(|app| seed(&app.durable_state_store(), "bob", "todo-bob"));
+    let request = LocalDaemonRequest::RestoreAppDataSnapshot(RestoreAppDataSnapshotRequest {
+        installation_id: "todo-bob".into(), expected_generation: "1".into(), snapshot_id: "snapshot-saved".into(),
+    });
+    let foreign = harness.dispatch_as_user("alice", request.clone()).unwrap();
+    assert_eq!(foreign, failed(AppRequestErrorCode::NotFound));
+    let mut remote = KernelCaller::for_source(&KernelCommandSource::RelayClient);
+    remote.user_id = Some("alice".into());
+    assert_eq!(harness.dispatch_with_caller(request.clone(), remote.clone()).unwrap(), foreign);
+    remote.user_id = None;
+    assert_eq!(harness.dispatch_with_caller(request.clone(), remote).unwrap(), failed(AppRequestErrorCode::Unauthorized));
+    // Owned but inactive snapshots fail before worker/data mutation.
+    assert_eq!(harness.dispatch_as_user("bob", request).unwrap(), failed(AppRequestErrorCode::Conflict));
+}

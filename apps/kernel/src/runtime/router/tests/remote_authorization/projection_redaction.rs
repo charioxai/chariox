@@ -2,13 +2,11 @@ use super::*;
 
 #[tokio::test]
 async fn remote_session_projection_redacts_other_users_private_agent_and_workflow_state() {
-    let fixture_worktree_0 = crate::test_support::TestWorktree::new(
-        "remote_session_projection_redacts_other_users_private_agent_and_workflow_state",
-    );
+    let worktree = crate::test_support::TestWorktree::new("redaction");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let session = app
         .sessions_mut()
-        .create_session(fixture_worktree_0.session_request())
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let session_id = session.id().to_string();
     let (_, invite) = app

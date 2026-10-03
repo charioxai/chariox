@@ -3,6 +3,7 @@ import {
   commandCenterCompletionText,
   commandCenterExecutionCommand,
   nextCommandCenterIndex,
+  promptAddsArgumentsToCommandCenterItem,
   shouldBypassCommandCenterSubmitSelection,
   shouldSubmitExactCommandCenterMatch,
 } from "./command-center-selection.js"
@@ -201,6 +202,10 @@ export function createCommandCenterController<TBox = unknown>(
       if (event.name === "return" || event.name === "enter") {
         const item = selectedItem()
         if (!item) {
+          return false
+        }
+        if (promptAddsArgumentsToCommandCenterItem(item, options.getPromptText())) {
+          // Not handled: the prompt's own submit sends the typed command.
           return false
         }
         event.preventDefault?.()

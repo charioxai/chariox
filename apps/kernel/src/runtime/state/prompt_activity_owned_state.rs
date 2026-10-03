@@ -54,7 +54,12 @@ impl KernelRuntimeOwnedState {
         }
     }
 
-    pub(super) fn reap_structured_prompt_jobs(&self) {
+    /// Applies finished structured prompt jobs. Returns the follow-ups that an
+    /// abort acknowledgement promoted but left to the dispatcher (a turn
+    /// substitute's next turn, which moves to the configured profile); see
+    /// `KernelRuntimeState::reap_structured_prompt_jobs_and_dispatch`.
+    pub(super) fn reap_structured_prompt_jobs(&self) -> Vec<crate::app::KernelPromptDispatch> {
+        let mut follow_ups = Vec::new();
         self.provider_store
             .apply_finished_provider_run_selection_sync_jobs();
         for finished in self
@@ -98,6 +103,16 @@ impl KernelRuntimeOwnedState {
                     }
                 }
                 Err(error) => {
+                    let Ok(session) = self.session_store.get_session(&finished.session_id) else {
+                        continue;
+                    };
+                    let Some(failed_prompt) = self
+                        .prompt_state_owner
+                        .active_prompt_for_agent(&session, &finished.agent_id)
+                        .filter(|prompt| prompt.id() == finished.prompt_id)
+                    else {
+                        continue;
+                    };
                     let provider_run = self.provider_store.get_run(&finished.provider_run_id).ok();
                     let mut _settlement_claim = None;
                     if let Some(provider_run) = provider_run.as_ref() {
@@ -155,6 +170,22 @@ impl KernelRuntimeOwnedState {
                                 continue;
                             }
                         }
+                    }
+                    if _settlement_claim.is_none() {
+                        let Some(claim) = self
+                            .prompt_state_owner
+                            .try_claim_active_prompt_delivery_settlement(
+                                &session,
+                                &finished.agent_id,
+                                &finished.prompt_id,
+                                &finished.provider_run_id,
+                            )
+                        else {
+                            continue;
+                        };
+                        _settlement_claim = Some(claim);
+                    }
+                    if provider_run.is_some() {
                         if let Ok(outcome) = self.provider_store.terminate_run_provider_only(
                             &finished.session_id,
                             &finished.provider_run_id,
@@ -186,7 +217,19 @@ impl KernelRuntimeOwnedState {
                         &finished.provider_run_id,
                         &diagnostic,
                     ) {
-                        Ok(Some(_)) => {}
+                        Ok(Some(_)) => {
+                            self.record_failed_request(
+                                &finished.session_id,
+                                &finished.provider_run_id,
+                                provider_run
+                                    .as_ref()
+                                    .map(|run| run.adapter_key())
+                                    .unwrap_or_default(),
+                                &finished.agent_id,
+                                &failed_prompt,
+                                &diagnostic,
+                            );
+                        }
                         Ok(None) => {}
                         Err(settlement_error) => {
                             crate::logging::warn_with_fields(
@@ -272,14 +315,19 @@ impl KernelRuntimeOwnedState {
                             let _ = self.workflow_cancel_prompt(&finished.session_id, &prompt);
                         }
                     }
-                    let _ = self.finalize_local_prompt_cancellation_with_queued_advance(
-                        &finished.session_id,
-                        agent_id,
-                        Some(&finished.provider_run_id),
-                    );
+                    if let Ok(cancellation) = self
+                        .finalize_local_prompt_cancellation_with_queued_advance(
+                            &finished.session_id,
+                            agent_id,
+                            Some(&finished.provider_run_id),
+                        )
+                    {
+                        follow_ups.extend(cancellation.dispatch);
+                    }
                 }
             }
         }
+        follow_ups
     }
 
     fn prepare_failed_prompt_resume_invalidation(
@@ -405,7 +453,11 @@ impl KernelRuntimeOwnedState {
             return Ok(());
         };
         let run = self.provider_store.get_run(provider_run_id)?;
-        if let Some(run_agent_id) = run.agent_instance_id() {
+        // A substitute run reruns one turn; it never becomes the agent's profile.
+        if let Some(run_agent_id) = run
+            .agent_instance_id()
+            .filter(|_| run.turn_substitute().is_none())
+        {
             self.agent_store.set_agent_runtime_profile_durably(
                 &self.durable_state_store,
                 run_agent_id,
@@ -430,6 +482,7 @@ impl KernelRuntimeOwnedState {
             Some(provider_run_id.to_string()),
             run.provider_session_id().map(str::to_string),
         )?;
+        self.consume_delivered_turn_context(session_id, agent_id, prompt_id, &run);
         let session = self.session_store.get_session(session_id)?;
         if let Some(active) = self
             .prompt_state_owner
@@ -481,7 +534,7 @@ impl KernelRuntimeOwnedState {
         // the reporter's barrier across that window, so publish a second change only after the
         // turn has been cleared by the completed settlement path.
         if active_turn.is_some() {
-            activity_mutation.record_at(observed_at_ms);
+            activity_mutation.record_prompt_finish_at(observed_at_ms);
             self.runtime_projection_changes.record_change();
         }
         released_claim
@@ -501,7 +554,7 @@ impl KernelRuntimeOwnedState {
         let activity_mutation = self.begin_managed_activity_mutation();
         let cleared_active_turns = self.active_turns.clear_session(session_id);
         if cleared_active_turns > 0 {
-            activity_mutation.record();
+            activity_mutation.record_prompt_finish_at(None);
             self.runtime_projection_changes.record_change();
         }
         let _ = self
@@ -525,7 +578,7 @@ impl KernelRuntimeOwnedState {
         let activity_mutation = self.begin_managed_activity_mutation();
         let cleared_active_turns = self.active_turns.clear_agent(session_id, agent_id);
         if cleared_active_turns > 0 {
-            activity_mutation.record();
+            activity_mutation.record_prompt_finish_at(None);
             self.runtime_projection_changes.record_change();
         }
     }

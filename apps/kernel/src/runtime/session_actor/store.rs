@@ -6,10 +6,11 @@ use crate::local::{
     FocusAgentRequest, ListProjectsRequest, LocalDaemonResponse,
     ReadRoomEnvironmentClipboardRequest, ReleaseRoomEnvironmentInputRequest, RenameProjectRequest,
     RequestRoomEnvironmentInputTakeoverRequest, RespondToInteractionRequest, RestoreProjectRequest,
-    RetryRoomEnvironmentRequest, StartRoomEnvironmentRequest, StopRoomEnvironmentRequest,
-    SubmitRoomEnvironmentActionRequest, SubmitRoomEnvironmentBrowserActionRequest,
-    UpdateProjectWorkspacesRequest, UpdateRoomEnvironmentPointerRequest,
-    UpdateRoomEnvironmentViewportRequest, UpdateSessionConfigRequest,
+    RetryRoomEnvironmentRequest, SetRoomBrowserBarRequest, StartRoomEnvironmentRequest,
+    StopRoomEnvironmentRequest, SubmitRoomEnvironmentActionRequest,
+    SubmitRoomEnvironmentBrowserActionRequest, UpdateProjectWorkspacesRequest,
+    UpdateRoomEnvironmentPointerRequest, UpdateRoomEnvironmentViewportRequest,
+    UpdateSessionConfigRequest,
 };
 use crate::runtime::state::KernelRuntimeState;
 use crate::session::CreateSessionRequest;
@@ -158,6 +159,47 @@ impl SessionRuntimeStore {
         (result, None)
     }
 
+    /// The flag is kept first, then the Room browser applies it; a failed
+    /// apply is reported and the next reconcile applies the kept flag.
+    pub(super) async fn set_room_browser_bar(
+        &self,
+        request: SetRoomBrowserBarRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let actor = crate::session::EnvironmentActor::new(
+            crate::session::human_environment_actor_id(&caller_user_id),
+            crate::session::EnvironmentActorKind::Human,
+            crate::session::human_environment_actor_label(&caller_user_id),
+        );
+        let result = match self.state.set_room_browser_bar_visible_as_actor(
+            &request.session_id,
+            actor,
+            request.visible,
+        ) {
+            Ok(_)
+                if self
+                    .state
+                    .browser_controller_enabled_for_room(&request.session_id) =>
+            {
+                self.state
+                    .reconcile_browser_controller_environment(&request.session_id)
+                    .await
+            }
+            Ok(environment) => Ok(environment),
+            Err(error) => Err(room_environment_control_error(
+                "environment.browser_bar.set",
+                error,
+            )),
+        };
+        (
+            result.map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment }),
+            None,
+        )
+    }
+
     pub(super) async fn update_room_environment_viewport(
         &self,
         request: UpdateRoomEnvironmentViewportRequest,
@@ -174,77 +216,59 @@ impl SessionRuntimeStore {
             request.viewport.desktop_pixel_height,
         )
         .map_err(|error| room_environment_control_error("environment.viewport.update", error));
-        let result = viewport.and_then(|viewport| {
-            let actor_id = crate::session::human_environment_actor_id(&caller_user_id);
-            let display_label = crate::session::human_environment_actor_label(&caller_user_id);
-            self.state
-                .update_room_environment_viewport_as_actor(
-                    &request.session_id,
-                    crate::session::EnvironmentActor::new(
-                        actor_id,
-                        crate::session::EnvironmentActorKind::Human,
-                        display_label,
-                    ),
-                    request.expected_revision,
-                    viewport,
-                )
-                .map_err(|error| {
-                    room_environment_control_error("environment.viewport.update", error)
-                })
-        });
-        let result = match result {
-            Ok(environment)
-                if self
-                    .state
-                    .browser_controller_enabled_for_room(&request.session_id) =>
-            {
-                match self
-                    .state
-                    .reconcile_browser_controller_environment(&request.session_id)
-                    .await
-                {
-                    Ok(_) => self
-                        .state
-                        .update_room_environment_component_health(
-                            &request.session_id,
-                            crate::session::EnvironmentComponent::Browser,
-                            crate::session::EnvironmentComponentHealthState::Ready,
-                            None,
-                        )
-                        .map_err(|error| {
-                            room_environment_control_error("environment.viewport.update", error)
-                        }),
-                    Err(_) => {
-                        let degraded = self
-                            .state
-                            .update_room_environment_component_health(
-                                &request.session_id,
-                                crate::session::EnvironmentComponent::Browser,
-                                crate::session::EnvironmentComponentHealthState::Degraded,
-                                Some("viewport_apply_failed"),
-                            )
-                            .unwrap_or(environment);
-                        if degraded.lifecycle == crate::session::EnvironmentLifecycle::Ready {
-                            self.state
-                                .transition_room_environment(
-                                    &request.session_id,
-                                    crate::session::EnvironmentLifecycle::Degraded,
-                                )
-                                .map_err(|error| {
-                                    room_environment_control_error(
-                                        "environment.viewport.update",
-                                        error,
-                                    )
-                                })
-                        } else {
-                            Ok(degraded)
-                        }
+        let result = async {
+            let viewport = viewport?;
+            let actor = crate::session::EnvironmentActor::new(
+                crate::session::human_environment_actor_id(&caller_user_id),
+                crate::session::EnvironmentActorKind::Human,
+                crate::session::human_environment_actor_label(&caller_user_id),
+            );
+            // Preview validates the owner and revision without publishing a
+            // new viewport or clearing pointers before physical application.
+            let preview = self.state.preview_update_room_environment_viewport_as_actor(
+                &request.session_id, actor.clone(), request.expected_revision, viewport.clone(),
+            ).map_err(|error| room_environment_control_error("environment.viewport.update", error))?;
+            let controlled = self.state.browser_controller_enabled_for_room(&request.session_id);
+            let reconciliation = if controlled {
+                match self.state.apply_browser_controller_viewport(&request.session_id, &preview).await {
+                    Ok(reconciliation) => Some(reconciliation),
+                    Err(error) => {
+                        // Physical failures roll back locally; this also restores
+                        // CDP metrics after a later browser-layout failure.
+                        let _ = self.state.restore_browser_controller_viewport(&request.session_id).await;
+                        return Err(error);
                     }
                 }
+            } else { None };
+            if let Some(reconciliation) = reconciliation {
+                if let Err(error) = self.state.observe_browser_controller_reconciliation(
+                    &request.session_id, reconciliation,
+                ) {
+                    let _ = self.state.restore_browser_controller_viewport(&request.session_id).await;
+                    return Err(error);
+                }
+                if let Err(error) = self.state.update_room_environment_component_health(
+                    &request.session_id, crate::session::EnvironmentComponent::Browser,
+                    crate::session::EnvironmentComponentHealthState::Ready, None,
+                ) {
+                    let _ = self.state.restore_browser_controller_viewport(&request.session_id).await;
+                    return Err(room_environment_control_error("environment.viewport.update", error));
+                }
             }
-            other => other,
-        }
-        .map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment });
+            let environment = match self.state.update_room_environment_viewport_as_actor(
+                &request.session_id, actor, request.expected_revision, viewport,
+            ) {
+                Ok(environment) => environment,
+                Err(error) => {
+                    if controlled {
+                        let _ = self.state.restore_browser_controller_viewport(&request.session_id).await;
+                    }
+                    return Err(room_environment_control_error("environment.viewport.update", error));
+                }
+            };
+            Ok(LocalDaemonResponse::RoomEnvironmentUpdated { environment })
+        }.await;
+
         (result, None)
     }
 
@@ -733,6 +757,7 @@ impl SessionRuntimeStore {
     pub(super) async fn respond_to_interaction(
         &self,
         request: RespondToInteractionRequest,
+        terminal_user_id: Option<String>,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
@@ -742,15 +767,20 @@ impl SessionRuntimeStore {
             interaction_id,
             choice_id,
             custom_reply,
+            passkey,
+            passkey_remember_minutes,
         } = request;
         let custom_reply = custom_reply.map(zeroize::Zeroizing::new);
         let result = match self
             .state
-            .resolve_runtime_interaction(
+            .answer_terminal_runtime_interaction(
                 &session_id,
                 &interaction_id,
                 &choice_id,
                 custom_reply.as_deref().map(String::as_str),
+                terminal_user_id.as_deref(),
+                passkey.as_ref(),
+                passkey_remember_minutes,
             )
             .await
         {

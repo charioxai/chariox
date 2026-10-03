@@ -128,13 +128,11 @@ mod tests {
 
     #[test]
     fn completion_uses_prompt_owner_when_session_mirror_is_stale() {
-        let fixture_worktree_0 = crate::test_support::TestWorktree::new(
-            "completion_uses_prompt_owner_when_session_mirror_is_stale",
-        );
+        let worktree = crate::test_support::TestWorktree::new("completion-uses-prompt-owner");
         let harness = LocalRouterTestHarness::new();
         let (session, agent) = harness.with_app_mut(|app| {
             crate::app::KernelSessionService::new(app)
-                .create_session(fixture_worktree_0.session_request())
+                .create_session(worktree.session_request())
                 .expect("session should be created")
         });
         let attachment = match harness

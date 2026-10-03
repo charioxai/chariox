@@ -850,32 +850,14 @@ pub(super) async fn handle_daemon_peer_request(
                 )
                 .await;
             match submitted {
-                Ok((provider_run_id, outcome)) => {
-                    if let Err(error) = emit_leased_projection_event(
-                        router,
-                        state,
-                        outgoing_tx,
-                        &leased_agent_id,
-                        &provider_run_id,
-                        true,
-                    )
-                    .await
-                    {
-                        crate::logging::warn_with_fields(
-                            "daemon.relay",
-                            "failed to emit leased runtime projection after submit",
-                            serde_json::json!({
-                                "leased_agent_id": leased_agent_id,
-                                "provider_run_id": provider_run_id,
-                                "error": error.to_string(),
-                            }),
-                        );
-                    }
-                    RelayPeerResponse::LeasedPromptSubmitted {
-                        provider_run_id,
-                        outcome,
-                    }
-                }
+                // No projection push before this ACK. The home binds the run only
+                // when it processes the ACK and drops a Chariox run's snapshot
+                // that arrives first, yet the push would already mark the run and
+                // its output as projected. The home drains after the ACK instead.
+                Ok((provider_run_id, outcome)) => RelayPeerResponse::LeasedPromptSubmitted {
+                    provider_run_id,
+                    outcome,
+                },
                 Err(error) => {
                     return RelayRequestOutcome {
                         encrypted_response: None,
@@ -1563,7 +1545,7 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
-        RelayPeerRequest::ForwardNativeInteraction {
+        RelayPeerRequest::ForwardNativeTurnInteraction {
             context,
             interaction,
         } => {
@@ -3706,6 +3688,7 @@ mod tests {
 
     #[test]
     fn disposable_worker_peer_arm_requires_confirmed_home_binding_and_valid_plan() {
+        crate::test_support::isolated_env_test!();
         std::thread::Builder::new()
             .name("disposable-worker-peer-arm".to_string())
             .stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
@@ -4123,6 +4106,7 @@ mod tests {
 
     #[test]
     fn encrypted_managed_context_peer_transfer_imports_repository_kernel_context_and_vault() {
+        crate::test_support::isolated_env_test!();
         std::thread::Builder::new()
             .name("managed-context-peer-transfer".to_string())
             .stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)

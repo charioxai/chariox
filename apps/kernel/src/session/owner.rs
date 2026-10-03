@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
 
 use crate::error::DaemonError;
 
@@ -12,13 +12,25 @@ use super::{
 #[derive(Debug, Clone)]
 pub(crate) struct SessionStateStore {
     inner: Arc<RwLock<SessionService>>,
+    identity: Arc<()>,
 }
 
 impl SessionStateStore {
     pub(crate) fn new(sessions: SessionService) -> Self {
         Self {
             inner: Arc::new(RwLock::new(sessions)),
+            identity: Arc::new(()),
         }
+    }
+
+    /// Cloned handles share this process-local identity. Pending responders
+    /// retain only the weak token, never the session store or a persisted ID.
+    pub(crate) fn weak_identity(&self) -> Weak<()> {
+        Arc::downgrade(&self.identity)
+    }
+
+    pub(crate) fn matches_identity(&self, identity: &Weak<()>) -> bool {
+        Weak::ptr_eq(identity, &self.weak_identity())
     }
 
     pub(crate) fn read(&self) -> RwLockReadGuard<'_, SessionService> {
@@ -320,6 +332,31 @@ impl SessionStateStore {
         )
     }
 
+    pub(crate) fn set_room_browser_bar_visible_as_actor(
+        &self,
+        session_id: &str,
+        actor: super::EnvironmentActor,
+        visible: bool,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.write()
+            .set_room_browser_bar_visible_as_actor(session_id, actor, visible)
+    }
+
+    pub(crate) fn preview_update_room_environment_viewport_as_actor(
+        &self,
+        session_id: &str,
+        actor: super::EnvironmentActor,
+        expected_revision: u64,
+        viewport: CanonicalViewport,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.read().preview_update_room_environment_viewport_as_actor(
+            session_id,
+            actor,
+            expected_revision,
+            viewport,
+        )
+    }
+
     pub(crate) fn update_room_environment_viewport_as_actor(
         &self,
         session_id: &str,
@@ -372,6 +409,15 @@ impl SessionStateStore {
             tabs,
             focused_runtime_target_id,
         )
+    }
+
+    pub(crate) fn set_room_environment_app_tabs(
+        &self,
+        session_id: &str,
+        apps: std::collections::BTreeMap<String, (String, crate::session::AppPanelLayout)>,
+        app_panels: bool,
+    ) -> Result<std::collections::BTreeMap<String, (u32, u32)>, EnvironmentError> {
+        self.write().set_room_environment_app_tabs(session_id, apps, app_panels)
     }
 
     pub(crate) fn room_environment_controller_tab_binding(

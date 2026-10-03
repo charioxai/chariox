@@ -30,7 +30,12 @@ test("managed Chromium never promotes an insecure origin to a secure context", a
 
 test("desktop startup and URL fallback share one Chromium launch configuration", async () => {
   const source = await readFile(new URL("./docker/slice-screen.sh", import.meta.url), "utf8");
+  // One argv serves the supervised owned lifetime and URL forwarding to it.
   assert.equal((source.match(/nohup chromium/g) ?? []).length, 1);
+  assert.equal((source.match(/browser-lifecycle\.py" start/g) ?? []).length, 1);
+  assert.equal((source.match(/--remote-debugging-port=9222/g) ?? []).length, 1);
+  assert.match(source, /run_chromium owned "\$@"/);
+  assert.match(source, /run_chromium forward "\$@"/);
   assert.match(source, /launch_chromium \|\| return \$\?/);
   assert.match(source, /launch_chromium "\$1"/);
   assert.match(source, /chrome_startup_target_args\+=\(--new-window -- "\$@"\)/);

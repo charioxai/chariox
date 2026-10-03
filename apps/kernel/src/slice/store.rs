@@ -5,15 +5,23 @@ use crate::error::DaemonError;
 use crate::slice_provider_auth::SliceProviderAuthSummary;
 
 use super::model::{
-    CreateSliceInput, SliceBackendKind, SliceBackupRecord, SliceBackupRestoreTransactionRecord,
-    SliceDevelopmentPublication, SliceDisplayEndpoint, SliceOperationStatus, SliceRecord,
-    SliceRelayEndpoint, SliceSavedStateRecord, SliceSavedStateStatus, SliceStatus,
+    CreateSliceInput, SliceBackendKind, SliceBackupRecord, SliceBackupRestoreAcknowledgementRecord,
+    SliceBackupRestoreTransactionRecord, SliceDevelopmentPublication, SliceDisplayEndpoint,
+    SliceOperationStatus, SliceRecord, SliceRelayEndpoint, SliceSavedStateRecord,
+    SliceSavedStateStatus, SliceStatus,
 };
 use super::ports::{self, LocalDockerSlicePorts};
 
 mod environment;
 mod execution_reference;
 mod invariants;
+
+pub(crate) const ENVIRONMENT_USE_ADMISSION_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(30);
+
+/// A shared use that drives the slice's browser controller. Queued Room input
+/// and reads wait for these before dispatch; other uses share with them.
+const CONTROLLER_ROUTE_OPERATION: &str = "browser_controller.route";
 
 use invariants::{
     reconcile_slice_status_after_kernel_restart, redact_slice_operation_error, validate_slice_name,
@@ -48,6 +56,22 @@ pub struct SliceOperationGuard {
     store: SliceStore,
     slice_id: String,
     operation: Option<String>,
+    controller_route: bool,
+}
+
+pub(crate) struct SliceEnvironmentUseGuard {
+    // Release the operation marker before admitting the next queued caller.
+    _operation: SliceOperationGuard,
+    _queue: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl From<SliceOperationGuard> for SliceEnvironmentUseGuard {
+    fn from(operation: SliceOperationGuard) -> Self {
+        Self {
+            _operation: operation,
+            _queue: None,
+        }
+    }
 }
 
 impl Drop for SliceOperationGuard {
@@ -64,13 +88,20 @@ impl Drop for SliceOperationGuard {
                 }
             }
             None => {
-                if let Some(uses) = state.environment_uses.get_mut(&self.slice_id) {
-                    *uses -= 1;
-                    if *uses == 0 {
-                        state.environment_uses.remove(&self.slice_id);
-                    }
+                release_use(&mut state.environment_uses, &self.slice_id);
+                if self.controller_route {
+                    release_use(&mut state.environment_route_uses, &self.slice_id);
                 }
             }
+        }
+    }
+}
+
+fn release_use(uses: &mut BTreeMap<String, usize>, slice_id: &str) {
+    if let Some(count) = uses.get_mut(slice_id) {
+        *count -= 1;
+        if *count == 0 {
+            uses.remove(slice_id);
         }
     }
 }
@@ -82,8 +113,11 @@ struct SliceStoreState {
     saved_states: BTreeMap<String, SliceSavedStateRecord>,
     backups: BTreeMap<String, SliceBackupRecord>,
     pending_backup_restores: BTreeMap<String, SliceBackupRestoreTransactionRecord>,
+    pending_restore_acknowledgements: BTreeMap<String, SliceBackupRestoreAcknowledgementRecord>,
     active_operations: BTreeMap<String, String>,
     environment_uses: BTreeMap<String, usize>,
+    environment_route_uses: BTreeMap<String, usize>,
+    environment_use_queues: BTreeMap<String, Arc<tokio::sync::Mutex<()>>>,
 }
 
 impl SliceStore {
@@ -287,6 +321,18 @@ impl SliceStore {
             .collect()
     }
 
+    pub fn list_pending_restore_acknowledgements(
+        &self,
+    ) -> Vec<SliceBackupRestoreAcknowledgementRecord> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pending_restore_acknowledgements
+            .values()
+            .cloned()
+            .collect()
+    }
+
     pub fn resolve_backup_for_slice(
         &self,
         slice_ref: &str,
@@ -365,6 +411,22 @@ impl SliceStore {
         }
     }
 
+    pub(crate) fn restore_pending_restore_acknowledgement_records(
+        &self,
+        records: Vec<SliceBackupRestoreAcknowledgementRecord>,
+    ) {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.pending_restore_acknowledgements.clear();
+        for record in records {
+            state
+                .pending_restore_acknowledgements
+                .insert(record.transaction_id.clone(), record);
+        }
+    }
+
     pub(crate) fn replay_backup_restore_started(
         &self,
         transaction: SliceBackupRestoreTransactionRecord,
@@ -406,6 +468,18 @@ impl SliceStore {
                     &existing.id,
                 ));
             }
+            // The broker treats an unacknowledged publication as interrupted;
+            // starting another restore would roll back a committed one.
+            if let Some(pending) = state
+                .pending_restore_acknowledgements
+                .values()
+                .find(|pending| pending.source_slice_id == transaction.source_slice_id)
+            {
+                return Err(unacknowledged_backup_restore_error(
+                    slice_name,
+                    &pending.transaction_id,
+                ));
+            }
             if state.pending_backup_restores.contains_key(&transaction.id) {
                 return Err(DaemonError::LocalTransport {
                     operation: "slice.backup.restore",
@@ -433,9 +507,13 @@ impl SliceStore {
         slice_ref: &str,
         saved_state: SliceSavedStateRecord,
         now_ms: u64,
-        operation_status: SliceOperationStatus,
+        resolution: super::SliceBackupRestoreResolution,
         last_error: Option<String>,
-        persist: impl FnOnce(&SliceRecord, &SliceSavedStateRecord) -> Result<(), DaemonError>,
+        persist: impl FnOnce(
+            &SliceRecord,
+            &SliceSavedStateRecord,
+            &SliceBackupRestoreAcknowledgementRecord,
+        ) -> Result<(), DaemonError>,
     ) -> Result<SliceRecord, DaemonError> {
         let resolved = self.resolve(slice_ref)?;
         let state = self
@@ -455,6 +533,26 @@ impl SliceStore {
                 message: format!("pending restore `{transaction_id}` belongs to another slice"),
             });
         }
+        // The resolution and its owed broker acknowledgement commit together.
+        let acknowledgement = SliceBackupRestoreAcknowledgementRecord {
+            transaction_id: transaction.id.clone(),
+            source_slice_id: transaction.source_slice_id.clone(),
+            home_archive_path: match resolution {
+                super::SliceBackupRestoreResolution::Restored => {
+                    transaction.target_backup.home_archive_path.clone()
+                }
+                super::SliceBackupRestoreResolution::RolledBack => {
+                    transaction.rollback_backup.home_archive_path.clone()
+                }
+            },
+            retained_rollback_backup: (resolution
+                == super::SliceBackupRestoreResolution::RolledBack)
+                .then(|| transaction.rollback_backup.clone()),
+        };
+        let operation_status = match resolution {
+            super::SliceBackupRestoreResolution::Restored => SliceOperationStatus::Completed,
+            super::SliceBackupRestoreResolution::RolledBack => SliceOperationStatus::Failed,
+        };
         let mut record = state.records.get(&resolved.id).cloned().ok_or_else(|| {
             DaemonError::LocalTransport {
                 operation: "slice.backup.restore",
@@ -478,7 +576,7 @@ impl SliceStore {
         record.last_error = last_error;
         record.last_operation_at_ms = Some(now_ms);
         record.updated_at_ms = now_ms;
-        persist(&record, &saved_state)?;
+        persist(&record, &saved_state, &acknowledgement)?;
 
         let mut state = self
             .inner
@@ -489,6 +587,9 @@ impl SliceStore {
             .insert(saved_state.id.clone(), saved_state);
         state.records.insert(record.id.clone(), record.clone());
         state.pending_backup_restores.remove(transaction_id);
+        state
+            .pending_restore_acknowledgements
+            .insert(acknowledgement.transaction_id.clone(), acknowledgement);
         Ok(record)
     }
 
@@ -497,6 +598,7 @@ impl SliceStore {
         transaction_id: &str,
         slice: SliceRecord,
         saved_state: SliceSavedStateRecord,
+        acknowledgement: Option<SliceBackupRestoreAcknowledgementRecord>,
     ) {
         let mut state = self
             .inner
@@ -507,6 +609,41 @@ impl SliceStore {
             .insert(saved_state.id.clone(), saved_state);
         state.records.insert(slice.id.clone(), slice);
         state.pending_backup_restores.remove(transaction_id);
+        if let Some(acknowledgement) = acknowledgement {
+            state
+                .pending_restore_acknowledgements
+                .insert(acknowledgement.transaction_id.clone(), acknowledgement);
+        }
+    }
+
+    /// Clears an owed broker acknowledgement after `persist` records it.
+    /// Unknown ids are already acknowledged.
+    pub(crate) fn acknowledge_backup_restore_transactionally(
+        &self,
+        transaction_id: &str,
+        persist: impl FnOnce(&SliceBackupRestoreAcknowledgementRecord) -> Result<(), DaemonError>,
+    ) -> Result<(), DaemonError> {
+        let Some(acknowledgement) = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pending_restore_acknowledgements
+            .get(transaction_id)
+            .cloned()
+        else {
+            return Ok(());
+        };
+        persist(&acknowledgement)?;
+        self.replay_backup_restore_acknowledged(transaction_id);
+        Ok(())
+    }
+
+    pub(crate) fn replay_backup_restore_acknowledged(&self, transaction_id: &str) {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pending_restore_acknowledgements
+            .remove(transaction_id);
     }
 
     pub(crate) fn upsert_saved_state_transactionally(
@@ -789,8 +926,15 @@ impl SliceStore {
                 message: format!("slice `{record_name}` already has {busy}"),
             });
         }
+        let controller_route = environment_use && operation == CONTROLLER_ROUTE_OPERATION;
         if environment_use {
             *state.environment_uses.entry(slice_id.clone()).or_default() += 1;
+            if controller_route {
+                *state
+                    .environment_route_uses
+                    .entry(slice_id.clone())
+                    .or_default() += 1;
+            }
         } else {
             state
                 .active_operations
@@ -800,6 +944,7 @@ impl SliceStore {
             store: self.clone(),
             slice_id,
             operation: (!environment_use).then(|| operation.to_string()),
+            controller_route,
         })
     }
 
@@ -1399,6 +1544,18 @@ fn pending_backup_restore_for_slice<'a>(
         .pending_backup_restores
         .values()
         .find(|transaction| transaction.source_slice_id == slice_id)
+}
+
+pub(crate) fn unacknowledged_backup_restore_error(
+    slice_name: &str,
+    transaction_id: &str,
+) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "slice.backup.restore",
+        message: format!(
+            "slice `{slice_name}` has committed backup restore `{transaction_id}` awaiting managed broker acknowledgement; the kernel retries it at startup and before each restore, so repair the broker and retry"
+        ),
+    }
 }
 
 fn unresolved_backup_restore_error(

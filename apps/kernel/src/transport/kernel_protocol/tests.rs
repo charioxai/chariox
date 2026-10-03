@@ -566,7 +566,7 @@ fn runtime_interactions_only_changes_can_skip_session_snapshot() {
             assert_eq!(active_interactions.len(), 1);
             let interaction = active_interactions.first().expect("interaction");
             assert_eq!(interaction.id(), "interaction-a");
-            assert_eq!(interaction.agent_id(), "agent-a");
+            assert_eq!(interaction.agent_id(), Some("agent-a"));
             assert_eq!(interaction.kind(), RuntimeInteractionKind::Permission);
             assert_eq!(interaction.choices().len(), 2);
         }
@@ -753,7 +753,7 @@ fn project_summary(id: &str, name: &str) -> crate::local::WaitingRoomPublicProje
 
 #[test]
 fn mp08_mp10_terminal_workflow_updates_have_one_authoritative_stream() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 376);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 410);
     let previous = session_snapshot_with_workflow_status(WorkflowRunStatus::Running);
     for status in [
         WorkflowRunStatus::Completed,

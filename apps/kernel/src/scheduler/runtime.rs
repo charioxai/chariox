@@ -147,9 +147,18 @@ pub fn schedule_workflow_node_prompt(
     node_id: &str,
     prompt: &str,
 ) -> Result<(), DaemonError> {
-    let _ = app
-        .sessions_mut()
-        .set_focused_agent(session_id, Some(target_agent_id.to_string()));
+    if crate::app::workflow_runtime::workflow_entry_scheduler_owner(
+        app,
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+    )? == crate::app::workflow_runtime::WorkflowSchedulerOwner::Owned
+    {
+        return Ok(());
+    }
+
+    // A workflow turn never moves the session's focus agent: only a person
+    // changes focus. The turn runs beside the owner's conversation.
     let delivery_token = workflow_turn_delivery_token(workflow_node_run_id);
     let mailbox_content = workflow_node_control_contents(
         app,
@@ -189,6 +198,18 @@ fn dispatch_prepared_workflow_node_prompt(
     node_id: &str,
     prompt: &str,
 ) -> Result<(), DaemonError> {
+    if crate::app::workflow_runtime::workflow_entry_scheduler_owner(
+        app,
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+    )? == crate::app::workflow_runtime::WorkflowSchedulerOwner::Owned
+    {
+        // The retained entry intent wakes the owned timer. Returning success
+        // here is deliberate deferral, never a legacy transport failure that
+        // would terminalize the run or submit an uncorrelated second prompt.
+        return Ok(());
+    }
     let provider_run_id =
         crate::app::workflow_runtime::ensure_workflow_provider_run_for_node_from_runtime(
             app,
@@ -324,6 +345,16 @@ fn retry_prepared_workflow_node_prompt(
     node_id: &str,
     prompt: &str,
 ) -> Result<(), DaemonError> {
+    if crate::app::workflow_runtime::workflow_entry_scheduler_owner(
+        app,
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+    )? == crate::app::workflow_runtime::WorkflowSchedulerOwner::Owned
+    {
+        return Ok(());
+    }
+
     let provider_run_id =
         crate::app::workflow_runtime::ensure_workflow_provider_run_for_node_from_runtime(
             app,
@@ -372,75 +403,6 @@ fn retry_prepared_workflow_node_prompt(
         target_agent_id,
         node_id,
         outcome,
-    )
-}
-
-pub fn resume_workflow_run(
-    app: &mut DaemonApp,
-    session_id: &str,
-    workflow_run_ref: &str,
-) -> Result<WorkflowRun, DaemonError> {
-    let workflow_run = app
-        .sessions_mut()
-        .resume_workflow_run(session_id, workflow_run_ref)?;
-    let resumable_node_runs = workflow_run
-        .node_runs()
-        .iter()
-        .filter(|node_run| {
-            node_run.status() == WorkflowNodeRunStatus::Ready
-                && node_run
-                    .turn_envelope()
-                    .and_then(|envelope| envelope.rendered_prompt())
-                    .is_some()
-        })
-        .map(|node_run| {
-            (
-                node_run.id().to_string(),
-                node_run.node_id().to_string(),
-                node_run.agent_id().to_string(),
-                node_run
-                    .turn_envelope()
-                    .and_then(|envelope| envelope.rendered_prompt())
-                    .unwrap_or_default()
-                    .to_string(),
-            )
-        })
-        .collect::<Vec<_>>();
-    for (workflow_node_run_id, node_id, agent_id, prompt) in resumable_node_runs {
-        resume_existing_workflow_node_prompt(
-            app,
-            session_id,
-            workflow_run.id(),
-            &workflow_node_run_id,
-            &node_id,
-            &agent_id,
-            &prompt,
-        )?;
-    }
-    app.sessions()
-        .resolve_workflow_run_ref(session_id, workflow_run.id())
-}
-
-fn resume_existing_workflow_node_prompt(
-    app: &mut DaemonApp,
-    session_id: &str,
-    workflow_run_id: &str,
-    workflow_node_run_id: &str,
-    node_id: &str,
-    target_agent_id: &str,
-    prompt: &str,
-) -> Result<(), DaemonError> {
-    let _ = app
-        .sessions_mut()
-        .set_focused_agent(session_id, Some(target_agent_id.to_string()));
-    dispatch_prepared_workflow_node_prompt(
-        app,
-        session_id,
-        workflow_run_id,
-        workflow_node_run_id,
-        target_agent_id,
-        node_id,
-        prompt,
     )
 }
 
@@ -597,67 +559,27 @@ pub fn ensure_workflow_provider_run_for_agent(
     session_id: &str,
     agent_id: &str,
 ) -> Result<String, DaemonError> {
-    ensure_workflow_provider_run_for_agent_with_event_reply(
-        app, session_id, agent_id, false, false, false,
-    )
+    prompt_dispatch::ensure_workflow_provider_run_for_agent(app, session_id, agent_id, false, None)
 }
 
-pub fn ensure_workflow_provider_run_for_agent_with_event_reply(
+pub fn ensure_fresh_workflow_provider_run_for_agent(
     app: &mut DaemonApp,
     session_id: &str,
     agent_id: &str,
-    event_reply_enabled: bool,
-    event_context_enabled: bool,
-    event_actions_enabled: bool,
 ) -> Result<String, DaemonError> {
-    prompt_dispatch::ensure_workflow_provider_run_for_agent(
-        app,
-        session_id,
-        agent_id,
-        event_reply_enabled,
-        event_context_enabled,
-        event_actions_enabled,
-        false,
-        None,
-    )
+    prompt_dispatch::ensure_workflow_provider_run_for_agent(app, session_id, agent_id, true, None)
 }
 
-pub fn ensure_fresh_workflow_provider_run_for_agent_with_event_reply(
-    app: &mut DaemonApp,
-    session_id: &str,
-    agent_id: &str,
-    event_reply_enabled: bool,
-    event_context_enabled: bool,
-    event_actions_enabled: bool,
-) -> Result<String, DaemonError> {
-    prompt_dispatch::ensure_workflow_provider_run_for_agent(
-        app,
-        session_id,
-        agent_id,
-        event_reply_enabled,
-        event_context_enabled,
-        event_actions_enabled,
-        true,
-        None,
-    )
-}
-
-pub fn ensure_fresh_workflow_provider_run_for_node_with_event_reply(
+pub fn ensure_fresh_workflow_provider_run_for_node(
     app: &mut DaemonApp,
     session_id: &str,
     agent_id: &str,
     workflow_node_run_id: &str,
-    event_reply_enabled: bool,
-    event_context_enabled: bool,
-    event_actions_enabled: bool,
 ) -> Result<String, DaemonError> {
     prompt_dispatch::ensure_workflow_provider_run_for_agent(
         app,
         session_id,
         agent_id,
-        event_reply_enabled,
-        event_context_enabled,
-        event_actions_enabled,
         true,
         Some(workflow_node_run_id),
     )

@@ -76,13 +76,13 @@ impl LocalDaemonClient {
 mod tests {
     use crate::config::PersistedCloudRelayProfile;
     use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
-    use crate::session::CreateSessionRequest;
     use crate::{DaemonApp, DaemonConfig};
 
     use super::LocalDaemonClient;
 
     #[test]
     fn local_client_uses_linked_cloud_user_for_session_creation() {
+        let worktree = crate::test_support::TestWorktree::new("workspace-client");
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
             api_url: "https://cloud.example.test".to_string(),
@@ -107,7 +107,7 @@ mod tests {
 
         let response = client
             .send(LocalDaemonRequest::CreateSession(
-                CreateSessionRequest::new("workspace-client", "."),
+                worktree.session_request(),
             ))
             .expect("session create should succeed");
         let session = match response {

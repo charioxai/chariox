@@ -8,11 +8,14 @@ import { fileURLToPath } from "node:url";
 
 import { BrowserCdpClient, BrowserControllerError } from "./browser-controller-cdp.mjs";
 import { BrowserActionError } from "./browser-controller-actions.mjs";
+import { AppTabs } from "./browser-controller-apps.mjs";
 import {
   BrowserResourceInventoryError,
   observeBrowserResources,
   validateBrowserResourceInventory,
 } from "./browser-controller-resources.mjs";
+
+import { managedCanonicalDisplay } from "./browser-controller-display.mjs";
 
 let browserImportModule;
 
@@ -25,6 +28,9 @@ export async function handleBrowserControllerRequest(
     signal,
   } = {},
 ) {
+  // Installed on the first request so the connection hook exists before any
+  // command (not only App commands) reconnects the browser.
+  if (browser && typeof browser === "object") browser.appTabs ??= new AppTabs(browser);
   if (!request || !Number.isSafeInteger(request.id) || request.id <= 0) {
     return errorResponse(request?.id ?? null, "invalid_request", "request id must be a positive integer");
   }
@@ -37,7 +43,10 @@ export async function handleBrowserControllerRequest(
       });
     }
     if (request.method === "browser.reconcile") {
-      const reconciled = await browser.reconcile(request.params?.viewport);
+      const reconciled = await browser.reconcile(request.params?.viewport, {
+        browserBarVisible: request.params?.browser_bar_visible,
+        appPanelCssWidth: request.params?.app_panel_css_width,
+      });
       const observedInventory = reconciled?.resource_inventory
         ?? await resourceInventory();
       return successResponse(
@@ -110,6 +119,14 @@ export async function handleBrowserControllerRequest(
         request.id,
         await browser.setPermission(request.params, { signal }),
       );
+    }
+    if (request.method.startsWith?.("browser.app.")) {
+      const apps = browser.appTabs;
+      if (request.method === "browser.app.open") return successResponse(request.id, await apps.open(request.params));
+      if (request.method === "browser.app.calls") return successResponse(request.id, await apps.takeCalls());
+      if (request.method === "browser.app.respond") return successResponse(request.id, await apps.respond(request.params));
+      if (request.method === "browser.app.reload") return successResponse(request.id, await apps.reload(request.params));
+      if (request.method === "browser.app.layout") return successResponse(request.id, await apps.layout(request.params));
     }
     if (request.method === "browser.events.poll") {
       return successResponse(
@@ -380,7 +397,10 @@ export class BrowserControllerStdioServer {
 
 function classifyScheduling(request, browser) {
   const method = request?.method;
-  if (method === "browser.reconcile" && browser?.canReconcileConcurrently?.(request.params?.viewport)) {
+  if (method === "browser.reconcile" && browser?.canReconcileConcurrently?.(request.params?.viewport, {
+    browserBarVisible: request.params?.browser_bar_visible,
+    appPanelCssWidth: request.params?.app_panel_css_width,
+  })) {
     return { kind: "read" };
   }
   if (["health", "browser.reconcile", "browser.tab", "browser.downloads.configure",
@@ -424,6 +444,7 @@ async function runCli() {
     process.env.CHARIOX_SLICE_MIN_FREE_MB,
   );
   const browser = new BrowserCdpClient({
+    applyCanonicalDisplay: managedCanonicalDisplay(),
     ...(debuggerEndpoint ? { debuggerEndpoint } : {}),
     downloadDirectory: process.env.CHARIOX_BROWSER_DOWNLOAD_DIR,
     minimumDownloadFreeBytes,

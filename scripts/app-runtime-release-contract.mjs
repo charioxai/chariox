@@ -1,0 +1,107 @@
+// Release authority comes from an external builder key and release key. Neither
+// a native build manifest nor a public key inside its directory is authority.
+import { createPublicKey, verify } from 'node:crypto';
+import { stableJson } from './app-runtime-bundle-files.mjs';
+import { parseJson } from '../packages/app-sdk/src/json.js';
+
+export const RELEASE_LIMIT = 536870912;
+export const MANIFEST_LIMIT = 262144;
+// Security launcher changes must not invalidate the expensive Node build cache.
+// They have their own exact attested input set at final release assembly.
+const COMMON_LAUNCHER_INPUTS = [
+  'apps/app-worker/src/bubblewrap-openat.patch',
+  'apps/app-worker/src/bwrap_openat_fallback.h',
+  'apps/app-worker/src/build-bwrap.sh',
+  'apps/app-worker/sandbox.lock.json', 'apps/app-worker/src/launcher.c',
+  'apps/app-worker/src/launcher.h', 'apps/app-worker/src/runtime.h',
+  'apps/app-worker/src/launch_record.c', 'apps/app-worker/src/launch_process.c',
+];
+export const LAUNCHER_INPUTS = [...COMMON_LAUNCHER_INPUTS,
+  'apps/app-worker/src/sandbox_linux.c', 'apps/app-worker/src/linux_domain_entry.c'].sort();
+const DARWIN_LAUNCHER_INPUTS = [...COMMON_LAUNCHER_INPUTS, 'apps/app-worker/src/sandbox_macos.c'].sort();
+const darwin = target => target === 'darwin-arm64' || target === 'darwin-x64';
+
+export function launcherInputs(target) {
+  return darwin(target) ? DARWIN_LAUNCHER_INPUTS : LAUNCHER_INPUTS;
+}
+
+export function nativeExecutables(target) {
+  return darwin(target) ? ['chariox-app-worker'] : ['chariox-app-worker', 'chariox-app-domain-entry', 'chariox-bwrap'];
+}
+const HEX = /^[a-f0-9]{64}$/u;
+const COMMIT = /^[a-f0-9]{40}$/u;
+const equal = (a, b) => stableJson(a) === stableJson(b);
+
+export function platformFiles(target) {
+  // macOS workers load system libraries from the dyld shared cache. Production
+  // darwin releases still require the Developer ID signing path.
+  if (darwin(target)) return [];
+  const loader = { 'linux-x64': 'ld-linux-x86-64.so.2', 'linux-arm64': 'ld-linux-aarch64.so.1' }[target];
+  if (!loader) throw new Error('Linux release target required; macOS needs its code-signing release path');
+  return [loader, 'libc.so.6', 'libm.so.6', 'libstdc++.so.6', 'libgcc_s.so.1',
+    'libpthread.so.0', 'libdl.so.2', 'librt.so.1'].map(name => `platform/${name}`).sort();
+}
+
+export function releasePaths(bundle) {
+  return [...bundle.files.map(file => file.path), 'bundle-manifest.json',
+    ...nativeExecutables(bundle.target), ...platformFiles(bundle.target)].sort();
+}
+
+// The bundled loader is every worker executable's ELF interpreter, which Linux
+// opens for execution; at 0444 each worker exec fails with EACCES.
+const EXECUTABLES = ['chariox-app-worker', 'chariox-app-domain-entry', 'chariox-bwrap',
+  'platform/ld-linux-x86-64.so.2', 'platform/ld-linux-aarch64.so.1'];
+
+// macOS releases codesign these Mach-O files before the runtime inventory is
+// signed: the worker launcher and the bundle's Node and runtime libraries.
+export function macosCodePaths(bundle) {
+  if (!darwin(bundle.target)) return [];
+  return [...nativeExecutables(bundle.target), ...bundle.files.map(file => file.path).filter(path => path.endsWith('.dylib'))].sort();
+}
+
+export function executable(path) {
+  return EXECUTABLES.includes(path);
+}
+
+export function publicKey(bytes) {
+  const key = createPublicKey(bytes);
+  if (key.asymmetricKeyType !== 'ed25519') throw new Error('Ed25519 key required');
+  return key;
+}
+
+function keys(value, expected) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || !equal(Object.keys(value).sort(), [...expected].sort())) throw new Error('invalid release fields');
+}
+
+export function verifyBuilder(bytes, signature, trustedKey, bundle, launcherInputs) {
+  if (bytes.length > MANIFEST_LIMIT || signature.length !== 128
+    || !/^[a-f0-9]{128}$/u.test(signature.toString('utf8'))
+    || !verify(null, bytes, publicKey(trustedKey), Buffer.from(signature.toString('utf8'), 'hex')))
+    throw new Error('invalid external builder signature');
+  const proof = parseJson(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+  keys(proof, ['schema', 'target', 'sourceCommit', 'bundleDigest', 'launcherBuildInputs', 'files']);
+  if (proof.schema !== 'chariox.app-runtime-release-build.v1' || proof.target !== bundle.target
+    || !COMMIT.test(proof.sourceCommit) || proof.sourceCommit !== bundle.sourceCommit
+    || proof.bundleDigest !== bundle.bundleDigest || !equal(proof.launcherBuildInputs, launcherInputs)
+    || !Array.isArray(proof.files) || proof.files.length > 40
+    || !equal(proof.files.map(file => file.path), releasePaths(bundle)))
+    throw new Error('builder proof differs from the release contract');
+  let size = 0;
+  for (const file of proof.files) {
+    keys(file, ['path', 'size', 'sha256', 'executable']);
+    if (!Number.isSafeInteger(file.size) || file.size <= 0 || !HEX.test(file.sha256)
+      || file.executable !== executable(file.path) || (size += file.size) > RELEASE_LIMIT)
+      throw new Error('invalid builder file inventory');
+  }
+  return proof;
+}
+
+export function runtimeInventory(proof, bundle) {
+  return {
+    schema: 'chariox.app-runtime-inventory.v1', target: proof.target,
+    runtimeVersion: bundle.runtimeVersion, workerAbi: bundle.workerAbi,
+    nodeVersion: bundle.nodeVersion, nodeModuleAbi: bundle.nodeModuleAbi,
+    sdkVersion: bundle.sdk.version, sourceCommit: proof.sourceCommit, files: proof.files,
+  };
+}

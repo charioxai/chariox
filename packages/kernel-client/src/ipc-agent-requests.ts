@@ -151,8 +151,6 @@ export type AgentSubstituteAction =
   | { Move: { from_index: number; to_index: number } }
   | { Clear: Record<string, never> }
   | { SetTimeout: { timeout_ms?: number | null } }
-  | { Activate: { index: number; reason?: string | null } }
-  | { Primary: Record<string, never> }
 
 export function updateAgentSubstitutesRequest(options: {
   sessionId: string

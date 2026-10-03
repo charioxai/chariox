@@ -1,9 +1,8 @@
 use super::*;
 use crate::local::{
-    CreateWorkflowEventBindingRequest, CreateWorkflowPublicationRequest,
-    CreateWorkflowScheduleRequest, ExportWorkflowPublicationPackageRequest, InstallSkillRequest,
-    ListWorkflowPublicationsRequest, RegisterEnvironmentRequest, RegisterScriptRequest,
-    RegisterWorkflowPublicationEndpointRequest, TestWorkflowEventBindingRequest,
+    CreateWorkflowPublicationRequest, CreateWorkflowScheduleRequest,
+    ExportWorkflowPublicationPackageRequest, InstallSkillRequest, ListWorkflowPublicationsRequest,
+    RegisterEnvironmentRequest, RegisterScriptRequest, RegisterWorkflowPublicationEndpointRequest,
 };
 use base64::Engine;
 use sha2::{Digest, Sha256};
@@ -17,6 +16,8 @@ mod workflow_code_source_roundtrip;
 mod workflow_code_validation_limits;
 mod workflow_event_publication;
 mod workflow_graph_runtime;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod workflow_publication_apps;
 mod workflow_publication_package;
 
 fn find_node_for_workflow_code_local_api_test() -> Option<PathBuf> {
@@ -76,7 +77,6 @@ fn workflow_code_test_sha256_hex(bytes: &[u8]) -> String {
 }
 
 struct PublicationTestGraph {
-    _worktree: Option<crate::test_support::TestWorktree>,
     session_id: String,
     agent_id: String,
     workflow_id: String,
@@ -87,11 +87,13 @@ fn create_publication_test_graph(
     harness: &LocalRouterTestHarness,
     label: &str,
 ) -> PublicationTestGraph {
-    let worktree = crate::test_support::TestWorktree::new(label);
-    let path = worktree.path().display().to_string();
-    let mut graph = create_publication_test_graph_in_workspace(harness, label, &path, &path);
-    graph._worktree = Some(worktree);
-    graph
+    let request = harness.fixture_session_request(label);
+    create_publication_test_graph_in_workspace(
+        harness,
+        label,
+        &request.workspace_id,
+        &request.worktree_id,
+    )
 }
 
 fn create_publication_test_graph_in_workspace(
@@ -190,7 +192,6 @@ fn create_publication_test_graph_in_workspace(
         _ => panic!("unexpected local response"),
     };
     PublicationTestGraph {
-        _worktree: None,
         session_id: session.id().to_string(),
         agent_id: agent.id().to_string(),
         workflow_id: workflow.id().to_string(),

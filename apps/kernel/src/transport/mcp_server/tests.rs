@@ -35,11 +35,12 @@ where
 }
 
 mod catalog_changes;
+mod permission_prompt;
 mod slice_tools;
 
 #[tokio::test]
 async fn mcp_initialize_and_tools_list_return_runtime_tools() {
-    let worktree = crate::test_support::TestWorktree::new("mcp-workflow-tools");
+    let worktree = crate::test_support::TestWorktree::new("mcp-workflow-tools-worktree");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
@@ -1019,7 +1020,7 @@ fn runtime_tool_content_preserves_objects_and_extracts_images() {
 #[test]
 fn primitive_mcp_result_shape_is_versioned_and_hashed() {
     use sha2::{Digest, Sha256};
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 376);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 410);
     let (content, structured) = super::runtime_tool_content(serde_json::json!("crm result"));
     let response = serde_json::json!({"jsonrpc": "2.0", "id": 7, "result": {
         "content": content, "structuredContent": structured, "isError": false

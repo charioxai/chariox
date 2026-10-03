@@ -10,8 +10,8 @@ use super::{
     LocalDockerSliceOptions,
 };
 use crate::slice::model::{
-    SliceBackendKind, SliceBackupRecord, SliceBackupRestoreTransactionRecord, SliceRecord,
-    SliceSavedStateRecord,
+    SliceBackendKind, SliceBackupRecord, SliceBackupRestoreAcknowledgementRecord,
+    SliceBackupRestoreTransactionRecord, SliceRecord, SliceSavedStateRecord,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -69,6 +69,7 @@ fn save_local_docker_slice_state_inner(
     quiesce: SliceSnapshotQuiesce,
     retain_replaced_state: bool,
 ) -> Result<LocalDockerSavedStateGeneration, DaemonError> {
+    super::capture_preflight::require_verified_layout(record, "slice.state.save")?;
     ensure_local_docker_state_target(record, "slice.state.save")?;
     ensure_host_docker_ready()?;
     let state_id = active_state_id(record);
@@ -356,6 +357,7 @@ pub(crate) fn restore_local_docker_slice_backup(
         &SliceSavedStateRecord,
         SliceBackupRestoreResolution,
     ) -> Result<(), DaemonError>,
+    mut reconcile_acknowledgement: impl FnMut(&SliceBackupRestoreTransactionRecord),
 ) -> Result<SliceSavedStateRecord, DaemonError> {
     validate_local_docker_slice_backup(record, backup)?;
 
@@ -382,6 +384,7 @@ pub(crate) fn restore_local_docker_slice_backup(
     }
     let restore_options = options.clone().with_backup(backup);
     let rollback_options = options.clone().with_backup(&rollback);
+    let rolled_back = std::cell::Cell::new(false);
     let generation = restore_local_docker_slice_backup_with_rollback(
         &rollback,
         || {
@@ -396,7 +399,12 @@ pub(crate) fn restore_local_docker_slice_backup(
         },
         || save_local_docker_slice_state_retaining_replaced(record, options),
         |generation, resolution| {
-            persist_restore_resolution(&transaction, &generation.state, resolution)
+            persist_restore_resolution(&transaction, &generation.state, resolution)?;
+            // Publication is committed. The broker acknowledgement is durable
+            // and retried; its failure never rolls this resolution back.
+            rolled_back.set(resolution == SliceBackupRestoreResolution::RolledBack);
+            reconcile_acknowledgement(&transaction);
+            Ok(())
         },
         || {
             super::run_local_docker_slice_action(
@@ -410,9 +418,83 @@ pub(crate) fn restore_local_docker_slice_backup(
             save_local_docker_slice_state_retaining_replaced(record, options)
         },
         |generation| cleanup_replaced_saved_state_generation(&transaction, generation),
-        || remove_local_docker_slice_backup_best_effort(&rollback),
+        || {
+            // A rolled-back acknowledgement names the rollback archive, so its
+            // reconciliation releases the rollback only once acknowledged.
+            if !rolled_back.get() {
+                remove_local_docker_slice_backup_best_effort(&rollback);
+            }
+        },
     )?;
     Ok(generation.state)
+}
+
+/// Retries owed broker acknowledgements of durably resolved restores, for one
+/// slice or all. Failure keeps the record and the archives it references; it
+/// never rolls a committed resolution back. Returns the records still owed.
+pub(crate) fn reconcile_local_docker_restore_acknowledgements(
+    slices: &crate::slice::SliceStore,
+    slice_id: Option<&str>,
+    mut acknowledge: impl FnMut(
+        &SliceRecord,
+        &SliceBackupRestoreAcknowledgementRecord,
+    ) -> Result<(), DaemonError>,
+    mut commit: impl FnMut(&SliceBackupRestoreAcknowledgementRecord) -> Result<(), DaemonError>,
+    mut release_rollback: impl FnMut(&SliceBackupRecord),
+) -> Result<Vec<SliceBackupRestoreAcknowledgementRecord>, DaemonError> {
+    let mut pending = Vec::new();
+    for acknowledgement in slices.list_pending_restore_acknowledgements() {
+        if slice_id.is_some_and(|slice_id| slice_id != acknowledgement.source_slice_id) {
+            continue;
+        }
+        // A removed slice has no publication left to acknowledge.
+        if let Ok(slice) = slices.resolve(&acknowledgement.source_slice_id) {
+            if let Err(error) = acknowledge(&slice, &acknowledgement) {
+                crate::logging::warn_with_fields(
+                    "slice.backup.restore",
+                    "managed broker restore acknowledgement remains pending",
+                    serde_json::json!({
+                        "transaction_id": &acknowledgement.transaction_id,
+                        "slice_id": &acknowledgement.source_slice_id,
+                        "error": error.to_string(),
+                    }),
+                );
+                pending.push(acknowledgement);
+                continue;
+            }
+        }
+        commit(&acknowledgement)?;
+        let Some(rollback) = acknowledgement.retained_rollback_backup.as_ref() else {
+            continue;
+        };
+        // Startup recovery publishes the rollback artifacts as the active
+        // saved state; release them only when nothing active references them.
+        let active = slices
+            .active_saved_state_for_slice(&acknowledgement.source_slice_id)
+            .ok()
+            .flatten();
+        if !active.is_some_and(|active| {
+            active.image_ref == rollback.image_ref
+                || active.home_archive_path == rollback.home_archive_path
+        }) {
+            release_rollback(rollback);
+        }
+    }
+    Ok(pending)
+}
+
+pub(crate) fn acknowledge_protected_home_restore(
+    record: &SliceRecord,
+    acknowledgement: &SliceBackupRestoreAcknowledgementRecord,
+) -> Result<(), DaemonError> {
+    broker::resolve_home_restore(
+        &local_docker_container_name(record),
+        &acknowledgement.home_archive_path,
+    )
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "slice.backup.restore",
+        message: format!("managed broker restore acknowledgement failed: {error}"),
+    })
 }
 
 pub(super) fn restore_local_docker_slice_backup_with_rollback<T>(
@@ -473,7 +555,48 @@ pub(crate) fn recover_pending_local_docker_slice_backup_restore(
         None,
         &rollback_options,
     )?;
-    save_local_docker_slice_state_retaining_replaced(record, options)
+    // Recovery reuses the already verified rollback generation. Recapturing here
+    // would quarantine legacy transactions forever under the capture preflight.
+    recovered_rollback_generation(record, options, transaction)
+}
+
+pub(super) fn recovered_rollback_generation(
+    record: &SliceRecord,
+    options: &LocalDockerSliceOptions,
+    transaction: &SliceBackupRestoreTransactionRecord,
+) -> Result<LocalDockerSavedStateGeneration, DaemonError> {
+    let rollback = &transaction.rollback_backup;
+    let state_id = active_state_id(record);
+    let directory = options.root.join("states").join(&state_id);
+    std::fs::create_dir_all(&directory).map_err(|error| DaemonError::LocalTransport {
+        operation: "slice.backup.restore",
+        message: format!("failed to create recovered state directory: {error}"),
+    })?;
+    let manifest = directory.join("manifest.json");
+    let now_ms = crate::session::unix_epoch_ms();
+    let state = SliceSavedStateRecord {
+        id: state_id,
+        slice_name: record.name.clone(),
+        source_slice_id: record.id.clone(),
+        backend: record.backend.clone(),
+        os: record.os.clone(),
+        image_ref: rollback.image_ref.clone(),
+        home_archive_path: rollback.home_archive_path.clone(),
+        manifest_path: manifest.display().to_string(),
+        created_at_ms: rollback.created_at_ms,
+        updated_at_ms: now_ms,
+        size_bytes: rollback.size_bytes,
+        last_operation: Some("backup.restore.rolled_back".to_string()),
+        last_operation_status: Some(crate::slice::SliceOperationStatus::Failed),
+        last_error: Some(
+            "interrupted backup restore rolled back during kernel startup".to_string(),
+        ),
+    };
+    write_state_manifest(&manifest, &state)?;
+    Ok(LocalDockerSavedStateGeneration {
+        state,
+        replaced_state: None,
+    })
 }
 
 pub(crate) fn cleanup_replaced_saved_state_generation(
@@ -521,6 +644,7 @@ fn create_local_docker_slice_backup_inner(
     name: Option<&str>,
     quiesce: SliceSnapshotQuiesce,
 ) -> Result<SliceBackupRecord, DaemonError> {
+    super::capture_preflight::require_verified_layout(record, "slice.backup.create")?;
     ensure_local_docker_state_target(record, "slice.backup.create")?;
     ensure_host_docker_ready()?;
     let backup_id = backup_id(record, name);
@@ -878,6 +1002,7 @@ fn docker_commit_container(
     image_ref: &str,
     operation: &'static str,
 ) -> Result<(), DaemonError> {
+    super::capture_preflight::require_verified_layout(record, operation)?;
     let container = local_docker_container_name(record);
     let status = docker_command()
         .args(["commit", &container, image_ref])
@@ -906,6 +1031,7 @@ fn archive_local_docker_home_volume(
     archive_id: &str,
     operation: &'static str,
 ) -> Result<(PathBuf, u64, String), DaemonError> {
+    super::capture_preflight::require_verified_layout(record, operation)?;
     let volume = format!("{}-home", local_docker_container_name(record));
     let helper = format!(
         "{}-home-archive-{}",
@@ -961,13 +1087,18 @@ fn archive_local_docker_home_volume_with_helper(
             message: format!("docker start home archive helper `{helper}` failed with {status}"),
         });
     }
-    if let Some(captured) = broker::capture_home_archive(helper, archive_scope, archive_id)
-        .map_err(|error| DaemonError::LocalTransport {
-            operation,
-            message: format!("failed to capture managed home archive: {error}"),
-        })?
-    {
-        return Ok(captured);
+    // A configured broker owns protected home capture; never fall back to an
+    // unprotected in-container archive.
+    if broker::configured() {
+        return broker::capture_home_archive(helper, archive_scope, archive_id)
+            .map_err(|_| DaemonError::LocalTransport {
+                operation,
+                message: "protected slice home capture failed; existing saved state is preserved".to_string(),
+            })?
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation,
+                message: "protected slice home capture is unavailable".to_string(),
+            });
     }
     super::home_archive_capture::capture(helper, archive_path, operation)
 }

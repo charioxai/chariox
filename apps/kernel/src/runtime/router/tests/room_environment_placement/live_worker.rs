@@ -18,6 +18,7 @@ mod controller_configuration;
 mod controller_configuration_cancellation;
 mod controller_configuration_queue;
 mod controller_configuration_recovery;
+mod controller_contention;
 mod controller_events;
 mod controller_history_queue;
 mod controller_integrations;
@@ -292,6 +293,7 @@ impl LiveWorker {
         if browser_controller {
             worker_state.config.room_environment_worker_binding =
                 Some(crate::config::RoomEnvironmentWorkerBinding {
+                    provisioned_slice_id: None,
                     home_kernel_id: home_state.config.daemon_id.clone(),
                     home_public_key: home_state.config.relay_public_key.clone(),
                     session_id: rooms[0].clone(),
@@ -433,6 +435,18 @@ impl LiveWorker {
             .await
             .unwrap();
         }
+        // The real worker is already running; only Docker provisioning is mocked.
+        self.home
+            .app
+            .lock()
+            .await
+            .slices()
+            .set_status(
+                "desktop",
+                SliceStatus::Running,
+                crate::session::unix_epoch_ms(),
+            )
+            .unwrap();
         // Fixture discovery metadata: use this test's relay instead of Docker.
         self.home
             .app
@@ -695,6 +709,7 @@ impl Drop for LiveWorker {
 
 #[test]
 fn room_environment_worker_spawn_and_destroy_use_public_commands() {
+    crate::test_support::isolated_env_test!();
     run_test(spawn_and_destroy_use_public_commands);
 }
 
@@ -752,6 +767,7 @@ async fn spawn_and_destroy_use_public_commands() {
 
 #[test]
 fn room_environment_worker_alias_attaches_agent_to_slice() {
+    crate::test_support::isolated_env_test!();
     run_test(worker_alias_attaches_agent_to_slice);
 }
 
@@ -804,6 +820,7 @@ async fn worker_alias_attaches_agent_to_slice() {
 
 #[test]
 fn room_environment_worker_batch_preserves_mixed_target_attachments() {
+    crate::test_support::isolated_env_test!();
     run_test(batch_preserves_mixed_target_attachments);
 }
 
@@ -856,6 +873,7 @@ async fn batch_preserves_mixed_target_attachments() {
 
 #[test]
 fn room_environment_worker_cleanup_failure_preserves_agent_and_slice() {
+    crate::test_support::isolated_env_test!();
     run_test(cleanup_failure_preserves_agent_and_slice);
 }
 

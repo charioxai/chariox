@@ -26,8 +26,9 @@ export function createAgentPaneStreamingCommitController(
     nextEntries: TranscriptEntry[],
     updatedEntryId: number,
   ) => {
+    const retainedEntries = deps.trimLiveAgentPaneEntries(agentId, nextEntries)
     const sanitizedEntries = projectCompactTranscriptDisplayState(
-      deps.trimLiveAgentPaneEntries(agentId, nextEntries),
+      retainedEntries,
       deps.collapsedTurnIdsForAgent(agentId),
     ).entries
     deps.commitAgentPaneEntries(agentId, sanitizedEntries)
@@ -39,7 +40,9 @@ export function createAgentPaneStreamingCommitController(
       return
     }
     const updatedEntry = sanitizedEntries.find((entry) => entry.id === updatedEntryId)
-    if (updatedEntry) {
+    // Retention can evict siblings while keeping the streamed entry. Reconcile
+    // those removals before taking the single-entry render update shortcut.
+    if (updatedEntry && retainedEntries.length === nextEntries.length) {
       deps.updateAuxiliaryTranscriptEntry(agentId, updatedEntry)
       return
     }

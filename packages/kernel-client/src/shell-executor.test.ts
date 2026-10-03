@@ -1012,3 +1012,19 @@ test("executeShellCommand resolves session status refs before rendering", async 
   assert.match(result.message ?? "", /session: release \(session-2\)/)
   assert.equal(fake.requests.length, 1)
 })
+
+test("executeShellCommand keeps the shell's quoting and variables for app inbox test", async () => {
+  const fake = fakeClient((request) => request.TestAppInboxRoute
+    ? { AppInboxOccurrenceAccepted: { installation_id: "todo", route_id: "mail", occurrence_id: "occ-1", duplicate: false } }
+    : {})
+  const context = createDefaultShellContext({ sessionId: "session-1", variables: { APP: "todo" } })
+  const result = await executeShellCommand(
+    parseShellCommand(`app inbox test $APP mail occ-1 '{"title":"a  b"}'`, context),
+    context,
+    { client: fake.client },
+  )
+  assert.equal(result.ok, true, result.message)
+  assert.deepEqual(fake.requests, [
+    { TestAppInboxRoute: { installation_id: "todo", route_id: "mail", occurrence_id: "occ-1", payload: { title: "a  b" } } },
+  ])
+})

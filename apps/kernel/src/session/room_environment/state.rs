@@ -38,6 +38,23 @@ pub struct RoomEnvironment {
     pub(super) element_references: ElementReferenceRegistry,
     pub(super) action_ledger: EnvironmentActionLedger,
     pub(super) browser_controller_recovering: bool,
+    /// Ordinary Tabs' windows show Chromium's tab strip and address bar
+    /// (maximized) instead of covering the desktop (fullscreen).
+    /// A user's choice that survives a kernel restart like the browser does.
+    #[serde(default)]
+    pub(super) browser_bar_visible: bool,
+    /// App view Tabs by controller target (installation and panel layout), and
+    /// the focus agent their panels show. Kept across Tab churn so a Tab gets
+    /// its marker once it appears. Not durable: the App view runtime publishes
+    /// them again after a kernel restart.
+    #[serde(skip)]
+    pub(super) app_installations: BTreeMap<String, (String, super::model::AppPanelLayout)>,
+    /// The browser controller lays App pages out beside the panel. An older
+    /// one does not: its App Tabs are marked without a panel.
+    #[serde(skip)]
+    pub(super) app_panels: bool,
+    #[serde(skip)]
+    pub(super) panel_agent_id: Option<String>,
     pub(super) event_log: EnvironmentEventLog,
 }
 
@@ -86,6 +103,10 @@ impl RoomEnvironment {
             element_references: ElementReferenceRegistry::new(),
             action_ledger: EnvironmentActionLedger::new(event_capacity, action_queue_capacity),
             browser_controller_recovering: false,
+            browser_bar_visible: false,
+            app_installations: BTreeMap::new(),
+            app_panels: false,
+            panel_agent_id: None,
             event_log: EnvironmentEventLog::new(event_capacity)?,
         })
     }
@@ -106,6 +127,7 @@ impl RoomEnvironment {
             actions: self.action_ledger.actions(),
             input_ownership: self.action_ledger.ownership(),
             pending_input_takeovers: self.action_ledger.pending_takeovers(),
+            browser_bar_visible: self.browser_bar_visible,
             event_cursor: self.event_log.cursor(),
         }
     }
@@ -200,7 +222,7 @@ impl RoomEnvironment {
         let (tab_id, created) =
             self.tabs
                 .register_or_reconcile(controller_target_id.into(), url.into(), title.into());
-        if created {
+        if created | self.mark_app_tabs() {
             self.emit(EnvironmentEventKind::TabsChanged);
         }
         Ok(tab_id)
@@ -213,7 +235,8 @@ impl RoomEnvironment {
     ) {
         let changed = self
             .tabs
-            .reconcile_controller_tabs(observations, focused_runtime_target_id);
+            .reconcile_controller_tabs(observations, focused_runtime_target_id)
+            | self.mark_app_tabs();
         let input_ownership_changed = self.action_ledger.retain_input_targets(&self.tabs);
         self.element_references
             .retain_current(&self.tabs, self.runtime_generation);
@@ -237,6 +260,62 @@ impl RoomEnvironment {
         controller_target_id: &str,
     ) -> Option<String> {
         self.tabs.tab_id_for_controller_target(controller_target_id)
+    }
+
+    /// The open App views (installation and panel layout by controller target)
+    /// and the session's focus agent.
+    pub(crate) fn set_app_tabs(
+        &mut self,
+        apps: BTreeMap<String, (String, super::model::AppPanelLayout)>,
+        agent_id: Option<String>,
+        app_panels: bool,
+    ) {
+        self.app_installations = apps;
+        self.panel_agent_id = agent_id;
+        self.app_panels = app_panels;
+        if self.mark_app_tabs() {
+            self.emit(EnvironmentEventKind::TabsChanged);
+        }
+    }
+
+    /// The session's focus agent, shown in every App view's panel.
+    pub(crate) fn set_panel_agent(&mut self, agent_id: Option<String>) {
+        self.panel_agent_id = agent_id;
+        if self.mark_app_tabs() {
+            self.emit(EnvironmentEventKind::TabsChanged);
+        }
+    }
+
+    fn mark_app_tabs(&mut self) -> bool {
+        let apps = self
+            .app_installations
+            .iter()
+            .map(|(target, (installation_id, layout))| {
+                let app = super::model::EnvironmentTabApp {
+                    installation_id: installation_id.clone(),
+                    panel: self
+                        .app_panels
+                        .then(|| {
+                            self.viewport
+                                .app_layout(*layout, self.panel_agent_id.clone())
+                                .1
+                        })
+                        .flatten(),
+                };
+                (target.clone(), app)
+            })
+            .collect();
+        self.tabs.set_apps(&apps)
+    }
+
+    /// Each App page's CSS size: the canonical viewport less its panel.
+    pub(crate) fn app_page_sizes(&self) -> BTreeMap<String, (u32, u32)> {
+        self.app_installations
+            .iter()
+            .map(|(target, (_, layout))| {
+                (target.clone(), self.viewport.app_layout(*layout, None).0)
+            })
+            .collect()
     }
 
     pub(crate) fn register_element_references(
@@ -502,6 +581,39 @@ impl RoomEnvironment {
         Ok(())
     }
 
+    /// Shows or hides the Room browser bar. Like a viewport change, it waits
+    /// while another actor drives the desktop.
+    pub fn set_browser_bar_visible_as_actor(
+        &mut self,
+        actor: EnvironmentActor,
+        visible: bool,
+    ) -> Result<(), EnvironmentError> {
+        if !matches!(
+            self.lifecycle,
+            EnvironmentLifecycle::Ready | EnvironmentLifecycle::Degraded
+        ) {
+            return Err(EnvironmentError::EnvironmentNotReady {
+                lifecycle: self.lifecycle,
+            });
+        }
+        if let Some(owner_actor_id) = self.action_ledger.owner(&InputTarget::Desktop) {
+            if owner_actor_id != actor.actor_id {
+                return Err(EnvironmentError::InputOwnedByAnotherActor {
+                    target: InputTarget::Desktop,
+                    actor_id: owner_actor_id.to_string(),
+                });
+            }
+        }
+        self.register_actor(actor)?;
+        // Existing clients refresh the snapshot on TabsChanged; a new event
+        // kind would break their replay parsers.
+        if self.browser_bar_visible != visible {
+            self.browser_bar_visible = visible;
+            self.emit(EnvironmentEventKind::TabsChanged);
+        }
+        Ok(())
+    }
+
     pub fn update_viewport_as_actor(
         &mut self,
         actor: EnvironmentActor,
@@ -553,6 +665,9 @@ impl RoomEnvironment {
         self.emit(EnvironmentEventKind::ViewportChanged {
             revision: self.viewport.revision,
         });
+        if self.mark_app_tabs() {
+            self.emit(EnvironmentEventKind::TabsChanged);
+        }
     }
 
     pub fn submit_action(

@@ -408,15 +408,6 @@ impl KernelRuntimeState {
         // Do not promote a workflow prompt onto it: complete the current turn
         // first, then the app-level queue path will replace the provider with a
         // workflow-scoped run before dispatching the queued prompt.
-        let next_queued_workflow_event_capabilities = next_queued_prompt_candidate
-            .as_ref()
-            .filter(|prompt| {
-                crate::scheduler::runtime::is_workflow_prompt_attachment(
-                    prompt.source_attachment_id(),
-                )
-            })
-            .map(|prompt| owned.workflow_event_capabilities_for_prompt(session_id, prompt))
-            .transpose()?;
         let next_queued_workflow_requires_fresh_context = next_queued_prompt_candidate
             .as_ref()
             .filter(|prompt| {
@@ -434,14 +425,7 @@ impl KernelRuntimeState {
                 crate::scheduler::runtime::is_workflow_prompt_attachment(
                     prompt.source_attachment_id(),
                 ) && (next_queued_workflow_requires_fresh_context
-                    || !provider_run.workflow_tools_enabled()
-                    || next_queued_workflow_event_capabilities.is_some_and(
-                        |(reply, context, actions)| {
-                            provider_run.workflow_event_reply_enabled() != reply
-                                || provider_run.workflow_event_context_enabled() != context
-                                || provider_run.workflow_event_actions_enabled() != actions
-                        },
-                    ))
+                    || !provider_run.workflow_tools_enabled())
             });
         let next_queued_prompt = (!defer_queued_prompt)
             .then_some(next_queued_prompt_candidate)
@@ -692,6 +676,13 @@ impl KernelRuntimeState {
             &agent_id,
             &completion.completion,
         )?;
+        if provider_run.turn_substitute().is_some()
+            && completion.completion.completed.workflow_run_id().is_none()
+        {
+            // The configured profile never saw this turn; its next turn gets it.
+            owned.prepare_turn_substitute_return_handoff(&provider_run);
+        }
+        let started_next_on_run = completion.completion.started_next.is_some();
         if let Some(dispatch) = completion.dispatch {
             if let Err(error) = self
                 .enqueue_prompt_dispatch_after_liveness(&dispatch, owned)
@@ -704,6 +695,11 @@ impl KernelRuntimeState {
                 .session_store
                 .write()
                 .clear_workflow_run_settling(session_id, workflow_run_id)?;
+        }
+        if provider_run.turn_substitute().is_some() && !started_next_on_run {
+            // The substitute served only this turn; the next starts on the agent's profile.
+            self.retire_owned_provider_run_after_terminal_failure(session_id, provider_run_id)
+                .await;
         }
         if defer_queued_prompt
             || (completion.completion.started_next.is_none() && !provider_run_was_running)

@@ -129,7 +129,8 @@ impl ProviderRunWorkerDeps {
                 run,
                 envelope,
             } => {
-                let result = execute_submit_command(&self.runtime_registry, run, envelope);
+                let result =
+                    execute_submit_command(&self.runtime_registry, run, envelope, &prompt_id);
                 self.in_flight.clear_prompt_io_in_flight(&provider_run_id);
                 let finished = FinishedProviderPromptSubmitJob {
                     session_id,

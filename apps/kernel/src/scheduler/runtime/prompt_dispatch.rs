@@ -115,21 +115,15 @@ pub(super) fn ensure_workflow_provider_run_for_agent(
     app: &mut DaemonApp,
     session_id: &str,
     agent_id: &str,
-    event_reply_enabled: bool,
-    event_context_enabled: bool,
-    event_actions_enabled: bool,
     fresh_context: bool,
     workflow_node_run_id: Option<&str>,
 ) -> Result<String, DaemonError> {
     if fresh_context {
         app.end_agent_provider_run(session_id, agent_id)?;
     }
+    app.retire_finished_turn_substitute_run(session_id, agent_id)?;
     if let Some(run) = app.providers().get_run_for_agent(session_id, agent_id) {
-        if run.workflow_tools_enabled()
-            && run.workflow_event_reply_enabled() == event_reply_enabled
-            && run.workflow_event_context_enabled() == event_context_enabled
-            && run.workflow_event_actions_enabled() == event_actions_enabled
-        {
+        if run.workflow_tools_enabled() {
             let provider_run_id = app.ensure_prompt_provider_run_for_agent(session_id, agent_id)?;
             app.sessions_mut()
                 .set_active_provider_run(session_id, Some(provider_run_id.clone()))?;
@@ -148,15 +142,7 @@ pub(super) fn ensure_workflow_provider_run_for_agent(
     // Cold workflow admission must launch the workflow-capable process directly.
     // Starting an ordinary process first and replacing it below leaves two live
     // provider processes for the same workflow agent.
-    let request = workflow_provider_request(
-        app,
-        session_id,
-        agent_id,
-        event_reply_enabled,
-        event_context_enabled,
-        event_actions_enabled,
-        fresh_context,
-    )?;
+    let request = workflow_provider_request(app, session_id, agent_id, fresh_context)?;
     let provider_run =
         app.start_workflow_provider_launch_for_node(request, workflow_node_run_id)?;
     Ok(provider_run.id().to_string())
@@ -166,12 +152,9 @@ fn workflow_provider_request(
     app: &DaemonApp,
     session_id: &str,
     agent_id: &str,
-    event_reply_enabled: bool,
-    event_context_enabled: bool,
-    event_actions_enabled: bool,
     fresh_context: bool,
 ) -> Result<LaunchProviderRequest, DaemonError> {
-    let agent = app.agents().get_agent(agent_id)?;
+    let (agent, turn_substitute) = app.agent_launch_profile(app.agents().get_agent(agent_id)?);
     let provider = crate::provider::provider_id_for_launch(agent.provider());
     let adapter_key = crate::provider::adapter_key_for_provider(provider);
     let session = app.sessions().get_session(session_id)?;
@@ -183,9 +166,6 @@ fn workflow_provider_request(
         agent.provider_account_profile(),
         agent.model().unwrap_or("default"),
     )
-    .with_workflow_event_reply(event_reply_enabled)
-    .with_workflow_event_context(event_context_enabled)
-    .with_workflow_event_actions(event_actions_enabled)
     .with_agent_id(agent.id().to_string())
     .with_variant(agent.effort().map(str::to_string))
     .with_execution_mode(effective_config.mode)
@@ -203,5 +183,5 @@ fn workflow_provider_request(
     {
         request = request.with_working_directory(working_directory);
     }
-    Ok(request)
+    Ok(request.with_turn_substitute(turn_substitute))
 }

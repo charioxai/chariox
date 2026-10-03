@@ -56,6 +56,7 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        self.durable_state_store.require_writer_healthy()?;
         let projection_sequence = self.session_projection.change_sequence();
         let session = self.build_session_snapshot(session_id)?;
         let session = self.update_session_projection(session);
@@ -69,6 +70,7 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        self.durable_state_store.require_writer_healthy()?;
         self.build_session_snapshot(session_id)
     }
 
@@ -120,6 +122,9 @@ impl KernelRuntimeOwnedState {
         &self,
         mut session: crate::session::RuntimeSession,
     ) -> crate::session::RuntimeSession {
+        if self.durable_state_store.require_writer_healthy().is_err() {
+            return session;
+        }
         self.project_session_runtime_view(&mut session);
         crate::runtime::projection::publish_session_runtime_projection(
             &self.session_projection,
@@ -374,6 +379,7 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
     ) -> Result<(crate::session::RuntimeSession, Vec<String>), DaemonError> {
         let session = self.session_store.get_session(session_id)?;
+        self.withdraw_agent_interactions(session_id, None)?;
 
         if session.status() == crate::session::SessionStatus::Ended {
             self.remove_session_workflow_dispatch_claims(session_id);
@@ -464,7 +470,23 @@ impl KernelRuntimeOwnedState {
             .session_store
             .read()
             .resolve_session_ref_for_delete(session_ref, workspace_id)?;
+        self.delete_session(session)
+    }
+
+    /// Deletes `session`, including a hidden one (a deployment copy's).
+    pub(super) fn delete_session(
+        &self,
+        session: crate::session::RuntimeSession,
+    ) -> Result<
+        (
+            crate::session::RuntimeSession,
+            Vec<String>,
+            Option<crate::session::RuntimeProject>,
+        ),
+        DaemonError,
+    > {
         let session_id = session.id().to_string();
+        self.withdraw_agent_interactions(&session_id, None)?;
         let (ended, terminated_run_ids) =
             if session.status() == crate::session::SessionStatus::Ended {
                 self.external_provider_sessions.detach_session(&session_id);

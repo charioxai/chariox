@@ -112,9 +112,11 @@ impl CommandRouter {
                     .await
                 })
             }
-            LocalDaemonRequest::RequestNativeProviderInteraction(request) => Box::pin(async move {
-                execute_native_provider_interaction_request(&self.runtime_state, request).await
-            }),
+            LocalDaemonRequest::RequestNativeProviderTurnInteraction(request) => {
+                Box::pin(async move {
+                    execute_native_provider_interaction_request(&self.runtime_state, request).await
+                })
+            }
             LocalDaemonRequest::LaunchProviderRun(request) => Box::pin(async move {
                 execute_provider_launch_command(&self.runtime_state, &command, request).await
             }),
@@ -143,6 +145,7 @@ impl CommandRouter {
             | LocalDaemonRequest::GetRoomEnvironmentState(_)
             | LocalDaemonRequest::GetRoomEnvironmentSlice(_)
             | LocalDaemonRequest::GetRoomEnvironmentResourceInventory(_)
+            | LocalDaemonRequest::GetRoomEnvironmentTabAccessibility(_)
             | LocalDaemonRequest::GetRoomEnvironmentEvents(_)
             | LocalDaemonRequest::ListRoomEnvironmentActionHistory(_)
             | LocalDaemonRequest::ListAgents(_)) => {

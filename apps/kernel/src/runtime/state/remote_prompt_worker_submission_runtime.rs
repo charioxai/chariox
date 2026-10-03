@@ -1025,6 +1025,18 @@ pub(super) fn remote_prompt_error_should_retry_transport(error: &DaemonError) ->
         DaemonError::LocalTransport { operation, message } => (*operation, message.as_str()),
         _ => return false,
     };
+    // This worker rejection precedes prompt admission. The existing bounded
+    // retry window can wait for native tools/list without replaying a turn.
+    let native_pending = match operation {
+        "remote runtime tool catalog reload" => message,
+        "read relay peer response" | "read temporary relay peer response" => message
+            .strip_prefix("local transport `remote runtime tool catalog reload` failed: ")
+            .unwrap_or(""),
+        _ => "",
+    };
+    if native_pending.starts_with("native_runtime_catalog_refresh_pending:") {
+        return true;
+    }
     if matches!(
         operation,
         "connect temporary relay peer socket"
@@ -1091,6 +1103,31 @@ fn remote_git_turn_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_refresh_pending_retries_only_the_exact_pre_admission_relay_error() {
+        let worker = DaemonError::LocalTransport {
+            operation: "remote runtime tool catalog reload",
+            message: "native_runtime_catalog_refresh_pending: refresh needed".into(),
+        };
+        assert!(remote_prompt_error_should_retry_transport(&worker));
+        for operation in [
+            "read relay peer response",
+            "read temporary relay peer response",
+        ] {
+            let transmitted = DaemonError::LocalTransport {
+                operation,
+                message: worker.to_string(),
+            };
+            assert!(remote_prompt_error_should_retry_transport(&transmitted));
+        }
+        assert!(!remote_prompt_error_should_retry_transport(
+            &DaemonError::LocalTransport {
+                operation: "submit remote prepared prompt",
+                message: worker.to_string(),
+            }
+        ));
+    }
 
     #[test]
     fn launch_credential_retry_requires_the_typed_worker_diagnostic() {
@@ -1739,9 +1776,6 @@ mod tests {
                 workflow_run_id: "workflow-run".into(),
                 workflow_node_run_id: "workflow-node-run".into(),
                 delivery_token: "workflow-delivery-token".into(),
-                event_reply_enabled: false,
-                event_context_enabled: false,
-                event_actions_enabled: false,
             });
             Self {
                 runtime,

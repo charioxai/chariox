@@ -174,6 +174,7 @@ async fn proxied_session_requests_are_handled_through_relay() {
 
 #[test]
 fn authenticated_public_client_preserves_worker_relay_retryability() {
+    crate::test_support::isolated_env_test!();
     run_async_with_large_test_stack(
         "public-worker-relay-retryability",
         authenticated_public_client_preserves_worker_relay_retryability_async,

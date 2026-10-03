@@ -162,7 +162,7 @@ impl KernelRuntimeState {
         if session
             .active_interactions()
             .iter()
-            .any(|interaction| interaction.agent_id() == agent.id())
+            .any(|interaction| interaction.agent_id() == Some(agent.id()))
         {
             return Err(environment_failure(
                 "resolve the current interaction before adjusting the environment",
@@ -417,6 +417,7 @@ mod tests {
             home_agent_id: agent.id().into(),
             leased_agent_id: "synthetic-leased-agent".into(),
             worker_provider_run_id: "environment-adjustment".into(),
+            home_prompt_id: None,
         };
         let mut selected = state.clone();
         std::fs::write(

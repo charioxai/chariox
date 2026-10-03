@@ -2,6 +2,30 @@ use super::*;
 use crate::slice::{CreateSliceInput, SliceOperationStatus, SliceStore};
 
 #[test]
+fn provider_auth_inspection_paths_follow_verified_layout_and_account() {
+    let account = LocalDockerProviderAccount {
+        owner_path_component: "owner-synthetic".to_string(),
+        profile_id: "profile-synthetic".to_string(),
+        environment: Default::default(),
+    };
+    assert_eq!(provider_auth_paths(Some(&account),true),
+        ("/var/lib/chariox/slice-private/provider-accounts/owner-synthetic/codex/profile-synthetic/codex/auth.json".to_string(),
+         "/var/lib/chariox/slice-private/provider-accounts/owner-synthetic/opencode/profile-synthetic/data/opencode/auth.json".to_string()));
+    assert_eq!(
+        provider_auth_paths(None, true).0,
+        "/var/lib/chariox/slice-private/provider-accounts/local-user/codex/default/codex/auth.json"
+    );
+    assert_eq!(provider_auth_paths(Some(&account),false).0,"/home/slice/.chariox/daemon/provider-accounts/owner-synthetic/codex/profile-synthetic/codex/auth.json");
+    assert_eq!(
+        provider_auth_paths(None, false),
+        (
+            "/home/slice/.codex/auth.json".to_string(),
+            "/home/slice/.local/share/opencode/auth.json".to_string()
+        )
+    );
+}
+
+#[test]
 fn selected_broker_credential_replaces_default_and_missing_selection_clears_it() {
     let mut inputs = vec![broker::ProvisionerInput {
         environment: "CHARIOX_SLICE_CODEX_AUTH",
@@ -119,6 +143,8 @@ fn github_auth_import_is_shared_by_the_agent_and_slice_user() {
     assert!(
         import.contains("ln -s \\\"$SLICE_PROVIDER_HOME/.config/gh\\\" '/home/slice/.config/gh'")
     );
+    assert!(import.contains("-z '$SLICE_PRIVATE_HOST_ROOT' && ! -e '/home/slice/.config/gh'"));
+    assert!(provisioner.contains("GH_CONFIG_DIR=$SLICE_PROVIDER_HOME/.config/gh"));
 }
 
 pub(super) fn test_record() -> SliceRecord {
@@ -239,6 +265,7 @@ fn test_root(label: &str) -> std::path::PathBuf {
 #[cfg(unix)]
 #[test]
 fn managed_broker_slice_does_not_require_docker_in_the_kernel_namespace() {
+    crate::test_support::isolated_env_test!();
     let _lock = crate::env_lock::lock();
     let previous_path = std::env::var_os("PATH");
     let previous_required = std::env::var_os("CHARIOX_SLICE_DOCKER_BROKER_REQUIRED");
@@ -288,6 +315,7 @@ fn managed_broker_slice_does_not_require_docker_in_the_kernel_namespace() {
 #[cfg(unix)]
 #[test]
 fn disk_pressure_admission_fault_probe() {
+    crate::test_support::isolated_env_test!();
     use std::os::unix::fs::PermissionsExt;
 
     let _environment = crate::env_lock::lock();
@@ -343,55 +371,56 @@ exit 0
     options.root = root.clone();
     let mut record = test_record();
     record.display_mode = SliceDisplayMode::Headless;
-    let rejection = state::save_local_docker_slice_state_live(&record, &options)
-        .expect_err("low Docker capacity must reject the real live-save path");
+    snapshot_pause::begin(&record, &options, false)
+        .expect("measurement obligation should persist without source pause");
+    let rejection = disk_admission::with_slice_snapshot_disk_admission(|guard| {
+        disk_admission::validate_slice_snapshot_disk_admission(&record, &options, guard)
+    })
+    .expect_err("low Docker capacity must reject the admission seam");
+    snapshot_pause::recover(&record, &options)
+        .expect("failed measurement obligation should retire");
     let pressured_calls = std::fs::read_to_string(&log).expect("Docker log should read");
-    let screen_stop = pressured_calls
-        .find("/opt/chariox-slice/slice-screen.sh stop")
-        .expect("headless desktop must stop before live snapshot");
-    let pause = pressured_calls
-        .find("pause chariox-slice-dev")
-        .expect("source container must pause");
-    let measurement = pressured_calls
-        .find("du -sb /home-src")
-        .expect("real admission must measure the home volume");
-    let unpause = pressured_calls
-        .rfind("unpause chariox-slice-dev")
-        .expect("rejected snapshot must resume the source container");
-    let screen_restart = pressured_calls
-        .rfind("/opt/chariox-slice/slice-screen.sh start")
-        .expect("headless desktop must restart after live snapshot rejection");
-    assert!(screen_stop < pause && unpause < screen_restart);
-    assert!(pause < measurement && measurement < unpause);
     assert!(rejection
         .to_string()
         .contains("slice snapshot needs more disk headroom"));
+    assert!(pressured_calls.contains("du -sb /home-src"));
     assert!(!pressured_calls
         .lines()
         .any(|call| call.starts_with("commit ")));
-    assert!(
-        pressured_calls
-            .lines()
-            .any(|call| call.starts_with("rm -f chariox-slice-dev-disk-admission-")),
-        "measurement helper must be removed after rejection: {pressured_calls}"
-    );
-    assert_eq!(
-        std::fs::read(&manifest).expect("prior manifest should remain"),
-        prior_manifest
-    );
-
-    std::fs::write(&capacity, b"107374182400\n").expect("recovered capacity should write");
-    let recovered = state::save_local_docker_slice_state_live(&record, &options)
-        .expect("the real save path should reopen after capacity recovers");
-    let recovered_calls = std::fs::read_to_string(&log).expect("Docker log should read");
-    assert!(recovered_calls
-        .lines()
-        .any(|call| call.starts_with("commit ")));
-    assert_ne!(
-        std::fs::read(&manifest).expect("replacement manifest should exist"),
-        prior_manifest
-    );
-    assert_eq!(recovered.id, "dev");
+    assert_eq!(std::fs::read(&manifest).unwrap(), prior_manifest);
+    std::fs::write(&capacity, b"107374182400\n").unwrap();
+    snapshot_pause::begin(&record, &options, false)
+        .expect("recovered measurement obligation should persist");
+    disk_admission::with_slice_snapshot_disk_admission(|guard| {
+        disk_admission::validate_slice_snapshot_disk_admission(&record, &options, guard)
+    })
+    .expect("recovered capacity should pass the independent admission seam");
+    snapshot_pause::recover(&record, &options)
+        .expect("successful measurement obligation should retire");
+    assert!(!root
+        .join("runtime")
+        .join(&record.id)
+        .join("snapshot-resume.json")
+        .exists());
+    let measurements = std::fs::read_to_string(&log).unwrap();
+    assert!(!measurements.lines().any(|call| call.starts_with("pause ")
+        || call.starts_with("stop ")
+        || call.contains("slice-screen.sh")));
+    std::fs::write(&log, "").unwrap();
+    for result in [
+        state::save_local_docker_slice_state_live(&record, &options).map(|_| ()),
+        state::create_local_docker_slice_backup_live(&record, &options, Some("synthetic-refusal"))
+            .map(|_| ()),
+        state::save_local_docker_slice_state_retaining_replaced(&record, &options).map(|_| ()),
+    ] {
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("unavailable because this storage layout"));
+    }
+    assert_eq!(std::fs::read_to_string(&log).unwrap(), "");
+    assert_eq!(std::fs::read(&manifest).unwrap(), prior_manifest);
+    assert!(!root.join("backups").exists());
 
     match previous_path {
         Some(path) => std::env::set_var("PATH", path),
@@ -403,11 +432,11 @@ exit 0
     println!(
         "CHARIOX_DISK_PRESSURE_PROBE:{}",
         serde_json::json!({
-            "schema": "chariox.disk_pressure_admission_probe.v1",
-            "admissionClosesBeforeEnospc": !pressured_calls.lines().any(|call| call.starts_with("commit ")),
-            "activeStateRemainsConsistent": pause < measurement && measurement < unpause,
+            "schema": "chariox.disk_pressure_admission_probe.v2",
+            "independentAdmissionRejectsLowCapacity": true,
+            "independentAdmissionAcceptsRecoveredCapacity": true,
+            "unsupportedCaptureRefusesBeforeMutation": true,
             "lastKnownGoodPreserved": true,
-            "resourceRecoveryRecorded": recovered_calls.lines().any(|call| call.starts_with("commit ")),
             "reserveBytes": 2_u64 * 1024 * 1024 * 1024,
         })
     );
@@ -417,6 +446,7 @@ exit 0
 #[cfg(unix)]
 #[test]
 fn public_headless_slice_save_gracefully_quiesces_before_capture_and_fails_closed() {
+    crate::test_support::isolated_env_test!();
     use std::os::unix::fs::PermissionsExt;
 
     let _environment = crate::env_lock::lock();
@@ -511,52 +541,20 @@ exit 0
     let mut options = test_options();
     options.root = root.clone();
 
-    let error = state::save_local_docker_slice_state(&record, &options)
-        .expect_err("a failed graceful screen stop must reject public state save");
-    assert!(error.to_string().contains("slice screen `stop`"));
-    let failed_calls = std::fs::read_to_string(&log).expect("failed-call log should read");
-    assert!(failed_calls.contains("/opt/chariox-slice/slice-screen.sh stop"));
-    assert!(!failed_calls
-        .lines()
-        .any(|call| call == "stop chariox-slice-dev"));
-    assert!(!failed_calls
-        .lines()
-        .any(|call| call.starts_with("commit chariox-slice-dev ")));
-
-    std::env::set_var("DOCKER_FAIL_SCREEN_STOP", "0");
-    let state = state::save_local_docker_slice_state(&record, &options)
-        .expect("public headless save should capture after graceful shutdown");
-    assert!(state.home_archive_path.contains("states/dev/home-"));
-    assert!(state.home_archive_path.ends_with(".tar.zst"));
-    assert!(
-        !running.exists(),
-        "successful state save must leave the source stopped"
-    );
-    let calls = std::fs::read_to_string(&log).expect("successful-call log should read");
-    let screen_stop = calls
-        .rfind("/opt/chariox-slice/slice-screen.sh stop")
-        .expect("screen stop should be called for a headless browser slice");
-    assert!(calls.contains("CHARIOX_SLICE_DISPLAY_MODE=headless"));
-    let kernel_shutdown = calls
-        .rfind("screen -S chariox-slice-kernel -X quit")
-        .expect("kernel shutdown should follow desktop quiescence");
-    let container_stop = calls
-        .rfind("stop chariox-slice-dev")
-        .expect("container should stop after graceful process cleanup");
-    let image_capture = calls
-        .rfind("commit chariox-slice-dev ")
-        .expect("image capture should occur after container stop");
-    let home_capture = calls
-        .rfind("tar --zstd -C /home-src -cf - .")
-        .expect("home archive should be captured");
-    assert!(screen_stop < kernel_shutdown);
-    assert!(kernel_shutdown < container_stop);
-    assert!(container_stop < image_capture);
-    assert!(image_capture < home_capture);
-    assert!(calls.lines().any(|call| {
-        call.starts_with("create --name chariox-slice-dev-home-archive-")
-            && call.contains("chariox-slice-dev-home:/home-src:ro")
-    }));
+    for fail_stop in ["1", "0"] {
+        std::env::set_var("DOCKER_FAIL_SCREEN_STOP", fail_stop);
+        let error = state::save_local_docker_slice_state(&record, &options)
+            .expect_err("unsupported capture must refuse before stopping the running slice");
+        assert!(error
+            .to_string()
+            .contains("unavailable because this storage layout"));
+        assert!(running.exists());
+        assert!(
+            !log.exists(),
+            "no Docker operation should occur before refusal"
+        );
+        assert!(!root.join("states").exists());
+    }
 
     let screen = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("slice-linux-docker/docker/slice-screen.sh"),
@@ -566,17 +564,6 @@ exit 0
     assert!(screen.contains("python3 \"$ROOT/browser-lifecycle.py\" stop \"$CHROME_PROFILE\""));
     assert!(screen.contains("stop_process_pattern \"websockify.*$NOVNC_PORT\""));
     assert!(screen.contains("$HOME/.chariox/browser/chromium"));
-
-    std::fs::write(&log, "").expect("stopped-slice log should reset");
-    std::env::set_var("DOCKER_FAIL_SCREEN_STOP", "1");
-    state::save_local_docker_slice_state(&record, &options)
-        .expect("already-stopped slices must remain saveable without screen startup");
-    let stopped_calls = std::fs::read_to_string(&log).expect("stopped-slice log should read");
-    assert!(!stopped_calls.contains("slice-screen.sh stop"));
-    assert!(!stopped_calls
-        .lines()
-        .any(|call| call == "stop chariox-slice-dev"));
-    assert!(!running.exists());
 }
 
 fn saved_state(manifest_path: String) -> SliceSavedStateRecord {
@@ -644,6 +631,7 @@ fn backup_restore_rejects_cross_slice_records_before_reading_artifacts() {
 #[cfg(unix)]
 #[test]
 fn backup_restore_quarantines_a_corrupt_archive_without_touching_known_good_state() {
+    crate::test_support::isolated_env_test!();
     use sha2::Digest as _;
     use std::os::unix::fs::PermissionsExt;
 
@@ -1015,8 +1003,11 @@ fn linux_docker_slice_support_refresh_includes_runtime_dependencies() {
         "start-providers.sh",
         "slice-screen.sh",
         "tint2rc",
+        "browser-app-restore.mjs",
         "browser-cdp.mjs",
         "browser-controller-actions.mjs",
+        "browser-controller-apps.mjs",
+        "browser-controller-bar.mjs",
         "browser-controller-cdp.mjs",
         "browser-controller-dialogs.mjs",
         "browser-controller-events.mjs",
@@ -1315,6 +1306,11 @@ fn linux_docker_slice_auto_build_refreshes_protocol_or_runtime_incompatible_work
         Path::new(env!("CARGO_MANIFEST_DIR")).join("slice-linux-docker/docker/Dockerfile"),
     )
     .expect("slice Dockerfile should be readable");
+    let roots = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("slice-linux-docker/runtime-source-roots.txt"),
+    )
+    .expect("slice runtime source roots should be readable");
+    let roots: Vec<&str> = roots.lines().collect();
 
     assert!(script.contains("io.chariox.relay-peer-protocol-version"));
     assert!(script.contains("io.chariox.runtime-source-revision"));
@@ -1326,13 +1322,31 @@ fn linux_docker_slice_auto_build_refreshes_protocol_or_runtime_incompatible_work
         "saved state image $SLICE_IMAGE is missing; restoring the saved home archive on $SLICE_BASE_IMAGE"
     ));
     assert!(script.contains("git rev-parse --is-inside-work-tree"));
-    assert!(script.contains("Cargo.toml Cargo.lock"));
-    assert!(script.contains("adapters/rust"));
-    assert!(script.contains("apps/aegs-dummy apps/kernel apps/relay"));
-    assert!(script.contains("packages/aegs-sdk packages/event-protocol"));
+    assert!(script.contains("runtime-source-roots.txt"));
+    for root in [
+        "Cargo.toml",
+        "Cargo.lock",
+        "adapters/rust",
+        "apps/aegs-dummy",
+        "apps/kernel",
+        "apps/relay",
+        "packages/aegs-sdk",
+        "packages/event-protocol",
+    ] {
+        assert!(roots.contains(&root), "missing runtime source root {root}");
+    }
     assert!(!script.contains("grep -v '^apps/kernel/slice-linux-docker/'"));
-    assert!(script.contains("packages/event-protocol"));
     assert!(dockerfile.contains("COPY packages/event-protocol packages/event-protocol"));
+    // The kernel links the App packages; the runtime image must build them.
+    for package in ["app-package", "app-runtime", "app-sdk"] {
+        let root = format!("packages/{package}");
+        assert!(dockerfile.contains(&format!("COPY {root} {root}")));
+        assert!(roots.contains(&root.as_str()));
+    }
+    let bundle_lock = "apps/app-worker/bundle.lock.json";
+    assert!(dockerfile.contains(&format!("COPY {bundle_lock} {bundle_lock}")));
+    assert!(roots.contains(&bundle_lock));
+    assert!(!dockerfile.contains("chariox-app-storage.service"));
     assert!(dockerfile.contains("COPY Cargo.toml Cargo.lock ./"));
     assert!(dockerfile.contains("cargo build --locked --release"));
     assert!(dockerfile.contains("npm ci --omit=dev"));
@@ -1398,8 +1412,10 @@ fn linux_docker_slice_auto_build_refreshes_protocol_or_runtime_incompatible_work
             "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-kernel /chariox-kernel",
             "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-managed-bootstrap /chariox-managed-bootstrap",
             "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-relay /chariox-relay",
+            "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-app-package /chariox-app-package",
+            "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-app-storage /chariox-app-storage",
         ],
-        "the release artifact stage must export only the three signed runtime binaries"
+        "the release artifact stage must export only the five signed runtime binaries"
     );
     assert!(script.contains("runtime image $SLICE_IMAGE is stale and build policy is never"));
     assert!(script.contains("because its worker image is stale"));
@@ -1478,6 +1494,7 @@ fn local_docker_slice_uses_the_safe_default_memory_limit() {
 
 #[test]
 fn local_docker_provider_sandbox_compatibility_selects_named_apparmor_boundary() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let previous_profile = std::env::var_os("CHARIOX_SLICE_APPARMOR_PROFILE");
     std::env::set_var("CHARIOX_SLICE_APPARMOR_PROFILE", "chariox-slice-provider");
@@ -2051,7 +2068,7 @@ exit 0
         .iter()
         .position(|call| call.starts_with("volume create ") && call.ends_with(" saved-slice-home"))
         .unwrap_or_else(|| panic!("missing labeled home volume creation: {calls:?}"));
-    let create_container = position("create --name saved-slice ");
+    let create_container = position("create --init --name saved-slice ");
     for label in [
         "io.chariox.selkies-version",
         "io.chariox.selkies-source-revision",
@@ -2140,7 +2157,7 @@ exit 0
     let compatible_calls = compatible_calls_text.lines().collect::<Vec<_>>();
     let compatible_create = compatible_calls
         .iter()
-        .find(|call| call.starts_with("create --name saved-slice "))
+        .find(|call| call.starts_with("create --init --name saved-slice "))
         .expect("compatible saved image should create the replacement container");
     assert!(
         compatible_create.ends_with(" backup-image"),
@@ -2613,6 +2630,322 @@ fn persisted_daemon_relay_url_maps_container_loopback_to_private_host_endpoint()
             .expect("private relay endpoint should recover");
 
     assert_eq!(endpoint, local_docker_private_relay_endpoint(&record));
+}
+
+#[test]
+fn pending_restore_reuses_rollback_and_clears_quarantine_only_after_durable_resolution() {
+    let root = test_root("pending-restore-no-capture");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut options = test_options();
+    options.root = root.clone();
+    let record = test_record();
+    let prior = saved_state(root.join("prior-manifest.json").display().to_string());
+    let rollback = backup_record(root.join("rollback-manifest.json").display().to_string());
+    std::fs::write(
+        &rollback.manifest_path,
+        b"synthetic retained rollback manifest",
+    )
+    .unwrap();
+    let transaction = crate::slice::SliceBackupRestoreTransactionRecord {
+        id: "pending-synthetic".to_string(),
+        source_slice_id: record.id.clone(),
+        target_backup: backup_record(root.join("target-manifest.json").display().to_string()),
+        rollback_backup: rollback.clone(),
+        previous_saved_state: Some(prior.clone()),
+        started_at_ms: 1,
+    };
+    let store = SliceStore::default();
+    store.restore_records(vec![record.clone()]);
+    store.restore_pending_backup_restore_records(vec![transaction.clone()]);
+    let generation = state::recovered_rollback_generation(&record, &options, &transaction).unwrap();
+    assert_eq!(generation.state.image_ref, rollback.image_ref);
+    assert_eq!(
+        generation.state.home_archive_path,
+        rollback.home_archive_path
+    );
+    assert_eq!(generation.state.created_at_ms, rollback.created_at_ms);
+    assert!(store
+        .try_begin_operation(&record.id, "slice.start")
+        .is_err());
+    let resolve = |fail| {
+        store.resolve_backup_restore_transactionally(
+            &transaction.id,
+            &record.id,
+            generation.state.clone(),
+            2,
+            crate::slice::SliceBackupRestoreResolution::RolledBack,
+            Some("rolled back".to_string()),
+            |_, _, _| {
+                if fail {
+                    Err(crate::error::DaemonError::LocalTransport {
+                        operation: "synthetic.persist",
+                        message: "interrupted".to_string(),
+                    })
+                } else {
+                    Ok(())
+                }
+            },
+        )
+    };
+    assert!(resolve(true).is_err());
+    assert_eq!(
+        store.list_pending_backup_restores(),
+        vec![transaction.clone()]
+    );
+    assert!(std::path::Path::new(&rollback.manifest_path).exists());
+    let resolved = resolve(false).unwrap();
+    assert_eq!(resolved.status, crate::slice::SliceStatus::Stopped);
+    assert!(store.list_pending_backup_restores().is_empty());
+    assert!(store.try_begin_operation(&record.id, "slice.start").is_ok());
+    assert!(std::path::Path::new(&rollback.manifest_path).exists());
+    assert_eq!(transaction.previous_saved_state, Some(prior));
+    // Neither generation publication nor durable resolution invokes Docker.
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn restore_acknowledgement_retries_broker_failure_and_retains_rollback_until_acknowledged() {
+    use std::cell::{Cell, RefCell};
+
+    let record = test_record();
+    let backup = |id: &str| crate::slice::SliceBackupRecord {
+        id: id.to_string(),
+        image_ref: format!("chariox-slice-backup:{id}"),
+        home_archive_path: format!("/tmp/{id}-home.tar.zst"),
+        ..backup_record(format!("/tmp/{id}-manifest.json"))
+    };
+    let transaction = |id: &str| crate::slice::SliceBackupRestoreTransactionRecord {
+        id: id.to_string(),
+        source_slice_id: record.id.clone(),
+        target_backup: backup(&format!("{id}-target")),
+        rollback_backup: backup(&format!("{id}-rollback")),
+        previous_saved_state: None,
+        started_at_ms: 1,
+    };
+    let store = SliceStore::default();
+    store.restore_records(vec![record.clone()]);
+    let first = transaction("restore-first");
+    store
+        .begin_backup_restore_transactionally(first.clone(), |_| Ok(()))
+        .unwrap();
+    // A failed restore rolls back; its published home is the rollback archive.
+    store
+        .resolve_backup_restore_transactionally(
+            &first.id,
+            &record.id,
+            saved_state("/tmp/rolled-back-manifest.json".to_string()),
+            2,
+            crate::slice::SliceBackupRestoreResolution::RolledBack,
+            None,
+            |_, _, acknowledgement| {
+                assert_eq!(
+                    acknowledgement.home_archive_path,
+                    first.rollback_backup.home_archive_path
+                );
+                Ok(())
+            },
+        )
+        .unwrap();
+
+    let attempts = Cell::new(0);
+    let broker_available = Cell::new(false);
+    let released = RefCell::new(Vec::new());
+    let reconcile = || {
+        state::reconcile_local_docker_restore_acknowledgements(
+            &store,
+            Some(&record.id),
+            |slice, acknowledgement| {
+                attempts.set(attempts.get() + 1);
+                assert_eq!(slice.id, record.id);
+                assert_eq!(acknowledgement.transaction_id, first.id);
+                if broker_available.get() {
+                    Ok(())
+                } else {
+                    Err(crate::error::DaemonError::LocalTransport {
+                        operation: "slice.backup.restore",
+                        message: "managed slice Docker broker is unavailable".to_string(),
+                    })
+                }
+            },
+            |acknowledgement| {
+                store.acknowledge_backup_restore_transactionally(
+                    &acknowledgement.transaction_id,
+                    |_| Ok(()),
+                )
+            },
+            |rollback| released.borrow_mut().push(rollback.id.clone()),
+        )
+        .unwrap()
+    };
+
+    // Broker failure: the committed resolution stays, the acknowledgement and
+    // the rollback archive it names are retained, and no restore can start.
+    let pending = reconcile();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(store.list_pending_restore_acknowledgements(), pending);
+    assert!(released.borrow().is_empty());
+    assert_eq!(
+        store
+            .active_saved_state_for_slice(&record.id)
+            .unwrap()
+            .map(|state| state.id),
+        Some("gmail-ready".to_string())
+    );
+    let second = transaction("restore-second");
+    let error = store
+        .begin_backup_restore_transactionally(second.clone(), |_| {
+            panic!("an unacknowledged publication must refuse the next restore before journaling")
+        })
+        .expect_err("the broker would roll back the committed restore");
+    assert!(error.to_string().contains(&first.id));
+    assert!(store.try_begin_operation(&record.id, "slice.start").is_ok());
+
+    // A failed durable acknowledgement commit also keeps the record.
+    broker_available.set(true);
+    assert!(store
+        .acknowledge_backup_restore_transactionally(&first.id, |_| {
+            Err(crate::error::DaemonError::LocalTransport {
+                operation: "synthetic.persist",
+                message: "interrupted".to_string(),
+            })
+        })
+        .is_err());
+    assert_eq!(store.list_pending_restore_acknowledgements().len(), 1);
+
+    // Retry: acknowledged once, then the rollback is released exactly once.
+    assert!(reconcile().is_empty());
+    assert_eq!(attempts.get(), 2);
+    assert_eq!(*released.borrow(), vec![first.rollback_backup.id.clone()]);
+    assert!(reconcile().is_empty());
+    assert_eq!(attempts.get(), 2, "an acknowledged restore is not retried");
+    assert_eq!(released.borrow().len(), 1);
+    store
+        .begin_backup_restore_transactionally(second, |_| Ok(()))
+        .expect("the next restore starts once acknowledged");
+}
+
+#[test]
+fn restore_acknowledgement_keeps_rollback_published_as_active_saved_state() {
+    let record = test_record();
+    let rollback = crate::slice::SliceBackupRecord {
+        home_archive_path: "/tmp/recovered-rollback-home.tar.zst".to_string(),
+        ..backup_record("/tmp/recovered-rollback-manifest.json".to_string())
+    };
+    let transaction = crate::slice::SliceBackupRestoreTransactionRecord {
+        id: "restore-recovered".to_string(),
+        source_slice_id: record.id.clone(),
+        target_backup: backup_record("/tmp/recovered-target-manifest.json".to_string()),
+        rollback_backup: rollback.clone(),
+        previous_saved_state: None,
+        started_at_ms: 1,
+    };
+    let store = SliceStore::default();
+    store.restore_records(vec![record.clone()]);
+    store.restore_pending_backup_restore_records(vec![transaction.clone()]);
+    // Startup recovery publishes the rollback artifacts as the active state.
+    let recovered = SliceSavedStateRecord {
+        image_ref: rollback.image_ref.clone(),
+        home_archive_path: rollback.home_archive_path.clone(),
+        ..saved_state("/tmp/recovered-manifest.json".to_string())
+    };
+    store
+        .resolve_backup_restore_transactionally(
+            &transaction.id,
+            &record.id,
+            recovered,
+            2,
+            crate::slice::SliceBackupRestoreResolution::RolledBack,
+            None,
+            |_, _, _| Ok(()),
+        )
+        .unwrap();
+    let pending = state::reconcile_local_docker_restore_acknowledgements(
+        &store,
+        None,
+        |_, _| Ok(()),
+        |acknowledgement| {
+            store
+                .acknowledge_backup_restore_transactionally(&acknowledgement.transaction_id, |_| {
+                    Ok(())
+                })
+        },
+        |_| panic!("the active saved state still references the rollback"),
+    )
+    .unwrap();
+    assert!(pending.is_empty());
+    assert!(store.list_pending_restore_acknowledgements().is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn release_kernel_finds_its_installed_slice_build_context_without_a_source_tree() {
+    use std::os::unix::fs::symlink;
+
+    let root = test_root("release-slice-build-context");
+    let prefix = root.join("chariox-0.2.0-linux-x64");
+    let kernel = prefix.join("bin/chariox-kernel");
+    let link = root.join("local-bin/chariox-kernel");
+    let system = root.join("usr/lib/chariox/slice-build-context");
+    std::fs::create_dir_all(prefix.join("bin")).expect("bundle bin should create");
+    std::fs::create_dir_all(root.join("local-bin")).expect("link directory should create");
+    std::fs::write(&kernel, "").expect("kernel should write");
+    symlink(&kernel, &link).expect("kernel link should create");
+    let provisioner = "apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh";
+    let bundled = std::fs::canonicalize(&prefix)
+        .expect("prefix should canonicalize")
+        .join("share/chariox/slice-build-context")
+        .join(provisioner);
+    let system_wide = system.join(provisioner);
+    let install = |script: &Path| {
+        std::fs::create_dir_all(script.parent().expect("provisioner has a parent"))
+            .expect("context should create");
+        std::fs::write(script, "").expect("provisioner should write");
+    };
+
+    // The system-wide context is the one the managed broker path already uses.
+    assert_eq!(
+        Path::new(SYSTEM_SLICE_BUILD_CONTEXT).join(SLICE_DOCKER_PROVISIONER),
+        Path::new(MANAGED_SLICE_DOCKER_PROVISIONER)
+    );
+
+    // With no installed context, the error names both places and the override,
+    // and never falls back to the source tree the kernel was built from.
+    let error = installed_slice_script(Some(&kernel), &system)
+        .expect_err("a release kernel without a context should refuse")
+        .to_string();
+    assert!(error.contains(&bundled.display().to_string()), "{error}");
+    assert!(
+        error.contains(&system_wide.display().to_string()),
+        "{error}"
+    );
+    assert!(
+        error.contains("CHARIOX_SLICE_DOCKER_PROVISIONER"),
+        "{error}"
+    );
+    assert!(!error.contains(env!("CARGO_MANIFEST_DIR")), "{error}");
+
+    // The system-wide context serves a kernel installed without its own.
+    install(&system_wide);
+    assert_eq!(
+        installed_slice_script(Some(&kernel), &system).expect("system context"),
+        system_wide
+    );
+    assert_eq!(
+        installed_slice_script(None, &system).expect("system context"),
+        system_wide
+    );
+
+    // The bundle's own context comes first, also through a link to the kernel.
+    install(&bundled);
+    assert_eq!(
+        installed_slice_script(Some(&kernel), &system).expect("bundled context"),
+        bundled
+    );
+    assert_eq!(
+        installed_slice_script(Some(&link), &system).expect("bundled context"),
+        bundled
+    );
+    std::fs::remove_dir_all(root).expect("fixture root should remove");
 }
 
 #[cfg(unix)]

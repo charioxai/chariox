@@ -1,3 +1,9 @@
+import { appHostOperationIds, type AppHostTerminal } from "./app-host-action.js"
+import { getAppInstallationRequest } from "@chariox/kernel-client/ipc-requests"
+import type { AppInstallationSummary } from "@chariox/kernel-client/kernel-types"
+import type { AppDevLoop } from "./app-dev-loop.js"
+import type { AppFileInstaller } from "./app-install-file.js"
+import type { AppPublisherEnrollment } from "./app-publisher-file.js"
 import type { BootstrapState, RuntimeSession } from "./cli-types.js"
 import type { CharioxLogger } from "./logging.js"
 import { createCommandActionHandlers } from "./command-actions.js"
@@ -8,6 +14,7 @@ import { buildHostedCloudViewUrl } from "./cloud-command-lifecycle.js"
 import { importExternalProviderAgent } from "./external-provider-session-api.js"
 import { openExternalUrl } from "./external-url.js"
 import { formatAgentLabel } from "./agent-label.js"
+import { grantAgentApp, revokeAgentApp } from "./app-binding-api.js"
 import {
   defaultRoomScreenshotOutputRoot,
   downloadRoomEnvironmentScreenshot,
@@ -187,6 +194,11 @@ import {
 type AnyFn = (...args: any[]) => any
 
 export type CliCommandActionCompositionDeps = {
+  appHostTerminal?: AppHostTerminal
+  lastViewedAppHostOperationId?: () => string | undefined
+  appFileInstaller?: AppFileInstaller
+  appDevLoop?: AppDevLoop
+  appPublisherEnrollment?: AppPublisherEnrollment
   client: BootstrapState["client"]
   options: BootstrapState["options"]
   preferencesState: AnyFn
@@ -255,6 +267,7 @@ export type CliCommandActionCompositionDeps = {
   replaceWorkflowDefinitions: AnyFn
   upsertWorkflowDefinition: AnyFn
   createWorkflow: AnyFn
+  createAgentWorkflow: AnyFn
   listWorkflows: AnyFn
   resolveWorkflow: AnyFn
   assignWorkflowAlias: AnyFn
@@ -372,6 +385,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     replaceWorkflowDefinitions,
     upsertWorkflowDefinition,
     createWorkflow,
+    createAgentWorkflow,
     listWorkflows,
     resolveWorkflow,
     assignWorkflowAlias,
@@ -475,6 +489,14 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       })
     },
     sendWorkflowEventPublicationRequest: (request) => client.send(request),
+    sendAppRequest: (request) => client.send(request),
+    ...(deps.appFileInstaller ? { appFileInstaller: deps.appFileInstaller } : {}),
+    ...(deps.appDevLoop ? { appDevLoop: deps.appDevLoop } : {}),
+    ...(deps.appPublisherEnrollment ? { appPublisherEnrollment: deps.appPublisherEnrollment } : {}),
+    ...(deps.appHostTerminal ? { appHostTerminal: deps.appHostTerminal } : {}),
+    ...(deps.lastViewedAppHostOperationId ? { lastViewedAppHostOperationId: deps.lastViewedAppHostOperationId } : {}),
+    currentAppHostOperationIds: () => isAttached() ? appHostOperationIds(sessionState()) : [],
+    currentAppSessionId: () => isAttached() ? sessionState().id : undefined,
     appendCloudNotice,
     formatError,
     createSession: (workspace, worktree, alias, agentDefaults, worktreePlacement) =>
@@ -683,6 +705,15 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     registerScript: (sourcePath, environment, name) => registerScript(client, pendingWorkspaceTarget(), sourcePath, environment, name),
     removeScript: (name) => removeScript(client, pendingWorkspaceTarget(), name),
     grantAgentScript: (agentRef, name, environment) => grantAgentScript(client, pendingWorkspaceTarget(), agentRef, name, environment),
+    getAppInstallation: async (installationId) => {
+      const response = await client.send<Record<string, unknown>>(getAppInstallationRequest(installationId))
+      const value = (response.AppInstallation as { installation: AppInstallationSummary } | undefined)?.installation
+      if (value) return value
+      if ((response.AppRequestFailed as { code: string } | undefined)?.code === "not_found") return null
+      throw new Error("App installation status unavailable")
+    },
+    grantAgentApp: (agentRef, installationId) => grantAgentApp(client, pendingWorkspaceTarget(), agentRef, installationId),
+    revokeAgentApp: (agentRef, installationId) => revokeAgentApp(client, agentRef, installationId),
     revokeAgentScript: (agentRef, name) => revokeAgentScript(client, agentRef, name),
     listCredentials: () => listCredentials(client),
     getCredential: (id) => getCredential(client, id),
@@ -917,6 +948,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     replaceWorkflowDefinitions,
     upsertWorkflowDefinition,
     createWorkflow,
+    createAgentWorkflow,
     listWorkflows,
     resolveWorkflow,
     assignWorkflowAlias,

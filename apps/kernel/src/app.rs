@@ -44,6 +44,7 @@ mod remote_workspace_live_sync_fanout;
 mod session_runtime;
 mod terminal_fanout;
 pub(crate) mod terminal_input;
+mod turn_substitute;
 mod workflow_design_events;
 pub(crate) mod workflow_runtime;
 mod workflow_workspace_claims;
@@ -75,7 +76,8 @@ pub(crate) use prompt_lifecycle::{
     KernelRemotePromptDispatch, KernelRemotePromptDispatchIntent,
 };
 pub(crate) use provider_output_claude_native::{
-    claude_native_recent_terminal_failure, ClaudeNativeDispatchAttempt, ClaudeNativeProcessOutcome,
+    claude_native_recent_terminal_failure, format_claude_permission_message,
+    ClaudeNativeDispatchAttempt, ClaudeNativeProcessOutcome,
 };
 pub(crate) use provider_tracking::{
     ProviderCatalogCacheStore, ProviderProcessTrackingStore, TrackedProviderProcess,
@@ -131,8 +133,7 @@ pub(crate) use provider_run_read::ProviderRunReadService;
 pub(crate) use remote_lease::ProviderCleanupFailurePoint;
 pub(crate) use remote_lease::{
     LeaseCallerBinding, LeasedAgentCleanupPhase, LeasedProjectEnvironmentSetupTarget,
-    PreparedLeasedProviderRun, RemoteLeaseRuntime, RemoteProviderFailure,
-    REMOTE_EXECUTION_LEASE_MAX_LIFETIME_MS,
+    PreparedLeasedProviderRun, RemoteLeaseRuntime, REMOTE_EXECUTION_LEASE_MAX_LIFETIME_MS,
 };
 
 pub struct DaemonApp {
@@ -150,12 +151,14 @@ pub struct DaemonApp {
     attached_provider_transcript_cursors: AttachedProviderTranscriptCursorStore,
     pub(crate) active_turns: ActiveTurnStore,
     pub(crate) prompt_activity: PromptActivityStore,
+    pub(crate) runtime_tool_call_activity: crate::runtime::state::RuntimeToolCallActivity,
     prompt_workspace_claims: PromptWorkspaceClaimStore,
     prompt_state_owner: PromptStateOwner,
     pub(crate) sessions: SessionStateStore,
     history: SessionHistoryStore,
     operational_history: OperationalHistoryStore,
     durable_state: DurableKernelStateStore,
+    app_control: crate::runtime::app_control::AppControlService,
     worker_prompt_receipts: crate::durable_state::worker_prompt_receipts::WorkerPromptReceiptStore,
     worker_steer_receipts: crate::durable_state::worker_steer_receipts::WorkerSteerReceiptStore,
     managed_context_transfers: crate::managed_context::transfer::ManagedContextTransferStore,
@@ -206,11 +209,13 @@ pub struct DaemonApp {
     /// A provider run can have one active turn plus queued turns, each with a
     /// different workflow context and capability snapshot.
     leased_workflow_turns: BTreeMap<String, LeasedWorkflowTurnBinding>,
+    leased_turns_waiting_for_capacity: VecDeque<remote_lease::LeasedTurnWaitingForCapacity>,
     remote_git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore,
     completed_git_turn_snapshots: crate::git_observer::CompletedGitTurnSnapshotStore,
     slices: crate::slice::SliceStore,
     next_execution_lease_number: u64,
     next_leased_agent_number: u64,
+    turn_substitute_launch: Option<turn_substitute::TurnSubstituteLaunch>,
 }
 
 impl DaemonApp {
@@ -355,6 +360,7 @@ impl DaemonApp {
             attached_provider_transcript_cursors: AttachedProviderTranscriptCursorStore::default(),
             active_turns: ActiveTurnStore::default(),
             prompt_activity: PromptActivityStore::default(),
+            runtime_tool_call_activity: crate::runtime::state::RuntimeToolCallActivity::default(),
             prompt_workspace_claims: PromptWorkspaceClaimStore::default(),
             prompt_state_owner: PromptStateOwner::default(),
             sessions: SessionStateStore::new(
@@ -363,6 +369,7 @@ impl DaemonApp {
             ),
             history,
             operational_history,
+            app_control: crate::runtime::app_control::AppControlService::new(durable_state.clone()),
             durable_state,
             worker_prompt_receipts,
             worker_steer_receipts,
@@ -409,12 +416,14 @@ impl DaemonApp {
             #[cfg(test)]
             leased_agent_provider_cleanup_failures: BTreeMap::new(),
             leased_workflow_turns: BTreeMap::new(),
+            leased_turns_waiting_for_capacity: VecDeque::new(),
             remote_git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
             completed_git_turn_snapshots:
                 crate::git_observer::CompletedGitTurnSnapshotStore::default(),
             slices: crate::slice::SliceStore::default(),
             next_execution_lease_number: 0,
             next_leased_agent_number: 0,
+            turn_substitute_launch: None,
             started_at_ms: crate::session::unix_epoch_ms(),
             relay_client_state: Arc::new(tokio::sync::RwLock::new(
                 RelayClientState::with_pinned_peer_public_keys(
@@ -423,6 +432,10 @@ impl DaemonApp {
             )),
             config,
         };
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        app.app_control
+            .lifecycle()
+            .attach_event_config(app.config_projection.clone());
         let restore_started = Instant::now();
         app.restore_durable_state()?;
         if app.config.kernel_runtime_role == crate::config::KernelRuntimeRole::RemoteLeaseWorker
@@ -512,6 +525,10 @@ impl DaemonApp {
 
     pub(crate) fn durable_state_store(&self) -> DurableKernelStateStore {
         self.durable_state.clone()
+    }
+
+    pub(crate) fn app_control_service(&self) -> crate::runtime::app_control::AppControlService {
+        self.app_control.clone()
     }
 
     pub(crate) fn managed_context_transfer_store(

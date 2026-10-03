@@ -667,6 +667,7 @@ fn source_kernel_package_round_trips_with_identity_bindings() {
 
 #[test]
 fn receipt_capacity_is_rejected_before_context_publication() {
+    crate::test_support::isolated_env_test!();
     let _env_guard = crate::env_lock::lock();
     const CHILD: &str = "CHARIOX_TEST_RECEIPT_CAPACITY_CHILD";
     if std::env::var_os(CHILD).is_none() {

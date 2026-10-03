@@ -4,6 +4,7 @@ use std::process::Command;
 
 #[test]
 fn room_environment_worker_session_alias_attaches_default_agent_to_slice() {
+    crate::test_support::isolated_env_test!();
     run_test(session_alias_attaches_default_agent_to_slice);
 }
 
@@ -52,6 +53,7 @@ async fn session_alias_attaches_default_agent_to_slice() {
 
 #[test]
 fn room_environment_standard_worker_does_not_infer_project_transfer() {
+    crate::test_support::isolated_env_test!();
     run_test(standard_worker_does_not_infer_project_transfer);
 }
 

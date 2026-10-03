@@ -290,9 +290,16 @@ impl ManagedActivityMutation<'_> {
         self.state.record_managed_activity_transition_unlocked();
     }
 
-    pub(super) fn record_at(self, observed_at_ms: Option<u64>) {
+    pub(super) fn record_prompt_finish_at(self, observed_at_ms: Option<u64>) {
+        // A delayed completion may predate another turn that finished while
+        // this one kept the aggregate busy. Include all cleared turns, even
+        // provider-less turns removed by agent/session cleanup.
+        let aggregate_finished_at_ms = self
+            .state
+            .managed_activity_transitions
+            .record_prompt_finish(observed_at_ms.unwrap_or_else(crate::session::unix_epoch_ms));
         self.state
-            .record_managed_activity_transition_at_unlocked(observed_at_ms);
+            .record_managed_activity_transition_at_unlocked(Some(aggregate_finished_at_ms));
     }
 }
 

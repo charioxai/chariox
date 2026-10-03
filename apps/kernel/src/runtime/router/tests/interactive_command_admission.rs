@@ -396,10 +396,13 @@ fn queued_prompt_router_fixture_with_options(
     active_prompt_origin: PromptOrigin,
     workflow_owned_queued_prompt: bool,
 ) -> QueuedPromptRouterFixture {
-    let worktree = crate::test_support::TestWorktree::new(label);
+    let worktree = crate::test_support::TestWorktree::new(&format!("queued-{label}"));
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(worktree.session_request())
+        .create_session(CreateSessionRequest::new(
+            format!("workspace-queued-{label}"),
+            worktree.path().display().to_string(),
+        ))
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -470,14 +473,12 @@ fn queued_prompt_router_fixture_with_options(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn prompt_submit_does_not_wait_behind_slow_history_load() {
-    let fixture_worktree_0 = crate::test_support::TestWorktree::new(
-        "prompt_submit_does_not_wait_behind_slow_history_load",
-    );
+    let worktree = crate::test_support::TestWorktree::new("prompt-submit-does-not");
     let mut config = DaemonConfig::for_tests();
     config.operational_history_read_delay_ms = 120;
     let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(fixture_worktree_0.session_request())
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let session_id = session.id().to_string();
     let agent_id = agent.id().to_string();
@@ -590,9 +591,7 @@ fn focus_resize_and_cancel_do_not_wait_behind_slow_provider_catalog() {
 }
 
 async fn focus_resize_and_cancel_do_not_wait_behind_slow_provider_catalog_inner() {
-    let fixture_worktree_0 = crate::test_support::TestWorktree::new(
-        "focus_resize_and_cancel_do_not_wait_behind_slow_provider_catalog_inner",
-    );
+    let worktree = crate::test_support::TestWorktree::new("focus-resize-and-cancel");
     let mut config = DaemonConfig::for_tests();
     // Assert independence from catalog discovery, not a sub-second CI disk/scheduler SLA.
     // The catalog delay exceeds the deadlock budget; each response must also arrive
@@ -602,7 +601,7 @@ async fn focus_resize_and_cancel_do_not_wait_behind_slow_provider_catalog_inner(
     config.provider_catalog_read_delay_ms = CATALOG_DELAY.as_millis() as u64;
     let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(fixture_worktree_0.session_request())
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let session_id = session.id().to_string();
     let agent_id = agent.id().to_string();

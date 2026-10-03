@@ -131,13 +131,24 @@ test("nested provider namespaces can use a host-installed AppArmor profile", asy
   assert.match(image, /chmod 4755 \/usr\/bin\/bwrap/)
   // MP-02/MP-08/MP-10: launch must use the no-new-privs mode admitted by the probe,
   // including on rootful Docker where setuid bwrap can fail at the sysctl write.
-  assert.match(launcher, /exec setpriv --no-new-privs \/usr\/bin\/bwrap --seccomp 3 "\$@"/)
+  assert.match(launcher, /exec \/usr\/bin\/setpriv --no-new-privs \/usr\/bin\/bwrap --seccomp 3 "\$@"/)
   assert.doesNotMatch(launcher, /\/proc\/self\/uid_map/)
+  // The compatibility probe must exercise the same unprivileged launch mode.
+  assert.match(source, /setpriv --no-new-privs\s*\\\s*bwrap[\s\S]*--disable-userns/)
   assert.match(seccomp, /SCMP_SYS\(unshare\)/)
   assert.match(seccomp, /SCMP_SYS\(clone3\)/)
   assert.match(runtimeSource, /CHARIOX_MANAGED_PROVIDER_BWRAP="\/usr\/local\/libexec\/chariox\/managed-provider-bwrap"/)
   assert.match(profile, /profile chariox-slice-provider flags=\(unconfined\)/)
   assert.match(profile, /^\s*userns,\s*$/m)
+})
+
+test("protected default provider accounts stay in the private root, outside the shared provider HOME", async () => {
+  const runtimeSource = await readFile(runtime, "utf8")
+
+  assert.match(runtimeSource, /DEFAULT_PROVIDER_ROOT="\$CHARIOX_SLICE_PRIVATE_ROOT\/provider-default"/)
+  assert.match(runtimeSource, /CODEX_HOME="\$DEFAULT_PROVIDER_ROOT\/codex" CLAUDE_CONFIG_DIR="\$DEFAULT_PROVIDER_ROOT\/claude"/)
+  assert.doesNotMatch(runtimeSource, /(?:CODEX_HOME|CLAUDE_CONFIG_DIR)="\$PROVIDER_HOME/)
+  assert.match(runtimeSource, /screen -dmS chariox-slice-kernel env \\\n\s+"\$\{default_provider_env\[@\]\}"/)
 })
 
 test("the isolation probe runs on its own kernel and the slice kernel starts without probe env", async () => {

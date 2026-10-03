@@ -4,7 +4,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -15,11 +15,50 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
 
+pub(crate) mod app_activation;
+pub(crate) mod app_active_release;
+pub(crate) mod app_automations;
+pub(crate) mod app_bindings;
+pub(crate) mod app_event_delivery;
+pub(crate) mod app_event_maintenance;
+pub(crate) mod app_connections;
+pub(crate) mod app_file_exports;
+pub(crate) mod app_host_actions;
+pub(crate) mod app_file_grants;
+pub(crate) mod app_inbox;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_files;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_http;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_installation_operations;
+pub(crate) mod app_installation_staging;
+pub(crate) mod app_publisher_operations;
+pub(crate) mod app_publishers;
+pub(crate) mod app_snapshots;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_snapshot_restore;
+pub(crate) mod app_state;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_tools;
+pub(crate) mod app_logs;
+pub(crate) mod app_validations;
+pub(crate) mod app_wakes;
+pub(crate) mod app_worker_lifecycle;
+pub(crate) mod app_view_assets;
+pub(crate) mod apps;
+#[cfg(test)]
+mod apps_tests;
 pub(crate) mod browser_import;
 mod owner;
 pub(crate) mod room_environment;
+pub(crate) mod storage_full;
 pub(crate) mod worker_prompt_receipts;
 pub(crate) mod worker_steer_receipts;
+mod writer_fence;
+use writer_fence::fenced_writer_error;
+pub(crate) mod workflow_dispatch_intents;
+pub(crate) mod workflow_queue_start;
 pub(crate) mod workflow_runtime;
 
 pub(crate) const QUIESCENCE_STATE_SNAPSHOT_KIND: &str =
@@ -31,6 +70,7 @@ pub struct DurableKernelStateStore {
     connection: Arc<Mutex<Connection>>,
     writer: Arc<DurableStateWriter>,
     workflow_runtime_transition_lock: Arc<Mutex<()>>,
+    app_wake_changed: Arc<tokio::sync::Notify>,
     _owner: Option<Arc<fs::File>>,
 }
 
@@ -76,13 +116,21 @@ mod settlement_retry_tests {
 
 #[derive(Debug)]
 struct DurableStateWriter {
-    sender: Mutex<Option<SyncSender<DurableWriteRequest>>>,
+    sender: Mutex<Option<SyncSender<DurableWriterRequest>>>,
     worker: Mutex<Option<JoinHandle<()>>>,
     health: Arc<DurableWriterHealth>,
 }
 
 #[derive(Debug, Default)]
 struct DurableWriterHealth {
+    fatal: AtomicBool,
+    /// Set with `fatal` only when a commit's outcome is unknown, not at an
+    /// ordinary writer shutdown.
+    stopped_uncertain: AtomicBool,
+    /// Nonzero while the disk is full: when the writer first saw it.
+    storage_full_since_ms: AtomicU64,
+    /// The condition last reported to the owner.
+    announced: AtomicU8,
     committed_batches: AtomicU64,
     committed_records: AtomicU64,
     max_batch_records: AtomicU64,
@@ -123,6 +171,41 @@ struct DurableWriteRequest {
 }
 
 #[derive(Debug)]
+enum DurableWriterRequest {
+    Ordinary(DurableWriteRequest),
+    App(Box<apps::AppRegistryRequest>),
+    AppPublisher(Box<app_publishers::AppPublisherRequest>),
+    AppPublisherOperation(Box<app_publisher_operations::PublisherOperationRequest>),
+    VerifiedApp(Box<app_installation_staging::AppVerifiedInstallationRequest>),
+    AppState(Box<app_state::AppStateRequest>),
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    AppRestore(Box<app_snapshot_restore::RestoreRequest>),
+    AppWake(Box<app_wakes::AppWakeRequest>),
+    AppInbox(Box<app_inbox::AppInboxRequest>),
+    AppLog(Box<app_logs::AppLogRequest>),
+    AppValidation(Box<app_validations::ValidationRequest>),
+    AppFileGrant(Box<app_file_grants::FileGrantRequest>),
+    AppFileExport(Box<app_file_exports::FileExportRequest>),
+    AppHostAction(Box<app_host_actions::HostActionRequest>),
+    AppConnectionGrant(Box<app_connections::ConnectionGrantRequest>),
+    AppBinding(Box<app_bindings::AppBindingRequest>),
+    AppAutomation(Box<app_automations::AppAutomationRequest>),
+    AppActivation(Box<app_activation::AppActivationRequest>),
+    AppWorkerLifecycle(Box<app_worker_lifecycle::AppWorkerLifecycleRequest>),
+    AppEventMaintenance(Box<app_event_maintenance::AppEventMaintenanceRequest>),
+    AppEventQueue(Box<app_event_delivery::AppEventQueueRequest>),
+    WorkflowQueueStart(Box<workflow_queue_start::WorkflowQueueStartRequest>),
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    AppTools(Box<app_tools::AppToolsRequest>),
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    AppFile(Box<app_files::AppFileRequest>),
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    AppHttp(Box<crate::runtime::app_http::HttpJob>),
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    AppInstallationOperation(Box<app_installation_operations::AppInstallationOperationRequest>),
+}
+
+#[derive(Debug)]
 enum DurableWriteOperation {
     RoomEnvironment(room_environment::RoomEnvironmentWrite),
     BrowserImport(browser_import::ImportStateWrite),
@@ -160,14 +243,7 @@ enum DurableWriteOperation {
         hot_entities: Vec<DurableWorkflowHotEntityWrite>,
         workflow_runs: Vec<DurableWorkflowRunWrite>,
         delivery_receipts: Vec<DurableDeliveryReceiptWrite>,
-        prompt_state_json: Vec<String>,
-    },
-    WorkflowRuntimeSessionsTransition {
-        event_id: String,
-        timestamp_ms: u64,
-        payload_json: String,
-        owner_id: String,
-        sessions: Vec<DurableWorkflowSessionWrite>,
+        prompt_state_jsons: Vec<String>,
     },
     WorkflowRuntimeMigration {
         owner_id: String,
@@ -254,6 +330,13 @@ impl DurableKernelStateStore {
         let owner = owner::acquire(&path)?;
         let mut store = Self::open(path)?;
         store._owner = Some(Arc::new(owner));
+        // Only this store's owning kernel may settle its own crashed workers.
+        store
+            .reset_app_workers_after_kernel_start()
+            .map_err(|_| DaemonError::LocalTransport {
+                operation: "durable_state.app_worker_restart",
+                message: "App worker lifecycle could not be reset after a kernel start".into(),
+            })?;
         Ok(store)
     }
 
@@ -267,10 +350,11 @@ impl DurableKernelStateStore {
                 message: error.to_string(),
             })?;
         }
-        let connection = Connection::open(&path).map_err(|error| DaemonError::LocalTransport {
-            operation: "durable_state.open",
-            message: error.to_string(),
-        })?;
+        let mut connection =
+            Connection::open(&path).map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.open",
+                message: error.to_string(),
+            })?;
         if initialize_incremental_vacuum {
             connection
                 .pragma_update(None, "auto_vacuum", "INCREMENTAL")
@@ -291,6 +375,38 @@ impl DurableKernelStateStore {
                 operation: "durable_state.migrate",
                 message: error.to_string(),
             })?;
+        storage_full::initialize(&connection)?;
+        apps::initialize(&mut connection)?;
+        app_publishers::initialize(&mut connection)?;
+        app_publisher_operations::initialize(&connection)?;
+        app_state::initialize(&mut connection)?;
+        app_automations::initialize(&mut connection)?;
+        app_inbox::initialize(&connection)?;
+        app_worker_lifecycle::initialize(&connection)?;
+        app_validations::initialize(&connection).map_err(|_| DaemonError::LocalTransport {
+            operation: "durable_state.app_validations",
+            message: "App validation schema could not be initialized".into(),
+        })?;
+        app_file_grants::initialize(&connection)
+            .and_then(|()| app_file_exports::initialize(&connection))
+            .and_then(|()| app_host_actions::initialize(&connection))
+            .and_then(|()| app_connections::initialize(&connection))
+            .map_err(|_| DaemonError::LocalTransport {
+                operation: "durable_state.app_file_grants",
+                message: "App file grant schema could not be initialized".into(),
+            })?;
+        app_logs::initialize(&connection).map_err(|_| DaemonError::LocalTransport {
+            operation: "durable_state.app_logs",
+            message: "App log schema could not be initialized".into(),
+        })?;
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        app_installation_operations::initialize(&connection)?;
+        workflow_dispatch_intents::initialize(&connection).map_err(|error| {
+            DaemonError::LocalTransport {
+                operation: "durable_state.workflow_dispatch_intents",
+                message: error.to_string(),
+            }
+        })?;
         let writer = DurableStateWriter::start(&path)?;
         connection
             .pragma_update(None, "query_only", true)
@@ -303,6 +419,7 @@ impl DurableKernelStateStore {
             connection: Arc::new(Mutex::new(connection)),
             writer: Arc::new(writer),
             workflow_runtime_transition_lock: Arc::new(Mutex::new(())),
+            app_wake_changed: Arc::new(tokio::sync::Notify::new()),
             _owner: None,
         })
     }
@@ -1220,6 +1337,13 @@ impl DurableKernelStateStore {
 }
 
 impl DurableStateWriter {
+    fn require_healthy(&self) -> Result<(), DaemonError> {
+        if self.health.fatal.load(Ordering::Acquire) {
+            Err(fenced_writer_error())
+        } else {
+            Ok(())
+        }
+    }
     fn start(path: &Path) -> Result<Self, DaemonError> {
         let connection = Connection::open(path).map_err(|error| DaemonError::LocalTransport {
             operation: "durable_state.open_writer",
@@ -1238,7 +1362,14 @@ impl DurableStateWriter {
         let worker = std::thread::Builder::new()
             .name("chariox-durable-writer".to_string())
             .stack_size(512 * 1024)
-            .spawn(move || run_durable_writer(connection, receiver, worker_health))
+            .spawn(move || {
+                run_durable_writer(
+                    connection,
+                    receiver,
+                    worker_health,
+                    DURABLE_WRITE_BATCH_WINDOW,
+                )
+            })
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "durable_state.spawn_writer",
                 message: error.to_string(),
@@ -1252,6 +1383,24 @@ impl DurableStateWriter {
 
     fn execute(&self, operation: DurableWriteOperation) -> Result<u64, DaemonError> {
         let (response_tx, response_rx) = mpsc::channel();
+        self.enqueue(DurableWriterRequest::Ordinary(DurableWriteRequest {
+            operation,
+            response: response_tx,
+        }))?;
+        response_rx
+            .recv()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.await_write",
+                message: error.to_string(),
+            })?
+            .map_err(|message| DaemonError::LocalTransport {
+                operation: "durable_state.commit_write",
+                message,
+            })
+    }
+
+    fn enqueue(&self, request: DurableWriterRequest) -> Result<(), DaemonError> {
+        self.require_healthy()?;
         let sender = self
             .sender
             .lock()
@@ -1266,23 +1415,10 @@ impl DurableStateWriter {
                 message: "durable writer is shutting down".to_string(),
             })?;
         sender
-            .send(DurableWriteRequest {
-                operation,
-                response: response_tx,
-            })
+            .send(request)
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "durable_state.enqueue_write",
                 message: error.to_string(),
-            })?;
-        response_rx
-            .recv()
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "durable_state.await_write",
-                message: error.to_string(),
-            })?
-            .map_err(|message| DaemonError::LocalTransport {
-                operation: "durable_state.commit_write",
-                message,
             })
     }
 
@@ -1325,18 +1461,215 @@ impl Drop for DurableStateWriter {
 
 fn run_durable_writer(
     mut connection: Connection,
-    receiver: Receiver<DurableWriteRequest>,
+    receiver: Receiver<DurableWriterRequest>,
     health: Arc<DurableWriterHealth>,
+    batch_window: Duration,
 ) {
-    while let Ok(first) = receiver.recv() {
+    struct MarkStopped(Arc<DurableWriterHealth>);
+    impl Drop for MarkStopped {
+        fn drop(&mut self) {
+            self.0.fatal.store(true, Ordering::Release);
+        }
+    }
+    let _stopped = MarkStopped(health.clone());
+    let mut storage = storage_full::StorageProbe::new(&connection);
+    let mut pending = None;
+    loop {
+        storage.after_request(&health);
+        let Some(first) = pending
+            .take()
+            .or_else(|| storage.next_request(&receiver, &mut connection, &health))
+        else {
+            break;
+        };
+        if health.fatal.load(Ordering::Acquire) {
+            break;
+        }
+        let first = match first {
+            DurableWriterRequest::Ordinary(request) => request,
+            DurableWriterRequest::App(request) => {
+                apps::execute(&mut connection, *request);
+                continue;
+            }
+            DurableWriterRequest::AppPublisher(request) => {
+                app_publishers::execute(&mut connection, *request);
+                continue;
+            }
+            DurableWriterRequest::AppPublisherOperation(request) => {
+                if matches!(
+                    app_publisher_operations::execute(&mut connection, *request, &health.fatal),
+                    app_event_delivery::WriterDisposition::Stop
+                ) {
+                    health.stop_uncertain("app_publisher_operation");
+                    break;
+                }
+                continue;
+            }
+            DurableWriterRequest::VerifiedApp(request) => {
+                app_installation_staging::execute(&mut connection, *request);
+                continue;
+            }
+            #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+            DurableWriterRequest::AppRestore(request) => {
+                if app_snapshot_restore::execute(&mut connection, *request, &health.fatal) {
+                    health.fatal.store(true, Ordering::Release);
+                    break;
+                }
+                continue;
+            }
+            DurableWriterRequest::AppState(request) => {
+                app_state::execute(&mut connection, *request);
+                continue;
+            }
+            DurableWriterRequest::AppWake(request) => {
+                app_wakes::execute(&mut connection, *request);
+                continue;
+            }
+            DurableWriterRequest::AppInbox(request) => {
+                app_inbox::execute(&mut connection, *request);
+                continue;
+            }
+            DurableWriterRequest::AppLog(request) => {
+                app_logs::execute(&mut connection, *request);
+                continue;
+            }
+            DurableWriterRequest::AppValidation(request) => {
+                app_validations::execute(&mut connection, *request);
+                continue;
+            }
+            DurableWriterRequest::AppFileGrant(request) => {
+                app_file_grants::execute(&mut connection, *request);
+                continue;
+            }
+            DurableWriterRequest::AppHostAction(request) => {
+                app_host_actions::execute(&mut connection, *request);
+                continue;
+            }
+            DurableWriterRequest::AppFileExport(request) => {
+                app_file_exports::execute(&mut connection, *request);
+                continue;
+            }
+            DurableWriterRequest::AppConnectionGrant(request) => {
+                app_connections::execute(&mut connection, *request);
+                continue;
+            }
+            DurableWriterRequest::AppBinding(request) => {
+                app_bindings::execute(&mut connection, *request);
+                continue;
+            }
+            DurableWriterRequest::AppAutomation(request) => {
+                app_automations::execute(&mut connection, *request);
+                continue;
+            }
+            DurableWriterRequest::AppActivation(request) => {
+                app_activation::execute(&mut connection, *request);
+                continue;
+            }
+            DurableWriterRequest::AppWorkerLifecycle(request) => {
+                app_worker_lifecycle::execute(&mut connection, *request);
+                continue;
+            }
+            #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+            DurableWriterRequest::AppInstallationOperation(request) => {
+                if matches!(
+                    app_installation_operations::execute(&mut connection, *request),
+                    app_event_delivery::WriterDisposition::Stop
+                ) {
+                    health.stop_uncertain("app_installation_operation");
+                    break;
+                }
+                continue;
+            }
+            DurableWriterRequest::AppEventMaintenance(request) => {
+                app_event_maintenance::execute(&mut connection, *request);
+                continue;
+            }
+            #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+            DurableWriterRequest::AppTools(request) => {
+                app_tools::execute(&mut connection, *request);
+                continue;
+            }
+            #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+            DurableWriterRequest::AppFile(request) => {
+                app_files::execute(&mut connection, *request);
+                continue;
+            }
+            #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+            DurableWriterRequest::AppHttp(request) => {
+                app_http::execute(&mut connection, *request);
+                continue;
+            }
+            DurableWriterRequest::AppEventQueue(request) => {
+                if matches!(
+                    app_event_delivery::execute(&mut connection, *request),
+                    app_event_delivery::WriterDisposition::Stop
+                ) {
+                    health.stop_uncertain("app_event_queue");
+                    // Drop queued replies and the receiver so stale sessions
+                    // cannot overwrite an uncertain commit. Restart reloads
+                    // authoritative state before the kernel accepts writes.
+                    break;
+                }
+                continue;
+            }
+            DurableWriterRequest::WorkflowQueueStart(request) => {
+                if matches!(
+                    workflow_queue_start::execute(&mut connection, *request),
+                    app_event_delivery::WriterDisposition::Stop
+                ) {
+                    health.stop_uncertain("workflow_queue_start");
+                    break;
+                }
+                continue;
+            }
+        };
         let mut batch = vec![first];
-        let deadline = Instant::now() + DURABLE_WRITE_BATCH_WINDOW;
+        let deadline = Instant::now() + batch_window;
         while batch.len() < DURABLE_WRITE_BATCH_LIMIT {
+            if health.fatal.load(Ordering::Acquire) {
+                break;
+            }
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 break;
             };
             match receiver.recv_timeout(remaining) {
-                Ok(request) => batch.push(request),
+                Ok(DurableWriterRequest::Ordinary(request)) => batch.push(request),
+                #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+                Ok(
+                    request @ (DurableWriterRequest::AppTools(_)
+                    | DurableWriterRequest::AppFile(_)
+                    | DurableWriterRequest::AppHttp(_)
+                    | DurableWriterRequest::AppInstallationOperation(_)
+                    | DurableWriterRequest::AppRestore(_)),
+                ) => {
+                    pending = Some(request);
+                    break;
+                }
+                Ok(
+                    request @ (DurableWriterRequest::App(_)
+                    | DurableWriterRequest::AppPublisher(_)
+                    | DurableWriterRequest::AppPublisherOperation(_)
+                    | DurableWriterRequest::VerifiedApp(_)
+                    | DurableWriterRequest::AppState(_)
+                    | DurableWriterRequest::AppWake(_)
+                    | DurableWriterRequest::AppInbox(_)
+                    | DurableWriterRequest::AppLog(_)
+                    | DurableWriterRequest::AppValidation(_)
+                    | DurableWriterRequest::AppFileGrant(_)
+                    | DurableWriterRequest::AppFileExport(_)
+                    | DurableWriterRequest::AppHostAction(_)
+                    | DurableWriterRequest::AppConnectionGrant(_)
+                    | DurableWriterRequest::AppBinding(_)
+                    | DurableWriterRequest::AppAutomation(_)
+                    | DurableWriterRequest::AppActivation(_)
+                    | DurableWriterRequest::AppWorkerLifecycle(_)
+                    | DurableWriterRequest::AppEventMaintenance(_)
+                    | DurableWriterRequest::WorkflowQueueStart(_)
+                    | DurableWriterRequest::AppEventQueue(_)),
+                ) => {
+                    pending = Some(request);
+                    break;
+                }
                 Err(mpsc::RecvTimeoutError::Timeout) => break,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
@@ -1350,9 +1683,14 @@ fn commit_durable_write_batch(
     batch: Vec<DurableWriteRequest>,
     health: &DurableWriterHealth,
 ) {
+    if health.fatal.load(Ordering::Acquire) {
+        send_durable_batch_error(batch, "durable writer requires recovery".into());
+        return;
+    }
     let transaction = match connection.transaction() {
         Ok(transaction) => transaction,
         Err(error) => {
+            storage_full::observe(&error);
             send_durable_batch_error(batch, error.to_string());
             return;
         }
@@ -1360,6 +1698,10 @@ fn commit_durable_write_batch(
     let mut results = Vec::with_capacity(batch.len());
     let mut failure = None;
     for request in &batch {
+        if health.fatal.load(Ordering::Acquire) {
+            failure = Some("durable writer requires recovery".into());
+            break;
+        }
         let result = match &request.operation {
             DurableWriteOperation::RoomEnvironment(write) => {
                 room_environment::apply(&transaction, write)
@@ -1386,7 +1728,16 @@ fn commit_durable_write_batch(
                         payload_json
                     ],
                 )
-                .map(|_| transaction.last_insert_rowid().max(0) as u64),
+                .and_then(|_| {
+                    let sequence = transaction.last_insert_rowid().max(0) as u64;
+                    if kind == crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND {
+                        workflow_dispatch_intents::record_prompt_state_in(
+                            &transaction,
+                            payload_json,
+                        )?;
+                    }
+                    Ok(sequence)
+                }),
             DurableWriteOperation::QuiescenceSnapshotEvent {
                 event_id,
                 subject_id,
@@ -1444,7 +1795,7 @@ fn commit_durable_write_batch(
                 hot_entities,
                 workflow_runs,
                 delivery_receipts,
-                prompt_state_json,
+                prompt_state_jsons,
             } => workflow_runtime::write_workflow_runtime_transition(
                 &transaction,
                 workflow_runtime::WorkflowRuntimeTransitionWrite {
@@ -1457,22 +1808,8 @@ fn commit_durable_write_batch(
                     hot_entities,
                     workflow_runs,
                     delivery_receipts,
-                    prompt_state_json,
+                    prompt_state_jsons,
                 },
-            ),
-            DurableWriteOperation::WorkflowRuntimeSessionsTransition {
-                event_id,
-                timestamp_ms,
-                payload_json,
-                owner_id,
-                sessions,
-            } => workflow_runtime::write_workflow_runtime_sessions_transition(
-                &transaction,
-                event_id,
-                *timestamp_ms,
-                payload_json,
-                owner_id,
-                sessions,
             ),
             DurableWriteOperation::WorkflowRuntimeMigration {
                 owner_id,
@@ -1514,10 +1851,14 @@ fn commit_durable_write_batch(
         match result {
             Ok(sequence) => results.push(sequence),
             Err(error) => {
+                storage_full::observe(&error);
                 failure = Some(error.to_string());
                 break;
             }
         }
+    }
+    if health.fatal.load(Ordering::Acquire) {
+        failure = Some("durable writer requires recovery".into());
     }
     if let Some(message) = failure {
         drop(transaction);
@@ -1525,6 +1866,7 @@ fn commit_durable_write_batch(
         return;
     }
     if let Err(error) = transaction.commit() {
+        storage_full::observe(&error);
         send_durable_batch_error(batch, error.to_string());
         return;
     }
@@ -1655,6 +1997,11 @@ fn write_entity_checkpoint(
 }
 
 const DURABLE_STATE_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS app_restore_receipts (
+    owner_id TEXT NOT NULL,
+    installation_id TEXT PRIMARY KEY,
+    restore_id TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS durable_room_environments (
     owner_id TEXT NOT NULL,
     session_id TEXT NOT NULL,

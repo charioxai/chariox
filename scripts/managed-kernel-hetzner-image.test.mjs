@@ -150,6 +150,12 @@ test("Hetzner image preparation is pinned, guarded, and leaves no runtime identi
   assert.match(script, /systemctl is-active --quiet "\$bootstrap_service"/)
   assert.match(script, /managed runtime state entered the image/)
   assert.match(script, /rootless Docker state entered the image/)
+  // The installer's empty protected layout root is allowed; its contents are not.
+  const installer = await readFile(installerUrl, "utf8")
+  assert.match(installer, /install -d -o chariox-docker -g chariox-docker -m 0711 "\$private_layout_root"/)
+  assert.match(script, /private_layout_root=\/var\/lib\/chariox-docker\/private-layout/)
+  assert.match(script, /! -path \/var\/lib\/chariox-docker\/home \\\s*! -path "\$private_layout_root" -print -quit/)
+  assert.match(script, /stat -c '%U:%a' "\$private_layout_root"\)" != chariox-docker:711/)
   assert.match(script, /managed slice state entered the image/)
   assert.match(script, /broker output staging is not on the managed share filesystem/)
   assert.match(script, /npm_config_cache="\$npm_cache" npm ci --omit=dev/)
@@ -418,6 +424,7 @@ test("Hetzner image preparation installs the hosted-drill tools", async () => {
   const script = await readFile(scriptUrl, "utf8")
   for (const dependency of [
     "acl",
+    "e2fsprogs",
     "bubblewrap",
     "build-essential",
     "ca-certificates",
@@ -486,8 +493,10 @@ test("managed slice image locks every network and compiler input", async () => {
       "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-kernel /chariox-kernel",
       "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-managed-bootstrap /chariox-managed-bootstrap",
       "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-relay /chariox-relay",
+      "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-app-package /chariox-app-package",
+      "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-app-storage /chariox-app-storage",
     ],
-    "scratch may export only the three managed runtime binaries",
+    "scratch may export only the five managed runtime binaries",
   )
   for (const [, image] of fromStages) {
     if (image.toLowerCase() === "scratch") continue
@@ -533,6 +542,21 @@ test("managed slices use builder-attested runtime binaries instead of compiling 
   assert.match(provisioner, /--build-arg "CHARIOX_PREBUILT_RUNTIME=1"/)
 })
 
+test("managed App domain is prepared after the delegated main process is spawned", async () => {
+  // systemd 259 (Ubuntu 26.04) spawns the main process through the unit's own
+  // cgroup; controllers enabled there by an ExecStartPre make that spawn fail
+  // with EBUSY, so the root domain preparation must be an ExecStartPost.
+  const prepare = "+/usr/libexec/chariox-app-storage --prepare-managed-domain"
+  const managed = await readFile(managedServiceUrl, "utf8")
+  const fixture = await readFile(new URL("./app-storage-linux-fixture.sh", import.meta.url), "utf8")
+  assert.match(managed, /^Delegate=cpu memory pids$/m)
+  assert.match(managed, /^DelegateSubgroup=supervisor$/m)
+  for (const unit of [managed, fixture]) {
+    assert.ok(unit.split("\n").includes(`ExecStartPost=${prepare}`))
+    assert.doesNotMatch(unit, /^ExecStartPre=.*--prepare-managed-domain/m)
+  }
+})
+
 test("managed Docker authority and publication access remain narrowly separated", async () => {
   const bootstrapEntrypoint = await readFile(bootstrapEntrypointUrl, "utf8")
   const managed = await readFile(managedServiceUrl, "utf8")
@@ -574,9 +598,9 @@ test("managed Docker authority and publication access remain narrowly separated"
     "ProtectSystem=strict",
     "ProtectHome=read-only",
     "ProtectKernelModules=true",
-    "ProtectControlGroups=true",
+    "ProtectControlGroups=false",
     "RestrictSUIDSGID=true",
-    "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
+    "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK",
     "UMask=0007",
   ]) {
     assert.match(managed, new RegExp(`^${directive}$`, "m"))
@@ -680,6 +704,8 @@ test("managed Docker authority and publication access remain narrowly separated"
   assert.match(rootless, /ReadWritePaths=.*\/var\/lib\/chariox-slice-share\/slices\/development/)
   assert.doesNotMatch(rootless, /ReadWritePaths=.*\/var\/lib\/chariox(?:\/home)?(?:\s|$)/)
   assert.match(broker, /^Restart=no$/m)
+  // The kernel delegates its App subtree; the Docker broker has no such authority.
+  assert.match(broker, /^ProtectControlGroups=true$/m)
   assert.match(broker, /^Group=chariox-docker$/m)
   assert.doesNotMatch(broker, /^SupplementaryGroups=/m)
   assert.match(broker, /enter-rootless-docker-namespace\.sh \/usr\/bin\/node/)
@@ -714,7 +740,11 @@ test("managed Docker authority and publication access remain narrowly separated"
   assert.match(archiveStream, /HOME_ARCHIVE_MINIMUM_FREE_BYTES = policy\.minimumFreeBytes/)
   const archivePolicy = JSON.parse(await readFile(new URL("../apps/kernel/slice-linux-docker/home-archive-policy.json", import.meta.url), "utf8"))
   assert.deepEqual(archivePolicy, { schemaVersion: 1, minimumFreeBytes: 2 * 1024 ** 3, progressTimeoutMs: 300_000 })
-  assert.match(managedBroker, /await capturePrivateHomeArchive\(\{/)
+  // Phase 1 capture admission: the kernel refuses save/backup unless the broker
+  // verifies a protected layout, so the broker captures only that layout. The
+  // protected capture runs as a lease-owned broker producer (release F).
+  assert.match(managedBroker, /protectedLayouts\.requireQuiescedHome\(owner\)/)
+  assert.match(managedBroker, /await spawnBounded\(process\.execPath,\s*\[join\(dirname\(fileURLToPath\(import\.meta\.url\)\), "protected-home-capture\.mjs"\)/)
   assert.match(managedBroker, /await digestPinnedHomeArchive\(archive\.fd, HOME_ARCHIVE_PROGRESS_TIMEOUT_MS, brokerLifetime\.signal\)/)
   assert.match(managedBroker, /verifyManagedHomeArchive/)
   assert.match(managedBroker, /spawnControl\("\/usr\/bin\/mount", \["--bind", "\/proc\/self\/fd\/3", path\]/)

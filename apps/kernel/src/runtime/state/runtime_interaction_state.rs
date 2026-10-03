@@ -16,7 +16,7 @@ impl KernelRuntimeState {
             .iter()
             .find(|interaction| interaction.id() == interaction_id);
         if !interaction_id.starts_with("provider-auth-recovery:")
-            || interaction.is_some_and(|interaction| interaction.agent_id() != agent_id)
+            || interaction.is_some_and(|interaction| interaction.agent_id() != Some(agent_id))
         {
             return Err(DaemonError::LocalTransport {
                 operation: "update provider login interaction",
@@ -41,8 +41,8 @@ impl KernelRuntimeState {
         interaction_id: &str,
         login: Option<crate::session::RuntimeProviderLogin>,
     ) -> Result<(), DaemonError> {
-        if let Some((config, home_kernel_id, context)) = self
-            .remote_native_interaction_context(session_id, agent_id)
+        if let Some((config, home_kernel_id, context, _)) = self
+            .leased_interaction_home_target(session_id, agent_id, None)
             .await?
         {
             let response = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
@@ -68,6 +68,47 @@ impl KernelRuntimeState {
         )
     }
 
+    /// MP-08 / MP-10 / MP-11: a leased worker agent's kernel interaction
+    /// (utility review, Vault input, provider login) is answered in the home
+    /// session. Like a provider-native approval, it is bound to the worker turn
+    /// that raised it, so the home withdraws it with that turn. Without a live
+    /// turn there is nothing to bind and the interaction stays local.
+    async fn leased_interaction_home_target(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        origin: Option<&crate::session::NativeInteractionOrigin>,
+    ) -> Result<
+        Option<(
+            crate::config::DaemonConfig,
+            String,
+            crate::transport::relay_peer::RemoteNativeInteractionContext,
+            crate::session::NativeInteractionOrigin,
+        )>,
+        DaemonError,
+    > {
+        let origin = match origin {
+            Some(origin) => origin.clone(),
+            None => {
+                let Some(origin) = self
+                    .owned
+                    .provider_store
+                    .get_run_for_agent(session_id, agent_id)
+                    .and_then(|run| {
+                        self.capture_native_interaction_origin(session_id, agent_id, run.id())
+                    })
+                else {
+                    return Ok(None);
+                };
+                origin
+            }
+        };
+        Ok(self
+            .remote_native_interaction_context(session_id, agent_id, &origin)
+            .await?
+            .map(|(config, home_kernel_id, context)| (config, home_kernel_id, context, origin)))
+    }
+
     pub(in crate::runtime) async fn create_runtime_interaction(
         &self,
         session_id: &str,
@@ -75,37 +116,61 @@ impl KernelRuntimeState {
     ) -> Result<oneshot::Receiver<PendingInteractionResolution>, DaemonError> {
         // MP-08 / MP-10 / MP-11: Leased utility reviews and Vault input belong
         // to the home session, using the same bridge as provider-native approval.
-        if let Some((config, home_kernel_id, context)) = self
-            .remote_native_interaction_context(session_id, interaction.agent_id())
-            .await?
-        {
-            let (tx, rx) = oneshot::channel();
-            let timeout =
-                Duration::from_secs(interaction.timeout_sec().unwrap_or(900).saturating_add(15));
-            tokio::spawn(async move {
-                let response = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
-                    &config, ClientTarget {daemon_id: Some(home_kernel_id), daemon_alias: None},
-                    RelayPeerRequest::ForwardNativeInteraction {context, interaction}, timeout,
-                ).await;
-                if let Ok(RelayPeerResponse::NativeInteractionResolved { resolution }) = response {
-                    let status = if resolution.status == "answered" {
-                        "answered"
-                    } else {
-                        "timed_out"
-                    };
-                    let _ = tx.send(PendingInteractionResolution {
-                        status,
-                        choice_id: resolution.choice_id,
-                        reply: resolution.reply,
-                    });
-                }
-            });
-            return Ok(rx);
+        let agent_id = interaction.agent_id().map(str::to_owned);
+        if let Some(agent_id) = agent_id {
+            if let Some((config, home_kernel_id, context, origin)) = self
+                .leased_interaction_home_target(session_id, &agent_id, interaction.native_origin())
+                .await?
+            {
+                let interaction = interaction.with_native_origin(Some(origin));
+                let (tx, rx) = oneshot::channel();
+                let timeout = Duration::from_secs(
+                    interaction.timeout_sec().unwrap_or(900).saturating_add(15),
+                );
+                tokio::spawn(async move {
+                    let response = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+                        &config, ClientTarget {daemon_id: Some(home_kernel_id), daemon_alias: None},
+                        RelayPeerRequest::ForwardNativeTurnInteraction {context, interaction}, timeout,
+                    ).await;
+                    if let Ok(RelayPeerResponse::NativeInteractionResolved { resolution }) =
+                        response
+                    {
+                        let status = if resolution.status == "answered" {
+                            "answered"
+                        } else {
+                            "timed_out"
+                        };
+                        let _ = tx.send(PendingInteractionResolution {
+                            status,
+                            choice_id: resolution.choice_id,
+                            reply: resolution.reply,
+                        });
+                    }
+                });
+                return Ok(rx);
+            }
         }
+        self.create_runtime_interaction_with_forwarding(session_id, interaction, None)
+            .await
+    }
+
+    pub(in crate::runtime) async fn create_runtime_interaction_with_forwarding(
+        &self,
+        session_id: &str,
+        interaction: crate::session::RuntimeInteraction,
+        forwarding: Option<&crate::transport::relay_peer::RemoteNativeInteractionContext>,
+    ) -> Result<oneshot::Receiver<PendingInteractionResolution>, DaemonError> {
+        let agent_id = interaction
+            .agent_id()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "create runtime interaction",
+                message: "Agent interaction requires an agent subject".into(),
+            })?
+            .to_owned();
         let (tx, rx) = oneshot::channel();
         let event_interaction = interaction.clone();
         self.owned
-            .register_runtime_interaction(session_id, interaction, tx)?;
+            .register_runtime_interaction(session_id, interaction, tx, None, forwarding)?;
         // Login challenges and PTY output are human-only ephemeral state.
         if event_interaction
             .id()
@@ -118,7 +183,7 @@ impl KernelRuntimeState {
         let dispatches = self.owned.metaagent_owned_agent_event_prompt_dispatches(
             session_id,
             "runtime.interaction",
-            event_interaction.agent_id(),
+            &agent_id,
             &source_attachment_id,
             format!(
                 "Runtime interaction `{}` is pending",
@@ -126,7 +191,7 @@ impl KernelRuntimeState {
             ),
             format!(
                 "Agent `{}` needs input for runtime interaction `{}`: {}",
-                event_interaction.agent_id(),
+                agent_id,
                 event_interaction.id(),
                 event_interaction.message()
             ),
@@ -145,8 +210,92 @@ impl KernelRuntimeState {
         choice_id: &str,
         custom_reply: Option<&str>,
     ) -> Result<(), DaemonError> {
-        self.owned
-            .resolve_runtime_interaction(session_id, interaction_id, choice_id, custom_reply)
+        self.owned.resolve_runtime_interaction(
+            session_id,
+            interaction_id,
+            choice_id,
+            custom_reply,
+            None,
+            false,
+        )
+    }
+
+    pub(in crate::runtime) async fn create_kernel_operation_interaction(
+        &self,
+        session_id: &str,
+        owner_user_id: &str,
+        interaction: crate::session::RuntimeInteraction,
+    ) -> Result<oneshot::Receiver<PendingInteractionResolution>, DaemonError> {
+        if interaction.kernel_operation_id().is_none() {
+            return Err(DaemonError::LocalTransport {
+                operation: "create kernel operation interaction",
+                message: "Kernel decision requires an operation subject".into(),
+            });
+        }
+        let (tx, rx) = oneshot::channel();
+        self.owned.register_runtime_interaction(
+            session_id,
+            interaction,
+            tx,
+            Some(owner_user_id),
+            None,
+        )?;
+        // Human-only decisions are projected to terminals, never dispatched to
+        // an agent's prompt or Meta delegation tools.
+        Ok(rx)
+    }
+
+    pub(in crate::runtime) async fn resolve_terminal_runtime_interaction(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        choice_id: &str,
+        custom_reply: Option<&str>,
+        caller_user_id: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        self.answer_terminal_runtime_interaction(
+            session_id,
+            interaction_id,
+            choice_id,
+            custom_reply,
+            caller_user_id,
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// A human terminal's answer; a critical approval also carries the
+    /// passkey, or falls within the owner's remember window.
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::runtime) async fn answer_terminal_runtime_interaction(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        choice_id: &str,
+        custom_reply: Option<&str>,
+        caller_user_id: Option<&str>,
+        passkey: Option<&crate::local::ApprovalPasskey>,
+        passkey_remember_minutes: Option<u32>,
+    ) -> Result<(), DaemonError> {
+        let passkey_verified = self
+            .authorize_critical_approval(
+                session_id,
+                interaction_id,
+                choice_id,
+                caller_user_id,
+                passkey,
+                passkey_remember_minutes,
+            )
+            .await?;
+        self.owned.resolve_runtime_interaction(
+            session_id,
+            interaction_id,
+            choice_id,
+            custom_reply,
+            caller_user_id,
+            passkey_verified,
+        )
     }
 
     pub(crate) async fn timeout_runtime_interaction(

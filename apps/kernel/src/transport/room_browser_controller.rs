@@ -233,6 +233,10 @@ pub(crate) enum RoomBrowserControllerCommand {
     Acquire,
     Reconcile {
         viewport: CanonicalViewport,
+        /// The Room's browser bar; a worker older than the flag leaves
+        /// windows as they are.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        browser_bar_visible: bool,
     },
     Snapshot {
         target_id: String,
@@ -314,6 +318,9 @@ pub(crate) enum RoomBrowserControllerCommand {
         document_id: String,
         permission: crate::runtime::browser_controller_permission::BrowserPermissionName,
         setting: crate::runtime::browser_controller_permission::BrowserPermissionSetting,
+    },
+    AppView {
+        request: crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
     },
     PollEvents {
         browser_generation: u64,
@@ -445,6 +452,9 @@ pub(crate) enum RoomBrowserControllerResult {
         result: Option<
             crate::runtime::browser_controller_permission::BrowserControllerPermissionResult,
         >,
+    },
+    AppView {
+        result: Option<serde_json::Value>,
     },
     Events {
         batch: Option<crate::runtime::browser_controller_event::BrowserControllerEventBatch>,

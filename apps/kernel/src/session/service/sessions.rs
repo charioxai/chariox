@@ -238,9 +238,12 @@ impl SessionService {
                     session_id: session_id.to_string(),
                 })?;
 
-        session.set_focused_agent(agent_id);
+        session.set_focused_agent(agent_id.clone());
         session.touch();
-        Ok(session.clone())
+        let session = session.clone();
+        // Open App views' panels follow the focus at once.
+        self.room_environments.set_panel_agent(session_id, agent_id);
+        Ok(session)
     }
 
     pub fn note_agent_output_sequence(

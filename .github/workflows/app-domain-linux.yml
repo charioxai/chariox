@@ -1,0 +1,66 @@
+name: App production Linux resource domain (unsigned fixture)
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'packages/app-runtime/src/worker_process*'
+      - 'packages/app-runtime/src/worker_process/**'
+      - 'apps/app-worker/src/**'
+      - 'apps/app-worker/tests/**'
+      - 'scripts/*app-domain-linux*'
+      - 'scripts/*app-worker-linux*'
+      - '.github/workflows/app-domain-linux.yml'
+permissions:
+  contents: read
+concurrency:
+  group: app-domain-linux-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+jobs:
+  resource-domain:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.20.0'
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - name: Install small native fixture dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gcc libc6-dev binutils meson ninja-build libcap-dev pkg-config apparmor
+      - name: Build pinned unsigned native fixture and verify its baseline
+        id: fixture
+        run: bash scripts/test-app-worker-linux-ci.sh
+      - name: Exercise production resource entry and namespace observations
+        env:
+          CHARIOX_DOMAIN_FIXTURE_SCRATCH: ${{ steps.fixture.outputs.scratch }}
+        run: bash scripts/test-app-domain-linux-ci.sh
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.fixture.outputs.evidence != ''
+        with:
+          name: unsigned-linux-domain-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ steps.fixture.outputs.evidence }}
+          if-no-files-found: error
+          retention-days: 7
+      - name: Remove owned fixture state
+        if: always() && steps.fixture.outputs.scratch != ''
+        env:
+          DOMAIN_SCRATCH: ${{ steps.fixture.outputs.scratch }}
+        run: |
+          domain_temp="$(realpath -e -- "$RUNNER_TEMP")"
+          case "$DOMAIN_SCRATCH" in
+            "$domain_temp"/chariox-sandbox.*)
+              for unit in "chariox-native-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" "chariox-domain-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" "chariox-domain-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-build"; do
+                sudo systemctl stop "$unit.service" >/dev/null 2>&1 || true
+              done
+              for profile in chariox-native.apparmor domain.apparmor; do
+                if [[ -f "$DOMAIN_SCRATCH/$profile" ]]; then sudo apparmor_parser -R "$DOMAIN_SCRATCH/$profile" >/dev/null 2>&1 || true; fi
+              done
+              sudo rm -rf -- "$DOMAIN_SCRATCH"
+              ;;
+            *) exit 1 ;;
+          esac

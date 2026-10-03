@@ -50,6 +50,97 @@ impl KernelRuntimeState {
         let mcp_registry = mcp_registry_for_workspace(session.workspace_id());
         let skill_registry = skill_registry_for_workspace(session.workspace_id());
         let (agent, effective_when, requires_provider_restart) = match args.kind.as_str() {
+            "app" => {
+                let grant = crate::extension::ExtensionGrant {
+                    kind: crate::extension::ExtensionKind::App,
+                    name: args.name.clone(),
+                    environment: args.environment.clone(),
+                    credential: args.credential.clone(),
+                    max_safety: args.allow.clone(),
+                };
+                grant.validate_app_binding()?;
+                // Nothing to change for an App already bound to this agent: no
+                // grant, no provider reload and no resumed request. Arming the
+                // reload again replayed the request after each reload, so an
+                // agent asked to bind the App asked again, in a loop.
+                if self
+                    .owned
+                    .agent_store
+                    .get_agent(agent.id())?
+                    .has_extension_grant(crate::extension::ExtensionKind::App, &args.name)
+                {
+                    return Ok((
+                        crate::transport::runtime_tools::RuntimeToolResult {
+                            ok: true,
+                            payload: serde_json::json!({
+                                "granted": true,
+                                "kind": "app",
+                                "name": args.name,
+                                "agent_ref": agent.agent_ref(),
+                                "effective": "already_bound",
+                                "requires_provider_restart": false,
+                                "note": "This App is already bound to you. Nothing changed and no reload follows. Its tools are listed while the App can start; a catalog refresh from an earlier binding change applies after the current turn.",
+                            }),
+                        },
+                        None,
+                    ));
+                }
+                if !self
+                    .authorize_agent_app_binding(session_id, agent.id(), agent.id(), &args.name)
+                    .await?
+                {
+                    return Ok((
+                        crate::transport::runtime_tools::RuntimeToolResult {
+                            ok: false,
+                            payload: serde_json::json!({
+                                "granted": false, "kind": "app", "name": args.name,
+                                "reason": {"kind": "permission_denied", "message": "The App binding was not approved."}
+                            }),
+                        },
+                        None,
+                    ));
+                }
+                let granted_agent = self
+                    .grant_agent_app_for_tool(agent.id(), grant, agent.owner_user_id())
+                    .await?;
+                // Listed when it runs or may start on demand (the grant seeded it).
+                #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+                let active = {
+                    let control = self.app_control();
+                    let owner = granted_agent.owner_user_id();
+                    control.active_app_lease(owner, &args.name).is_some()
+                        || control.is_app_dormant(owner, &args.name)
+                };
+                #[cfg(not(any(
+                    target_os = "macos",
+                    all(target_os = "linux", target_env = "gnu")
+                )))]
+                let active = false;
+                if active {
+                    let previous = self
+                        .owned
+                        .session_store
+                        .get_session(session_id)
+                        .ok()
+                        .and_then(|session| {
+                            self.owned
+                                .prompt_state_owner
+                                .active_prompt_for_agent(&session, granted_agent.id())
+                                .map(|prompt| prompt.prompt().to_owned())
+                        })
+                        .unwrap_or_default();
+                    // Providers cache tools. Reuse the actual shared runtime MCP's
+                    // established idle reload/resume, not a per-App MCP server.
+                    self.remember_pending_runtime_tools_continuation(
+                        session_id,
+                        granted_agent.id(),
+                        &previous,
+                    );
+                    (granted_agent, "after_provider_reload", true)
+                } else {
+                    (granted_agent, "binding_saved", false)
+                }
+            }
             "mcp" => {
                 if mcp_registry.get(&args.name)?.is_none() {
                     return Ok((
@@ -226,7 +317,7 @@ impl KernelRuntimeState {
                     crate::transport::runtime_tools::RuntimeToolResult {
                         ok: false,
                         payload: serde_json::json!({
-                            "error": "kind must be one of: mcp, skill, script, connector"
+                            "error": "kind must be one of: mcp, skill, script, connector, app"
                         }),
                     },
                     None,
@@ -242,12 +333,19 @@ impl KernelRuntimeState {
             "effective": effective_when,
             "requires_provider_restart": requires_provider_restart,
             "note": match effective_when {
+                "binding_saved" => "The App binding is saved. The App is stopped or cannot start, so its tools are not listed; they appear once it can start again.",
                 "after_provider_reload" => "Chariox will reload this provider conversation after the current turn and send an automatic continuation prompt once the MCP is available.",
                 "next_provider_launch" => "MCP grants are rendered into provider-native MCP config when the provider run launches; restart/relaunch the agent provider run before using this MCP.",
                 "now" => "The extension grant is persisted and available immediately in this turn.",
                 _ => "The extension grant is persisted."
             }
         });
+        if args.kind == "app" {
+            payload["tools_available"] = serde_json::json!(false);
+            if requires_provider_restart {
+                payload["note"] = serde_json::json!("Chariox will refresh its shared runtime tool catalog after this turn and resume the request. The App's current binding and permissions are checked again on every call.");
+            }
+        }
         if !skill_payload.is_null() {
             payload["skill"] = skill_payload;
         }

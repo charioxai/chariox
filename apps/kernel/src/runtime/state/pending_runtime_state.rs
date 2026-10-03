@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard, OnceLock};
+use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard, OnceLock, Weak};
 
 use tokio::sync::oneshot;
+mod pollers;
+use pollers::PendingPollers;
 
 #[derive(Debug, Clone)]
 pub(super) struct PendingMcpContinuation {
@@ -10,11 +12,13 @@ pub(super) struct PendingMcpContinuation {
 
     pub(super) mcp_name: String,
     pub(super) previous_prompt: String,
+    pub(super) reload_reason: super::ProviderReloadReason,
 }
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct PendingMcpContinuationStore {
     pub(super) inner: Arc<StdMutex<BTreeMap<String, PendingMcpContinuation>>>,
+    pub(super) pollers: PendingPollers,
 }
 
 impl PendingMcpContinuationStore {
@@ -36,13 +40,13 @@ impl PendingMcpContinuationStore {
 pub(super) struct PendingProviderReload {
     pub(super) session_id: String,
     pub(super) agent_id: String,
-    pub(super) reason: String,
-    pub(super) force_catalog_reload: bool,
+    pub(super) reason: super::ProviderReloadReason,
 }
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct PendingProviderReloadStore {
     pub(super) inner: Arc<StdMutex<BTreeMap<String, PendingProviderReload>>>,
+    pub(super) pollers: PendingPollers,
 }
 
 impl PendingProviderReloadStore {
@@ -56,7 +60,43 @@ impl PendingProviderReloadStore {
 #[derive(Debug, Clone)]
 pub(super) struct PendingInteraction {
     pub(super) session_id: String,
+    pub(super) session_store_identity: Weak<()>,
+    pub(super) agent_lifetime: Option<PendingAgentInteractionLifetime>,
+    pub(super) kernel_operation_owner: Option<String>,
+    pub(super) kernel_operation_deadline: Option<std::time::Instant>,
     pub(super) responder: Arc<StdMutex<Option<oneshot::Sender<PendingInteractionResolution>>>>,
+}
+
+/// Internal ownership of the originating prompt/run, including forwarded worker runs.
+#[derive(Debug, Clone)]
+pub(super) struct PendingAgentInteractionLifetime {
+    pub(super) agent_id: String,
+    pub(super) prompt_id: Option<String>,
+    pub(super) native_turn_id: Option<String>,
+    pub(super) worker: Option<PendingWorkerInteractionLifetime>,
+    pub(super) provider_run_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct PendingWorkerInteractionLifetime {
+    pub(super) leased_agent_id: String,
+    pub(super) execution_lease_id: String,
+    pub(super) provider_run_id: String,
+    pub(super) binding_observed: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl PendingInteraction {
+    pub(super) fn belongs_to(&self, sessions: &crate::session::SessionStateStore) -> bool {
+        sessions.matches_identity(&self.session_store_identity)
+    }
+
+    /// The component that asked is gone or the interaction was answered: no
+    /// receiver waits for a resolution any more.
+    pub(super) fn nobody_waits(&self) -> bool {
+        self.responder.lock().map_or(true, |responder| {
+            responder.as_ref().is_none_or(|sender| sender.is_closed())
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -80,6 +120,10 @@ impl std::fmt::Debug for PendingInteractionResolution {
 #[derive(Debug, Clone, Default)]
 pub(super) struct PendingInteractionStore {
     pub(super) inner: Arc<StdMutex<BTreeMap<String, PendingInteraction>>>,
+    pub(super) mutation: Arc<StdMutex<()>>,
+    /// Last orphaned-decision pass (unix ms) per session-store identity, so
+    /// kernels sharing this process-wide store never throttle each other.
+    pub(super) orphan_sweeps: Arc<StdMutex<Vec<(std::sync::Weak<()>, u64)>>>,
 }
 
 impl PendingInteractionStore {
@@ -92,5 +136,24 @@ impl PendingInteractionStore {
         self.inner
             .lock()
             .expect("pending interaction mutex poisoned")
+    }
+
+    /// Called while the shared mutation guard is held. A dead weak identity
+    /// cannot be revived, so dropping these senders cannot consume a decision
+    /// from a live kernel. Ordinary agent interactions keep their old lifetime.
+    pub(super) fn prune_abandoned_kernel_owners(&self) {
+        let mut pending = self.write();
+        let abandoned = pending
+            .iter()
+            .filter(|(_, entry)| {
+                entry.kernel_operation_owner.is_some()
+                    && entry.session_store_identity.strong_count() == 0
+            })
+            .take(32)
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        for id in abandoned {
+            pending.remove(&id);
+        }
     }
 }

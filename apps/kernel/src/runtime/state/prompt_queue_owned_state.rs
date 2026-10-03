@@ -235,6 +235,7 @@ impl KernelRuntimeOwnedState {
         )?;
         self.persist_prompt_session_state(&session, agent_id)?;
         activity_mutation.record();
+        self.withdraw_stale_agent_interactions();
         self.provider_process_projection.invalidate();
         let _ = self.session_snapshot(session_id)?;
         Ok(())
@@ -721,33 +722,26 @@ impl KernelRuntimeOwnedState {
                 operation: "advance queued prompt",
             });
         }
-        let acquired_workflow_claim =
-            match self.ensure_workflow_prompt_workspace_claim(session_id, &next_prompt) {
-                Ok(acquired) => acquired,
-                Err(DaemonError::WorkspaceClaimConflict { .. }) => return Ok(None),
-                Err(error) => return Err(error),
-            };
+        // The workspace claim is taken by the prompt owner's prepare callback
+        // for the eligible head only, inside the activity mutation boundary.
         let _admission = match self.begin_managed_activity_admission() {
             Ok(admission) => admission,
-            Err(_) => {
-                if acquired_workflow_claim == Some(true) {
-                    self.release_workflow_node_workspace_claim(
-                        session_id,
-                        next_prompt.workflow_run_id().unwrap_or_default(),
-                        next_prompt.workflow_node_run_id().unwrap_or_default(),
-                    );
-                }
-                return Ok(None);
-            }
+            Err(_) => return Ok(None),
         };
         let activity_mutation = self.begin_managed_activity_mutation();
+        let mut acquired_workflow_claim = None;
         let started_next = self
             .prompt_state_owner
-            .activate_next_queued_prompt_with_prompt_id(
+            .try_activate_next_queued_prompt_with_prompt_id(
                 &session,
                 agent_id,
-                Some(next_prompt.id()),
+                next_prompt.id(),
                 self.session_store.reserve_prompt_id(),
+                |prompt| {
+                    acquired_workflow_claim =
+                        self.ensure_workflow_prompt_workspace_claim(session_id, prompt)?;
+                    Ok(())
+                },
             );
         let started_next = match started_next {
             Ok(Some(prompt)) => prompt,
@@ -759,14 +753,9 @@ impl KernelRuntimeOwnedState {
                         next_prompt.workflow_node_run_id().unwrap_or_default(),
                     );
                 }
-                return Err(DaemonError::LocalTransport {
-                    operation: "advance queued prompt",
-                    message: format!(
-                        "expected queued prompt `{}` but no queued prompt was available",
-                        next_prompt.id()
-                    ),
-                });
+                return Ok(None);
             }
+            Err(DaemonError::WorkspaceClaimConflict { .. }) => return Ok(None),
             Err(error) => {
                 if acquired_workflow_claim == Some(true) {
                     self.release_workflow_node_workspace_claim(

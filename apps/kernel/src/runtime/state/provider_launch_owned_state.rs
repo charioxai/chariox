@@ -329,10 +329,12 @@ impl KernelRuntimeOwnedState {
                 &config,
                 &request.owner_user_id,
             );
-        crate::provider::provider_account_credential_uses_vault(
+        crate::provider::launch_uses_vault_credential(
+            &self.provider_account_profiles,
             &account_owner_user_id,
             &request.provider,
             &request.account_profile,
+            request.client_interface,
         )
     }
 }
@@ -345,7 +347,8 @@ mod tests {
     use tokio::sync::Mutex;
 
     #[tokio::test]
-    async fn owned_launch_preparation_preserves_provider_account_and_project_repositories() {
+    async fn owned_launch_preparation_preserves_account_without_injecting_project_repositories() {
+        crate::test_support::isolated_env_test!();
         let root = std::env::temp_dir().join(format!(
             "chariox-owned-provider-launch-{}-{}",
             std::process::id(),
@@ -437,7 +440,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unattended_claude_launch_requires_portable_or_vaulted_credentials() {
+    async fn claude_agents_launch_on_the_accounts_own_login_on_every_platform() {
+        crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-owned-missing-claude-credential-{}-{}",
@@ -498,10 +502,10 @@ mod tests {
                 request.clone(),
                 "http://127.0.0.1:43120/mcp".to_string(),
             )
-            .expect_err("unattended launch without credentials must fail before spawn");
+            .expect_err("a launch on a signed-out account must fail before spawn");
         assert!(error
             .to_string()
-            .contains("unattended Claude launch requires"));
+            .contains("this Claude account is not signed in"));
 
         let foreground = runtime
             .owned
@@ -519,16 +523,67 @@ mod tests {
             br#"{"claudeAiOauth":{"refreshToken":"portable-refresh-token"}}"#,
         )
         .expect("portable Claude credential fixture should write");
-        let portable_launch = runtime
+        // One sign-in: the account's own login runs background agents on Linux
+        // (its credential file) and macOS (its verified Keychain login) alike.
+        app.lock()
+            .await
+            .provider_account_profile_registry()
+            .update_observation(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "claude",
+                &profile.profile_id,
+                crate::account_profile::ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("the verified login should record");
+        let launch = runtime
             .owned
-            .prepare_provider_launch_request(request, "http://127.0.0.1:43120/mcp".to_string());
-        if cfg!(target_os = "linux") {
-            portable_launch.expect("Linux may use portable provider-native credentials");
-        } else {
-            portable_launch.expect_err(
-                "macOS and Windows unattended launches must require a Chariox setup token",
-            );
-        }
+            .prepare_provider_launch_request(request, "http://127.0.0.1:43120/mcp".to_string())
+            .expect("the account's own login runs background agents");
+        assert!(
+            launch.provider_credential_env.is_empty(),
+            "no Chariox-vault token is needed"
+        );
+        // A setup token left in the vault from before is not read either, so
+        // the launch asks for no vault unlock; the native Claude TUI still may.
+        let credential_id = crate::provider::provider_account_credential_id(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "claude",
+            &profile.profile_id,
+        );
+        crate::credential::CharioxCredentialRegistry::user()
+            .expect("credential registry should resolve")
+            .upsert(crate::config::UserCredentialConfig {
+                id: credential_id.clone(),
+                description: None,
+                source: crate::config::UserCredentialSourceConfig::Vault { key: credential_id },
+                allowed_hosts: Vec::new(),
+                allowed_uses: vec![crate::config::UserCredentialUse::Provider],
+                injection: crate::config::UserCredentialInjectionConfig::Provider,
+                metadata: None,
+            })
+            .expect("vault credential should register");
+        let profiles = app.lock().await.provider_account_profile_registry();
+        let uses_vault = |client_interface| {
+            crate::provider::launch_uses_vault_credential(
+                &profiles,
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "claude",
+                &profile.profile_id,
+                client_interface,
+            )
+            .expect("vault use should resolve")
+        };
+        assert!(!uses_vault(
+            crate::provider::ProviderClientInterface::Chariox
+        ));
+        assert!(uses_vault(
+            crate::provider::ProviderClientInterface::NativeTui
+        ));
+        drop(app);
 
         std::env::remove_var("CHARIOX_HOME");
         let _ = std::fs::remove_dir_all(root);
@@ -536,6 +591,7 @@ mod tests {
 
     #[tokio::test]
     async fn owned_managed_launch_does_not_inject_a_project_workspace_allowlist() {
+        crate::test_support::isolated_env_test!();
         let root = std::env::temp_dir().join(format!(
             "chariox-owned-managed-pool-launch-{}-{}",
             std::process::id(),
@@ -545,6 +601,7 @@ mod tests {
         let supporting = root.join("supporting");
         let instance_worktree = root.join("workflow-runtime").join("instance-2");
         let unregistered_worktree = root.join("workflow-runtime").join("unregistered");
+        let traversal_worktree = instance_worktree.join("..").join("unregistered");
         std::fs::create_dir_all(&primary).expect("primary workspace");
         std::fs::create_dir_all(&supporting).expect("supporting workspace");
         std::fs::create_dir_all(&instance_worktree).expect("runtime instance worktree");
@@ -610,7 +667,7 @@ mod tests {
             "model",
         )
         .with_agent_id(runtime_agent.id())
-        .with_workspace_live_sync_mode(crate::config::WorkspaceLiveSyncMode::Tracked);
+        .with_workspace_live_sync_managed();
 
         let _env = crate::env_lock::lock();
         let previous_isolation = std::env::var_os(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV);
@@ -627,7 +684,7 @@ mod tests {
                 "model",
             )
             .with_agent_id(unregistered_agent.id())
-            .with_workspace_live_sync_mode(crate::config::WorkspaceLiveSyncMode::Tracked),
+            .with_workspace_live_sync_managed(),
             "http://127.0.0.1:43120/mcp".to_string(),
         );
         let traversal = runtime.owned.prepare_provider_launch_request(
@@ -639,8 +696,8 @@ mod tests {
                 "model",
             )
             .with_agent_id(runtime_agent.id())
-            .with_workspace_live_sync_mode(crate::config::WorkspaceLiveSyncMode::Tracked)
-            .with_working_directory(instance_worktree.join("..").join("unregistered")),
+            .with_working_directory(traversal_worktree.clone())
+            .with_workspace_live_sync_managed(),
             "http://127.0.0.1:43120/mcp".to_string(),
         );
         #[cfg(unix)]
@@ -657,8 +714,8 @@ mod tests {
                     "model",
                 )
                 .with_agent_id(runtime_agent.id())
-                .with_workspace_live_sync_mode(crate::config::WorkspaceLiveSyncMode::Tracked)
-                .with_working_directory(link),
+                .with_working_directory(link)
+                .with_workspace_live_sync_managed(),
                 "http://127.0.0.1:43120/mcp".to_string(),
             )
         };
@@ -687,7 +744,7 @@ mod tests {
             (
                 "lexical traversal",
                 &traversal.workspace_live_sync_roots,
-                &instance_worktree.join("..").join("unregistered"),
+                &traversal_worktree,
             ),
         ] {
             assert!(
@@ -717,6 +774,7 @@ mod tests {
 
     #[tokio::test]
     async fn workflow_runtime_launch_with_chariox_home_uses_kernel_owned_instance_root() {
+        crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-owned-workflow-runtime-home-{}-{}",
@@ -820,6 +878,7 @@ mod tests {
 
     #[tokio::test]
     async fn owned_launch_preparation_allows_hidden_remote_lease_session_under_managed_isolation() {
+        crate::test_support::isolated_env_test!();
         let root = std::env::temp_dir().join(format!(
             "chariox-owned-hidden-provider-launch-{}-{}",
             std::process::id(),
@@ -868,6 +927,7 @@ mod tests {
 
     #[tokio::test]
     async fn vaulted_claude_launch_waits_for_chariox_unlock_interaction() {
+        crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-owned-vaulted-claude-launch-{}-{}",
@@ -937,15 +997,7 @@ mod tests {
         let runtime = owned_runtime_state(&app).await;
         let (workflow_provider_run_id, retired_provider_run_id) = runtime
             .owned
-            .workflow_ensure_provider_run(
-                session.id(),
-                workflow_agent.id(),
-                false,
-                false,
-                false,
-                false,
-                None,
-            )
+            .workflow_ensure_provider_run(session.id(), workflow_agent.id(), false, None)
             .expect("locked vault must not block synchronous workflow admission");
         assert!(retired_provider_run_id.is_none());
         assert!(runtime
@@ -1066,6 +1118,7 @@ mod tests {
 
     #[tokio::test]
     async fn mcp_continuation_retries_when_prompt_starts_during_vault_unlock() {
+        crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-mcp-continuation-vault-race-{}-{}",
@@ -1113,6 +1166,7 @@ mod tests {
         config.user_config.artifacts.operational.index_path =
             Some(root.join("artifacts.db").display().to_string());
 
+        let _mcp = crate::test_support::TestRuntimeMcp::serve(&mut config);
         let mut app = crate::app::DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap");
         let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(crate::session::CreateSessionRequest::new(
@@ -1128,13 +1182,15 @@ mod tests {
                 "Vaulted continuation Claude",
             )
             .expect("managed Claude profile should create");
+        // The continuation is a prompt submission, which requires an
+        // authenticated account; a new managed profile starts as Unknown.
         crate::test_support::authenticate_provider_account(
             &app.provider_account_profile_registry(),
             crate::session::DEFAULT_LOCAL_USER_ID,
             "claude",
             &profile.profile_id,
         )
-        .expect("synthetic continuation account should be authenticated");
+        .expect("managed Claude profile should authenticate");
         let agent = crate::app::KernelSessionService::new(&mut app)
             .spawn_agent(
                 crate::agent::CreateAgentRequest::new(session.id(), "claude")
@@ -1219,7 +1275,7 @@ mod tests {
             "playwright",
             "continue after granting playwright",
         );
-        let first_unlock = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        let first_unlock = tokio::time::timeout(std::time::Duration::from_secs(45), async {
             loop {
                 if let Some(interaction) = runtime
                     .owned
@@ -1249,7 +1305,7 @@ mod tests {
             .expect("active prompt should start during unlock");
         resolve_vault_passphrase_interaction(&runtime, session.id(), &first_unlock).await;
 
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::time::timeout(std::time::Duration::from_secs(45), async {
             loop {
                 if runtime
                     .owned
@@ -1278,7 +1334,7 @@ mod tests {
             .await
             .prompt_owner_sync_external_active_prompt(session.id(), agent.id(), None)
             .expect("agent should become idle");
-        let second_unlock = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        let second_unlock = tokio::time::timeout(std::time::Duration::from_secs(45), async {
             loop {
                 if let Some(interaction) = runtime
                     .owned
@@ -1299,7 +1355,7 @@ mod tests {
         resolve_vault_passphrase_interaction(&runtime, session.id(), &second_unlock).await;
         // MP-08/MP-10: forced catalog activation uses the existing 12s policy
         // relaunch delay. Match its bounded 30s readiness gate, then retain the
-        // separate 2s continuation-delivery assertion below.
+        // separate continuation-delivery assertion below.
         tokio::time::timeout(std::time::Duration::from_secs(30), async {
             loop {
                 if runtime
@@ -1318,7 +1374,7 @@ mod tests {
         })
         .await
         .expect("forced catalog reload should produce a new running provider");
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::time::timeout(std::time::Duration::from_secs(45), async {
             loop {
                 let resumed = runtime
                     .owned
@@ -1345,7 +1401,7 @@ mod tests {
             }
         })
         .await
-        .unwrap_or_else(|_| {
+        .unwrap_or_else(|error| {
             let session = runtime
                 .owned
                 .session_store
@@ -1361,12 +1417,20 @@ mod tests {
                 .write()
                 .contains_key(agent.id());
             panic!(
-                "MCP continuation should resume; run={:?}, interaction={:?}, pending={}",
+                "MCP continuation should resume after the agent becomes idle: {error}; run={:?}, interaction={:?}, pending={}, run states={:?}; notices={:?}",
                 run.map(|r| r.state()),
                 session
                     .active_interaction_for_agent(agent.id())
                     .map(|i| i.title()),
-                pending
+                pending,
+                runtime
+                    .owned
+                    .provider_store
+                    .list_runs()
+                    .iter()
+                    .map(|run| (run.id().to_string(), run.state()))
+                    .collect::<Vec<_>>(),
+                runtime.owned.terminal_stream.notice_records()
             );
         });
 

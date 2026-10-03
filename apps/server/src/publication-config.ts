@@ -27,7 +27,6 @@ import {
   type ProviderModelBindingPrompt,
 } from "./publication-bindings.js"
 import { validateAgentAppConfig } from "./publication-agent-app-schema.js"
-import { activatePublicationEventBindings } from "./publication-event-bindings.js"
 import { validatePublicationRequirements } from "./publication-requirements.js"
 import { ensurePublicationRuntimeAttached } from "./publication-runtime-pump.js"
 import type {
@@ -150,12 +149,6 @@ export async function loadPublicationPackageConfig(
     for (let index = 0; index < replicaCount; index += 1) {
       const runtimeKey = options.runtimeKey === undefined ? undefined : `${options.runtimeKey}:replica-${index}`
       const materialized = await materializePublicationConfig(config, materializationSnapshot, ownedClient, runtimeKey)
-      await activatePublicationEventBindings({
-        client: ownedClient,
-        packageRoot: root,
-        publicationPackage,
-        runtimeSessionId: materialized.session_id,
-      })
       materializedConfigs.push(materialized)
     }
     const materializedConfig = {
@@ -263,7 +256,8 @@ export function publicationConfigFromPackage(
     kernel_endpoint: kernelEndpoint,
   }
   if (transport) config.transport = transport
-  if (transport !== "schedule_only") {
+  const takesRequests = publicationTakesRequests({ transport })
+  if (takesRequests) {
     config.route = hook.route ?? defaultRouteForTransport(transport)
     config.mode = hook.mode ?? defaultModeForTransport(transport)
     if (parser) config.parser = parser
@@ -279,7 +273,7 @@ export function publicationConfigFromPackage(
     config.trace_exposure = traceExposure
     config.trace_context = publicationTraceContextFromSnapshot(snapshot)
   }
-  const methods = transport === "schedule_only"
+  const methods = !takesRequests
     ? null
     : normalizeHttpMethods(hook.methods) ?? defaultMethodsForTransport(transport)
   if (methods) config.methods = methods
@@ -320,6 +314,14 @@ export async function loadPublicationConfigFromKernel(
   }
 }
 
+/** Schedule-only and App-event triggers take no requests: no HTTP routes and
+ * no endpoint registration. */
+export function publicationTakesRequests(publication: { transport?: string | undefined; kind?: string | undefined }): boolean {
+  return publication.transport !== "schedule_only"
+    && publication.transport !== "event_based"
+    && publication.kind !== "event_based"
+}
+
 export function publicationConfigFromKernelRecord(
   publication: WorkflowPublicationDefinition,
   kernelEndpoint = defaultKernelEndpoint(),
@@ -336,7 +338,9 @@ export function publicationConfigFromKernelRecord(
     queue_ref: publication.queue_ref ?? "default",
     kernel_endpoint: kernelEndpoint,
   }
-  if (transport !== "schedule_only") {
+  if (publication.kind) config.kind = publication.kind
+  const takesRequests = publicationTakesRequests({ transport, kind: publication.kind ?? undefined })
+  if (takesRequests) {
     config.route = publication.route ?? defaultRouteForTransport(transport)
     config.mode = normalizePublicationMode(publication.mode) ?? defaultModeForTransport(transport)
     if (parser) config.parser = parser
@@ -345,7 +349,7 @@ export function publicationConfigFromKernelRecord(
   if (publication.poll_ms != null) config.poll_ms = publication.poll_ms
   if (traceExposure) config.trace_exposure = traceExposure
   if (transport) config.transport = transport
-  const methods = transport === "schedule_only"
+  const methods = !takesRequests
     ? null
     : normalizeHttpMethods(publication.methods) ?? defaultMethodsForTransport(transport)
   if (methods) config.methods = methods
@@ -458,7 +462,7 @@ function publicationTransportKind(value: unknown): string | undefined {
 
 export function assertWorkflowPublicationTransport(transport: unknown): void {
   const kind = publicationTransportKind(transport)
-  if (!kind || kind === "human_http" || kind === "schedule_only") return
+  if (!kind || kind === "human_http" || kind === "schedule_only" || kind === "event_based") return
   throw new Error(`unsupported workflow publication transport \`${kind}\``)
 }
 

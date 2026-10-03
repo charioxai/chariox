@@ -68,6 +68,17 @@ fn leased_prompt_admission_receipt_projection(
 }
 
 impl<'a> RemoteLeaseRuntime<'a> {
+    pub(crate) fn leased_prompt_receipt_recorded(
+        &self,
+        leased_agent_id: &str,
+        home_prompt_id: &str,
+    ) -> bool {
+        self.app
+            .worker_prompt_receipts
+            .get(leased_agent_id, home_prompt_id)
+            .is_some()
+    }
+
     pub(crate) fn begin_leased_prompt_receipt(
         &mut self,
         leased_agent_id: &str,
@@ -684,23 +695,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     .set_workspace_live_sync_mode(&leased_agent.backing_session_id, mode)?;
             }
         }
-        let (event_reply_enabled, event_context_enabled, event_actions_enabled) = workflow_context
-            .as_ref()
-            .map(|context| {
-                (
-                    context.event_reply_enabled,
-                    context.event_context_enabled,
-                    context.event_actions_enabled,
-                )
-            })
-            .unwrap_or((false, false, false));
         let provider_run = match self.prepare_leased_provider_run_matches_mcps(
             &leased_agent,
             &required_mcps,
             &remote_extension_manifest,
-            event_reply_enabled,
-            event_context_enabled,
-            event_actions_enabled,
         )? {
             LeasedProviderRunMatch::Ready(provider_run_id) => {
                 self.app.mark_leased_provider_run(&provider_run_id);
@@ -738,11 +736,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let home_prompt_id = git_context
             .as_ref()
             .map(|context| context.home_prompt_id.clone());
-        if let Some(git_context) = git_context {
-            self.observe_leased_git_before(&leased_agent, &provider_run_id, git_context);
-        }
-        let outcome = crate::app::KernelAgentService::new(self.app)
-            .submit_prompt_with_hidden_system_context(
+        let must_wait_for_capacity = self.leased_turn_must_wait_for_capacity();
+        let (outcome, dispatch) = crate::app::KernelAgentService::new(self.app)
+            .submit_prompt_holding_dispatch(
                 &leased_agent.backing_session_id,
                 &leased_agent.backing_attachment_id,
                 Some(&leased_agent.backing_agent_id),
@@ -750,6 +746,21 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 &hidden_system_context,
                 materialized_attachments,
             )?;
+        let held_for_capacity = must_wait_for_capacity && dispatch.is_some();
+        match dispatch {
+            Some(dispatch) if held_for_capacity => {
+                self.hold_leased_turn_for_capacity(&leased_agent.id, dispatch, git_context)
+            }
+            dispatch => {
+                if let Some(git_context) = git_context {
+                    self.observe_leased_git_before(&leased_agent, &provider_run_id, git_context);
+                }
+                crate::app::KernelAgentService::new(self.app)
+                    .finish_compat_prompt_dispatch(dispatch)?
+            }
+        }
+        crate::app::KernelSessionReadService::new(self.app)
+            .session_snapshot(&leased_agent.backing_session_id)?;
         let started = matches!(outcome, PromptSubmissionOutcome::Started { .. });
         let accepted_prompt = match &outcome {
             PromptSubmissionOutcome::Started { prompt }
@@ -765,15 +776,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 && active.hidden_system_context() == accepted_prompt.hidden_system_context()
                 && active.attachments() == accepted_prompt.attachments()
         });
-        if started {
+        if started && !held_for_capacity {
             crate::transport::flow_control::note_prompt_started(self.app, &provider_run_id);
         }
-        let provider_run_projection = self
-            .app
-            .providers
-            .get_run(&provider_run_id)
-            .ok()
-            .map(|run| (run.id().to_string(), run.state()));
         if started
             || leased_agent.active_home_prompt_id.is_none()
             || backing_active.is_none()
@@ -788,10 +793,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 agent.active_home_prompt_started_at_ms = Some(accepted_prompt.created_at_ms());
             }
         }
-        if let Some(provider_run_projection) = provider_run_projection {
-            if let Some(agent) = self.app.leased_agents.get_mut(&leased_agent.id) {
-                agent.projected_provider_run = Some(provider_run_projection);
-            }
+        // The home kernel binds this provider run only when it processes the
+        // submit acknowledgement, and it drops run snapshots that arrive
+        // earlier. Clear the marker so the home's first drain after the ACK
+        // carries the run even if the run never changes state again.
+        if let Some(agent) = self.app.leased_agents.get_mut(&leased_agent.id) {
+            agent.projected_provider_run = None;
         }
         if let Some(context) = workflow_context {
             let binding_home_prompt_id = home_prompt_id
@@ -913,6 +920,31 @@ impl<'a> RemoteLeaseRuntime<'a> {
         }
         let materialized_attachments =
             self.materialize_leased_prompt_attachments(&leased_agent, attachments)?;
+        if self.leased_turn_is_waiting_for_capacity(leased_agent_id) {
+            // The steer rides with the held turn, so it is accepted now. Persist
+            // its exact receipt first so retries and receipt queries see that
+            // outcome instead of a bare applied marker.
+            self.persist_worker_steer_receipt(
+                leased_agent_id,
+                LeasedPromptSteerReceipt {
+                    steer_id: steer_id.to_string(),
+                    target_home_prompt_id: target_home_prompt_id.to_string(),
+                    worker_provider_run_id: provider_run.id().to_string(),
+                    execution_lease_id: leased_agent.lease_id.clone(),
+                    phase: LeasedPromptSteerReceiptPhase::Accepted,
+                },
+            )?;
+            self.add_steer_to_held_turn(
+                leased_agent_id,
+                prompt,
+                hidden_system_context,
+                materialized_attachments,
+            );
+            if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
+                agent.applied_home_steer_ids.push(steer_id.to_string());
+            }
+            return Ok((provider_run.id().to_string(), None));
+        }
         Ok((
             provider_run.id().to_string(),
             Some(crate::app::KernelPromptDispatch {
@@ -1238,6 +1270,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 self.app.leased_workflow_turns.remove(&binding_key);
             }
         }
+        self.admit_leased_turns_waiting_for_capacity();
         Ok(completion)
     }
 
@@ -1321,11 +1354,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 started_next: None,
             });
         }
-        let cancellation = self.app.cancel_active_prompt_internal(
-            &leased_agent.backing_session_id,
-            &leased_agent.backing_agent_id,
-            None,
-        )?;
+        // A turn held for worker capacity never reached its provider, so it is
+        // settled here instead of interrupting the provider.
+        let cancellation = match self.cancel_leased_turn_waiting_for_capacity(leased_agent_id)? {
+            Some(cancellation) => cancellation,
+            None => self.app.cancel_active_prompt_internal(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+                None,
+            )?,
+        };
         self.app.leased_workflow_turns.retain(|_, binding| {
             binding.leased_agent_id != leased_agent_id
                 || binding.home_prompt_id != expected_home_prompt_id
@@ -1384,7 +1422,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
     }
 }
 
-fn join_hidden_context(first: &str, second: &str) -> String {
+pub(super) fn join_hidden_context(first: &str, second: &str) -> String {
     match (first.trim(), second.trim()) {
         ("", "") => String::new(),
         ("", second) => second.to_string(),

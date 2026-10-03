@@ -1782,3 +1782,58 @@ fn newer_completion_evidence_and_each_turn_reset_authoritative_backfill_budget()
     gate.reset();
     assert!(gate.is_due(true, next_turn_evidence, now));
 }
+
+#[test]
+fn completed_turn_that_discusses_provider_errors_is_not_a_failure() {
+    let mut active_turn_id = Some("turn-1".to_string());
+    let mut turn_tracker = CodexTurnTracker::default();
+    let mut text_items = BTreeMap::new();
+    let mut tool_items = BTreeMap::new();
+    let mut chunks = Vec::new();
+    let mut completions = Vec::new();
+    let mut notices = Vec::new();
+    let mut prompt_completed = false;
+    let mut terminal_failure = None;
+    let mut resolved_usage = None;
+    let prose = "Codex error [server_overloaded]: Selected model is at capacity. \
+                 The review covers usage limit and rate limit handling.";
+
+    apply_notification(
+        CodexNotification::TurnCompleted {
+            turn_id: "turn-1".to_string(),
+            status: "completed".to_string(),
+            error_message: None,
+            items: vec![serde_json::json!({
+                "type": "agentMessage",
+                "id": "message-1",
+                "phase": "finalAnswer",
+                "text": prose,
+            })],
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    flush_quiet_terminal_for_test(
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+    );
+
+    assert!(prompt_completed);
+    assert_eq!(
+        terminal_failure, None,
+        "assistant prose is not a provider error"
+    );
+    assert!(notices.is_empty());
+}

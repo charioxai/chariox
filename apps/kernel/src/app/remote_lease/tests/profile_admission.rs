@@ -24,6 +24,7 @@ async fn leased_prompt_preserves_busy_run_on_profile_mismatch() {
 
 // None means idle, Some(false) active, Some(true) queued for provider startup.
 async fn assert_run_profile_reconciliation(field: &str, queued_work: Option<bool>) {
+    crate::test_support::isolated_env_test!();
     let (mut app, lease) = leased_agent_fixture(false);
     let profile = crate::transport::relay_peer::RelayAgentExecutionProfile::from(
         &app.agents().get_agent(&lease.backing_agent_id).unwrap(),
@@ -276,6 +277,7 @@ async fn cancelling_leased_prompt_admission_releases_profile_operations() {
 
 #[tokio::test]
 async fn leased_prompt_reconciles_durable_home_profile_after_lost_ack_and_restart() {
+    crate::test_support::isolated_env_test!();
     let (mut app, lease) = leased_agent_fixture(false);
     RemoteLeaseRuntime::new(&mut app)
         .update_leased_agent_profile(
@@ -429,7 +431,7 @@ fn mp08_mp10_mp11_leased_reuse_observes_worker_value_changes() {
     let manifest = crate::extension::RemoteExtensionManifest::default();
     let select = |app: &mut DaemonApp| {
         RemoteLeaseRuntime::new(app)
-            .prepare_leased_provider_run_matches_mcps(&lease, &[], &manifest, false, false, false)
+            .prepare_leased_provider_run_matches_mcps(&lease, &[], &manifest)
             .unwrap()
     };
     let LeasedProviderRunMatch::LaunchRequired(request) = select(&mut app) else {

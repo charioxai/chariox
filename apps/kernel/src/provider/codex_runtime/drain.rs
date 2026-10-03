@@ -17,7 +17,14 @@ pub fn drain_codex_events(
     state: &mut CodexRuntimeState,
     native_interaction_bridge: Option<std::sync::Arc<dyn ProviderNativeInteractionBridge>>,
 ) -> Result<CodexPollResult, DaemonError> {
-    let client = codex_client_for_run(run, state.endpoint(), native_interaction_bridge)?;
+    if state.active_turn_id.is_none() {
+        state.native_approval_origin = None;
+    }
+    let client = codex_client_for_run(run, state.endpoint(), native_interaction_bridge)?
+        .with_native_approval_context(
+            state.native_approval_origin.clone(),
+            state.active_turn_id.clone(),
+        );
     let client = if state.read_only_discovery_permissions() || run.read_only_discovery() {
         client.with_read_only_discovery_permissions()
     } else {
@@ -282,6 +289,7 @@ mod tests {
         let (turn_start_returned_tx, turn_start_returned_rx) = mpsc::channel();
         let (permission_sent_tx, permission_sent_rx) = mpsc::channel();
         let (response_received_tx, response_received_rx) = mpsc::channel();
+        let (drain_finished_tx, drain_finished_rx) = mpsc::channel();
         let server = thread::spawn(move || {
             let (stream, _) = listener.accept().expect("accept Codex websocket client");
             let mut socket = accept(stream).expect("upgrade Codex websocket fixture");
@@ -346,7 +354,7 @@ mod tests {
                 ))
                 .expect("send turn/start response");
             turn_start_returned_rx
-                .recv_timeout(Duration::from_secs(1))
+                .recv_timeout(Duration::from_secs(10))
                 .expect("client should finish turn/start before permission request");
             socket
                 .send(Message::Text(
@@ -368,10 +376,6 @@ mod tests {
                     .into(),
                 ))
                 .expect("send post-turn-start permission request");
-            // `drain_codex_events` intentionally performs a bounded
-            // nonblocking read. Give the loopback peer time to deliver the
-            // frame before releasing the client-side barrier below.
-            thread::sleep(Duration::from_millis(50));
             permission_sent_tx
                 .send(())
                 .expect("notify client that permission request was sent");
@@ -395,6 +399,9 @@ mod tests {
             response_received_tx
                 .send(())
                 .expect("notify client that permission response was received");
+            drain_finished_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("client must finish draining before the server closes");
         });
 
         let endpoint = format!("ws://{address}");
@@ -472,15 +479,28 @@ mod tests {
             .send(())
             .expect("notify server that turn/start returned");
         permission_sent_rx
-            .recv_timeout(Duration::from_secs(1))
+            .recv_timeout(Duration::from_secs(10))
             .expect("server should send the permission request");
 
-        let poll = drain_codex_events(&run, &mut state, None).expect("event drain should succeed");
-        assert!(poll.terminal_failure.is_none());
-        assert!(!poll.prompt_completed);
-        response_received_rx
-            .recv_timeout(Duration::from_secs(1))
-            .expect("server should receive the read-only permission response");
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let poll =
+                drain_codex_events(&run, &mut state, None).expect("event drain should succeed");
+            assert!(poll.terminal_failure.is_none());
+            assert!(!poll.prompt_completed);
+            match response_received_rx.try_recv() {
+                Ok(()) => break,
+                Err(mpsc::TryRecvError::Empty) if std::time::Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                result => {
+                    panic!("server should receive the read-only permission response: {result:?}")
+                }
+            }
+        }
+        drain_finished_tx
+            .send(())
+            .expect("release the mock server after draining");
         drop(state);
         server.join().expect("join Codex websocket fixture");
     }

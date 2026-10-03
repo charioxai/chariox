@@ -4,6 +4,16 @@ use crate::error::DaemonError;
 use crate::session::RuntimeInteraction;
 
 pub(crate) trait ProviderNativeInteractionBridge: Send + Sync {
+    /// Called when the provider creates the request, before any blocking handoff.
+    fn capture_turn_origin(
+        &self,
+        _session_id: &str,
+        _agent_id: &str,
+        _provider_run_id: &str,
+    ) -> Option<crate::session::NativeInteractionOrigin> {
+        None
+    }
+
     fn request_blocking(
         &self,
         session_id: &str,

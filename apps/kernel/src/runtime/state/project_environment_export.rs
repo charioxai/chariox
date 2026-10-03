@@ -323,7 +323,7 @@ impl KernelRuntimeState {
                         && !session
                             .active_interactions()
                             .iter()
-                            .any(|interaction| interaction.agent_id() == agent.id())
+                            .any(|interaction| interaction.agent_id() == Some(agent.id()))
                         && self
                             .owned
                             .prompt_state_owner

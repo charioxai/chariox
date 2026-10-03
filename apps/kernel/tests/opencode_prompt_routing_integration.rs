@@ -520,8 +520,9 @@ fn detaching_the_last_attachment_keeps_an_active_turn_available_on_rejoin() {
 
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = app
-        .sessions_mut()
+    // Phase 1: the session is created with its default agent, which holds focus;
+    // attaching a client creates no agent.
+    let (session, _default_agent) = app
         .create_session(workspace.session_request())
         .expect("session should be created");
     let first = app

@@ -1,22 +1,23 @@
 export const SLICE_SAVE_ACK_LOSS_CASE_IDS = Object.freeze([
-  "fault.response-loss",
-  "effect.backend-exactly-once",
-  "replay.same-process",
-  "replay.kernel-restart",
+  "fault.refusal-response-loss",
+  "effect.backend-not-dispatched",
+  "refusal.replay.same-process",
+  "refusal.replay.kernel-restart",
   "guard.command-conflict",
   "cleanup.resources",
 ])
 
 export const SLICE_SAVE_ACK_LOSS_TEST_NAME =
-  "runtime_transport::tests::slice_state_save_acknowledgement_replays_without_a_second_dispatch"
+  "runtime_transport::tests::unsupported_slice_save_refusal_replays_without_backend_side_effects"
 
 const PROBE_PREFIX = "CHARIOX_SLICE_SAVE_ACK_LOSS_PROBE:"
-const PROBE_SCHEMA = "chariox.slice_save_ack_loss_probe.v1"
+const PROBE_SCHEMA = "chariox.slice_save_ack_loss_probe.v2"
 const BOOLEAN_FIELDS = Object.freeze([
   "sameProcessReplay",
   "restartReplay",
-  "savedStateRefPreserved",
+  "unsupportedCaptureRefusalPreserved",
   "conflictingReuseRejected",
+  "successfulSaveReplayStillRequiresProtectedLiveFixture",
   "cleanupComplete",
 ])
 
@@ -36,7 +37,7 @@ export function buildSliceSaveAckLossCargoArgs() {
 export function parseSliceSaveAckLossProbe(output) {
   const line = String(output ?? "")
     .split("\n")
-    .map((candidate) => candidate.trim())
+    .map((candidate) => candidate.trim().replace(/^test \S+ \.\.\. /, ""))
     .findLast((candidate) => candidate.startsWith(PROBE_PREFIX))
   if (!line) throw new Error(`slice save acknowledgement-loss output is missing ${PROBE_SCHEMA}`)
 
@@ -46,7 +47,7 @@ export function parseSliceSaveAckLossProbe(output) {
   } catch {
     throw new Error("slice save acknowledgement-loss probe is not valid JSON")
   }
-  const expectedKeys = ["schema", "backendSaveCount", "savedStateRef", "homeArchiveGeneration", ...BOOLEAN_FIELDS].sort()
+  const expectedKeys = ["schema", "backendSaveCount", ...BOOLEAN_FIELDS].sort()
   if (probe?.schema !== PROBE_SCHEMA) {
     throw new Error(`slice save acknowledgement-loss probe schema must be ${PROBE_SCHEMA}`)
   }
@@ -58,13 +59,8 @@ export function parseSliceSaveAckLossProbe(output) {
       throw new Error(`slice save acknowledgement-loss probe ${field} must be true`)
     }
   }
-  if (probe.backendSaveCount !== 1) {
-    throw new Error("slice save acknowledgement-loss probe backendSaveCount must be 1")
-  }
-  for (const field of ["savedStateRef", "homeArchiveGeneration"]) {
-    if (typeof probe[field] !== "string" || probe[field].length === 0) {
-      throw new Error(`slice save acknowledgement-loss probe ${field} must be non-empty`)
-    }
+  if (probe.backendSaveCount !== 0) {
+    throw new Error("slice save acknowledgement-loss probe backendSaveCount must be 0")
   }
   return probe
 }

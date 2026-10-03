@@ -7,9 +7,10 @@ filter="/usr/local/libexec/chariox/managed-provider-seccomp.bpf"
   exit 1
 }
 
-# The provisioner admits provider sandboxes with no-new-privs. Use that same
-# unprivileged setup on rootful Docker too: its setuid path may lack permission
-# to write the sysctl required by --disable-userns. Provider caps and the
-# nested-namespace seccomp filter remain unchanged.
 exec 3<"$filter"
-exec setpriv --no-new-privs /usr/bin/bwrap --seccomp 3 "$@"
+# Run Bubblewrap unprivileged, exactly as the provisioner's compatibility probe
+# does. The image's bwrap is setuid; in setuid mode the sandbox user namespace
+# is created by root, so --disable-userns cannot write the namespace's own
+# user.max_user_namespaces and every managed provider launch fails. Bubblewrap
+# sets no_new_privs inside the sandbox for --seccomp anyway.
+exec /usr/bin/setpriv --no-new-privs /usr/bin/bwrap --seccomp 3 "$@"

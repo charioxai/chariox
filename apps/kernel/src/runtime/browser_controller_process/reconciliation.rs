@@ -7,17 +7,12 @@ impl BrowserControllerProcessStdioBackend {
     fn begin_reconciliation_read(
         &mut self,
         viewport: &CanonicalViewport,
+        browser_bar_visible: bool,
     ) -> Result<pending_responses::PendingResponse<BrowserControllerRpcResponse>, String> {
+        // Same parameters as the barrier path (Room browser bar, App panel width).
         self.begin_observation_request(
             "browser.reconcile",
-            serde_json::json!({
-                "viewport": {
-                    "css_width": viewport.css_width, "css_height": viewport.css_height,
-                    "device_scale_factor": viewport.device_scale_factor,
-                    "desktop_pixel_width": viewport.desktop_pixel_width,
-                    "desktop_pixel_height": viewport.desktop_pixel_height,
-                }
-            }),
+            browser_reconcile_params(viewport, browser_bar_visible),
         )
     }
 
@@ -99,6 +94,7 @@ impl BrowserControllerProcessStore {
         &self,
         session_id: &str,
         viewport: &CanonicalViewport,
+        browser_bar_visible: bool,
     ) -> Result<Option<BrowserControllerReconciliation>, String> {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
@@ -119,9 +115,12 @@ impl BrowserControllerProcessStore {
                 && !supervisor.recovery_pending
                 && supervisor.snapshot.state == BrowserControllerProcessState::Ready
                 && supervisor.reconciled_viewport.as_ref() == Some(viewport)
+                && supervisor.reconciled_browser_bar_visible == browser_bar_visible
             {
                 Some((
-                    supervisor.backend.begin_reconciliation_read(viewport)?,
+                    supervisor
+                        .backend
+                        .begin_reconciliation_read(viewport, browser_bar_visible)?,
                     supervisor.snapshot.clone(),
                     supervisor.backend.timeout,
                 ))
@@ -141,7 +140,9 @@ impl BrowserControllerProcessStore {
         let mut ownership = ownership
             .lock()
             .map_err(|_| "browser controller supervisor lock poisoned")?;
-        ownership.reconcile_browser(session_id, viewport).map(Some)
+        ownership
+            .reconcile_browser(session_id, viewport, browser_bar_visible)
+            .map(Some)
     }
 }
 

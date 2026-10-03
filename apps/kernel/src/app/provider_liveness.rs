@@ -390,13 +390,12 @@ mod tests {
     }
 
     fn assert_app_provider_exit_state(cancelling: bool) {
-        let fixture_worktree_0 =
-            crate::test_support::TestWorktree::new("assert_app_provider_exit_state");
+        let worktree = crate::test_support::TestWorktree::new("app-unexpected-exit");
         let mut app =
             crate::test_support::bootstrap_authenticated_app(crate::DaemonConfig::for_tests())
                 .expect("daemon should boot");
         let (session, agent) = KernelSessionService::new(&mut app)
-            .create_session(fixture_worktree_0.session_request())
+            .create_session(worktree.session_request())
             .expect("session should create");
         let attachment = KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(

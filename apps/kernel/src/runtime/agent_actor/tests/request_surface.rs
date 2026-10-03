@@ -2,12 +2,10 @@ use super::*;
 
 #[test]
 fn handles_prompt_submit_through_agent_request_surface() {
-    let fixture_worktree_0 = crate::test_support::TestWorktree::new(
-        "handles_prompt_submit_through_agent_request_surface",
-    );
+    let worktree = crate::test_support::TestWorktree::new("handles-prompt-submit-through");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(fixture_worktree_0.session_request())
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(AttachRequest::new(
@@ -56,12 +54,10 @@ fn handles_prompt_submit_through_agent_request_surface() {
 
 #[test]
 fn handles_prompt_cancel_through_agent_request_surface() {
-    let fixture_worktree_0 = crate::test_support::TestWorktree::new(
-        "handles_prompt_cancel_through_agent_request_surface",
-    );
+    let worktree = crate::test_support::TestWorktree::new("handles-prompt-cancel-through");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(fixture_worktree_0.session_request())
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(AttachRequest::new(

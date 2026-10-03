@@ -15,6 +15,21 @@ impl KernelRuntimeState {
         &self,
         mut request: crate::session::CreateSessionRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        // Every session-create path (local, sliced, remote) starts from here:
+        // the first agent gets a real provider, never the `default` placeholder.
+        let mut defaults = request.agent_defaults.take().unwrap_or_default();
+        defaults.provider = crate::account_profile::resolve_placeholder_provider(
+            &self.owned.config_projection.snapshot(),
+            &self.owned.provider_account_profiles,
+            &request.owner_user_id,
+            &defaults.provider,
+        );
+        request.agent_defaults = Some(defaults);
+        if request.kernel_ref.as_deref().is_some_and(|kernel_ref| {
+            kernel_ref_matches_local_config(&self.owned.config_projection.snapshot(), kernel_ref)
+        }) {
+            request.kernel_ref = None;
+        }
         let slice_ref = request.slice_ref.clone();
         let kernel_ref = request.kernel_ref.clone();
         if request.metaagent {
@@ -438,7 +453,13 @@ impl KernelRuntimeState {
         agent_id: &str,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        self.owned.focus_agent(session_id, agent_id, caller_user_id)
+        let agent = self
+            .owned
+            .focus_agent(session_id, agent_id, caller_user_id)?;
+        // The focus agent gets the App of the Room's focused App Tab.
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        self.bind_foreground_app(session_id).await;
+        Ok(agent)
     }
 
     pub(crate) async fn acknowledge_agent_output_seen(
@@ -501,7 +522,10 @@ impl KernelRuntimeState {
         session_id: &str,
         caller_user_id: &str,
     ) -> Result<Option<crate::agent::AgentInstance>, DaemonError> {
-        self.owned.cycle_agent_focus(session_id, caller_user_id)
+        let agent = self.owned.cycle_agent_focus(session_id, caller_user_id)?;
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        self.bind_foreground_app(session_id).await;
+        Ok(agent)
     }
 
     pub(crate) async fn alias_session(
@@ -544,14 +568,19 @@ impl KernelRuntimeState {
         &self,
         mut request: crate::agent::CreateAgentRequest,
     ) -> Result<crate::agent::CreateAgentRequest, DaemonError> {
-        let Some(placement) = request.worktree_placement.take() else {
-            return Ok(request);
-        };
         let session = self.owned.session_store.get_session(&request.session_id)?;
         let base_worktree = request
             .worktree_id
             .as_deref()
             .unwrap_or_else(|| session.worktree_id());
+        crate::git_worktree_placement::preflight_existing_absolute_directory(
+            base_worktree,
+            "worktree_id",
+            "agent.spawn",
+        )?;
+        let Some(placement) = request.worktree_placement.take() else {
+            return Ok(request);
+        };
         let resolved = crate::git_worktree_placement::prepare_git_worktree(
             &placement,
             std::path::Path::new(base_worktree),
@@ -893,6 +922,15 @@ impl KernelRuntimeState {
         let session_id = self
             .resolve_session_ref_id_for_delete(session_ref, workspace_id)
             .await?;
+        self.delete_session_id(&session_id).await
+    }
+
+    /// Deletes a session by id, including a hidden one (a deployment copy's).
+    pub(crate) async fn delete_session_id(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let session_id = session_id.to_string();
         let owned = &self.owned;
         let durable_session = owned.session_end_snapshot(&session_id)?;
         let durable_project_delete = owned.project_removed_by_session_delete(&session_id);
@@ -908,7 +946,7 @@ impl KernelRuntimeState {
         self.stop_managed_environment_for_session_lifecycle(&session_id)
             .await;
         let (session, terminated_run_ids, removed_project) =
-            owned.delete_session_ref(session_ref, workspace_id)?;
+            owned.delete_session(owned.session_store.get_session(&session_id)?)?;
         debug_assert_eq!(
             removed_project.as_ref().map(|project| project.id()),
             durable_project_delete.as_ref().map(|project| project.id()),
@@ -1081,6 +1119,16 @@ impl Drop for UnpublishedSessionGuard {
 fn prepare_local_session_worktree_placement(
     mut request: crate::session::CreateSessionRequest,
 ) -> Result<crate::session::CreateSessionRequest, DaemonError> {
+    crate::git_worktree_placement::preflight_existing_absolute_directory(
+        &request.workspace_id,
+        "workspace_id",
+        "session.create",
+    )?;
+    crate::git_worktree_placement::preflight_existing_absolute_directory(
+        &request.worktree_id,
+        "worktree_id",
+        "session.create",
+    )?;
     let Some(placement) = request.worktree_placement.take() else {
         return Ok(request);
     };
@@ -1690,13 +1738,15 @@ mod tests {
             "{}-feature",
             repo.file_name().and_then(|name| name.to_str()).unwrap()
         ));
-        let request =
-            crate::session::CreateSessionRequest::new("workspace", repo.display().to_string())
-                .with_worktree_placement(crate::agent::GitWorktreePlacement {
-                    target_directory: Some(target.display().to_string()),
-                    branch: Some("feature/session-placement".to_string()),
-                    from_ref: Some("HEAD".to_string()),
-                });
+        let request = crate::session::CreateSessionRequest::new(
+            repo.display().to_string(),
+            repo.display().to_string(),
+        )
+        .with_worktree_placement(crate::agent::GitWorktreePlacement {
+            target_directory: Some(target.display().to_string()),
+            branch: Some("feature/session-placement".to_string()),
+            from_ref: Some("HEAD".to_string()),
+        });
 
         let adjusted = prepare_local_session_worktree_placement(request)
             .expect("session placement should create git worktree");

@@ -14,6 +14,8 @@ use chariox_relay::protocol::ClientTarget;
 use super::RemoteLeaseRuntime;
 
 #[cfg(test)]
+mod history_tests;
+#[cfg(test)]
 mod test_pause;
 
 const REMOTE_COMPLETION_HARVEST_RESPONSE_TIMEOUT: std::time::Duration =
@@ -23,15 +25,10 @@ const REMOTE_COMPLETION_HARVEST_RESPONSE_TIMEOUT: std::time::Duration =
 pub(crate) struct RemoteRuntimeProjectionOutcome {
     pub(crate) accepted: bool,
     pub(crate) completions: Vec<PromptCompletion>,
-    pub(crate) provider_failure: Option<RemoteProviderFailure>,
+    /// A leased workflow turn failed on the worker's provider. Substitutes
+    /// rerun only local turns, so the home settles it without one.
+    pub(crate) provider_failed: bool,
     pub(crate) remote_dispatches: Vec<crate::app::KernelRemotePromptDispatchIntent>,
-}
-
-#[derive(Debug)]
-pub(crate) struct RemoteProviderFailure {
-    pub(crate) adapter_key: String,
-    pub(crate) message: String,
-    pub(crate) profile_transition: crate::runtime::prompt_state::AgentProfileTransitionClaim,
 }
 
 impl<'a> RemoteLeaseRuntime<'a> {
@@ -60,6 +57,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
         if test_pause::is_paused(self.app, leased_agent_id) {
             return Ok(None);
         }
+        // Home drains poll every active remote turn, including held ones, so
+        // this is where a freed capacity slot is noticed.
+        self.admit_leased_turns_waiting_for_capacity();
         let leased_agent = self
             .app
             .leased_agents
@@ -116,67 +116,159 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 bytes: record.bytes,
             })
             .collect::<Vec<_>>();
-        let mut projected_output_history_keys = Vec::new();
-        output_chunks.retain(|chunk| {
-            if chunk.kind != TerminalOutputKind::ProviderTool {
-                return true;
-            }
-            let snapshot_key =
-                leased_provider_run_history_chunk_key(&leased_agent, provider_run_id, chunk);
-            if leased_agent
-                .projected_output_history_keys
-                .iter()
-                .any(|key| key == &snapshot_key)
-            {
-                return false;
-            }
-            projected_output_history_keys.push(snapshot_key);
-            true
-        });
-        let mut projected_output_stream_keys = output_chunks
+        let projection_id = format!(
+            "{}:{}:{provider_run_id}",
+            leased_agent.backing_session_id, leased_agent.backing_agent_id,
+        );
+        let history_store = self.app.operational_history_store();
+        let mut history_cursor = history_store.load_leased_projection_cursor(&projection_id)?;
+        let initial_history_cursor = history_cursor.clone();
+        let session = self
+            .app
+            .sessions
+            .get_session(&leased_agent.backing_session_id)?;
+        self.app.ensure_session_history_imported(&session)?;
+        let history_events = history_store.load_leased_projection_history(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+            provider_run_id,
+            history_cursor.committed_sequence,
+        )?;
+        let mut pending_keys = leased_agent
+            .projected_output_history_keys
             .iter()
-            .map(|chunk| leased_provider_run_stream_key(&leased_agent, provider_run_id, chunk))
+            .cloned()
             .collect::<std::collections::BTreeSet<_>>();
-        projected_output_history_keys.extend(projected_output_stream_keys.iter().cloned());
-        let mut history_chunks =
-            self.leased_provider_run_output_history_chunks(&leased_agent, provider_run_id)?;
-        history_chunks.retain(|history_chunk| {
-            let history_key = leased_provider_run_history_chunk_key(
-                &leased_agent,
-                provider_run_id,
-                history_chunk,
-            );
-            let stream_key =
-                leased_provider_run_stream_key(&leased_agent, provider_run_id, history_chunk);
-            let already_projected = leased_agent
-                .projected_output_history_keys
-                .iter()
-                .any(|key| key == &history_key || key == &stream_key)
-                || projected_output_stream_keys.contains(&stream_key);
-            if already_projected {
-                projected_output_history_keys.push(history_key);
-                return false;
+        let mut history_keys = Vec::new();
+        let mut tool_states = std::collections::BTreeMap::new();
+        let mut projected_output_stream_keys = std::collections::BTreeSet::new();
+        let mut deduplicated_chunks = Vec::with_capacity(output_chunks.len());
+        for chunk in output_chunks.drain(..) {
+            let snapshot_key =
+                leased_provider_run_history_chunk_key(&leased_agent, provider_run_id, &chunk);
+            if chunk.kind == TerminalOutputKind::ProviderTool {
+                let identity = crate::history::leased_projection::tool_identity(
+                    &chunk.merge_key,
+                    &chunk.bytes,
+                );
+                let stream_key = leased_tool_stream_key(&leased_agent, provider_run_id, &identity);
+                let tool = match tool_states.entry(stream_key.clone()) {
+                    std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(crate::history::leased_projection::ProjectedToolState {
+                            state: history_store.load_leased_tool_state(&stream_key)?,
+                            stream_key,
+                            session_id: leased_agent.backing_session_id.clone(),
+                            agent_id: leased_agent.backing_agent_id.clone(),
+                            provider_run_id: provider_run_id.to_string(),
+                            identity,
+                        })
+                    }
+                };
+                if pending_keys.contains(&snapshot_key)
+                    || history_store.leased_projection_key_exists(&snapshot_key)?
+                    || !tool
+                        .state
+                        .record(snapshot_key, &chunk.bytes, tool.identity.is_some())
+                {
+                    continue;
+                }
             }
-            projected_output_stream_keys.insert(stream_key.clone());
-            projected_output_history_keys.push(stream_key);
-            true
-        });
-        let latest_output_history_completion_key = history_chunks
-            .iter()
-            .rev()
-            .find(|chunk| chunk.kind == TerminalOutputKind::ProviderOutput)
-            .map(|chunk| {
-                leased_provider_run_history_chunk_key(&leased_agent, provider_run_id, chunk)
-            });
-        for history_chunk in &history_chunks {
-            projected_output_history_keys.push(leased_provider_run_history_chunk_key(
-                &leased_agent,
-                provider_run_id,
-                history_chunk,
-            ));
+            if chunk.kind == TerminalOutputKind::ProviderOutput {
+                let stream_key =
+                    leased_provider_run_stream_key(&leased_agent, provider_run_id, &chunk);
+                if projected_output_stream_keys.insert(stream_key.clone())
+                    && !history_store.leased_projection_key_exists(&stream_key)?
+                {
+                    pending_keys.insert(stream_key);
+                }
+            }
+            deduplicated_chunks.push(chunk);
         }
-        if !history_chunks.is_empty() {
-            output_chunks.extend(history_chunks);
+        output_chunks = deduplicated_chunks;
+        let mut latest_output_history_completion_key = None;
+        let mut history_entries = Vec::new();
+        for (committed_sequence, event) in history_events {
+            history_cursor.committed_sequence = committed_sequence;
+            let Some(entry) = event.to_session_history_entry() else {
+                continue;
+            };
+            if entry.is_external_provider_observed() {
+                continue;
+            }
+            if entry.provider_run_id.as_deref() == Some(provider_run_id)
+                && entry.kind != SessionHistoryEntryKind::UserPrompt
+            {
+                let kind = match entry.kind {
+                    SessionHistoryEntryKind::ProviderOutput => {
+                        Some(TerminalOutputKind::ProviderOutput)
+                    }
+                    SessionHistoryEntryKind::ProviderTool => Some(TerminalOutputKind::ProviderTool),
+                    _ => None,
+                };
+                if let Some(kind) = kind {
+                    let chunk = RelayProjectedOutputChunk {
+                        kind,
+                        merge_key: entry.merge_key.clone(),
+                        bytes: entry.text.as_bytes().to_vec(),
+                    };
+                    if chunk.kind == TerminalOutputKind::ProviderTool {
+                        // Retire pending tool state by identity, even when the
+                        // terminal carried a delta and history a full snapshot.
+                        let identity = crate::history::leased_projection::tool_identity(
+                            &chunk.merge_key,
+                            &chunk.bytes,
+                        );
+                        let stream_key =
+                            leased_tool_stream_key(&leased_agent, provider_run_id, &identity);
+                        if !tool_states.contains_key(&stream_key) {
+                            tool_states.insert(
+                                stream_key.clone(),
+                                crate::history::leased_projection::ProjectedToolState {
+                                    state: history_store.load_leased_tool_state(&stream_key)?,
+                                    stream_key,
+                                    session_id: leased_agent.backing_session_id.clone(),
+                                    agent_id: leased_agent.backing_agent_id.clone(),
+                                    provider_run_id: provider_run_id.to_string(),
+                                    identity,
+                                },
+                            );
+                        }
+                        continue;
+                    }
+                    let snapshot_key = leased_provider_run_history_chunk_key(
+                        &leased_agent,
+                        provider_run_id,
+                        &chunk,
+                    );
+                    let stream_key =
+                        leased_provider_run_stream_key(&leased_agent, provider_run_id, &chunk);
+                    let stream_projected = pending_keys.contains(&stream_key)
+                        || projected_output_stream_keys.contains(&stream_key)
+                        || history_store.leased_projection_key_exists(&stream_key)?;
+                    let already_projected = pending_keys.contains(&snapshot_key)
+                        || stream_projected
+                        || history_store.leased_projection_key_exists(&snapshot_key)?;
+                    if chunk.kind == TerminalOutputKind::ProviderOutput && !already_projected {
+                        projected_output_stream_keys.insert(stream_key.clone());
+                        latest_output_history_completion_key = Some(snapshot_key.clone());
+                        output_chunks.push(chunk);
+                    }
+                    history_keys.push(crate::history::leased_projection::ProjectedHistoryKeys {
+                        event_id: event.event_id,
+                        stream_key: (!already_projected || stream_projected).then_some(stream_key),
+                        snapshot_key,
+                    });
+                }
+            }
+            history_entries.push((event.sequence, entry));
+        }
+        if output_chunks
+            .iter()
+            .any(|chunk| chunk.kind == TerminalOutputKind::ProviderOutput)
+        {
+            history_cursor.output_prompt_key =
+                Some(leased_home_prompt_projection_key(&leased_agent));
         }
         let notices = self
             .app
@@ -255,17 +347,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
             &leased_agent.backing_agent_id,
         )?;
         let mut prompts = Vec::new();
-        let mut latest_home_origin_prompt_key = None;
-        if let Ok(backing_session) = self
-            .app
-            .sessions
-            .get_session(&leased_agent.backing_session_id)
+        let mut latest_home_origin_prompt_key = history_cursor.latest_home_prompt_key.clone();
         {
-            let history_entries = self.app.load_session_history_entries(
-                &backing_session,
-                Some(&leased_agent.backing_agent_id),
-            )?;
-            for entry in history_entries.into_iter().filter(|entry| {
+            for (sequence, entry) in history_entries.into_iter().filter(|(_, entry)| {
                 entry.kind == SessionHistoryEntryKind::UserPrompt
                     && !entry.is_external_provider_observed()
             }) {
@@ -289,7 +373,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
                             source_attachment_id == leased_agent.backing_attachment_id
                         })
                 {
-                    latest_home_origin_prompt_key = Some(prompt_history_key);
+                    if sequence > history_cursor.latest_home_prompt_sequence {
+                        latest_home_origin_prompt_key = Some(prompt_history_key);
+                        history_cursor.latest_home_prompt_sequence = sequence;
+                    }
                     continue;
                 }
                 if !leased_agent
@@ -319,6 +406,14 @@ impl<'a> RemoteLeaseRuntime<'a> {
             }
         }
         let backing_prompt_active = backing_active_prompt.is_some();
+        let completion_waits_for_runtime_tools = backing_active_prompt
+            .as_ref()
+            .is_some_and(|prompt| prompt.status() != PromptStatus::Cancelling)
+            && self
+                .app
+                .runtime_tool_call_activity
+                .active_count(provider_run_id)
+                > 0;
         let backing_active_prompt_id = backing_active_prompt
             .as_ref()
             .map(|prompt| prompt.id().to_string());
@@ -340,7 +435,22 @@ impl<'a> RemoteLeaseRuntime<'a> {
         // and Claude can likewise finish intermediate native items. Only the
         // provider-owned prompt transition may release the home turn.
         let completion_waits_for_native_prompt_settlement = requires_explicit_completion;
-        if completion_waits_for_native_prompt_settlement
+        let unprojected_replay_for_turn =
+            leased_agent
+                .replayable_completion
+                .as_ref()
+                .is_some_and(|replay| {
+                    replay.provider_run_id == provider_run_id
+                        && replay.home_prompt_id == home_prompt_id
+                        && !leased_agent.projected_completion_keys.iter().any(|key| {
+                            key == &leased_provider_run_completion_key(
+                                &leased_agent,
+                                provider_run_id,
+                                &replay.message_id,
+                            )
+                        })
+                });
+        if (completion_waits_for_native_prompt_settlement || unprojected_replay_for_turn)
             && !backing_prompt_active
             && leased_agent
                 .replayable_completion
@@ -362,7 +472,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .is_some_and(|diagnostic| !diagnostic.trim().is_empty());
         let provider_run_has_projected_output = current_batch_has_provider_output
             || latest_output_history_completion_key.is_some()
-            || leased_provider_run_has_projected_transcript_output(&leased_agent, provider_run_id);
+            || history_cursor.output_prompt_key.as_deref()
+                == Some(leased_home_prompt_projection_key(&leased_agent).as_str());
         let native_prompt_has_settled =
             completion_waits_for_native_prompt_settlement && !backing_prompt_active;
         let mut deferred_explicit_completion = false;
@@ -376,7 +487,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
             && completion_waits_for_native_prompt_settlement
             && backing_prompt_active
             && !provider_run_failed;
-        if completion_waits_for_output || completion_waits_for_native_stop {
+        if completion_waits_for_output
+            || completion_waits_for_native_stop
+            || (completion_waits_for_runtime_tools && !completions.is_empty())
+        {
             if let Some(completion) = completions.last() {
                 if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
                     agent.replayable_completion =
@@ -428,11 +542,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     .any(|key| key == &completion_key)
             });
         if completions.is_empty()
-            && requires_explicit_completion
+            && !completion_waits_for_runtime_tools
+            && (requires_explicit_completion || unprojected_replay_for_turn)
             && !explicit_completion_waiting_for_prompt_settlement
             && (native_prompt_has_settled
                 || current_batch_has_provider_output
-                || provider_run_has_projected_output)
+                || provider_run_has_projected_output
+                || unprojected_replay_for_turn)
         {
             if let Some(replay) = leased_agent
                 .replayable_completion
@@ -472,6 +588,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             }
         }
         if completions.is_empty()
+            && !completion_waits_for_runtime_tools
             && !backing_prompt_active
             && !explicit_completion_waiting
             && !((requires_explicit_completion || provider_run_failed || provider_run_ended)
@@ -577,18 +694,22 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 });
             }
         }
-        if !projected_output_history_keys.is_empty() {
-            if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
-                for key in projected_output_history_keys {
-                    if !agent
-                        .projected_output_history_keys
-                        .iter()
-                        .any(|id| id == &key)
-                    {
-                        agent.projected_output_history_keys.push(key);
-                    }
-                }
-            }
+        history_cursor.latest_home_prompt_key = latest_home_origin_prompt_key;
+        if history_cursor != initial_history_cursor
+            || !pending_keys.is_empty()
+            || !history_keys.is_empty()
+            || !tool_states.is_empty()
+        {
+            history_store.commit_leased_projection_cursor(
+                &projection_id,
+                &history_cursor,
+                &pending_keys.into_iter().collect::<Vec<_>>(),
+                &history_keys,
+                &tool_states.into_values().collect::<Vec<_>>(),
+            )?;
+        }
+        if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
+            agent.projected_output_history_keys = Vec::new();
         }
         if output_chunks.is_empty()
             && notices.is_empty()
@@ -624,6 +745,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
         leased_agent: &LeasedAgent,
         provider_run_id: &str,
     ) -> Result<bool, DaemonError> {
+        if self.leased_turn_is_waiting_for_capacity(&leased_agent.id) {
+            return Ok(false);
+        }
         let provider_run = self.app.providers.get_run(provider_run_id).ok();
         if leased_provider_requires_explicit_completion(
             &leased_agent.provider,
@@ -641,6 +765,17 @@ impl<'a> RemoteLeaseRuntime<'a> {
         if active_prompt.workflow_run_id().is_some() {
             return Ok(false);
         }
+        // A leased output poll must not complete the prompt underneath an
+        // authenticated runtime tool still executing on this worker.
+        if active_prompt.status() != PromptStatus::Cancelling
+            && self
+                .app
+                .runtime_tool_call_activity
+                .active_count(provider_run_id)
+                > 0
+        {
+            return Ok(false);
+        }
         if !crate::transport::flow_control::prompt_output_quiet_after_response(
             self.app,
             provider_run_id,
@@ -656,36 +791,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
         Ok(true)
     }
 
-    fn leased_provider_run_output_history_chunks(
-        &mut self,
-        leased_agent: &LeasedAgent,
-        provider_run_id: &str,
-    ) -> Result<Vec<RelayProjectedOutputChunk>, DaemonError> {
-        let session = self
-            .app
-            .sessions
-            .get_session(&leased_agent.backing_session_id)?;
-        let entries = self
-            .app
-            .load_session_history_entries(&session, Some(&leased_agent.backing_agent_id))?;
-        Ok(entries
-            .into_iter()
-            .filter(|entry| {
-                entry.provider_run_id.as_deref() == Some(provider_run_id)
-                    && entry.kind == SessionHistoryEntryKind::ProviderOutput
-                    && !entry.is_external_provider_observed()
-            })
-            .map(|entry| RelayProjectedOutputChunk {
-                kind: TerminalOutputKind::ProviderOutput,
-                merge_key: entry.merge_key,
-                bytes: entry.text.into_bytes(),
-            })
-            .collect())
-    }
-
     pub(crate) fn pump_leased_runtime_projections(
         &mut self,
     ) -> Result<Vec<(String, RelayPeerEvent)>, DaemonError> {
+        self.admit_leased_turns_waiting_for_capacity();
         let leased_agents = self.app.leased_agents.values().cloned().collect::<Vec<_>>();
         let mut events = Vec::new();
         for leased_agent in leased_agents {
@@ -962,10 +1071,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
                                 .and_then(|run| run.terminal_diagnostic().map(str::to_string))
                                 .filter(|message| !message.trim().is_empty())
                         });
-                    let failure_details = failed_provider
-                        .as_ref()
-                        .zip(provider_diagnostic.as_ref())
-                        .map(|(run, message)| (run.adapter_key().to_string(), message.clone()));
+                    let provider_failed =
+                        failed_provider.is_some() && provider_diagnostic.is_some();
                     let (failure_kind, failure_message, notice_message) = if let Some(diagnostic) =
                         provider_diagnostic
                     {
@@ -1017,31 +1124,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         projected_settled_at_ms.unwrap_or_else(crate::session::unix_epoch_ms),
                         projected_termination.clone(),
                     );
-                    let completed = if let Some((adapter_key, message)) = failure_details {
-                        let session = self.app.sessions.get_session(session_id)?;
-                        let Some((completed, profile_transition)) = self
-                            .app
-                            .prompt_state_owner()
-                            .complete_active_prompt_and_claim_profile_transition(
-                            &session,
-                            agent_id,
-                            active_prompt.id(),
-                        )?
-                        else {
-                            return Ok(outcome);
-                        };
-                        self.app
-                            .mirror_prompt_owner_agent_state(session_id, agent_id)?;
-                        outcome.provider_failure = Some(RemoteProviderFailure {
-                            adapter_key,
-                            message,
-                            profile_transition,
-                        });
-                        completed
-                    } else {
-                        self.app
-                            .prompt_owner_complete_active_prompt_only(session_id, agent_id)?
-                    };
+                    let completed = self
+                        .app
+                        .prompt_owner_complete_active_prompt_only(session_id, agent_id)?;
+                    outcome.provider_failed = provider_failed;
                     crate::transport::flow_control::clear_prompt_activity(
                         self.app,
                         provider_run_id,
@@ -1155,8 +1241,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
                             outcome.remote_dispatches.push(dispatch_intent);
                             Some(prompt)
                         } else {
-                            // Admission may have skipped a detached ordinary
-                            // queue head and stopped at a workflow prompt. Re-read
+                            // Admission admits nothing when the expected head is
+                            // stale or the queue head is a workflow prompt. Re-read
                             // the authoritative queue after admission so the
                             // selected candidate, rather than the stale head,
                             // decides which dispatch path owns it.
@@ -1442,22 +1528,6 @@ fn leased_provider_run_stream_key(
         chunk.kind,
         chunk.merge_key.as_deref().unwrap_or("")
     )
-}
-
-fn leased_provider_run_has_projected_transcript_output(
-    leased_agent: &LeasedAgent,
-    provider_run_id: &str,
-) -> bool {
-    let prompt_output_prefix = format!(
-        "{}:{provider_run_id}:{}:{:?}:",
-        leased_agent.backing_session_id,
-        leased_home_prompt_projection_key(leased_agent),
-        TerminalOutputKind::ProviderOutput,
-    );
-    leased_agent
-        .projected_output_history_keys
-        .iter()
-        .any(|key| key.starts_with(&prompt_output_prefix))
 }
 
 fn leased_home_prompt_projection_key(leased_agent: &LeasedAgent) -> String {
@@ -2013,7 +2083,28 @@ mod explicit_completion_tests {
         let before_output = RemoteLeaseRuntime::new(&mut app)
             .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
             .expect("completion-only projection should succeed");
-        assert!(before_output.is_none());
+        let (_, projection) =
+            before_output.expect("ACK should project the provider run before completion");
+        let RelayPeerEvent::LeasedRuntimeProjection {
+            provider_run,
+            prompts,
+            output_chunks,
+            notices,
+            completions,
+            ..
+        } = projection;
+        assert_eq!(
+            provider_run.as_ref().map(|run| run.id()),
+            Some(provider_run_id.as_str())
+        );
+        assert!(prompts.is_empty());
+        assert!(output_chunks.is_empty());
+        assert!(notices.is_empty());
+        assert!(completions.is_empty());
+        assert!(RemoteLeaseRuntime::new(&mut app)
+            .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
+            .expect("unchanged provider state should not bypass completion guards")
+            .is_none());
         assert!(app
             .prompt_owner_active_prompt_for_agent_snapshot(
                 &leased_agent.backing_session_id,
@@ -2761,7 +2852,66 @@ mod explicit_completion_tests {
                     provider_termination: None,
                 }],
             )
-            .expect("completion should skip the detached head and advance the workflow");
+            .expect("completion should admit the detached ordinary head");
+
+        // Queued prompts outlive their source attachment, so the detached
+        // ordinary head runs first and the workflow prompt waits behind it.
+        let ordinary = projected.completions[0]
+            .started_next
+            .clone()
+            .expect("detached ordinary head should be admitted instead of leaving the agent idle");
+        assert_eq!(ordinary.prompt(), "stale ordinary prompt");
+        assert_eq!(ordinary.workflow_run_id(), None);
+        assert_eq!(
+            projected.remote_dispatches.len(),
+            1,
+            "the ordinary head should hand off exactly one send"
+        );
+        assert_eq!(
+            projected.remote_dispatches[0].dispatch.prompt_id,
+            ordinary.id()
+        );
+        assert!(
+            app.take_deferred_workflow_remote_prompt_dispatches()
+                .is_empty(),
+            "the ordinary send is returned to the caller, not deferred"
+        );
+        assert_eq!(
+            app.prompt_owner_peek_next_queued_prompt(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )
+            .expect("queue head should load after admission")
+            .map(|prompt| prompt.id().to_string()),
+            Some(queued_workflow.id().to_string()),
+            "the workflow prompt must stay queued behind the ordinary turn"
+        );
+
+        // The worker acknowledges and then completes the ordinary turn; the
+        // workflow prompt is promoted rather than stranded.
+        app.agents
+            .set_remote_execution_active_worker_provider_run_id(
+                &leased_agent.backing_agent_id,
+                Some(provider_run_id.clone()),
+            )
+            .expect("dispatch acknowledgement should bind the worker run");
+        let projected = RemoteLeaseRuntime::new(&mut app)
+            .project_remote_runtime_projection(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+                &provider_run_id,
+                None,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                vec![RelayProjectedCompletion {
+                    message_id: "ordinary-prompt-complete".to_string(),
+                    completed_at_ms: crate::session::unix_epoch_ms(),
+                    home_prompt_id: Some(ordinary.id().to_string()),
+                    provider_termination: None,
+                }],
+            )
+            .expect("ordinary completion should advance the workflow");
 
         assert!(projected.remote_dispatches.is_empty());
         let started_next = projected.completions[0]
@@ -2791,7 +2941,7 @@ mod explicit_completion_tests {
             )
             .expect("queue should load after promotion"),
             None,
-            "neither the stale ordinary prompt nor workflow prompt should remain queued"
+            "neither the ordinary prompt nor the workflow prompt should remain queued"
         );
 
         let deferred = app.take_deferred_workflow_remote_prompt_dispatches();
@@ -2814,4 +2964,13 @@ mod explicit_completion_tests {
             "dispatch should have only one durable post-lock handoff"
         );
     }
+}
+
+fn leased_tool_stream_key(leased: &LeasedAgent, run: &str, identity: &Option<String>) -> String {
+    format!(
+        "{}:{}:{run}:ProviderTool:{}",
+        leased.backing_session_id,
+        leased.backing_agent_id,
+        serde_json::to_string(identity).expect("tool identity serializes")
+    )
 }

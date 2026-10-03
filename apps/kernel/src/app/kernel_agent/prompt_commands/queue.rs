@@ -22,37 +22,26 @@ impl<'a> KernelAgentService<'a> {
             let source_is_workflow = crate::app::workflow_runtime::is_workflow_prompt_source(
                 peeked.source_attachment_id(),
             );
-            let leased_event_capabilities = if source_is_workflow {
-                None
-            } else {
-                crate::app::RemoteLeaseRuntime::new(self.app)
-                    .leased_workflow_event_capabilities_for_backing_prompt(
-                        session_id,
-                        &target_agent_id,
-                        peeked.id(),
-                    )
-            };
-            let is_workflow_prompt = source_is_workflow || leased_event_capabilities.is_some();
-            let provider_run_id = match if is_workflow_prompt {
-                if let Some((event_reply_enabled, event_context_enabled, event_actions_enabled)) =
-                    leased_event_capabilities
-                {
-                    crate::app::workflow_runtime::ensure_workflow_provider_run_with_event_capabilities_from_runtime(
-                        self.app,
-                        session_id,
-                        &target_agent_id,
-                        event_reply_enabled,
-                        event_context_enabled,
-                        event_actions_enabled,
-                    )
-                } else {
-                    crate::app::workflow_runtime::ensure_workflow_provider_run_for_prompt_from_runtime(
-                        self.app,
-                        session_id,
-                        &target_agent_id,
-                        &peeked,
-                    )
-                }
+            let leased_workflow_prompt = !source_is_workflow
+                && crate::app::RemoteLeaseRuntime::new(self.app).is_leased_workflow_backing_prompt(
+                    session_id,
+                    &target_agent_id,
+                    peeked.id(),
+                );
+            let is_workflow_prompt = source_is_workflow || leased_workflow_prompt;
+            let provider_run_id = match if source_is_workflow {
+                crate::app::workflow_runtime::ensure_workflow_provider_run_for_prompt_from_runtime(
+                    self.app,
+                    session_id,
+                    &target_agent_id,
+                    &peeked,
+                )
+            } else if leased_workflow_prompt {
+                crate::scheduler::runtime::ensure_workflow_provider_run_for_agent(
+                    self.app,
+                    session_id,
+                    &target_agent_id,
+                )
             } else {
                 self.app
                     .ensure_prompt_provider_run_for_agent(session_id, &target_agent_id)

@@ -2,7 +2,7 @@ use crate::error::DaemonError;
 use crate::local::RoomEnvironmentResourceInventory;
 use crate::runtime::browser_controller_event::{RoomBrowserEvent, RoomBrowserEventBatch};
 use crate::runtime::browser_controller_process::{
-    BrowserControllerProcessSnapshot, BrowserControllerProcessState,
+    BrowserControllerProcessSnapshot, BrowserControllerProcessState, BrowserControllerReconciliation,
 };
 use crate::session::{
     agent_environment_actor_id, EnvironmentActionRequest, EnvironmentComponent,
@@ -10,7 +10,7 @@ use crate::session::{
     RoomEnvironmentSnapshot,
 };
 
-use super::room_browser_controller::controller_route_error;
+use super::room_browser_controller::{controller_route_error, is_room_slice_unreachable};
 use super::KernelRuntimeState;
 use crate::transport::room_browser_controller::{
     RoomBrowserControllerCommand, RoomBrowserControllerResult,
@@ -105,10 +105,7 @@ impl KernelRuntimeState {
             None,
         )
         .map_err(|error| environment_runtime_error(operation, error))?;
-        match self
-            .reconcile_browser_controller_environment(session_id)
-            .await
-        {
+        match self.reconcile_started_browser(session_id).await {
             Ok(_) => {
                 let environment = self
                     .update_room_environment_component_health(
@@ -129,6 +126,37 @@ impl KernelRuntimeState {
                 );
                 let _ = self.transition_room_environment(session_id, EnvironmentLifecycle::Failed);
                 Err(error)
+            }
+        }
+    }
+
+    /// A browser that a slice (re)start just launched can still be settling:
+    /// not listening yet, or slow while it restores the previous session's
+    /// windows. The start's reconcile retries those transient controller
+    /// failures with backoff before the Room fails: a retry starts only within
+    /// the budget, and the last one still runs its own command timeout (5 s
+    /// CDP locally, up to the 15 s relay timeout for a slice). Room commands on
+    /// the session's lane, a Stop included, wait behind it meanwhile.
+    async fn reconcile_started_browser(
+        &self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, DaemonError> {
+        let deadline = tokio::time::Instant::now() + START_RECONCILE_BUDGET;
+        let mut delay = START_RECONCILE_FIRST_DELAY;
+        loop {
+            match self
+                .reconcile_browser_controller_environment(session_id)
+                .await
+            {
+                Err(error)
+                    if transient_started_browser_error(&error)
+                        && tokio::time::Instant::now() + delay < deadline =>
+                {
+                    tracing::warn!(%error, ?delay, "Room browser not ready; retrying its reconcile");
+                    tokio::time::sleep(delay).await;
+                    delay = (delay * 2).min(START_RECONCILE_MAX_DELAY);
+                }
+                result => return result,
             }
         }
     }
@@ -173,18 +201,58 @@ impl KernelRuntimeState {
             .map_err(|error| environment_runtime_error(operation, error))
     }
 
+    pub(crate) async fn restore_browser_controller_viewport(
+        &self,
+        session_id: &str,
+    ) -> Result<(), DaemonError> {
+        if let Err(error) = self.reconcile_browser_controller_environment(session_id).await {
+            let _ = self.update_room_environment_component_health(
+                session_id,
+                EnvironmentComponent::Browser,
+                EnvironmentComponentHealthState::Degraded,
+                Some("viewport_rollback_failed"),
+            );
+            if self.room_environment_snapshot(session_id).is_ok_and(|environment| {
+                environment.lifecycle == EnvironmentLifecycle::Ready
+            }) {
+                let _ = self.transition_room_environment(session_id, EnvironmentLifecycle::Degraded);
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn apply_browser_controller_viewport(
+        &self,
+        session_id: &str,
+        environment: &RoomEnvironmentSnapshot,
+    ) -> Result<BrowserControllerReconciliation, DaemonError> {
+        match self.room_browser_controller_command(
+            session_id,
+            RoomBrowserControllerCommand::Reconcile {
+                viewport: environment.viewport.clone(),
+                browser_bar_visible: environment.browser_bar_visible,
+            },
+        ).await? {
+            RoomBrowserControllerResult::Reconciled { reconciliation: Some(reconciliation) } => Ok(reconciliation),
+            _ => Err(controller_route_error("controller did not verify canonical viewport")),
+        }
+    }
+
     pub(crate) async fn reconcile_browser_controller_environment(
         &self,
         session_id: &str,
     ) -> Result<RoomEnvironmentSnapshot, DaemonError> {
-        let viewport = self
+        let environment = self
             .room_environment_snapshot(session_id)
-            .map_err(|error| environment_runtime_error("browser_controller.reconcile", error))?
-            .viewport;
+            .map_err(|error| environment_runtime_error("browser_controller.reconcile", error))?;
         let RoomBrowserControllerResult::Reconciled { reconciliation } = self
             .room_browser_controller_command(
                 session_id,
-                RoomBrowserControllerCommand::Reconcile { viewport },
+                RoomBrowserControllerCommand::Reconcile {
+                    viewport: environment.viewport,
+                    browser_bar_visible: environment.browser_bar_visible,
+                },
             )
             .await?
         else {
@@ -197,6 +265,14 @@ impl KernelRuntimeState {
                 .room_environment_snapshot(session_id)
                 .map_err(|error| environment_runtime_error("browser_controller.reconcile", error));
         };
+        self.observe_browser_controller_reconciliation(session_id, reconciliation)
+    }
+
+    pub(crate) fn observe_browser_controller_reconciliation(
+        &self,
+        session_id: &str,
+        reconciliation: BrowserControllerReconciliation,
+    ) -> Result<RoomEnvironmentSnapshot, DaemonError> {
         let controller_recovery_pending = self.observe_browser_controller_generation(
             session_id,
             reconciliation.process.runtime_generation,
@@ -272,6 +348,7 @@ impl KernelRuntimeState {
                 session_id,
                 RoomBrowserControllerCommand::Reconcile {
                     viewport: environment.viewport.clone(),
+                    browser_bar_visible: environment.browser_bar_visible,
                 },
             )
             .await?
@@ -1085,15 +1162,26 @@ impl KernelRuntimeState {
     ) -> Result<RoomEnvironmentSnapshot, DaemonError> {
         self.begin_stop_room_environment(session_id)
             .map_err(|error| environment_runtime_error("environment.stop", error))?;
-        if let Err(error) = self.stop_browser_controller_process(session_id).await {
-            let _ = self.update_room_environment_component_health(
-                session_id,
-                EnvironmentComponent::BrowserController,
-                EnvironmentComponentHealthState::Unavailable,
-                Some("controller_stop_failed"),
-            );
-            let _ = self.transition_room_environment(session_id, EnvironmentLifecycle::Failed);
-            return Err(error);
+        match self.stop_browser_controller_process(session_id).await {
+            Ok(_) => {}
+            // The controller lived in the slice, which is gone: nothing to release.
+            Err(error) if is_room_slice_unreachable(&error) => {
+                self.owned
+                    .browser_controller_generations
+                    .lock()
+                    .map_err(|_| controller_generation_error("generation lock poisoned"))?
+                    .remove(session_id);
+            }
+            Err(error) => {
+                let _ = self.update_room_environment_component_health(
+                    session_id,
+                    EnvironmentComponent::BrowserController,
+                    EnvironmentComponentHealthState::Unavailable,
+                    Some("controller_stop_failed"),
+                );
+                let _ = self.transition_room_environment(session_id, EnvironmentLifecycle::Failed);
+                return Err(error);
+            }
         }
         self.update_room_environment_component_health(
             session_id,
@@ -1190,6 +1278,26 @@ impl KernelRuntimeState {
         }
         Ok(())
     }
+}
+
+const START_RECONCILE_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+const START_RECONCILE_FIRST_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+const START_RECONCILE_MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// Controller failures of a browser that is still starting, as the controller
+/// reports them, locally or through the relay.
+fn transient_started_browser_error(error: &DaemonError) -> bool {
+    let message = error.to_string();
+    [
+        "browser_cdp_timeout",
+        "browser_debugger_unavailable",
+        "browser_cdp_disconnected",
+        "browser_cdp_socket_error",
+    ]
+    .iter()
+    .any(|code| {
+        message.contains(&crate::runtime::browser_controller_process::controller_error_marker(code))
+    })
 }
 
 fn controller_generation_error(message: &str) -> DaemonError {

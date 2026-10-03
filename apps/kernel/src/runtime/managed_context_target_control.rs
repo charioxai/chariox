@@ -132,6 +132,7 @@ mod tests {
 
     #[test]
     fn empty_launch_target_uses_managed_workspace_without_publication_control_state() {
+        crate::test_support::isolated_env_test!();
         let _lock = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-empty-launch-target-{}-{}",

@@ -5,13 +5,21 @@ use crate::local::{
     TerminalCommandCatalogNodeKind, TerminalCommandCatalogSurface,
 };
 
+mod agent_workflow;
+mod app_events;
+mod app_fetch;
+mod app_install;
+mod app_publisher;
+mod apps;
 mod browser_import;
 mod cloud_relay;
 mod core;
 mod credential_enrollment;
 mod disposable_worker;
 mod event_publication;
+mod extension_apps;
 mod fresh_remote_relay_inventory;
+mod kernel_operation_interactions;
 mod managed_activity;
 mod managed_context;
 mod managed_environment;

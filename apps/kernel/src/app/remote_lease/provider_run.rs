@@ -11,7 +11,44 @@ pub(crate) enum LeasedProviderRunMatch {
     LaunchRequired(LaunchProviderRequest),
 }
 
+fn native_runtime_catalog_refresh_pending_error() -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "remote runtime tool catalog reload",
+        message: "native_runtime_catalog_refresh_pending: the native provider must fetch the updated catalog before this prompt is admitted".into(),
+    }
+}
+
 impl<'a> RemoteLeaseRuntime<'a> {
+    /// Rejects a prompt before admission while the leased agent's native
+    /// provider run has not loaded `remote_extension_manifest`, the same
+    /// retryable rejection the provider-run match returns.
+    pub(crate) fn ensure_leased_native_runtime_catalog_loaded(
+        &self,
+        leased_agent_id: &str,
+        remote_extension_manifest: &crate::extension::RemoteExtensionManifest,
+    ) -> Result<(), DaemonError> {
+        let leased_agent = self.app.leased_agents.get(leased_agent_id).ok_or_else(|| {
+            DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            }
+        })?;
+        let refresh_pending = self
+            .app
+            .providers
+            .get_run_for_agent(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )
+            .is_some_and(|run| {
+                !run.client_interface().is_chariox()
+                    && !run.remote_extension_catalog_matches_launch(remote_extension_manifest)
+            });
+        if refresh_pending {
+            return Err(native_runtime_catalog_refresh_pending_error());
+        }
+        Ok(())
+    }
+
     pub(super) fn ensure_home_proxy_manifest_has_no_worker_collisions(
         &self,
         leased_agent: &LeasedAgent,
@@ -112,9 +149,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
         leased_agent: &LeasedAgent,
         required_mcps: &[RequiredRemoteMcp],
         remote_extension_manifest: &crate::extension::RemoteExtensionManifest,
-        event_reply_enabled: bool,
-        event_context_enabled: bool,
-        event_actions_enabled: bool,
     ) -> Result<LeasedProviderRunMatch, DaemonError> {
         self.ensure_home_proxy_manifest_has_no_worker_collisions(
             leased_agent,
@@ -163,24 +197,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
             let environment_matches = run.project_environment_revision()
                 == selection.project_environment_revision.as_deref();
             let mcp_matches = provider_run_mcp_set_matches(run, required_mcps)?;
-            let reply_capability_matches =
-                run.workflow_event_reply_enabled() == event_reply_enabled;
-            let context_capability_matches =
-                run.workflow_event_context_enabled() == event_context_enabled;
-            let actions_capability_matches =
-                run.workflow_event_actions_enabled() == event_actions_enabled;
-            if existing_profile_matches
-                && environment_matches
-                && mcp_matches
-                && reply_capability_matches
-                && context_capability_matches
-                && actions_capability_matches
-            {
-                let updated = self.app.providers.update_run_remote_extension_manifest(
-                    run.id(),
-                    remote_extension_manifest.clone(),
-                )?;
-                self.app.update_provider_run_projection(updated);
+            let catalog_matches =
+                run.remote_extension_catalog_matches_launch(remote_extension_manifest);
+            if existing_profile_matches && environment_matches && mcp_matches && catalog_matches {
+                if run.remote_extension_manifest() != remote_extension_manifest {
+                    let updated = self.app.providers.update_run_remote_extension_manifest(
+                        run.id(),
+                        remote_extension_manifest.clone(),
+                    )?;
+                    self.app.update_provider_run_projection(updated);
+                }
                 return Ok(LeasedProviderRunMatch::Ready(run.id().to_string()));
             }
             let active = self
@@ -203,11 +229,30 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     message: "the worker provider run differs from the selected profile and still has pending work; settle or cancel it before retrying".to_string(),
                 });
             }
+            if !catalog_matches && !run.client_interface().is_chariox() {
+                // The attached native terminal keeps this run identity. The
+                // existing metadata sync queues an in-place provider refresh;
+                // do not replace it with a managed run while refresh is pending.
+                return Err(native_runtime_catalog_refresh_pending_error());
+            }
             if active && !mcp_matches {
                 return Err(DaemonError::LocalTransport {
                     operation: "remote MCP provider reload",
                     message: format!(
                         "remote worker provider run `{}` does not have the required MCP set and is currently busy; retry after the active turn completes",
+                        run.id()
+                    ),
+                });
+            }
+            if active && !catalog_matches {
+                // Queue advance does not repeat provider admission. Accepting
+                // this prompt on the old run would promise a catalog that its
+                // provider has never loaded. Keep the current turn intact; the
+                // existing home dispatch handshake can retry once it is idle.
+                return Err(DaemonError::LocalTransport {
+                    operation: "remote runtime tool catalog reload",
+                    message: format!(
+                        "remote worker provider run `{}` has an active turn and a changed runtime tool catalog; retry after the active turn completes",
                         run.id()
                     ),
                 });
@@ -257,9 +302,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
         )
         .with_agent_id(&leased_agent.backing_agent_id)
         .with_owner_user_id(lease.owner_user_id)
-        .with_workflow_event_reply(event_reply_enabled)
-        .with_workflow_event_context(event_context_enabled)
-        .with_workflow_event_actions(event_actions_enabled)
         .with_working_directory(std::path::PathBuf::from(
             self.app
                 .sessions

@@ -39,7 +39,7 @@ environment hygiene without forking ordinary provider filesystem semantics.
 ## Release inputs
 
 Use the OpenShip builder to build `chariox-kernel`, `chariox-managed-bootstrap`,
-and `chariox-relay` for `x86_64-unknown-linux-gnu` from an exact pushed
+`chariox-relay`, `chariox-app-package`, and `chariox-app-storage` for `x86_64-unknown-linux-gnu` from an exact pushed
 OSS revision. The builder must hold a dedicated Ed25519 PKCS8 attestation key
 outside the repository with mode `0600`. Its build command archives the Git
 object into a new temporary directory, runs a locked one-job release build, and
@@ -63,6 +63,8 @@ node scripts/package-managed-kernel-release.mjs \
   --kernel <build-output>/chariox-kernel \
   --supervisor <build-output>/chariox-managed-bootstrap \
   --relay <build-output>/chariox-relay \
+  --app-package <build-output>/chariox-app-package \
+  --app-storage <build-output>/chariox-app-storage \
   --builder-attestation <build-output>/build-attestation.json \
   --builder-attestation-signature <build-output>/build-attestation.sig \
   --trusted-builder-public-key <openship-builder-public-key> \
@@ -99,11 +101,22 @@ force recovery. Retain their public history and resolve the interrupted old
 transaction with its matching reviewed tooling before attempting rotation.
 The packager
 verifies the detached builder signature, exact commit and tree IDs, target,
-and all three staged binary digests
+and all five staged binary digests
 before it reads the release-signing key. The signed release retains the builder
 attestation and records the full Git commit and tree IDs. Its systemd units and
 slice context come from that exact Git object; working-tree changes and
 untracked files cannot enter the release.
+
+The signed release includes the privileged App storage helper and its service.
+The installer derives its enrollment from the actual `chariox` OS UID/GID; it
+never imports an App-supplied mount path, device, quota or command. The managed
+kernel receives its own cgroup-v2 subtree with systemd `DelegateSubgroup`; the
+rootless Docker subtree and broker remain separate. Storage uses the installed
+helper and fixed ext4 images, so the image includes e2fsprogs. The helper shares
+the host mount namespace and the kernel receives those mounts through its
+existing service namespace. The dedicated Ubuntu24.04 storage drill covers
+that seam; its first execution and the Ubuntu26.04 full image gate remain
+required validation.
 
 ## Disposable Hetzner builder
 
@@ -309,3 +322,39 @@ the receipt's grant binding (schema 2) covers the machine's identity, not its
 release, so an updated machine starts normally. Cloud authorizes the target
 release and records it once the machine reports it; an update Cloud did not
 authorize leaves Cloud's release record unchanged.
+
+Deliberate managed rollback from local protocol 410 or later to a pre-Apps
+protocol is blocked when durable Phase 1 state exists: installed App releases,
+App storage, App tables or migrations. Initialized App tables count even when
+empty: opening the 410 kernel database writes the Phase 1 schema, so an ordinary
+410 host that has started its kernel requires the override for deliberate
+downgrade even if no App was installed. Empty enrollment/storage roots alone do
+not block a host whose database has not acquired App tables. Unreadable, corrupt or redirected state requires the override.
+An operator may pass `--allow-apps-rollback` before the positional arguments to
+`upgrade-image.sh`; this warns about unproven App state recovery and still
+requires signed reciprocal transition policy. Preserve a state backup first.
+Automatic recovery of a failed upgrade remains the existing transaction path
+and does not pass through this deliberate rollback gate.
+
+Release F Path-1 slices retain their original save/backup behavior until migrated.
+The broker records `layoutKind: legacy-release-f` under its private
+`legacy-layouts/` inventory, bound to the inspected home lineage, with the current container and image recorded. Signed worker refreshes and broker-recorded legacy saved images retain that lineage across recreation and restore.
+Capture emits a warning in the home kernel diagnostics that the mixed home/image may contain credentials. Legacy saved-image proofs are separate from protected image proofs; they never admit protected capture.
+Only pre-Apps release F image protocols (relay 58–68), without protected mounts
+or environment markers, qualify. New slices and protected slices still require
+the complete verified protected layout; losing its receipt never enables legacy
+capture. Migrate intentionally to a new protected slice to separate credentials.
+
+Pre-upgrade saved images have no broker image proof. For an already retained
+legacy home only, restore preserves release F’s saved-image selection: the
+kernel selects its saved-state image, and the broker requires a release F relay
+label (58–68) with no protected marker. That compatibility fallback is not a
+per-slice image proof. Newly captured legacy images have broker-owned proofs;
+protected restores never use the release F fallback.
+
+Managed upgrade enrolls App storage through the same root-owned enrollment path
+as installation, publishes the signed App helper/package/unit links, and starts
+the helper before the kernel. Rollback to a pre-Apps release disables the helper
+and removes only these release links. Enrollment and durable App storage remain
+intact; the rollback prints a notice that App storage is disabled until a later
+Apps upgrade. Conflicting host links or enrollment fail rather than being adopted.

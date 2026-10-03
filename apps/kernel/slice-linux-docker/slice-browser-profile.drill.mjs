@@ -75,7 +75,7 @@ await new Promise((resolve, reject) => {
 const client = new BrowserCdpClient();
 try {
   await screen("start");
-  const connection = await client.ensureConnection();
+  const connection = await connect();
   await assertSandbox(connection);
   const session = await openFixture(connection, phase === "seed" ? "/login" : "/");
   await assertStorage(connection, session, phase);
@@ -94,7 +94,7 @@ try {
   await client.close();
   await screen("stop");
   await screen("start");
-  let restarted = await client.ensureConnection();
+  let restarted = await connect();
   await assertSandbox(restarted);
   let restartedSession = await openFixture(restarted, "/");
   await assertStorage(restarted, restartedSession, `${phase}-restart`);
@@ -114,7 +114,7 @@ try {
     // Reopen through the product URL action while keeping the desktop alive.
     const url = `${origin}/cold-fallback-${fault}`;
     await screen("open-url", url);
-    restarted = await client.ensureConnection();
+    restarted = await connect();
     await assertSandbox(restarted);
     const target = await waitFor(async () => {
       const { targetInfos } = await restarted.send("Target.getTargets");
@@ -251,6 +251,20 @@ async function evaluate(connection, session, expression) {
   const response = await connection.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, session);
   assert.equal(response.exceptionDetails, undefined, "fixture script must not throw");
   return response.result?.value;
+}
+
+// Chromium answers CDP a few seconds after the desktop starts, more on a
+// capped CPU.
+async function connect() {
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    try {
+      return await client.ensureConnection();
+    } catch (error) {
+      if (Date.now() > deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
 }
 
 async function waitFor(check) {

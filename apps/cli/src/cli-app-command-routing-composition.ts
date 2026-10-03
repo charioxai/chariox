@@ -8,6 +8,7 @@ export type CliAppCommandRoutingCompositionDeps = Record<string, any> & {
   anyTurnWork: AnyFn
   requestExit: AnyFn
   requestWaitingRoom: AnyFn
+  openKernelApprovals: () => void
   handleAttachmentCommand: AnyFn
   flashFooter: AnyFn
   formatError: AnyFn
@@ -22,6 +23,7 @@ export function createCliAppCommandRoutingComposition(
   const commandCenterCommandExecutor = createCommandCenterCommandExecutor({
     onExit: () => deps.requestExit(),
     onWaiting: () => deps.requestWaitingRoom(),
+    onApprovals: deps.openKernelApprovals,
     onStop: () => requestPromptStop(),
     handleAttachmentCommand: deps.handleAttachmentCommand,
     onSession: commandHandlers.handleSessionCommand,
@@ -47,6 +49,7 @@ export function createCliAppCommandRoutingComposition(
     onWorktree: commandHandlers.handleWorktreeCommand,
     onWorkflow: commandHandlers.handleWorkflowCommand,
     onNotifications: commandHandlers.handleNotificationsCommand,
+    onApp: commandHandlers.handleAppCommand,
     onSettings: commandHandlers.handleSettingsCommand,
     onLoop: commandHandlers.handleLoopCommand,
     onGoal: commandHandlers.handleGoalCommand,

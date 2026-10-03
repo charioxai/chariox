@@ -564,6 +564,8 @@ async fn required_permission_agent_gets_registration_approval_before_path_valida
             interaction_id: interaction_id.clone(),
             choice_id: "deny".to_string(),
             custom_reply: None,
+            passkey: None,
+            passkey_remember_minutes: None,
         });
     router
         .dispatch(

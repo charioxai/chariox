@@ -23,7 +23,11 @@ use super::model::{
 };
 use super::ports::{busy_published_ports_for_slice, LocalDockerSlicePorts};
 
+#[cfg(unix)]
+mod admission_lock;
 mod broker;
+mod local_authority;
+mod capture_preflight;
 mod disk_admission;
 mod extension_build;
 mod home_archive_capture;
@@ -38,10 +42,13 @@ mod tests;
 mod tuning;
 
 use broker::docker_command;
+pub(crate) use capture_preflight::require_verified_layout as require_supported_slice_capture_layout;
 use provider_inputs::home_provider_credential_sources;
 pub(crate) use snapshot_pause::recover as recover_local_docker_snapshot_pause;
 pub(crate) use state::{
-    cleanup_replaced_saved_state_generation, recover_pending_local_docker_slice_backup_restore,
+    acknowledge_protected_home_restore, cleanup_replaced_saved_state_generation,
+    reconcile_local_docker_restore_acknowledgements,
+    recover_pending_local_docker_slice_backup_restore,
     remove_local_docker_slice_backup_best_effort, restore_local_docker_slice_backup,
     SliceBackupRestoreResolution,
 };
@@ -118,6 +125,14 @@ const DOCKER_READY_ATTEMPTS: usize = 60;
 const DOCKER_READY_RETRY_DELAY_MS: u64 = 1_000;
 const MANAGED_SLICE_DOCKER_PROVISIONER: &str =
     "/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh";
+/// The provisioner inside a slice build context, a tree in the repository layout.
+const SLICE_DOCKER_PROVISIONER: &str =
+    "apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh";
+/// A release's own slice build context, relative to the prefix of its `bin/chariox-kernel`.
+const RELEASE_SLICE_BUILD_CONTEXT: &str = "share/chariox/slice-build-context";
+/// The system-wide slice build context, where the managed image and the Linux
+/// release's root install step put it.
+const SYSTEM_SLICE_BUILD_CONTEXT: &str = "/usr/lib/chariox/slice-build-context";
 const MAX_PROVIDER_CREDENTIAL_BYTES: usize = 2 * 1024 * 1024;
 const MAX_PROVIDER_CREDENTIAL_TOTAL_BYTES: usize = 8 * 1024 * 1024;
 const GITHUB_TOKEN_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
@@ -710,6 +725,34 @@ pub fn start_local_docker_slice_provider_login(
     })
 }
 
+fn provider_auth_paths(
+    account: Option<&LocalDockerProviderAccount>,
+    protected: bool,
+) -> (String, String) {
+    let root = if protected {
+        "/var/lib/chariox/slice-private/provider-accounts"
+    } else {
+        "/home/slice/.chariox/daemon/provider-accounts"
+    };
+    let owner = account
+        .map(|account| account.owner_path_component.as_str())
+        .unwrap_or("local-user");
+    let profile = account
+        .map(|account| account.profile_id.as_str())
+        .unwrap_or("default");
+    if protected || account.is_some() {
+        (
+            format!("{root}/{owner}/codex/{profile}/codex/auth.json"),
+            format!("{root}/{owner}/opencode/{profile}/data/opencode/auth.json"),
+        )
+    } else {
+        (
+            "/home/slice/.codex/auth.json".to_string(),
+            "/home/slice/.local/share/opencode/auth.json".to_string(),
+        )
+    }
+}
+
 pub fn inspect_local_docker_slice_provider_auth(
     record: &SliceRecord,
     provider: &str,
@@ -725,20 +768,13 @@ pub fn inspect_local_docker_slice_provider_auth(
     let account_profile = provider_account
         .map(|account| account.profile_id.as_str())
         .unwrap_or("default");
-    let profile_base = provider_account.map(|account| {
-        format!(
-            "/home/slice/.chariox/daemon/provider-accounts/{}/{}/{}",
-            account.owner_path_component, provider, account.profile_id
-        )
-    });
-    let codex_path = profile_base
-        .as_ref()
-        .map(|base| format!("{base}/codex/auth.json"))
-        .unwrap_or_else(|| "/home/slice/.codex/auth.json".to_string());
-    let opencode_path = profile_base
-        .as_ref()
-        .map(|base| format!("{base}/data/opencode/auth.json"))
-        .unwrap_or_else(|| "/home/slice/.local/share/opencode/auth.json".to_string());
+    let protected = broker::provider_auth_protected(&container).map_err(|error| {
+        DaemonError::LocalTransport {
+            operation: "slice.auth.inspect",
+            message: format!("failed to verify provider auth layout: {error}"),
+        }
+    })?;
+    let (codex_path, opencode_path) = provider_auth_paths(provider_account, protected);
     let checks = match provider {
         "all" => vec![
             ("codex", codex_path.as_str()),
@@ -1010,10 +1046,27 @@ fn local_docker_container_log_entry(record: &SliceRecord, tail_lines: u32) -> Sl
 fn local_docker_runtime_log_entry(record: &SliceRecord, tail_lines: u32) -> SliceLogEntry {
     let container = local_docker_container_name(record);
     let tail_lines_arg = tail_lines.to_string();
+    let protected = match broker::provider_auth_protected(&container) {
+        Ok(value) => value,
+        Err(_) => {
+            return SliceLogEntry {
+                source: "runtime".to_string(),
+                path: None,
+                text: "slice runtime log layout verification refused".to_string(),
+                truncated: false,
+            }
+        }
+    };
+    let layout = if protected { "protected" } else { "legacy" };
     let script = r#"
 set -eu
 found=0
-for file in /opt/chariox-slice/logs/*.log /home/slice/.local/state/chariox/logs/*.ndjson; do
+case "$2" in
+  protected) runtime=/var/lib/chariox/slice-private/runtime/logs; kernel=/var/lib/chariox/slice-private/kernel/logs ;;
+  legacy) runtime=/opt/chariox-slice/logs; kernel=/home/slice/.local/state/chariox/logs ;;
+  *) exit 64 ;;
+esac
+for file in "$runtime"/*.log "$kernel"/*.ndjson; do
   [ -f "$file" ] || continue
   found=1
   printf '\n=== %s ===\n' "$file"
@@ -1034,6 +1087,7 @@ fi
             script,
             "slice-runtime-logs",
             &tail_lines_arg,
+            layout,
         ])
         .output();
     match output {
@@ -1581,11 +1635,21 @@ fn expand_user_path_for_slice(value: &str) -> PathBuf {
 
 fn linux_docker_slice_script() -> Result<PathBuf, DaemonError> {
     if broker::configured() {
-        return validate_linux_docker_slice_script(PathBuf::from(MANAGED_SLICE_DOCKER_PROVISIONER));
+        // The broker runs its own installed provisioner and receives only the
+        // action and filtered environment; this host path is never executed.
+        // A local DEV enrollment installs no managed build context on the host.
+        return Ok(PathBuf::from(MANAGED_SLICE_DOCKER_PROVISIONER));
     }
     if let Some(script) = std::env::var_os("CHARIOX_SLICE_DOCKER_PROVISIONER") {
         let script = expand_user_path_for_slice(&script.to_string_lossy());
         return validate_linux_docker_slice_script(script);
+    }
+    if !cfg!(debug_assertions) {
+        // A release kernel has no source tree; it uses its release's slice build context.
+        return installed_slice_script(
+            std::env::current_exe().ok().as_deref(),
+            Path::new(SYSTEM_SLICE_BUILD_CONTEXT),
+        );
     }
 
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -1602,6 +1666,40 @@ fn linux_docker_slice_script() -> Result<PathBuf, DaemonError> {
         .join("slice-linux-docker")
         .join("provision-linux-docker-slice.sh");
     validate_linux_docker_slice_script(script)
+}
+
+/// Finds a release kernel's provisioner: first in the context beside its real
+/// executable (`<prefix>/bin/chariox-kernel` with
+/// `<prefix>/share/chariox/slice-build-context`, the release bundle's layout), then
+/// in the system-wide context.
+fn installed_slice_script(
+    executable: Option<&Path>,
+    system_context: &Path,
+) -> Result<PathBuf, DaemonError> {
+    let prefix = executable
+        .and_then(|executable| executable.canonicalize().ok())
+        .and_then(|executable| Some(executable.parent()?.parent()?.to_path_buf()));
+    let candidates = prefix
+        .map(|prefix| prefix.join(RELEASE_SLICE_BUILD_CONTEXT))
+        .into_iter()
+        .chain([system_context.to_path_buf()])
+        .map(|context| context.join(SLICE_DOCKER_PROVISIONER))
+        .collect::<Vec<_>>();
+    candidates
+        .iter()
+        .find(|script| script.is_file())
+        .cloned()
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "slice.local_docker",
+            message: format!(
+                "slice Docker provisioner not found at {}; install the release's slice build context or set CHARIOX_SLICE_DOCKER_PROVISIONER",
+                candidates
+                    .iter()
+                    .map(|script| script.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(" or ")
+            ),
+        })
 }
 
 fn validate_linux_docker_slice_script(script: PathBuf) -> Result<PathBuf, DaemonError> {

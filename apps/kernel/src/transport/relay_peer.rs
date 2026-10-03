@@ -95,7 +95,11 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Version 66 queries and adjusts the leased worker Project through its own authority.
 /// Version 67 binds Computer credential input to its approved native display target (MP-08).
 /// Version 68 updates/dismisses ephemeral login UI through the existing interaction bridge (MP-08/MP-10/MP-11).
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 68;
+/// Version 69 drops the workflow event capability flags (local protocol 365):
+/// `RemoteWorkflowTurnContext` loses `event_context_enabled` /
+/// `event_actions_enabled` and leased provider-run projections lose
+/// `workflow_event_actions_enabled`, which a peer at v68 or below still requires.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 69;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
@@ -419,6 +423,8 @@ pub struct RemoteNativeInteractionContext {
     pub home_agent_id: String,
     pub leased_agent_id: String,
     pub worker_provider_run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_prompt_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -890,7 +896,7 @@ pub enum RelayPeerRequest {
         context: RemoteWorkspaceLiveSyncApplyContext,
         change: crate::git_observer::WorkspaceLiveSyncChange,
     },
-    ForwardNativeInteraction {
+    ForwardNativeTurnInteraction {
         context: RemoteNativeInteractionContext,
         interaction: crate::session::RuntimeInteraction,
     },
@@ -1265,7 +1271,7 @@ mod tests {
 
     #[test]
     fn leased_prompt_cancellation_requires_exact_prompt_and_run_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 68);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 69);
         let request = RelayPeerRequest::CancelLeasedPrompt {
             leased_agent_id: "leased-agent-1".to_string(),
             home_prompt_id: "home-prompt-1".to_string(),
@@ -1302,7 +1308,7 @@ mod tests {
 
     #[test]
     fn remote_room_browser_capability_manifest_is_versioned_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 68);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 69);
         let request = RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
             leased_agent_id: "leased-agent-1".to_string(),
             remote_extension_manifest: crate::extension::RemoteExtensionManifest {
@@ -1324,7 +1330,7 @@ mod tests {
 
     #[test]
     fn leased_completion_provider_termination_shape_is_versioned() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 68);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 69);
         let completion = RelayProjectedCompletion {
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1_234,
@@ -1390,7 +1396,7 @@ mod tests {
 
     #[test]
     fn leased_project_setup_target_resolution_is_versioned_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 68);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 69);
         let request = RelayPeerRequest::ResolveLeasedProjectEnvironmentSetupTarget {
             leased_agent_id: "leased-agent-1".to_string(),
             home_session_id: "home-session-1".to_string(),
@@ -1434,7 +1440,7 @@ mod tests {
 
     #[test]
     fn project_environment_setup_relay_shapes_round_trip_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 68);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 69);
         let definition = crate::session::ProjectEnvironmentDefinition {
             schema_version: 1,
             origin: crate::session::ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
@@ -1609,7 +1615,7 @@ mod tests {
 
     #[test]
     fn leased_prompt_receipt_query_and_steer_reconciliation_are_versioned_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 68);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 69);
         let request = RelayPeerRequest::GetLeasedPromptReceipt {
             leased_agent_id: "leased-agent-1".to_string(),
             home_prompt_id: "home-prompt-1".to_string(),
@@ -1809,10 +1815,7 @@ mod tests {
                 "home_agent_id": "agent",
                 "workflow_run_id": "run",
                 "workflow_node_run_id": "node",
-                "delivery_token": "test-turn",
-                "event_reply_enabled": false,
-                "event_context_enabled": false,
-                "event_actions_enabled": false
+                "delivery_token": "test-turn"
             },
             "message": "provider capacity exhausted"
         });
@@ -1913,12 +1916,38 @@ mod tests {
 }
 
 #[cfg(test)]
+mod native_approval_protocol_tests {
+    #[test]
+    fn native_approval_origin_relay_shape_is_versioned() {
+        use sha2::{Digest, Sha256};
+        assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 410);
+        let snapshot = serde_json::json!({"kind": "forward_native_turn_interaction",
+            "context": {"home_session_id":"home-session", "home_agent_id":"home-agent",
+                "leased_agent_id":"lease", "worker_provider_run_id":"run", "home_prompt_id":"home-prompt-A"},
+            "interaction": {"id":"approval", "agent_id":"worker-agent", "kind":"permission", "level":"warning",
+                "message":"Allow?", "choices":[], "native_origin":{"scope":"prompt", "provider_run_id":"run", "prompt_id":"worker-prompt-A"},
+                "requested_at_ms":1}
+        });
+        let request: super::RelayPeerRequest = serde_json::from_value(snapshot.clone()).unwrap();
+        let mut legacy = snapshot.clone();
+        legacy["kind"] = serde_json::json!("forward_native_interaction");
+        assert!(serde_json::from_value::<super::RelayPeerRequest>(legacy).is_err());
+        assert_eq!(serde_json::to_value(request).unwrap(), snapshot);
+        let encoded = serde_json::to_vec(&snapshot).unwrap();
+        assert_eq!(
+            format!("{:x}", Sha256::digest(encoded)),
+            "dee36b9bf4d4a4e4877a46ea81e1be63d696f78ebc07ebf90d964606c6d93084"
+        );
+    }
+}
+
+#[cfg(test)]
 mod project_environment_adjustment_shapes {
     use super::*;
     #[test]
     fn mp08_mp10_mp11_worker_environment_shapes_are_protocol_66() {
         use sha2::{Digest, Sha256};
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 68);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 69);
         let request = RelayPeerRequest::ReadLeasedProjectEnvironment {
             context: RemoteSkillSyncContext {
                 home_kernel_id: "home".into(),
@@ -1956,7 +1985,7 @@ mod project_environment_export_shapes {
     #[test]
     fn mp08_mp10_mp11_source_export_and_target_reuse_shapes_require_peer_66() {
         use sha2::{Digest, Sha256};
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 68);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 69);
         let value: serde_json::Value = serde_json::from_str(r#"{"kind":"export_leased_project_environment","context":{"home_kernel_id":"home","home_session_id":"session","home_agent_id":"agent","leased_agent_id":"leased-agent"},"interactive":true,"target_name":"second","target":{"context_id":"lease2","kernel_id":"worker2","public_key":"public2"}}"#).unwrap();
         let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
         let roundtrip = serde_json::to_value(request).unwrap();

@@ -1,19 +1,68 @@
 use super::*;
 use crate::local::{
-    ListSessionsRequest, RequestCredentialEnrollmentInteractionRequest,
-    RequestNativeProviderInteractionRequest, RespondToInteractionRequest,
+    AppWorkerAction, ControlAppWorkerRequest, ListSessionsRequest,
+    RequestCredentialEnrollmentInteractionRequest, RequestNativeProviderTurnInteractionRequest,
+    RespondToInteractionRequest, UninstallAppRequest,
 };
 
+/// A replay of these runs them again (no cache entry, no request-id ledger),
+/// so the kernel client never resends one once written. Its list and this one
+/// must name the same requests.
 #[test]
-fn command_cache_estimates_json_byte_arrays_by_heap_footprint() {
+fn requests_a_replay_runs_again_are_the_ones_the_kernel_client_never_resends() {
+    let control = LocalDaemonRequest::ControlAppWorker(ControlAppWorkerRequest {
+        installation_id: "todo".to_string(),
+        action: AppWorkerAction::Restart,
+    });
+    let uninstall = LocalDaemonRequest::UninstallApp(UninstallAppRequest {
+        installation_id: "todo".to_string(),
+        expected_generation: "3".to_string(),
+        delete_data: false,
+    });
+    assert!(!request_is_cacheable(&control));
+    assert!(!request_is_cacheable(&uninstall));
+    let client = include_str!("../../../../../packages/kernel-client/src/ipc.ts");
+    let listed = client
+        .split_once("KERNEL_REQUESTS_RUN_AGAIN_ON_REPLAY = new Set([")
+        .and_then(|(_, rest)| rest.split_once("])"))
+        .map(|(names, _)| {
+            names
+                .split(',')
+                .map(|name| name.trim().trim_matches('"'))
+                .filter(|name| !name.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .expect("the kernel client lists the requests it never resends");
+    assert_eq!(listed, ["ControlAppWorker", "UninstallApp"]);
+}
+
+#[test]
+fn command_cache_stores_shared_serialized_byte_arrays() {
     let byte_count = 64 * 1024;
     let value = serde_json::to_value(vec![7_u8; byte_count]).expect("bytes should serialize");
-    let estimated = value_heap_bytes(&value);
-
-    assert!(
-        estimated >= (byte_count * std::mem::size_of::<Value>()) as u64,
-        "JSON byte arrays must be charged for each heap-resident Value: {estimated}"
+    let result = persistent_result_for_test(
+        "bytes",
+        CommandResultCache::fingerprint_from_bytes_for_test(b"bytes"),
+        1,
+        Some(value.clone()),
+    )
+    .result;
+    let serialized = serde_json::to_string(&value).unwrap();
+    assert_eq!(result.response.as_ref().unwrap().get(), serialized);
+    assert_eq!(*result.response_value(), Some(value));
+    assert!(cached_command_result_memory_bytes("bytes", &result) < serialized.len() as u64 + 1024);
+    let cloned = result.clone();
+    assert!(Arc::ptr_eq(
+        result.response.as_ref().unwrap(),
+        cloned.response.as_ref().unwrap()
+    ));
+    let persisted = serde_json::to_string(&result).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&persisted).unwrap()["response"],
+        serde_json::from_str::<Value>(&serialized).unwrap()
     );
+    let restored: CachedCommandResult = serde_json::from_str(&persisted).unwrap();
+    assert_eq!(*restored.response_value(), *result.response_value());
 }
 
 #[test]
@@ -30,14 +79,17 @@ fn interaction_requests_use_volatile_command_deduplication() {
             timeout_sec: Some(30),
         },
     );
-    let native_request = LocalDaemonRequest::RequestNativeProviderInteraction(
-        RequestNativeProviderInteractionRequest::allow_deny(
+    let native_request = LocalDaemonRequest::RequestNativeProviderTurnInteraction(
+        RequestNativeProviderTurnInteractionRequest::allow_deny(
             "session-1",
             "agent-1",
             "interaction-1",
             Some("Approve?".to_string()),
             "Approve?".to_string(),
             Some(30),
+            crate::session::NativeInteractionOrigin::ProviderStartup {
+                provider_run_id: "provider-run-native-test".into(),
+            },
         ),
     );
     let response_request = LocalDaemonRequest::RespondToInteraction(RespondToInteractionRequest {
@@ -45,6 +97,8 @@ fn interaction_requests_use_volatile_command_deduplication() {
         interaction_id: "interaction-1".to_string(),
         choice_id: "submit_callback".to_string(),
         custom_reply: Some("secret-callback".to_string()),
+        passkey: None,
+        passkey_remember_minutes: None,
     });
 
     for request in [&helper_request, &native_request, &response_request] {
@@ -63,14 +117,17 @@ async fn pending_interaction_replay_waits_for_one_volatile_result() {
     let path = temp_cache_path("pending-interaction-replay");
     let cache = CommandResultCache::new_with_persistent_path(path.clone())
         .expect("persistent cache should initialize");
-    let request = LocalDaemonRequest::RequestNativeProviderInteraction(
-        RequestNativeProviderInteractionRequest::allow_deny(
+    let request = LocalDaemonRequest::RequestNativeProviderTurnInteraction(
+        RequestNativeProviderTurnInteractionRequest::allow_deny(
             "session-1",
             "agent-1",
             "interaction-1",
             Some("Approve?".to_string()),
             "Approve?".to_string(),
             Some(30),
+            crate::session::NativeInteractionOrigin::ProviderStartup {
+                provider_run_id: "provider-run-native-test".into(),
+            },
         ),
     );
     let fingerprint = CommandResultCache::fingerprint_for_test(&request);
@@ -106,7 +163,7 @@ async fn pending_interaction_replay_waits_for_one_volatile_result() {
         )
         .await;
     let replayed = replay.await.expect("interaction replay should resolve");
-    assert_eq!(*replayed.response, Some(response));
+    assert_eq!(*replayed.response_value(), Some(response));
     assert!(fs::read_to_string(&path).unwrap_or_default().is_empty());
 
     let restored = CommandResultCache::new_with_persistent_path(path.clone())
@@ -141,7 +198,10 @@ async fn persistent_command_cache_recovers_completed_results() {
         _ => panic!("completed command should be replayable after reload"),
     };
     let result = wait.await.expect("cached result should resolve");
-    assert_eq!(*result.response, Some(serde_json::json!({"ok": true})));
+    assert_eq!(
+        *result.response_value(),
+        Some(serde_json::json!({"ok": true}))
+    );
 
     let _ = fs::remove_file(path);
 }
@@ -254,6 +314,7 @@ async fn persistent_command_cache_compacts_by_age_on_load() {
     );
     rewrite_persistent_results(&path, &[old, fresh]).expect("cache fixture should write");
     let retention = CommandResultRetentionPolicy {
+        at_most_once: false,
         max_entries: COMMAND_RESULT_CACHE_LIMIT,
         max_memory_bytes: COMMAND_RESULT_CACHE_MAX_MEMORY_BYTES,
         max_total_bytes: None,
@@ -297,6 +358,7 @@ async fn persistent_command_cache_compacts_by_total_bytes() {
         second_response.clone(),
     );
     let retention = CommandResultRetentionPolicy {
+        at_most_once: false,
         max_entries: COMMAND_RESULT_CACHE_LIMIT,
         max_memory_bytes: COMMAND_RESULT_CACHE_MAX_MEMORY_BYTES,
         max_total_bytes: Some(
@@ -468,6 +530,7 @@ async fn persistent_command_cache_does_not_persist_oversized_results() {
 async fn command_cache_byte_bounds_oversized_non_persisted_results_in_memory() {
     let path = temp_cache_path("byte-bound-oversized-memory-results");
     let retention = CommandResultRetentionPolicy {
+        at_most_once: false,
         max_entries: 512,
         max_memory_bytes: 700_000,
         max_total_bytes: None,
@@ -657,10 +720,227 @@ fn persistent_result_for_test(
         command_id: command_id.to_string(),
         completed_at_ms,
         result: CachedCommandResult {
-            response: Box::new(response),
+            response: serialized_response(&response),
             error: None,
             completed_at_ms,
             fingerprint,
         },
+    }
+}
+
+#[tokio::test]
+async fn at_most_once_receipts_never_evict_and_refuse_new_identity_at_capacity() {
+    let path = temp_cache_path("at-most-once-capacity");
+    let cache = CommandResultCache::new_with_persistent_path_and_retention(
+        path.clone(),
+        CommandResultRetentionPolicy {
+            max_entries: 1,
+            at_most_once: true,
+            max_age_ms: Some(0),
+            ..CommandResultRetentionPolicy::persistent()
+        },
+    )
+    .unwrap();
+    let fingerprint = CommandResultCache::fingerprint_from_bytes_for_test(b"input");
+    let response = serde_json::json!({"accepted":true});
+    assert!(matches!(
+        cache
+            .reserve_at_most_once("one", &fingerprint, response.clone())
+            .await
+            .unwrap(),
+        CommandReservation::Dispatch
+    ));
+    cache
+        .complete(
+            "one".into(),
+            fingerprint.clone(),
+            &KernelOutgoingFrame::Response {
+                request_id: "one".into(),
+                response: Box::new(Some(response.clone())),
+                error: None,
+            },
+        )
+        .await;
+    let capacity = match cache
+        .reserve_at_most_once("two", &fingerprint, response.clone())
+        .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("full journal admitted a new receipt"),
+    };
+    assert!(is_receipt_capacity_error(&capacity));
+    // The OS uses the same ErrorKind for ENOMEM. It is an I/O failure,
+    // not receipt capacity, and cannot authorize the safety-control exception.
+    let enomem = io::Error::from_raw_os_error(libc::ENOMEM);
+    assert_eq!(enomem.kind(), capacity.kind());
+    assert!(!is_receipt_capacity_error(&enomem));
+    assert!(matches!(
+        cache
+            .reserve_at_most_once("one", &fingerprint, response.clone())
+            .await
+            .unwrap(),
+        CommandReservation::Wait(_)
+    ));
+    let restored =
+        CommandResultCache::new_with_persistent_path_and_retention(path.clone(), cache.retention)
+            .unwrap();
+    assert!(matches!(
+        restored
+            .reserve_at_most_once("one", &fingerprint, response)
+            .await
+            .unwrap(),
+        CommandReservation::Wait(_)
+    ));
+    let _ = fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn at_most_once_duplicates_wait_for_durable_settlement() {
+    let path = temp_cache_path("at-most-once-blocked-settlement");
+    let cache = std::sync::Arc::new(CommandResultCache::new_at_most_once(path.clone()).unwrap());
+    let fingerprint = CommandResultCache::fingerprint_from_bytes_for_test(b"input");
+    let unknown = serde_json::json!({"unknown":true});
+    let success = serde_json::json!({"ok":true});
+    assert!(matches!(
+        cache
+            .reserve_at_most_once("one", &fingerprint, unknown.clone())
+            .await
+            .unwrap(),
+        CommandReservation::Dispatch
+    ));
+    let mut duplicate = match cache
+        .reserve_at_most_once("one", &fingerprint, unknown.clone())
+        .await
+        .unwrap()
+    {
+        CommandReservation::Wait(wait) => wait,
+        _ => panic!("duplicate must wait"),
+    };
+    let guard = cache.persistence.as_ref().unwrap().io_lock.lock().await;
+    let task_cache = cache.clone();
+    let task_fingerprint = fingerprint.clone();
+    let task_success = success.clone();
+    let mut completion = tokio::spawn(async move {
+        task_cache
+            .complete_at_most_once("one".into(), task_fingerprint, task_success, unknown)
+            .await
+    });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(20), &mut completion)
+            .await
+            .is_err()
+    );
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(20), &mut duplicate)
+            .await
+            .is_err()
+    );
+    drop(guard);
+    completion.await.unwrap().unwrap();
+    assert_eq!(*duplicate.await.unwrap().response_value(), Some(success.clone()));
+    let restored = CommandResultCache::new_at_most_once(path.clone()).unwrap();
+    let replay = match restored
+        .reserve_at_most_once("one", &fingerprint, serde_json::Value::Null)
+        .await
+        .unwrap()
+    {
+        CommandReservation::Wait(wait) => wait,
+        _ => panic!("settled receipt must replay"),
+    };
+    assert_eq!(*replay.await.unwrap().response_value(), Some(success));
+    let _ = fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn at_most_once_sync_failure_reports_unknown_to_every_caller() {
+    let path = temp_cache_path("at-most-once-failed-sync");
+    let cache = CommandResultCache::new_at_most_once(path.clone()).unwrap();
+    let fingerprint = CommandResultCache::fingerprint_from_bytes_for_test(b"input");
+    let unknown = serde_json::json!({"unknown":true});
+    assert!(matches!(
+        cache
+            .reserve_at_most_once("one", &fingerprint, unknown.clone())
+            .await
+            .unwrap(),
+        CommandReservation::Dispatch
+    ));
+    let duplicate = match cache
+        .reserve_at_most_once("one", &fingerprint, unknown.clone())
+        .await
+        .unwrap()
+    {
+        CommandReservation::Wait(wait) => wait,
+        _ => panic!("duplicate must wait"),
+    };
+    cache.fail_settlement_sync.store(true, Ordering::SeqCst);
+    assert!(cache
+        .complete_at_most_once(
+            "one".into(),
+            fingerprint.clone(),
+            serde_json::json!({"ok":true}),
+            unknown.clone()
+        )
+        .await
+        .is_err());
+    assert_eq!(*duplicate.await.unwrap().response_value(), Some(unknown.clone()));
+    let replay = match cache
+        .reserve_at_most_once("one", &fingerprint, unknown.clone())
+        .await
+        .unwrap()
+    {
+        CommandReservation::Wait(wait) => wait,
+        _ => panic!("failed settlement must never redispatch"),
+    };
+    assert_eq!(*replay.await.unwrap().response_value(), Some(unknown));
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn saved_snapshot_restore_is_not_transport_cacheable() {
+    let request =
+        LocalDaemonRequest::RestoreAppDataSnapshot(crate::local::RestoreAppDataSnapshotRequest {
+            installation_id: "installed".into(),
+            expected_generation: "1".into(),
+            snapshot_id: "snapshot-saved".into(),
+        });
+    assert!(!request_is_cacheable(&request));
+}
+
+#[test]
+fn command_cache_replays_generated_responses_beyond_input_nesting_limit() {
+    let mut response = Value::Null;
+    for _ in 0..150 {
+        response = Value::Array(vec![response]);
+    }
+    let result = persistent_result_for_test(
+        "nested",
+        CommandResultCache::fingerprint_from_bytes_for_test(b"nested"),
+        1,
+        Some(response.clone()),
+    )
+    .result;
+    assert_eq!(*result.response_value(), Some(response));
+}
+
+#[test]
+fn command_cache_replays_floats_without_precision_loss() {
+    for value in [
+        -0.0_f64,
+        51.248178375505404,
+        2.0030397744267762e-253,
+        3.9287532173373315e299,
+    ] {
+        let result = persistent_result_for_test(
+            "float",
+            CommandResultCache::fingerprint_from_bytes_for_test(b"float"),
+            1,
+            Some(serde_json::json!({ "value": value })),
+        )
+        .result;
+        let replayed = (*result.response_value()).unwrap();
+        assert_eq!(
+            replayed["value"].as_f64().unwrap().to_bits(),
+            value.to_bits()
+        );
     }
 }

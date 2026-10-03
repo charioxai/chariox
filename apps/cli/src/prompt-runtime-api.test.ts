@@ -9,8 +9,21 @@ import type { LocalIpcClient } from "./ipc.js"
 import {
   cancelQueuedPrompt,
   steerQueuedPrompt,
+  respondToInteraction,
   submitPromptWithRecovery,
 } from "./prompt-runtime-api.js"
+
+test("interaction responses must match both requested session and interaction", async () => {
+  for (const [sessionId, interactionId] of [["other", "approval"], ["session-1", "other"], ["session-1", undefined]]) {
+    await assert.rejects(respondToInteraction(fakeClient({ InteractionResponded: {
+      session: runtimeSession(sessionId!), interaction_id: interactionId,
+    } }), "session-1", "approval", "allow", null), /identity mismatch/)
+  }
+  const result = await respondToInteraction(fakeClient({ InteractionResponded: {
+    session: runtimeSession("session-1"), interaction_id: "approval",
+  } }), "session-1", "approval", "allow", null)
+  assert.equal(result.id, "session-1")
+})
 
 test("submitPromptWithRecovery merges projected agent activity into returned session", async () => {
   const client = fakeClient({

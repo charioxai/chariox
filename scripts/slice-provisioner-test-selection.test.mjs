@@ -32,6 +32,8 @@ function selectionGlobs(command) {
     `${sliceTestDirectory}/provision-*.test.mjs`,
     `${sliceTestDirectory}/slice-disk-quota*.test.mjs`,
     `${sliceTestDirectory}/managed-rootless-quota*.test.mjs`,
+    // Phase 1: the slice screen launcher's process-group and pointer tests.
+    `${sliceTestDirectory}/slice-screen-*.test.mjs`,
   ]
   const expectedScript = `for file in ${patterns.join(" ")}; do [ -f \"$file\" ] || exit 1; done; exec node --test --test-concurrency=1 ${patterns.join(" ")}`
   assert.equal(shellScript, expectedScript, "all test globs must be guarded before the sequential Node run")
@@ -75,6 +77,7 @@ function makeSelectionFixture(t, quotaTests, { includeProvisioner = true } = {})
   }))
   if (includeProvisioner) addFixtureTest(testDirectory, "provision-existing.test.mjs")
   addFixtureTest(testDirectory, "managed-rootless-quota-check.test.mjs")
+  addFixtureTest(testDirectory, "slice-screen-existing.test.mjs")
   for (const quotaTest of quotaTests) addFixtureTest(testDirectory, quotaTest.filename, quotaTest)
   return { root, marker: join(root, "selection-marker") }
 }
@@ -108,26 +111,29 @@ test("slice provisioner selection covers its dynamic repository inventory once a
   const patterns = selectionGlobs(selectionCommand())
   const provisionPattern = `${sliceTestDirectory}/provision-*.test.mjs`
   const quotaPattern = `${sliceTestDirectory}/slice-disk-quota*.test.mjs`
-  assert.deepEqual(patterns, [provisionPattern, quotaPattern, `${sliceTestDirectory}/managed-rootless-quota*.test.mjs`])
+  assert.deepEqual(patterns, [provisionPattern, quotaPattern, `${sliceTestDirectory}/managed-rootless-quota*.test.mjs`,
+    `${sliceTestDirectory}/slice-screen-*.test.mjs`])
 
   const selected = patterns.flatMap(expandOneLevelGlob).sort()
   const directory = resolve(repositoryRoot, sliceTestDirectory)
   const testFiles = readdirSync(directory).filter((filename) => filename.endsWith(".test.mjs"))
   const provisionInventory = testFiles.filter((filename) => filename.startsWith("provision-"))
   const quotaInventory = testFiles.filter((filename) => filename.includes("quota"))
+  const screenInventory = testFiles.filter((filename) => filename.startsWith("slice-screen-"))
 
   assert.ok(provisionInventory.length > 0, "the provisioner test inventory must not be empty")
   assert.ok(quotaInventory.length > 0, "the quota test inventory must not be empty")
+  assert.ok(screenInventory.length > 0, "the slice screen test inventory must not be empty")
   assert.equal(new Set(selected).size, selected.length, "a test file must not be selected twice")
-  for (const filename of [...provisionInventory, ...quotaInventory]) {
+  for (const filename of [...provisionInventory, ...quotaInventory, ...screenInventory]) {
     assert.ok(selected.includes(join(sliceTestDirectory, filename)), `${filename} must be selected`)
   }
   assert.deepEqual(
     selected,
-    [...new Set([...provisionInventory, ...quotaInventory])]
+    [...new Set([...provisionInventory, ...quotaInventory, ...screenInventory])]
       .map((filename) => join(sliceTestDirectory, filename))
       .sort(),
-    "the command should select all provisioner and quota tests and no unrelated files",
+    "the command should select all provisioner, quota and slice screen tests and no unrelated files",
   )
 })
 
@@ -141,8 +147,8 @@ test("selection runs future quota-pattern files once and propagates a selected t
 
   assert.notEqual(result.status, 0, `a failing selected quota test must fail the package script\n${result.diagnostics}`)
   assert.match(output, /intentional selection failure/, result.diagnostics)
-  assert.match(output, /(?:#|ℹ)\s*tests 4\b/, result.diagnostics)
-  assert.match(output, /(?:#|ℹ)\s*pass 3\b/, result.diagnostics)
+  assert.match(output, /(?:#|ℹ)\s*tests 5\b/, result.diagnostics)
+  assert.match(output, /(?:#|ℹ)\s*pass 4\b/, result.diagnostics)
   assert.match(output, /(?:#|ℹ)\s*fail 1\b/, result.diagnostics)
   assert.match(output, /(?:#|ℹ)\s*skipped 0\b/, result.diagnostics)
   assert.deepEqual(
@@ -152,8 +158,9 @@ test("selection runs future quota-pattern files once and propagates a selected t
       "provision-existing.test.mjs",
       "slice-disk-quota-current.test.mjs",
       "slice-disk-quota-future.test.mjs",
+      "slice-screen-existing.test.mjs",
     ].sort(),
-    `each matching provisioner and quota test file must execute exactly once\n${result.diagnostics}`,
+    `each matching provisioner, quota and slice screen test file must execute exactly once\n${result.diagnostics}`,
   )
 })
 

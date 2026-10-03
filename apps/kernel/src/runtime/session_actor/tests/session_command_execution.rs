@@ -1,5 +1,7 @@
 use super::*;
 
+mod cold_browser_start;
+mod browser_health;
 mod browser_isolation;
 
 struct TestBrowserControllerTool {
@@ -10,6 +12,11 @@ struct TestBrowserControllerTool {
 
 impl TestBrowserControllerTool {
     fn new() -> Self {
+        Self::with_reconcile_failures("", 0)
+    }
+
+    /// The first `failures` reconciles fail with the controller error `code`.
+    fn with_reconcile_failures(code: &str, failures: usize) -> Self {
         use std::os::unix::fs::PermissionsExt;
         use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -35,6 +42,10 @@ while IFS= read -r request; do
       ;;
     *'"method":"browser.reconcile"'*)
       printf 'reconcile\n' >> '__LOG__'
+      if [ "$(grep -c reconcile '__LOG__')" -le __RECONCILE_FAILURES__ ]; then
+        printf '{"id":%s,"ok":false,"error":{"code":"__RECONCILE_ERROR__","message":"browser CDP method Page.enable timed out after 5000ms"}}\n' "$id"
+        continue
+      fi
       printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"event_cursor":1,"tabs":[{"target_id":"target-a","document_id":"loader-a","url":"https://a.test","title":"A"}],"focused_target_id":"target-a","resource_inventory":{"browser_ids":["browser-pid-41"],"profile_ids":["profile-sha256-41"]},"viewport":{"css_width":1280,"css_height":800,"device_scale_factor":1,"desktop_pixel_width":1280,"desktop_pixel_height":800}}}\n' "$id"
       ;;
     *'"method":"browser.snapshot"'*)
@@ -73,7 +84,9 @@ while IFS= read -r request; do
   esac
 done
 "#
-        .replace("__LOG__", &log.display().to_string());
+        .replace("__LOG__", &log.display().to_string())
+        .replace("__RECONCILE_FAILURES__", &failures.to_string())
+        .replace("__RECONCILE_ERROR__", code);
         std::fs::write(&path, script).expect("write controller tool");
         let mut permissions = std::fs::metadata(&path)
             .expect("controller tool metadata")
@@ -478,6 +491,9 @@ async fn ending_a_session_survives_managed_environment_cleanup_failure() {
 
 #[tokio::test]
 async fn create_session_uses_owned_runtime_state_without_app_lock() {
+    let worktree = crate::test_support::TestWorktree::new(
+        "create_session_uses_owned_runtime_state_without_app_lock",
+    );
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
     ));
@@ -500,10 +516,31 @@ async fn create_session_uses_owned_runtime_state_without_app_lock() {
         terminal_stream,
     );
 
-    let request = LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-        "owned-workspace",
-        "owned-worktree",
-    ));
+    // The owner's Claude account is signed in: a session created with no
+    // provider starts with it (the runtime create path web and TUI use).
+    {
+        let registry = app.lock().await.provider_account_profile_registry();
+        let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+        let claude = registry
+            .list(owner, Some("claude"))
+            .unwrap()
+            .into_iter()
+            .find(|profile| profile.is_default)
+            .expect("bootstrap registers a default Claude account");
+        registry
+            .update_observation(
+                owner,
+                "claude",
+                &claude.profile_id,
+                crate::account_profile::ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("the Claude login should record");
+    }
+    let request = LocalDaemonRequest::CreateSession(worktree.session_request());
     let command = KernelCommand::from_local_request("owned-session-create", None, None, &request);
     let locked_app = app.lock().await;
     let response = timeout(
@@ -517,10 +554,16 @@ async fn create_session_uses_owned_runtime_state_without_app_lock() {
     let LocalDaemonResponse::SessionCreated { session, agent } = response else {
         panic!("unexpected response");
     };
-    assert_eq!(session.workspace_id(), "owned-workspace");
-    assert_eq!(session.alias(), Some("owned-workspace-1"));
+    assert_eq!(session.workspace_id(), worktree.path().to_str().unwrap());
+    let expected_alias = format!(
+        "{}-1",
+        worktree.path().file_name().unwrap().to_str().unwrap()
+    );
+    assert_eq!(session.alias(), Some(expected_alias.as_str()));
     assert_eq!(agent.session_id(), session.id());
     assert_eq!(session.focused_agent_id(), Some(agent.id()));
+    assert_eq!(agent.provider(), "claude");
+    assert_eq!(session.agent_defaults().provider, "claude");
     drop(locked_app);
     let durable_events = durable_state_store
         .load_events_after(0)
@@ -1182,22 +1225,20 @@ async fn focus_and_cycle_use_owned_runtime_state_without_app_lock() {
 
 #[tokio::test]
 async fn owned_multi_agent_reattach_resumes_focused_run_before_focus_cycle() {
-    let fixture_worktree_0 = crate::test_support::TestWorktree::new(
-        "owned_multi_agent_reattach_resumes_focused_run_before_focus_cycle",
-    );
+    let worktree = crate::test_support::TestWorktree::new("owned-multi-agent-reattach");
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
     ));
     let (session_id, attachment_id, default_agent_id, extra_agent_id, default_run_id, extra_run_id) = {
         let mut app_locked = app.lock().await;
         let (session, default_agent) = crate::app::KernelSessionService::new(&mut app_locked)
-            .create_session(fixture_worktree_0.session_request())
+            .create_session(worktree.session_request())
             .expect("session should be created");
         let extra_agent = crate::app::KernelSessionService::new(&mut app_locked)
             .spawn_agent(
                 CreateAgentRequest::new(session.id(), "dev-stub")
                     .with_alias("cycle-me")
-                    .with_worktree(fixture_worktree_0.path().to_string_lossy()),
+                    .with_worktree(worktree.path().display().to_string()),
             )
             .expect("extra agent should be created");
         let attachment = crate::app::KernelSessionService::new(&mut app_locked)

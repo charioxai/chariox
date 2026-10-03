@@ -8,6 +8,8 @@ pub struct RoomEnvironmentWorkerBinding {
     pub home_public_key: String,
     pub session_id: String,
     pub slice_id: String,
+    // Boot configuration only; never serialized or learned from relay callers.
+    pub(crate) provisioned_slice_id: Option<String>,
 }
 
 impl RoomEnvironmentWorkerBinding {
@@ -28,23 +30,36 @@ impl RoomEnvironmentWorkerBinding {
             home_public_key: key.unwrap_or_default(),
             session_id: session.unwrap_or_default(),
             slice_id: slice.unwrap_or_default(),
+            provisioned_slice_id: super::identity::protected_slice_identity_required()
+                .then(|| std::env::var("CHARIOX_SLICE_ID").unwrap_or_default()),
         })
     }
 
     pub(super) fn validate(&self, kernel_id: &str, machine_id: &str) -> Result<(), DaemonError> {
         let key = crate::transport::relay_crypto::decode_public_key(&self.home_public_key);
+        // Protected boot has already verified the retained machine/kernel keys.
+        // Its machine ID is not the legacy slice:<id> alias; the provisioner
+        // supplies the slice record ID separately in both fresh and restored boots.
+        // Unprotected workers keep the private slice:<id> alias, or a hosted
+        // worker ref scoped to its authenticated parent Machine.
+        let matches_slice = match self.provisioned_slice_id.as_deref() {
+            Some(slice_id) => slice_id == self.slice_id,
+            None => {
+                machine_id == format!("slice:{}", self.slice_id)
+                    || crate::slice::machine_scoped_slice_worker_ref(kernel_id, machine_id)
+            }
+        };
         if [&self.home_kernel_id, &self.session_id, &self.slice_id]
             .iter()
             .any(|value| value.is_empty() || value.trim() != value.as_str())
             || !matches!(key, Ok(ref public_key)
                 if crate::transport::relay_crypto::encode_public_key(public_key) == self.home_public_key)
-            || !(machine_id == format!("slice:{}", self.slice_id)
-                || crate::slice::machine_scoped_slice_worker_ref(kernel_id, machine_id))
+            || !matches_slice
         {
             return Err(DaemonError::InvalidConfig {
                 field: "room_environment_worker_binding",
                 message:
-                    "requires a home kernel, public key, Room, and matching private or machine-scoped slice identity",
+                    "requires a home kernel, public key, Room, and matching provisioned slice ID, private slice alias, or machine-scoped slice identity",
             });
         }
         Ok(())
@@ -93,6 +108,7 @@ mod tests {
     fn bound_config() -> DaemonConfig {
         let mut config = DaemonConfig::for_tests();
         config.room_environment_worker_binding = Some(RoomEnvironmentWorkerBinding {
+            provisioned_slice_id: None,
             home_kernel_id: "home-kernel".into(),
             home_public_key: config.relay_public_key.clone(),
             session_id: "room-a".into(),

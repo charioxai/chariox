@@ -517,19 +517,20 @@ fn publication_export_captures_exact_grants_and_rejects_missing_definitions() {
         sync_timeout_ms: None,
         poll_ms: None,
     };
-    let publication = match harness
+    let publish = |request: CreateWorkflowPublicationRequest| match harness
         .dispatch(LocalDaemonRequest::CreateWorkflowPublication(request))
         .expect("publication should be created")
     {
         LocalDaemonResponse::WorkflowPublicationCreated { publication, .. } => publication,
         response => panic!("unexpected response: {response:?}"),
     };
+    let publication = publish(request.clone());
 
-    let export = || match harness
+    let export = |publication_id: &str| match harness
         .dispatch(LocalDaemonRequest::ExportWorkflowPublicationPackage(
             ExportWorkflowPublicationPackageRequest {
                 session_id: graph.session_id.clone(),
-                publication_ref: publication.id().to_string(),
+                publication_ref: publication_id.to_string(),
                 kernel_url: None,
                 agent_app: None,
                 agent_app_assets_dir: None,
@@ -544,7 +545,7 @@ fn publication_export_captures_exact_grants_and_rejects_missing_definitions() {
         } => (package_digest, package_files),
         response => panic!("unexpected response: {response:?}"),
     };
-    let (installed_digest, files) = export();
+    let (installed_digest, files) = export(publication.id());
     let requirements = package_json_file(&files, "requirements.json");
     assert_eq!(requirements["schema_version"], serde_json::json!(2));
     assert_eq!(requirements["extensions"].as_array().map(Vec::len), Some(2));
@@ -654,7 +655,26 @@ fn publication_export_captures_exact_grants_and_rejects_missing_definitions() {
             },
         ))
         .expect("deleted MCP should be ungranted before export");
-    let (removed_digest, removed_files) = export();
+    // The trigger keeps its snapshot's grants; a new trigger captures the
+    // agent without the revoked grant.
+    assert!(harness
+        .dispatch(LocalDaemonRequest::ExportWorkflowPublicationPackage(
+            ExportWorkflowPublicationPackageRequest {
+                session_id: graph.session_id.clone(),
+                publication_ref: publication.id().to_string(),
+                kernel_url: None,
+                agent_app: None,
+                agent_app_assets_dir: None,
+            },
+        ))
+        .is_err());
+    let revoked = publish(CreateWorkflowPublicationRequest {
+        operation_key: Some("freeze-after-revoke".to_string()),
+        alias: Some("freeze-after-revoke".to_string()),
+        route: Some("/extensions-after-revoke".to_string()),
+        ..request
+    });
+    let (removed_digest, removed_files) = export(revoked.id());
     let removed_requirements = package_json_file(&removed_files, "requirements.json");
     assert_eq!(
         removed_requirements["extensions"].as_array().map(Vec::len),
@@ -670,7 +690,7 @@ fn publication_export_captures_exact_grants_and_rejects_missing_definitions() {
     );
     assert_ne!(installed_digest, removed_digest);
 
-    let (repeated_removed_digest, repeated_removed_files) = export();
+    let (repeated_removed_digest, repeated_removed_files) = export(revoked.id());
     assert_eq!(repeated_removed_digest, removed_digest);
     assert_eq!(repeated_removed_files, removed_files);
 
@@ -682,7 +702,7 @@ fn local_request_api_exports_agent_app_publication_package() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-agent-app", "worktree-agent-app"),
+            harness.fixture_session_request("workspace-agent-app"),
         ))
         .expect("session create should succeed")
     {
@@ -912,7 +932,8 @@ fn local_request_api_exports_agent_app_publication_package() {
     );
     assert_eq!(
         deployment_contract["compatibility"]["minimum_local_daemon_protocol_version"],
-        serde_json::json!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION)
+        serde_json::json!(367),
+        "the package format's protocol, stable across kernel protocol bumps"
     );
     assert_eq!(
         deployment_contract["provider_requirements"][0]["provider"],
@@ -1295,7 +1316,7 @@ fn workflow_node_add_rejects_metaagents() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-meta-workflow", "worktree-meta-workflow"),
+            harness.fixture_session_request("workspace-meta-workflow"),
         ))
         .expect("session create should succeed")
     {

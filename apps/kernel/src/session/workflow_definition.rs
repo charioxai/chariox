@@ -141,6 +141,35 @@ impl WorkflowSchemaDefinition {
     }
 }
 
+/// Why a workflow was generated from an agent. A Freeform agent gains a
+/// workflow only when it gets a trigger or a deployment; binding Apps or
+/// Extensions to it creates none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowOriginReason {
+    Trigger,
+    Deploy,
+}
+
+/// The client surface that requested a generated workflow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowOriginSurface {
+    Web,
+    Tui,
+    Cli,
+}
+
+/// Origin of a workflow generated from an agent. The workflow is otherwise
+/// ordinary: visible, editable, with an ordinary alias.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowOrigin {
+    pub source_agent_id: String,
+    pub reason: WorkflowOriginReason,
+    pub surface: WorkflowOriginSurface,
+    pub created_at_ms: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowDefinition {
     id: String,
@@ -149,6 +178,8 @@ pub struct WorkflowDefinition {
     prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     controlled_by_metaagent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    origin: Option<WorkflowOrigin>,
     #[serde(default = "unix_epoch_ms")]
     created_at_ms: u64,
     #[serde(default)]
@@ -177,6 +208,7 @@ impl WorkflowDefinition {
             alias,
             prompt: None,
             controlled_by_metaagent_id: None,
+            origin: None,
             created_at_ms: unix_epoch_ms(),
             revision: 0,
             code_source: None,
@@ -334,6 +366,15 @@ impl WorkflowDefinition {
 
     pub fn set_controlled_by_metaagent_id(&mut self, metaagent_id: Option<String>) {
         self.controlled_by_metaagent_id = metaagent_id;
+        self.bump_revision();
+    }
+
+    pub fn origin(&self) -> Option<&WorkflowOrigin> {
+        self.origin.as_ref()
+    }
+
+    pub fn set_origin(&mut self, origin: WorkflowOrigin) {
+        self.origin = Some(origin);
         self.bump_revision();
     }
 

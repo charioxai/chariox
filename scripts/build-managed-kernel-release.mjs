@@ -20,7 +20,14 @@ const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex")
 const BUILD_TARGET = "x86_64-unknown-linux-gnu"
 const ARTIFACT_STAGE = "managed-release-artifacts"
 const BUILDER_DOCKERFILE = "apps/kernel/slice-linux-docker/docker/Dockerfile"
-const ARTIFACTS = ["chariox-kernel", "chariox-managed-bootstrap", "chariox-relay"]
+// Sorted: compared index by index with the sorted export listing.
+const ARTIFACTS = [
+  "chariox-app-package",
+  "chariox-app-storage",
+  "chariox-kernel",
+  "chariox-managed-bootstrap",
+  "chariox-relay",
+]
 const REQUIRED_OPTIONS = ["source-repository", "source-commit", "builder-signing-key", "output", "builder"]
 const BUILDER_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/
 const NODE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,255}$/
@@ -786,6 +793,8 @@ export async function runManagedKernelReleaseBuild(options, {
         { name: "chariox-kernel", sha256: await sha256File(join(pending, "chariox-kernel")) },
         { name: "chariox-managed-bootstrap", sha256: await sha256File(join(pending, "chariox-managed-bootstrap")) },
         { name: "chariox-relay", sha256: await sha256File(join(pending, "chariox-relay")) },
+        { name: "chariox-app-package", sha256: await sha256File(join(pending, "chariox-app-package")) },
+        { name: "chariox-app-storage", sha256: await sha256File(join(pending, "chariox-app-storage")) },
       ],
     }))
     await writeFile(join(pending, "build-attestation.json"), attestation, { flag: "wx", mode: 0o644 })

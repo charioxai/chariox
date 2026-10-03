@@ -14,7 +14,16 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str) {
     .await
     .unwrap();
     let before_environment = &before_environment["RoomEnvironmentState"]["environment"];
-    let before_action_count = before_environment["actions"].as_array().unwrap().len();
+    let mutation_actions = |environment: &serde_json::Value| {
+        environment["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|action| action["kind"] == "click")
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let before_action_count = mutation_actions(before_environment).len();
     let before_ownership = before_environment["input_ownership"].clone();
     let controller_state_path = fixture._worker_state.root.join("chromium-state.json");
     let clicks_before_recovery = controller_click_count(&controller_state_path);
@@ -76,7 +85,7 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str) {
     .unwrap();
     let after_failed_mutation = &after_failed_mutation["RoomEnvironmentState"]["environment"];
     assert_eq!(
-        after_failed_mutation["actions"].as_array().unwrap().len(),
+        mutation_actions(after_failed_mutation).len(),
         before_action_count + 1,
         "a rejected stale mutation must have one attributed terminal action"
     );
@@ -285,8 +294,16 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str) {
         after_dialog["RoomEnvironmentState"]["environment"]["actions"]
             .as_array()
             .unwrap()
-            .len(),
-        after_completed["actions"].as_array().unwrap().len() + 1,
+            .iter()
+            .filter(|action| action["kind"] == "dialog")
+            .count(),
+        after_completed["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|action| action["kind"] == "dialog")
+            .count()
+            + 1,
         "dialog recovery must admit exactly one fresh action"
     );
     let dialog_action = after_dialog["RoomEnvironmentState"]["environment"]["actions"]

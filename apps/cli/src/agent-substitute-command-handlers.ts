@@ -1,7 +1,6 @@
 import type {
   AgentInstance,
   ProviderAccountProfile,
-  RuntimeProviderRun,
   RuntimeSession,
 } from "./cli-types.js"
 import {
@@ -22,8 +21,6 @@ type AgentConfigUpdatePayload = {
 export type AgentSubstituteCommandHandlerDeps = {
   sessionState: () => RuntimeSession
   focusedAgentId: () => string | null
-  currentModelId: () => string
-  currentVariantId: () => string
   flashFooter: (message: string, tone: FooterTone) => void
   updateAgentSubstitutes?: (
     sessionId: string,
@@ -32,15 +29,6 @@ export type AgentSubstituteCommandHandlerDeps = {
   ) => Promise<AgentConfigUpdatePayload>
   applySessionState: (session: RuntimeSession) => void
   refreshAgentPanes: (session: RuntimeSession) => Promise<void>
-  launchAgentProviderRun: (
-    provider: string,
-    model: string,
-    variant: string,
-    agentId: string,
-    accountProfile?: string,
-  ) => Promise<RuntimeProviderRun>
-  setProviderRunState: (run: RuntimeProviderRun | null) => void
-  refreshSessionState: (sessionId: string) => Promise<RuntimeSession>
   resolveSessionAgent: (reference?: string | null) => ResolvedAgentReference
   formatAgentLabel: (agent: AgentInstance | null | undefined) => string
   listProviderAccountProfiles?: (
@@ -165,52 +153,7 @@ export async function handleAgentSubstituteCommand(
     deps.flashFooter(`${deps.formatAgentLabel(payload.agent)} substitute timeout: ${timeoutMs == null ? "default" : `${timeoutMs}ms`}`, "info")
     return
   }
-  if (subcommand === "activate") {
-    const index = Number.parseInt(filteredArgs[0] ?? "", 10)
-    if (!Number.isFinite(index)) {
-      deps.flashFooter("usage: /agent substitute activate <index> [--agent a]", "error")
-      return
-    }
-    const payload = await applyUpdate({ Activate: { index, reason: "manual" } })
-    const profile = payload.agent.substitutes?.[index]
-    if (!profile) {
-      deps.flashFooter(`${deps.formatAgentLabel(payload.agent)} substitute ${index} is not available`, "error")
-      return
-    }
-    const run = await deps.launchAgentProviderRun(
-      profile.provider,
-      profile.model,
-      profile.variant ?? "",
-      payload.agent.id,
-      profile.account_profile ?? undefined,
-    )
-    deps.setProviderRunState(run)
-    const refreshedSession = await deps.refreshSessionState(payload.session.id)
-    deps.applySessionState(refreshedSession)
-    await deps.refreshAgentPanes(refreshedSession)
-    const accountSuffix = profile.account_profile
-      ? await formatAccountSuffixForProfileId(deps, profile.provider, profile.account_profile)
-      : ""
-    deps.flashFooter(`${deps.formatAgentLabel(payload.agent)} activated substitute ${index}: ${profile.provider}/${profile.model}${accountSuffix}`, "info")
-    return
-  }
-  if (subcommand === "primary" || subcommand === "reset") {
-    const payload = await applyUpdate({ Primary: {} })
-    const run = await deps.launchAgentProviderRun(
-      payload.agent.provider,
-      payload.agent.model ?? deps.currentModelId(),
-      payload.agent.effort ?? deps.currentVariantId(),
-      payload.agent.id,
-      payload.agent.account_profile ?? undefined,
-    )
-    deps.setProviderRunState(run)
-    const refreshedSession = await deps.refreshSessionState(payload.session.id)
-    deps.applySessionState(refreshedSession)
-    await deps.refreshAgentPanes(refreshedSession)
-    deps.flashFooter(`${deps.formatAgentLabel(payload.agent)} reset to starter profile`, "info")
-    return
-  }
-  deps.flashFooter("usage: /agent substitute list|add|remove|move|clear|timeout|activate|reset", "error")
+  deps.flashFooter("usage: /agent substitute list|add|remove|move|clear|timeout", "error")
 }
 
 function parseSubstitutionTimeoutMs(value: string | null | undefined): number | undefined {
@@ -272,14 +215,4 @@ async function formatSubstituteSummaryWithAccountLabels(
     agent as SharedAgentInstance,
     await substituteAccountLabelResolver(deps),
   )
-}
-
-async function formatAccountSuffixForProfileId(
-  deps: AgentSubstituteCommandHandlerDeps,
-  provider: string,
-  accountProfileId: string,
-): Promise<string> {
-  const resolveLabel = await substituteAccountLabelResolver(deps)
-  const label = resolveLabel(provider, accountProfileId)
-  return label ? ` · account ${label}` : " · custom account"
 }

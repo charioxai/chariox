@@ -175,6 +175,7 @@ impl RemoteLeaseRuntime<'_> {
                     home_agent_id: context.home_agent_id,
                     leased_agent_id: context.leased_agent_id,
                     worker_provider_run_id: "environment-adjustment".into(),
+                    home_prompt_id: None,
                 },
                 workspaces: mapping
                     .into_iter()

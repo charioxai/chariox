@@ -3,6 +3,7 @@
 
 import fcntl
 import http.client
+import importlib.resources
 import json
 import os
 from pathlib import Path
@@ -149,8 +150,9 @@ def start(directory, *, port=None, display=None):
 
     token = secrets.token_urlsafe(32)
     environment = {**os.environ, "DISPLAY": display, "SELKIES_MASTER_TOKEN": token}
-    command = [
-        os.environ.get("CHARIOX_SLICE_SELKIES_BIN", "/opt/chariox-selkies/bin/selkies"),
+    override = os.environ.get("CHARIOX_SLICE_SELKIES_BIN")
+    command = ([override] if override and override != "/opt/chariox-selkies/bin/selkies"
+               else ["/opt/chariox-selkies/bin/python", str(Path(__file__).with_name("selkies-capture.py"))]) + [
         "--addr=127.0.0.1", f"--port={port}", "--mode=websockets",
         "--encoder=h264enc", "--use-cpu=true|locked", "--framerate=30",
         "--enable-https=false", "--enable-basic-auth=false",
@@ -160,6 +162,14 @@ def start(directory, *, port=None, display=None):
         "--command-enabled=false|locked", "--file-transfers=none",
         "--enable-clipboard=false",
     ]
+    # Serve the installed frontend directly. Selkies otherwise copies the whole
+    # package to a temporary directory before opening its health endpoint.
+    try:
+        frontend = importlib.resources.files("selkies.selkies_web")
+        if isinstance(frontend, Path) and (frontend / "index.html").is_file():
+            command.append(f"--web-root={frontend}")
+    except ModuleNotFoundError:
+        pass
     log_descriptor = os.open(directory / "streamer.log", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     child = None
     try:

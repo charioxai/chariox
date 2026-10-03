@@ -24,7 +24,8 @@ pub use model::{
     CanonicalViewport, EnvironmentActor, EnvironmentActorColor, EnvironmentActorKind,
     EnvironmentActorPresence, EnvironmentComponent, EnvironmentComponentHealth,
     EnvironmentComponentHealthState, EnvironmentError, EnvironmentLifecycle, EnvironmentPointer,
-    EnvironmentPointerPosition, EnvironmentTab, RoomEnvironmentSnapshot,
+    AppPanelLayout, AppPanelPlacement, EnvironmentAppPanel, EnvironmentPointerPosition, EnvironmentTab, EnvironmentTabApp,
+    RoomEnvironmentSnapshot,
 };
 pub(crate) use model::{EnvironmentTabObservation, EnvironmentTabRuntimeBinding};
 pub use ownership::{InputOwnership, PendingInputTakeover, TakeoverOutcome};

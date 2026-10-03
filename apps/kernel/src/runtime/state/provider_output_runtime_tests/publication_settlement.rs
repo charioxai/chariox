@@ -6,7 +6,7 @@ async fn assert_completed_publication_output_settlement(
     client_interface: crate::provider::ProviderClientInterface,
     waits_for_provider_completion: bool,
 ) {
-    let worktree = crate::test_support::TestWorktree::new("publication-settlement");
+    let worktree = crate::test_support::TestWorktree::new("publication-claim");
     let mut app =
         crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
