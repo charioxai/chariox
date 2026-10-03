@@ -1046,8 +1046,11 @@ mod tests {
                     "error": {"message": at_capacity, "codexErrorInfo": "serverOverloaded"}
                 })
             ),
-            Some(CodexNotification::Error {
-                message: format!("Codex error [server_overloaded]: {at_capacity}"),
+            Some(CodexNotification::TurnScoped {
+                turn_id: "turn-1".to_string(),
+                notification: Box::new(CodexNotification::Error {
+                    message: format!("Codex error [server_overloaded]: {at_capacity}"),
+                }),
             })
         );
         assert_eq!(
