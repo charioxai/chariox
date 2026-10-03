@@ -382,6 +382,29 @@ async function run(args) {
     }
     return
   }
+  // MP-07: a settled root unit may replay only its exact Cloud transaction.
+  if (operation === "validate-update-recovery" && values.length === 4) {
+    const [journal, id, from, target] = values
+    if (!/^managed_release_update_[a-f0-9-]{36}$/.test(id) || !validDigest(from) || !validDigest(target)) {
+      fail("managed update recovery command identity is invalid")
+    }
+    const handle = await open(resolve(journal, "update-result-identity"), constants.O_RDONLY | constants.O_NOFOLLOW)
+    try {
+      const metadata = await handle.stat()
+      if (!metadata.isFile() || metadata.uid !== 0 || (metadata.mode & 0o022) !== 0 || metadata.size > 4096) {
+        fail("managed update recovery journal identity is unsafe")
+      }
+      const buffer = Buffer.alloc(4097)
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0)
+      const fields = buffer.subarray(0, bytesRead).toString("utf8").split("\n")
+      if (bytesRead > 4096 || fields.length !== 8 || fields[7] !== "" || fields[0] !== "1"
+        || fields[1] !== id || fields[2] !== from || fields[3] !== target
+        || fields.slice(4, 7).some(value => !/^[a-z0-9][a-z0-9._:-]{0,127}$/.test(value))) {
+        fail("managed update recovery journal does not match the Cloud command")
+      }
+    } finally { await handle.close() }
+    return
+  }
   if (operation === "validate-receipt" && (values.length === 2 || values.length === 3)) {
     if (!validDigest(values[1])) fail("expected managed release digest is invalid")
     await readReceipt(resolve(values[0]), values[1], values[2] ? resolve(values[2]) : null)

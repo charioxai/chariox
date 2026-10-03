@@ -20,6 +20,9 @@ expected_current_digest=$2
 expected_new_digest=$3
 trusted_public_key=$4
 next_trusted_public_key=${5:-$4}
+# MP-07: restart recovery must not depend on a deleted download or image.
+recover_only=${CHARIOX_MANAGED_UPGRADE_RECOVER_ONLY:-0}
+case "$recover_only" in 0|1) ;; *) echo "invalid managed upgrade recovery mode" >&2; exit 1 ;; esac
 install_root=${CHARIOX_MANAGED_UPGRADE_ROOT:-}
 state_root=$install_root/var/lib/chariox
 managed_home=$install_root/home/chariox
@@ -842,18 +845,19 @@ if [ "$managed_provider_topology" = path1 ]; then
     exit 1
   fi
 fi
-if [ -L "$image_root" ] || [ ! -d "$image_root" ]; then
+if [ "$recover_only" -eq 0 ] && { [ -L "$image_root" ] || [ ! -d "$image_root" ]; }; then
   echo "managed kernel image root must be a directory, not a symlink" >&2
   exit 1
 fi
 if [ "$managed_provider_topology" = path1 ]; then
-  image_canonical=$(realpath "$image_root")
+  image_canonical=
+  if [ "$recover_only" -eq 0 ]; then image_canonical=$(realpath "$image_root"); fi
   for builder_input in "$trusted_builder_public_key" "$next_trusted_builder_public_key"; do
     require_root_owned_private_regular_file "$builder_input" "trusted builder public key"
     require_root_owned_ancestor_chain "$builder_input" "trusted builder public key"
     builder_key_canonical=$(realpath "$builder_input")
-    case "$builder_key_canonical" in
-      "$image_canonical"|"$image_canonical"/*)
+    case "$recover_only:$builder_key_canonical" in
+      "0:$image_canonical"|"0:$image_canonical"/*)
         echo "trusted builder public key must be supplied outside the image" >&2
         exit 1
         ;;
@@ -864,8 +868,10 @@ require_root_owned_private_regular_file "$trusted_public_key" "trusted release p
 require_root_owned_ancestor_chain "$trusted_public_key" "trusted release public key"
 require_root_owned_private_regular_file "$next_trusted_public_key" "next trusted release public key"
 require_root_owned_ancestor_chain "$next_trusted_public_key" "next trusted release public key"
-mkdir "$staging_root/image"
-(umask 000; cp -RP "$image_root/." "$staging_root/image/")
+if [ "$recover_only" -eq 0 ]; then
+  mkdir "$staging_root/image"
+  (umask 000; cp -RP "$image_root/." "$staging_root/image/")
+fi
 cp "$trusted_public_key" "$staging_root/trusted-public-key"
 cp "$next_trusted_public_key" "$staging_root/next-trusted-public-key"
 if [ "$managed_provider_topology" = path1 ]; then
@@ -894,7 +900,19 @@ require_private_regular_file "$receipt_path" "managed bootstrap receipt"
 require_safe_ancestor_chain "$receipt_path" "managed bootstrap receipt"
 select_supervisor_service
 assert_path1_units_have_no_dropins
+if [ "$recover_only" -eq 1 ]; then
+  for recovery_journal in "$transaction_root" "$terminal_transaction"; do
+    if path_exists "$recovery_journal"; then
+      require_root_owned_directory "$recovery_journal"
+      node "$script_root/managed-kernel-upgrade-state.mjs" validate-update-recovery \
+        "$recovery_journal" "$managed_release_update_id" "$expected_current_digest" "$expected_new_digest"
+    fi
+  done
+fi
 recover_transaction
+# A replay settles the original journal and publishes its terminal evidence;
+# it must not silently start the failed target again under the same update ID.
+if [ "$recover_only" -eq 1 ]; then exit 0; fi
 select_receipt_path
 require_private_regular_file "$receipt_path" "managed bootstrap receipt"
 require_safe_ancestor_chain "$receipt_path" "managed bootstrap receipt"
