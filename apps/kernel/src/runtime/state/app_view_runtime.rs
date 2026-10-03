@@ -8,6 +8,7 @@ use crate::{
     runtime::{
         app_operation_budget::AppOperationBudget,
         app_views::AppViewBinding,
+        app_worker::AppWorkerError,
         browser_controller_app_view::{
             BrowserAppViewAsset, BrowserAppViewCall, BrowserAppViewCalls, BrowserAppViewError,
             BrowserAppViewOpened, BrowserAppViewRequest,
@@ -445,7 +446,7 @@ impl KernelRuntimeState {
             .ok_or_else(|| view_error("UNKNOWN_TOOL", "The App declares no such tool"))?;
         let slot = lease
             .reserve_call(Duration::from_secs(30))
-            .map_err(|error| view_error("APP_BUSY", &format!("{error}; retry after 500 ms")))?;
+            .map_err(view_call_error)?;
         slot.validate_input(&tool, &input)
             .map_err(|error| view_error("INVALID_INPUT", &error.to_string()))?;
         let permit = self.app_control().try_admit().map_err(|_| unavailable())?;
@@ -518,6 +519,14 @@ fn view_error(code: &str, message: &str) -> BrowserAppViewError {
     }
 }
 
+fn view_call_error(error: AppWorkerError) -> BrowserAppViewError {
+    match error {
+        AppWorkerError::Busy => view_error("APP_BUSY", "app_worker_busy; retry after 500 ms"),
+        AppWorkerError::Unavailable => view_error("APP_UNAVAILABLE", "The App is not running"),
+        error => view_error("APP_ERROR", &error.to_string()),
+    }
+}
+
 /// A view calls the App's own tools by their local names; the catalog keys
 /// them by the installation-namespaced runtime MCP name.
 fn view_tool(
@@ -541,6 +550,25 @@ fn failed(code: AppRequestErrorCode) -> LocalDaemonResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_busy_view_admission_asks_the_page_to_retry() {
+        let busy = view_call_error(AppWorkerError::Busy);
+        assert_eq!(busy.code, "APP_BUSY");
+        assert_eq!(busy.message, "app_worker_busy; retry after 500 ms");
+        let stopped = view_call_error(AppWorkerError::Unavailable);
+        assert_eq!(stopped.code, "APP_UNAVAILABLE");
+        assert_eq!(stopped.message, "The App is not running");
+        for error in [
+            AppWorkerError::Identity,
+            AppWorkerError::Deadline,
+            AppWorkerError::Invalid,
+        ] {
+            let failed = view_call_error(error);
+            assert_eq!(failed.code, "APP_ERROR");
+            assert!(!failed.message.contains("retry"));
+        }
+    }
 
     #[test]
     fn view_calls_run_as_the_views_owner_in_its_room() {
