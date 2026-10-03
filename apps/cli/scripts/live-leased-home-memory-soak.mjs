@@ -112,9 +112,6 @@ function startKernel(name, port, base, relayToken, acceptLeases) {
     env: {
       ...childBaseEnv,
       HOME: home,
-      CODEX_HOME: path.join(home, ".codex"),
-      CLAUDE_CONFIG_DIR: path.join(home, ".claude"),
-      OPENCODE_CONFIG_DIR: path.join(home, "xdg-config", "opencode"),
       CHARIOX_HOME: path.join(home, "home"),
       CHARIOX_LOG_DIR: path.join(home, "logs"),
       CHARIOX_DAEMON_ID: `soak-${name}-${process.pid}`,
