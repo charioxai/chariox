@@ -1876,7 +1876,8 @@ async function execute(request) {
             CHARIOX_SLICE_BUILD_IMAGE: "never",
             ...localDevRuntimeEnvironment(LOCAL_AUTHORITY.enrollment)} : {}),
           ...(VERIFIED_BUILD_CONTEXT_DIGEST
-            ? { CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: VERIFIED_BUILD_CONTEXT_DIGEST, CHARIOX_SLICE_PROTECTED_IMAGE_PROOF_ROOT: protectedLayouts.imageRoot }
+            ? { CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: VERIFIED_BUILD_CONTEXT_DIGEST,
+              ...(protectedLayouts.trusted ? {CHARIOX_SLICE_PROTECTED_IMAGE_PROOF_ROOT: protectedLayouts.imageRoot} : {}) }
             : {}),
         }
       return spawnBounded(command, args, {

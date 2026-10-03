@@ -718,6 +718,9 @@ else if (args[0] !== "rm") process.exit(1)
     const build = provisioner.match(/^build_standard_runtime_image\(\) \{\n[\s\S]*?^\}/m)?.[0]
     assert.ok(build)
     for (const prebuilt of [false, true]) {
+      // Each branch must independently mint its own proof.
+      rmSync(join(controller.imageRoot, `${current.Id.slice(7)}.json`), {force: true})
+      assert.throws(() => requireManagedImageProof(controller.imageRoot, source, current.Id))
       if (prebuilt) { mkdirSync(join(moduleDir, "prebuilt")); writeFileSync(join(moduleDir, "prebuilt/.managed-release"), "synthetic") }
       const result = spawnSync("bash", ["-c", `set -eu
 log() { :; }

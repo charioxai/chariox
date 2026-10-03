@@ -149,6 +149,7 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
     requireIdentityRetention({privateRoot: record.privateHostRoot, backupRoot, sliceId: record.ownerSliceId, dataOwner})
   }
   return {
+    trusted,
     imageRoot,
     captureLayout(container) {
       if (receipt(container)) return this.preflight(container)
