@@ -1,6 +1,18 @@
 use super::*;
 
 pub(super) async fn check(fixture: &LiveWorker, token: &str) {
+    // GetRoomEnvironmentState schedules an asynchronous health probe. Drain
+    // and hold that probe so the first mutation, rather than an incidental
+    // state read, must observe the crash and initiate controller recovery.
+    let health_probe = timeout(
+        Duration::from_secs(30),
+        fixture
+            .home
+            .runtime_state
+            .test_hold_room_environment_health_refresh(&fixture.rooms[0]),
+    )
+    .await
+    .expect("prior Room health observation completes before the crash drill");
     let before = fixture
         .home
         .runtime_state
@@ -77,6 +89,7 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str) {
         repeated_stale_error.to_string().contains("stale"),
         "{repeated_stale_error}"
     );
+    drop(health_probe);
     let after_failed_mutation = dispatch_json(
         &fixture.home,
         json!({"GetRoomEnvironmentState":{"session_id":fixture.rooms[0]}}),

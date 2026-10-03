@@ -43,8 +43,11 @@ fn operational_history_error(
 }
 
 pub(super) fn migrate(connection: &mut rusqlite::Connection) -> Result<(), DaemonError> {
+    // Acquire write access before inspecting the schema. Otherwise a concurrent
+    // history write can invalidate our WAL snapshot and make ALTER fail busy
+    // immediately, bypassing the connection's busy timeout.
     let transaction = connection
-        .transaction()
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| operational_history_error("begin projection migration", e))?;
     let connection = &transaction;
     let mut statement = connection
@@ -356,6 +359,64 @@ mod tests {
         );
         let columns: i64 = connection.query_row("SELECT count(*) FROM pragma_table_info('history_events') WHERE name = 'committed_sequence'", [], |row| row.get(0)).unwrap();
         assert_eq!(columns, 0);
+    }
+
+    #[test]
+    fn projection_migration_waits_for_concurrent_history_writer() {
+        use std::{cell::RefCell, sync::mpsc, time::Duration};
+
+        thread_local! {
+            static BUSY: RefCell<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>> = const { RefCell::new(None) };
+        }
+
+        let fixture = Fixture::new();
+        let store = fixture.open();
+        store
+            .append_transcript(&entry(0), HistoryEventTurnContext::default())
+            .unwrap();
+        drop(store);
+        let path = fixture.0.join("history.sqlite");
+        let writer = rusqlite::Connection::open(&path).unwrap();
+        writer
+            .execute_batch(
+                "BEGIN IMMEDIATE; UPDATE history_events SET timestamp_ms = timestamp_ms + 1;",
+            )
+            .unwrap();
+        let (waiting_tx, waiting_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let migration = std::thread::spawn(move || {
+            let mut connection = rusqlite::Connection::open(path).unwrap();
+            BUSY.with(|busy| *busy.borrow_mut() = Some((waiting_tx, release_rx)));
+            connection
+                .busy_handler(Some(|_| {
+                    BUSY.with(|busy| {
+                        let Some((waiting, release)) = busy.borrow_mut().take() else {
+                            return false;
+                        };
+                        waiting.send(()).unwrap();
+                        release.recv_timeout(Duration::from_secs(30)).is_ok()
+                    })
+                }))
+                .unwrap();
+            migrate(&mut connection)
+        });
+        // The busy notification proves migration contends with a real writer;
+        // release it only then, without a sleep or scheduler-dependent overlap.
+        let waiting = waiting_rx.recv_timeout(Duration::from_secs(30));
+        writer.execute_batch("COMMIT").unwrap();
+        let _ = release_tx.send(());
+        let result = migration.join().unwrap();
+        waiting.expect("projection migration must wait for the concurrent writer");
+        result.expect("projection migration must succeed after the writer commits");
+
+        let connection = fixture.open();
+        let history = connection.lock_read_connection(None).unwrap();
+        let committed: i64 = history
+            .query_row("SELECT committed_sequence FROM history_events", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(committed, 1, "migration must preserve and backfill history");
     }
 
     #[test]
