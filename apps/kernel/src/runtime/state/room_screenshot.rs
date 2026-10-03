@@ -54,6 +54,11 @@ impl KernelRuntimeState {
                 agent_id: agent_id.to_string(),
             });
         }
+        self.ensure_room_observation_clearance(session_id, agent_id, true)
+            .await?;
+        self.owned
+            .room_secret_observations
+            .require(session_id, true)?;
         let slice = self.running_room_screenshot_slice(session_id)?;
         let artifact = self
             .capture_room_screenshot_from_slice(session_id, &slice)
@@ -242,6 +247,15 @@ impl KernelRuntimeState {
             session_id,
             slice_id,
         )?;
+        let _observation_guard = self
+            .owned
+            .room_secret_observations
+            .barrier(session_id)?
+            .read_owned()
+            .await;
+        self.owned
+            .room_secret_observations
+            .require(session_id, true)?;
         let capture_guard = self
             .owned
             .computer_input_executions
@@ -288,10 +302,23 @@ impl KernelRuntimeState {
             attachment_id: None,
             workspace_id: None,
             worktree_path: None,
-            metadata: BTreeMap::from([(
-                "slice_id".to_string(),
-                serde_json::Value::String(slice_id.to_string()),
-            )]),
+            metadata: BTreeMap::from([
+                (
+                    "slice_id".to_string(),
+                    serde_json::Value::String(slice_id.to_string()),
+                ),
+                (
+                    "observation_epoch".to_string(),
+                    self.owned.room_secret_observations.epoch.into(),
+                ),
+                (
+                    "observation_revision".to_string(),
+                    self.owned
+                        .room_secret_observations
+                        .revision(session_id)?
+                        .into(),
+                ),
+            ]),
         });
         let _ = std::fs::remove_file(&staging_path);
         let stored = stored?;
@@ -327,8 +354,22 @@ impl KernelRuntimeState {
                 "screenshot chunk size must be between 1 and 131072 bytes",
             ));
         }
+        let _observation_guard = self
+            .owned
+            .room_secret_observations
+            .barrier(session_id)?
+            .try_read_owned()
+            .map_err(|_| super::room_secret_observation::protection_error())?;
+        self.owned
+            .room_secret_observations
+            .require(session_id, true)?;
         let (store, record) =
             load_room_screenshot_artifact(&config, session_id, slice_id, artifact_id)?;
+        validate_observation_artifact(
+            &record,
+            self.owned.room_secret_observations.epoch,
+            self.owned.room_secret_observations.revision(session_id)?,
+        )?;
         let read = store.read_artifact_chunk(&record, offset, max_bytes as usize)?;
         Ok(RoomEnvironmentScreenshotChunk {
             artifact_id: record.artifact_id,
@@ -405,8 +446,11 @@ pub(in crate::runtime::state) fn room_screenshot_artifact_path(
     session_id: &str,
     slice_id: &str,
     artifact_id: &str,
+    observation_epoch: u64,
+    observation_revision: u64,
 ) -> Result<std::path::PathBuf, DaemonError> {
     let (store, record) = load_room_screenshot_artifact(config, session_id, slice_id, artifact_id)?;
+    validate_observation_artifact(&record, observation_epoch, observation_revision)?;
     let signature = store.read_artifact_chunk(&record, 0, ROOM_SCREENSHOT_PNG_SIGNATURE.len())?;
     if signature.data != ROOM_SCREENSHOT_PNG_SIGNATURE {
         return Err(screenshot_error("screenshot artifact is not a PNG image"));
@@ -512,6 +556,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn vault_observation_artifacts_require_current_epoch_and_revision() {
+        let mut record: crate::artifacts::ArtifactRecord =
+            serde_json::from_value(serde_json::json!({
+                "artifact_id":"image", "sha256":"0".repeat(64), "size_bytes":16,
+                "display_name":"screen.png", "source_kind":"room_environment_screenshot",
+                "operational_path":"screen.png", "created_at_ms":1,
+                "metadata":{"observation_epoch":100,"observation_revision":2}
+            }))
+            .unwrap();
+        assert!(validate_observation_artifact(&record, 100, 2).is_ok());
+        assert!(validate_observation_artifact(&record, 101, 2).is_err());
+        assert!(validate_observation_artifact(&record, 100, 3).is_err());
+        record.metadata.clear();
+        assert!(validate_observation_artifact(&record, 100, 2).is_err());
+    }
+
+    #[test]
     fn complete_provider_screenshot_requires_exact_png_bytes_and_digest() {
         let bytes = b"\x89PNG\r\n\x1a\nprovider-screen";
         let artifact = RoomEnvironmentScreenshotArtifact {
@@ -532,4 +593,26 @@ mod tests {
         wrong_digest.sha256 = "0".repeat(64);
         assert!(validate_complete_room_screenshot(bytes, &wrong_digest).is_err());
     }
+}
+
+// MP-08/MP-11: older pixels are never reauthorized by clearing the current view.
+fn validate_observation_artifact(
+    record: &crate::artifacts::ArtifactRecord,
+    epoch: u64,
+    revision: u64,
+) -> Result<(), DaemonError> {
+    if record
+        .metadata
+        .get("observation_epoch")
+        .and_then(serde_json::Value::as_u64)
+        != Some(epoch)
+        || record
+            .metadata
+            .get("observation_revision")
+            .and_then(serde_json::Value::as_u64)
+            != Some(revision)
+    {
+        return Err(screenshot_error("Screenshot belongs to an earlier observation lifetime and remains withheld. Capture a new image after clearing the sensitive view."));
+    }
+    Ok(())
 }

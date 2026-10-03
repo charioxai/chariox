@@ -16,10 +16,17 @@ import {
 } from "./browser-controller-resources.mjs";
 
 import { managedCanonicalDisplay } from "./browser-controller-display.mjs";
+import { redactObservation } from "./browser-controller-snapshot.mjs";
 
 let browserImportModule;
 
-export async function handleBrowserControllerRequest(
+export async function handleBrowserControllerRequest(request, options = {}) {
+  const browser = options.browser ?? new BrowserCdpClient();
+  const result = await handleBrowserControllerRequestInner(request, { ...options, browser });
+  return redactObservation(result, browser.protectedValues ?? []);
+}
+
+async function handleBrowserControllerRequestInner(
   request,
   {
     processId = process.pid,

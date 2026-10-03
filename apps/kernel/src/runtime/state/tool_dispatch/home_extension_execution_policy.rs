@@ -55,6 +55,10 @@ impl KernelRuntimeState {
             .begin_audited_home_extension_invocation(&context, &metadata, &tool)
             .await?
         {
+            let cached = self
+                .owned
+                .room_secret_observations
+                .scrub_cached_result(&context.home_session_id, cached)?;
             return serde_json::from_value(cached).map_err(|error| DaemonError::LocalTransport {
                 operation: "home extension invocation replay",
                 message: error.to_string(),
@@ -98,7 +102,8 @@ impl KernelRuntimeState {
                     "error": "home extension runtime tool invocation only supports scripts and connectors"
                 }),
             }),
-        };
+        }.and_then(|value| self.owned.room_secret_observations.scrub(&context.home_session_id, value))
+         .map_err(|error| self.owned.room_secret_observations.scrub_error(&context.home_session_id, error));
         if let Ok(result) = &result {
             let completed = self
                 .complete_home_extension_invocation(

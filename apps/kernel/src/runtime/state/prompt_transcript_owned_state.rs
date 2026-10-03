@@ -35,6 +35,9 @@ impl KernelRuntimeOwnedState {
         merge_key: Option<String>,
         message: &str,
     ) {
+        let message = self
+            .room_secret_observations
+            .scrub_text_or_withhold(&dispatch.session_id, message);
         let kind = crate::terminal::TerminalOutputKind::ProviderError;
         let delta = terminal_output_delta_bytes(
             &dispatch.session_id,
@@ -192,7 +195,10 @@ impl KernelRuntimeOwnedState {
         let mut prompt_metadata_cache =
             std::collections::BTreeMap::<Option<String>, ActivePromptTranscriptMetadata>::new();
         let mut terminal_outputs = Vec::with_capacity(outputs.len());
-        for output in outputs {
+        for mut output in outputs {
+            output.bytes = self
+                .room_secret_observations
+                .protect_unframed_bytes(session_id, &output.bytes);
             let agent_id = output.agent_id;
             let delta_bytes = terminal_output_delta_bytes(
                 session_id,
@@ -301,13 +307,16 @@ impl KernelRuntimeOwnedState {
             .and_then(|run| run.agent_instance_id().map(str::to_string));
         let prompt_metadata =
             self.active_prompt_transcript_metadata_for_agent(session_id, agent_id.as_deref());
+        let bytes = self
+            .room_secret_observations
+            .protect_unframed_bytes(session_id, bytes);
         let delta_bytes = terminal_output_delta_bytes(
             session_id,
             provider_run_id,
             agent_id.as_deref(),
             &kind,
             &merge_key,
-            bytes,
+            &bytes,
         );
         let bounded_bytes = bounded_terminal_output_bytes(&kind, &delta_bytes);
         self.log_provider_output_truncation(
@@ -500,6 +509,9 @@ impl KernelRuntimeOwnedState {
 
     #[cfg(test)]
     pub(super) fn append_history_entry(&self, session_id: &str, entry: SessionHistoryEntry) {
+        let entry = self
+            .room_secret_observations
+            .protect_transcript_entry(entry);
         let Some(entry) = bounded_history_entry(entry) else {
             return;
         };
@@ -524,6 +536,10 @@ impl KernelRuntimeOwnedState {
     ) {
         let entries = entries
             .into_iter()
+            .map(|entry| {
+                self.room_secret_observations
+                    .protect_transcript_entry(entry)
+            })
             .filter_map(bounded_history_entry)
             .collect::<Vec<_>>();
         if entries.is_empty() {
@@ -580,6 +596,10 @@ impl KernelRuntimeOwnedState {
         entry: &crate::history::SessionHistoryEntry,
         context: crate::history::HistoryEventTurnContext,
     ) -> Option<AgentOutputSequenceUpdate> {
+        let entry = self
+            .room_secret_observations
+            .protect_transcript_entry(entry.clone());
+        let entry = &entry;
         match self
             .operational_history_store
             .append_transcript(entry, context)
@@ -698,6 +718,15 @@ impl KernelRuntimeOwnedState {
         if entries.is_empty() {
             return;
         }
+        let scrubbed = entries
+            .iter()
+            .cloned()
+            .map(|entry| {
+                self.room_secret_observations
+                    .protect_transcript_entry(entry)
+            })
+            .collect::<Vec<_>>();
+        let entries = scrubbed.as_slice();
         let active_turns = self.active_turns.snapshot();
         let mut prepared = Vec::with_capacity(entries.len());
         for entry in entries {
@@ -938,13 +967,18 @@ impl KernelRuntimeOwnedState {
                 .map(|path| path.display().to_string()),
             ..crate::history::HistoryEventTurnContext::default()
         };
+        let content = self.room_secret_observations.scrub_text_or_withhold(
+            session_id,
+            &crate::prompt_transcript::render_prompt_transcript(prompt, attachments),
+        );
+        let metadata = self
+            .room_secret_observations
+            .scrub(session_id, metadata)
+            .unwrap_or_default();
         let event = self.operational_history_store.append_operational_event(
             crate::history::HistoryEventKind::UserPrompt,
             Some(crate::history::HistoryEventRole::User),
-            Some(crate::prompt_transcript::render_prompt_transcript(
-                prompt,
-                attachments,
-            )),
+            Some(content),
             metadata,
             context,
         )?;
@@ -1072,8 +1106,13 @@ impl KernelRuntimeOwnedState {
         if recipient_attachment_ids.is_empty() {
             return;
         }
-        let mut bytes =
-            crate::prompt_transcript::render_prompt_transcript(prompt, attachments).into_bytes();
+        let mut bytes = self
+            .room_secret_observations
+            .scrub_text_or_withhold(
+                session_id,
+                &crate::prompt_transcript::render_prompt_transcript(prompt, attachments),
+            )
+            .into_bytes();
         if !bytes.ends_with(b"\n") {
             bytes.push(b'\n');
         }

@@ -1,3 +1,4 @@
+import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { BrowserInputCapture } from "./browser-controller-input.mjs";
 import {
   BrowserSnapshotError,
@@ -101,6 +102,7 @@ export class BrowserCdpClient {
     this.documentIdsByTarget = new Map();
     this.focusWorldsByTarget = new Map();
     this.snapshotStateByTarget = new Map();
+    this.protectedValues = new Set();
     this.dialogDefaults = new BrowserDialogDefaults();
     this.networkRequestsBySession = new Map();
     this.cookieWriterFence = null;
@@ -612,6 +614,7 @@ export class BrowserCdpClient {
         documentId,
         browserGeneration: this.browserGeneration,
         snapshotRevision,
+        protectedValues: this.protectedValues,
       });
     } catch (error) {
       if (this.snapshotStateByTarget.get(targetId)?.revision === snapshotRevision) {
@@ -626,6 +629,10 @@ export class BrowserCdpClient {
   }
 
   async performAction(rawRequest, { signal } = {}) {
+    // Register before focus/input handlers run, including a failed or partial fill.
+    if (rawRequest?.action?.kind === "fill" && rawRequest.action.expected_document_url) {
+      this.protectedValues.add(rawRequest.action.text);
+    }
     const targetId = requiredIdentity(rawRequest?.target_id, "target_id");
     const documentId = requiredIdentity(rawRequest?.document_id, "document_id");
     const connection = await this.ensureConnection();
@@ -1022,7 +1029,7 @@ export class BrowserCdpClient {
     }
     if (this.frameSessions.observe(message, this.connection)) return;
     const dialogTargetId = this.targetsBySession.get(message?.sessionId) ?? message?.params?.targetId;
-    this.dialogDefaults.observe(message, dialogTargetId, this.documentIdsByTarget.get(dialogTargetId));
+    this.dialogDefaults.observe(redactObservation(message, this.protectedValues), dialogTargetId, this.documentIdsByTarget.get(dialogTargetId));
     if (message?.method === "Target.detachedFromTarget") {
       const sessionId = message.params?.sessionId ?? message.sessionId;
       const targetId = this.targetsBySession.get(sessionId) ?? message.params?.targetId;
@@ -1062,7 +1069,7 @@ export class BrowserCdpClient {
     ) {
       this.scheduleDownloadDiskCheck();
     }
-    this.eventJournal.recordCdp(message, this.eventContext());
+    this.eventJournal.recordCdp(redactObservation(message, this.protectedValues), this.eventContext());
     if (
       message?.method === "Browser.downloadProgress" &&
       message.params?.state !== "inProgress"

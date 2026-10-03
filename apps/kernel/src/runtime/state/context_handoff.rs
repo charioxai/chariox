@@ -217,6 +217,7 @@ impl super::KernelRuntimeOwnedState {
             &self.operational_history_store,
             session_id,
             source_history_agent_id,
+            &self.room_secret_observations,
         ) {
             Ok(Some(context)) => {
                 self.pending_agent_context_handoffs.set(

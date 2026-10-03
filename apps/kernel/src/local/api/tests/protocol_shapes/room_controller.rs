@@ -1017,3 +1017,38 @@ fn computer_secret_target_protocol_374_peer_67_is_hashed() {
         "d15bc20375584abc3a797667ea308d85b6da0e1153b135f6406c6db34ccff111"
     );
 }
+
+// MP-08/MP-10/MP-11: no value or provider-chosen clearance parameter crosses this seam.
+#[test]
+fn room_secret_observation_clearance_protocol_378_peer_69_is_hashed() {
+    use crate::transport::room_browser_controller::RoomBrowserControllerResult;
+    use sha2::{Digest, Sha256};
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 378);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 69);
+    let command =
+        serde_json::to_value(RoomBrowserControllerCommand::ClearSecretObservation).unwrap();
+    let response =
+        serde_json::to_value(RoomBrowserControllerResult::SecretObservationCleared).unwrap();
+    assert_eq!(
+        command,
+        serde_json::json!({"kind":"clear_secret_observation"})
+    );
+    assert_eq!(
+        response,
+        serde_json::json!({"kind":"secret_observation_cleared"})
+    );
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&command).unwrap())
+        ),
+        "0b51d367c657307a95c218d49cd379845c8b051b9d24dd91c652a9bc2aa74e08"
+    );
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&response).unwrap())
+        ),
+        "793d616c37292c4b5ccdfe4e5d3c71b89ed89615fc5d0b32f8ae43f972de51f9"
+    );
+}

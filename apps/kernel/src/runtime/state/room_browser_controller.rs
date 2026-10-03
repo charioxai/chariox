@@ -21,7 +21,16 @@ impl KernelRuntimeState {
         request: RelayPeerRequest,
         timeout: std::time::Duration,
     ) -> Result<RelayPeerResponse, DaemonError> {
-        match self.connected_relay_state_for_config(config).await {
+        let protected_room = match &request {
+            RelayPeerRequest::RoomBrowserController { session_id, .. }
+            | RelayPeerRequest::ObserveRoomComputer { session_id, .. }
+            | RelayPeerRequest::CaptureRoomScreenshot { session_id, .. }
+            | RelayPeerRequest::ReadRoomScreenshotChunk { session_id, .. } => {
+                Some(session_id.clone())
+            }
+            _ => None,
+        };
+        let result = match self.connected_relay_state_for_config(config).await {
             Some(relay_state) => {
                 crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
                     config,
@@ -38,7 +47,13 @@ impl KernelRuntimeState {
                 )
                 .await
             }
+        };
+        if let (Some(room), Err(error)) = (protected_room, &result) {
+            if error.to_string().contains("Agent observation withheld:") {
+                self.owned.room_secret_observations.quarantine(&room)?;
+            }
         }
+        result
     }
 
     pub(crate) fn browser_controller_enabled_for_room(&self, session_id: &str) -> bool {
@@ -148,6 +163,20 @@ impl KernelRuntimeState {
                     | crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Reload { .. }
             }
         );
+        let protection = &self.owned.room_secret_observations;
+        let secret_guard = if super::room_secret_observation::command_secret(&command).is_some() {
+            Some(protection.barrier(session_id)?.write_owned().await)
+        } else {
+            None
+        };
+        let observation_guard = if secret_guard.is_none() {
+            Some(protection.barrier(session_id)?.read_owned().await)
+        } else {
+            None
+        };
+        if let Some(secret) = super::room_secret_observation::command_secret(&command) {
+            protection.register(session_id, secret)?;
+        }
         let response = if let Some(slice) = self.owned.slice_store.environment_slice(session_id) {
             // Keep the relay client's large future off callers' async stacks. Local
             // controller operations stay allocation-free; only the remote boundary
@@ -180,6 +209,9 @@ impl KernelRuntimeState {
             )
             .await?
         };
+        let response = protection.scrub_response(session_id, response)?;
+        drop(observation_guard);
+        drop(secret_guard);
         match response {
             Response::ActionCancelled { controller_fenced } if admitted_mutation_command => {
                 Err(DaemonError::BrowserControllerActionCancelled { controller_fenced })
@@ -203,7 +235,7 @@ impl KernelRuntimeState {
         }
     }
 
-    async fn route_room_browser_controller_command(
+    pub(super) async fn route_room_browser_controller_command(
         &self,
         session_id: &str,
         slice: crate::slice::SliceRecord,
@@ -310,6 +342,25 @@ impl KernelRuntimeState {
         if !permitted {
             return Err(controller_route_error("browser_controller_scope_denied: peer or Room does not match the provisioned slice binding"));
         }
+        let protection = &self.owned.room_secret_observations;
+        if matches!(&command, Command::ClearSecretObservation) {
+            let _guard = protection.barrier(session_id)?.write_owned().await;
+            protection.clear(session_id)?;
+            return Ok(Response::SecretObservationCleared);
+        }
+        let secret_guard = if super::room_secret_observation::command_secret(&command).is_some() {
+            Some(protection.barrier(session_id)?.write_owned().await)
+        } else {
+            None
+        };
+        let _observation_guard = if secret_guard.is_none() {
+            Some(protection.barrier(session_id)?.read_owned().await)
+        } else {
+            None
+        };
+        if let Some(secret) = super::room_secret_observation::command_secret(&command) {
+            protection.register(session_id, secret)?;
+        }
         if !matches!(
             &command,
             Command::ComputerInput { .. }
@@ -321,13 +372,15 @@ impl KernelRuntimeState {
                 "browser_controller_unavailable: slice has no configured controller",
             ));
         }
-        execute_local(
+        let response = execute_local(
             self.owned.browser_controller_processes.clone(),
             self.owned.computer_input_executions.clone(),
             session_id,
             command,
         )
         .await
+        .map_err(|error| protection.scrub_error(session_id, error))?;
+        protection.scrub_response(session_id, response)
     }
 }
 
@@ -574,6 +627,11 @@ async fn execute_local(
             }
             input_result?;
             return Ok(Response::ComputerInputApplied { action_id });
+        }
+        Command::ClearSecretObservation => {
+            return Err(controller_route_error(
+                "observation clearance requires home interaction authority",
+            ))
         }
         Command::ComputerSecretTarget => {
             let capture_guard = computer_input_executions
@@ -826,6 +884,9 @@ async fn execute_local(
         }
         Command::ComputerInput { .. } => {
             unreachable!("Computer input executes before the blocking controller path")
+        }
+        Command::ClearSecretObservation => {
+            unreachable!("clearance executes before controller path")
         }
         Command::ComputerClipboardRead { .. } => {
             unreachable!("Computer clipboard reads execute before the blocking controller path")

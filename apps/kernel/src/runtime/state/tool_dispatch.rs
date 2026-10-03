@@ -223,6 +223,40 @@ impl KernelRuntimeState {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let rooms = self
+            .owned
+            .provider_store
+            .get_runs_by_runtime_mcp_auth_token(auth_token)
+            .into_iter()
+            .map(|run| run.session_id().to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut result = match self
+            .dispatch_authenticated_runtime_tool_call_inner(auth_token, tool_name, arguments)
+            .await
+        {
+            Ok(result) => result,
+            Err(mut error) => {
+                for room in rooms {
+                    error = self
+                        .owned
+                        .room_secret_observations
+                        .scrub_error(&room, error);
+                }
+                return Err(error);
+            }
+        };
+        for room in rooms {
+            result = self.owned.room_secret_observations.scrub(&room, result)?;
+        }
+        Ok(result)
+    }
+
+    async fn dispatch_authenticated_runtime_tool_call_inner(
+        &self,
+        auth_token: &str,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         {
             let owned = &self.owned;
             let canonical_tool_name =

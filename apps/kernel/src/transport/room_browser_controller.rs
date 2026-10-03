@@ -356,6 +356,8 @@ pub(crate) enum RoomBrowserControllerCommand {
         action: RoomComputerInputAction,
     },
     ComputerSecretTarget,
+    /// MP-08/MP-11: home sends only after human Room clearance.
+    ClearSecretObservation,
     ComputerClipboardRead {
         actor_id: String,
         runtime_generation: u64,
@@ -408,6 +410,7 @@ pub(crate) enum RoomBrowserControllerResult {
     CookiesImported {
         results: Vec<BrowserImportDomainResult>,
     },
+    SecretObservationCleared,
     CookieImportRecovered,
     CookieImportRolledBack,
     Snapshot {

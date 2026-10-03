@@ -21,6 +21,12 @@ impl KernelRuntimeState {
                 agent_id: agent_id.to_string(),
             });
         }
+        let pixels = !matches!(&call, RemoteRoomComputerObservationCall::ScreenStatus);
+        self.ensure_room_observation_clearance(session_id, agent_id, pixels)
+            .await?;
+        self.owned
+            .room_secret_observations
+            .require(session_id, pixels)?;
         let slice = self.running_room_screenshot_slice(session_id)?;
         if slice.id != slice_id {
             return Err(computer_observation_error(
@@ -79,8 +85,12 @@ impl KernelRuntimeState {
                 "worker returned mismatched Computer observation metadata",
             ));
         }
+        let result = self
+            .owned
+            .room_secret_observations
+            .scrub(session_id, result.0)?;
         authoritative_computer_observation_result(
-            result.0,
+            result,
             screen_status,
             session_id,
             &slice.id,
@@ -103,6 +113,16 @@ impl KernelRuntimeState {
             session_id,
             slice_id,
         )?;
+        let _observation_guard = self
+            .owned
+            .room_secret_observations
+            .barrier(session_id)?
+            .read_owned()
+            .await;
+        self.owned.room_secret_observations.require(
+            session_id,
+            !matches!(&call, RemoteRoomComputerObservationCall::ScreenStatus),
+        )?;
         let capture_guard = self
             .owned
             .computer_input_executions
@@ -120,11 +140,20 @@ impl KernelRuntimeState {
                 session_id,
                 slice_id,
                 artifact_id,
+                self.owned.room_secret_observations.epoch,
+                self.owned.room_secret_observations.revision(session_id)?,
             )?),
             _ => None,
         };
-        super::tool_dispatch::execute_room_computer_observation(call, artifact_path, capture_guard)
-            .await
+        let result = super::tool_dispatch::execute_room_computer_observation(
+            call,
+            artifact_path,
+            capture_guard,
+        )
+        .await?;
+        self.owned
+            .room_secret_observations
+            .scrub(session_id, result)
     }
 }
 

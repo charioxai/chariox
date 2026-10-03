@@ -19,7 +19,14 @@ export async function captureBrowserSnapshot({
   browserGeneration,
   snapshotRevision,
   limits = {},
+  protectedValues = [],
 }) {
+  // MP-08/MP-10/MP-11: scrub the raw CDP strings before compaction can
+  // truncate an echoed value and make exact-value redaction impossible.
+  const rawConnection = connection;
+  connection = {
+    send: async (...args) => redactObservation(await rawConnection.send(...args), protectedValues),
+  };
   const options = snapshotLimits(limits);
   const frames = snapshotFrames(
     await assertCurrentDocument(connection, sessionId, targetId, documentId),
@@ -57,6 +64,34 @@ export async function captureBrowserSnapshot({
     accessibility_truncated: accessibility.truncated,
     ...compactedDom,
   };
+}
+
+export function redactObservation(value, protectedValues) {
+  const variants = new Set();
+  for (const secret of protectedValues) {
+    if (typeof secret !== "string" || !secret) continue;
+    for (const variant of [secret, secret.toLowerCase(), secret.toUpperCase(),
+      encodeURIComponent(secret), encodeURIComponent(secret).toLowerCase(),
+      JSON.stringify(secret).slice(1, -1),
+      secret.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;"),
+      Buffer.from(secret).toString("base64"), Buffer.from(secret).toString("base64url"),
+      Buffer.from(secret).toString("hex"), Buffer.from(secret).toString("hex").toUpperCase()]) {
+      variants.add(variant);
+    }
+  }
+  const ordered = [...variants].sort((a, b) => b.length - a.length);
+  const scrub = (input) => {
+    if (typeof input === "string") {
+      for (const variant of ordered) input = input.replaceAll(variant, "[redacted]");
+      return input;
+    }
+    if (Array.isArray(input)) return input.map(scrub);
+    if (input && typeof input === "object") return Object.fromEntries(
+      Object.entries(input).map(([key, child]) => [scrub(key), scrub(child)]),
+    );
+    return input;
+  };
+  return scrub(value);
 }
 
 function snapshotLimits(rawLimits) {

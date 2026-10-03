@@ -263,6 +263,8 @@ async fn run_semantic_recall_search_utility(
             message: reason,
         });
     }
+    // MP-08/MP-11: archived candidates must be protected before entering utility model context.
+    let candidates = runtime_state.protect_semantic_recall_candidates(candidates);
     let prompt = semantic_recall_search_utility_prompt_assembly(&input, &candidates)?;
     let output = run_provider_utility_prompt(
         runtime_state,
