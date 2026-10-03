@@ -35,6 +35,7 @@ fn process_for(
 
 #[test]
 fn request_waits_for_matching_response_after_notification_and_stale_id() {
+    crate::test_support::isolated_env_test!();
     let Some(config) = node_stdio_config(
         r#"
 let buffer = Buffer.alloc(0)
@@ -79,6 +80,7 @@ process.stdin.on('data', (chunk) => {
 
 #[test]
 fn busy_process_lookup_does_not_hold_the_supervisor_lock() {
+    crate::test_support::isolated_env_test!();
     let Some(config) = node_stdio_config("process.stdin.resume()") else {
         return;
     };
