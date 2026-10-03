@@ -140,7 +140,7 @@ impl KernelRuntimeState {
         // App view polls and answers only drain and resolve the page bridge's
         // queue, so they share the slot with controller routes (the local
         // controller runs these concurrently too); holding it would starve
-        // or fail agent and Room commands 4 times a second.
+        // or fail agent and Room commands on each idle or active bridge poll.
         let _guard = if matches!(&command, Command::CancelAction { .. }) {
             None
         } else if matches!(

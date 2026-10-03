@@ -51,6 +51,7 @@ chariox-app-runtime = { path = "../../packages/app-runtime" }
 chariox-app-package = { path = "../../packages/app-package" }
 
 [dev-dependencies]
+tokio = { version = "1.44.2", features = ["test-util"] }
 # Fixed unsandboxed ABI fixtures; excluded from production dependency graphs.
 chariox-app-runtime = { path = "../../packages/app-runtime", features = ["test-fixtures"] }
 anyhow = "1"
