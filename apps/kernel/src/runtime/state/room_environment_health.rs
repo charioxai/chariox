@@ -45,7 +45,15 @@ impl KernelRuntimeState {
         let state = self.clone();
         let room = session_id.to_string();
         tokio::spawn(async move {
-            if environment.lifecycle == EnvironmentLifecycle::Ready {
+            if environment.lifecycle == EnvironmentLifecycle::Ready
+                && matches!(
+                    state
+                        .owned
+                        .durable_state_store
+                        .browser_import_pending_for_room(&room),
+                    Ok(false)
+                )
+            {
                 // A Ready read needs only health, not controller acquisition
                 // or exclusive reconciliation. Reuse the periodic observer's
                 // shared admission, in-flight ownership and generation fence.

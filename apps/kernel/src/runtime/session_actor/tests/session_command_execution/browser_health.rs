@@ -38,6 +38,14 @@ async fn fixture() -> (
         ),
     );
     std::fs::write(&tool.path, script).unwrap();
+    let script = std::fs::read_to_string(&tool.path).unwrap().replace(
+        "    *'\"method\":\"shutdown\"'*)",
+        r#"    *'"method":"browser.cookies.recover"'*)
+      printf '{"id":%s,"ok":true,"result":{"status":"verified"}}\n' "$id"
+      ;;
+    *'"method":"shutdown"'*)"#,
+    );
+    std::fs::write(&tool.path, script).unwrap();
     let mut state = owned_runtime_state(&app).await;
     state.set_browser_controller_process_store_for_test(
         crate::runtime::browser_controller_process::BrowserControllerProcessStore::new(
@@ -327,4 +335,78 @@ async fn ready_state_read_ignores_busy_but_degrades_positive_browser_loss() {
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn ready_state_read_recovers_pending_import() {
+    let (state, room, _tool, _) = fixture().await;
+    let environment = state.room_environment_snapshot(&room).unwrap();
+    state
+        .owned
+        .durable_state_store
+        .begin_browser_import_recovery(
+            &environment.environment_id,
+            "ready-import-recovery",
+            "local",
+            &room,
+        )
+        .unwrap();
+    assert!(state
+        .ensure_browser_import_execution_allowed(&room)
+        .is_err());
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            state.schedule_room_environment_health_refresh(&room);
+            if state.ensure_browser_import_execution_allowed(&room).is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        state.room_environment_snapshot(&room).unwrap().lifecycle,
+        Lifecycle::Ready
+    );
+}
+
+#[tokio::test]
+async fn ready_state_read_reacquires_lost_controller_lease() {
+    let (state, room, _tool, _) = fixture().await;
+    state
+        .room_browser_controller_command(
+            &room,
+            crate::transport::room_browser_controller::RoomBrowserControllerCommand::Release,
+        )
+        .await
+        .unwrap();
+    state.schedule_room_environment_health_refresh(&room);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while state.room_environment_snapshot(&room).unwrap().lifecycle != Lifecycle::Degraded {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        loop {
+            state.schedule_room_environment_health_refresh(&room);
+            if state.room_environment_snapshot(&room).unwrap().lifecycle == Lifecycle::Ready {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    state
+        .refresh_room_browser_health(
+            &room,
+            state
+                .room_environment_snapshot(&room)
+                .unwrap()
+                .runtime_generation,
+        )
+        .await;
+    assert_eq!(
+        state.room_environment_snapshot(&room).unwrap().lifecycle,
+        Lifecycle::Ready
+    );
 }

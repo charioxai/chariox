@@ -100,7 +100,11 @@ impl KernelRuntimeState {
         let room = session_id.to_owned();
         let query = tokio::spawn(async move {
             let result = runtime
-                .room_browser_controller_health_probe(&room, snapshot.viewport, snapshot.browser_bar_visible)
+                .room_browser_controller_health_probe(
+                    &room,
+                    snapshot.viewport,
+                    snapshot.browser_bar_visible,
+                )
                 .await;
             (guard, result)
         });
@@ -117,6 +121,13 @@ impl KernelRuntimeState {
             }
             Err(error) if error.to_string().contains("browser_cdp_disconnected") => {
                 Some("browser_cdp_disconnected")
+            }
+            Err(error)
+                if error
+                    .to_string()
+                    .contains("browser controller is not leased by Room ") =>
+            {
+                Some("browser_controller_lease_lost")
             }
             // Reconcile shares a serial controller queue with foreground
             // commands and can wait on page dialogs. A timeout or route error
