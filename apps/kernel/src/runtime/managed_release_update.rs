@@ -269,9 +269,9 @@ impl ManagedReleaseUpdateClient {
             .args(["/bin/sh", "-c"])
             .arg(update_script(
                 &tooling,
-                &archive,
+                archive,
                 Path::new(STAGING_ROOT),
-                &update,
+                update,
             ))
             .status()
             .map_err(|error| update_error(format!("start release update unit: {error}")))?;

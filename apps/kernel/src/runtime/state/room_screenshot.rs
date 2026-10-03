@@ -446,32 +446,6 @@ impl KernelRuntimeState {
     }
 }
 
-pub(in crate::runtime::state) fn room_screenshot_artifact_path(
-    config: &crate::config::DaemonConfig,
-    session_id: &str,
-    slice_id: &str,
-    artifact_id: &str,
-    observation_epoch: u64,
-    observation_revision: u64,
-) -> Result<std::path::PathBuf, DaemonError> {
-    let (store, record) = load_room_screenshot_artifact(config, session_id, slice_id, artifact_id)?;
-    validate_observation_artifact(&record, observation_epoch, observation_revision)?;
-    let signature = store.read_artifact_chunk(&record, 0, ROOM_SCREENSHOT_PNG_SIGNATURE.len())?;
-    if signature.data != ROOM_SCREENSHOT_PNG_SIGNATURE {
-        return Err(screenshot_error("screenshot artifact is not a PNG image"));
-    }
-    let path = store.blob_path_for_record(&record);
-    let metadata = std::fs::metadata(&path).map_err(|error| {
-        screenshot_error(&format!("failed to inspect screenshot artifact: {error}"))
-    })?;
-    if !metadata.is_file() || metadata.len() != record.size_bytes {
-        return Err(screenshot_error(
-            "screenshot artifact bytes do not match its index record",
-        ));
-    }
-    Ok(path)
-}
-
 fn load_room_screenshot_artifact(
     config: &crate::config::DaemonConfig,
     session_id: &str,
@@ -556,6 +530,28 @@ fn screenshot_error(message: &str) -> DaemonError {
     }
 }
 
+// MP-08/MP-11: older pixels stay withheld; each observation uses a fresh masked image.
+fn validate_observation_artifact(
+    record: &crate::artifacts::ArtifactRecord,
+    epoch: u64,
+    revision: u64,
+) -> Result<(), DaemonError> {
+    if record
+        .metadata
+        .get("observation_epoch")
+        .and_then(serde_json::Value::as_u64)
+        != Some(epoch)
+        || record
+            .metadata
+            .get("observation_revision")
+            .and_then(serde_json::Value::as_u64)
+            != Some(revision)
+    {
+        return Err(screenshot_error("Screenshot belongs to an earlier observation lifetime and remains withheld. Capture a new redacted image."));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -598,26 +594,4 @@ mod tests {
         wrong_digest.sha256 = "0".repeat(64);
         assert!(validate_complete_room_screenshot(bytes, &wrong_digest).is_err());
     }
-}
-
-// MP-08/MP-11: older pixels are never reauthorized by clearing the current view.
-fn validate_observation_artifact(
-    record: &crate::artifacts::ArtifactRecord,
-    epoch: u64,
-    revision: u64,
-) -> Result<(), DaemonError> {
-    if record
-        .metadata
-        .get("observation_epoch")
-        .and_then(serde_json::Value::as_u64)
-        != Some(epoch)
-        || record
-            .metadata
-            .get("observation_revision")
-            .and_then(serde_json::Value::as_u64)
-            != Some(revision)
-    {
-        return Err(screenshot_error("Screenshot belongs to an earlier observation lifetime and remains withheld. Capture a new image after clearing the sensitive view."));
-    }
-    Ok(())
 }

@@ -520,7 +520,7 @@ async fn execute_local(
             }
             let execution = computer_input_executions
                 .begin(session_id, &action_id)
-                .map_err(|error| controller_route_error(&error))?;
+                .map_err(controller_route_error)?;
             if matches!(
                 &action,
                 crate::transport::room_browser_controller::RoomComputerInputAction::SecretText { .. }
@@ -627,7 +627,7 @@ async fn execute_local(
         Command::ComputerSecretTarget => {
             let capture_guard = computer_input_executions
                 .capture_guard()
-                .map_err(|error| controller_route_error(&error))?;
+                .map_err(controller_route_error)?;
             let target =
                 super::tool_dispatch::capture_computer_secret_target(capture_guard).await?;
             return Ok(Response::ComputerSecretTarget { target });

@@ -332,6 +332,72 @@ fn truncate_utf8_bytes(value: &str, max_bytes: usize) -> String {
     format!("{}{MARKER}", &value[..end])
 }
 
+// MP-08/MP-11: protect full history before snippet bounds can split known values.
+fn protected_recall_events_tool_result(
+    protection: &super::super::room_secret_observation::RoomSecretObservations,
+    response: LocalDaemonResponse,
+    mode: &str,
+) -> Result<RuntimeToolResult, DaemonError> {
+    let response = match response {
+        LocalDaemonResponse::RecallEvents {
+            events,
+            next_sequence,
+        } => LocalDaemonResponse::RecallEvents {
+            events: protection.protect_history_events(events),
+            next_sequence,
+        },
+        response => response,
+    };
+    recall_events_tool_result(response, mode)
+}
+fn protected_semantic_recall_events_tool_result(
+    protection: &super::super::room_secret_observation::RoomSecretObservations,
+    response: LocalDaemonResponse,
+    mode: &str,
+) -> Result<RuntimeToolResult, DaemonError> {
+    let response = match response {
+        LocalDaemonResponse::SemanticRecallEvents {
+            mut results,
+            next_cursor,
+            unavailable_reason,
+            mut answer,
+        } => {
+            for result in &mut results {
+                let protected = protection.protect_history_events(vec![result.event.clone()]);
+                if protected[0] != result.event {
+                    result.chunk_text = None;
+                    answer = None;
+                }
+                result.event = protected
+                    .into_iter()
+                    .next()
+                    .ok_or_else(super::super::room_secret_observation::protection_error)?;
+                if let Some(room) = result.event.session_id.as_deref() {
+                    result.chunk_text = result
+                        .chunk_text
+                        .as_deref()
+                        .map(|text| protection.scrub_text_or_withhold(room, text));
+                    result.reason = result
+                        .reason
+                        .as_deref()
+                        .map(|text| protection.scrub_text_or_withhold(room, text));
+                    answer = answer
+                        .as_deref()
+                        .map(|text| protection.scrub_text_or_withhold(room, text));
+                }
+            }
+            LocalDaemonResponse::SemanticRecallEvents {
+                results,
+                next_cursor,
+                unavailable_reason,
+                answer,
+            }
+        }
+        response => response,
+    };
+    semantic_recall_events_tool_result(response, mode)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,70 +488,4 @@ mod tests {
         assert!(bounded.len() <= 31);
         assert!(bounded.contains("recall"));
     }
-}
-
-// MP-08/MP-11: protect full history before snippet bounds can split known values.
-fn protected_recall_events_tool_result(
-    protection: &super::super::room_secret_observation::RoomSecretObservations,
-    response: LocalDaemonResponse,
-    mode: &str,
-) -> Result<RuntimeToolResult, DaemonError> {
-    let response = match response {
-        LocalDaemonResponse::RecallEvents {
-            events,
-            next_sequence,
-        } => LocalDaemonResponse::RecallEvents {
-            events: protection.protect_history_events(events),
-            next_sequence,
-        },
-        response => response,
-    };
-    recall_events_tool_result(response, mode)
-}
-fn protected_semantic_recall_events_tool_result(
-    protection: &super::super::room_secret_observation::RoomSecretObservations,
-    response: LocalDaemonResponse,
-    mode: &str,
-) -> Result<RuntimeToolResult, DaemonError> {
-    let response = match response {
-        LocalDaemonResponse::SemanticRecallEvents {
-            mut results,
-            next_cursor,
-            unavailable_reason,
-            mut answer,
-        } => {
-            for result in &mut results {
-                let protected = protection.protect_history_events(vec![result.event.clone()]);
-                if protected[0] != result.event {
-                    result.chunk_text = None;
-                    answer = None;
-                }
-                result.event = protected
-                    .into_iter()
-                    .next()
-                    .ok_or_else(super::super::room_secret_observation::protection_error)?;
-                if let Some(room) = result.event.session_id.as_deref() {
-                    result.chunk_text = result
-                        .chunk_text
-                        .as_deref()
-                        .map(|text| protection.scrub_text_or_withhold(room, text));
-                    result.reason = result
-                        .reason
-                        .as_deref()
-                        .map(|text| protection.scrub_text_or_withhold(room, text));
-                    answer = answer
-                        .as_deref()
-                        .map(|text| protection.scrub_text_or_withhold(room, text));
-                }
-            }
-            LocalDaemonResponse::SemanticRecallEvents {
-                results,
-                next_cursor,
-                unavailable_reason,
-                answer,
-            }
-        }
-        response => response,
-    };
-    semantic_recall_events_tool_result(response, mode)
 }
