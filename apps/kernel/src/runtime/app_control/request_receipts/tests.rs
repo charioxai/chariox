@@ -337,3 +337,91 @@ async fn successful_effect_with_failed_append_reports_unknown_and_never_reexecut
     );
     assert_eq!(executions.load(Ordering::SeqCst), 1);
 }
+
+#[tokio::test]
+async fn full_receipt_journal_keeps_effects_at_most_once_after_recovery() {
+    let journal = Journal::new();
+    let receipts = AppRequestReceipts::new(journal.0.clone());
+    let request = restart();
+    for n in 0..crate::runtime_transport::COMMAND_RESULT_CACHE_LIMIT {
+        let input = command(&format!("fill-{n}"), &request);
+        assert_eq!(
+            receipts
+                .execute("alice", &input, &request, || async { answer() })
+                .await,
+            answer()
+        );
+    }
+    use sha2::{Digest, Sha256};
+    for recovered in [false, true] {
+        let receipts = if recovered {
+            AppRequestReceipts::new(journal.0.clone())
+        } else {
+            receipts.clone()
+        };
+        // Recovery compacts reservation/result pairs. Safety controls must
+        // leave the loaded journal unchanged, including after that compaction.
+        let before = Sha256::digest(std::fs::read(&journal.0).unwrap());
+        let old = command("fill-0", &request);
+        assert_eq!(
+            receipts
+                .execute("alice", &old, &request, || async {
+                    panic!("full journal re-executed a completed effect")
+                })
+                .await,
+            answer()
+        );
+        let new = command("new", &request);
+        assert_eq!(
+            receipts
+                .execute("alice", &new, &request, || async {
+                    panic!("full journal admitted a new restart")
+                })
+                .await,
+            LocalDaemonResponse::AppRequestFailed {
+                code: AppRequestErrorCode::LimitExceeded
+            }
+        );
+        let mut start = request.clone();
+        if let LocalDaemonRequest::ControlAppWorker(input) = &mut start {
+            input.action = AppWorkerAction::Start;
+        }
+        let new = command("new-start", &start);
+        assert_eq!(
+            receipts
+                .execute("alice", &new, &start, || async {
+                    panic!("full journal admitted a new start")
+                })
+                .await,
+            LocalDaemonResponse::AppRequestFailed {
+                code: AppRequestErrorCode::LimitExceeded
+            }
+        );
+        let stop = LocalDaemonRequest::ControlAppWorker(ControlAppWorkerRequest {
+            installation_id: "app".into(),
+            action: AppWorkerAction::Stop,
+        });
+        let conflict = command("fill-0", &stop);
+        assert_eq!(
+            receipts
+                .execute("alice", &conflict, &stop, || async {
+                    panic!("safety control bypassed an existing receipt conflict")
+                })
+                .await,
+            LocalDaemonResponse::AppRequestFailed {
+                code: AppRequestErrorCode::Conflict
+            }
+        );
+        // More safety operations than a second finite lane could hold.
+        for n in 0..=crate::runtime_transport::COMMAND_RESULT_CACHE_LIMIT {
+            let input = command(&format!("stop-{n}"), &stop);
+            assert_eq!(
+                receipts
+                    .execute("alice", &input, &stop, || async { answer() })
+                    .await,
+                answer()
+            );
+        }
+        assert_eq!(Sha256::digest(std::fs::read(&journal.0).unwrap()), before);
+    }
+}

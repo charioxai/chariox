@@ -725,3 +725,110 @@ async fn rejected_app_requests() {
         stopped
     );
 }
+
+#[test]
+fn full_receipt_journal_uninstalls_and_fences_replayed_generation() {
+    std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    use crate::local::{
+                        AppRequestErrorCode, AppWorkerAction, ControlAppWorkerRequest,
+                        UninstallAppRequest,
+                    };
+                    use crate::runtime::command::KernelCommand;
+                    let root = TestRoot::new();
+                    let app = crate::DaemonApp::bootstrap(root.config()).unwrap();
+                    let store = app.durable_state_store();
+                    crate::durable_state::app_state::fixture_event_catalog(&store);
+                    let router = CommandRouter::with_interactive_capacity(
+                        Arc::new(tokio::sync::Mutex::new(app)),
+                        8,
+                    );
+                    let state = router.runtime_state();
+                    let cache = CommandResultCache::default();
+                    let restart = LocalDaemonRequest::ControlAppWorker(ControlAppWorkerRequest {
+                        installation_id: "installed".into(),
+                        action: AppWorkerAction::Restart,
+                    });
+                    for n in 0..crate::runtime_transport::COMMAND_RESULT_CACHE_LIMIT {
+                        let input = KernelCommand::from_local_request(
+                            format!("fill-{n}"),
+                            None,
+                            None,
+                            &restart,
+                        );
+                        state
+                            .app_control()
+                            .execute_once("alice", &input, &restart, || async {
+                                LocalDaemonResponse::AppRequestFailed {
+                                    code: AppRequestErrorCode::Busy,
+                                }
+                            })
+                            .await;
+                    }
+                    let generation = store
+                        .get_app_installation("alice", "installed")
+                        .unwrap()
+                        .generation;
+                    let uninstall = LocalDaemonRequest::UninstallApp(UninstallAppRequest {
+                        installation_id: "installed".into(),
+                        expected_generation: generation.to_string(),
+                        delete_data: false,
+                    });
+                    assert_eq!(
+                        dispatch(
+                            &router,
+                            &cache,
+                            Some("bob"),
+                            uninstall.clone(),
+                            "uninstall-full"
+                        )
+                        .await,
+                        LocalDaemonResponse::AppRequestFailed {
+                            code: AppRequestErrorCode::NotFound
+                        }
+                    );
+                    let result = dispatch(
+                        &router,
+                        &cache,
+                        Some("alice"),
+                        uninstall.clone(),
+                        "uninstall-full",
+                    )
+                    .await;
+                    assert!(
+                        matches!(result, LocalDaemonResponse::AppInstallation { .. }),
+                        "{result:?}"
+                    );
+                    let removed = store.get_app_installation("alice", "installed").unwrap();
+                    assert!(removed.active.is_none());
+                    assert!(removed.generation > generation);
+                    let stopped = store
+                        .app_worker_status("alice", "installed")
+                        .unwrap()
+                        .unwrap();
+                    assert!(!stopped.desired_running);
+                    assert_eq!(
+                        dispatch(&router, &cache, Some("alice"), uninstall, "uninstall-full").await,
+                        LocalDaemonResponse::AppRequestFailed {
+                            code: AppRequestErrorCode::Conflict
+                        }
+                    );
+                    assert_eq!(
+                        store
+                            .get_app_installation("alice", "installed")
+                            .unwrap()
+                            .generation,
+                        removed.generation
+                    );
+                });
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}

@@ -63,6 +63,16 @@ impl AppRequestReceipts {
         let Some(cache) = self.0.clone() else {
             return failed();
         };
+        // These controls reduce authority and have their own durable fences:
+        // manual-stop intent and uninstall's expected generation. Never let
+        // receipt capacity prevent them from reaching the lifecycle service.
+        let safety_control = matches!(
+            request,
+            LocalDaemonRequest::ControlAppWorker(crate::local::ControlAppWorkerRequest {
+                action: crate::local::AppWorkerAction::Stop,
+                ..
+            }) | LocalDaemonRequest::UninstallApp(_)
+        );
         let key = serde_json::to_string(&(owner, &command.command_id)).unwrap();
         let fingerprint = CommandFingerprint::for_app_control(command, request);
         // Detach acceptance, execution and settlement together. A disconnected or
@@ -104,6 +114,12 @@ impl AppRequestReceipts {
                 Ok(CommandReservation::Conflict) => LocalDaemonResponse::AppRequestFailed {
                     code: AppRequestErrorCode::Conflict,
                 },
+                Err(error) if error.kind() == std::io::ErrorKind::OutOfMemory && safety_control => {
+                    // Reservation checks existing identities/conflicts before
+                    // capacity. Preserve every accepted receipt; only this new
+                    // control executes without a historical response receipt.
+                    tokio::spawn(execute()).await.unwrap_or_else(|_| failed())
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::OutOfMemory => {
                     LocalDaemonResponse::AppRequestFailed {
                         code: AppRequestErrorCode::LimitExceeded,
