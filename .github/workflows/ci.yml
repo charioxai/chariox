@@ -107,9 +107,12 @@ jobs:
 
       - name: Release session project assignment regression
         # MP-08/MP-10: partition the large kernel test crate for the CI compiler;
-        # keep release optimization and disabled debug assertions unchanged.
+        # keep kernel release optimization and disabled debug assertions unchanged.
+        # The dev-only App fixture dependency requires debug assertions; production
+        # App builds retain their default release guard against this feature.
         run: >-
           cargo --config 'profile.release.package.chariox-kernel.codegen-units=256'
+          --config 'profile.release.package.chariox-app-runtime.debug-assertions=true'
           test --release -p chariox-kernel --lib visible_session_project_assignment_survives_release_builds -- --nocapture
 
       - name: Clippy
