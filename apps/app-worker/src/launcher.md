@@ -251,3 +251,12 @@ family allowlist for bubblewrap's private loopback setup. systemd's
 `RestrictAddressFamilies` cannot distinguish NETLINK_ROUTE from other netlink
 protocols. App main still cannot create sockets under the native launcher policy.
 The storage helper and Docker broker units retain their existing restrictions.
+
+These two unit compatibility fixes assume the Linux App domain's other launch
+prerequisites are present: executable installed ELF loaders, the runtime-only
+overflow-owner check, and the leased storage helper's supplementary-group
+clearing handshake. The service kernel also needs `chariox-slice`; the App
+observer must keep rejecting that extra group until the handshake clears it.
+Do not widen the worker's accepted groups to make an older deployment start.
+Candidate-k includes those prerequisites; older input branches may require them
+before a signed managed-unit start can be qualified.
