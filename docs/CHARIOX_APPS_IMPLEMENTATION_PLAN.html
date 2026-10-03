@@ -954,6 +954,7 @@
           </div>
 
           <h3>Resource implementation and release budgets</h3>
+          <p>Phase 1 numeric limits, proposed acceptance targets and reference-machine evidence are recorded in <a href="CHARIOX_APPS_RELEASE_BUDGETS.md">Apps Phase 1 release budgets</a>.</p>
           <p>P1.03 must name the supported OS/distribution floor, installer-provisioned privileges and delegation, actual storage quota mechanism, and total-resource enforcement for each platform. Record numeric limits on named reference machines before validation: total memory including external buffers and browser work, CPU, threads, descriptors, queued bytes, logs, disk, broker concurrency, startup, event lateness and input latency. Distinguish hard limits from monitored thresholds and bound reaction delay and overshoot. Aggregate admission preserves host and kernel reserves across many Apps. Browser sandboxing alone does not promise these resource ceilings. Each supported installation provisions the required facilities for developers automatically. On Linux this is one privileged step when Chariox itself is installed (package post-install or a single <code>sudo</code> prompt); installing, updating and running Apps never requires root or a new prompt.</p>
 
           <h3>Durable event contract</h3>
