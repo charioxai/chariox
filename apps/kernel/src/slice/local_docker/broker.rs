@@ -408,6 +408,9 @@ pub(super) fn require_capture_preflight(container: &str) -> io::Result<()> {
     {
         let output = execute(&BrokerRequest::CapturePreflight { container })?;
         if output.status.success() {
+            if !output.stderr.is_empty() {
+                tracing::warn!(slice_container = container, "Legacy release F slice capture includes the original mixed home and image; migrate to a protected slice for credential separation");
+            }
             return Ok(());
         }
     }

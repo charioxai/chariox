@@ -7,6 +7,7 @@ import { requireRuntimeProof } from "./protected-runtime-proof.mjs"
 import { requireIdentityRetention } from "./protected-identity-retention.mjs"
 import { PRIVATE_ROOT, verifyProtectedCaptureLayout } from "./protected-layout.mjs"
 import { createHomeGenerationStore } from "./protected-home-generation.mjs"
+import { verifyLegacyReleaseFLayout } from "./legacy-release-f-layout.mjs"
 import { createHash } from "node:crypto"
 
 function identifier(value) { return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,179}$/.test(value) }
@@ -76,6 +77,28 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
     if (!existsSync(join(receiptRoot, `${container}.json`))) return null
     return readProtectedLayoutReceipt(receiptRoot, container)
   }
+  function legacyReceipt(container) {
+    if (!trusted || receipt(container)) refuse()
+    const info = containerInfo(container)
+    if (!info) refuse()
+    const inspected = docker(["image", "inspect", info.Image])
+    if (inspected.status !== 0) refuse()
+    const images = JSON.parse(inspected.stdout)
+    if (!Array.isArray(images) || images.length !== 1) refuse()
+    const current = verifyLegacyReleaseFLayout(container, info, images[0])
+    initialize()
+    const directory = join(root, "legacy-layouts")
+    try { mkdirSync(directory, {mode: 0o700}) } catch (error) { if (error.code !== "EEXIST") throw error }
+    verifyPrivateHostDirectory(directory, controlOwner)
+    const path = join(directory, `${container}.json`)
+    if (existsSync(path)) {
+      const retained = readProtectedLayoutReceipt(directory, container)
+      if (JSON.stringify(retained) !== JSON.stringify(current)) refuse()
+    } else {
+      writeProtectedLayoutReceipt(directory, container, current)
+    }
+    return current
+  }
   function captureOrigin(container, digest) {
     return findRetainedCaptureOrigin(join(root, "capture-origins"), container, digest)
   }
@@ -97,6 +120,10 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
   }
   return {
     imageRoot,
+    captureLayout(container) {
+      if (receipt(container)) return this.preflight(container)
+      return legacyReceipt(container)
+    },
     homeVolume(container) {
       const record = receipt(container)
       if (!record) return `${container}-home`
@@ -113,7 +140,8 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
     },
     recordCapture(container, digest) {
       const record = receipt(container)
-      if (!record || !/^[a-f0-9]{64}$/.test(digest)) refuse()
+      if (!record) { legacyReceipt(container); return }
+      if (!/^[a-f0-9]{64}$/.test(digest)) refuse()
       const origins = join(root, "capture-origins")
       try { mkdirSync(origins, {mode: 0o700}) } catch (error) { if (error.code !== "EEXIST") throw error }
       verifyPrivateHostDirectory(origins, controlOwner)
@@ -168,7 +196,7 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
       ]
     },
     prepare(action, environment) {
-      if (!trusted) return null // Legacy compatibility never enables capture.
+      if (!trusted) return null // Unsigned/unattested contexts never enable capture.
       const container = environment.CHARIOX_SLICE_NAME
       if (!identifier(container) || !identifier(environment.CHARIOX_SLICE_ID)) refuse()
       if (["provision", "restore-state"].includes(action) && environment.CHARIOX_SLICE_SAVED_HOME_ARCHIVE) {
@@ -193,7 +221,7 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
       // Existing mixed containers/homes are never retrofitted or migrated.
       const prior = containerInfo(container)
       if (prior) {
-        if (prior.Mounts?.some(mount => mount.Destination === PRIVATE_ROOT)) refuse()
+        legacyReceipt(container)
         return null
       }
       const volumes = docker(["volume", "ls", "--format", "{{.Name}}"])
@@ -240,8 +268,7 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
       generations.resolveInitialization(record.sliceId, record)
     },
     requireQuiescedHome(container) {
-      const record = receipt(container)
-      if (!record) refuse()
+      const record = receipt(container) ?? legacyReceipt(container)
       const info = containerInfo(container)
       if (!info || info.Id !== record.containerId
           || (info.State?.Running !== false && info.State?.Paused !== true)) refuse()

@@ -1,10 +1,10 @@
-//! Capture admission requires an actual credential-separated managed layout.
+//! Capture admission requires a protected layout or explicit broker-retained release F legacy state.
 //! Home-volume filtering cannot attest environment secrets or committed image layers.
 use crate::error::DaemonError;
 use crate::slice::SliceRecord;
 
 // The broker verifies retained host ownership, identities, mounts, environment,
-// runtime/image lineage and the actual home. Unsupported topologies refuse.
+// runtime/image lineage and the actual home. Release F legacy layouts emit a diagnostic; unsupported topologies refuse.
 pub(crate) fn require_verified_layout(
     record: &SliceRecord,
     operation: &'static str,
@@ -24,7 +24,8 @@ thread_local! {
 
 /// Release F's capture-mechanics tests (helper cleanup, stall recovery) run
 /// below the Phase 1 capture preflight. Production never bypasses it: without
-/// a broker-verified layout every save/backup is refused before Docker runs.
+/// broker-admitted protected or explicit release F legacy state, save/backup
+/// is refused before Docker runs.
 #[cfg(test)]
 pub(crate) fn with_test_verified_layout<T>(run: impl FnOnce() -> T) -> T {
     struct Reset;

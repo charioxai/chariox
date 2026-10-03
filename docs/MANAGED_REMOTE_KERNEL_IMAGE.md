@@ -322,3 +322,12 @@ the receipt's grant binding (schema 2) covers the machine's identity, not its
 release, so an updated machine starts normally. Cloud authorizes the target
 release and records it once the machine reports it; an update Cloud did not
 authorize leaves Cloud's release record unchanged.
+
+Release F Path-1 slices retain their original save/backup behavior until migrated.
+The broker records `layoutKind: legacy-release-f` under its private
+`legacy-layouts/` inventory, bound to the inspected container, image and home.
+Capture emits a kernel warning that the mixed home/image may contain credentials.
+Only pre-Apps release F image protocols (relay 58–68), without protected mounts
+or environment markers, qualify. New slices and protected slices still require
+the complete verified protected layout; losing its receipt never enables legacy
+capture. Migrate intentionally to a new protected slice to separate credentials.
