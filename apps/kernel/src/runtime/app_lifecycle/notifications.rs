@@ -206,9 +206,17 @@ pub(super) fn serve(
                         // Commit before stopping: a crash after suspension must
                         // leave this App dormant, rather than booting it again.
                         let _operation = owner::queue(&context.control, &context.admission)?;
-                        context
+                        match context
                             .store
-                            .suspend_app_worker(admission, context.control.budget())?;
+                            .suspend_app_worker(admission, context.control.budget())
+                        {
+                            Ok(()) => {}
+                            // Host storage failure is not an App failure. Keep
+                            // the prior in-memory suspension; after a reboot
+                            // this App may start once if the flag did not commit.
+                            Err(LifecycleStoreError::Storage) => {}
+                            Err(error) => return Err(error.into()),
+                        }
                         context.control.cancel_idle()?;
                         if !reservation.commit() {
                             return Err(LifecycleError::Stopped);

@@ -60,7 +60,10 @@ wake to the calls the worker had open when its arming request arrived. Idle
 suspension is committed on the kernel writer before the worker stops.
 A kernel restart retains that dormancy: only due work (wakes or inbox), a tool
 call, or an explicit start starts an idle-stopped App. Previously running Apps
-retain their normal restart intent; manual stops remain disabled.
+retain their normal restart intent; manual stops remain disabled. If the
+suspension write fails because host storage is unavailable, the worker still
+suspends in memory without charging the App a failure; it may start once after
+a reboot if dormancy could not commit.
 
 A user stop persists `desired_running = false` and ends dormant on-demand use. Graceful kernel shutdown retains
 the previous restart intent. Restart recovery scans eight installations per

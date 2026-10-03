@@ -194,3 +194,48 @@ fn twelve_idle_apps_survive_restart_and_only_the_due_wake_starts_a_worker() {
         vec![("alice".into(), ids[7].clone())]
     );
 }
+
+#[test]
+fn host_suspension_write_failure_keeps_dormant_use_without_spending_app_failures() {
+    let (_scratch, executor, store, control, observations) = notifications::setup(Mode::Lifecycle);
+    let connection = rusqlite::Connection::open(store.path()).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TRIGGER fail_dormancy BEFORE UPDATE OF dormant ON app_worker_lifecycle
+        WHEN NEW.dormant=1 BEGIN SELECT RAISE(ABORT,'fixture storage unavailable'); END;",
+        )
+        .unwrap();
+    for _ in 0..4 {
+        let catalog = control
+            .active_app_lease("alice", "installed")
+            .unwrap()
+            .catalog()
+            .clone();
+        control
+            .lifecycle()
+            .idle_stop_blocking("alice", catalog, || true)
+            .unwrap();
+        let status = store
+            .app_worker_status("alice", "installed")
+            .unwrap()
+            .unwrap();
+        assert_eq!(status.phase, WorkerPhase::Stopped);
+        assert_eq!(status.failures, 0);
+        assert!(status.desired_running && !status.dormant);
+        assert!(control.is_app_dormant("alice", "installed"));
+        assert_eq!(
+            store.app_worker_start_gate("alice", "installed").unwrap(),
+            crate::durable_state::app_worker_lifecycle::StartGate::Allowed
+        );
+        control
+            .lifecycle()
+            .start_on_demand_blocking("alice", "installed", executor.handle().clone())
+            .unwrap();
+        wait(|| control.active_app_lease("alice", "installed").is_some());
+    }
+    connection
+        .execute_batch("DROP TRIGGER fail_dormancy;")
+        .unwrap();
+    control.lifecycle().shutdown_blocking().unwrap();
+    assert!(all_reaped(&observations));
+}
