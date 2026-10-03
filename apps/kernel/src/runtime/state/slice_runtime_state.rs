@@ -32,6 +32,7 @@ impl KernelRuntimeState {
             &request.backend,
             request.workspace_id.as_deref(),
             request.worktree_id.as_deref(),
+            request.source_slice_ref.as_deref(),
         )?;
         let config = self.owned.config_projection.snapshot();
         let development_storage_parent = (request.development.is_some()
@@ -51,6 +52,7 @@ impl KernelRuntimeState {
             &config.daemon_id,
             &config.host_machine_id,
             crate::slice::CreateSliceInput {
+                source_slice_ref: request.source_slice_ref,
                 name: request.name,
                 backend: request.backend,
                 os: request.os,
@@ -98,6 +100,8 @@ impl KernelRuntimeState {
         slice: &crate::slice::SliceRecord,
     ) -> Result<crate::slice::SliceRecord, DaemonError> {
         let mut current = slice.clone();
+        let config = self.owned.config_projection.snapshot();
+        let recorded_slices = self.owned.slice_store.list();
         let missing_attachments = self
             .owned
             .agent_store
@@ -105,9 +109,13 @@ impl KernelRuntimeState {
             .into_iter()
             .filter_map(|agent| {
                 let remote = agent.remote_execution()?;
-                let targets_slice = remote.worker_machine_id == format!("slice:{}", slice.id)
-                    || slice.worker_kernel_id.as_deref() == Some(remote.worker_kernel_id.as_str())
-                    || slice.worker_kernel_ref == remote.worker_kernel_id;
+                let targets_slice = crate::slice::recorded_slice_for_worker(
+                    &config,
+                    &recorded_slices,
+                    &remote.worker_kernel_id,
+                    &remote.worker_machine_id,
+                )
+                .is_some_and(|record| record.id == slice.id);
                 (targets_slice
                     && !slice
                         .agent_ids
@@ -144,14 +152,13 @@ impl KernelRuntimeState {
                     let remote = agent.remote_execution();
                     session_exists
                         && remote.is_some_and(|remote| {
-                            let live_worker_identity_available = current.worker_kernel_id.is_some()
-                                || current.worker_machine_id.is_some();
-                            (!live_worker_identity_available
-                                && current.status != crate::slice::SliceStatus::Running)
-                                || remote.worker_machine_id == format!("slice:{}", current.id)
-                                || current.worker_kernel_id.as_deref()
-                                    == Some(remote.worker_kernel_id.as_str())
-                                || current.worker_kernel_ref == remote.worker_kernel_id
+                            crate::slice::retained_slice_attachment_matches(
+                                &config,
+                                &recorded_slices,
+                                &current,
+                                &remote.worker_kernel_id,
+                                &remote.worker_machine_id,
+                            )
                         })
                 });
             if !matches_canonical_agent {
@@ -335,6 +342,7 @@ impl KernelRuntimeState {
         &self,
         manifests: Vec<SliceAgentRelaunchManifest>,
         worker: &chariox_relay::protocol::RelayKernelPresence,
+        operation: &crate::slice::SliceOperationGuard,
     ) -> Result<(), DaemonError> {
         for manifest in manifests {
             let source_agent = self.owned.agent_store.get_agent(&manifest.agent_id)?;
@@ -379,7 +387,11 @@ impl KernelRuntimeState {
             let worker = worker.clone();
             let rebound = self
                 .with_app_side_effect(move |app| {
-                    app.refresh_remote_agent_binding_to_worker_kernel(&agent_id, &worker)
+                    app.refresh_remote_agent_binding_to_worker_kernel_with_operation(
+                        &agent_id,
+                        &worker,
+                        Some(operation),
+                    )
                 })
                 .await?;
             self.append_agent_durable_event("agent.remote_binding_refreshed", &rebound, None)
@@ -762,10 +774,12 @@ impl KernelRuntimeState {
         &self,
         slice_ref: &str,
         worker_kernel_id: &str,
+        worker_machine_id: &str,
     ) -> Result<crate::slice::SliceRecord, DaemonError> {
         let slice = self.owned.slice_store.claim_starting_worker_identity(
             slice_ref,
             worker_kernel_id,
+            worker_machine_id,
             crate::session::unix_epoch_ms(),
         )?;
         self.append_slice_durable_event("slice.updated", &slice)?;
@@ -840,6 +854,9 @@ impl KernelRuntimeState {
         slice_ref: &str,
     ) -> Result<crate::slice::SliceRecord, DaemonError> {
         let slice = self.owned.slice_store.delete(slice_ref)?;
+        if let Some(session_id) = slice.environment_session_id.as_deref() {
+            self.enqueue_room_browser_manifest_sync_for_session(session_id);
+        }
         self.append_slice_durable_event("slice.deleted", &slice)?;
         Ok(slice)
     }
@@ -1817,6 +1834,7 @@ mod tests {
         let runtime = owned_runtime_state(&app).await;
         let created = runtime
             .create_slice(crate::local::CreateSliceRequest {
+                source_slice_ref: None,
                 name: "empty-regression".into(),
                 backend: crate::slice::SliceBackendKind::LocalDocker,
                 os: "linux".into(),
@@ -1899,7 +1917,7 @@ mod tests {
         );
     }
 
-    async fn slice_runtime() -> (
+    pub(super) async fn slice_runtime() -> (
         Arc<Mutex<DaemonApp>>,
         KernelRuntimeState,
         crate::slice::SliceRecord,
@@ -1922,6 +1940,7 @@ mod tests {
                 "owner-kernel-1",
                 "owner-machine-1",
                 crate::slice::CreateSliceInput {
+                    source_slice_ref: None,
                     name: "slice-1".to_string(),
                     backend: crate::slice::SliceBackendKind::LocalDocker,
                     os: "linux".to_string(),
@@ -1977,6 +1996,82 @@ mod tests {
             .await
             .prompt_owner_sync_external_active_prompt(session_id, agent_id, Some(prompt))
             .expect("active prompt should sync");
+    }
+
+    #[tokio::test]
+    async fn slice_development_defaults_to_the_projects_primary_workspace() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-slice-project-selection-{}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = std::fs::canonicalize(&root).unwrap();
+        let primary = root.join("primary");
+        let supporting = root.join("supporting");
+        for repository in [&primary, &supporting] {
+            std::fs::create_dir_all(repository).unwrap();
+            let status = std::process::Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(repository)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.local_socket_path = root.join("kernel.sock");
+        config = config.with_session_history_root(root.join("history"));
+        config.user_config.history.operational.path =
+            Some(root.join("operational.db").display().to_string());
+        config.user_config.artifacts.operational.root =
+            Some(root.join("artifacts").display().to_string());
+        config.user_config.artifacts.operational.index_path =
+            Some(root.join("artifacts.db").display().to_string());
+        let app = Arc::new(Mutex::new(DaemonApp::bootstrap(config).unwrap()));
+        let runtime = owned_runtime_state(&app).await;
+        let primary = primary.display().to_string();
+        let supporting = supporting.display().to_string();
+        let mut project = crate::session::RuntimeProject::new(
+            "project-1",
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            &primary,
+            "Imported",
+            crate::session::RuntimeProjectKind::Named,
+        );
+        project.replace_workspace_ids(vec![primary.clone(), supporting.clone()]);
+        runtime.owned.session_store.restore_projects(vec![project]);
+
+        let (selection, workspace, worktree) = runtime
+            .slice_development_selection_for_project("project-1", None, None)
+            .expect("default to the primary Workspace");
+        assert_eq!(
+            (workspace.as_str(), worktree.as_str()),
+            (primary.as_str(), primary.as_str())
+        );
+        let crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProject {
+            repositories,
+            ..
+        } = selection
+        else {
+            panic!("source-project selection expected");
+        };
+        assert_eq!(repositories.len(), 2);
+        assert_eq!(
+            repositories[0].worktree_id.as_deref(),
+            Some(primary.as_str())
+        );
+        assert_eq!(repositories[1].workspace_id, supporting);
+        assert_eq!(repositories[1].worktree_id, None);
+
+        let (_, workspace, worktree) = runtime
+            .slice_development_selection_for_project("project-1", Some(&supporting), None)
+            .expect("a supporting Workspace can be primary for the slice");
+        assert_eq!((workspace, worktree), (supporting.clone(), supporting));
+        let source = runtime
+            .slice_development_selection_for_project("project-1", Some("/source/kernel/repo"), None)
+            .expect_err("a source-kernel path is not a Workspace here");
+        assert!(source.to_string().contains("does not include Workspace"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
@@ -2051,3 +2146,7 @@ mod tests {
         )
     }
 }
+
+#[cfg(test)]
+#[path = "slice_runtime_state/attachment_identity_tests.rs"]
+mod attachment_identity_tests;

@@ -109,14 +109,10 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str, agent: &str, tab: &
         let relay = fixture.worker.app.lock().await.relay_client_state();
         for forget_receipt in [false, true] {
             let before = physical_count(fixture, counter);
-            if forget_receipt {
-                relay
-                    .write()
-                    .await
-                    .test_lose_next_peer_response_payload_and_forget_action_receipts();
-            } else {
-                relay.write().await.test_lose_next_peer_response_payload();
-            }
+            relay
+                .write()
+                .await
+                .test_lose_next_browser_mutation_response(forget_receipt);
             // Inject after MCP preflight, at the admitted mutation interface.
             let result = configure(fixture, agent, tab, kind).await;
             if forget_receipt {

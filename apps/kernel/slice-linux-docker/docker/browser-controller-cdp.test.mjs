@@ -16,6 +16,36 @@ const viewport = {
   desktop_pixel_height: 1440,
 };
 
+test("concurrent reads share connection initialization", async () => {
+  const ready = Promise.withResolvers();
+  const connection = new FakeConnection();
+  let opens = 0;
+  const browser = new BrowserCdpClient({ connectionFactory: async () => {
+    opens += 1;
+    await ready.promise;
+    return connection;
+  } });
+  const first = browser.ensureConnection();
+  const second = browser.ensureConnection();
+  ready.resolve();
+  const connections = await Promise.all([first, second]);
+  assert.equal(opens, 1);
+  assert.equal(connections[0], connections[1]);
+});
+
+test("concurrent reads share fully initialized target sessions", async () => {
+  const connection = new FakeConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  await browser.ensureConnection();
+  const [first, second] = await Promise.all([
+    browser.ensureTargetSession(connection, "target-a"),
+    browser.ensureTargetSession(connection, "target-a"),
+  ]);
+  assert.equal(first, second);
+  assert.equal(connection.calls.filter(call => call.method === "Target.attachToTarget").length, 1);
+  assert.equal(connection.calls.filter(call => call.method === "Page.enable").length, 1);
+});
+
 test("persistent browser connection returns page identities, focus, and applied viewport", async () => {
   const connection = new FakeConnection();
   let connectionCount = 0;
@@ -48,6 +78,8 @@ test("persistent browser connection returns page identities, focus, and applied 
     },
   ]);
   assert.equal(first.focused_target_id, "target-b");
+  assert.equal(connection.calls.filter(call => call.method === "Emulation.setDeviceMetricsOverride").length, 2,
+    "MP-08/MP-10 unchanged reconciliation must not resize either tab again");
   assert.deepEqual(first.viewport, viewport);
   assert.equal(
     connection.calls.filter((call) => call.method === "Target.attachToTarget").length,
@@ -339,8 +371,8 @@ test("tab lifecycle operations stay document-bound and use browser target comman
     action: "close",
   });
   assert.deepEqual(
-    connection.calls.find((call) => call.method === "Target.activateTarget")?.params,
-    { targetId: "target-a" },
+    connection.calls.find((call) => call.method === "Page.bringToFront"),
+    { method: "Page.bringToFront", params: {}, sessionId: "session-a" },
   );
   assert.deepEqual(
     connection.calls.find((call) => call.method === "Target.closeTarget")?.params,
@@ -353,6 +385,29 @@ test("tab lifecycle operations stay document-bound and use browser target comman
   await assert.rejects(
     browser.manageTab({ target_id: "target-b", document_id: "loader-b", action: "detach" }),
     (error) => error.code === "browser_tab_action_invalid",
+  );
+});
+
+test("tab activation brings the selected page to front before focus is reconciled", async () => {
+  const connection = new PageActivationConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  const before = await browser.reconcile(viewport);
+  assert.equal(before.focused_target_id, "target-b");
+
+  await browser.manageTab({
+    target_id: "target-a",
+    document_id: "loader-a",
+    action: "activate",
+  });
+
+  const after = await browser.reconcile(viewport);
+  assert.equal(after.focused_target_id, "target-a");
+  assert.equal(
+    connection.calls.some(
+      (call) => call.method === "Page.bringToFront" && call.sessionId === "session-a",
+    ),
+    true,
+    "activation must use the selected page session so a subsequent focus read sees it",
   );
 });
 
@@ -643,6 +698,7 @@ test("download and upload requests stay target-bound and return no file paths", 
     downloadDirectory: "/safe/downloads",
     uploadRoots: ["/safe/uploads"],
     fileSystem,
+    stageUploads: async ({ files }) => ({ files, markExposed() {}, async discard() {} }),
   });
   await browser.reconcile(viewport);
 
@@ -1166,6 +1222,29 @@ class StillClosingConnection extends FakeConnection {
   }
 }
 
+class PageActivationConnection extends FakeConnection {
+  constructor() {
+    super();
+    this.focusedTargetId = "target-b";
+  }
+
+  async send(method, params = {}, sessionId) {
+    if (method === "Page.bringToFront") {
+      this.focusedTargetId = sessionId === "session-a" ? "target-a" : "target-b";
+      return super.send(method, params, sessionId);
+    }
+    if (method === "Runtime.evaluate" && params.expression === "document.visibilityState === 'visible'") {
+      this.calls.push({ method, params, sessionId });
+      return {
+        result: {
+          value: this.focusedTargetId === (sessionId === "session-a" ? "target-a" : "target-b"),
+        },
+      };
+    }
+    return super.send(method, params, sessionId);
+  }
+}
+
 class ReleaseFaultConnection extends FakeConnection {
   constructor() {
     super();
@@ -1479,4 +1558,57 @@ test("concurrent closes preserve a page after the final original tab closes", as
   }};
   await Promise.all([browser.closePageTarget(connection,"a"),browser.closePageTarget(connection,"b")]);
   assert.deepEqual([...pages], ["blank"]);
+});
+
+// MP-08/MP-10: a partially failed resize is never an observational preflight.
+test("failed viewport change invalidates concurrent reconciliation admission", async () => {
+  const connection = new FakeConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  await browser.reconcile(viewport);
+  assert.equal(browser.canReconcileConcurrently(viewport), true);
+  const send = connection.send.bind(connection);
+  connection.send = async (method, params, sessionId) => {
+    if (method === "Emulation.setDeviceMetricsOverride") throw new Error("resize failed");
+    return send(method, params, sessionId);
+  };
+  await assert.rejects(browser.reconcile({ ...viewport, css_width: 900 }), /resize failed/);
+  assert.equal(browser.canReconcileConcurrently(viewport), false);
+  await browser.close();
+});
+
+// The Room browser bar and App panel layout are applied with the viewport: a
+// change to either is never an observational preflight.
+test("browser bar and App panel changes are not admitted as concurrent reconciliation", async () => {
+  const browser = new BrowserCdpClient({ connectionFactory: async () => new FakeConnection() });
+  const layout = { browserBarVisible: false, appPanelCssWidth: 320 };
+  await browser.reconcile(viewport, layout);
+  assert.equal(browser.canReconcileConcurrently(viewport, layout), true);
+  assert.equal(browser.canReconcileConcurrently(viewport, { ...layout, browserBarVisible: true }), false);
+  assert.equal(browser.canReconcileConcurrently(viewport, { ...layout, appPanelCssWidth: 400 }), false);
+  assert.equal(browser.canReconcileConcurrently(viewport), false);
+  await browser.close();
+});
+
+test("a failed physical display apply withdraws concurrent reconciliation admission", async () => {
+  let refuse = false;
+  const browser = new BrowserCdpClient({
+    applyCanonicalDisplay: async () => { if (refuse) throw new Error("physical display refused"); },
+    connectionFactory: async () => new FakeConnection(),
+  });
+  await browser.reconcile(viewport);
+  assert.equal(browser.canReconcileConcurrently(viewport), true);
+  refuse = true;
+  await assert.rejects(browser.reconcile(viewport), /physical display refused/);
+  assert.equal(browser.canReconcileConcurrently(viewport), false);
+  await browser.close();
+});
+
+test("isolated-world focus keeps the physical visibility captured by input emulation", async () => {
+  const browser = new BrowserCdpClient({ connectionFactory: async () => new FakeConnection() });
+  assert.equal((await browser.reconcile(viewport)).focused_target_id, "target-b");
+  browser.inputCapture.visibilityBySession.set("session-b", { visible: false });
+  assert.equal((await browser.reconcile(viewport)).focused_target_id, null);
+  browser.inputCapture.visibilityBySession.delete("session-b");
+  assert.equal((await browser.reconcile(viewport)).focused_target_id, "target-b");
+  await browser.close();
 });

@@ -7,6 +7,8 @@ mod config_runtime;
 mod daemon_lifecycle;
 mod durable_runtime_state;
 mod external_provider_session_discovery;
+#[cfg(test)]
+mod room_environment_durability_tests;
 pub(crate) use external_provider_session_discovery::find_external_provider_prompt_recovery_match;
 mod external_provider_sessions;
 mod history_access;
@@ -38,7 +40,6 @@ mod relay_runtime;
 mod remote_agent_binding;
 mod remote_kernel_selection;
 mod remote_lease;
-mod remote_prompt_peer;
 mod remote_workspace_live_sync_fanout;
 mod session_runtime;
 mod terminal_fanout;
@@ -72,7 +73,7 @@ pub(crate) use prompt_lifecycle::{
     serialize_remote_prompt_attachments, KernelPreparedPromptSubmission, KernelPromptAbortDispatch,
     KernelPromptCancellation, KernelPromptDispatch, KernelPromptSubmission,
     KernelQueuedPromptCancellation, KernelQueuedPromptSteer, KernelQueuedPromptUpdate,
-    KernelRemotePromptDispatch,
+    KernelRemotePromptDispatch, KernelRemotePromptDispatchIntent,
 };
 pub(crate) use provider_output_claude_native::{
     claude_native_recent_terminal_failure, format_claude_permission_message,
@@ -158,6 +159,8 @@ pub struct DaemonApp {
     operational_history: OperationalHistoryStore,
     durable_state: DurableKernelStateStore,
     app_control: crate::runtime::app_control::AppControlService,
+    worker_prompt_receipts: crate::durable_state::worker_prompt_receipts::WorkerPromptReceiptStore,
+    worker_steer_receipts: crate::durable_state::worker_steer_receipts::WorkerSteerReceiptStore,
     managed_context_transfers: crate::managed_context::transfer::ManagedContextTransferStore,
     managed_context_outbound:
         crate::managed_context::outbound_service::ManagedContextOutboundOperationStore,
@@ -181,6 +184,7 @@ pub struct DaemonApp {
     terminal: TerminalStreamStore,
     workflow_design_events: WorkflowDesignEventStore,
     pending_structured_output_records: provider_output::StructuredOutputRecordStore,
+    pending_workflow_remote_prompt_dispatches: Vec<KernelRemotePromptDispatch>,
     execution_leases: BTreeMap<String, ExecutionLease>,
     leased_agents: BTreeMap<String, LeasedAgent>,
     execution_lease_callers: BTreeMap<String, remote_lease::LeaseCallerBinding>,
@@ -193,6 +197,8 @@ pub struct DaemonApp {
         BTreeMap<(String, remote_lease::LeaseCallerBinding), usize>,
     completed_leased_agent_deletions: VecDeque<String>,
     completed_execution_lease_deletions: VecDeque<String>,
+    #[cfg(test)]
+    leased_runtime_projection_pauses: BTreeMap<String, std::sync::Weak<()>>,
     leased_agent_cleanup_phases: BTreeMap<String, remote_lease::LeasedAgentCleanupPhase>,
     #[cfg(test)]
     leased_agent_cleanup_failures: BTreeMap<String, remote_lease::LeasedAgentCleanupPhase>,
@@ -214,6 +220,10 @@ pub struct DaemonApp {
 
 impl DaemonApp {
     pub fn bootstrap(config: DaemonConfig) -> Result<Self, DaemonError> {
+        // Bootstrap also resolves ambient provider homes and writes their files.
+        // Keep those test reads/writes inside the fixture environment boundary.
+        #[cfg(test)]
+        let _environment = crate::env_lock::lock();
         let bootstrap_started = Instant::now();
         let validate_started = Instant::now();
         config.validate()?;
@@ -268,7 +278,21 @@ impl DaemonApp {
 
         let durable_state_started = Instant::now();
         let durable_state = DurableKernelStateStore::open_owned(config.durable_state_path())?;
+        let worker_prompt_receipts =
+            crate::durable_state::worker_prompt_receipts::WorkerPromptReceiptStore::restore(
+                durable_state.clone(),
+            )?;
+        let worker_steer_receipts =
+            crate::durable_state::worker_steer_receipts::WorkerSteerReceiptStore::restore(
+                durable_state.clone(),
+            )?;
         let managed_context_root = config.private_runtime_state_root();
+        // The same parent the transfer bridge publishes development copies under.
+        if let Some(state_root) = config.durable_state_path().parent() {
+            crate::managed_context::development::register_transfer_workspaces_parent(
+                state_root.join("managed-context-workspaces"),
+            );
+        }
         let managed_kernel_registration =
             crate::managed_bootstrap::confirmed_managed_kernel_registration_from_env()?;
         let managed_context_launch_recovery =
@@ -339,11 +363,16 @@ impl DaemonApp {
             runtime_tool_call_activity: crate::runtime::state::RuntimeToolCallActivity::default(),
             prompt_workspace_claims: PromptWorkspaceClaimStore::default(),
             prompt_state_owner: PromptStateOwner::default(),
-            sessions: SessionStateStore::new(SessionService::new(&config)),
+            sessions: SessionStateStore::new(
+                SessionService::new(&config)
+                    .with_room_environment_durability(durable_state.clone()),
+            ),
             history,
             operational_history,
             app_control: crate::runtime::app_control::AppControlService::new(durable_state.clone()),
             durable_state,
+            worker_prompt_receipts,
+            worker_steer_receipts,
             managed_context_transfers,
             managed_context_outbound,
             managed_kernel_registration,
@@ -368,6 +397,7 @@ impl DaemonApp {
             workflow_design_events: WorkflowDesignEventStore::default(),
             pending_structured_output_records:
                 provider_output::StructuredOutputRecordStore::default(),
+            pending_workflow_remote_prompt_dispatches: Vec::new(),
             execution_leases: BTreeMap::new(),
             leased_agents: BTreeMap::new(),
             execution_lease_callers: BTreeMap::new(),
@@ -378,6 +408,8 @@ impl DaemonApp {
             pending_leased_agent_authorizations: BTreeMap::new(),
             completed_leased_agent_deletions: VecDeque::new(),
             completed_execution_lease_deletions: VecDeque::new(),
+            #[cfg(test)]
+            leased_runtime_projection_pauses: BTreeMap::new(),
             leased_agent_cleanup_phases: BTreeMap::new(),
             #[cfg(test)]
             leased_agent_cleanup_failures: BTreeMap::new(),
@@ -809,6 +841,7 @@ mod tests {
                     &app.config().daemon_id,
                     &app.config().host_machine_id,
                     crate::slice::CreateSliceInput {
+                        source_slice_ref: None,
                         name: "linux-dev".to_string(),
                         backend: crate::slice::SliceBackendKind::LocalDocker,
                         os: "linux".to_string(),

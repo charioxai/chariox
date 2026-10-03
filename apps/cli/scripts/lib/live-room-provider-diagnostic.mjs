@@ -1,3 +1,5 @@
+import { roomProviderToolName, roomProviderToolOutput } from "./room-provider-tool-record.mjs"
+
 const entryKinds = ["user_prompt", "provider_output", "provider_reasoning", "provider_tool", "provider_error", "provider_status", "notice"]
 const actionStates = ["queued", "running", "completed", "failed", "cancelled"]
 const diagnosticTools = new Set([
@@ -15,6 +17,7 @@ const errorSignals = [
   "vault", "workspace",
 ].map(signal => [signal, new RegExp(`\\b${signal}\\b`, "i")])
 const diagnosticPatterns = [
+  ["stale_document", /stale_document_(?:revision|reference)/i],
   ["endpoint_unhealthy", /(?:codex|claude|opencode)_endpoint_unhealthy/i],
   ["provider_launch", /provider launch/i],
   ["unauthorized", /unauthorized|authentication failed|invalid api key/i],
@@ -99,12 +102,11 @@ export async function captureRoomProviderDiagnostic(input) {
     if (kind === "provider_tool") {
       try {
         const value = JSON.parse(text)
-        const tool = typeof value?.tool === "string"
-          ? value.tool.replace(/^(?:mcp__chariox__|chariox\.|chariox_)/, "") : ""
+        const tool = roomProviderToolName(value?.tool)
         if (diagnosticTools.has(tool)) observedTools.add(tool)
         if (tool === "slice_mouse") result.computerToolMentioned = true
         if (tool === "slice_browser_find" && value.status === "completed") {
-          const output = typeof value.output === "string" ? JSON.parse(value.output) : value.output
+          const output = roomProviderToolOutput(value.output)
           const matches = output?.browser?.matches ?? output?.payload?.browser?.matches
           if (Array.isArray(matches) && (!Number.isSafeInteger(item.entry_index) || !discovered.has(item.entry_index))) {
             if (Number.isSafeInteger(item.entry_index)) discovered.add(item.entry_index)
@@ -135,7 +137,7 @@ export async function captureRoomProviderDiagnostic(input) {
     }
   })
   await section("history_unavailable", async () => {
-    const outline = await request(requests.getSessionHistoryOutlineRequest(sessionId, [agentId], 2), "SessionHistoryOutline")
+    const outline = await request(requests.getSessionHistoryOutlineRequest(sessionId, [agentId], input.latestPromptCount ?? 2), "SessionHistoryOutline")
     const turns = outline.agents?.find((item) => item.agent_id === agentId)?.turns ?? []
     if (turns.length > 2) result.truncated = true
     // History outlines are chronological. Spend the bounded blob budget on

@@ -10,6 +10,7 @@ fn local_daemon_protocol_slice_logs_shape_is_versioned() {
     });
     let response = LocalDaemonResponse::SliceLogs {
         slice: crate::slice::SliceRecord {
+            source_slice_ref: None,
             id: "slice-1".to_string(),
             name: "linux-dev".to_string(),
             owner_kernel_id: "home-kernel".to_string(),

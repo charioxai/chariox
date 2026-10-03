@@ -1,4 +1,4 @@
-use std::{path::PathBuf, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use chariox_relay::protocol::{ClientTarget, RelayKernelPresence};
 
@@ -8,6 +8,7 @@ use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::transport::relay_client::{
     send_peer_request_via_connected_relay, send_peer_request_via_temporary_connection,
+    RelayClientState,
 };
 use crate::transport::relay_discovery;
 use crate::transport::relay_peer::{
@@ -19,10 +20,437 @@ use super::remote_kernel_selection::{
     no_remote_kernel_available_message, select_remote_kernel,
 };
 
+mod slice_recovery;
+use slice_recovery::SliceBindingRecovery;
+
 const REMOTE_KERNEL_REF_DISCOVERY_ATTEMPTS: usize = 20;
 const REMOTE_KERNEL_REF_DISCOVERY_RETRY_DELAY_MS: u64 = 250;
 
+pub(crate) struct RemoteAgentBindingRefreshPlan {
+    agent: AgentInstance,
+    expected_binding: RemoteAgentBinding,
+    config: DaemonConfig,
+    relay_config: DaemonConfig,
+    relay_override: Option<DaemonConfig>,
+    relay_state: Arc<tokio::sync::RwLock<RelayClientState>>,
+    provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
+    slice_store: crate::slice::SliceStore,
+    projected_kernels: Vec<RelayKernelPresence>,
+    execution_mode: crate::provider::AgentExecutionMode,
+    permission_level: crate::provider::AgentPermissionLevel,
+    workspace_live_sync_mode: crate::config::WorkspaceLiveSyncMode,
+    slice_recovery: Option<SliceBindingRecovery>,
+}
+
+pub(crate) async fn execute_remote_agent_binding_refresh(
+    plan: RemoteAgentBindingRefreshPlan,
+) -> Result<RemoteAgentBindingRefreshResult, DaemonError> {
+    let old_binding = plan.expected_binding.clone();
+    let old_worker_ref = old_binding.worker_kernel_id.clone();
+    let mut discovery_config = plan.relay_config.clone();
+    let hosted_shared_slice = plan
+        .slice_recovery
+        .as_ref()
+        .is_some_and(|recovery| recovery.uses_connected_relay(&plan.config));
+    if hosted_shared_slice {
+        let profile =
+            discovery_config
+                .cloud_relay
+                .clone()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "discover hosted slice worker",
+                    message: "hosted shared slice requires a Cloud relay profile".to_string(),
+                })?;
+        let owner_kernel_ref = plan.config.daemon_id.clone();
+        let worker_kernel_ref = old_worker_ref.clone();
+        let token = crate::runtime::cloud_api_client::issue_cloud_slice_discovery_token(
+            &profile,
+            &owner_kernel_ref,
+            &worker_kernel_ref,
+        )
+        .await?;
+        discovery_config.relay_token = Some(token.token);
+    }
+
+    let machine_ref =
+        crate::config::DaemonConfig::resolve_registered_machine_ref(&old_binding.worker_machine_id)
+            .unwrap_or_else(|| old_binding.worker_machine_id.clone());
+    let can_use_connected_inventory = discovery_config.relay_url == plan.config.relay_url
+        && (discovery_config.relay_token == plan.config.relay_token || hosted_shared_slice);
+    let select_worker = |kernels| match plan.slice_recovery.as_ref() {
+        Some(recovery) => recovery.select(kernels, plan.agent.provider()),
+        None => Ok(select_remote_kernel(
+            slice_recovery::ordinary_machine_workers(&plan.slice_store, kernels),
+            &machine_ref,
+            plan.agent.provider(),
+        )),
+    };
+    let worker_kernel = async {
+        if can_use_connected_inventory {
+            if let Some(worker) = select_worker(plan.projected_kernels.clone())? {
+                return Ok(worker);
+            }
+        }
+        let kernels =
+            relay_discovery::list_live_kernels_for_machine(&discovery_config, &machine_ref).await?;
+        let message =
+            no_remote_kernel_available_message(&kernels, &machine_ref, plan.agent.provider());
+        select_worker(kernels)?.ok_or_else(|| match plan.slice_recovery.as_ref() {
+            Some(recovery) => recovery.unavailable(),
+            None => DaemonError::NoRemoteKernelAvailable {
+                machine_ref: machine_ref.clone(),
+                provider: plan.agent.provider().to_string(),
+                message,
+            },
+        })
+    }
+    .await?;
+    let worker_worktree_id = plan
+        .slice_recovery
+        .as_ref()
+        .map(SliceBindingRecovery::worktree_id);
+    let relay_config = plan.relay_config.clone();
+    let use_connected_relay = hosted_shared_slice;
+    remember_remote_worker_public_key_off_lock(&relay_config, &worker_kernel, &plan.relay_state)
+        .await?;
+    let target = ClientTarget {
+        daemon_id: Some(worker_kernel.kernel_id.clone()),
+        daemon_alias: None,
+    };
+    let (lease, relay_peer_protocol_version) = match send_remote_binding_request_off_lock(
+        &relay_config,
+        &plan.relay_state,
+        target.clone(),
+        RelayPeerRequest::CreateExecutionLease {
+            home_kernel_id: plan.config.daemon_id.clone(),
+            home_session_id: plan.agent.session_id().to_string(),
+            home_agent_id: plan.agent.id().to_string(),
+            home_agent_metaagent: plan.agent.is_metaagent(),
+            owner_user_id: plan.agent.owner_user_id().to_string(),
+        },
+        use_connected_relay,
+    )
+    .await?
+    {
+        RelayPeerResponse::ExecutionLeaseCreated {
+            lease,
+            relay_peer_protocol_version,
+        } => (lease, relay_peer_protocol_version),
+        other => {
+            return Err(DaemonError::LocalTransport {
+                operation: "create remote execution lease",
+                message: format!("unexpected peer response: {other:?}"),
+            });
+        }
+    };
+    if relay_peer_protocol_version < RELAY_PEER_PROTOCOL_VERSION {
+        cleanup_remote_binding_setup_off_lock(
+            &relay_config,
+            &plan.relay_state,
+            &target,
+            &lease.id,
+            None,
+            use_connected_relay,
+        )
+        .await;
+        return Err(DaemonError::LocalTransport {
+            operation: "create remote execution lease",
+            message: format!(
+                "remote worker `{}` uses relay peer protocol {}, but this home kernel requires {}. Upgrade and restart the worker kernel, then retry the remote agent.",
+                worker_kernel.kernel_id,
+                relay_peer_protocol_version,
+                RELAY_PEER_PROTOCOL_VERSION
+            ),
+        });
+    }
+    let lease_id = lease.id.clone();
+    let mut materialized_account = None;
+    if crate::provider::canonical_provider_family(plan.agent.provider())
+        .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
+    {
+        let materialization_target_kind = if plan.slice_recovery.is_some() {
+            crate::account_profile::ProviderAccountMaterializationTargetKind::Slice
+        } else {
+            crate::account_profile::ProviderAccountMaterializationTargetKind::Worker
+        };
+        let materialization_target_ref = worker_kernel.kernel_id.clone();
+        let account_owner_user_id =
+            crate::account_profile::provider_account_authority_owner_user_id(
+                &plan.config,
+                plan.agent.owner_user_id(),
+            );
+        let source_profile = match plan.provider_account_profiles.get(
+            &account_owner_user_id,
+            plan.agent.provider(),
+            plan.agent.provider_account_profile(),
+        ) {
+            Ok(profile) => profile,
+            Err(error) => {
+                cleanup_remote_binding_setup_off_lock(
+                    &relay_config,
+                    &plan.relay_state,
+                    &target,
+                    &lease_id,
+                    None,
+                    use_connected_relay,
+                )
+                .await;
+                return Err(error);
+            }
+        };
+        if let Some(installed) = installed_remote_account_metadata(
+            &source_profile,
+            materialization_target_kind,
+            &materialization_target_ref,
+            plan.agent.owner_user_id(),
+        ) {
+            materialized_account = Some(installed);
+        } else {
+            let mut account_materialization =
+                match plan.provider_account_profiles.export_materialization(
+                    &account_owner_user_id,
+                    plan.agent.provider(),
+                    plan.agent.provider_account_profile(),
+                ) {
+                    Ok(materialization) => materialization,
+                    Err(error) => {
+                        let _ = update_remote_binding_materialization_status(
+                            &plan.provider_account_profiles,
+                            &account_owner_user_id,
+                            &plan.agent,
+                            materialization_target_kind,
+                            &materialization_target_ref,
+                            crate::account_profile::ProviderAccountMaterializationState::Error,
+                            Some("account materialization export failed"),
+                        );
+                        cleanup_remote_binding_setup_off_lock(
+                            &relay_config,
+                            &plan.relay_state,
+                            &target,
+                            &lease_id,
+                            None,
+                            use_connected_relay,
+                        )
+                        .await;
+                        return Err(error);
+                    }
+                };
+            account_materialization.profile.owner_user_id = plan.agent.owner_user_id().to_string();
+            let expected_account = account_materialization.profile.clone();
+            match send_remote_binding_request_off_lock(
+                &relay_config,
+                &plan.relay_state,
+                target.clone(),
+                RelayPeerRequest::EnsureRemoteProviderAccount {
+                    context: crate::transport::relay_peer::RemoteProviderAccountSyncContext {
+                        home_kernel_id: plan.config.daemon_id.clone(),
+                        home_session_id: plan.agent.session_id().to_string(),
+                        home_agent_id: plan.agent.id().to_string(),
+                        execution_lease_id: lease_id.clone(),
+                    },
+                    materialization: account_materialization,
+                },
+                use_connected_relay,
+            )
+            .await
+            {
+                Ok(response)
+                    if remote_provider_account_response_matches(&response, &expected_account) =>
+                {
+                    if let Err(error) = update_remote_binding_materialization_status(
+                        &plan.provider_account_profiles,
+                        &account_owner_user_id,
+                        &plan.agent,
+                        materialization_target_kind,
+                        &materialization_target_ref,
+                        crate::account_profile::ProviderAccountMaterializationState::Materialized,
+                        None,
+                    ) {
+                        cleanup_remote_binding_setup_off_lock(
+                            &relay_config,
+                            &plan.relay_state,
+                            &target,
+                            &lease_id,
+                            None,
+                            use_connected_relay,
+                        )
+                        .await;
+                        return Err(error);
+                    }
+                    materialized_account = Some(expected_account);
+                }
+                Ok(other) => {
+                    let _ = update_remote_binding_materialization_status(
+                        &plan.provider_account_profiles,
+                        &account_owner_user_id,
+                        &plan.agent,
+                        materialization_target_kind,
+                        &materialization_target_ref,
+                        crate::account_profile::ProviderAccountMaterializationState::Error,
+                        Some("worker rejected account materialization"),
+                    );
+                    cleanup_remote_binding_setup_off_lock(
+                        &relay_config,
+                        &plan.relay_state,
+                        &target,
+                        &lease_id,
+                        None,
+                        use_connected_relay,
+                    )
+                    .await;
+                    return Err(DaemonError::LocalTransport {
+                        operation: "materialize remote provider account",
+                        message: format!("unexpected peer response: {other:?}"),
+                    });
+                }
+                Err(error) => {
+                    let _ = update_remote_binding_materialization_status(
+                        &plan.provider_account_profiles,
+                        &account_owner_user_id,
+                        &plan.agent,
+                        materialization_target_kind,
+                        &materialization_target_ref,
+                        crate::account_profile::ProviderAccountMaterializationState::Error,
+                        Some("account materialization failed"),
+                    );
+                    cleanup_remote_binding_setup_off_lock(
+                        &relay_config,
+                        &plan.relay_state,
+                        &target,
+                        &lease_id,
+                        None,
+                        use_connected_relay,
+                    )
+                    .await;
+                    return Err(error);
+                }
+            }
+        }
+    }
+
+    let leased_agent = match send_remote_binding_request_off_lock(
+        &relay_config,
+        &plan.relay_state,
+        target.clone(),
+        RelayPeerRequest::SpawnLeasedAgent {
+            lease_id: lease_id.clone(),
+            provider: plan.agent.provider().to_string(),
+            account_profile: worker_account_profile_for_spawn(
+                plan.agent.provider_account_profile(),
+                materialized_account.as_ref(),
+            ),
+            model: plan.agent.model().map(ToOwned::to_owned),
+            effort: plan.agent.effort().map(ToOwned::to_owned),
+            execution_mode: Some(plan.execution_mode),
+            permission_level: Some(plan.permission_level),
+            workspace_live_sync_mode: Some(plan.workspace_live_sync_mode),
+            worktree_id: worker_worktree_id
+                .or_else(|| plan.agent.worktree_id().map(ToOwned::to_owned)),
+            worktree_placement: None,
+        },
+        use_connected_relay,
+    )
+    .await
+    {
+        Ok(RelayPeerResponse::LeasedAgentSpawned { leased_agent }) => leased_agent,
+        Ok(other) => {
+            cleanup_remote_binding_setup_off_lock(
+                &relay_config,
+                &plan.relay_state,
+                &target,
+                &lease_id,
+                None,
+                use_connected_relay,
+            )
+            .await;
+            return Err(DaemonError::LocalTransport {
+                operation: "spawn remote leased agent",
+                message: format!("unexpected peer response: {other:?}"),
+            });
+        }
+        Err(error) => {
+            cleanup_remote_binding_setup_off_lock(
+                &relay_config,
+                &plan.relay_state,
+                &target,
+                &lease_id,
+                None,
+                use_connected_relay,
+            )
+            .await;
+            return Err(error);
+        }
+    };
+    let leased_agent_id = leased_agent.id;
+    let remote_execution = RemoteAgentBinding {
+        worker_kernel_id: worker_kernel.kernel_id,
+        worker_machine_id: worker_kernel.machine_id,
+        execution_lease_id: lease_id.clone(),
+        leased_agent_id: leased_agent_id.clone(),
+        active_worker_provider_run_id: None,
+        relay_url: plan
+            .relay_override
+            .as_ref()
+            .and_then(|config| config.relay_url.clone()),
+        relay_token: plan
+            .relay_override
+            .as_ref()
+            .and_then(|config| config.relay_token.clone()),
+        relay_peer_protocol_version: Some(relay_peer_protocol_version),
+    };
+    if let Err(error) = ensure_remote_skill_packages_off_lock(
+        &plan,
+        &remote_execution,
+        &relay_config,
+        use_connected_relay,
+    )
+    .await
+    {
+        cleanup_remote_binding_setup_off_lock(
+            &relay_config,
+            &plan.relay_state,
+            &target,
+            &lease_id,
+            Some(&leased_agent_id),
+            use_connected_relay,
+        )
+        .await;
+        return Err(error);
+    }
+    Ok(RemoteAgentBindingRefreshResult {
+        agent_id: plan.agent.id().to_string(),
+        expected_binding: plan.expected_binding,
+        remote_execution,
+        relay_config,
+        relay_state: plan.relay_state,
+        use_connected_relay,
+        _slice_recovery: plan.slice_recovery,
+    })
+}
+
+pub(crate) struct RemoteAgentBindingRefreshResult {
+    agent_id: String,
+    expected_binding: RemoteAgentBinding,
+    pub(crate) remote_execution: RemoteAgentBinding,
+    relay_config: DaemonConfig,
+    relay_state: Arc<tokio::sync::RwLock<RelayClientState>>,
+    use_connected_relay: bool,
+    _slice_recovery: Option<SliceBindingRecovery>,
+}
+
 impl DaemonApp {
+    pub(crate) async fn execute_remote_agent_binding_refresh(
+        plan: RemoteAgentBindingRefreshPlan,
+    ) -> Result<RemoteAgentBindingRefreshResult, DaemonError> {
+        execute_remote_agent_binding_refresh(plan).await
+    }
+
+    pub(crate) async fn cleanup_remote_agent_binding_refresh(
+        refresh: &RemoteAgentBindingRefreshResult,
+    ) {
+        cleanup_remote_agent_binding_refresh(refresh).await;
+    }
+
     pub(crate) fn remote_extension_manifest_for_agent(
         &self,
         agent: &AgentInstance,
@@ -135,7 +563,10 @@ impl DaemonApp {
                     })?,
             );
         }
-        Ok(crate::extension::RemoteExtensionManifest { tools })
+        Ok(crate::extension::RemoteExtensionManifest {
+            tools,
+            room_browser_available: self.slices.environment_slice(agent.session_id()).is_some(),
+        })
     }
 
     pub(crate) fn required_remote_mcps_for_native_provider_launch(
@@ -196,6 +627,7 @@ impl DaemonApp {
             .collect()
     }
 
+    #[cfg(test)]
     pub(crate) fn remote_prompt_capabilities_for_agent(
         &self,
         agent: &AgentInstance,
@@ -580,6 +1012,103 @@ impl DaemonApp {
         Ok(bound)
     }
 
+    pub(crate) fn prepare_remote_agent_binding_refresh(
+        &self,
+        agent_id: &str,
+        expected_binding: &RemoteAgentBinding,
+    ) -> Result<RemoteAgentBindingRefreshPlan, DaemonError> {
+        let agent = self.agents.get_agent(agent_id)?;
+        let Some(current_binding) = agent.remote_execution().cloned() else {
+            return Err(DaemonError::LocalTransport {
+                operation: "refresh remote agent binding",
+                message: format!("agent `{agent_id}` is not remote-backed"),
+            });
+        };
+        if &current_binding != expected_binding {
+            return Err(DaemonError::LocalTransport {
+                operation: "refresh remote agent binding",
+                message: format!("agent `{agent_id}` remote binding changed before refresh"),
+            });
+        }
+        let session = self.sessions.get_session(agent.session_id())?;
+        let effective_config =
+            crate::session::effective_agent_execution_config(&session, Some(&agent));
+        let workspace_live_sync_mode =
+            crate::provider::provider_workspace_live_sync_mode_for_session(
+                agent.provider(),
+                &self.config,
+                Some(&session),
+            );
+        let relay_config = self.relay_config_for_remote_execution(&current_binding);
+        let uses_remote_execution_relay =
+            current_binding.relay_url.is_some() && current_binding.relay_token.is_some();
+        let (_, projected_kernels) = self.remote_relay_inventory_projection_store().snapshot();
+        let slice_recovery =
+            SliceBindingRecovery::admit(&self.slices, &current_binding, agent.session_id(), None)?;
+        Ok(RemoteAgentBindingRefreshPlan {
+            agent,
+            expected_binding: current_binding.clone(),
+            config: self.config.clone(),
+            relay_override: uses_remote_execution_relay.then_some(relay_config.clone()),
+            relay_config,
+            relay_state: self.relay_client_state(),
+            provider_account_profiles: self.provider_account_profiles.clone(),
+            slice_store: self.slices.clone(),
+            projected_kernels,
+            execution_mode: effective_config.mode,
+            permission_level: effective_config.permission_level,
+            workspace_live_sync_mode,
+            slice_recovery,
+        })
+    }
+
+    pub(crate) fn commit_remote_agent_binding_refresh(
+        &mut self,
+        refresh: &RemoteAgentBindingRefreshResult,
+    ) -> (Result<AgentInstance, DaemonError>, bool) {
+        let agent = self
+            .agents
+            .get_agent(&refresh.agent_id)
+            .map_err(|error| (error, false));
+        let agent = match agent {
+            Ok(agent) => agent,
+            Err((error, committed)) => return (Err(error), committed),
+        };
+        if agent.remote_execution() != Some(&refresh.expected_binding) {
+            return (
+                Err(DaemonError::LocalTransport {
+                    operation: "refresh remote agent binding",
+                    message: format!(
+                        "agent `{}` remote binding changed while refresh was in flight",
+                        refresh.agent_id
+                    ),
+                }),
+                false,
+            );
+        }
+        let rebound = match self
+            .agents
+            .bind_remote_execution(&refresh.agent_id, refresh.remote_execution.clone())
+        {
+            Ok(rebound) => rebound,
+            Err(error) => return (Err(error), false),
+        };
+        if let Err(error) = self.durable_state_store().append_event(
+            "agent.updated",
+            Some(rebound.id().to_string()),
+            serde_json::json!({
+                "agent": &rebound,
+                "source": "remote_agent_binding_refreshed",
+            }),
+        ) {
+            return (Err(error), true);
+        }
+        if let Ok(session) = self.sessions.get_session(rebound.session_id()) {
+            self.update_session_projection(session);
+        }
+        (Ok(rebound), true)
+    }
+
     pub(crate) fn refresh_remote_agent_binding(
         &mut self,
         agent_id: &str,
@@ -591,6 +1120,8 @@ impl DaemonApp {
                 message: format!("agent `{agent_id}` is not remote-backed"),
             });
         };
+        let slice_recovery =
+            SliceBindingRecovery::admit(&self.slices, &remote_execution, agent.session_id(), None)?;
         let relay_config = self.relay_config_for_remote_execution(&remote_execution);
         let discovery_config = self.remote_worker_discovery_config(
             &remote_execution.worker_kernel_id,
@@ -598,11 +1129,21 @@ impl DaemonApp {
         )?;
         let uses_remote_execution_relay =
             remote_execution.relay_url.is_some() && remote_execution.relay_token.is_some();
-        let worker_kernel = self.select_remote_kernel_for_machine_with_config(
-            &remote_execution.worker_machine_id,
-            agent.provider(),
-            &discovery_config,
-        )?;
+        let worker_kernel = match slice_recovery.as_ref() {
+            Some(recovery) => recovery.require_worker(
+                self.select_remote_kernel_by_ref_with_config(
+                    &remote_execution.worker_kernel_id,
+                    agent.provider(),
+                    &discovery_config,
+                )?,
+                agent.provider(),
+            )?,
+            None => self.select_remote_kernel_for_machine_with_config(
+                &remote_execution.worker_machine_id,
+                agent.provider(),
+                &discovery_config,
+            )?,
+        };
         let worker_worktree_id = self.worker_worktree_id_for_rebound_worker(
             &worker_kernel.kernel_id,
             &worker_kernel.machine_id,
@@ -628,10 +1169,24 @@ impl DaemonApp {
         Ok(rebound)
     }
 
+    #[cfg(test)]
     pub(crate) fn refresh_remote_agent_binding_to_worker_kernel(
         &mut self,
         agent_id: &str,
         worker_kernel: &RelayKernelPresence,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.refresh_remote_agent_binding_to_worker_kernel_with_operation(
+            agent_id,
+            worker_kernel,
+            None,
+        )
+    }
+
+    pub(crate) fn refresh_remote_agent_binding_to_worker_kernel_with_operation(
+        &mut self,
+        agent_id: &str,
+        worker_kernel: &RelayKernelPresence,
+        operation: Option<&crate::slice::SliceOperationGuard>,
     ) -> Result<AgentInstance, DaemonError> {
         let agent = self.agents.get_agent(agent_id)?;
         let Some(remote_execution) = agent.remote_execution().cloned() else {
@@ -640,6 +1195,15 @@ impl DaemonApp {
                 message: format!("agent `{agent_id}` is not remote-backed"),
             });
         };
+        let slice_recovery = SliceBindingRecovery::admit(
+            &self.slices,
+            &remote_execution,
+            agent.session_id(),
+            operation,
+        )?;
+        if let Some(recovery) = slice_recovery.as_ref() {
+            recovery.require_worker(worker_kernel.clone(), agent.provider())?;
+        }
         let relay_config = self.relay_config_for_remote_execution(&remote_execution);
         let uses_remote_execution_relay =
             remote_execution.relay_url.is_some() && remote_execution.relay_token.is_some();
@@ -708,11 +1272,20 @@ impl DaemonApp {
             .unwrap_or_else(|| self.config.clone());
         let discovery_config =
             self.remote_worker_discovery_config(machine_ref, relay_config.clone())?;
-        let worker_kernel = self.select_remote_kernel_for_machine_with_config(
-            machine_ref,
-            agent.provider(),
-            &discovery_config,
-        )?;
+        let worker_kernel =
+            if slice_recovery::recorded_slice_worker_id(&self.slices, machine_ref)?.is_some() {
+                self.select_remote_kernel_by_ref_with_config(
+                    machine_ref,
+                    agent.provider(),
+                    &discovery_config,
+                )?
+            } else {
+                self.select_remote_kernel_for_machine_with_config(
+                    machine_ref,
+                    agent.provider(),
+                    &discovery_config,
+                )?
+            };
         let worker_worktree_id = self.worker_worktree_id_for_kernel_ref(machine_ref, None);
         self.bind_remote_agent_to_worker(
             &agent,
@@ -919,13 +1492,18 @@ impl DaemonApp {
             .unwrap_or_else(|| machine_ref.to_string());
         if self.can_use_connected_relay_inventory(&machine_ref, relay_config) {
             let (_, projected_kernels) = self.remote_relay_inventory_projection_store().snapshot();
-            if let Some(kernel) = select_remote_kernel(projected_kernels, &machine_ref, provider) {
+            if let Some(kernel) = select_remote_kernel(
+                slice_recovery::ordinary_machine_workers(&self.slices, projected_kernels),
+                &machine_ref,
+                provider,
+            ) {
                 return Ok(kernel);
             }
         }
         let kernels = self.block_on_relay_future(
             relay_discovery::list_live_kernels_for_machine(relay_config, &machine_ref),
         )?;
+        let kernels = slice_recovery::ordinary_machine_workers(&self.slices, kernels);
         let message = no_remote_kernel_available_message(&kernels, &machine_ref, provider);
         select_remote_kernel(kernels, &machine_ref, provider).ok_or_else(|| {
             DaemonError::NoRemoteKernelAvailable {
@@ -943,21 +1521,30 @@ impl DaemonApp {
         relay_config: &DaemonConfig,
     ) -> Result<RelayKernelPresence, DaemonError> {
         let kernel_ref = kernel_ref.trim();
+        let expected_slice_worker =
+            slice_recovery::recorded_slice_worker_id(&self.slices, kernel_ref)?;
         if self.can_use_connected_relay_inventory(kernel_ref, relay_config) {
             let (_, projected_kernels) = self.remote_relay_inventory_projection_store().snapshot();
-            if let Some(kernel) = projected_kernels
-                .into_iter()
-                .find(|kernel| kernel_presence_matches_ref(kernel, kernel_ref))
-            {
+            if let Some(kernel) = projected_kernels.into_iter().find(|kernel| {
+                match expected_slice_worker.as_deref() {
+                    Some(expected) => kernel.kernel_id == expected,
+                    None => kernel_presence_matches_ref(kernel, kernel_ref),
+                }
+            }) {
                 return ensure_kernel_can_host_provider(kernel, kernel_ref, provider);
             }
         }
         let mut last_error = None;
         for attempt in 0..REMOTE_KERNEL_REF_DISCOVERY_ATTEMPTS {
-            match self
-                .block_on_relay_future(relay_discovery::get_live_kernel(relay_config, kernel_ref))
-            {
+            match self.block_on_relay_future(relay_discovery::get_live_kernel(
+                relay_config,
+                expected_slice_worker.as_deref().unwrap_or(kernel_ref),
+            )) {
                 Ok(kernel) => {
+                    let kernel = slice_recovery::require_selected_slice_worker(
+                        expected_slice_worker.as_deref(),
+                        kernel,
+                    )?;
                     return ensure_kernel_can_host_provider(kernel, kernel_ref, provider);
                 }
                 Err(error) => {
@@ -1174,17 +1761,197 @@ impl DaemonApp {
             let mut state = relay_state.write().await;
             if state.connected()
                 && state.connected_relay_url().as_deref() == Some(relay_url.as_str())
+                && !state.claim_peer_public_key(&kernel_id, &public_key)
             {
-                if !state.claim_peer_public_key(&kernel_id, &public_key) {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "bind remote worker identity",
-                        message: format!("remote worker `{kernel_id}` changed its public key"),
-                    });
-                }
+                return Err(DaemonError::LocalTransport {
+                    operation: "bind remote worker identity",
+                    message: format!("remote worker `{kernel_id}` changed its public key"),
+                });
             }
             Ok(())
         })
     }
+}
+
+async fn send_remote_binding_request_off_lock(
+    relay_config: &DaemonConfig,
+    relay_state: &Arc<tokio::sync::RwLock<RelayClientState>>,
+    target: ClientTarget,
+    request: RelayPeerRequest,
+    use_connected_relay: bool,
+) -> Result<RelayPeerResponse, DaemonError> {
+    if use_connected_relay {
+        send_peer_request_via_connected_relay(relay_config, relay_state, target, request).await
+    } else {
+        send_peer_request_via_temporary_connection(relay_config, target, request).await
+    }
+}
+
+async fn cleanup_remote_binding_setup_off_lock(
+    relay_config: &DaemonConfig,
+    relay_state: &Arc<tokio::sync::RwLock<RelayClientState>>,
+    target: &ClientTarget,
+    lease_id: &str,
+    leased_agent_id: Option<&str>,
+    use_connected_relay: bool,
+) {
+    if let Some(leased_agent_id) = leased_agent_id {
+        let _ = send_remote_binding_request_off_lock(
+            relay_config,
+            relay_state,
+            target.clone(),
+            RelayPeerRequest::DestroyLeasedAgent {
+                leased_agent_id: leased_agent_id.to_string(),
+            },
+            use_connected_relay,
+        )
+        .await;
+    }
+    let _ = send_remote_binding_request_off_lock(
+        relay_config,
+        relay_state,
+        target.clone(),
+        RelayPeerRequest::DestroyExecutionLease {
+            lease_id: lease_id.to_string(),
+        },
+        use_connected_relay,
+    )
+    .await;
+}
+
+async fn remember_remote_worker_public_key_off_lock(
+    relay_config: &DaemonConfig,
+    worker_kernel: &RelayKernelPresence,
+    relay_state: &Arc<tokio::sync::RwLock<RelayClientState>>,
+) -> Result<(), DaemonError> {
+    if !DaemonConfig::claim_relay_peer_public_key(
+        &worker_kernel.kernel_id,
+        &worker_kernel.public_key,
+    )? {
+        return Err(DaemonError::LocalTransport {
+            operation: "bind remote worker identity",
+            message: format!(
+                "remote worker `{}` changed its public key",
+                worker_kernel.kernel_id
+            ),
+        });
+    }
+    let Some(relay_url) = relay_config.relay_url.as_deref() else {
+        return Ok(());
+    };
+    let mut state = relay_state.write().await;
+    if state.connected()
+        && state.connected_relay_url().as_deref() == Some(relay_url)
+        && !state.claim_peer_public_key(&worker_kernel.kernel_id, &worker_kernel.public_key)
+    {
+        return Err(DaemonError::LocalTransport {
+            operation: "bind remote worker identity",
+            message: format!(
+                "remote worker `{}` changed its public key",
+                worker_kernel.kernel_id
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn update_remote_binding_materialization_status(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    agent: &AgentInstance,
+    target_kind: crate::account_profile::ProviderAccountMaterializationTargetKind,
+    target_ref: &str,
+    state: crate::account_profile::ProviderAccountMaterializationState,
+    last_error: Option<&str>,
+) -> Result<(), DaemonError> {
+    registry
+        .update_materialization_status(
+            owner_user_id,
+            agent.provider(),
+            agent.provider_account_profile(),
+            crate::account_profile::ProviderAccountMaterializationStatus {
+                target_kind,
+                target_ref: target_ref.to_string(),
+                state,
+                observed_at_ms: crate::session::unix_epoch_ms(),
+                last_error: last_error.map(str::to_string),
+            },
+        )
+        .map(|_| ())
+}
+
+async fn ensure_remote_skill_packages_off_lock(
+    plan: &RemoteAgentBindingRefreshPlan,
+    remote_execution: &RemoteAgentBinding,
+    relay_config: &DaemonConfig,
+    use_connected_relay: bool,
+) -> Result<(), DaemonError> {
+    let skill_grants = plan.agent.skill_grants();
+    if skill_grants.is_empty() {
+        return Ok(());
+    }
+    let roots = crate::skill::CharioxSkillRegistry::user_root()
+        .map(|root| vec![root])
+        .unwrap_or_default();
+    let registry = crate::skill::CharioxSkillRegistry::new(roots);
+    let packages = skill_grants
+        .iter()
+        .map(|grant| {
+            registry.package(grant).and_then(|package| {
+                package.ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "ensure remote agent skill packages",
+                    message: format!("skill `{grant}` is not installed"),
+                })
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if packages.is_empty() {
+        return Ok(());
+    }
+    match send_remote_binding_request_off_lock(
+        relay_config,
+        &plan.relay_state,
+        ClientTarget {
+            daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+            daemon_alias: None,
+        },
+        RelayPeerRequest::EnsureRemoteSkillPackages {
+            context: crate::transport::relay_peer::RemoteSkillSyncContext {
+                home_kernel_id: plan.config.daemon_id.clone(),
+                home_session_id: plan.agent.session_id().to_string(),
+                home_agent_id: plan.agent.id().to_string(),
+                leased_agent_id: remote_execution.leased_agent_id.clone(),
+            },
+            packages,
+        },
+        use_connected_relay,
+    )
+    .await?
+    {
+        RelayPeerResponse::RemoteSkillPackagesEnsured { .. } => Ok(()),
+        other => Err(DaemonError::LocalTransport {
+            operation: "ensure remote agent skill packages",
+            message: format!("unexpected remote skill sync response: {other:?}"),
+        }),
+    }
+}
+
+pub(crate) async fn cleanup_remote_agent_binding_refresh(
+    refresh: &RemoteAgentBindingRefreshResult,
+) {
+    let target = ClientTarget {
+        daemon_id: Some(refresh.remote_execution.worker_kernel_id.clone()),
+        daemon_alias: None,
+    };
+    cleanup_remote_binding_setup_off_lock(
+        &refresh.relay_config,
+        &refresh.relay_state,
+        &target,
+        &refresh.remote_execution.execution_lease_id,
+        Some(&refresh.remote_execution.leased_agent_id),
+        refresh.use_connected_relay,
+    )
+    .await;
 }
 
 fn remote_provider_account_response_matches(
@@ -1611,6 +2378,7 @@ mod tests {
                 &app.config().daemon_id,
                 &app.config().host_machine_id,
                 crate::slice::CreateSliceInput {
+                    source_slice_ref: None,
                     name: "linux-dev".to_string(),
                     backend: crate::slice::SliceBackendKind::LocalDocker,
                     os: "linux".to_string(),
@@ -1696,6 +2464,7 @@ mod tests {
                 &app.config().daemon_id,
                 &app.config().host_machine_id,
                 crate::slice::CreateSliceInput {
+                    source_slice_ref: None,
                     name: "linux-dev".to_string(),
                     backend: crate::slice::SliceBackendKind::LocalDocker,
                     os: "linux".to_string(),
@@ -1767,6 +2536,7 @@ mod tests {
                 &app.config().daemon_id,
                 &app.config().host_machine_id,
                 crate::slice::CreateSliceInput {
+                    source_slice_ref: None,
                     name: "linux-dev".to_string(),
                     backend: crate::slice::SliceBackendKind::LocalDocker,
                     os: "linux".to_string(),
@@ -1823,6 +2593,7 @@ mod tests {
                 &app.config().daemon_id,
                 &app.config().host_machine_id,
                 crate::slice::CreateSliceInput {
+                    source_slice_ref: None,
                     name: "linux-dev".to_string(),
                     backend: crate::slice::SliceBackendKind::LocalDocker,
                     os: "linux".to_string(),
@@ -1875,6 +2646,7 @@ mod tests {
                 &app.config().daemon_id,
                 &app.config().host_machine_id,
                 crate::slice::CreateSliceInput {
+                    source_slice_ref: None,
                     name: "hosted-linux-dev".to_string(),
                     backend: crate::slice::SliceBackendKind::LocalDocker,
                     os: "linux".to_string(),
@@ -1974,6 +2746,7 @@ mod tests {
                 &app.config().daemon_id,
                 &app.config().host_machine_id,
                 crate::slice::CreateSliceInput {
+                    source_slice_ref: None,
                     name: "hosted-linux-dev".to_string(),
                     backend: crate::slice::SliceBackendKind::LocalDocker,
                     os: "linux".to_string(),
@@ -2092,3 +2865,6 @@ mod tests {
         assert!(relay_config.cloud_relay.is_none());
     }
 }
+
+#[cfg(test)]
+mod recovery_tests;

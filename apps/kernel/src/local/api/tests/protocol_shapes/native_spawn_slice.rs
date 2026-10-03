@@ -379,6 +379,7 @@ fn local_daemon_protocol_slice_record_relay_endpoint_shape_is_versioned() {
 
     let response = LocalDaemonResponse::Slice {
         slice: crate::slice::SliceRecord {
+            source_slice_ref: None,
             id: "slice-1".to_string(),
             name: "linux-dev".to_string(),
             owner_kernel_id: "home-kernel".to_string(),
@@ -473,6 +474,7 @@ fn local_daemon_protocol_slice_saved_state_shape_is_versioned() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 410);
 
     let create_request = LocalDaemonRequest::CreateSlice(crate::local::CreateSliceRequest {
+        source_slice_ref: None,
         name: "linux-dev".to_string(),
         backend: crate::slice::SliceBackendKind::LocalDocker,
         os: "linux".to_string(),
@@ -544,6 +546,7 @@ fn local_daemon_protocol_slice_saved_state_shape_is_versioned() {
         image_id: Some("sha256:abcdef".to_string()),
     };
     let slice = crate::slice::SliceRecord {
+        source_slice_ref: None,
         id: "slice-1".to_string(),
         name: "linux-dev".to_string(),
         owner_kernel_id: "home-kernel".to_string(),
@@ -657,6 +660,7 @@ fn local_daemon_protocol_slice_saved_state_shape_is_versioned() {
 fn local_daemon_protocol_slice_multi_repository_development_shape_is_versioned() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 410);
     let request = LocalDaemonRequest::CreateSlice(crate::local::CreateSliceRequest {
+        source_slice_ref: None,
         name: "project-slice".to_string(),
         backend: crate::slice::SliceBackendKind::LocalDocker,
         os: "linux".to_string(),
@@ -740,6 +744,7 @@ fn local_daemon_protocol_slice_auth_remove_shape_is_versioned() {
         });
     let response = LocalDaemonResponse::SliceProviderAuthRemoved {
         slice: crate::slice::SliceRecord {
+            source_slice_ref: None,
             id: "slice-1".to_string(),
             name: "linux-dev".to_string(),
             owner_kernel_id: "home-kernel".to_string(),
@@ -809,6 +814,7 @@ fn local_daemon_protocol_slice_provider_login_shape_is_versioned() {
         });
     let response = LocalDaemonResponse::SliceProviderLoginStarted {
         slice: crate::slice::SliceRecord {
+            source_slice_ref: None,
             id: "slice-1".to_string(),
             name: "linux-dev".to_string(),
             owner_kernel_id: "home-kernel".to_string(),

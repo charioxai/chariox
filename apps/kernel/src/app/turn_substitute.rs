@@ -112,6 +112,6 @@ impl DaemonApp {
         {
             return Ok(());
         }
-        self.end_provider_run_for_workflow_context_flush(session_id, agent_id)
+        self.end_agent_provider_run(session_id, agent_id)
     }
 }

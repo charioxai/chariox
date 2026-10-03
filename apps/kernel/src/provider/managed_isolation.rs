@@ -141,6 +141,7 @@ const CONTROL_ENVIRONMENT_NAMES: &[&str] = &[
     MANAGED_SLICE_PUBLICATION_ROOT_ENV,
     "CHARIOX_MANAGED_RELEASE_SIGNATURE",
     "CHARIOX_MANAGED_RELEASE_PUBLIC_KEY",
+    "CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY",
 ];
 
 #[cfg(target_os = "linux")]
@@ -334,15 +335,15 @@ fn canonical_preparation_home(path: &Path) -> Result<PathBuf, DaemonError> {
             "worker preparation HOME must be a real directory",
         ));
     }
-    let state_root = path
+    let preparation_root = path
         .parent()
         .ok_or_else(|| isolation_error("worker preparation HOME has no durable state parent"))?;
-    let state_metadata = std::fs::symlink_metadata(state_root).map_err(|error| {
+    let preparation_metadata = std::fs::symlink_metadata(preparation_root).map_err(|error| {
         isolation_error(format!(
             "worker preparation state root could not be inspected: {error}"
         ))
     })?;
-    if state_metadata.file_type().is_symlink() || !state_metadata.is_dir() {
+    if preparation_metadata.file_type().is_symlink() || !preparation_metadata.is_dir() {
         return Err(isolation_error(
             "worker preparation state root must be a real directory",
         ));
@@ -350,29 +351,110 @@ fn canonical_preparation_home(path: &Path) -> Result<PathBuf, DaemonError> {
     let canonical = path.canonicalize().map_err(|error| {
         isolation_error(format!("worker preparation HOME is unavailable: {error}"))
     })?;
-    let canonical_state_root = state_root.canonicalize().map_err(|error| {
+    let canonical_preparation_root = preparation_root.canonicalize().map_err(|error| {
         isolation_error(format!(
             "worker preparation state root is unavailable: {error}"
         ))
     })?;
-    if canonical.parent() != Some(canonical_state_root.as_path()) {
+    if canonical.parent() != Some(canonical_preparation_root.as_path()) {
         return Err(isolation_error(
             "worker preparation HOME has an inconsistent durable state parent",
         ));
     }
-    if state_root.file_name().and_then(|name| name.to_str()) != Some(".chariox-project-environment")
-        || canonical
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_none_or(|name| {
-                name.len() != 64 || !name.bytes().all(|byte| byte.is_ascii_hexdigit())
-            })
+    let home_key = canonical.file_name().and_then(|name| name.to_str());
+    if home_key
+        .is_none_or(|name| name.len() != 64 || !name.bytes().all(|byte| byte.is_ascii_hexdigit()))
     {
         return Err(isolation_error(
             "worker preparation HOME is outside the durable project state boundary",
         ));
     }
+
+    // Existing runs can still carry the former workspace-adjacent location;
+    // keep accepting that exact boundary for rollback/restart. New setup runs
+    // use the durable kernel state tree and must match its complete directory
+    // shape, not just the hash-named leaf.
+    match preparation_root.file_name().and_then(|name| name.to_str()) {
+        Some(".chariox-project-environment") => return Ok(canonical),
+        Some("project-environment-preparation") => {}
+        _ => {
+            return Err(isolation_error(
+                "worker preparation HOME is outside the durable project state boundary",
+            ))
+        }
+    }
+
+    let state_root = preparation_root.parent().ok_or_else(|| {
+        isolation_error("worker preparation state root has no kernel home parent")
+    })?;
+    let kernel_home = state_root
+        .parent()
+        .ok_or_else(|| isolation_error("worker preparation state root has no kernel home"))?;
+    if state_root.file_name().and_then(|name| name.to_str()) != Some("state") {
+        return Err(isolation_error(
+            "worker preparation HOME is outside the durable kernel state boundary",
+        ));
+    }
+
+    let canonical_state_root = canonical_preparation_directory(state_root, "kernel state root")?;
+    let canonical_kernel_home = canonical_preparation_directory(kernel_home, "kernel home")?;
+    if canonical_preparation_root.parent() != Some(canonical_state_root.as_path())
+        || canonical_state_root.parent() != Some(canonical_kernel_home.as_path())
+    {
+        return Err(isolation_error(
+            "worker preparation HOME has an inconsistent kernel state path",
+        ));
+    }
+
+    validate_preparation_home_directory(&metadata, "worker preparation HOME", true)?;
+    validate_preparation_home_directory(
+        &preparation_metadata,
+        "worker preparation state root",
+        true,
+    )?;
+    let state_metadata = std::fs::symlink_metadata(state_root).map_err(|error| {
+        isolation_error(format!("kernel state root could not be inspected: {error}"))
+    })?;
+    let kernel_metadata = std::fs::symlink_metadata(kernel_home)
+        .map_err(|error| isolation_error(format!("kernel home could not be inspected: {error}")))?;
+    validate_preparation_home_directory(&state_metadata, "kernel state root", false)?;
+    validate_preparation_home_directory(&kernel_metadata, "kernel home", false)?;
     Ok(canonical)
+}
+
+fn canonical_preparation_directory(path: &Path, label: &str) -> Result<PathBuf, DaemonError> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| isolation_error(format!("{label} could not be inspected: {error}")))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(isolation_error(format!("{label} must be a real directory")));
+    }
+    path.canonicalize()
+        .map_err(|error| isolation_error(format!("{label} could not be resolved: {error}")))
+}
+
+fn validate_preparation_home_directory(
+    metadata: &std::fs::Metadata,
+    label: &str,
+    private: bool,
+) -> Result<(), DaemonError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+
+        if metadata.uid() != unsafe { libc::geteuid() } {
+            return Err(isolation_error(format!(
+                "{label} must be owned by the kernel user"
+            )));
+        }
+        let mode = metadata.mode() & 0o777;
+        if (private && mode != 0o700) || (!private && mode & 0o022 != 0) {
+            return Err(isolation_error(format!("{label} has unsafe permissions")));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = (metadata, label, private);
+
+    Ok(())
 }
 
 pub(crate) fn provider_reported_path_on_kernel(
@@ -861,9 +943,36 @@ fn append_managed_protected_namespace_directories(
         if directory == Path::new("/run") {
             continue;
         }
+        // A masked ancestor already hides this path; masking it again would
+        // recreate it inside the ancestor's otherwise empty mask.
+        if directories.iter().any(|ancestor| {
+            ancestor != directory
+                && ancestor != Path::new("/run")
+                && directory.starts_with(ancestor)
+        }) {
+            continue;
+        }
         append_directory(args, directory, created);
         args.extend(["--tmpfs".to_string(), directory.display().to_string()]);
     }
+}
+
+// A file inside a masked directory is already hidden; masking it again would
+// recreate its path inside the otherwise empty mask. /run is not re-masked.
+#[cfg(target_os = "linux")]
+fn protected_files_outside_masked_directories(
+    files: &[PathBuf],
+    directories: &[PathBuf],
+) -> Vec<PathBuf> {
+    files
+        .iter()
+        .filter(|file| {
+            !directories
+                .iter()
+                .any(|directory| directory != Path::new("/run") && file.starts_with(directory))
+        })
+        .cloned()
+        .collect()
 }
 
 #[cfg(target_os = "linux")]
@@ -1080,7 +1189,10 @@ pub(crate) fn apply_managed_provider_isolation(
         );
         append_managed_protected_namespace_files(
             &mut args,
-            &protected_namespace_files,
+            &protected_files_outside_masked_directories(
+                &protected_namespace_files,
+                &protected_directories,
+            ),
             &mut created_directories,
         );
         append_managed_protected_namespace_files(
@@ -1154,10 +1266,6 @@ pub(crate) fn apply_managed_provider_isolation(
                 launch.pty_env_remove.push(name);
             }
         }
-        // bwrap applies --setenv/--unsetenv in order. The scrub above removes
-        // the isolation marker among the inherited controls, so the namespace
-        // environment, including the marker, must be set after it.
-        append_managed_namespace_environment(&mut args, request);
         // Account paths are scrubbed from the inherited kernel environment,
         // then restored only to their validated, namespace-local destinations.
         // This keeps an inherited XDG_RUNTIME_DIR (or provider-specific home)
@@ -1166,6 +1274,8 @@ pub(crate) fn apply_managed_provider_isolation(
         for (name, value) in account_environment {
             args.extend(["--setenv".to_string(), name, value]);
         }
+        // After the scrub: the control set also names the isolation marker.
+        append_managed_namespace_environment(&mut args, request);
         append_managed_git_safe_directory_environment(&mut args, &workspace_roots);
         args.extend([
             "--chdir".to_string(),
@@ -2146,6 +2256,60 @@ mod tests {
 
     use super::*;
 
+    fn kernel_preparation_home_fixture(root: &Path) -> PathBuf {
+        let kernel_home = root.join("kernel-home");
+        let home = kernel_home
+            .join("state")
+            .join("project-environment-preparation")
+            .join("d".repeat(64));
+        std::fs::create_dir_all(&home).expect("kernel preparation HOME should exist");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let preparation_root = home.parent().expect("preparation root should exist");
+            std::fs::set_permissions(&kernel_home, std::fs::Permissions::from_mode(0o700))
+                .expect("kernel home should be private");
+            std::fs::set_permissions(preparation_root, std::fs::Permissions::from_mode(0o700))
+                .expect("preparation root should be private");
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700))
+                .expect("preparation HOME should be private");
+        }
+        home.canonicalize()
+            .expect("kernel preparation HOME should canonicalize")
+    }
+
+    fn preparation_test_run(provider: &str, program: &str) -> RuntimeProviderRun {
+        let request = LaunchProviderRequest::new(
+            "preparation-home-provider-test",
+            provider,
+            provider,
+            "default",
+            "default",
+        );
+        let launch_result = ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: provider.to_string(),
+            pty_target: None,
+            pty_program: Some(program.to_string()),
+            pty_args: vec![
+                "--setenv".to_string(),
+                "HOME".to_string(),
+                SANDBOX_HOME.to_string(),
+                "--setenv".to_string(),
+                MANAGED_PROVIDER_ISOLATION_MARKER_ENV.to_string(),
+                "1".to_string(),
+                "--".to_string(),
+                program.to_string(),
+            ],
+            pty_env: BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        };
+        RuntimeProviderRun::new("preparation-home-provider-run", &request, launch_result)
+    }
+
     #[test]
     fn managed_provider_reported_path_resolves_through_its_account_bind() {
         let root = std::env::temp_dir().join(format!(
@@ -2458,6 +2622,45 @@ mod tests {
 
         assert_eq!(args.iter().filter(|arg| *arg == "--ro-bind").count(), 0);
         assert!(!args.iter().any(|arg| arg == "/etc/resolv.conf"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn protected_paths_inside_a_masked_directory_are_not_masked_again() {
+        let directories = [
+            PathBuf::from("/run"),
+            PathBuf::from("/run/chariox"),
+            PathBuf::from("/home/u/.chariox"),
+            PathBuf::from("/home/u/.chariox/provider-home"),
+        ];
+        let mut args = Vec::new();
+        append_managed_protected_namespace_directories(
+            &mut args,
+            &directories,
+            &mut BTreeSet::new(),
+        );
+        let masks = args
+            .windows(2)
+            .filter(|window| window[0] == "--tmpfs")
+            .map(|window| window[1].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(masks, ["/run/chariox", "/home/u/.chariox"]);
+
+        let files = protected_files_outside_masked_directories(
+            &[
+                PathBuf::from("/home/u/.chariox/vault.json"),
+                PathBuf::from("/run/control.sock"),
+                PathBuf::from("/etc/managed.json"),
+            ],
+            &directories,
+        );
+        assert_eq!(
+            files,
+            [
+                PathBuf::from("/run/control.sock"),
+                PathBuf::from("/etc/managed.json")
+            ]
+        );
     }
 
     #[cfg(target_os = "linux")]
@@ -2862,14 +3065,11 @@ mod tests {
         std::fs::create_dir_all(&provider_home).expect("provider home should exist");
         std::fs::create_dir_all(&chariox_home).expect("CHARIOX_HOME should exist");
         std::fs::create_dir_all(&runtime_home).expect("runtime user home should exist");
-        let bwrap_copy = scratch.join("bwrap");
-        if let Err(error) = std::fs::copy(BWRAP_PATH, &bwrap_copy) {
+        if let Err(error) = std::fs::metadata(BWRAP_PATH) {
             let _ = std::fs::remove_dir_all(&scratch);
             eprintln!("skipped managed home workspace launch assembly: cannot copy bwrap: {error}");
             return;
         }
-        std::fs::set_permissions(&bwrap_copy, std::fs::Permissions::from_mode(0o755))
-            .expect("private bwrap copy should be executable");
 
         let home_root = PathBuf::from(SANDBOX_HOME).join(format!(
             "chariox-managed-home-workspace-collector-{}-{}",
@@ -2940,7 +3140,7 @@ mod tests {
         std::env::set_var(MANAGED_PROVIDER_HOME_ENV, &provider_home);
         std::env::set_var("CHARIOX_HOME", &chariox_home);
         std::env::set_var("HOME", &runtime_home);
-        std::env::set_var(MANAGED_PROVIDER_BWRAP_ENV, &bwrap_copy);
+        std::env::set_var(MANAGED_PROVIDER_BWRAP_ENV, BWRAP_PATH);
 
         let selected = selected
             .canonicalize()
@@ -3037,7 +3237,7 @@ mod tests {
                 panic!("managed home workspace launch assembly should succeed: {error}");
             }
         };
-        let prepared_args = prepared.pty_args.clone();
+        let mut prepared_args = prepared.pty_args.clone();
         let selected_text = selected.display().to_string();
         let home_mask = prepared_args
             .windows(2)
@@ -3082,6 +3282,24 @@ mod tests {
             "managed launch should preserve the selected workspace as cwd"
         );
 
+        // The host's /home/chariox can be private to another operator. Preserve the
+        // exact assembly assertions above, then provide the same fixture bytes from
+        // a traversable source for the bounded unprivileged execution probe.
+        let accessible_source = PathBuf::from("/home").join(format!(
+            "chariox-ktests-source-{}-{:x}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir(&accessible_source).unwrap();
+        std::fs::set_permissions(&accessible_source, std::fs::Permissions::from_mode(0o777))
+            .unwrap();
+        std::fs::copy(
+            selected.join("selected.txt"),
+            accessible_source.join("selected.txt"),
+        )
+        .unwrap();
+        prepared_args[selected_bind + 1] = accessible_source.display().to_string();
+
         let bwrap = prepared
             .pty_program
             .as_deref()
@@ -3099,9 +3317,7 @@ mod tests {
             }
         };
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("No permissions to create a new namespace")
-            || stderr.contains("Operation not permitted")
-        {
+        if bubblewrap_user_namespaces_unavailable(&stderr) {
             eprintln!(
                 "skipped managed home workspace collector bwrap probe: user namespaces are unavailable"
             );
@@ -3115,11 +3331,12 @@ mod tests {
             stderr.trim()
         );
         assert_eq!(
-            std::fs::read_to_string(selected.join("selected-write"))
+            std::fs::read_to_string(accessible_source.join("selected-write"))
                 .expect("selected workspace should receive provider write"),
             "provider"
         );
         assert!(!sibling.join("selected-write").exists());
+        let _ = std::fs::remove_dir_all(&accessible_source);
         let _ = std::fs::remove_dir_all(&home_root);
         let _ = std::fs::remove_dir_all(&scratch);
     }
@@ -3164,7 +3381,6 @@ mod tests {
         let scratch =
             std::env::temp_dir().join(format!("chariox-managed-runtime-home-ancestor-{nonce}"));
         let provider_home = scratch.join("provider-home");
-        let bwrap_copy = scratch.join("bwrap");
         let home = home_root.join("runtime-home");
         let protected_state = home.join(".chariox");
         let config = home.join(".config");
@@ -3193,6 +3409,25 @@ mod tests {
             .collect::<Vec<_>>();
 
         std::fs::create_dir_all(&provider_home).expect("provider home should exist");
+        let uid = unsafe { libc::getuid() }.to_string();
+        let gid = unsafe { libc::getgid() }.to_string();
+        let mut install = if uid == "0" {
+            Command::new("install")
+        } else {
+            let mut command = Command::new("sudo");
+            command.args(["-n", "--", "install"]);
+            command
+        };
+        let created = install
+            .args(["-d", "-m", "0755", "-o", &uid, "-g", &gid])
+            .arg(&home_root)
+            .output()
+            .expect("owned runtime-home fixture root should install");
+        assert!(
+            created.status.success(),
+            "runtime-home fixture root setup failed: {}",
+            String::from_utf8_lossy(&created.stderr)
+        );
         std::fs::create_dir_all(&home).expect("runtime user home should exist");
         std::fs::create_dir_all(&protected_state).expect("protected runtime state should exist");
         std::fs::create_dir_all(&openbox).expect("runtime Openbox directory should exist");
@@ -3230,10 +3465,6 @@ mod tests {
             std::fs::write(path, "safe command payload\n").expect("command payload should exist");
         }
 
-        std::fs::copy(BWRAP_PATH, &bwrap_copy).expect("private Bubblewrap copy should exist");
-        std::fs::set_permissions(&bwrap_copy, std::fs::Permissions::from_mode(0o755))
-            .expect("private Bubblewrap copy should be executable");
-
         let mut environment_names = vec![
             MANAGED_PROVIDER_ISOLATION_ENV,
             MANAGED_PROVIDER_HOME_ENV,
@@ -3264,7 +3495,7 @@ mod tests {
         std::env::set_var(MANAGED_PROVIDER_HOME_ENV, &provider_home);
         std::env::set_var("CHARIOX_HOME", &protected_state);
         std::env::set_var("HOME", &home);
-        std::env::set_var(MANAGED_PROVIDER_BWRAP_ENV, &bwrap_copy);
+        std::env::set_var(MANAGED_PROVIDER_BWRAP_ENV, BWRAP_PATH);
 
         let home = home
             .canonicalize()
@@ -3503,9 +3734,7 @@ mod tests {
             .output()
             .expect("managed runtime-home bwrap probe should start");
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("No permissions to create a new namespace")
-            || stderr.contains("Operation not permitted")
-        {
+        if bubblewrap_user_namespaces_unavailable(&stderr) {
             eprintln!(
                 "skipped managed {workspace_kind} runtime-home bwrap probe: user namespaces are unavailable"
             );
@@ -3867,9 +4096,7 @@ mod tests {
             }
         };
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("No permissions to create a new namespace")
-            || stderr.contains("Operation not permitted")
-        {
+        if bubblewrap_user_namespaces_unavailable(&stderr) {
             eprintln!("skipped managed bwrap selected-home probe: user namespaces are unavailable");
             let _ = std::fs::remove_dir_all(root);
             return;
@@ -3957,9 +4184,7 @@ mod tests {
             }
         };
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("No permissions to create a new namespace")
-            || stderr.contains("Operation not permitted")
-        {
+        if bubblewrap_user_namespaces_unavailable(&stderr) {
             eprintln!(
                 "skipped managed bwrap missing-anchor probe: user namespaces are unavailable"
             );
@@ -4135,9 +4360,7 @@ mod tests {
             }
         };
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("No permissions to create a new namespace")
-            || stderr.contains("Operation not permitted")
-        {
+        if bubblewrap_user_namespaces_unavailable(&stderr) {
             eprintln!(
                 "skipped managed bwrap runtime-home startup/Openbox probe: user namespaces are unavailable"
             );
@@ -4310,9 +4533,7 @@ mod tests {
             }
         };
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("No permissions to create a new namespace")
-            || stderr.contains("Operation not permitted")
-        {
+        if bubblewrap_user_namespaces_unavailable(&stderr) {
             eprintln!(
                 "skipped managed bwrap trusted-helper probe: user namespaces are unavailable"
             );
@@ -4424,12 +4645,10 @@ mod tests {
         let outer_home = scratch.join("outer-home");
         let workspace = scratch.join("workspace");
         let account_root = scratch.join("accounts");
-        let bwrap_copy = scratch.join("bwrap");
         std::fs::create_dir_all(&provider_home).expect("provider home should exist");
         std::fs::create_dir_all(&outer_home).expect("outer home should exist");
         std::fs::create_dir_all(&workspace).expect("workspace should exist");
         std::fs::create_dir_all(&account_root).expect("account root should exist");
-        std::fs::copy(BWRAP_PATH, &bwrap_copy).expect("private Bubblewrap copy should exist");
 
         let account_names = [
             "CODEX_HOME",
@@ -4511,7 +4730,7 @@ mod tests {
         std::env::set_var(MANAGED_PROVIDER_ISOLATION_ENV, "1");
         std::env::set_var(MANAGED_PROVIDER_HOME_ENV, &provider_home);
         std::env::set_var("HOME", &outer_home);
-        std::env::set_var(MANAGED_PROVIDER_BWRAP_ENV, &bwrap_copy);
+        std::env::set_var(MANAGED_PROVIDER_BWRAP_ENV, BWRAP_PATH);
 
         let child_script = r#"
 set -eu
@@ -4599,6 +4818,39 @@ printf 'managed account environment probe passed\n'
                 "{name} namespace --setenv must follow --unsetenv"
             );
         }
+        let marker = launch
+            .pty_args
+            .windows(3)
+            .rposition(|window| window == ["--setenv", MANAGED_PROVIDER_ISOLATION_MARKER_ENV, "1"])
+            .expect("managed launch should set the isolation marker");
+        assert!(
+            !launch.pty_args[marker..]
+                .windows(2)
+                .any(|window| window == ["--unsetenv", MANAGED_PROVIDER_ISOLATION_MARKER_ENV]),
+            "the isolation marker must survive the namespace scrub"
+        );
+
+        // MP-01/MP-03: keep the launch assertions above on restricted CI hosts.
+        // Probe namespace support separately so a bad account bind or child
+        // permission failure cannot be mistaken for a host restriction.
+        let namespace_probe = Command::new(BWRAP_PATH)
+            .args(["--unshare-user", "--ro-bind", "/", "/", "--", "/bin/true"])
+            .output()
+            .expect("Bubblewrap namespace capability probe should run");
+        let probe_stderr = String::from_utf8_lossy(&namespace_probe.stderr);
+        if !namespace_probe.status.success()
+            && bubblewrap_user_namespaces_unavailable(&probe_stderr)
+        {
+            eprintln!(
+                "skipped managed account namespace execution: user namespaces are unavailable; launch assertions passed: {}",
+                probe_stderr.trim()
+            );
+            return;
+        }
+        assert!(
+            namespace_probe.status.success(),
+            "Bubblewrap namespace capability probe failed: {probe_stderr}"
+        );
 
         let output = command_from_provider_launch(launch)
             .expect("managed account environment command should be constructed")
@@ -5025,9 +5277,7 @@ printf 'managed account environment probe passed\n'
             }
         };
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("No permissions to create a new namespace")
-            || stderr.contains("Operation not permitted")
-        {
+        if bubblewrap_user_namespaces_unavailable(&stderr) {
             eprintln!(
                 "skipped managed bwrap slice-publication probe: user namespaces are unavailable"
             );
@@ -5605,8 +5855,7 @@ printf 'managed account environment probe passed\n'
             .expect("second bwrap sibling probe should finish");
         let namespace_unavailable = |output: &std::process::Output| {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            stderr.contains("No permissions to create a new namespace")
-                || stderr.contains("Operation not permitted")
+            bubblewrap_user_namespaces_unavailable(&stderr)
         };
         if namespace_unavailable(&first) || namespace_unavailable(&second) {
             eprintln!("skipped managed bwrap sibling probe: user namespaces are unavailable");
@@ -5781,6 +6030,107 @@ printf 'managed account environment probe passed\n'
     }
 
     #[test]
+    fn runtime_provider_run_accepts_kernel_preparation_home_for_all_official_providers() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-kernel-preparation-home-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms(),
+        ));
+        let home = kernel_preparation_home_fixture(&root);
+        let home_text = home.display().to_string();
+
+        for (provider, program) in [
+            ("codex", "/usr/bin/codex"),
+            ("claude", "/usr/bin/claude"),
+            ("opencode", "/usr/bin/opencode"),
+        ] {
+            let mut run = preparation_test_run(provider, program);
+            run.set_preparation_environment(home_text.clone(), "/usr/bin".to_string())
+                .expect("provider setter should accept the kernel-created durable HOME");
+            assert!(run.preparation_environment_matches(&home_text, "/usr/bin"));
+            assert_eq!(
+                run.preparation_environment(),
+                Some((home_text.clone(), "/usr/bin".to_string()))
+            );
+            let restored: RuntimeProviderRun = serde_json::from_value(
+                serde_json::to_value(&run).expect("provider run should serialize for restart"),
+            )
+            .expect("provider run should restore after restart");
+            assert_eq!(
+                restored.preparation_environment(),
+                Some((home_text.clone(), "/usr/bin".to_string()))
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_provider_run_rejects_unrelated_symlinked_and_insecure_preparation_homes() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let root = std::env::temp_dir().join(format!(
+            "chariox-kernel-preparation-home-rejected-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms(),
+        ));
+        let home = kernel_preparation_home_fixture(&root);
+        let unrelated = root.join("unrelated-home");
+        std::fs::create_dir_all(&unrelated).expect("unrelated HOME should exist");
+
+        let mut unrelated_run = preparation_test_run("codex", "/usr/bin/codex");
+        assert!(unrelated_run
+            .set_preparation_environment(unrelated.display().to_string(), "/usr/bin".to_string())
+            .is_err());
+
+        let malformed_home = home
+            .parent()
+            .expect("preparation root should exist")
+            .join("d".repeat(63));
+        std::fs::create_dir_all(&malformed_home).expect("malformed HOME should exist");
+        let mut malformed_run = preparation_test_run("codex", "/usr/bin/codex");
+        assert!(malformed_run
+            .set_preparation_environment(
+                malformed_home.display().to_string(),
+                "/usr/bin".to_string(),
+            )
+            .is_err());
+
+        let matching_leaf_outside_state = root
+            .join("not-kernel-state")
+            .join("project-environment-preparation")
+            .join("e".repeat(64));
+        std::fs::create_dir_all(&matching_leaf_outside_state)
+            .expect("wrong-boundary HOME should exist");
+        let mut wrong_boundary_run = preparation_test_run("codex", "/usr/bin/codex");
+        assert!(wrong_boundary_run
+            .set_preparation_environment(
+                matching_leaf_outside_state.display().to_string(),
+                "/usr/bin".to_string(),
+            )
+            .is_err());
+
+        let symlink_home = root.join("symlink-home");
+        symlink(&home, &symlink_home).expect("symlink HOME should be created");
+        let mut symlink_run = preparation_test_run("claude", "/usr/bin/claude");
+        assert!(symlink_run
+            .set_preparation_environment(symlink_home.display().to_string(), "/usr/bin".to_string())
+            .is_err());
+
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755))
+            .expect("insecure HOME permissions should be set");
+        let mut insecure_run = preparation_test_run("opencode", "/usr/bin/opencode");
+        assert!(insecure_run
+            .set_preparation_environment(home.display().to_string(), "/usr/bin".to_string())
+            .is_err());
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700))
+            .expect("HOME permissions should be restored for cleanup");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn managed_namespace_rejects_arbitrary_preparation_home() {
         let root = std::env::temp_dir().join(format!(
             "chariox-managed-preparation-home-rejected-{}-{}",
@@ -5897,6 +6247,26 @@ printf 'managed account environment probe passed\n'
         }
         let status = result.expect("ordinary account utility child should run");
         assert!(status.success(), "provider child environment checks failed");
+    }
+
+    // MP-01/MP-03: Debian/Ubuntu versions differ on the article in this error.
+    fn bubblewrap_user_namespaces_unavailable(stderr: &str) -> bool {
+        (stderr.contains("No permissions to create") && stderr.contains("namespace"))
+            || stderr.contains("Operation not permitted")
+    }
+
+    #[test]
+    fn bubblewrap_namespace_gate_recognizes_ubuntu_and_legacy_diagnostics() {
+        for message in [
+            "bwrap: No permissions to create new namespace, likely because the kernel does not allow non-privileged user namespaces.",
+            "bwrap: No permissions to create a new namespace",
+            "bwrap: Creating new namespace failed: Operation not permitted",
+        ] {
+            assert!(bubblewrap_user_namespaces_unavailable(message));
+        }
+        for message in ["", "bwrap: Can't bind mount account: Permission denied"] {
+            assert!(!bubblewrap_user_namespaces_unavailable(message));
+        }
     }
 
     fn restore_env(name: &str, previous: Option<std::ffi::OsString>) {

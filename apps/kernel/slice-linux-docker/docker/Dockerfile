@@ -30,7 +30,9 @@ COPY apps/kernel/slice-linux-docker/prebuilt /opt/chariox-prebuilt
 ARG CHARIOX_PREBUILT_RUNTIME=0
 ARG CARGO_PROFILE_RELEASE_OPT_LEVEL=3
 ARG CHARIOX_RUNTIME_BUILD_PROFILE=release
+ARG CHARIOX_CARGO_BUILD_JOBS=1
 RUN mkdir -p /opt/chariox-runtime-bin \
+  && case "$CHARIOX_CARGO_BUILD_JOBS" in 1|2) ;; *) echo "Cargo jobs must be 1 or 2" >&2; exit 2 ;; esac \
   && if [ "$CHARIOX_PREBUILT_RUNTIME" = "1" ]; then \
       test -x /opt/chariox-prebuilt/chariox-kernel \
       && test -x /opt/chariox-prebuilt/chariox-relay \
@@ -39,8 +41,10 @@ RUN mkdir -p /opt/chariox-runtime-bin \
     else \
       case "$CHARIOX_RUNTIME_BUILD_PROFILE" in \
         release) \
-          CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-kernel --bin chariox-kernel --bin chariox-managed-bootstrap \
-          && CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-relay --bin chariox-relay \
+          CARGO_BUILD_JOBS="$CHARIOX_CARGO_BUILD_JOBS" CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-kernel --bin chariox-kernel --bin chariox-managed-bootstrap \
+          && CARGO_BUILD_JOBS="$CHARIOX_CARGO_BUILD_JOBS" CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-relay --bin chariox-relay \
+          && CARGO_BUILD_JOBS="$CHARIOX_CARGO_BUILD_JOBS" CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-app-package --bin chariox-app-package \
+          && CARGO_BUILD_JOBS="$CHARIOX_CARGO_BUILD_JOBS" CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-app-runtime --bin chariox-app-storage \
           && profile_dir="release" \
           ;; \
         dev) \
@@ -53,6 +57,13 @@ RUN mkdir -p /opt/chariox-runtime-bin \
       && install -m 0755 "target/$profile_dir/chariox-kernel" /opt/chariox-runtime-bin/chariox-kernel \
       && install -m 0755 "target/$profile_dir/chariox-relay" /opt/chariox-runtime-bin/chariox-relay; \
     fi
+
+FROM scratch AS managed-release-artifacts
+COPY --from=rust-builder /opt/chariox-source/target/release/chariox-kernel /chariox-kernel
+COPY --from=rust-builder /opt/chariox-source/target/release/chariox-managed-bootstrap /chariox-managed-bootstrap
+COPY --from=rust-builder /opt/chariox-source/target/release/chariox-relay /chariox-relay
+COPY --from=rust-builder /opt/chariox-source/target/release/chariox-app-package /chariox-app-package
+COPY --from=rust-builder /opt/chariox-source/target/release/chariox-app-storage /chariox-app-storage
 
 FROM node:26-bookworm-slim@sha256:367679cf9792759492a486e4aa4b421764d71a9546a6dae8aab81a99eb797b3e AS selkies-build
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv \
@@ -139,7 +150,8 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
 
 # Nested Docker cannot write an unprivileged uid_map on every host. The
 # setuid helper only sets up Bubblewrap's namespace and drops its caps
-# before the provider starts.
+# before the provider starts. Managed provider launches use the unprivileged
+# no-new-privs path validated by the provisioner sandbox probe.
 RUN chmod 4755 /usr/bin/bwrap
 
 RUN --mount=type=bind,source=apps/kernel/slice-linux-docker/docker/managed-provider-seccomp.c,target=/tmp/managed-provider-seccomp.c \
@@ -170,10 +182,12 @@ COPY apps/kernel/slice-linux-docker/docker/slice-selkies.py \
 
 WORKDIR /opt/chariox-toolchain
 COPY apps/kernel/slice-linux-docker/toolchain/package.json apps/kernel/slice-linux-docker/toolchain/package-lock.json ./
-RUN npm_config_cache=/tmp/chariox-npm-cache npm ci --omit=dev \
-  && test "$(node_modules/.bin/codex --version)" = "codex-cli 0.144.5" \
-  && test "$(node_modules/.bin/opencode --version)" = "1.18.23" \
-  && test "$(node_modules/.bin/claude --version)" = "2.1.212 (Claude Code)" \
+COPY deploy/managed-kernel/provider-versions.env ./
+RUN . ./provider-versions.env \
+  && npm_config_cache=/tmp/chariox-npm-cache npm ci --omit=dev \
+  && test "$(node_modules/.bin/codex --version)" = "codex-cli ${CHARIOX_CODEX_VERSION}" \
+  && test "$(node_modules/.bin/opencode --version)" = "${CHARIOX_OPENCODE_VERSION}" \
+  && test "$(node_modules/.bin/claude --version)" = "${CHARIOX_CLAUDE_VERSION} (Claude Code)" \
   && test "$(node_modules/.bin/pnpm --version)" = "11.22.0" \
   && rm -rf /tmp/chariox-npm-cache /root/.npm
 ENV PATH=/opt/chariox-toolchain/node_modules/.bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -187,6 +201,7 @@ COPY --from=rust-builder --chown=slice:slice /opt/chariox-runtime-bin/chariox-ke
 COPY --from=rust-builder --chown=slice:slice /opt/chariox-runtime-bin/chariox-relay /opt/chariox-slice/bin/chariox-relay
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-cdp.mjs /opt/chariox-slice/browser-cdp.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-actions.mjs /opt/chariox-slice/browser-controller-actions.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-input.mjs /opt/chariox-slice/browser-controller-input.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-cdp.mjs /opt/chariox-slice/browser-controller-cdp.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/selkies-capture.py /opt/chariox-slice/selkies-capture.py
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-resources.mjs /opt/chariox-slice/browser-controller-resources.mjs
@@ -197,6 +212,9 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controlle
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-bar.mjs /opt/chariox-slice/browser-controller-bar.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-events.mjs /opt/chariox-slice/browser-controller-events.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-files.mjs /opt/chariox-slice/browser-controller-files.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-upload-staging.mjs /opt/chariox-slice/browser-controller-upload-staging.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-upload-store.py /opt/chariox-slice/browser-upload-store.py
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-lifecycle.py /opt/chariox-slice/browser-lifecycle.py
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-frames.mjs /opt/chariox-slice/browser-controller-frames.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-history.mjs /opt/chariox-slice/browser-controller-history.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-permissions.mjs /opt/chariox-slice/browser-controller-permissions.mjs
@@ -225,6 +243,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/validate-screen.s
 
 RUN chmod +x /opt/chariox-slice/browser-cdp.mjs \
     /opt/chariox-slice/browser-controller-actions.mjs \
+    /opt/chariox-slice/browser-controller-input.mjs \
     /opt/chariox-slice/browser-controller-cdp.mjs \
     /opt/chariox-slice/browser-controller-resources.mjs \
     /opt/chariox-slice/browser-controller-cookie-fence.mjs \
@@ -234,6 +253,7 @@ RUN chmod +x /opt/chariox-slice/browser-cdp.mjs \
     /opt/chariox-slice/browser-controller-bar.mjs \
     /opt/chariox-slice/browser-controller-events.mjs \
     /opt/chariox-slice/browser-controller-files.mjs \
+    /opt/chariox-slice/browser-controller-upload-staging.mjs \
     /opt/chariox-slice/browser-controller-frames.mjs \
     /opt/chariox-slice/browser-controller-history.mjs \
     /opt/chariox-slice/browser-controller-permissions.mjs \

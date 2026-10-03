@@ -196,8 +196,8 @@ pub fn discover_workflow_code_node_path() -> Result<PathBuf, crate::DaemonError>
             candidates.push(dir.join("node"));
         }
     }
-    candidates.sort();
-    candidates.dedup();
+    let mut seen = std::collections::HashSet::new();
+    candidates.retain(|candidate| seen.insert(candidate.clone()));
     candidates
         .into_iter()
         .find(|candidate| {
@@ -214,4 +214,17 @@ pub fn discover_workflow_code_node_path() -> Result<PathBuf, crate::DaemonError>
                 "could not find Node.js for workflow-code compilation; pass node_path or set NODE"
                     .to_string(),
         })
+}
+
+#[cfg(unix)]
+#[test]
+fn node_discovery_preserves_the_explicit_runtime_override() {
+    use std::os::unix::fs::PermissionsExt;
+    let _environment = crate::env_lock::lock();
+    let worktree = crate::test_support::TestWorktree::new("node-discovery-override");
+    let node = worktree.path().join("configured-node");
+    std::fs::write(&node, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::env::set_var("NODE", &node);
+    assert_eq!(discover_workflow_code_node_path().unwrap(), node);
 }

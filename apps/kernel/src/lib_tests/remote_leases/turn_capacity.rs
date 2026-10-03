@@ -43,6 +43,46 @@ fn submit(app: &mut DaemonApp, leased_agent_id: &str) -> String {
     provider_run_id
 }
 
+/// Release F cancels a leased turn only by its exact home prompt and worker run,
+/// so this submission carries the home identity a real home kernel sends.
+fn submit_with_home_prompt(
+    app: &mut DaemonApp,
+    leased_agent_id: &str,
+    home_agent_id: &str,
+    home_prompt_id: &str,
+) -> String {
+    let context = crate::transport::relay_peer::RemoteGitTurnContext {
+        home_session_id: format!("session-{home_agent_id}"),
+        home_agent_id: home_agent_id.to_string(),
+        home_prompt_id: home_prompt_id.to_string(),
+        home_turn_id: format!("turn-{home_prompt_id}"),
+        source_attachment_id: None,
+        workspace_live_sync_mode: None,
+        prompt_origin: None,
+        external_provider: None,
+        external_provider_session_id: None,
+        external_provider_turn_id: None,
+        prompt_summary: "held turn cancellation".to_string(),
+    };
+    let (provider_run_id, outcome) = RemoteLeaseRuntime::new(app)
+        .submit_leased_prompt_with_workflow_context(
+            leased_agent_id,
+            "remote leased prompt\n",
+            Vec::new(),
+            None,
+            Some(context),
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+        )
+        .expect("leased prompt should be accepted");
+    assert!(
+        matches!(outcome, PromptSubmissionOutcome::Started { .. }),
+        "the home must see an accepted turn as running: {outcome:?}"
+    );
+    provider_run_id
+}
+
 fn turn_reached_provider(app: &DaemonApp, provider_run_id: &str) -> bool {
     app.prompt_activity.read().contains_key(provider_run_id)
 }
@@ -159,11 +199,12 @@ fn cancelling_a_held_turn_settles_it_without_reaching_the_provider() {
     let first = leased_agent(&mut app, "agent-first");
     let second = leased_agent(&mut app, "agent-second");
     submit(&mut app, &first.id);
-    let second_run = submit(&mut app, &second.id);
+    let second_run =
+        submit_with_home_prompt(&mut app, &second.id, "agent-second", "home-prompt-second");
     assert!(waiting(&mut app, &second.id));
 
     let cancellation = RemoteLeaseRuntime::new(&mut app)
-        .cancel_leased_prompt(&second.id)
+        .cancel_leased_prompt(&second.id, "home-prompt-second", &second_run)
         .expect("held turn should cancel");
     assert_eq!(cancellation.prompt.status(), PromptStatus::Cancelled);
     assert!(!waiting(&mut app, &second.id));

@@ -23,33 +23,39 @@ use super::tabs::TabRegistry;
 const DEFAULT_ACTION_QUEUE_CAPACITY: usize = 128;
 const MAX_ACTION_HISTORY_PAGE_SIZE: usize = 100;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RoomEnvironment {
-    session_id: String,
-    environment_id: String,
-    runtime_generation: u64,
-    has_started: bool,
-    lifecycle: EnvironmentLifecycle,
-    viewport: CanonicalViewport,
-    health: BTreeMap<EnvironmentComponent, EnvironmentComponentHealth>,
-    actors: BTreeMap<String, EnvironmentActor>,
-    pointers: BTreeMap<String, EnvironmentPointer>,
-    tabs: TabRegistry,
-    element_references: ElementReferenceRegistry,
-    action_ledger: EnvironmentActionLedger,
-    browser_controller_recovering: bool,
+    pub(super) session_id: String,
+    pub(super) environment_id: String,
+    pub(super) runtime_generation: u64,
+    pub(super) has_started: bool,
+    pub(super) lifecycle: EnvironmentLifecycle,
+    pub(super) viewport: CanonicalViewport,
+    pub(super) health: BTreeMap<EnvironmentComponent, EnvironmentComponentHealth>,
+    pub(super) actors: BTreeMap<String, EnvironmentActor>,
+    pub(super) pointers: BTreeMap<String, EnvironmentPointer>,
+    pub(super) tabs: TabRegistry,
+    pub(super) element_references: ElementReferenceRegistry,
+    pub(super) action_ledger: EnvironmentActionLedger,
+    pub(super) browser_controller_recovering: bool,
     /// Ordinary Tabs' windows show Chromium's tab strip and address bar
     /// (maximized) instead of covering the desktop (fullscreen).
-    browser_bar_visible: bool,
+    /// A user's choice that survives a kernel restart like the browser does.
+    #[serde(default)]
+    pub(super) browser_bar_visible: bool,
     /// App view Tabs by controller target (installation and panel layout), and
     /// the focus agent their panels show. Kept across Tab churn so a Tab gets
-    /// its marker once it appears.
-    app_installations: BTreeMap<String, (String, super::model::AppPanelLayout)>,
+    /// its marker once it appears. Not durable: the App view runtime publishes
+    /// them again after a kernel restart.
+    #[serde(skip)]
+    pub(super) app_installations: BTreeMap<String, (String, super::model::AppPanelLayout)>,
     /// The browser controller lays App pages out beside the panel. An older
     /// one does not: its App Tabs are marked without a panel.
-    app_panels: bool,
-    panel_agent_id: Option<String>,
-    event_log: EnvironmentEventLog,
+    #[serde(skip)]
+    pub(super) app_panels: bool,
+    #[serde(skip)]
+    pub(super) panel_agent_id: Option<String>,
+    pub(super) event_log: EnvironmentEventLog,
 }
 
 impl RoomEnvironment {
@@ -180,6 +186,7 @@ impl RoomEnvironment {
         } else {
             self.has_started = true;
             self.lifecycle = EnvironmentLifecycle::Starting;
+            self.mark_browser_components_starting();
             self.emit(EnvironmentEventKind::LifecycleChanged {
                 lifecycle: EnvironmentLifecycle::Starting,
             });
@@ -542,6 +549,11 @@ impl RoomEnvironment {
         state: EnvironmentComponentHealthState,
         diagnostic_code: Option<&str>,
     ) {
+        if self.health.get(&component).is_some_and(|health| {
+            health.state == state && health.diagnostic_code.as_deref() == diagnostic_code
+        }) {
+            return;
+        }
         self.health.insert(
             component,
             EnvironmentComponentHealth {
@@ -994,10 +1006,24 @@ impl RoomEnvironment {
             self.emit_action_changed(&action_id, EnvironmentActionState::Failed);
         }
         self.action_ledger.compact_terminal_actions();
+        self.mark_browser_components_starting();
         self.emit(EnvironmentEventKind::RuntimeInvalidated);
         self.emit(EnvironmentEventKind::LifecycleChanged {
             lifecycle: EnvironmentLifecycle::Starting,
         });
+    }
+
+    fn mark_browser_components_starting(&mut self) {
+        for component in [
+            EnvironmentComponent::BrowserController,
+            EnvironmentComponent::Browser,
+        ] {
+            self.update_component_health(
+                component,
+                EnvironmentComponentHealthState::Starting,
+                None,
+            );
+        }
     }
 
     fn emit_action_recovery_effect(&mut self, effect: ActionRecoveryEffect) {
@@ -1013,7 +1039,7 @@ impl RoomEnvironment {
         self.action_ledger.compact_terminal_actions();
     }
 
-    fn clear_pointers(&mut self) {
+    pub(super) fn clear_pointers(&mut self) {
         if !self.pointers.is_empty() {
             self.pointers.clear();
             self.emit(EnvironmentEventKind::PointersChanged);
@@ -1026,12 +1052,12 @@ impl RoomEnvironment {
         }
     }
 
-    fn emit(&mut self, kind: EnvironmentEventKind) {
+    pub(super) fn emit(&mut self, kind: EnvironmentEventKind) {
         self.event_log
             .push(&self.environment_id, self.runtime_generation, kind);
     }
 
-    fn emit_action_changed(&mut self, action_id: &str, state: EnvironmentActionState) {
+    pub(super) fn emit_action_changed(&mut self, action_id: &str, state: EnvironmentActionState) {
         let Some(action) = self.action_ledger.action(action_id) else {
             debug_assert!(
                 false,

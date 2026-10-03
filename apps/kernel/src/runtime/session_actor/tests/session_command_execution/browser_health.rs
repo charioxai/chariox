@@ -205,6 +205,7 @@ async fn room_browser_health_probe_shares_controller_routes_and_yields_to_slice_
             "health-home",
             "health-machine",
             crate::slice::CreateSliceInput {
+                source_slice_ref: None,
                 name: "health-admission".into(),
                 backend: crate::slice::SliceBackendKind::LocalDocker,
                 os: "linux".into(),

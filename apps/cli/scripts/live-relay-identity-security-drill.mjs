@@ -143,7 +143,7 @@ function jwtActionName(action) {
   return name
 }
 
-function claims({
+export function claims({
   subject,
   subjectKind,
   realm,
@@ -152,6 +152,7 @@ function claims({
   issuedAt = Date.now(),
   expiresAt = Date.now() + 60_000,
   publicKeyThumbprint = null,
+  machineId = subjectKind === "kernel" || subjectKind === "machine" ? subject : null,
 }) {
   return {
     issuer,
@@ -166,14 +167,14 @@ function claims({
     account_id: "account-drill",
     organization_id: null,
     device_id: subject,
-    machine_id: subjectKind === "kernel" || subjectKind === "machine" ? subject : null,
+    machine_id: machineId,
     client_id: subjectKind === "client" ? subject : null,
     public_key_thumbprint: publicKeyThumbprint,
     entitlements_version: "drill",
   }
 }
 
-function daemonRegistration({ token, daemonId, machineId }) {
+export function daemonRegistration({ token, daemonId, machineId }) {
   return {
     kind: "daemon_register",
     registration: {
@@ -526,6 +527,7 @@ async function main() {
     const daemonAToken = signToken(claims({
       subject: "daemon-a",
       subjectKind: "kernel",
+      machineId: "machine-a",
       realm: "realm-a",
       actions: ["daemon_register", "daemon_heartbeat", "peer_request", "peer_event"],
       publicKeyThumbprint: relayPublicKeyThumbprint("daemon-a-public-key"),
@@ -533,6 +535,7 @@ async function main() {
     const daemonBToken = signToken(claims({
       subject: "daemon-b",
       subjectKind: "kernel",
+      machineId: "machine-b",
       realm: "realm-b",
       actions: ["daemon_register"],
       publicKeyThumbprint: relayPublicKeyThumbprint("daemon-b-public-key"),
@@ -740,7 +743,9 @@ async function main() {
   if (failure) throw failure
 }
 
-main().catch((error) => {
-  console.error(`[relay-identity-security-drill] ${bounded(error.stack ?? error.message)}`)
-  process.exitCode = 1
-})
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error(`[relay-identity-security-drill] ${bounded(error.stack ?? error.message)}`)
+    process.exitCode = 1
+  })
+}

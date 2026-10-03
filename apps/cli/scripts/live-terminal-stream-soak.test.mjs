@@ -27,3 +27,20 @@ test("stream soak enforces kernel resource budgets", async () => {
   assert.match(source, /peakRssMb <= maxRssMb/)
   assert.match(source, /cpuP95Percent <= maxCpuPercent/)
 })
+
+test("stream soak selects an explicit release and external client without changing the shared target", async () => {
+  const { stdout } = await run(process.execPath, [script, "--dry-run", "--kernel-binary", "/opt/release/chariox-kernel", "--client-root", "/opt/client/dist"], {
+    env: { ...process.env, CARGO_TARGET_DIR: "/tmp/chariox-shared-target" },
+  })
+  const plan = JSON.parse(stdout)
+  assert.equal(plan.kernelBinary, "/opt/release/chariox-kernel")
+  assert.equal(plan.clientRoot, "/opt/client/dist")
+  assert.equal(plan.cargoTargetDir, "/tmp/chariox-shared-target")
+  assert.ok(!plan.output.includes("/.artifacts/"))
+})
+
+test("stream soak rejects relative runtime and client paths", async () => {
+  for (const flag of ["--kernel-binary", "--client-root"]) {
+    await assert.rejects(run(process.execPath, [script, "--dry-run", flag, "relative/path"]), /must be absolute/)
+  }
+})

@@ -213,22 +213,6 @@ impl KernelRuntimeOwnedState {
         )
     }
 
-    pub(super) fn fail_local_prompt_without_advance_with_termination(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-        provider_run_id: Option<&str>,
-        provider_termination: Option<crate::provider::ProviderRunTermination>,
-    ) -> Result<Option<OwnedPromptCompletion>, DaemonError> {
-        self.fail_local_prompt_without_advance_with_termination_if_matches(
-            session_id,
-            agent_id,
-            provider_run_id,
-            None,
-            provider_termination,
-        )
-    }
-
     pub(super) fn fail_local_prompt_without_advance_with_termination_if_matches(
         &self,
         session_id: &str,
@@ -433,6 +417,17 @@ impl KernelRuntimeOwnedState {
                 ),
             _ => false,
         };
+        // MP-08/MP-10/MP-11: Project inputs require normal activation after the
+        // old turn settles. Never dispatch this queue head to an unvalidated process.
+        if self.project_prompt_provider_requires_resolution(&session, &provider_run) {
+            return self.finalize_local_completion_without_queued_advance(
+                session_id,
+                agent_id,
+                completed,
+                &provider_run_id,
+                released_workflow_claim,
+            );
+        }
         if !self.provider_account_allows_queued_prompt_advance(
             session_id,
             &target_agent,
@@ -446,10 +441,24 @@ impl KernelRuntimeOwnedState {
                 released_workflow_claim,
             );
         }
+        let _admission = match self.begin_managed_activity_admission() {
+            Ok(admission) => admission,
+            Err(_) => {
+                return self.finalize_local_completion_without_queued_advance(
+                    session_id,
+                    agent_id,
+                    completed,
+                    &provider_run_id,
+                    released_workflow_claim,
+                );
+            }
+        };
+        let activity_mutation = self.begin_managed_activity_mutation();
         let acquired_next_workflow_claim =
             match self.ensure_workflow_prompt_workspace_claim(session_id, next_queued_prompt) {
                 Ok(acquired) => acquired,
                 Err(DaemonError::WorkspaceClaimConflict { .. }) => {
+                    drop(activity_mutation);
                     return self.finalize_local_completion_without_queued_advance(
                         session_id,
                         agent_id,
@@ -469,6 +478,7 @@ impl KernelRuntimeOwnedState {
                 self.session_store.reserve_prompt_id(),
             )?
         else {
+            drop(activity_mutation);
             if acquired_next_workflow_claim == Some(true) {
                 self.release_workflow_node_workspace_claim(
                     session_id,
@@ -498,6 +508,15 @@ impl KernelRuntimeOwnedState {
                 dispatch: None,
             }));
         };
+        let (active_prompt, queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        self.mirror_prompt_owner_agent_state_with_activity_mutation(
+            session_id,
+            agent_id,
+            active_prompt,
+            queued_prompts,
+            activity_mutation,
+        )?;
         let source_attachment_id = self.promoted_prompt_source_attachment_id(
             session_id,
             started_next.source_attachment_id(),
@@ -519,9 +538,6 @@ impl KernelRuntimeOwnedState {
             &started_next,
             Some(prompt_sent_at_ms),
         );
-        let (active_prompt, queued_prompts) =
-            self.prompt_state_owner.state_parts(&session, agent_id);
-        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
         // A substitute run serves only its own turn; the next one goes through
         // the dispatcher, which moves it to the agent's configured profile.
         if self
@@ -689,6 +705,10 @@ impl KernelRuntimeOwnedState {
             );
     }
 }
+
+#[cfg(test)]
+#[path = "prompt_workspace_claim_conflict_tests.rs"]
+mod prompt_workspace_claim_conflict_tests;
 
 fn join_hidden_context(first: &str, second: &str) -> String {
     match (first.trim(), second.trim()) {

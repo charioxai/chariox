@@ -1,3 +1,4 @@
+import { BrowserInputCapture } from "./browser-controller-input.mjs";
 import {
   BrowserSnapshotError,
 } from "./browser-controller-snapshot.mjs";
@@ -67,6 +68,7 @@ export class BrowserCdpClient {
     minimumDownloadFreeBytes = DEFAULT_MINIMUM_DOWNLOAD_FREE_BYTES,
     uploadRoots = [],
     fileSystem,
+    stageUploads,
     eventJournal = new BrowserEventJournal(),
     applyCanonicalDisplay,
   } = {}) {
@@ -80,12 +82,15 @@ export class BrowserCdpClient {
     this.minimumDownloadFreeBytes = minimumDownloadFreeBytes;
     this.uploadRoots = uploadRoots;
     this.fileSystem = fileSystem;
+    this.stageUploads = stageUploads;
     this.eventJournal = eventJournal;
     this.connection = null;
+    this.connectionOpening = null;
     this.pageCloseQueue = Promise.resolve();
     this.unsubscribeFromConnection = null;
     this.browserGeneration = 0;
     this.sessionsByTarget = new Map();
+    this.targetSessionOpening = new Map();
     this.targetsBySession = new Map();
     this.targetsByFrame = new BrowserFrameTargets();
     this.frameSessions = new BrowserFrameSessions(this.targetsByFrame, (id) => this.targetsBySession.get(id));
@@ -100,11 +105,32 @@ export class BrowserCdpClient {
     this.networkRequestsBySession = new Map();
     this.cookieWriterFence = null;
     this.cookieWriterFenceInUse = false;
+    this.inputCapture = new BrowserInputCapture();
+    this.appliedViewport = null;
+    this.viewportByTarget = new Map();
+  }
+
+  // MP-08/MP-10: discovery is observational once the canonical viewport, and
+  // the Room browser bar and App panel layout sent with it, are applied.
+  canReconcileConcurrently(rawViewport, { browserBarVisible, appPanelCssWidth } = {}) {
+    try {
+      return this.connection?.isOpen() === true
+        && this.appliedViewport === appliedReconcileKey(canonicalViewport(rawViewport), browserBarVisible, appPanelCssWidth);
+    } catch { return false; }
   }
 
   async reconcile(rawViewport, { browserBarVisible, appPanelCssWidth } = {}) {
     const viewport = canonicalViewport(rawViewport);
-    await this.applyCanonicalDisplay?.(viewport);
+    // A changed or failed viewport is never an observational preflight.
+    if (this.appliedViewport !== appliedReconcileKey(viewport, browserBarVisible, appPanelCssWidth)) {
+      this.appliedViewport = null;
+    }
+    try {
+      await this.applyCanonicalDisplay?.(viewport);
+    } catch (error) {
+      this.appliedViewport = null;
+      throw error;
+    }
     // A kernel before the automatic App panel sends no width: App pages then
     // get the whole viewport and no panel is drawn beside them.
     this.appViewport = Number.isSafeInteger(appPanelCssWidth) && appPanelCssWidth > 0
@@ -159,6 +185,7 @@ export class BrowserCdpClient {
       if (typeof browserBarVisible === "boolean") {
         await applyBrowserBar(connection, pages, appTargets, browserBarVisible, this.browserBarApplied);
       }
+      this.appliedViewport = appliedReconcileKey(viewport, browserBarVisible, appPanelCssWidth);
       const focused = inspected.find((tab) => tab.focused)?.target_id ?? null;
       return {
         browser_generation: this.browserGeneration,
@@ -170,6 +197,9 @@ export class BrowserCdpClient {
     } catch (error) {
       if (!connection.isOpen()) {
         this.connection = null;
+        this.appliedViewport = null;
+        this.viewportByTarget.clear();
+        this.focusWorldsByTarget.clear();
         this.sessionsByTarget.clear();
         this.targetsBySession.clear();
         this.targetsByFrame.clear();
@@ -191,6 +221,9 @@ export class BrowserCdpClient {
   async close() {
     const connection = this.connection;
     this.connection = null;
+    this.appliedViewport = null;
+    this.viewportByTarget.clear();
+    this.focusWorldsByTarget.clear();
     this.unsubscribeFromConnection?.();
     this.unsubscribeFromConnection = null;
     this.sessionsByTarget.clear();
@@ -290,12 +323,27 @@ export class BrowserCdpClient {
   }
 
   async ensureConnection() {
+    if (this.connectionOpening) return this.connectionOpening;
     if (this.connection?.isOpen()) {
       return this.connection;
     }
+    const opening = this.openConnection();
+    this.connectionOpening = opening;
+    try {
+      return await opening;
+    } finally {
+      if (this.connectionOpening === opening) this.connectionOpening = null;
+    }
+  }
+
+  async openConnection() {
+    this.appliedViewport = null;
+    this.viewportByTarget.clear();
+    this.focusWorldsByTarget.clear();
     this.unsubscribeFromConnection?.();
     this.unsubscribeFromConnection = null;
     this.sessionsByTarget.clear();
+    this.targetSessionOpening.clear();
     this.targetsBySession.clear();
     this.targetsByFrame.clear();
     this.frameSessions.clear();
@@ -351,6 +399,7 @@ export class BrowserCdpClient {
     this.targetsBySession.delete(sessionId);
     this.networkRequestsBySession.delete(sessionId);
     this.sessionsByTarget.delete(targetId);
+    this.viewportByTarget.delete(targetId);
     this.documentIdsByTarget.delete(targetId);
     this.focusWorldsByTarget.delete(targetId);
     this.snapshotStateByTarget.delete(targetId);
@@ -373,7 +422,13 @@ export class BrowserCdpClient {
 
   async inspectPage(connection, target, metrics) {
     const sessionId = await this.ensureTargetSession(connection, target.targetId);
-    await connection.send("Emulation.setDeviceMetricsOverride", metrics, sessionId);
+    // Metrics differ per target (App pages lay out beside their panel).
+    // Reapply only when this target's metrics changed.
+    const metricsKey = JSON.stringify(metrics);
+    if (this.viewportByTarget.get(target.targetId) !== metricsKey) {
+      await connection.send("Emulation.setDeviceMetricsOverride", metrics, sessionId);
+      this.viewportByTarget.set(target.targetId, metricsKey);
+    }
     const frameTree = await connection.send("Page.getFrameTree", {}, sessionId);
     const frame = frameTree?.frameTree?.frame;
     const documentId = frame?.loaderId;
@@ -391,12 +446,16 @@ export class BrowserCdpClient {
       document_id: documentId,
       url: typeof target.url === "string" ? target.url : "",
       title: typeof target.title === "string" ? target.title : "",
-      focused: focus?.result?.value === true,
+      focused: focus === true,
     };
   }
 
   // One isolated world per document: polls reuse it, a new document gets a new one.
+  // Input capture emulates focus while it runs: report the physical visibility
+  // it captured before enabling emulation instead.
   async readFocus(connection, sessionId, targetId, frame) {
+    const captured = this.inputCapture.visibilityBySession.get(sessionId);
+    if (captured) return captured.visible;
     let world = this.focusWorldsByTarget.get(targetId);
     if (world?.documentId !== frame.loaderId) {
       const created = await connection.send(
@@ -407,8 +466,9 @@ export class BrowserCdpClient {
       world = { documentId: frame.loaderId, contextId: created?.executionContextId };
       this.focusWorldsByTarget.set(targetId, world);
     }
+    let focus;
     try {
-      return await connection.send(
+      focus = await connection.send(
         "Runtime.evaluate",
         {
           expression: "document.visibilityState === 'visible'",
@@ -422,6 +482,8 @@ export class BrowserCdpClient {
       this.focusWorldsByTarget.delete(targetId);
       throw error;
     }
+    // This read may have begun just before input enabled emulation.
+    return this.inputCapture.visibilityBySession.get(sessionId)?.visible ?? focus?.result?.value === true;
   }
 
   async manageTab(rawRequest, { signal } = {}) {
@@ -454,7 +516,9 @@ export class BrowserCdpClient {
     }
     assertNotCancelled(signal);
     if (action === "activate") {
-      await connection.send("Target.activateTarget", { targetId });
+      const sessionId = await this.ensureTargetSession(connection, targetId);
+      assertNotCancelled(signal);
+      await connection.send("Page.bringToFront", {}, sessionId);
     } else {
       const result = await this.closePageTarget(connection, targetId, { signal });
       if (result?.success !== true) {
@@ -587,6 +651,7 @@ export class BrowserCdpClient {
         action: rawRequest?.action,
         timeoutMs: rawRequest?.timeout_ms,
         signal,
+        withInput: operation => this.inputCapture.run(connection, sessionId, operation),
       }, performBrowserAction);
       return {
         browser_generation: this.browserGeneration,
@@ -791,6 +856,7 @@ export class BrowserCdpClient {
           filePaths: rawRequest?.file_paths,
           uploadRoots: this.uploadRoots,
           fileSystem: this.fileSystem,
+          stageUploads: this.stageUploads,
           signal,
         }, uploadBrowserFiles),
       };
@@ -855,10 +921,22 @@ export class BrowserCdpClient {
   }
 
   async ensureTargetSession(connection, targetId) {
-    let sessionId = this.sessionsByTarget.get(targetId);
+    const pending = this.targetSessionOpening.get(targetId);
+    if (pending) return pending;
+    const sessionId = this.sessionsByTarget.get(targetId);
     if (sessionId) {
       return sessionId;
     }
+    const opening = this.attachTargetSession(connection, targetId);
+    this.targetSessionOpening.set(targetId, opening);
+    try {
+      return await opening;
+    } finally {
+      if (this.targetSessionOpening.get(targetId) === opening) this.targetSessionOpening.delete(targetId);
+    }
+  }
+
+  async attachTargetSession(connection, targetId) {
     const attached = await connection.send("Target.attachToTarget", {
       targetId,
       flatten: true,
@@ -869,7 +947,10 @@ export class BrowserCdpClient {
         `browser target ${JSON.stringify(targetId)} did not return a session`,
       );
     }
-    sessionId = attached.sessionId;
+    const sessionId = attached.sessionId;
+    if (this.connection !== connection || !connection.isOpen()) {
+      throw new BrowserControllerError("browser_connection_changed", "browser connection changed while attaching a target");
+    }
     this.sessionsByTarget.set(targetId, sessionId);
     this.targetsBySession.set(sessionId, targetId);
     try {
@@ -881,10 +962,15 @@ export class BrowserCdpClient {
         connection.send("Inspector.enable", {}, sessionId),
         this.frameSessions.start(connection, sessionId),
       ]);
+      if (this.connection !== connection || !connection.isOpen()) {
+        throw new BrowserControllerError("browser_connection_changed", "browser connection changed while initializing a target");
+      }
     } catch (error) {
-      this.sessionsByTarget.delete(targetId);
-      this.targetsBySession.delete(sessionId);
-      await this.frameSessions.removeTarget(targetId);
+      if (this.connection === connection && this.sessionsByTarget.get(targetId) === sessionId) {
+        this.sessionsByTarget.delete(targetId);
+        this.targetsBySession.delete(sessionId);
+        await this.frameSessions.removeTarget(targetId);
+      }
       await connection.send("Target.detachFromTarget", { sessionId }).catch(() => {});
       throw error;
     }
@@ -945,7 +1031,10 @@ export class BrowserCdpClient {
         this.networkRequestsBySession.delete(sessionId);
       }
       if (typeof targetId === "string") {
+        this.appliedViewport = null;
         this.sessionsByTarget.delete(targetId);
+        this.viewportByTarget.delete(targetId);
+        this.focusWorldsByTarget.delete(targetId);
         this.dialogDefaults.delete(targetId);
         this.targetsByFrame.removeTarget(targetId);
         void this.frameSessions.removeTarget(targetId);
@@ -1300,6 +1389,10 @@ function validPage(page, viewport) {
     : null;
 }
 
+function appliedReconcileKey(viewport, browserBarVisible, appPanelCssWidth) {
+  return JSON.stringify({ viewport, browserBarVisible, appPanelCssWidth });
+}
+
 function deviceMetricsFor(viewport) {
   return {
     width: viewport.css_width,
@@ -1347,7 +1440,11 @@ async function connectToBrowser({
   );
   const socket = webSocketFactory(debuggerUrl);
   await waitForSocketOpen(socket, requestTimeoutMs);
-  return new CdpConnection(socket, requestTimeoutMs);
+  const connection = new CdpConnection(socket, requestTimeoutMs);
+  // This is Chromium's physical browser endpoint, not our reconnect counter.
+  // Upload staging must survive websocket and controller-process replacement.
+  connection.browserInstanceId = debuggerUrl;
+  return connection;
 }
 
 function waitForSocketOpen(socket, timeoutMs) {

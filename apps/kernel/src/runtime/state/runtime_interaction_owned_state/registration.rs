@@ -9,6 +9,7 @@ impl KernelRuntimeOwnedState {
         kernel_operation_owner: Option<&str>,
         forwarding: Option<&crate::transport::relay_peer::RemoteNativeInteractionContext>,
     ) -> Result<(), DaemonError> {
+        let _admission = self.begin_managed_activity_admission()?;
         let _mutation = self
             .pending_interactions
             .mutation

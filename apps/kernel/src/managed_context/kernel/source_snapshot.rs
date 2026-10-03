@@ -31,6 +31,7 @@ const PORTABLE_ENVIRONMENT_FILES: [&str; 4] = [
 pub(super) struct KernelContextSourceSnapshot {
     _root: PrivateSnapshotRoot,
     pub(super) mcp_root: PathBuf,
+    pub(super) user_rules_root: PathBuf,
     pub(super) original_mcp_root: Option<PathBuf>,
     pub(super) skill_root: PathBuf,
     pub(super) script_root: PathBuf,
@@ -62,8 +63,36 @@ impl KernelContextSourceSnapshot {
         let connector_root = root.path.join("connectors/definitions");
         let connector_adapter_root = root.path.join("connectors/adapters");
         let credential_root = root.path.join("credentials");
+        let user_rules_root = root.path.join("user-rules");
+        create_private_directory(&user_rules_root)?;
         let original_mcp_root = crate::mcp::CharioxMcpRegistry::user_root();
         capture_optional_root(original_mcp_root.as_deref(), &mcp_root, &mut budget)?;
+        if let Some(source) = original_mcp_root
+            .as_deref()
+            .and_then(Path::parent)
+            .map(|root| root.join("user-rules.md"))
+        {
+            match fs::symlink_metadata(&source) {
+                Ok(metadata)
+                    if metadata.is_file()
+                        && !metadata.file_type().is_symlink()
+                        && metadata.len() <= 64 * 1024 =>
+                {
+                    let bytes = read_bounded_source_file(&source)?;
+                    if bytes.len() > 64 * 1024 {
+                        return Err(source_error("user rules exceed bounds"));
+                    }
+                    budget.add_file(bytes.len() as u64)?;
+                    write_private_snapshot_file(
+                        &user_rules_root.join("user-rules.md"),
+                        &bytes,
+                        false,
+                    )?;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                _ => return Err(source_error("user rules must be a bounded regular file")),
+            }
+        }
         capture_optional_root(
             crate::skill::CharioxSkillRegistry::user_root().as_deref(),
             &skill_root,
@@ -109,6 +138,7 @@ impl KernelContextSourceSnapshot {
         Ok(Self {
             _root: root,
             mcp_root,
+            user_rules_root,
             original_mcp_root,
             skill_root,
             script_root,
@@ -135,6 +165,7 @@ impl KernelContextSourceSnapshot {
     fn roots(&self) -> Vec<(String, &Path)> {
         let mut roots = vec![
             ("mcp".to_string(), self.mcp_root.as_path()),
+            ("user_rules".to_string(), self.user_rules_root.as_path()),
             ("skill".to_string(), self.skill_root.as_path()),
             ("script".to_string(), self.script_root.as_path()),
             ("environment".to_string(), self.environment_root.as_path()),

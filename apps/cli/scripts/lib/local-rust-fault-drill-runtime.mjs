@@ -92,7 +92,7 @@ export async function runLocalRustFaultDrill({
     }
     report.failure = bounded(error instanceof Error ? error.message : error)
   } finally {
-    const remaining = processNeedle ? await matchingProcesses(run, processNeedle) : []
+    const remaining = processNeedle ? await matchingProcesses(run, processNeedle, cargoPid) : []
     report.cleanup = { ownedProcessesAbsent: remaining.length === 0, remaining }
     report.resources.push(await resourceSnapshot(run, "after-cleanup", null, repoRoot))
     report.completedAt = new Date().toISOString()
@@ -111,7 +111,7 @@ export async function runLocalRustFaultDrill({
 }
 
 function parseArgs(argv, { name, description }) {
-  const options = { cargoTarget: defaultCargoTarget, reportPath: null, dryRun: false, help: false }
+  const options = { cargoTarget: process.env.CARGO_TARGET_DIR ?? defaultCargoTarget, reportPath: null, dryRun: false, help: false }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
     if (arg === "--dry-run") options.dryRun = true
@@ -240,9 +240,16 @@ async function resourceSnapshot(run, label, childPid = null, diskRoot = process.
   }
 }
 
-async function matchingProcesses(run, needle) {
+export async function matchingProcesses(run, needle, processGroupId) {
   const result = await run("pgrep", ["-f", needle], { timeoutMs: 10_000, allowFailure: true }).catch(() => null)
-  return result?.code === 0 ? result.stdout.trim().split("\n").filter(Boolean) : []
+  const pids = result?.code === 0 ? result.stdout.trim().split("\n").filter(Boolean) : []
+  if (!pids.length || !processGroupId) return []
+  const processes = await run("ps", ["-o", "pid=,pgid=", "-p", pids.join(",")], {
+    timeoutMs: 10_000, allowFailure: true,
+  })
+  return processes.stdout.split("\n").map((line) => line.trim().split(/\s+/))
+    .filter(([pid, group]) => pids.includes(pid) && Number(group) === processGroupId)
+    .map(([pid]) => pid)
 }
 
 async function writeReport(reportPath, report) {

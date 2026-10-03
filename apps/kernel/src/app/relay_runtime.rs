@@ -37,12 +37,19 @@ impl DaemonApp {
             daemon_alias: self.config.daemon_alias.clone(),
             kernel_alias: self.config.daemon_alias.clone(),
             public_key: self.config.relay_public_key.clone(),
-            capabilities: vec![
+            capabilities: [
                 "kernel_websocket".to_string(),
                 "relay_request_proxy".to_string(),
                 "relay_peer_transport".to_string(),
                 "execution_lease_management".to_string(),
-            ],
+            ]
+            .into_iter()
+            .chain(
+                crate::local::RUNTIME_CONTROL_CAPABILITIES
+                    .iter()
+                    .map(|value| (*value).to_string()),
+            )
+            .collect(),
             available_providers,
             provider_accounts,
             accepting_remote_leases: self.config.accept_remote_leases,

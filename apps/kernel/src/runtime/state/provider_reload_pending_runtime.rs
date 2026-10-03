@@ -3,6 +3,20 @@
 use super::*;
 
 impl KernelRuntimeState {
+    /// A runtime tool catalog change keeps its typed cause in the same idle
+    /// queue as launch-input changes, so a merged reload still forces it.
+    pub(super) fn remember_pending_provider_catalog_reload(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) {
+        self.remember_pending_provider_reload(
+            session_id,
+            agent_id,
+            ProviderReloadReason::RuntimeToolCatalog,
+        );
+    }
+
     pub(super) fn remember_pending_provider_reload(
         &self,
         session_id: &str,

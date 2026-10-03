@@ -9,6 +9,7 @@ import test from "node:test"
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url))
 const packager = join(repositoryRoot, "scripts/package-managed-kernel-release.mjs")
+const packageTimeoutMs = 30_000
 
 test("managed release stages every local Dockerfile COPY source", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-managed-build-context-"))
@@ -37,10 +38,16 @@ test("managed release stages every local Dockerfile COPY source", async (context
     {
       encoding: "utf8",
       env: { ...process.env, SOURCE_DATE_EPOCH: "946684800" },
-      timeout: 30_000,
+      timeout: packageTimeoutMs,
     },
   )
-  assert.equal(packaged.status, 0, packaged.stderr)
+  if (packaged.status === null) {
+    const detail = packaged.error?.code === "ETIMEDOUT"
+      ? `packager timed out after ${packageTimeoutMs}ms${packaged.signal ? ` (${packaged.signal})` : ""}`
+      : `packager did not exit${packaged.signal ? ` (${packaged.signal})` : ""}${packaged.error ? `: ${packaged.error.message}` : ""}`
+    assert.fail(`${detail}${packaged.stderr ? `\n${packaged.stderr}` : ""}`)
+  }
+  assert.equal(packaged.status, 0, `packager exited with status ${packaged.status}: ${packaged.stderr}`)
 
   const stagedContext = join(output, "rootfs/usr/lib/chariox/slice-build-context")
   const dockerfile = await readFile(

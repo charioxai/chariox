@@ -1,6 +1,38 @@
 use super::*;
 
 #[test]
+fn runtime_start_and_reset_publish_browser_starting_health() {
+    let viewport = CanonicalViewport::new(1440, 900, 1, 1440, 900).unwrap();
+    let mut environment = RoomEnvironment::new("room-1", "environment-1", viewport).unwrap();
+    environment.start_runtime().unwrap();
+    for restarting in [false, true] {
+        if restarting {
+            environment.reset_runtime().unwrap();
+        }
+        let snapshot = environment.snapshot();
+        assert_eq!(snapshot.lifecycle, EnvironmentLifecycle::Starting);
+        for component in [
+            EnvironmentComponent::BrowserController,
+            EnvironmentComponent::Browser,
+        ] {
+            assert!(snapshot.health.iter().any(|health| {
+                health.component == component
+                    && health.state == EnvironmentComponentHealthState::Starting
+            }));
+        }
+        environment
+            .transition_to(EnvironmentLifecycle::Ready)
+            .unwrap();
+        environment
+            .transition_to(EnvironmentLifecycle::Stopping)
+            .unwrap();
+        environment
+            .transition_to(EnvironmentLifecycle::Stopped)
+            .unwrap();
+    }
+}
+
+#[test]
 fn lifecycle_preserves_identity_and_reset_invalidates_runtime_handles() {
     let viewport = CanonicalViewport::new(1440, 900, 2, 2880, 1800).unwrap();
     let mut environment = RoomEnvironment::new("room-1", "environment-1", viewport).unwrap();
@@ -2588,7 +2620,7 @@ fn component_health_projects_safe_diagnostic_codes() {
             },
             EnvironmentComponentHealth {
                 component: EnvironmentComponent::Browser,
-                state: EnvironmentComponentHealthState::Unavailable,
+                state: EnvironmentComponentHealthState::Starting,
                 diagnostic_code: None,
             },
             EnvironmentComponentHealth {

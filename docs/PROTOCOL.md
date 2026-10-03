@@ -4,6 +4,9 @@
 
 Draft protocol aligned with `docs/spec-v1.md`.
 
+Apps Phase 1 protocol numbers were renumbered above release F on 2026-10-03 (local
+N → N + 9 for 368–406, relay 58 → 69); see [PROTOCOL_PHASE1_RENUMBERING.md](PROTOCOL_PHASE1_RENUMBERING.md).
+
 ## 1. Scope
 
 This document defines message classes and protocol contracts between:
@@ -214,6 +217,24 @@ Existing providers like OpenCode may continue to be adapted through their native
 
 ## 3.3.2 Native TUI Agents
 
+MP-08 / MP-10 / MP-11 (owner decision 2026-10-02): credential copying remains
+unchanged across leased workers, managed-context imports and slices, including
+profile-scoped Claude Keychain export and the Vault setup-token remote path.
+Receiving kernels publish one non-blocking notice per renewable account and
+Machine about possible refresh-token invalidation. API keys and Claude setup
+tokens do not receive it. There is no credential sync or shared refresh authority.
+A failed native renewal raises one kernel-owned `Log in to <Provider> on this
+machine` RuntimeInteraction. Accepting invokes the existing official login on
+the execution kernel; login success reloads the official harness and resumes the admitted Chariox turn.
+Protocol v376 adds optional ephemeral `RuntimeInteraction.provider_login`
+(receiving Kernel ID, official `ProviderLoginStart`, bounded terminal output).
+Challenges and masked native responses are human-only, excluded from model
+context, history and logs. Relay peer v68 updates/dismisses that projection
+through the existing lease-authorized native-interaction bridge. Standalone
+kernels use the same local path; no external auth coordinator is required.
+Existing clients retain their minimum versions; rendering this optional login
+projection requires v376. Older peer kernels reject the changed bridge version.
+
 Native TUI agents let a user run a familiar provider CLI UI while the Chariox kernel remains the session authority.
 
 Current commands:
@@ -288,7 +309,7 @@ Provider-native credential enrollment callback bridge (local daemon protocol 241
 Native TUI hidden context:
 
 - granted skill prompt context and other Chariox-only prompt injections MUST be delivered on the provider-facing path without becoming visible provider-TUI text
-- Codex native TUI hidden context MUST use the same Codex turn-scoped `developer_instructions` channel as ordinary Codex provider runs
+- Codex native TUI hidden context MUST use Codex `thread/inject_items` developer messages before `turn/start` or `turn/steer`, preserving the attached thread and keeping `input` limited to visible user text and attachments. Resumed threads use the same bridge; newly created ordinary threads retain `thread/start.developerInstructions`. Injection failures MUST fail the prompt rather than fall back to visible user input.
 - OpenCode native TUI hidden context MUST use the same OpenCode prompt request `system` field as ordinary OpenCode provider runs
 - Claude Code native TUI MUST use the `UserPromptSubmit` hook `additionalContext` path for hidden context; the hook emits a scoped context request id, and the Chariox CLI bridge or worker kernel writes the matching context response before the hook returns
 - Claude hook context responses are scoped to the session, agent, and provider run; they must not expose broad kernel authority or accept arbitrary provider-origin file paths
@@ -442,6 +463,7 @@ Current pushed event contract:
 
 - all pushed events use the `KernelOutgoingFrame::Event` envelope with monotonic `event_id` plus an `event` payload tagged by its `event` string
 - `terminal_output` carries terminal records and should be used for terminal append/update rendering without forcing `session.state.get`
+- Local daemon protocol v370 keeps recipient-scoped bounded output drains scheduled while records remain, even after the producer stops. Local and relay subscriptions preserve byte order and heartbeat scheduling; an empty drain does not schedule more work. Event shapes, relay peer protocol, and client minimum versions are unchanged (MP-08 / MP-10).
 - `runtime_notices` carries runtime notices for the subscribed attachment/session
 - `assistant_message_completed` carries `session_id`, `provider_run_id`, optional `agent_id`, `message_id`, and `completed_at_ms`
 - `session_snapshot` is the full subscribed-session projection and remains the fallback after attach, replay gaps, explicit recovery, and structural changes
@@ -608,6 +630,9 @@ Current slice-management surface:
 - Slice lifecycle status is `stopped`, `starting`, `stopping`, `running`, or `unhealthy`. Start must only report `running` after the worker kernel has been discovered; otherwise the slice remains `unhealthy` and diagnostics are available through `slice.logs.get`.
 - Slice records also carry display-only operation diagnostics: `last_operation`, `last_operation_status`, `last_error`, and `last_operation_at_ms`. The kernel updates these on lifecycle operations and restart reconciliation; clients may render them in status/doctor views, but must continue to treat `status` as the lifecycle state and audit/log records as the detailed diagnostic source.
 - Daemon health `slice_lifecycle.issues` identifies each unhealthy slice or failed slice operation by slice id/name, status, last operation/status/error, sessions, agents, and worktree so clients can point users directly to the affected slice before they open logs/audit or restart/delete it. `slice_lifecycle.provider_auth_issues` separately identifies attached-agent slices with no provider account summaries or with `unknown`/`not_configured` provider auth, including provider, alias/identity, sessions, agents, and worktree. Clients should surface this from kernel health and point users to `/slice doctor`, `/slice audit`, and slice auth login/import before they send more provider prompts.
+- Local daemon protocol v371 adds optional `runtime_process_identity` to `RelayStatus` for MP-10. Linux kernels report their own PID, Linux boot ID and process start ticks from native metadata, without argv, environment or account data. Legacy and non-Linux kernels omit it. The collector uses the normal kernel public API or authenticated TLS relay route, independently checks the live process executable against the signed release and requires that kernel to be a provider-child ancestor. Relay peer protocol remains v64.
+- Local daemon protocol v370 projects nullable `runtimeStartedAt` from the Cloud managed-environment summary through the kernel to clients. Shutdown observation requires v370 so the three-hour minimum is measured from the authoritative runtime start; older/pre-bootstrap summaries may omit it and decode as null. Ordinary runtime behavior and other client minimums are unchanged.
+- Local daemon protocol v369 and relay peer protocol v64 coordinate canonical signed daemon admission. A signed `Kernel` token registers only its canonical kernel subject, including production-shaped temporary peer IDs derived from that subject; display aliases do not authorize another daemon ID. Signed `Machine` tokens do not register daemons. Trusted `Service` admission and legacy self-host tokens retain their existing behavior. New slice kernels use their unique `slice:<id>` worker reference as both canonical daemon ID and display alias, so their existing bootstrap, key-bound runtime and recovery tokens identify the actual registered worker. The owner-only `allowed_targets` transport scope remains separate from the worker registration identity. Existing client minimum protocol versions remain unchanged.
 - Local Docker slices use the kernel-configured relay when it has a token and a non-loopback `ws://` or `wss://` URL, so hosted Cloud and self-hosted relay deployments expose the slice worker on the same relay fabric as other remote workers. A hosted slice initially receives a short bootstrap token limited to registration and heartbeat. After discovering its relay key, the home kernel obtains a key-bound token that targets only that owner kernel and installs it through the encrypted peer lane with a fresh activation nonce. The worker queues the encrypted install acknowledgement before closing its bootstrap relay socket. After reconnecting, the worker must return that nonce in a worker-originated confirmation whose relay caller identity is bound to the installed key. The owner matches the slice, worker id, relay subject, full relay key, and nonce, then requires same-key live presence plus an encrypted ping before reporting the slice as running. The slice receives no Cloud session or machine credential. Loopback or incomplete relay configuration falls back to a private per-slice relay owned by the home kernel; clients should render the projected `relay_endpoint.private` flag rather than guessing from the URL.
 - Kernel restart reconciliation must not leave runtime-only states active. Local Docker reconciliation inspects the host container: missing/stopped previously running slices become `stopped`, still-running or unverifiable runtime state becomes `unhealthy`, and interrupted `starting`/`stopping` transitions become `unhealthy`.
 - `slice.logs.get` returns structured log entries for local Docker slice provisioner actions and recent container logs. Clients should render these as diagnostics only and must not treat log text as control data.
@@ -821,6 +846,11 @@ Protocol v298 and relay peer protocol v34 bind a browser secret fill to the exac
 Protocol v299 and relay peer protocol v35 add the owning `document_index` to every browser DOM snapshot node. The home kernel uses this internal association to authorize a vault credential against the exact top-level or iframe document that owns the target element, while explicit `expected_url` and `expected_host` guards continue to describe the visible top-level page. Missing or invalid document metadata fails before vault resolution. The frame URL is passed back only as the action's document-bound insertion guard and is not added to MCP browser field projections. Secret paste accepts only an editable HTML password input. The kernel rejects an unmasked or non-editable field before vault resolution, and the controller rechecks the field inside the document-bound insertion operation both before and after focus handlers run.
 
 Protocol v300 and relay peer protocol v36 add approval-gated Computer credential input. A Computer credential must declare both `allowed_uses = ["computer"]` and `injection = { kind = "computer" }`. The home kernel validates that policy and obtains an explicit user confirmation before resolving the secret. A leased worker forwards only the credential handle and its authenticated active-run context to home through the existing credential-tool request; it must not resolve the Computer secret or admit an Action against its private provider session. Home admits the redacted Action against the authoritative Room and sends the one-operation secret through the existing encrypted Room controller command. The physical worker types the value from process stdin into the already-focused desktop control; it does not focus Chromium or use the clipboard. The tool result may expose the credential handle, actor, target, action ID, and outcome. Action history records the actor, target, lifecycle, and outcome without the credential handle or secret. Debug and helper output are also secret-free. Because X11 cannot universally prove that an arbitrary native control masks its contents, the confirmation explicitly requires the user to verify masking; Browser input continues to enforce the password-field invariant automatically. This correction reuses the existing v300/v36 serialized shapes and therefore requires no version bump.
+
+MP-08 / MP-11: local protocol v374 and relay peer v67 bind Computer credential approval to the native display target. The home queries `computer_secret_target` through the ordinary Room controller command and projects the window identity, native focused-control identity and geometry in one RuntimeInteraction. `SecretText.expected_target` is required; unbound input fails closed. Home rechecks after approval/unlock and rejects a changed Room generation. The worker checks the target before typing and between single-keystroke batches; an X server grab prevents another display client changing native focus between the check and delivery. A changed observable focus, window or geometry aborts with an actionable error. Already delivered keystrokes cannot be rolled back. Computer mode observes X11 native focus/geometry, not DOM field identity or masking within a shared native surface. User-confirmed masking remains the guarantee boundary; the prompt says that approving an unmasked field can expose the credential. Browser mode retains automatic expected-host and masked-field validation.
+
+MP-08 / MP-11: the worker excludes agent screenshot, OCR, text-from-frame and generic screenshot capability capture while Computer insertion executes. Capture already in progress settles before typing begins. Capture and insertion permits stay with the blocking helper through completion or cancellation, including dropped async callers. Human display transport remains available. The legacy raw Computer-secret resolution request is rejected in favor of home-owned Room insertion. These changes apply to ordinary and managed placement through the same kernel paths; client feature minimums are unchanged.
+
 
 Protocol v302 and relay peer protocol v37 complete the shared human Computer mouse and keyboard input surface. `SubmitRoomEnvironmentAction` adds `pointer_move`, `pointer_drag`, `pointer_scroll`, `keyboard_text`, and `keyboard_key` beside the v294 `pointer_click`. Every action uses the same authenticated human Actor, explicit desktop takeover, current runtime generation, canonical viewport revision, opaque idempotency key, Room Action ledger, and bound-worker controller route. Pointer coordinates are canonical desktop pixels and must remain inside the current desktop bounds. Drag identifies both endpoints and the left, middle, or right button. Scroll uses signed discrete wheel steps: negative horizontal means left, positive horizontal means right, negative vertical means up, and positive vertical means down. At least one axis must be nonzero and each axis is bounded to 120 steps per Action. Keyboard text is nonempty UTF-8 bounded to 64 KiB. Keyboard key input is a nonempty ASCII xdotool key or chord name, bounded to 128 bytes, with a repeat count from 1 through 32. Human Computer input targets whichever desktop application already owns focus; it never activates Chromium implicitly. Text and chord payloads travel to the worker helper over stdin and are redacted from Debug output. The durable Action record keeps only text byte/character counts or a key repeat count, never keyboard contents. The in-memory idempotency ledger compares a domain-separated HMAC of keyboard contents, keyed by the home kernel identity, so a reused key with different same-length input conflicts without exposing a guessable content digest. As with v294 clicks, physical input is at-most-once and has no replay command after an ambiguous delivery failure.
 
@@ -1718,9 +1748,9 @@ Workflow trigger and deployment direction:
 - relay peer protocol 69 (with local protocol 365) drops the workflow event
   capability flags: `RemoteWorkflowTurnContext.event_context_enabled` /
   `event_actions_enabled` and the leased provider run's
-  `workflow_event_actions_enabled`. A v69 peer reads a v57 peer's extra fields
-  and ignores them; a v57 peer cannot decode a v69 provider run, so home and
-  worker must both run v69.
+  `workflow_event_actions_enabled`. A v69 peer reads the extra fields of an
+  older peer (v68 or below) and ignores them; an older peer cannot decode a
+  v69 provider run, so home and worker must both run v69.
 - protocol 288 adds `ListAppInstallations`, `GetAppInstallation` and
   `GetAppInstallationJournal` on the same local/relay terminal path. The kernel
   derives ownership from the authenticated caller; requests cannot name an owner
@@ -2361,6 +2391,164 @@ Workflow trigger and deployment direction:
   event records the outcome only. Clients prompt for the
   passkey with hidden input only for a `requires_passkey` choice; to a remote
   kernel it travels inside the end-to-end encrypted relay request.
+- protocol 344 and relay peer protocol 58 add `room_browser_available` to the
+  home-authored remote extension manifest. The field defaults to false and is
+  omitted when false. It advertises the Room's shared browser independently of
+  the leased agent's execution placement. It does not grant authority: home
+  validates current Room membership, worker/run binding, and Environment
+  binding on every forwarded browser call. Client minimums remain unchanged.
+  Successful Environment binding and deletion enqueue manifest refreshes for
+  agents already leased in the Room, without waiting for another prompt.
+  Refreshes share the leased-agent operation lane with grant updates and
+  retries, and recompute the manifest after acquiring that lane. The binding
+  operation does not wait for relay I/O. Until delivery succeeds, tools may
+  remain hidden after binding or advertised after deletion; forwarded calls
+  still validate the current binding at home. Stop and input release do not
+  remove the Environment binding. Live validation must cover updates to an
+  already-running agent, not only an Environment bound before agent launch.
+- protocol 345 adds owner-authenticated, read-only
+  `GetManagedEnvironmentReimageReceipt` and `ManagedEnvironmentReimageReceipt`.
+  The home kernel reads Cloud's existing receipt route using its authenticated
+  Cloud session and rejects a response for a different environment. This request
+  does not admit a rebuild, authorize context transfer, or introduce another
+  runtime authority. Clients using this request require protocol 345; existing
+  web/native minimum versions remain unchanged. The request/response snapshot
+  and managed-control drill cover owner/session admission, URL escaping,
+  environment binding, and incomplete versus finalized receipt projection.
+  `apps/cli/scripts/path1-cloud-reimage-capture.mjs` uses this shared request
+  against the reviewed local home kernel. It checks the selected operation,
+  generation and release binding and retains only allowlisted receipt fields
+  in a new external mode-0600 file. It is not the full fresh-equivalent rebuild
+  gate and does not independently verify Cloud's receipt digest.
+- relay peer protocol 60 adds durable queued-steer receipts and the
+  `ReconcileLeasedPromptSteerReceipt` operation. It carries the exact queued
+  home prompt, target active home prompt, worker provider run, and execution
+  lease. The existing `GetLeasedPromptReceipt` remains read-only. A receipt names the exact queued
+  home prompt, target active home prompt, worker provider run, and execution
+  lease, and reports `steer_dispatching`, `steer_accepted`, or
+  `steer_rejected`. The worker persists `dispatching` before provider enqueue,
+  changes it to accepted only after local dispatch accepts the input, and
+  records rejection only when non-admission is known. After a lost steer reply,
+  the home keeps the exact queue item durably held and queries only the current
+  matching worker binding. It removes that item after an exact accepted receipt
+  or releases it after an exact rejected receipt. Under the worker run lane,
+  reconciliation records a durable rejected tombstone when no receipt exists;
+  a delayed original steer then encounters that tombstone and cannot enqueue.
+  Dispatching, stale, or conflicting receipts never replay or promote the uncertain item. The
+  focused fake-relay regression covers lost-reply acceptance, restart hold,
+  receipt reconciliation, and at-most-once worker input. The local daemon
+  request and response shapes are unchanged, so client minimum versions do not
+  change; home and worker kernels must both support relay peer protocol 60.
+  Lease operations also bind the authenticated home daemon and sender key to
+  the worker's execution lease. Leases created before that binding was stored
+  cannot pass the new authorization check after an upgrade; the home must
+  rebind them with a current peer protocol instead of reusing the old lease.
+- relay peer protocol 61 adds `ResolveLeasedProjectEnvironmentSetupTarget` and
+  `LeasedProjectEnvironmentSetupTargetResolved`. Before starting Project setup,
+  the home kernel derives the selected worker from the agent binding and asks
+  that authenticated lease worker for its actual platform. An explicitly
+  supplied worker or platform remains an assertion and must match the resolved
+  values; empty fields request resolution. The worker verifies the leased
+  agent and home session/agent binding before replying. The local-daemon shape
+  and client minimum versions do not change; remote Project setup requires
+  both home and worker kernels to support relay peer protocol 61.
+- relay peer protocol 62 gives original leased prompts a durable worker admission
+  receipt using the existing `GetLeasedPromptReceipt` response. A receipt with
+  no `target_home_prompt_id` and an exact `execution_lease_id` reports
+  `steer_dispatching` before the worker starts provider admission, then
+  `active` or `completed` after admission, or `steer_rejected` only when
+  non-admission is known. A lost reply must be reconciled against the current
+  leased agent and execution lease; an absent or dispatching receipt is not
+  proof that resubmission is safe. Worker restart retains the receipt, so a
+  delayed duplicate cannot launch a second provider prompt. The wire shape
+  is unchanged, but the receipt's original-prompt semantics require both home
+  and worker kernels to support relay peer protocol 62. Local-daemon client
+  minimum versions do not change.
+- relay peer protocol 63 adds
+  `AcknowledgeLeasedProjectEnvironmentSetupDefinition` and
+  `LeasedProjectEnvironmentSetupDefinitionAcknowledged`. When a leased worker
+  generates a utility-origin Project definition whose persistence belongs to
+  the home kernel, it keeps the setup attempt in `Preparing` and returns the
+  definition in the existing setup status. The home persists the definition
+  before acknowledging it. The request binds the leased-agent ID, operation ID,
+  attempt, project ID, home session and agent IDs, and the definition digest;
+  the response must echo the operation, attempt, project, and digest. The home
+  checks the owner-scoped setup target and active binding. The worker accepts
+  the acknowledgment only for its active attempt and lease, matching home
+  session/agent and project, and a digest equal to both the staged definition's
+  recomputed digest and its status digest. An identical acknowledgment is
+  idempotent; a mismatch or conflicting repeat is rejected. Worker validation
+  starts only after the matching acknowledgment; if it does not arrive within
+  the existing 30-second wait, setup fails before validation. Both home and
+  worker kernels must support relay peer protocol 63 or newer; a missing or
+  older worker version is incompatible and requires rebinding. Local-daemon
+  request/response shapes and client minimum versions do not change.
+- protocol 350 adds optional `disk_layer_mb` and `disk_home_mb` to the Linux
+  slice settings in the existing user-config response and coordinates the
+  signed managed auto-stop quiescence HTTP contract. Quiescence adds no
+  LocalDaemon request/response variant. Kernel-to-Cloud REST v1 uses
+  `/v1/managed-kernels/auto-stop/quiescence/poll`,
+  `/v1/managed-kernels/auto-stop/quiescence/ack`, and
+  `/v1/managed-kernels/auto-stop/quiescence/release-ack`. Cloud must deploy and
+  verify all three routes and their validators before protocol-350 kernels roll
+  out. The legacy timer/direct auto-stop path must be disabled before either
+  side is enabled; the producer and receiver must not be deployed independently.
+  Missing routes, timeouts, malformed or unsupported v1 responses, and missing,
+  invalid, or stale acknowledgements leave the stop pending and retain the
+  admission fence. There is no legacy auto-stop fallback. The quiescence
+  contract does not change web, native, or CLI minimums because clients do not
+  consume it. The optional disk-cap fields do not change minimums for clients
+  that do not use them; a client that reads or writes those fields must gate
+  that capability at protocol 350.
+- protocol 351 adds `CreateDisposableWorker`, `GetDisposableWorker`,
+  `ReleaseDisposableWorker`, `KeepDisposableWorkerRunning`,
+  `PrepareDisposableWorkerContextTransfer`, and `KeepManagedEnvironmentRunning`.
+  Disposable selections bind `allocationId`, `homeKernelId`, and
+  `homeRelayRealmId`. The authenticated home kernel derives Cloud account and
+  session authority; clients must not supply credentials or account authority.
+  Before mutating an existing allocation, the home reads it and verifies its
+  allocation, home, and realm binding. Context-transfer tickets also bind the
+  returned worker machine and kernel. Create preserves `clientRequestId` for
+  Cloud idempotency; transport failure must not trigger an automatic mutation
+  retry or a fallback to a different home or Cloud authority.
+  Protocol numbers 344–365 were independently allocated on the Apps branch;
+  a numeric minimum alone does not prove these controls exist. Protocol 366
+  adds `RelayStatus.capabilities`, defaulting to an empty list when absent.
+  Clients consuming these controls require protocol 367 and must query the
+  selected home through its authenticated kernel connection before mutation.
+  Require `disposable_worker_control_v1` for disposable controls and
+  `managed_environment_keep_running_v1` for managed keep-running. Verify the
+  response's daemon and machine binding; reject missing capabilities even on
+  a numerically newer kernel. Relay discovery advertises the same markers but
+  is not sufficient proof of the connected kernel's support. These are kernel
+  implementation capabilities, identical on ordinary and managed kernels,
+  not permission grants or an alternative to operation authorization.
+  Other client minimums remain unchanged. Deploy the matching Cloud allocation,
+  context-transfer, and keep-running routes before enabling these controls on
+  a signed capability-bearing home, then connect the updated client. A 366
+  release does not incorporate the divergent Apps branch or automatically
+  authorize upgrades from its releases; signed compatibility must name proven
+  predecessor contracts. The focused source checks
+  are `ipc-disposable-worker-requests.test.ts`,
+  `local/api/tests/protocol_shapes/disposable_worker.rs`, and
+  `runtime/disposable_worker_control/tests.rs`. Live acceptance must create
+  through the selected home, observe the returned allocation and worker
+  identities, reject foreign-home selection, exercise keep-running and context
+  transfer, and release with authoritative provider-resource deletion evidence.
+  Source tests alone do not prove that live drill passed.
+- protocol 367 adds guarded Unix control sessions. Legacy Unix IPC remains one
+  length-prefixed request, one response, then EOF. For disposable-worker controls
+  and managed-environment keep-running, the client sends
+  `{"GuardedControlSession":{"version":1}}` on one socket. The kernel dispatches
+  ordinary `RelayStatus` and replies with
+  `{"session":{"version":1},"response":{"RelayStatus":{"status":{...}}},"error":null}`
+  without closing. After validating capabilities and kernel identity, the client
+  sends exactly one guarded control request on that same connection. The kernel
+  uses the ordinary local caller/router and closes after its response. Frames
+  retain the 1 MiB limit and 30-second I/O deadlines; the TypeScript client also
+  bounds the whole exchange by its request timeout. Unsupported negotiation, EOF,
+  timeout, or capability mismatch fails closed, with no fallback connection or
+  automatic mutation replay. Numeric versions never replace capability checks.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic
@@ -2551,6 +2739,39 @@ Queue and turn direction:
 ## 5.0 Capability, Session, Workflow, Security, and Versioning Details
 
 Detailed capability API baseline, Workspace Live Sync coordination, provider control operations, session/attachment semantics, workflow contracts, security semantics, compatibility rules, versioning strategy, and cross-platform terminal conformance now live in [PROTOCOL_CAPABILITY_SESSION_WORKFLOW.md](PROTOCOL_CAPABILITY_SESSION_WORKFLOW.md). Keep this main protocol document focused on scope, lanes, native provider behavior, envelope shape, current transport baseline, and command/workflow message direction.
+
+MP-08: Local daemon protocol v371 adds the kernel-owned, value-free Project environment manifest query and environment input contract. Candidate B v370 shutdown observation remains a v370 client dependency. Project values resolve only inside the exporting kernel and never enter manifest projections.
+
+
+MP-08 / MP-10 / MP-11: The Project environment feature stays at local protocol 371 and moves relay peer 64 to 65 for authenticated leased Project environment installation. Interactive slice/M28 start requests opt into the shared kernel-owned Ready-to-move RuntimeInteraction; API requests default to unattended decisions. Review projections contain names, use sites, sources and decisions only. Missing values use the existing secret reply path to Vault or remain named as skipped inputs. Exported Project values are sealed to the authenticated target/context; the target resolves launch bindings locally. Provider-neutral user rules travel in the kernel context, while provider home transfer carries credentials only.
+
+MP-08 / MP-10 / MP-11: Local protocol v373 and relay peer v66 add lease-bound worker Environment query/Adjust, explicit selected private-file retrieval, and source-worker export/reuse. GetProjectEnvironmentManifest.agentId selects the execution kernel. Pending interactions are projected in waiting-room activity, including unattached utility sessions. CreateSlice.source_slice_ref selects a running home-owned Docker slice of the same Project/repository selection; its actual worker refreshes the manifest and seals values directly to the next worker, while the existing development exporter captures its owned mounted repository snapshot. The home routes the opaque sealed layer and does not decrypt worker values. The target binds subsequent leases to its existing Project state without source contact. Reaching the source is required only for explicit retrieval of a previously omitted private file. Imported manifests and source receipts are independent private target state; values remain absent from public projections. Metadata-only Codex utilities use ephemeral native threads and settle through native item/completion events, without durable turn-list reads.
+
+MP-08 / MP-10 / MP-11: Ordinary local prompt admission and leased-worker reuse resolve the exporting kernel's current Project bindings before reusing an idle provider process. Changed bindings retire the idle process before native conversation resume, releasing Codex's thread writer; active turns are never replaced for environment changes. Native TUI refresh reports that the TUI must restart when its selected inputs change. Account activation merges native credentials without dropping Project bindings. Secret-file length changes do not trigger metadata discovery; incremental discovery preserves kernel-owned unchanged selections, while unsupported names/locators remain rejected. Automatic queued-turn promotion and native-TUI refresh require further validation before acceptance.
+
+### MP-08 / MP-10 primitive MCP results (protocol 375)
+
+Runtime script results may be any JSON value. The shared MCP response producer
+wraps non-object values as `{ "result": <value> }` before serializing both
+`structuredContent` and its text representation. Object results retain their
+existing fields; image extraction is unchanged. This follows the
+[MCP structured content contract](https://modelcontextprotocol.io/specification/2025-06-18/server/tools#structured-content).
+The correction is shared by ordinary and worker provider runs. Local protocol
+375 records the serialized result correction; relay peer protocol remains 67.
+Web/native minimum versions remain unchanged because they do not depend on this
+MCP-only behavior. Provider-free transport/script tests are focused source
+proof, not MP-08 or MP-10 acceptance on a signed fresh Path-1 release.
+
+### MP-08 / MP-10 terminal workflow event authority (protocol 376)
+
+Terminal `workflow_run_updated` events come from the kernel's archival update
+stream exactly once per recipient. Hot-session snapshot diffs publish only
+nonterminal workflow runs; they cannot duplicate the archival terminal event.
+The focused WebSocket terminal-transition drill verifies Running, Completed,
+durable lookup after archival, and absence of duplicate terminal updates.
+Serialized fields and the relay peer contract are unchanged by this correction. Existing web/native
+minimum supported versions stay unchanged because this restores the existing
+terminal-event contract without adding a required client field or operation.
 
 ### Protocol 405: native approval origin
 

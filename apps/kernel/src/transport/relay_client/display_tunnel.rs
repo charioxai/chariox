@@ -152,6 +152,13 @@ async fn handle_display_tunnel_websocket(
     } else {
         proxy_display_websocket(&outgoing_tx, &target, &request, client_rx).await
     };
+    if let (true, Err(error)) = (selkies, &result) {
+        crate::logging::warn_with_fields(
+            "display.proxy",
+            "Selkies proxy stopped",
+            serde_json::json!({"code": error.code, "stream_id": stream_id}),
+        );
+    }
     state.write().await.remove_display_stream(&stream_id);
     if selkies {
         let _ = outgoing_tx.try_send(RelayEnvelope::DaemonDisplayTunnelRevoke {

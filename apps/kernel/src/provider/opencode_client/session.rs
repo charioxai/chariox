@@ -97,6 +97,19 @@ impl OpenCodeClient {
         Ok(())
     }
 
+    pub fn update_session_permissions(
+        &self,
+        session_id: &str,
+        permission: Value,
+    ) -> Result<(), DaemonError> {
+        let _: Value = self.send_json_request(
+            "PATCH",
+            &format!("/session/{session_id}"),
+            Some(&json!({ "permission": permission })),
+        )?;
+        Ok(())
+    }
+
     pub fn reply_permission(
         &self,
         session_id: &str,

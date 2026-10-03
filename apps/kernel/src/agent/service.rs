@@ -1003,6 +1003,7 @@ impl AgentService {
                 agent_id: agent_ref.to_string(),
             })?;
         agent.grant_extension(grant);
+        crate::transport::mcp_server::catalog_changed();
         Ok(agent.clone())
     }
 
@@ -1060,6 +1061,7 @@ impl AgentService {
                 agent_id: agent_ref.to_string(),
             })?;
         agent.revoke_extension(kind, name);
+        crate::transport::mcp_server::catalog_changed();
         Ok(agent.clone())
     }
 

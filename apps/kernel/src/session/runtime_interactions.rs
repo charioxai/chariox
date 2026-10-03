@@ -233,6 +233,28 @@ pub struct RuntimeInteraction {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     native_origin: Option<NativeInteractionOrigin>,
     requested_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    project_environment_review: Option<crate::project_environment::ProjectEnvironmentReview>,
+    /// Ephemeral provider-native login UI, never model context or history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider_login: Option<RuntimeProviderLogin>,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeProviderLogin {
+    pub kernel_id: String,
+    pub login: crate::provider::ProviderLoginStart,
+    pub terminal_output_base64: String,
+}
+
+impl std::fmt::Debug for RuntimeProviderLogin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RuntimeProviderLogin")
+            .field("kernel_id", &self.kernel_id)
+            .field("login", &self.login)
+            .field("terminal_output_base64", &"[REDACTED]")
+            .finish()
+    }
 }
 
 impl RuntimeInteraction {
@@ -264,6 +286,8 @@ impl RuntimeInteraction {
             default_on_timeout,
             native_origin: None,
             requested_at_ms: unix_epoch_ms(),
+            project_environment_review: None,
+            provider_login: None,
         }
     }
 
@@ -273,6 +297,14 @@ impl RuntimeInteraction {
 
     pub fn with_native_origin(mut self, origin: Option<NativeInteractionOrigin>) -> Self {
         self.native_origin = origin;
+        self
+    }
+
+    pub fn with_project_environment_review(
+        mut self,
+        review: crate::project_environment::ProjectEnvironmentReview,
+    ) -> Self {
+        self.project_environment_review = Some(review);
         self
     }
 
@@ -320,6 +352,8 @@ impl RuntimeInteraction {
             default_on_timeout: None,
             native_origin: None,
             requested_at_ms: unix_epoch_ms(),
+            project_environment_review: None,
+            provider_login: None,
         }
     }
 
@@ -327,6 +361,19 @@ impl RuntimeInteraction {
     pub(crate) fn with_timeout_sec(mut self, seconds: u64) -> Self {
         self.timeout_sec = Some(seconds);
         self
+    }
+
+    pub fn with_provider_login(mut self, login: RuntimeProviderLogin) -> Self {
+        self.provider_login = Some(login);
+        self
+    }
+
+    pub(crate) fn provider_login_is_human_only(&self) -> bool {
+        self.provider_login.is_some() || self.id.starts_with("provider-auth-recovery:")
+    }
+
+    pub fn provider_login(&self) -> Option<&RuntimeProviderLogin> {
+        self.provider_login.as_ref()
     }
 
     pub fn kind(&self) -> RuntimeInteractionKind {

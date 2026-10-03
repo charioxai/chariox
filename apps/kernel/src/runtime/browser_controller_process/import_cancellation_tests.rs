@@ -86,16 +86,28 @@ done
             }
         );
     });
+    let imports = fs::read_to_string(root.join("import-requests")).unwrap();
     let cancelled = fs::read_to_string(root.join("cancel-requests")).unwrap();
-    assert!(cancelled.contains(r#""method":"browser.cancel""#));
-    // acquire() sends health (id 1) and the import's pre-dispatch
-    // ensure_started() sends another health (id 2), so bind the cancel to the
-    // import's actual stdio id instead of a hard-coded one.
-    let imported = fs::read_to_string(root.join("import-requests")).unwrap();
-    let import: serde_json::Value = serde_json::from_str(imported.lines().next().unwrap()).unwrap();
-    let cancel: serde_json::Value =
-        serde_json::from_str(cancelled.lines().next().unwrap()).unwrap();
-    assert_eq!(cancel["params"]["request_id"], import["id"]);
+    let imports: Vec<serde_json::Value> = imports
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let cancelled: Vec<serde_json::Value> = cancelled
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(imports.len(), 1, "the import must dispatch exactly once");
+    assert_eq!(
+        cancelled.len(),
+        1,
+        "only the admitted execution may be cancelled"
+    );
+    assert_eq!(imports[0]["method"], "browser.cookies.import");
+    assert_eq!(cancelled[0]["method"], "browser.cancel");
+    assert_eq!(
+        cancelled[0]["params"]["request_id"], imports[0]["id"],
+        "cancellation must address the actual import RPC, not a health request"
+    );
     store.shutdown().unwrap();
     fs::remove_dir_all(root).unwrap();
 }

@@ -16,17 +16,12 @@ use sha2::{Digest, Sha256};
 
 use crate::error::DaemonError;
 
+#[path = "account_copy_notice.rs"]
+mod copy_notice;
+
 const REGISTRY_VERSION: u32 = 1;
 const SUPPORTED_PROVIDERS: [&str; 3] = ["codex", "claude", "opencode"];
 const MAX_MATERIALIZATION_BYTES: usize = 64 * 1024 * 1024;
-const OPENCODE_CONFIG_FILES: [&str; 6] = [
-    "config",
-    "config.json",
-    "opencode.json",
-    "opencode.jsonc",
-    "tui.json",
-    "tui.jsonc",
-];
 #[cfg(unix)]
 #[path = "account_profile_managed_fs.rs"]
 mod managed_fs;
@@ -931,6 +926,8 @@ struct ReplacedProviderAccountProfile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RegistryDocument {
     version: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    credential_copy_notices: Vec<copy_notice::CredentialCopyNotice>,
     #[serde(default)]
     profiles: Vec<StoredProviderAccountProfile>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -949,6 +946,7 @@ impl Default for RegistryDocument {
     fn default() -> Self {
         Self {
             version: REGISTRY_VERSION,
+            credential_copy_notices: Vec::new(),
             profiles: Vec::new(),
             pending_replica_cleanup: Vec::new(),
         }
@@ -2877,6 +2875,22 @@ impl ProviderAccountProfileRegistry {
         }
         let provider = normalize_provider(&materialization.profile.provider)?;
         let profile_id = validate_profile_id(&materialization.profile.profile_id)?;
+        let allowed = match provider {
+            "codex" => "auth.json",
+            "claude" => ".credentials.json",
+            "opencode" => "data/opencode/auth.json",
+            _ => unreachable!(),
+        };
+        if materialization
+            .files
+            .iter()
+            .any(|file| file.relative_path != allowed)
+        {
+            return Err(registry_error(
+                "materialize account profile",
+                "MP-08 / MP-10: provider homes transfer credentials only",
+            ));
+        }
         if managed_context.is_some() {
             validate_managed_context_materialization_shape(provider, materialization)?;
         }
@@ -4240,13 +4254,13 @@ fn materialization_files(
     match locator {
         ProviderAccountLocator::Codex { codex_home } => {
             collect_optional_file(codex_home, "auth.json", "auth.json", &mut files)?;
-            collect_optional_file(codex_home, "config.toml", "config.toml", &mut files)?;
         }
         ProviderAccountLocator::Claude {
             claude_config_dir,
             ambient_default,
         } => {
-            for name in [".credentials.json", "settings.json", "stats-cache.json"] {
+            {
+                let name = ".credentials.json";
                 collect_optional_file(claude_config_dir, name, name, &mut files)?;
             }
             discard_nonportable_claude_credentials(&mut files);
@@ -4258,12 +4272,7 @@ fn materialization_files(
                 )?;
             }
         }
-        ProviderAccountLocator::Opencode {
-            xdg_data_home,
-            xdg_config_home,
-            opencode_config_dir,
-            ..
-        } => {
+        ProviderAccountLocator::Opencode { xdg_data_home, .. } => {
             // Account transfer is not provider-session migration. In particular,
             // never traverse databases, prompt history, locks, or node_modules.
             collect_optional_profile_files(
@@ -4272,20 +4281,6 @@ fn materialization_files(
                 &["auth.json"],
                 &mut files,
             )?;
-            collect_optional_profile_files(
-                &xdg_config_home.join("opencode"),
-                "config/opencode",
-                &OPENCODE_CONFIG_FILES,
-                &mut files,
-            )?;
-            if opencode_config_dir != &xdg_config_home.join("opencode") {
-                collect_optional_profile_files(
-                    opencode_config_dir,
-                    "opencode-config",
-                    &OPENCODE_CONFIG_FILES,
-                    &mut files,
-                )?;
-            }
         }
     }
     Ok(files)
@@ -8313,7 +8308,7 @@ mod tests {
             (
                 "context-claude-extra",
                 with_extra_file,
-                "managed-context credential allowlist",
+                "provider homes transfer credentials only",
             ),
         ] {
             let (target_root, target) = fixture();

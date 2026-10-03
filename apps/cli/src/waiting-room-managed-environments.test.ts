@@ -67,6 +67,24 @@ test("managed environments share the Machine selector without duplicating runtim
   )
 })
 
+test("MP-02/MP-08/MP-11 ready enrollment uses ordinary launch choices", () => {
+  __setWaitingRoomWorktreeInventoryForTest({ workspacePath: "/tmp/user-repo", currentWorktreePath: "/tmp/user-repo", options: [{ id: "existing:/tmp/user-repo", kind: "existing", label: "user", path: "/tmp/user-repo", branch: "main", isCurrent: true }] })
+  try {
+    const state = normalizeWaitingRoomState({
+      ...baseState(), selectedMachineRef: managedEnvironmentMachineRef("environment-1"),
+      selectedKernelRef: "kernel-managed", worktreeSelectionId: "existing:/tmp/user-repo",
+      projectSelectionId: "default", sliceSelectionId: "none",
+    }, [], catalog(), undefined, remote())
+    const decision = deriveWaitingRoomActivationDecision({ state, sessions: [], catalog: catalog(), currentProvider: "opencode", currentModel: "opencode/gpt-5.4", remote: remote() })
+    assert.equal(decision.action, "create")
+    if (decision.action !== "create") throw new Error("expected common creation")
+    assert.equal(decision.launch.managedEnvironment, undefined)
+    assert.equal(decision.launch.ownerMachineRef, "managed-machine")
+    assert.equal(decision.launch.ownerKernelRef, "kernel-managed")
+    assert.equal(state.worktreeSelectionId, "existing:/tmp/user-repo")
+  } finally { __setWaitingRoomWorktreeInventoryForTest(null) }
+})
+
 test("new managed Machine selection keeps managed configuration out of the session form", () => {
   const state = normalizeWaitingRoomState({
     ...baseState(),

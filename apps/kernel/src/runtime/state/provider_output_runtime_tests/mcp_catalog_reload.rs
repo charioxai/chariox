@@ -160,12 +160,7 @@ async fn busy_catalog_refresh_retains_typed_reason_and_self_grant_uses_one_conti
         .write()
         .remove(agent.id());
 
-    runtime.remember_pending_runtime_tools_continuation(
-        session.id(),
-        agent.id(),
-        source.id(),
-        "active turn",
-    );
+    runtime.remember_pending_runtime_tools_continuation(session.id(), agent.id(), "active turn");
     let mut pending = runtime.owned.pending_mcp_continuations.write();
     let continuation = pending.remove(agent.id()).unwrap();
     assert_eq!(

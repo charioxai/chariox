@@ -40,7 +40,7 @@ impl WorkflowProgression {
                 {
                     continue;
                 }
-                app.end_provider_run_for_workflow_context_flush(session_id, node.agent_id())?;
+                app.end_agent_provider_run(session_id, node.agent_id())?;
             }
             return Ok(());
         }
@@ -128,6 +128,22 @@ use entry_ownership::workflow_queue_scheduler_owner;
 pub(crate) use entry_ownership::{workflow_entry_scheduler_owner, WorkflowSchedulerOwner};
 
 impl DaemonApp {
+    /// Retain a remote workflow dispatch until the lock-owning runtime caller
+    /// has released the app mutex and can hand it to the ordered sender.
+    pub(crate) fn defer_workflow_remote_prompt_dispatch(
+        &mut self,
+        dispatch: crate::app::KernelRemotePromptDispatch,
+    ) {
+        self.pending_workflow_remote_prompt_dispatches
+            .push(dispatch);
+    }
+
+    pub(crate) fn take_deferred_workflow_remote_prompt_dispatches(
+        &mut self,
+    ) -> Vec<crate::app::KernelRemotePromptDispatch> {
+        std::mem::take(&mut self.pending_workflow_remote_prompt_dispatches)
+    }
+
     pub fn enqueue_workflow_prompt_and_maybe_start(
         &mut self,
         session_id: &str,

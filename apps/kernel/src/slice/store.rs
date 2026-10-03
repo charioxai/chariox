@@ -13,10 +13,15 @@ use super::model::{
 use super::ports::{self, LocalDockerSlicePorts};
 
 mod environment;
+mod execution_reference;
 mod invariants;
 
 pub(crate) const ENVIRONMENT_USE_ADMISSION_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(30);
+
+/// A shared use that drives the slice's browser controller. Queued Room input
+/// and reads wait for these before dispatch; other uses share with them.
+const CONTROLLER_ROUTE_OPERATION: &str = "browser_controller.route";
 
 use invariants::{
     reconcile_slice_status_after_kernel_restart, redact_slice_operation_error, validate_slice_name,
@@ -42,11 +47,16 @@ pub struct SliceAgentAttachment {
     pub agent_id: String,
 }
 
+/// An exclusive slice operation, or (`operation: None`) one shared use of the
+/// slice by a Room action or an agent admission. Uses run concurrently (the
+/// worker serializes browser actions per tab, and leased agents are
+/// independent); exclusive operations and Room binding wait for every use.
 #[derive(Debug)]
 pub struct SliceOperationGuard {
     store: SliceStore,
     slice_id: String,
-    operation: String,
+    operation: Option<String>,
+    controller_route: bool,
 }
 
 pub(crate) struct SliceEnvironmentUseGuard {
@@ -71,12 +81,27 @@ impl Drop for SliceOperationGuard {
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state
-            .active_operations
-            .get(&self.slice_id)
-            .is_some_and(|operation| operation == &self.operation)
-        {
-            state.active_operations.remove(&self.slice_id);
+        match &self.operation {
+            Some(operation) => {
+                if state.active_operations.get(&self.slice_id) == Some(operation) {
+                    state.active_operations.remove(&self.slice_id);
+                }
+            }
+            None => {
+                release_use(&mut state.environment_uses, &self.slice_id);
+                if self.controller_route {
+                    release_use(&mut state.environment_route_uses, &self.slice_id);
+                }
+            }
+        }
+    }
+}
+
+fn release_use(uses: &mut BTreeMap<String, usize>, slice_id: &str) {
+    if let Some(count) = uses.get_mut(slice_id) {
+        *count -= 1;
+        if *count == 0 {
+            uses.remove(slice_id);
         }
     }
 }
@@ -90,6 +115,8 @@ struct SliceStoreState {
     pending_backup_restores: BTreeMap<String, SliceBackupRestoreTransactionRecord>,
     pending_restore_acknowledgements: BTreeMap<String, SliceBackupRestoreAcknowledgementRecord>,
     active_operations: BTreeMap<String, String>,
+    environment_uses: BTreeMap<String, usize>,
+    environment_route_uses: BTreeMap<String, usize>,
     environment_use_queues: BTreeMap<String, Arc<tokio::sync::Mutex<()>>>,
 }
 
@@ -120,7 +147,16 @@ impl SliceStore {
         let worker_kernel_ref = input
             .worker_kernel_ref
             .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| format!("slice:{}", input.name));
+            .unwrap_or_else(|| match input.backend {
+                SliceBackendKind::LocalDocker => {
+                    super::worker_identity::new_local_docker_worker_ref(
+                        owner_machine_id,
+                        owner_kernel_id,
+                        &input.name,
+                    )
+                }
+                SliceBackendKind::SshDocker => format!("slice:{}", input.name),
+            });
         let local_docker_ports = if input.backend == SliceBackendKind::LocalDocker {
             Some(ports::allocate_local_docker_ports_for_slice(
                 &state.records,
@@ -141,6 +177,7 @@ impl SliceStore {
         );
         let from_saved_state = input.from_saved_state.clone();
         let record = SliceRecord {
+            source_slice_ref: input.source_slice_ref,
             id: id.clone(),
             name: input.name,
             owner_kernel_id: owner_kernel_id.to_string(),
@@ -818,6 +855,15 @@ impl SliceStore {
         slice_ref: &str,
         operation: &'static str,
     ) -> Result<SliceOperationGuard, DaemonError> {
+        self.begin_operation(slice_ref, operation, false)
+    }
+
+    pub(super) fn begin_operation(
+        &self,
+        slice_ref: &str,
+        operation: &'static str,
+        environment_use: bool,
+    ) -> Result<SliceOperationGuard, DaemonError> {
         let slice_ref = slice_ref.trim();
         if slice_ref.is_empty() {
             return Err(DaemonError::LocalTransport {
@@ -862,26 +908,43 @@ impl SliceStore {
                 &pending.id,
             ));
         }
-        if let Some(existing) = state.active_operations.get(&slice_id) {
-            let record_name = state
-                .records
-                .get(&slice_id)
-                .map(|record| record.name.as_str())
-                .unwrap_or(slice_ref);
+        let record_name = state
+            .records
+            .get(&slice_id)
+            .map(|record| record.name.clone())
+            .unwrap_or_else(|| slice_ref.to_string());
+        let busy = match state.active_operations.get(&slice_id) {
+            Some(existing) => Some(format!("an active `{existing}` operation")),
+            None if !environment_use && state.environment_uses.contains_key(&slice_id) => {
+                Some("an active Room or agent use".to_string())
+            }
+            None => None,
+        };
+        if let Some(busy) = busy {
             return Err(DaemonError::LocalTransport {
                 operation: "slice.operation",
-                message: format!(
-                    "slice `{record_name}` already has an active `{existing}` operation"
-                ),
+                message: format!("slice `{record_name}` already has {busy}"),
             });
         }
-        state
-            .active_operations
-            .insert(slice_id.clone(), operation.to_string());
+        let controller_route = environment_use && operation == CONTROLLER_ROUTE_OPERATION;
+        if environment_use {
+            *state.environment_uses.entry(slice_id.clone()).or_default() += 1;
+            if controller_route {
+                *state
+                    .environment_route_uses
+                    .entry(slice_id.clone())
+                    .or_default() += 1;
+            }
+        } else {
+            state
+                .active_operations
+                .insert(slice_id.clone(), operation.to_string());
+        }
         Ok(SliceOperationGuard {
             store: self.clone(),
             slice_id,
-            operation: operation.to_string(),
+            operation: (!environment_use).then(|| operation.to_string()),
+            controller_route,
         })
     }
 
@@ -1071,6 +1134,7 @@ impl SliceStore {
         &self,
         slice_ref: &str,
         worker_kernel_id: &str,
+        worker_machine_id: &str,
         now_ms: u64,
     ) -> Result<SliceRecord, DaemonError> {
         let resolved = self.resolve(slice_ref)?;
@@ -1101,8 +1165,18 @@ impl SliceStore {
             }
             return Ok(record.clone());
         }
+        let hosted_identity = super::machine_scoped_slice_worker_ref(
+            &record.worker_kernel_ref,
+            &record.owner_machine_id,
+        );
+        if hosted_identity && worker_kernel_id != record.worker_kernel_ref {
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.worker_identity",
+                message: "slice worker kernel id does not match its canonical reference".into(),
+            });
+        }
         record.worker_kernel_id = Some(worker_kernel_id.to_string());
-        record.worker_machine_id = Some(format!("slice:{}", record.id));
+        record.worker_machine_id = Some(worker_machine_id.to_string());
         record.updated_at_ms = now_ms;
         Ok(record.clone())
     }
@@ -1444,7 +1518,9 @@ impl SliceStore {
             .find(|record| {
                 record.worker_kernel_ref == kernel_ref
                     || record.worker_kernel_id.as_deref() == Some(kernel_ref)
-                    || record.worker_machine_id.as_deref() == Some(kernel_ref)
+                    || (record.worker_machine_id.as_deref() == Some(kernel_ref)
+                        && record.worker_machine_id.as_deref()
+                            != Some(record.owner_machine_id.as_str()))
             })
             .cloned()
     }

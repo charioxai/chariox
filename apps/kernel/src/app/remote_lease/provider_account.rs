@@ -192,6 +192,13 @@ impl RemoteLeaseRuntime<'_> {
                 &materialization.profile.provider,
                 &materialization.profile.profile_id,
             )?;
+        self.app
+            .provider_account_profile_registry()
+            .record_credential_copy(
+                &lease.owner_user_id,
+                &materialization,
+                &context.home_kernel_id,
+            )?;
         self.app.durable_state_store().append_event(
             "provider_account.materialized",
             Some(lease.id),
@@ -410,14 +417,17 @@ exit 2
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[cfg(unix)]
     #[test]
     fn repeated_ensure_preserves_the_worker_owned_provider_profile() {
+        let _env = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-remote-account-handoff-{}-{}",
             std::process::id(),
             rand::random::<u64>()
         ));
         std::fs::create_dir_all(&root).unwrap();
+        let _native_auth = install_opencode_auth_fixture(&root);
         let mut config = crate::config::DaemonConfig::for_tests();
         config.accept_remote_leases = true;
         config.user_config.state.path = Some(root.join("state.db").display().to_string());
@@ -437,48 +447,58 @@ exit 2
             home_agent_id: "home-agent".to_string(),
             execution_lease_id: lease.id,
         };
-        let materialization = |contents_base64: &str| ProviderAccountMaterialization {
+        let materialization = |synthetic_key: &str| ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
                 owner_user_id: "owner-a".to_string(),
-                provider: "claude".to_string(),
+                provider: "opencode".to_string(),
                 profile_id: "work".to_string(),
                 label: "Work".to_string(),
                 origin: crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated,
                 is_default: false,
             },
             files: vec![crate::account_profile::ProviderAccountMaterializationFile {
-                relative_path: "settings.json".to_string(),
-                contents_base64: contents_base64.to_string(),
+                relative_path: "data/opencode/auth.json".to_string(),
+                contents_base64: base64::Engine::encode(
+                    &base64::engine::general_purpose::STANDARD,
+                    serde_json::to_vec(&serde_json::json!({
+                        "opencode": {"type": "api", "key": synthetic_key}
+                    }))
+                    .unwrap(),
+                ),
             }],
             generated_at_ms: 1,
         };
 
         RemoteLeaseRuntime::new(&mut app)
-            .ensure_remote_provider_account(
-                context.clone(),
-                materialization("eyJzb3VyY2UiOiJpbml0aWFsIn0="),
-            )
+            .ensure_remote_provider_account(context.clone(), materialization("synthetic-initial"))
             .unwrap();
         let environment = app
             .provider_account_profile_registry()
-            .resolve_environment("owner-a", "claude", "work")
+            .resolve_environment("owner-a", "opencode", "work")
             .unwrap();
-        let claude_config_dir = std::path::Path::new(&environment["CLAUDE_CONFIG_DIR"]);
-        let settings_path = claude_config_dir.join("settings.json");
-        let provider_state_path = claude_config_dir.join("provider-owned-state.json");
-        std::fs::write(&settings_path, br#"{"source":"worker"}"#).unwrap();
+        let provider_config_dir =
+            std::path::Path::new(&environment["XDG_CONFIG_HOME"]).join("opencode");
+        std::fs::create_dir_all(&provider_config_dir).unwrap();
+        let settings_path = provider_config_dir.join("opencode.json");
+        let provider_state_path = provider_config_dir.join("provider-owned-state.json");
+        std::fs::write(&settings_path, br#"{"model":"worker-model"}"#).unwrap();
         std::fs::write(&provider_state_path, b"worker-state").unwrap();
+        let auth_path =
+            std::path::Path::new(&environment["XDG_DATA_HOME"]).join("opencode/auth.json");
+        let worker_auth = serde_json::to_vec(&serde_json::json!({
+            "opencode": {"type": "api", "key": "synthetic-worker"}
+        }))
+        .unwrap();
+        std::fs::write(&auth_path, &worker_auth).unwrap();
 
         RemoteLeaseRuntime::new(&mut app)
-            .ensure_remote_provider_account(
-                context,
-                materialization("eyJzb3VyY2UiOiJyZWZyZXNoIn0="),
-            )
+            .ensure_remote_provider_account(context, materialization("synthetic-refresh"))
             .unwrap();
 
+        assert_eq!(std::fs::read(&auth_path).unwrap(), worker_auth);
         assert_eq!(
             std::fs::read(&settings_path).unwrap(),
-            br#"{"source":"worker"}"#
+            br#"{"model":"worker-model"}"#
         );
         assert_eq!(
             std::fs::read(&provider_state_path).unwrap(),

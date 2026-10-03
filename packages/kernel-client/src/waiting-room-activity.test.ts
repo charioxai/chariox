@@ -241,3 +241,11 @@ test("waiting room item activity predicates derive work and unread output", () =
   }), "working, 1 active prompt, 2 queued prompts")
   assert.equal(waitingRoomItemActivityWorkLabel(undefined), "active work")
 })
+
+// MP-08 / MP-10 / MP-11: Unattached utility reviews remain discoverable.
+test("pending review names the existing attachment path without declaring provider work", () => {
+  const session = {status: "Ready", activity: {pending_interaction_count: 1, active_prompt_count: 0, queued_prompt_count: 0, working_agent_count: 0}};
+  assert.equal(waitingRoomSessionStatusLabel(session), "Needs you");
+  assert.equal(waitingRoomSessionActivityHasWork(session.activity), false);
+  assert.equal(waitingRoomSessionActivityNextAction(session), "Attach to this session to review the pending request");
+});

@@ -1,21 +1,159 @@
 use super::*;
 
 impl KernelRuntimeState {
+    pub(super) fn runtime_catalog_signature_for_agent(
+        &self,
+        agent: &crate::agent::AgentInstance,
+    ) -> Vec<(String, String, serde_json::Value)> {
+        let Some(run) = self
+            .owned
+            .provider_store
+            .get_run_for_agent(agent.session_id(), agent.id())
+        else {
+            return Vec::new();
+        };
+        let Some(token) = run.runtime_mcp_auth_token() else {
+            return Vec::new();
+        };
+        let mut tools: Vec<_> = self
+            .runtime_tool_specs_for_auth_token(token)
+            .into_iter()
+            .map(|tool| (tool.name, tool.description, tool.input_schema))
+            .collect();
+        tools.sort_by(|a, b| a.0.cmp(&b.0));
+        tools
+    }
+
+    pub(super) fn runtime_catalog_registration_changed(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        previous: &[(String, String, serde_json::Value)],
+    ) {
+        if previous != self.runtime_catalog_signature_for_agent(agent).as_slice() {
+            // Set the reload obligation before returning an already-granted
+            // registration result; the asynchronous monitor may run later.
+            self.remember_runtime_catalog_continuation(agent, "runtime tool catalog");
+        }
+    }
+
+    pub(crate) fn runtime_tool_catalog_auth_tokens(&self) -> Vec<String> {
+        self.owned
+            .provider_store
+            .list_runs()
+            .into_iter()
+            .filter(|run| run.state() != crate::provider::ProviderRunState::Ended)
+            .filter_map(|run| run.runtime_mcp_auth_token().map(str::to_string))
+            .collect()
+    }
+
+    pub(crate) fn runtime_tool_catalog_changed_for_auth_token(&self, auth_token: &str) {
+        for run in self
+            .owned
+            .provider_store
+            .get_runs_by_runtime_mcp_auth_token(auth_token)
+        {
+            if !crate::provider::provider_runtime_catalog_requires_reload(run.provider()) {
+                continue;
+            }
+            let Some(agent_id) = run.agent_instance_id() else {
+                continue;
+            };
+            let Ok(agent) = self.owned.agent_store.get_agent(agent_id) else {
+                continue;
+            };
+            if self
+                .owned
+                .provider_run_projection
+                .is_leased_provider_run(run.id())
+            {
+                // The home owns prompt continuation. Workers only refresh their provider.
+                self.remember_pending_provider_catalog_reload(agent.session_id(), agent.id());
+            } else {
+                self.remember_runtime_catalog_continuation(&agent, "runtime tool catalog");
+            }
+        }
+    }
+
+    pub(super) fn runtime_catalog_grant_effect(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        already_granted: bool,
+    ) -> (&'static str, bool) {
+        let pending = self
+            .owned
+            .pending_mcp_continuations
+            .write()
+            .contains_key(agent.id())
+            || self
+                .owned
+                .pending_provider_reloads
+                .write()
+                .contains_key(agent.id());
+        if crate::provider::provider_runtime_catalog_requires_reload(agent.provider())
+            && (!already_granted || pending)
+        {
+            ("after_provider_reload", true)
+        } else {
+            ("now", false)
+        }
+    }
+
+    pub(super) fn remember_runtime_catalog_continuation(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        name: &str,
+    ) {
+        if !crate::provider::provider_runtime_catalog_requires_reload(agent.provider()) {
+            return;
+        }
+        let Ok(session) = self.owned.session_store.get_session(agent.session_id()) else {
+            return;
+        };
+        // Idle changes reload the conversation without replaying a finished user request.
+        let Some(prompt) = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent.id())
+        else {
+            self.remember_pending_provider_catalog_reload(session.id(), agent.id());
+            return;
+        };
+        self.remember_mcp_continuation_with_reason(
+            session.id(),
+            agent.id(),
+            name,
+            prompt.prompt(),
+            ProviderReloadReason::RuntimeToolCatalog,
+        );
+    }
+
     pub(super) fn remember_pending_mcp_continuation(
         &self,
         session_id: &str,
         agent_id: &str,
-        source_attachment_id: &str,
         mcp_name: &str,
         previous_prompt: &str,
     ) {
+        let label = format!("MCP `{mcp_name}`");
+        // Providers cache MCP tool lists, so a grant refreshes the catalog even
+        // when launch inputs compare equal; dev-stub has no catalog to refresh.
+        let reload_reason = if self
+            .owned
+            .agent_store
+            .get_agent(agent_id)
+            .is_ok_and(|agent| {
+                crate::provider::provider_runtime_catalog_requires_reload(agent.provider())
+            }) {
+            ProviderReloadReason::RuntimeToolCatalogAndLaunchInputs(label)
+        } else {
+            ProviderReloadReason::LaunchInputs(label)
+        };
         self.remember_mcp_continuation_with_reason(
             session_id,
             agent_id,
-            source_attachment_id,
             mcp_name,
             previous_prompt,
-            ProviderReloadReason::LaunchInputs(format!("MCP `{mcp_name}`")),
+            reload_reason,
         );
     }
 
@@ -23,13 +161,11 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         agent_id: &str,
-        source_attachment_id: &str,
         previous_prompt: &str,
     ) {
         self.remember_mcp_continuation_with_reason(
             session_id,
             agent_id,
-            source_attachment_id,
             "chariox-runtime",
             previous_prompt,
             ProviderReloadReason::RuntimeToolCatalog,
@@ -40,28 +176,27 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         agent_id: &str,
-        source_attachment_id: &str,
         mcp_name: &str,
         previous_prompt: &str,
         reload_reason: ProviderReloadReason,
     ) {
         let mut pending = self.owned.pending_mcp_continuations.write();
-        let reload_reason = pending
-            .get(agent_id)
-            .map_or(reload_reason.clone(), |previous| {
-                reload_reason.merge(&previous.reload_reason)
-            });
-        pending.insert(
-            agent_id.to_string(),
-            PendingMcpContinuation {
-                session_id: session_id.to_string(),
-                agent_id: agent_id.to_string(),
-                source_attachment_id: source_attachment_id.to_string(),
-                mcp_name: mcp_name.to_string(),
-                previous_prompt: previous_prompt.to_string(),
-                reload_reason,
-            },
-        );
+        if let Some(existing) = pending.get_mut(agent_id) {
+            // The first continuation owns the interrupted turn. Later grants in
+            // that turn only widen the reload cause it carries.
+            existing.reload_reason = reload_reason.merge(&existing.reload_reason);
+        } else {
+            pending.insert(
+                agent_id.to_string(),
+                PendingMcpContinuation {
+                    session_id: session_id.to_string(),
+                    agent_id: agent_id.to_string(),
+                    mcp_name: mcp_name.to_string(),
+                    previous_prompt: previous_prompt.to_string(),
+                    reload_reason,
+                },
+            );
+        }
         drop(pending);
         self.ensure_pending_mcp_continuation_poller(session_id, agent_id);
     }
@@ -156,7 +291,9 @@ impl KernelRuntimeState {
             .provider_store
             .get_run_for_agent(&continuation.session_id, &continuation.agent_id)
             .and_then(|run| {
-                if crate::provider::provider_run_reuses_run_for_mcp_continuation_reload(&run) {
+                if !crate::provider::provider_runtime_catalog_requires_reload(run.provider())
+                    && crate::provider::provider_run_reuses_run_for_mcp_continuation_reload(&run)
+                {
                     None
                 } else {
                     Some(run.id().to_string())
@@ -203,7 +340,7 @@ impl KernelRuntimeState {
                 "pending-draft:mcp-continuation:{}:{}",
                 continuation.session_id, continuation.agent_id
             ),
-            &continuation.source_attachment_id,
+            self.ensure_mcp_continuation_attachment(&continuation)?,
             &continuation.agent_id,
             continuation.previous_prompt,
             crate::session::PromptStatus::Queued,
@@ -224,6 +361,41 @@ impl KernelRuntimeState {
             self.spawn_remote_prompt_dispatch(dispatch);
         }
         Ok(())
+    }
+
+    // An accepted capability continuation belongs to the kernel, even after the
+    // client that submitted the original turn disconnects. Use the same automation
+    // attachment/admission path as schedules and metaagent tasks.
+    pub(super) fn ensure_mcp_continuation_attachment(
+        &self,
+        continuation: &PendingMcpContinuation,
+    ) -> Result<String, DaemonError> {
+        let agent = self.owned.agent_store.get_agent(&continuation.agent_id)?;
+        if agent.session_id() != continuation.session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: continuation.session_id.clone(),
+                agent_id: continuation.agent_id.clone(),
+            });
+        }
+        let client_id = format!("mcp-continuation:{}", agent.id());
+        if let Some(attachment) = self
+            .owned
+            .attachment_store
+            .list_client_attachments(&client_id)
+            .into_iter()
+            .find(|attachment| attachment.session_id() == continuation.session_id)
+        {
+            return Ok(attachment.id().to_string());
+        }
+        let attachment = self
+            .owned
+            .attach(crate::attachment::AttachRequest::for_user(
+                &continuation.session_id,
+                client_id,
+                crate::attachment::ClientCapabilityLevel::AutomationOnly,
+                agent.owner_user_id(),
+            ))?;
+        Ok(attachment.id().to_string())
     }
 
     async fn wait_for_agent_provider_relaunch(

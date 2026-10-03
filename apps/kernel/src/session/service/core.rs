@@ -1,4 +1,6 @@
 use super::*;
+#[path = "leased_project.rs"]
+mod leased_project;
 use crate::session::{WorkflowEventDeliveryReceipt, WorkflowPublicationSnapshot};
 use std::path::Path;
 
@@ -14,6 +16,7 @@ impl SessionService {
         Self {
             store: SessionStore::new(),
             room_environments: RoomEnvironmentRegistry::new(),
+            room_environment_durable_state: None,
             projects: BTreeMap::new(),
             ephemeral_session_ids: BTreeSet::new(),
             host_machine_id: config.host_machine_id.clone(),

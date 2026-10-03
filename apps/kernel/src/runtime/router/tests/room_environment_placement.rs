@@ -81,6 +81,29 @@ impl TestState {
 impl Drop for TestState {
     fn drop(&mut self) {
         if self.root.exists() {
+            #[cfg(target_os = "linux")]
+            if self.root.join("upload-browser-lifetimes").exists() {
+                let lifecycle = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("slice-linux-docker/docker/browser-lifecycle.py");
+                let stopped = std::process::Command::new("python3")
+                    .arg(lifecycle)
+                    .arg("stop")
+                    .arg(self.root.join("upload-browser-profile"))
+                    .env(
+                        "CHARIOX_BROWSER_LIFECYCLE_ROOT",
+                        self.root.join("upload-browser-lifetimes"),
+                    )
+                    .env("TMPDIR", &self.root)
+                    .output();
+                // Never panic again while unwinding: keep the original failure.
+                if !std::thread::panicking() {
+                    let stopped = stopped.expect("retire fixture-owned upload browser");
+                    assert!(
+                        stopped.status.success(),
+                        "fixture browser retirement failed"
+                    );
+                }
+            }
             if let Err(error) = std::fs::remove_dir_all(&self.root) {
                 if std::thread::panicking() {
                     // Aborted background tasks can still hold the state briefly.

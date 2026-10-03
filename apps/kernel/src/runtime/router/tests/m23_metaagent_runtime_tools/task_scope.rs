@@ -662,6 +662,28 @@ async fn local_metaagent_task_pause_and_abort_cancel_active_prompt_inner() {
         .await
         .expect("task update should start notification prompt");
 
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let session = router
+                .runtime_state()
+                .session_snapshot(session.id())
+                .await
+                .unwrap();
+            if session
+                .active_prompt_for_agent(metaagent.id())
+                .is_some_and(|prompt| {
+                    prompt.durable_delivery_phase()
+                        == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+                })
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("task notification must be delivered before the pause fixture");
+
     // Withhold the abort dispatch until the intermediate Cancelling state
     // has been asserted; a successful PTY abort otherwise settles immediately.
     let cancellation_lane = router

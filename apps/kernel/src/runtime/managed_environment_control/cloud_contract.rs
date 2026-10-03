@@ -34,9 +34,9 @@ pub(super) struct EnvironmentsResponse {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct EnvironmentDetailsResponse {
-    pub(super) environment: EnvironmentSummary,
-    #[allow(dead_code)]
+pub(in crate::runtime) struct EnvironmentDetailsResponse {
+    pub(in crate::runtime) environment: EnvironmentSummary,
+    #[serde(default)]
     pub(super) operations: Vec<OperationSummary>,
 }
 
@@ -57,7 +57,7 @@ pub(super) struct ReimageResult {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ReimageReceipt {
+pub(super) struct ReimageReceipt {
     receipt_id: String,
     environment_id: String,
     operation_id: String,
@@ -102,7 +102,7 @@ struct ReimageReceipt {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct ContextTransferTicket {
+pub(in crate::runtime) struct ContextTransferTicket {
     environment_id: String,
     context_plan: ContextPlan,
     target: ContextTransferTarget,
@@ -136,7 +136,7 @@ pub(super) struct ContextSourceOption {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct EnvironmentSummary {
+pub(in crate::runtime) struct EnvironmentSummary {
     environment_id: String,
     account_id: String,
     created_by_user_id: String,
@@ -155,10 +155,54 @@ pub(super) struct EnvironmentSummary {
     context_plan: ContextPlan,
     context_manifest_digest: Option<String>,
     auto_stop_policy: AutoStopPolicy,
+    #[serde(default, deserialize_with = "deserialize_optional_timestamp")]
+    runtime_started_at: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_running_agent_count")]
+    running_agent_count: Option<u8>,
+    #[serde(default, deserialize_with = "deserialize_optional_timestamp")]
+    last_activity_reported_at: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_timestamp")]
+    last_activity_changed_at: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_timestamp")]
+    auto_stop_warning_at: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_timestamp")]
+    auto_stop_deadline_at: Option<String>,
     last_error_code: Option<String>,
     last_error_message: Option<String>,
     created_at: String,
     updated_at: String,
+}
+
+fn deserialize_running_agent_count<'de, D>(deserializer: D) -> Result<Option<u8>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<u8>::deserialize(deserializer)?;
+    match value {
+        Some(0 | 1) | None => Ok(value),
+        Some(_) => Err(serde::de::Error::custom("running agent count is invalid")),
+    }
+}
+
+fn deserialize_optional_timestamp<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    if let Some(timestamp) = value.as_deref() {
+        let parsed = chrono::DateTime::parse_from_rfc3339(timestamp)
+            .map_err(|_| serde::de::Error::custom("managed activity timestamp is invalid"))?;
+        if parsed
+            .with_timezone(&chrono::Utc)
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+            != timestamp
+        {
+            return Err(serde::de::Error::custom(
+                "managed activity timestamp is not canonical",
+            ));
+        }
+    }
+    Ok(value)
 }
 
 #[derive(Deserialize)]
@@ -304,6 +348,12 @@ impl From<EnvironmentSummary> for ManagedEnvironmentSummary {
             context_plan: value.context_plan.into(),
             context_manifest_digest: value.context_manifest_digest,
             auto_stop_policy: value.auto_stop_policy.into(),
+            runtime_started_at: value.runtime_started_at,
+            running_agent_count: value.running_agent_count,
+            last_activity_reported_at: value.last_activity_reported_at,
+            last_activity_changed_at: value.last_activity_changed_at,
+            auto_stop_warning_at: value.auto_stop_warning_at,
+            auto_stop_deadline_at: value.auto_stop_deadline_at,
             last_error_code: value.last_error_code,
             last_error_message: value.last_error_message,
             created_at: value.created_at,
@@ -491,7 +541,9 @@ impl From<ReimageResult> for ManagedEnvironmentReimageResult {
 }
 
 impl ContextTransferTicket {
-    pub(super) fn into_ticket(self) -> Result<ManagedContextTransferTicket, DaemonError> {
+    pub(in crate::runtime) fn into_ticket(
+        self,
+    ) -> Result<ManagedContextTransferTicket, DaemonError> {
         let context_plan = ManagedEnvironmentContextPlan::from(self.context_plan);
         let context_plan = serde_json::from_value(
             serde_json::to_value(context_plan).map_err(ticket_decode_error)?,

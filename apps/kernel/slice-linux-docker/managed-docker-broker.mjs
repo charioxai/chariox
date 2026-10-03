@@ -8,8 +8,14 @@ import { localDevRuntimeEnvironment } from "./protected-local-docker-authority.m
 import { verifiedProtectedAuthority } from "./protected-authority.mjs"
 import { recordManagedImageProof } from "./protected-image-proof.mjs"
 import { DURABLE_LAYOUT_ROOT } from "./protected-first-boot.mjs"
+import { dockerControlPolicy, runBrokerCommand } from "./managed-broker-command.mjs"
+
 import { spawnSync } from "node:child_process"
+import { isPositiveDockerCpuLimit } from "./docker-cpu-policy.mjs"
+import { isDockerImageReference } from "./docker-image-reference.mjs"
+import { HOME_ARCHIVE_PROGRESS_TIMEOUT_MS, homeArchiveMetadataMatches } from "./managed-home-archive-stream.mjs"
 import { createHash } from "node:crypto"
+import { digestPinnedHomeArchive } from "./managed-home-archive-digest.mjs"
 import {
   chmodSync,
   chownSync,
@@ -28,7 +34,6 @@ import {
   realpathSync,
   renameSync,
   rmSync,
-  statfsSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs"
@@ -36,9 +41,17 @@ import { createServer } from "node:net"
 import { createInterface } from "node:readline"
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
+import { requestSliceDiskQuota, sliceDiskQuotaIdentityFromEnvironment } from "./slice-disk-quota-client.mjs"
+import { validateSliceDiskQuotaIdentity } from "./slice-disk-quota-contract.mjs"
+import { createSliceDiskQuotaCoordinator } from "./slice-disk-quota-coordinator.mjs"
+import {
+  dockerObjectNotFound,
+  readSliceDiskQuotaMarkerInspection,
+  runWithSliceDiskQuotaAdmission,
+} from "./slice-disk-quota-admission.mjs"
 
 const MAX_FRAME_BYTES = 12 * 1024 * 1024
-const MAX_OUTPUT_BYTES = 4 * 1024 * 1024
+const MAX_OUTPUT_BYTES = 64 * 1024
 const MAX_CREDENTIAL_BYTES = 2 * 1024 * 1024
 const MAX_CREDENTIAL_TOTAL_BYTES = 8 * 1024 * 1024
 const LINUX_O_PATH = 0x200000
@@ -52,16 +65,15 @@ const BROKER_INPUT_ROOT = resolve(
   process.env.CHARIOX_SLICE_DOCKER_BROKER_INPUT_ROOT ?? "/run/chariox-slice-broker/input",
 )
 const BROKER_OUTPUT_ROOT = resolve(
-  process.env.CHARIOX_SLICE_DOCKER_BROKER_OUTPUT_ROOT ?? "/var/lib/chariox-slice-share/.broker-private/output",
+  process.env.CHARIOX_SLICE_DOCKER_BROKER_OUTPUT_ROOT ?? join(SHARE_ROOT, ".broker-private/output"),
 )
 const BROKER_ARTIFACT_ROOT = resolve(
   process.env.CHARIOX_SLICE_DOCKER_BROKER_ARTIFACT_ROOT ?? "/var/lib/chariox-slice-share/.broker-private/artifacts",
 )
 const HANDLE_ROOT = resolve(process.env.CHARIOX_SLICE_DOCKER_HANDLE_ROOT ?? "/var/lib/chariox-docker/mount-handles")
 const HANDLE_STATE = resolve(process.env.CHARIOX_SLICE_DOCKER_HANDLE_STATE ?? "/var/lib/chariox-docker/mount-handles.json")
+const sliceDiskQuotaCoordinator = createSliceDiskQuotaCoordinator()
 const MAX_PERSISTENT_HANDLES = 256
-const MAX_HOME_ARCHIVE_BYTES = 32 * 1024 * 1024 * 1024
-const MIN_FREE_AFTER_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
 const PROVISIONER = resolve(
   process.env.CHARIOX_SLICE_DOCKER_PROVISIONER ??
     resolve(dirname(fileURLToPath(import.meta.url)), "provision-linux-docker-slice.sh"),
@@ -137,6 +149,9 @@ const ALLOWED_ENVIRONMENT = new Set([
   "CHARIOX_SLICE_OWNER_KERNEL_ID",
   "CHARIOX_SLICE_OWNER_MACHINE_ID",
   "CHARIOX_SLICE_OWNER_PUBLIC_KEY",
+  "CHARIOX_SLICE_DOCKER_PIDS_LIMIT",
+  "CHARIOX_SLICE_DOCKER_NOFILE_LIMIT",
+  "CHARIOX_SLICE_MIN_FREE_MB",
   "CHARIOX_SLICE_DOCKER_IMAGE",
   "CHARIOX_SLICE_BASE_IMAGE",
   "CHARIOX_SLICE_BUILD_IMAGE",
@@ -161,11 +176,14 @@ const ALLOWED_ENVIRONMENT = new Set([
   "CHARIOX_SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY",
   "CHARIOX_SLICE_APPARMOR_PROFILE",
   "CHARIOX_SLICE_PROVIDER_BIND_HOST",
+  "CHARIOX_SLICE_DAEMON_ID",
   "CHARIOX_SLICE_DAEMON_ALIAS",
   "CHARIOX_SLICE_MACHINE_ID",
   "CHARIOX_SLICE_MACHINE_ALIAS",
   "CHARIOX_SLICE_DOCKER_MEMORY",
   "CHARIOX_SLICE_DOCKER_CPUS",
+  "CHARIOX_SLICE_DISK_LAYER_MB",
+  "CHARIOX_SLICE_DISK_HOME_MB",
   "CHARIOX_SLICE_RELAY_TOKEN",
   "CHARIOX_SLICE_RELAY_URL",
   "CHARIOX_SLICE_DEVELOPMENT_MOUNT_COUNT",
@@ -310,11 +328,6 @@ function validateDockerExec(args) {
   ) return
   if (
     args[2] === "root" &&
-    /-home-archive-[0-9]+$/.test(args[3]) &&
-    exactArguments(command, ["bash", "-lc", "set -euo pipefail; cd /home-src; tar --zstd -cf /tmp/home.tar.zst ."])
-  ) return
-  if (
-    args[2] === "root" &&
     isDiskAdmissionHelper(args[3]) &&
     exactArguments(command, ["du", "-sb", "/home-src"])
   ) return
@@ -393,7 +406,7 @@ function validateDocker(args) {
   }
   if (exactArguments(args.slice(0, 4), ["image", "inspect", "--format", "{{.Id}}"])
       && args.length === 5) {
-    validateResource(args[4], "Docker image")
+    if (!isDockerImageReference(args[4])) fail("Docker image reference is invalid")
     return
   }
   if (exactArguments(args.slice(0, 2), ["container", "inspect"]) && args.length === 3) {
@@ -432,7 +445,7 @@ function validateDocker(args) {
     validateResource(volume, "Docker volume")
     if (volume !== `${args[2].slice(0, suffix.index)}-home`) fail("Docker helper volume does not match its slice")
     if (target !== "/home-src" || extra !== "ro") fail("Docker helper volume target is invalid")
-    validateResource(args[17], "Docker image")
+    if (!isDockerImageReference(args[17])) fail("Docker helper image reference is invalid")
     return
   }
   if (args[0] === "cp" && args.length === 3) {
@@ -564,7 +577,7 @@ function validateProvisioner(action, environment, files) {
     fail("CHARIOX_SLICE_LOGIN_PROVIDER is invalid")
   }
   for (const name of ["CHARIOX_SLICE_DOCKER_IMAGE", "CHARIOX_SLICE_BASE_IMAGE"]) {
-    if (environment[name]) validateResource(environment[name], name)
+    if (environment[name] && !isDockerImageReference(environment[name])) fail(`${name} image reference is invalid`)
   }
   if (environment.CHARIOX_SLICE_BUILD_IMAGE && !["auto", "always", "never"].includes(environment.CHARIOX_SLICE_BUILD_IMAGE)) {
     fail("CHARIOX_SLICE_BUILD_IMAGE is invalid")
@@ -581,8 +594,26 @@ function validateProvisioner(action, environment, files) {
   if (environment.CHARIOX_SLICE_DOCKER_MEMORY && !/^[1-9][0-9]{0,6}[mMgG]$/.test(environment.CHARIOX_SLICE_DOCKER_MEMORY)) {
     fail("CHARIOX_SLICE_DOCKER_MEMORY is invalid")
   }
-  if (environment.CHARIOX_SLICE_DOCKER_CPUS && !/^[1-9][0-9]*(?:\.[0-9]{1,3})?$/.test(environment.CHARIOX_SLICE_DOCKER_CPUS)) {
+  if (environment.CHARIOX_SLICE_DOCKER_CPUS !== undefined && !isPositiveDockerCpuLimit(environment.CHARIOX_SLICE_DOCKER_CPUS)) {
     fail("CHARIOX_SLICE_DOCKER_CPUS is invalid")
+  }
+  for (const [name, minimum, maximum, grammar] of [
+    ["CHARIOX_SLICE_DOCKER_PIDS_LIMIT", 1, 2_147_483_647, /^[1-9][0-9]{0,9}$/],
+    ["CHARIOX_SLICE_DOCKER_NOFILE_LIMIT", 1024, 1_048_576, /^[1-9][0-9]{0,6}$/],
+    ["CHARIOX_SLICE_MIN_FREE_MB", 0, 4_294_967_295, /^[0-9]{1,10}$/],
+  ]) {
+    const value = environment[name]
+    if (value !== undefined && (!grammar.test(value) || Number(value) < minimum || Number(value) > maximum)) fail(`${name} is invalid`)
+  }
+  const diskLayerMb = environment.CHARIOX_SLICE_DISK_LAYER_MB
+  const diskHomeMb = environment.CHARIOX_SLICE_DISK_HOME_MB
+  if ((diskLayerMb === undefined) !== (diskHomeMb === undefined)) {
+    fail("writable-layer and persistent-home disk limits must be configured together")
+  }
+  for (const [name, value] of [["CHARIOX_SLICE_DISK_LAYER_MB", diskLayerMb], ["CHARIOX_SLICE_DISK_HOME_MB", diskHomeMb]]) {
+    if (value !== undefined && (!/^[1-9][0-9]{0,9}$/.test(value) || Number(value) > 4_294_967_295)) {
+      fail(`${name} must be a positive u32 integer`)
+    }
   }
   for (const name of [
     "CHARIOX_SLICE_ALLOW_UNCONFINED_SECCOMP",
@@ -677,6 +708,7 @@ function validateRequest(request) {
   if (request?.kind === "home_archive_capture") {
     exactKeys(request, ["kind", "container", "scope", "id"], "home archive capture request")
     validateResource(request.container, "home archive container")
+    if (!/-home-archive-[0-9]+$/.test(request.container)) fail("home archive capture requires an archive helper")
     validateArtifactIdentity(request.scope, request.id)
     return
   }
@@ -709,7 +741,8 @@ function validateRequest(request) {
 }
 
 function validateArtifactIdentity(scope, id) {
-  if (!new Set(["state", "backup"]).has(scope) || typeof id !== "string" || !/^[a-zA-Z0-9_.:-]{1,180}$/.test(id)) {
+  if (!new Set(["state", "backup"]).has(scope) || typeof id !== "string"
+      || id === "." || id === ".." || !/^[a-zA-Z0-9_.:-]{1,180}$/.test(id)) {
     fail("home archive identity is invalid")
   }
 }
@@ -731,7 +764,8 @@ function artifactDirectory(scope, id) {
   return join(artifactScopeRoot(scope), id)
 }
 
-function captureHomeArchive(request) {
+async function captureHomeArchive(request) {
+  // Only a verified protected layout whose home is quiesced is captured.
   const owner = request.container.match(/^(chariox-slice-[A-Za-z0-9_.:-]+)-home-archive-[0-9]+$/)?.[1]
   if (!owner) fail("slice home capture helper ownership is invalid")
   const layout = protectedLayouts.preflight(owner)
@@ -747,16 +781,19 @@ function captureHomeArchive(request) {
   chmodSync(staging, 0o700)
   const staged = join(staging, "home.tar.zst")
   try {
-    const captured = spawnSync(process.execPath,
+    // The verified helper streams its read-only home straight into private
+    // broker state; the capture module bounds size, free space and duration.
+    // Lease loss settles its process group like any other broker producer.
+    const captured = await spawnBounded(process.execPath,
       [join(dirname(fileURLToPath(import.meta.url)), "protected-home-capture.mjs"), request.container, layout.homeVolume, staged],
-      {env: dockerEnvironment(), encoding: "utf8", maxBuffer: 64 * 1024, timeout: 11 * 60_000})
+      {env: dockerEnvironment(), maxBuffer: 64 * 1024, timeout: 11 * 60_000})
     if (captured.status !== 0) fail("slice home capture was refused; existing saved state is preserved")
-    const result = JSON.parse(captured.stdout)
+    const result = JSON.parse(captured.stdout.toString("utf8"))
     exactKeys(result, ["sizeBytes", "sha256"], "protected home capture result")
     const expectedSize = result.sizeBytes
     const digest = result.sha256
     const metadata = lstatSync(staged)
-    if (!Number.isSafeInteger(expectedSize) || expectedSize <= 0 || expectedSize > MAX_HOME_ARCHIVE_BYTES
+    if (!Number.isSafeInteger(expectedSize) || expectedSize <= 0
         || !/^[a-f0-9]{64}$/.test(digest) || !metadata.isFile() || metadata.isSymbolicLink()
         || metadata.nlink !== 1 || metadata.size !== expectedSize || metadata.uid !== process.getuid()
         || (metadata.mode & 0o077) !== 0) fail("captured slice home archive is invalid")
@@ -812,10 +849,16 @@ function managedHomeArchiveCoordinates(path) {
   return { candidate, relative }
 }
 
-function inspectManagedHomeArchive(path) {
+async function inspectManagedHomeArchive(path) {
   const { candidate, relative } = managedHomeArchiveCoordinates(path)
   const archive = pinnedSharedPath(candidate, "managed saved home archive", "file")
+  let directory
   try {
+    directory = pinnedSharedPath(dirname(candidate), "managed saved home archive generation", "directory")
+    const entries = readdirSync(directory.path).sort()
+    if (entries.length !== 2 || entries[0] !== "home.tar.zst" || entries[1] !== "metadata.json") {
+      fail("managed saved home archive generation contains unexpected files")
+    }
     const metadataPath = join(dirname(candidate), "metadata.json")
     const metadataFile = pinnedSharedPath(metadataPath, "managed saved home archive metadata", "file")
     try {
@@ -823,45 +866,32 @@ function inspectManagedHomeArchive(path) {
       exactKeys(metadata, ["schemaVersion", "scope", "id", "sizeBytes", "sha256"], "managed saved home archive metadata")
       const expectedScope = relative[0] === "states" ? "state" : "backup"
       const archiveMetadata = fstatSync(archive.fd)
-      if (
-        metadata.schemaVersion !== 1 ||
-        metadata.scope !== expectedScope ||
-        metadata.id !== relative[1] ||
-        !Number.isSafeInteger(metadata.sizeBytes) ||
-        metadata.sizeBytes <= 0 ||
-        metadata.sizeBytes > MAX_HOME_ARCHIVE_BYTES ||
-        metadata.sizeBytes !== archiveMetadata.size ||
-        !/^[a-f0-9]{64}$/.test(metadata.sha256)
-      ) {
+      if (!homeArchiveMetadataMatches(metadata, expectedScope, relative[1], archiveMetadata.size)) {
         fail("managed saved home archive metadata is invalid")
       }
-      const digestResult = spawnSync("/usr/bin/sha256sum", ["--", archive.path], {
-        env: { PATH: "/usr/bin:/bin" },
-        encoding: "utf8",
-        maxBuffer: 64 * 1024,
-        timeout: 10 * 60_000,
-      })
-      if (digestResult.status !== 0 || !digestResult.stdout.startsWith(`${metadata.sha256} `)) {
+      const digest = await digestPinnedHomeArchive(archive.fd, HOME_ARCHIVE_PROGRESS_TIMEOUT_MS, brokerLifetime.signal)
+      if (digest !== metadata.sha256) {
         fail("managed saved home archive digest does not match")
       }
-      return { archive, metadata }
+      return { archive, directory, metadata }
     } finally {
       closeSync(metadataFile.fd)
     }
   } catch (error) {
     closeSync(archive.fd)
+    if (directory) closeSync(directory.fd)
     throw error
   }
 }
 
 function verifyManagedHomeArchive(path) {
-  const {archive, metadata} = inspectManagedHomeArchive(path)
-  return {...archive, digest: metadata.sha256}
+  return inspectManagedHomeArchive(path)
 }
 
-function verifyHomeArchive(request) {
-  const { archive, metadata } = inspectManagedHomeArchive(request.path)
+async function verifyHomeArchive(request) {
+  const { archive, directory, metadata } = await inspectManagedHomeArchive(request.path)
   closeSync(archive.fd)
+  closeSync(directory.fd)
   return {
     path: request.path,
     sizeBytes: metadata.sizeBytes,
@@ -942,16 +972,27 @@ function handleMetadata(path) {
   }
 }
 
+function spawnControl(command, args, options = {}) {
+  // Fixed broker control commands never carry archive bytes. A stalled daemon
+  // or utility must settle before admission or stable-handle mutation continues.
+  return spawnSync(command, args, {
+    ...options,
+    timeout: options.timeout ?? 20_000,
+    killSignal: "SIGKILL",
+  })
+}
+
 function handleIsMountpoint(path) {
-  const result = spawnSync("/usr/bin/mountpoint", ["-q", "--", path], { stdio: "ignore" })
+  const result = spawnControl("/usr/bin/mountpoint", ["-q", "--", path], { stdio: "ignore" })
+  if (result.error || result.signal) fail("failed to inspect persistent mount handle")
   if (result.status === 0) return true
-  if (Number.isInteger(result.status)) return false
+  if (result.status === 32) return false
   fail("failed to inspect persistent mount handle")
 }
 
 function unmountHandle(path) {
   if (!handleIsMountpoint(path)) return
-  const result = spawnSync("/usr/bin/umount", [path], { stdio: "ignore" })
+  const result = spawnControl("/usr/bin/umount", [path], { stdio: "ignore" })
   if (result.status !== 0) fail("failed to unmount persistent mount handle")
 }
 
@@ -988,7 +1029,7 @@ function publishHandle(record, fd) {
   } else if (readdirSync(path).length !== 0) {
     fail("persistent mount handle directory is not empty")
   }
-  const mounted = spawnSync("/usr/bin/mount", ["--bind", "/proc/self/fd/3", path], {
+  const mounted = spawnControl("/usr/bin/mount", ["--bind", "/proc/self/fd/3", path], {
     stdio: ["ignore", "ignore", "ignore", fd],
   })
   if (mounted.status !== 0) fail("failed to publish persistent mount handle")
@@ -1273,17 +1314,146 @@ function normalizedMounts(mounts) {
 }
 
 function inspectContainerMounts(container) {
-  const result = spawnSync(
+  const result = spawnControl(
     "/usr/bin/docker",
     ["container", "inspect", "--format", "{{json .Mounts}}", container],
     { env: dockerEnvironment(), encoding: "utf8", maxBuffer: 1024 * 1024 },
   )
-  if (result.status !== 0) return undefined
+  if (result.error || result.signal) fail("Docker container mount inspection failed")
+  if (result.status !== 0) {
+    if (result.status === 1 && dockerObjectNotFound(result.stderr, "container", container)) return undefined
+    fail("Docker container mount inspection failed")
+  }
   const mounts = JSON.parse(result.stdout)
   if (!Array.isArray(mounts)) fail("Docker container mount inspection is invalid")
   return mounts
     .filter((mount) => mount?.Type === "bind")
     .map((mount) => ({ destination: mount.Destination, rw: mount.RW === true, source: mount.Source }))
+}
+
+function diskQuotaMarkerPresent(container) {
+  const inspectedContainer = spawnControl(
+    "/usr/bin/docker",
+    ["container", "inspect", "--format", "{{json .Config.Labels}}", container],
+    { env: dockerEnvironment(), encoding: "utf8", maxBuffer: 256 * 1024, timeout: 20_000 },
+  )
+  if (readSliceDiskQuotaMarkerInspection(inspectedContainer, "container", container)) return true
+  const volume = `${container}-home`
+  const inspectedVolume = spawnControl(
+    "/usr/bin/docker",
+    ["volume", "inspect", "--format", "{{json .Labels}}", volume],
+    { env: dockerEnvironment(), encoding: "utf8", maxBuffer: 256 * 1024, timeout: 20_000 },
+  )
+  return readSliceDiskQuotaMarkerInspection(inspectedVolume, "volume", volume)
+}
+
+function dockerInspection(result, label) {
+  if (result.error || result.signal || result.status !== 0) {
+    fail(`${label} could not be inspected`)
+  }
+  try {
+    const value = JSON.parse(result.stdout)
+    if (!value || typeof value !== "object" || Array.isArray(value)) fail(`${label} inspection is malformed`)
+    return value
+  } catch {
+    fail(`${label} inspection is malformed`)
+  }
+}
+
+function unboundedQuotaObservation(container) {
+  const inspectedContainer = dockerInspection(spawnControl(
+    "/usr/bin/docker",
+    ["container", "inspect", "--format", "{{json .}}", container],
+    { env: dockerEnvironment(), encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 20_000 },
+  ), "managed slice container")
+  const containerLabels = inspectedContainer.Config?.Labels
+  if (!containerLabels || typeof containerLabels !== "object" || Array.isArray(containerLabels)) {
+    fail("managed slice container labels are unreadable")
+  }
+  if (readSliceDiskQuotaMarkerInspection({ status: 0, stdout: JSON.stringify(containerLabels) }, "container", container)) {
+    fail("managed slice container has a disk quota marker")
+  }
+  if (!Array.isArray(inspectedContainer.Mounts)) fail("managed slice container mounts are unreadable")
+  const homeMounts = inspectedContainer.Mounts.filter(
+    (mount) => mount?.Type === "volume" && mount.Destination === "/home/slice",
+  )
+  if (homeMounts.length !== 1 || homeMounts[0].RW !== true || typeof homeMounts[0].Name !== "string") {
+    fail("managed slice home-volume mount identity is invalid")
+  }
+  const homeVolumeName = homeMounts[0].Name
+  const inspectedVolume = dockerInspection(spawnControl(
+    "/usr/bin/docker",
+    ["volume", "inspect", "--format", "{{json .}}", homeVolumeName],
+    { env: dockerEnvironment(), encoding: "utf8", maxBuffer: 256 * 1024, timeout: 20_000 },
+  ), "managed slice home volume")
+  const volumeLabels = inspectedVolume.Labels
+  if (!volumeLabels || typeof volumeLabels !== "object" || Array.isArray(volumeLabels)) {
+    fail("managed slice home-volume labels are unreadable")
+  }
+  if (readSliceDiskQuotaMarkerInspection({ status: 0, stdout: JSON.stringify(volumeLabels) }, "volume", homeVolumeName)) {
+    fail("managed slice home volume has a disk quota marker")
+  }
+  const identity = validateSliceDiskQuotaIdentity({
+    ownerKernelId: containerLabels["io.chariox.slice.owner-kernel-id"],
+    ownerMachineId: containerLabels["io.chariox.slice.owner-machine-id"],
+    sliceId: containerLabels["io.chariox.slice.id"],
+    containerName: container,
+    homeVolumeName,
+  })
+  if (
+    inspectedVolume.Name !== homeVolumeName ||
+    volumeLabels["io.chariox.slice.owner-kernel-id"] !== identity.ownerKernelId ||
+    volumeLabels["io.chariox.slice.owner-machine-id"] !== identity.ownerMachineId ||
+    volumeLabels["io.chariox.slice.id"] !== identity.sliceId
+  ) {
+    fail("managed slice container and home-volume ownership do not match")
+  }
+  if (typeof inspectedContainer.Id !== "string" || !/^[a-f0-9]{64}$/.test(inspectedContainer.Id)) {
+    fail("managed slice container identity is invalid")
+  }
+  if (
+    typeof inspectedVolume.Mountpoint !== "string" || !isAbsolute(inspectedVolume.Mountpoint) ||
+    typeof inspectedVolume.Driver !== "string" || typeof inspectedVolume.Scope !== "string"
+  ) {
+    fail("managed slice home-volume identity is invalid")
+  }
+  const mountpointMetadata = lstatSync(inspectedVolume.Mountpoint, { bigint: true })
+  if (mountpointMetadata.isSymbolicLink() || !mountpointMetadata.isDirectory()) {
+    fail("managed slice home-volume mountpoint identity is invalid")
+  }
+  return {
+    identity,
+    binding: {
+      containerId: inspectedContainer.Id,
+      homeVolumeCreatedAt: typeof inspectedVolume.CreatedAt === "string" ? inspectedVolume.CreatedAt : "",
+      homeVolumeDevice: mountpointMetadata.dev.toString(),
+      homeVolumeDriver: inspectedVolume.Driver,
+      homeVolumeInode: mountpointMetadata.ino.toString(),
+      homeVolumeMountpoint: inspectedVolume.Mountpoint,
+      homeVolumeName,
+      homeVolumeScope: inspectedVolume.Scope,
+    },
+  }
+}
+
+async function resolveBrokerUnboundedQuotaProof(container, lock) {
+  const observed = unboundedQuotaObservation(container)
+  return sliceDiskQuotaCoordinator.resolveUnboundedProof(lock, observed.identity, observed.binding)
+}
+
+async function rememberBrokerUnboundedQuotaProof(identity, container, lock) {
+  try {
+    sliceDiskQuotaCoordinator.assertLockHeld(lock)
+    const observed = unboundedQuotaObservation(container)
+    if (JSON.stringify(observed.identity) !== JSON.stringify(identity)) return
+    await sliceDiskQuotaCoordinator.captureUnboundedProof(
+      lock,
+      observed.identity,
+      observed.binding,
+    )
+  } catch {
+    // Online allocator evidence remains sufficient for this operation; no offline proof is cached.
+  }
 }
 
 function requireExactContainerMounts(container, expected, stop) {
@@ -1293,7 +1463,8 @@ function requireExactContainerMounts(container, expected, stop) {
     fail("existing managed slice bind mounts do not match the broker-owned stable handle set")
   }
   if (stop) {
-    const stopped = spawnSync("/usr/bin/docker", ["stop", container], {
+    const stopped = spawnControl("/usr/bin/docker", ["stop", container], {
+      timeout: 30_000,
       env: dockerEnvironment(),
       maxBuffer: MAX_OUTPUT_BYTES,
     })
@@ -1355,7 +1526,7 @@ function prepareDocker(args) {
   return { args: prepared, descriptors, output }
 }
 
-function prepareProvisioner(request) {
+async function prepareProvisioner(request) {
   const environment = { ...request.environment }
   if (LOCAL_AUTHORITY) {
     environment.CHARIOX_SLICE_LOCAL_DEV_OWNER_UID = String(LOCAL_AUTHORITY.enrollment.ownerUid)
@@ -1427,11 +1598,17 @@ function prepareProvisioner(request) {
         if (persistent.created) newHandles.add(persistent.handle)
       } else {
         const pinned = name === "CHARIOX_SLICE_SAVED_HOME_ARCHIVE"
-          ? verifyManagedHomeArchive(value)
+          ? await verifyManagedHomeArchive(value)
           : pinnedSharedPath(value, name, "file")
-        descriptors.push(pinned.fd)
-        environment[name] = pinned.path
-        if (name === "CHARIOX_SLICE_SAVED_HOME_ARCHIVE") restoreDigest = pinned.digest
+        if (name === "CHARIOX_SLICE_SAVED_HOME_ARCHIVE") {
+          descriptors.push(pinned.archive.fd, pinned.directory.fd)
+          environment[name] = pinned.archive.path
+          environment.CHARIOX_SLICE_BROKER_SAVED_HOME_ARCHIVE_DIR = pinned.directory.path
+          restoreDigest = pinned.metadata.sha256
+        } else {
+          descriptors.push(pinned.fd)
+          environment[name] = pinned.path
+        }
       }
     }
     const mountCount = provisionsContainer
@@ -1484,15 +1661,9 @@ function cleanupPrepared(prepared) {
   if (prepared.output?.stagingDirectory) rmSync(prepared.output.stagingDirectory, { recursive: true, force: true })
 }
 
-function spawnBounded(command, args, options) {
-  if (process.platform === "linux") {
-    return spawnSync(
-      "/usr/bin/timeout",
-      ["--signal=TERM", "--kill-after=10s", "20m", command, ...args],
-      { ...options, timeout: 21 * 60_000, killSignal: "SIGKILL" },
-    )
-  }
-  return spawnSync(command, args, { ...options, timeout: 20 * 60_000, killSignal: "SIGKILL" })
+const brokerLifetime = new AbortController()
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(signal, () => { brokerLifetime.abort() })
 }
 
 function inspectDockerObject(kind, reference) {
@@ -1520,7 +1691,29 @@ function seedLocalDevWorkerProof() {
   recordManagedImageProof(protectedLayouts.imageRoot, enrollment.sourceDigest, image, enrollment.workerKernelHash)
 }
 
-function execute(request) {
+function spawnBounded(command, args, options) {
+  return runBrokerCommand(command, args, { ...options, signal: brokerLifetime.signal, logRoot: join(BROKER_OUTPUT_ROOT, "logs") })
+}
+
+function provisionerQuotaRequest(environment) {
+  const identity = sliceDiskQuotaIdentityFromEnvironment(environment)
+  const layerMb = environment.CHARIOX_SLICE_DISK_LAYER_MB
+  const homeMb = environment.CHARIOX_SLICE_DISK_HOME_MB
+  if ((layerMb === undefined) !== (homeMb === undefined)) {
+    fail("writable-layer and persistent-home disk limits must be configured together")
+  }
+  return {
+    identity,
+    limits: layerMb === undefined
+      ? undefined
+      : {
+        writableLayerBytes: Number(layerMb) * 1024 * 1024,
+        persistentHomeBytes: Number(homeMb) * 1024 * 1024,
+      },
+  }
+}
+
+async function execute(request) {
   validateRequest(request)
   if (LOCAL_AUTHORITY) {
     verifiedProtectedAuthority()
@@ -1558,13 +1751,16 @@ function execute(request) {
     return {status: 0, stdoutBase64: "", stderrBase64: ""}
   }
   if (request.kind === "home_restore_resolve") {
-    const {archive, metadata} = inspectManagedHomeArchive(request.path)
+    const {archive, directory, metadata} = await inspectManagedHomeArchive(request.path)
     try { protectedLayouts.resolveRestore(request.container, metadata.sha256) }
-    finally { closeSync(archive.fd) }
+    finally { closeSync(archive.fd); closeSync(directory.fd) }
     return {status: 0, stdoutBase64: "", stderrBase64: ""}
   }
+  let releaseDiskQuota = false
+  let unboundedQuotaIdentity
+  let unboundedQuotaStatusVerified = false
   if (request.kind === "home_archive_capture") {
-    const captured = captureHomeArchive(request)
+    const captured = await captureHomeArchive(request)
     return { status: 0, stdoutBase64: Buffer.from(JSON.stringify(captured)).toString("base64"), stderrBase64: "" }
   }
   if (request.kind === "home_archive_remove") {
@@ -1572,7 +1768,7 @@ function execute(request) {
     return { status: 0, stdoutBase64: "", stderrBase64: "" }
   }
   if (request.kind === "home_archive_verify") {
-    const verified = verifyHomeArchive(request)
+    const verified = await verifyHomeArchive(request)
     return { status: 0, stdoutBase64: Buffer.from(JSON.stringify(verified)).toString("base64"), stderrBase64: "" }
   }
   if (request.kind === "docker" && request.args[0] === "start") {
@@ -1586,26 +1782,168 @@ function execute(request) {
       fail("managed slice start has no broker-owned stable mount record")
     }
   }
-  const prepared = request.kind === "docker" ? prepareDocker(request.args) : prepareProvisioner(request)
-  try {
-    const command = request.kind === "docker" ? "/usr/bin/docker" : PROVISIONER
-    const args = request.kind === "docker" ? prepared.args : [request.action]
-    const env = request.kind === "docker"
-      ? dockerEnvironment()
-      : {
-        HOME: "/var/lib/chariox-docker/home",
-        PATH: "/usr/local/bin:/usr/bin:/bin",
-        DOCKER_HOST,
-        ...prepared.environment,
-        ...(LOCAL_AUTHORITY ? {CHARIOX_SLICE_LOCAL_DEV_OWNER_UID: String(LOCAL_AUTHORITY.enrollment.ownerUid),
-          CHARIOX_SLICE_LOCAL_DEV_HELPER_NAME: process.env.CHARIOX_SLICE_LOCAL_DEV_HELPER_NAME,
-          CHARIOX_SLICE_BUILD_IMAGE: "never",
-          ...localDevRuntimeEnvironment(LOCAL_AUTHORITY.enrollment)} : {}),
-        ...(VERIFIED_BUILD_CONTEXT_DIGEST
-          ? { CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: VERIFIED_BUILD_CONTEXT_DIGEST, CHARIOX_SLICE_PROTECTED_IMAGE_PROOF_ROOT: protectedLayouts.imageRoot }
-          : {}),
+  let boundedLimits
+  if (request.kind === "provisioner" && ["provision", "restore-state", "recover"].includes(request.action)) {
+    const quota = provisionerQuotaRequest(request.environment)
+    unboundedQuotaIdentity = quota.identity
+    if (quota.limits) {
+      await requestSliceDiskQuota({
+        protocolVersion: 1,
+        operation: "reserve",
+        identity: quota.identity,
+        limits: quota.limits,
+      })
+      boundedLimits = quota.limits
+    } else {
+      if (diskQuotaMarkerPresent(quota.identity.containerName)) {
+        fail("configured disk quota caps are missing for a slice with an existing reservation")
       }
-    const result = spawnBounded(command, args, { env, maxBuffer: MAX_OUTPUT_BYTES })
+      try {
+        const status = await requestSliceDiskQuota({
+          protocolVersion: 1,
+          operation: "status",
+          identity: quota.identity,
+        })
+        if (status.bounded) fail("configured disk quota caps are missing for a slice with an existing reservation")
+        if (!status || typeof status !== "object" || Array.isArray(status) || status.bounded !== false) {
+          fail("managed disk quota allocator status is invalid")
+        }
+        exactKeys(status, ["bounded"], "managed disk quota unbounded status")
+        unboundedQuotaStatusVerified = true
+      } catch (error) {
+        if (!new Set(["ENOENT", "ECONNREFUSED"]).has(error?.code)) throw error
+      }
+    }
+  }
+  if (request.kind === "provisioner" && request.action === "destroy") {
+    const quota = provisionerQuotaRequest(request.environment)
+    releaseDiskQuota = diskQuotaMarkerPresent(quota.identity.containerName)
+    try {
+      const status = await requestSliceDiskQuota({
+        protocolVersion: 1,
+        operation: "status",
+        identity: quota.identity,
+      })
+      releaseDiskQuota ||= status.bounded
+    } catch (error) {
+      if (!new Set(["ENOENT", "ECONNREFUSED"]).has(error?.code)) releaseDiskQuota = true
+    }
+  }
+  let prepared
+  try {
+    const runPrepared = async (admission) => {
+      prepared = request.kind === "docker" ? prepareDocker(request.args) : await prepareProvisioner(request)
+      if (request.kind === "docker" && admission?.source === "broker-proof") {
+        prepared.args[1] = admission.containerId
+      }
+      const command = request.kind === "docker" ? "/usr/bin/docker" : PROVISIONER
+      const args = request.kind === "docker" ? prepared.args : [request.action]
+      const env = request.kind === "docker"
+        ? dockerEnvironment()
+        : {
+          HOME: "/var/lib/chariox-docker/home",
+          PATH: "/usr/local/bin:/usr/bin:/bin",
+          DOCKER_HOST,
+          ...prepared.environment,
+          ...(LOCAL_AUTHORITY ? {CHARIOX_SLICE_LOCAL_DEV_OWNER_UID: String(LOCAL_AUTHORITY.enrollment.ownerUid),
+            CHARIOX_SLICE_LOCAL_DEV_HELPER_NAME: process.env.CHARIOX_SLICE_LOCAL_DEV_HELPER_NAME,
+            CHARIOX_SLICE_BUILD_IMAGE: "never",
+            ...localDevRuntimeEnvironment(LOCAL_AUTHORITY.enrollment)} : {}),
+          ...(VERIFIED_BUILD_CONTEXT_DIGEST
+            ? { CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: VERIFIED_BUILD_CONTEXT_DIGEST, CHARIOX_SLICE_PROTECTED_IMAGE_PROOF_ROOT: protectedLayouts.imageRoot }
+            : {}),
+        }
+      return spawnBounded(command, args, {
+        env, maxBuffer: MAX_OUTPUT_BYTES,
+        ...(request.kind === "docker" ? dockerControlPolicy(request.args) : {}),
+      })
+    }
+    const containerName = request.kind === "docker" ? request.args[1] : undefined
+    const isDockerStartOrUnpause = request.kind === "docker" && ["start", "unpause"].includes(request.args[0])
+    const isQuotaProvision = request.kind === "provisioner" && ["provision", "restore-state", "recover"].includes(request.action)
+    const result = isDockerStartOrUnpause
+      ? await sliceDiskQuotaCoordinator.withContainerLock(containerName, async (lock) => runWithSliceDiskQuotaAdmission({
+        containerName,
+        quotaMarkerPresent: diskQuotaMarkerPresent(containerName),
+        resolveUnboundedProof: () => resolveBrokerUnboundedQuotaProof(containerName, lock),
+        run: async (quotaResult, admission) => {
+          sliceDiskQuotaCoordinator.assertLockHeld(lock)
+          let durableUnboundedState
+          if (admission.source === "allocator") {
+            if (quotaResult.bounded) {
+              await sliceDiskQuotaCoordinator.assertBounded(lock)
+            } else {
+              durableUnboundedState = await sliceDiskQuotaCoordinator.assertUnbounded(lock, { allowMissing: true })
+            }
+          } else {
+            const current = unboundedQuotaObservation(containerName)
+            const currentProof = await sliceDiskQuotaCoordinator.resolveUnboundedProof(
+              lock,
+              current.identity,
+              current.binding,
+            )
+            if (currentProof?.containerId !== admission.containerId) {
+              fail("broker-owned unbounded quota proof changed before container start")
+            }
+          }
+
+          let before
+          if (admission.source === "allocator" && quotaResult.bounded === false) {
+            try {
+              before = unboundedQuotaObservation(containerName)
+            } catch {
+              // Online allocator evidence remains sufficient; without a stable binding no receipt is cached.
+            }
+          }
+          sliceDiskQuotaCoordinator.assertLockHeld(lock)
+          const started = await runPrepared(admission)
+          if (before && durableUnboundedState && started.status === 0) {
+            try {
+              const after = unboundedQuotaObservation(containerName)
+              if (
+                JSON.stringify(before.identity) === JSON.stringify(after.identity) &&
+                JSON.stringify(before.binding) === JSON.stringify(after.binding)
+              ) {
+                await sliceDiskQuotaCoordinator.captureUnboundedProof(
+                  lock,
+                  after.identity,
+                  after.binding,
+                )
+              }
+            } catch {
+              // Keep the successful start result; a failed proof write means future outages fail closed.
+            }
+          }
+          return started
+        },
+      }))
+      : isQuotaProvision
+        ? await sliceDiskQuotaCoordinator.withContainerLock(
+          unboundedQuotaIdentity.containerName,
+          async (lock) => {
+            let durableUnboundedState
+            if (boundedLimits) {
+              await sliceDiskQuotaCoordinator.assertBounded(lock, {
+                identity: unboundedQuotaIdentity,
+                limits: boundedLimits,
+              })
+            } else if (unboundedQuotaStatusVerified) {
+              durableUnboundedState = await sliceDiskQuotaCoordinator.assertUnbounded(lock, { allowMissing: true })
+            } else {
+              await sliceDiskQuotaCoordinator.assertUnbounded(lock)
+            }
+            const provisioned = await runPrepared()
+            if (provisioned.status === 0 && unboundedQuotaStatusVerified && durableUnboundedState) {
+              await rememberBrokerUnboundedQuotaProof(
+                unboundedQuotaIdentity,
+                request.environment.CHARIOX_SLICE_NAME,
+                lock,
+              )
+            }
+            return provisioned
+          },
+        )
+      : await runPrepared()
     if (commitSource && result.status === 0) {
       const captured = inspectDockerObject("image", request.args[2])
       recordCapturedImageProof(protectedLayouts.imageRoot, VERIFIED_BUILD_CONTEXT_DIGEST,
@@ -1615,7 +1953,19 @@ function execute(request) {
       publishStagedOutput(prepared.output)
     }
     if (request.kind === "provisioner" && request.action === "destroy" && result.status === 0) {
+      const identity = sliceDiskQuotaIdentityFromEnvironment(request.environment)
+      await sliceDiskQuotaCoordinator.withContainerLock(identity.containerName, (lock) => {
+        sliceDiskQuotaCoordinator.revokeUnboundedProof(lock, identity)
+      })
       releasePersistentHandles(request.environment.CHARIOX_SLICE_NAME)
+      if (releaseDiskQuota) {
+        const quota = provisionerQuotaRequest(request.environment)
+        await requestSliceDiskQuota({
+          protocolVersion: 1,
+          operation: "release",
+          identity: quota.identity,
+        })
+      }
     }
     if (request.kind === "provisioner" && new Set(["provision", "restore-state"]).has(request.action)) {
       if (result.status === 0) {
@@ -1627,13 +1977,23 @@ function execute(request) {
         removePersistentHandles((record) => prepared.newHandles.has(record.handle))
       }
     }
-    return {
+    const response = {
       status: result.status ?? 125,
       stdoutBase64: (result.stdout ?? Buffer.alloc(0)).toString("base64"),
       stderrBase64: (result.stderr ?? Buffer.from(result.error?.message ?? "")).toString("base64"),
     }
+    if (result.status === 0 && boundedLimits) {
+      const quota = provisionerQuotaRequest(request.environment)
+      const verified = await requestSliceDiskQuota({
+        protocolVersion: 1,
+        operation: "verify",
+        identity: quota.identity,
+      })
+      response.diskQuotaEvidence = verified.evidence
+    }
+    return response
   } finally {
-    cleanupPrepared(prepared)
+    if (prepared) cleanupPrepared(prepared)
   }
 }
 
@@ -1675,7 +2035,7 @@ if (process.argv[2] === "--validate-request") {
     let response
     try {
       if (Buffer.byteLength(line) > MAX_FRAME_BYTES) fail("broker request is too large")
-      response = execute(JSON.parse(line))
+      response = await execute(JSON.parse(line))
     } catch (error) {
       response = errorResponse(error)
     }
@@ -1708,7 +2068,10 @@ if (process.argv[2] === "--validate-request") {
     accepted = true
     server.close()
     rmSync(SOCKET_PATH, { force: true })
+    socket.on("close", () => brokerLifetime.abort())
+    socket.on("error", () => brokerLifetime.abort())
     let buffered = Buffer.alloc(0)
+    let processing = Promise.resolve()
     socket.on("data", (chunk) => {
       buffered = Buffer.concat([buffered, chunk])
       while (buffered.length >= 4) {
@@ -1722,15 +2085,25 @@ if (process.argv[2] === "--validate-request") {
         const remainder = Buffer.from(buffered.subarray(4 + payloadLength))
         buffered.fill(0)
         buffered = remainder
-        let response
+        let parsed
         try {
-          response = execute(JSON.parse(payload.toString("utf8")))
+          parsed = JSON.parse(payload.toString("utf8"))
         } catch (error) {
-          response = errorResponse(error)
-        } finally {
           payload.fill(0)
+          socket.write(serializeResponse(errorResponse(error)))
+          continue
         }
-        socket.write(serializeResponse(response))
+        payload.fill(0)
+        processing = processing.then(async () => {
+          let response
+          try {
+            if (brokerLifetime.signal.aborted) throw new Error("slice broker lease closed")
+            response = await execute(parsed)
+          } catch (error) {
+            response = errorResponse(error)
+          }
+          socket.write(serializeResponse(response))
+        })
       }
     })
   })

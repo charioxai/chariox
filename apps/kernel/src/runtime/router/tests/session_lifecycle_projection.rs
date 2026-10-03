@@ -256,6 +256,7 @@ async fn end_session_detaches_reusable_slice_agents() {
             app.config().daemon_id.as_str(),
             app.config().host_machine_id.as_str(),
             crate::slice::CreateSliceInput {
+                source_slice_ref: None,
                 name: "test-slice".to_string(),
                 backend: crate::slice::SliceBackendKind::LocalDocker,
                 os: "linux".to_string(),
@@ -318,6 +319,7 @@ async fn create_slice_ignores_client_supplied_provider_auth() {
     ));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
     let request = LocalDaemonRequest::CreateSlice(crate::local::CreateSliceRequest {
+        source_slice_ref: None,
         name: "forged-auth".to_string(),
         backend: crate::slice::SliceBackendKind::LocalDocker,
         os: "linux".to_string(),
@@ -427,6 +429,7 @@ async fn create_slice_preserves_selkies_selection_and_read_only_capabilities() {
     );
     let request = LocalDaemonRequest::GetSlice(crate::local::SliceRefRequest {
         slice_ref: slice.id.clone(),
+        interactive: false,
     });
     let command = KernelCommand::from_local_request("get-selkies-slice", None, None, &request);
     let LocalDaemonResponse::Slice { slice: persisted } = router
@@ -449,6 +452,7 @@ async fn unsupported_slice_auth_mutations_fail_loudly_and_audit() {
     ));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
     let create_request = LocalDaemonRequest::CreateSlice(crate::local::CreateSliceRequest {
+        source_slice_ref: None,
         name: "ssh-slice".to_string(),
         backend: crate::slice::SliceBackendKind::SshDocker,
         os: "linux".to_string(),
@@ -664,6 +668,76 @@ async fn delete_session_uses_owned_runtime_state_without_app_lock() {
         !router.session_runtime.has_lane(&session_id).await,
         "deleting a session should remove its mailbox registration"
     );
+}
+
+#[tokio::test]
+async fn ended_session_can_be_deleted_by_exact_id_without_becoming_resolvable() {
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+    ));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+    let create_request = LocalDaemonRequest::CreateSession(
+        CreateSessionRequest::new("workspace-ended-delete", "worktree").with_alias("ended-delete"),
+    );
+    let create_command =
+        KernelCommand::from_local_request("cmd-ended-delete-create", None, None, &create_request);
+    let session_id = match router
+        .dispatch(create_command, create_request)
+        .await
+        .expect("create")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session.id().to_string(),
+        _ => panic!("unexpected create response"),
+    };
+
+    let end_request = LocalDaemonRequest::EndSession(EndSessionRequest {
+        session_id: session_id.clone(),
+    });
+    let end_command =
+        KernelCommand::from_local_request("cmd-ended-delete-end", None, None, &end_request);
+    router
+        .dispatch(end_command, end_request)
+        .await
+        .expect("end");
+
+    let resolve_request = LocalDaemonRequest::ResolveSession(ResolveSessionRequest {
+        session_ref: session_id.clone(),
+        workspace_id: None,
+    });
+    let resolve_command =
+        KernelCommand::from_local_request("cmd-ended-delete-resolve", None, None, &resolve_request);
+    assert!(matches!(
+        router.dispatch(resolve_command, resolve_request).await,
+        Err(DaemonError::SessionNotFound { .. })
+    ));
+
+    let alias_delete_request = LocalDaemonRequest::DeleteSession(DeleteSessionRequest {
+        session_ref: "ended-delete".to_string(),
+        workspace_id: Some("workspace-ended-delete".to_string()),
+    });
+    let alias_delete_command = KernelCommand::from_local_request(
+        "cmd-ended-delete-alias",
+        None,
+        None,
+        &alias_delete_request,
+    );
+    assert!(matches!(
+        router
+            .dispatch(alias_delete_command, alias_delete_request)
+            .await,
+        Err(DaemonError::SessionNotFound { .. })
+    ));
+
+    let delete_request = LocalDaemonRequest::DeleteSession(DeleteSessionRequest {
+        session_ref: session_id.clone(),
+        workspace_id: None,
+    });
+    let delete_command =
+        KernelCommand::from_local_request("cmd-ended-delete-delete", None, None, &delete_request);
+    assert!(matches!(
+        router.dispatch(delete_command, delete_request).await,
+        Ok(LocalDaemonResponse::SessionDeleted { .. })
+    ));
 }
 
 #[tokio::test]
@@ -956,6 +1030,7 @@ fn create_router_test_slice(
             app.config().daemon_id.as_str(),
             app.config().host_machine_id.as_str(),
             crate::slice::CreateSliceInput {
+                source_slice_ref: None,
                 name: name.to_string(),
                 backend: crate::slice::SliceBackendKind::LocalDocker,
                 os: "linux".to_string(),

@@ -138,6 +138,7 @@ impl KernelRuntimeState {
         ),
         DaemonError,
     > {
+        let _admission = self.owned.begin_managed_activity_admission()?;
         let (task, session) = self
             .mutate_metaagent_task_session_with_result(
                 session_id,
@@ -191,6 +192,7 @@ impl KernelRuntimeState {
             let _ = self.owned.agent_store.deactivate_agent_meta_mode(agent_id);
             return Err(error);
         }
+        let _admission = self.owned.begin_managed_activity_admission()?;
         let activity_mutation = self.owned.begin_managed_activity_mutation();
         let session_result = (|| {
             let mut sessions = self.owned.session_store.write();
@@ -200,6 +202,7 @@ impl KernelRuntimeState {
             Ok(session) => session,
             Err(error) => {
                 drop(activity_mutation);
+                drop(_admission);
                 let _ = self
                     .sync_remote_leased_agent_meta_mode(session_id, agent_id, false)
                     .await;
@@ -223,6 +226,7 @@ impl KernelRuntimeState {
             .activate_agent_meta_mode(agent_id, task_id)
         {
             drop(activity_mutation);
+            drop(_admission);
             let _ = self
                 .sync_remote_leased_agent_meta_mode(session_id, agent_id, false)
                 .await;

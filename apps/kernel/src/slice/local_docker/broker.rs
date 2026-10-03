@@ -33,7 +33,7 @@ const MAX_BROKER_RESPONSE_BYTES: usize = 12 * 1024 * 1024;
 #[cfg(unix)]
 const MAX_BROKER_REQUEST_BYTES: usize = 12 * 1024 * 1024;
 #[cfg(unix)]
-const BROKER_IO_TIMEOUT: Duration = Duration::from_secs(21 * 60);
+const BROKER_IO_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(unix)]
 const LOCAL_BROKER_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -127,6 +127,13 @@ struct BrokerResponse {
     status: i32,
     stdout_base64: String,
     stderr_base64: String,
+    #[serde(default)]
+    disk_quota_evidence: Option<super::super::disk_quota_policy::SliceDiskQuotaEvidence>,
+}
+
+pub(super) struct BrokerExecution {
+    pub(super) output: Output,
+    pub(super) disk_quota_evidence: Option<super::super::disk_quota_policy::SliceDiskQuotaEvidence>,
 }
 
 #[cfg(unix)]
@@ -178,13 +185,15 @@ pub fn initialize() {
                 None
             }
         });
-        if configured && !make_process_nondumpable() {
+        // Every kernel owns relay/provider control memory, including ordinary hosts.
+        // Exec resets dumpability for normal provider diagnostics on Linux.
+        if !make_process_nondumpable() {
             if let Some(raw_fd) = inherited_fd {
                 unsafe {
                     libc::close(raw_fd);
                 }
             }
-            return;
+            panic!("failed to protect kernel control memory from process dumps");
         }
         if let Some(raw_fd) = inherited_fd {
             let writer = unsafe { UnixStream::from_raw_fd(raw_fd) };
@@ -332,7 +341,7 @@ fn unavailable(outage: &Option<LocalBrokerOutage>) -> io::Error {
 
 #[cfg(unix)]
 fn configure_stream_deadlines(stream: &UnixStream) -> io::Result<()> {
-    stream.set_read_timeout(Some(BROKER_IO_TIMEOUT))?;
+    stream.set_read_timeout(None)?;
     stream.set_write_timeout(Some(BROKER_IO_TIMEOUT))
 }
 
@@ -427,7 +436,7 @@ fn broker_is_configured() -> bool {
 }
 
 #[cfg(unix)]
-fn execute(request: &BrokerRequest<'_>) -> io::Result<Output> {
+fn execute_with_disk_evidence(request: &BrokerRequest<'_>) -> io::Result<BrokerExecution> {
     let request = Zeroizing::new(
         serde_json::to_vec(request)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?,
@@ -453,33 +462,44 @@ fn execute(request: &BrokerRequest<'_>) -> io::Result<Output> {
     }
     let result = (|| {
         let connection = state.as_mut().ok_or_else(broker_unavailable)?;
-        connection
-            .writer
-            .write_all(&(request.len() as u32).to_be_bytes())?;
-        connection.writer.write_all(&request)?;
-        connection.writer.flush()?;
-        let mut header = [0_u8; 4];
-        connection.reader.read_exact(&mut header)?;
-        let response_len = u32::from_be_bytes(header) as usize;
-        if response_len == 0 || response_len > MAX_BROKER_RESPONSE_BYTES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "managed slice Docker broker response is invalid",
-            ));
-        }
-        let mut response = vec![0_u8; response_len];
-        connection.reader.read_exact(&mut response)?;
-        let response: BrokerResponse = serde_json::from_slice(&response)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        let decode = |value: &str| {
-            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, value)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
-        };
-        Ok(Output {
-            status: ExitStatus::from_raw(response.status.clamp(0, 255) << 8),
-            stdout: decode(&response.stdout_base64)?,
-            stderr: decode(&response.stderr_base64)?,
-        })
+        let previous_read_timeout = connection.writer.read_timeout()?;
+        connection.writer.set_read_timeout(None)?;
+        let result = (|| {
+            connection
+                .writer
+                .write_all(&(request.len() as u32).to_be_bytes())?;
+            connection.writer.write_all(&request)?;
+            connection.writer.flush()?;
+            let mut header = [0_u8; 4];
+            connection.reader.read_exact(&mut header)?;
+            let response_len = u32::from_be_bytes(header) as usize;
+            if response_len == 0 || response_len > MAX_BROKER_RESPONSE_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "managed slice Docker broker response is invalid",
+                ));
+            }
+            let mut response = vec![0_u8; response_len];
+            connection.reader.read_exact(&mut response)?;
+            let response: BrokerResponse = serde_json::from_slice(&response)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            let decode = |value: &str| {
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, value)
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+            };
+            Ok(BrokerExecution {
+                output: Output {
+                    status: ExitStatus::from_raw(response.status.clamp(0, 255) << 8),
+                    stdout: decode(&response.stdout_base64)?,
+                    stderr: decode(&response.stderr_base64)?,
+                },
+                disk_quota_evidence: response.disk_quota_evidence,
+            })
+        })();
+        // MP-08/MP-10/MP-11: all operations wait under broker lease ownership.
+        // Preserve the caller write deadline and restore read state on every result.
+        connection.writer.set_read_timeout(previous_read_timeout)?;
+        result
     })();
     if result.is_err() {
         *state = None;
@@ -488,7 +508,12 @@ fn execute(request: &BrokerRequest<'_>) -> io::Result<Output> {
 }
 
 #[cfg(unix)]
-fn provisioner_environment(command: &Command) -> BTreeMap<String, String> {
+fn execute(request: &BrokerRequest<'_>) -> io::Result<Output> {
+    execute_with_disk_evidence(request).map(|response| response.output)
+}
+
+#[cfg(unix)]
+pub(super) fn provisioner_environment(command: &Command) -> BTreeMap<String, String> {
     command
         .get_envs()
         .filter_map(|(name, value)| {
@@ -514,7 +539,7 @@ pub(super) fn run_provisioner(
     command: &Command,
     action: &str,
     inputs: &[ProvisionerInput],
-) -> Option<io::Result<Output>> {
+) -> Option<io::Result<BrokerExecution>> {
     if !broker_is_configured() {
         return None;
     }
@@ -532,7 +557,7 @@ pub(super) fn run_provisioner(
                 ),
             })
             .collect::<Vec<_>>();
-        Some(execute(&BrokerRequest::Provisioner {
+        Some(execute_with_disk_evidence(&BrokerRequest::Provisioner {
             action,
             environment: &environment,
             files: &files,
@@ -565,7 +590,9 @@ pub(super) fn capture_home_archive(
         }
         let captured: HomeArchiveCaptureResponse = serde_json::from_slice(&output.stdout)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        if captured.sha256.len() != 64
+        if captured.size_bytes == 0
+            || captured.size_bytes > 9_007_199_254_740_991
+            || captured.sha256.len() != 64
             || !captured
                 .sha256
                 .bytes()
@@ -613,6 +640,7 @@ pub(super) fn verify_home_archive(
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         if verified.path != path
             || verified.size_bytes == 0
+            || verified.size_bytes > 9_007_199_254_740_991
             || verified.sha256.len() != 64
             || !verified
                 .sha256
@@ -762,6 +790,10 @@ impl DockerCommand {
     fn local_command(&self) -> Command {
         let mut command = Command::new("docker");
         command.args(&self.args);
+        // MP-08/MP-11: use the same explicit engine as image production.
+        if std::env::var_os("DOCKER_HOST").is_some_and(|host| !host.is_empty()) {
+            command.env_remove("DOCKER_CONTEXT");
+        }
         if self.quiet_stdout {
             command.stdout(Stdio::null());
         }
@@ -842,6 +874,70 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn mp08_mp11_kernel_control_memory_policy_is_common_and_exec_resets_it() {
+        const MODE: &str = "CHARIOX_TEST_DUMPABILITY_PLACEMENT";
+        if let Ok(mode) = std::env::var(MODE) {
+            unsafe {
+                assert_eq!(libc::prctl(libc::PR_SET_DUMPABLE, 1, 0, 0, 0), 0);
+            }
+            std::env::remove_var(BROKER_SOCKET_ENV);
+            std::env::remove_var(BROKER_FD_ENV);
+            std::env::remove_var(BROKER_REQUIRED_ENV);
+            if mode == "broker" {
+                std::env::set_var(BROKER_REQUIRED_ENV, "1");
+            }
+            initialize();
+            assert_eq!(unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) }, 0);
+            let provider = Command::new("/usr/bin/python3")
+                .args([
+                    "-I",
+                    "-S",
+                    "-c",
+                    "import ctypes; print(ctypes.CDLL(None).prctl(3,0,0,0,0))",
+                ])
+                .output()
+                .unwrap();
+            assert!(provider.status.success());
+            assert_eq!(
+                provider.stdout, b"1\n",
+                "ordinary exec must retain provider diagnostics"
+            );
+            return;
+        }
+        for mode in ["ordinary", "broker"] {
+            let result = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "slice::local_docker::broker::tests::mp08_mp11_kernel_control_memory_policy_is_common_and_exec_resets_it", "--test-threads=1"])
+                .env(MODE, mode).output().unwrap();
+            assert!(
+                result.status.success(),
+                "{mode}: {}",
+                String::from_utf8_lossy(&result.stdout)
+            );
+        }
+    }
+
+    #[test]
+    fn mp08_mp11_raw_controls_use_the_same_explicit_engine_as_builds() {
+        let _lock = crate::env_lock::lock();
+        let previous = ["DOCKER_HOST", "DOCKER_CONTEXT"].map(|name| (name, std::env::var_os(name)));
+        std::env::set_var("DOCKER_HOST", "unix:///synthetic-slice.sock");
+        std::env::set_var("DOCKER_CONTEXT", "foreign-builder");
+        let command = DockerCommand::default().local_command();
+        for (name, value) in previous {
+            if let Some(value) = value {
+                std::env::set_var(name, value);
+            } else {
+                std::env::remove_var(name);
+            }
+        }
+        assert_eq!(
+            command.get_envs().collect::<Vec<_>>(),
+            vec![(OsStr::new("DOCKER_CONTEXT"), None)]
+        );
+    }
+
     #[test]
     fn managed_provider_isolation_probe_survives_broker_filter() {
         let mut command = Command::new("unused-provisioner");
@@ -891,3 +987,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "broker_archive_policy_tests.rs"]
+mod archive_policy_tests;

@@ -9,6 +9,38 @@ use crate::transport::room_browser_controller::{
 use super::*;
 
 impl KernelRuntimeState {
+    /// Send a Room request to its slice worker over the connected relay when one
+    /// matches the slice's relay. A temporary connection needs relay metadata
+    /// access, which a kernel-scoped Cloud relay token does not carry; the
+    /// connected path avoids it while the worker key is pinned or cached (managed
+    /// slice workers pin theirs at token refresh).
+    pub(super) async fn send_room_slice_peer_request(
+        &self,
+        config: &crate::config::DaemonConfig,
+        target: chariox_relay::protocol::ClientTarget,
+        request: RelayPeerRequest,
+        timeout: std::time::Duration,
+    ) -> Result<RelayPeerResponse, DaemonError> {
+        match self.connected_relay_state_for_config(config).await {
+            Some(relay_state) => {
+                crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
+                    config,
+                    &relay_state,
+                    target,
+                    request,
+                    timeout,
+                )
+                .await
+            }
+            None => {
+                crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+                    config, target, request, timeout,
+                )
+                .await
+            }
+        }
+    }
+
     pub(crate) fn browser_controller_enabled_for_room(&self, session_id: &str) -> bool {
         self.owned
             .slice_store
@@ -217,29 +249,15 @@ impl KernelRuntimeState {
                 } => Duration::from_millis(
                     crate::runtime::computer_input_action::keyboard_text_timeout_ms(input.as_str()) + 10_000,
                 ),
+                Command::ComputerInput {
+                    action: crate::transport::room_browser_controller::RoomComputerInputAction::SecretText { input, .. }, ..
+                } => Duration::from_millis(
+                    crate::runtime::computer_input_action::keyboard_text_timeout_ms(input.as_str()) + 10_000,
+                ),
                 _ => Duration::from_secs(15),
             };
-            match self.connected_relay_state_for_config(&config).await {
-                Some(relay_state) => {
-                    crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
-                        &config,
-                        &relay_state,
-                        target,
-                        request(command),
-                        timeout,
-                    )
-                    .await
-                }
-                None => {
-                    crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
-                        &config,
-                        target,
-                        request(command),
-                        timeout,
-                    )
-                    .await
-                }
-            }
+            self.send_room_slice_peer_request(&config, target, request(command), timeout)
+                .await
         };
         let first = send(target.clone(), command.clone())
             .await
@@ -291,7 +309,9 @@ impl KernelRuntimeState {
         }
         if !matches!(
             &command,
-            Command::ComputerInput { .. } | Command::ComputerClipboardRead { .. }
+            Command::ComputerInput { .. }
+                | Command::ComputerClipboardRead { .. }
+                | Command::ComputerSecretTarget
         ) && !self.browser_controller_process_enabled()
         {
             return Err(controller_route_error(
@@ -452,6 +472,12 @@ async fn execute_local(
             let execution = computer_input_executions
                 .begin(session_id, &action_id)
                 .map_err(controller_route_error)?;
+            if matches!(
+                &action,
+                crate::transport::room_browser_controller::RoomComputerInputAction::SecretText { .. }
+            ) {
+                execution.withhold_capture().await;
+            }
             let cancellation = execution.cancellation();
             let input_result = match action {
                 crate::transport::room_browser_controller::RoomComputerInputAction::PointerMove {
@@ -531,8 +557,8 @@ async fn execute_local(
                     .await
                 }
                 crate::transport::room_browser_controller::RoomComputerInputAction::SecretText {
-                    input,
-                } => super::tool_dispatch::run_room_secret_text_input(input, cancellation).await,
+                    input, expected_target,
+                } => super::tool_dispatch::run_room_secret_text_input(input, expected_target, cancellation).await,
             };
             if matches!(
                 input_result,
@@ -545,6 +571,14 @@ async fn execute_local(
             }
             input_result?;
             return Ok(Response::ComputerInputApplied { action_id });
+        }
+        Command::ComputerSecretTarget => {
+            let capture_guard = computer_input_executions
+                .capture_guard()
+                .map_err(controller_route_error)?;
+            let target =
+                super::tool_dispatch::capture_computer_secret_target(capture_guard).await?;
+            return Ok(Response::ComputerSecretTarget { target });
         }
         Command::ComputerClipboardRead {
             actor_id,
@@ -784,6 +818,9 @@ async fn execute_local(
             &action,
             timeout_ms,
         ),
+        Command::ComputerSecretTarget => {
+            unreachable!("Computer focus executes before the blocking controller path")
+        }
         Command::ComputerInput { .. } => {
             unreachable!("Computer input executes before the blocking controller path")
         }

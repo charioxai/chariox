@@ -16,10 +16,27 @@ test("runtime startup passes the supplied Room binding across docker exec withou
     await writeFile(join(root, "docker"), `#!/usr/bin/env node
 const { appendFileSync } = require("node:fs");
 const args = process.argv.slice(2);
-if (args[0] === "info" || args[0] === "container") process.exit(0);
+if (args[0] === "info") { console.log("engine-fixture"); process.exit(0); }
+if (args[0] === "container") process.exit(0);
+if (args[0] === "inspect" && !args.includes("--format") && !args.includes("-f")) {
+  console.log(JSON.stringify([{
+    Id: "a".repeat(64), Image: "fixture-image", Created: "fixture-created",
+    State: { Running: true, Paused: false, Restarting: false, Status: "running", Pid: 123, StartedAt: "fixture-started", FinishedAt: "" },
+    HostConfig: { PidMode: "" }, Config: { Env: ["HOME=/home/slice"], Labels: {
+      "io.chariox.slice.id": process.env.CHARIOX_SLICE_ID,
+      "io.chariox.slice.owner-kernel-id": process.env.CHARIOX_SLICE_OWNER_KERNEL_ID,
+      "io.chariox.slice.owner-machine-id": process.env.CHARIOX_SLICE_OWNER_MACHINE_ID,
+    } },
+  }]));
+  process.exit(0);
+}
 if (args[0] === "inspect") {
   const format = args[args.indexOf("--format") + 1] ?? "";
   console.log(format.includes("HostConfig.Ulimits") ? "8192:8192" : "true");
+  process.exit(0);
+}
+if (args[0] === "exec" && args.includes("python3")) {
+  console.log(JSON.stringify({ disposition: "clear", profileProcessCount: 0 }));
   process.exit(0);
 }
 if (args[0] === "exec" && args.includes("df")) {
@@ -49,6 +66,9 @@ process.exit(0);
         env: { ...environment, PATH: `${root}:${environment.PATH}`,
           TMPDIR: root, CHARIOX_TEST_DOCKER_LOG: log,
           CHARIOX_SLICE_NAME: "chariox-binding-fixture",
+          CHARIOX_SLICE_ID: "slice-fixture",
+          CHARIOX_SLICE_OWNER_KERNEL_ID: "kernel-fixture",
+          CHARIOX_SLICE_OWNER_MACHINE_ID: "machine-fixture",
           ...Object.fromEntries(Object.entries(binding).map(([key, value]) => [prefix + key, value])),
         },
       });

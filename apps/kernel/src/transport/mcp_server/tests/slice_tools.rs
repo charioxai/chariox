@@ -639,7 +639,7 @@ done
     std::fs::write(
         &one_shot,
         format!(
-            "#!/bin/sh\nset -eu\nprintf 'called %s\\n' \"$*\" >> '{}'\nif [ \"${{1:-}}\" = computer-secret-paste-stdin ]; then\n  input=$(cat)\n  [ \"$input\" = \"$CHARIOX_CONTROLLER_MCP_COMPUTER_SECRET\" ]\n  printf 'computer-secret-match\\n' >> '{}'\n  exit 0\nfi\nexit 91\n",
+            "#!/bin/sh\nset -eu\nprintf 'called %s\\n' \"$*\" >> '{}'\nif [ \"${{1:-}}\" = computer-secret-target ]; then\n  printf '%s\\n' '{{\"focus_window\":101,\"active_window\":100,\"geometry\":[20,30,200,40],\"window_geometry\":[0,0,800,600]}}'\n  exit 0\nfi\nif [ \"${{1:-}}\" = computer-secret-paste-stdin ]; then\n  input=$(cat)\n  [ \"$input\" = \"$CHARIOX_CONTROLLER_MCP_COMPUTER_SECRET\" ]\n  printf 'computer-secret-match\\n' >> '{}'\n  exit 0\nfi\nexit 91\n",
             one_shot_log.display(),
             one_shot_log.display()
         ),
@@ -724,6 +724,7 @@ done
         crate::config::CredentialVaultBackend::ProcessMemory;
     config.user_config.providers.workspace_live_sync.mode =
         crate::config::WorkspaceLiveSyncMode::Tracked;
+    let worktree = crate::test_support::TestWorktree::new("mcp-room-browser");
     let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
     let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
@@ -733,7 +734,7 @@ done
             CreateAgentRequest::new(session.id(), "dev-stub")
                 .with_alias("agent-a")
                 .with_model("test-model")
-                .with_worktree(worktree.path().display().to_string()),
+                .with_worktree(worktree.path().to_string_lossy()),
         )
         .expect("agent should spawn")
         .id()
@@ -981,6 +982,16 @@ done
                 .iter()
                 .find(|interaction| interaction.title() == Some("Computer credential input"))
             {
+                assert!(interaction
+                    .message()
+                    .contains("Confirm that this focused field masks secret input"));
+                assert!(interaction
+                    .message()
+                    .contains("approving an unmasked field can expose the credential"));
+                assert!(interaction
+                    .message()
+                    .contains("native window 100, focused control 101 at [20, 30, 200, 40]"));
+                assert_eq!(interaction.default_on_timeout(), Some("deny"));
                 break interaction.id().to_string();
             }
             tokio::task::yield_now().await;
@@ -1016,8 +1027,8 @@ done
     );
     assert_eq!(
         std::fs::read_to_string(&one_shot_log).unwrap_or_default(),
-        one_shot_before_denial,
-        "denial must not reach the desktop input helper"
+        format!("{one_shot_before_denial}called computer-secret-target\n"),
+        "denial must not submit any credential keystrokes"
     );
     assert!(
         router

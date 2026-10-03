@@ -1,5 +1,7 @@
 use super::*;
 
+mod cli_target;
+
 #[test]
 fn shared_verifier_accepts_matching_token() {
     let verifier = RelayAuthVerifier::shared(Some("secret".to_string()));

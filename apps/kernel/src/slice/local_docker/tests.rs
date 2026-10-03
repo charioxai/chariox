@@ -154,6 +154,7 @@ pub(super) fn test_record() -> SliceRecord {
             "kernel-1",
             "machine-1",
             CreateSliceInput {
+                source_slice_ref: None,
                 name: "dev".to_string(),
                 backend: SliceBackendKind::LocalDocker,
                 os: "linux".to_string(),
@@ -245,6 +246,8 @@ pub(super) fn test_options() -> LocalDockerSliceOptions {
         allow_provider_sandbox_compatibility: false,
         memory_mb: None,
         cpus: None,
+        disk_layer_mb: None,
+        disk_home_mb: None,
         screen_width: 1280,
         screen_height: 800,
         saved_home_archive: None,
@@ -337,11 +340,7 @@ case "$*" in
   *" du -sb /home-src") printf '1048576 /home-src\n' ;;
   *" find /home-src -printf . | wc -c") printf '1\n' ;;
   *" df -B1 --output=avail /tmp") cat "$DOCKER_CAPACITY" ;;
-  cp\ *)
-    destination=
-    for argument in "$@"; do destination=$argument; done
-    printf 'known-good-home' > "$destination"
-    ;;
+  *"tar --zstd -C /home-src -cf - .") printf 'known-good-home' ;;
 esac
 exit 0
 "#,
@@ -485,12 +484,7 @@ case "$*" in
     exit 0
     ;;
   "stop chariox-slice-dev") rm -f "$DOCKER_RUNNING"; exit 0 ;;
-  cp\ *)
-    destination=
-    for argument in "$@"; do destination=$argument; done
-    printf 'fixture home archive' > "$destination"
-    exit 0
-    ;;
+  *"tar --zstd -C /home-src -cf - .") printf 'fixture home archive'; exit 0 ;;
 esac
 exit 0
 "##,
@@ -561,6 +555,15 @@ exit 0
         );
         assert!(!root.join("states").exists());
     }
+
+    let screen = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("slice-linux-docker/docker/slice-screen.sh"),
+    )
+    .expect("slice screen script should be readable");
+    assert!(screen.contains("slice_selkies stop >/dev/null"));
+    assert!(screen.contains("python3 \"$ROOT/browser-lifecycle.py\" stop \"$CHROME_PROFILE\""));
+    assert!(screen.contains("stop_process_pattern \"websockify.*$NOVNC_PORT\""));
+    assert!(screen.contains("$HOME/.chariox/browser/chromium"));
 }
 
 fn saved_state(manifest_path: String) -> SliceSavedStateRecord {
@@ -1093,7 +1096,7 @@ fn linux_docker_headed_browser_reopens_tabs_after_snapshot_quiescence() {
     )
     .expect("slice screen script should be readable");
 
-    assert!(script.contains("chromium_has_restorable_session"));
+    assert!(script.contains("[[ -d \"$CHROME_PROFILE/Default\" ]]"));
     assert!(script.contains("chrome_startup_target_args+=(--restore-last-session)"));
     assert!(script.contains("chrome_startup_target_args=(-- \"$CHROME_URL\")"));
     assert!(script.contains("\"${chrome_startup_target_args[@]}\""));
@@ -1350,12 +1353,67 @@ fn linux_docker_slice_auto_build_refreshes_protocol_or_runtime_incompatible_work
     assert!(!dockerfile.contains("npm install -g"));
     assert!(!dockerfile.contains("rustup.rs"));
     assert!(!dockerfile.contains("deb.nodesource.com"));
-    for base in dockerfile.lines().filter(|line| line.starts_with("FROM ")) {
-        assert!(
-            base.contains("@sha256:"),
-            "unpinned slice base image: {base}"
-        );
+    let dockerfile_lines: Vec<_> = dockerfile.lines().map(str::trim).collect();
+    let artifact_stage = "FROM scratch AS managed-release-artifacts";
+    let artifact_stage_indices: Vec<_> = dockerfile_lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| (*line == artifact_stage).then_some(index))
+        .collect();
+    assert_eq!(
+        artifact_stage_indices.len(),
+        1,
+        "the signed release artifact stage must have one exact scratch declaration"
+    );
+
+    for base in dockerfile_lines
+        .iter()
+        .filter(|line| line.starts_with("FROM "))
+    {
+        let mut fields = base.split_whitespace();
+        assert_eq!(fields.next(), Some("FROM"));
+        let first = fields.next().expect("FROM should name a base image");
+        let image = if first.starts_with("--platform=") {
+            fields
+                .next()
+                .expect("FROM platform should be followed by an image")
+        } else {
+            first
+        };
+        if image == "scratch" {
+            assert_eq!(
+                *base, artifact_stage,
+                "scratch is allowed only for the exact release artifact stage"
+            );
+        } else {
+            assert!(
+                base.contains("@sha256:"),
+                "unpinned slice base image: {base}"
+            );
+        }
     }
+
+    let artifact_stage_index = artifact_stage_indices[0];
+    let artifact_stage_end = dockerfile_lines[artifact_stage_index + 1..]
+        .iter()
+        .position(|line| line.starts_with("FROM "))
+        .map(|offset| artifact_stage_index + 1 + offset)
+        .unwrap_or(dockerfile_lines.len());
+    let artifact_stage_instructions: Vec<_> = dockerfile_lines
+        [artifact_stage_index + 1..artifact_stage_end]
+        .iter()
+        .copied()
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect();
+    assert_eq!(
+        artifact_stage_instructions,
+        vec![
+            "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-kernel /chariox-kernel",
+            "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-managed-bootstrap /chariox-managed-bootstrap",
+            "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-relay /chariox-relay",
+        ],
+        "the release artifact stage must export only the three signed runtime binaries"
+    );
     assert!(script.contains("runtime image $SLICE_IMAGE is stale and build policy is never"));
     assert!(script.contains("because its worker image is stale"));
     assert!(dockerfile.contains("io.chariox.relay-peer-protocol-version"));
@@ -1470,6 +1528,7 @@ fn local_docker_slice_mounts_only_development_repositories() {
             "kernel-1",
             "machine-1",
             CreateSliceInput {
+                source_slice_ref: None,
                 name: "project-dev".to_string(),
                 backend: SliceBackendKind::SshDocker,
                 os: "linux".to_string(),
@@ -1555,11 +1614,50 @@ fn local_docker_slice_mounts_only_development_repositories() {
 }
 
 #[cfg(unix)]
+fn browser_admission_docker_fixture(root: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(root).unwrap();
+    let path = root.join("browser-fixture.py");
+    std::fs::write(
+        &path,
+        r#"#!/usr/bin/env python3
+import json,os,sys
+args=sys.argv[1:]
+if args == ['info','--format','{{.ID}}']:
+    print('synthetic-docker-engine')
+elif args and args[0] == 'inspect' and not any(flag in args for flag in ['-f','--format']):
+    running=os.path.exists(os.environ['DOCKER_RUNNING']) if 'DOCKER_RUNNING' in os.environ else True
+    print(json.dumps([{
+        'Id':'a'*64,'Image':'sha256:'+'b'*64,'Created':'2026-09-30T00:00:00Z',
+        'Config':{'Env':['HOME=/home/slice'],'Labels':{
+            'io.chariox.slice.id':os.environ['CHARIOX_SLICE_ID'],
+            'io.chariox.slice.owner-kernel-id':os.environ['CHARIOX_SLICE_OWNER_KERNEL_ID'],
+            'io.chariox.slice.owner-machine-id':os.environ['CHARIOX_SLICE_OWNER_MACHINE_ID']}},
+        'HostConfig':{'PidMode':'private'},
+        'State':{'Running':running,'Paused':False,'Restarting':False,'Pid':321 if running else 0,
+                 'Status':'running' if running else 'exited','StartedAt':'2026-09-30T00:01:00Z',
+                 'FinishedAt':'2026-09-30T00:02:00Z'}}]))
+elif args and args[0] == 'exec' and any('profileProcessCount' in arg for arg in args):
+    print(json.dumps({'disposition':'clear','profileProcessCount':0}))
+elif args == ['system','dial-stdio']:
+    sys.stdin.buffer.read()
+    sys.stdout.buffer.write(b'HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n')
+else:
+    sys.exit(1)
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    path
+}
+
+#[cfg(unix)]
 #[test]
 fn existing_slice_runtime_forwards_managed_workspace_roots() {
     use std::os::unix::fs::PermissionsExt;
 
     let root = test_root("existing-slice-workspace-roots");
+    let browser_fixture = browser_admission_docker_fixture(&root);
     let bin = root.join("bin");
     let docker = bin.join("docker");
     let log = root.join("docker.log");
@@ -1568,6 +1666,7 @@ fn existing_slice_runtime_forwards_managed_workspace_roots() {
         &docker,
         r#"#!/bin/sh
 printf '%s\n' "$*" >> "$DOCKER_LOG"
+if "$BROWSER_FIXTURE" "$@"; then exit 0; fi
 if [ "$1" = "container" ] && [ "$2" = "inspect" ]; then
   if [ "${3:-}" = "-f" ]; then
     printf 'sha256:fixture\n'
@@ -1614,6 +1713,10 @@ exit 0
         .env("PATH", path)
         .env("TMPDIR", &root)
         .env("DOCKER_LOG", &log)
+        .env("BROWSER_FIXTURE", &browser_fixture)
+        .env("CHARIOX_SLICE_ID", "synthetic-slice")
+        .env("CHARIOX_SLICE_OWNER_KERNEL_ID", "synthetic-owner-kernel")
+        .env("CHARIOX_SLICE_OWNER_MACHINE_ID", "synthetic-owner-machine")
         .env("CHARIOX_SLICE_NAME", "saved-slice")
         .env("CHARIOX_SLICE_DOCKER_IMAGE", "fixture")
         .env("CHARIOX_SLICE_BASE_IMAGE", "fixture")
@@ -1661,6 +1764,7 @@ fn failed_save_recovery_starts_only_the_existing_container() {
     use std::os::unix::fs::PermissionsExt;
 
     let root = test_root("failed-save-recovery");
+    let browser_fixture = browser_admission_docker_fixture(&root);
     let bin = root.join("bin");
     let docker = bin.join("docker");
     let log = root.join("docker.log");
@@ -1670,6 +1774,7 @@ fn failed_save_recovery_starts_only_the_existing_container() {
         &docker,
         r#"#!/bin/sh
 printf '%s\n' "$*" >> "$DOCKER_LOG"
+if "$BROWSER_FIXTURE" "$@"; then exit 0; fi
 if [ "$1" = "container" ] && [ "$2" = "inspect" ]; then
   exit 0
 fi
@@ -1713,6 +1818,10 @@ exit 0
         .env("PATH", path)
         .env("TMPDIR", &root)
         .env("DOCKER_LOG", &log)
+        .env("BROWSER_FIXTURE", &browser_fixture)
+        .env("CHARIOX_SLICE_ID", "synthetic-slice")
+        .env("CHARIOX_SLICE_OWNER_KERNEL_ID", "synthetic-owner-kernel")
+        .env("CHARIOX_SLICE_OWNER_MACHINE_ID", "synthetic-owner-machine")
         .env("DOCKER_RUNNING", &running)
         .env("CHARIOX_SLICE_NAME", "saved-slice")
         .env("CHARIOX_SLICE_DOCKER_IMAGE", "prior-saved-image")
@@ -1756,6 +1865,7 @@ fn backup_restore_replaces_the_slice_in_order_and_leaves_it_stopped() {
     use std::os::unix::fs::PermissionsExt;
 
     let root = test_root("backup-restore-order");
+    let browser_fixture = browser_admission_docker_fixture(&root);
     let bin = root.join("bin");
     let docker = bin.join("docker");
     let log = root.join("docker.log");
@@ -1763,6 +1873,7 @@ fn backup_restore_replaces_the_slice_in_order_and_leaves_it_stopped() {
     let running = root.join("running");
     let volume = root.join("volume");
     let archive = root.join("backup-home.tar.zst");
+    let restored_stdin = root.join("restore-stdin");
     std::fs::create_dir_all(&bin).expect("fake Docker directory should create");
     std::fs::write(&container, b"").expect("container state should write");
     std::fs::write(&running, b"").expect("running state should write");
@@ -1772,6 +1883,10 @@ fn backup_restore_replaces_the_slice_in_order_and_leaves_it_stopped() {
         &docker,
         r#"#!/bin/sh
 printf '%s\n' "$*" >> "$DOCKER_LOG"
+if "$BROWSER_FIXTURE" "$@"; then exit 0; fi
+case "$*" in
+  *"chariox-home-restore -") cat > "$DOCKER_RESTORE_STDIN"; exit 0 ;;
+esac
 if [ "$1" = "info" ]; then
   exit 0
 fi
@@ -1779,10 +1894,18 @@ if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then
   case "$*" in
     *relay-peer-protocol-version*) printf '%s\n' "$EXPECTED_PROTOCOL" ;;
     *runtime-source-revision*) printf '%s\n' "$EXPECTED_REVISION" ;;
-    *selkies-version*) printf '0.0.0.dev0\n' ;;
-    *selkies-source-revision*) printf '3f87241fcd6abc44e205b22f6596e78ef4946670\n' ;;
-    *selkies-source*) printf 'https://github.com/selkies-project/selkies/commit/3f87241fcd6abc44e205b22f6596e78ef4946670\n' ;;
-    *selkies-license*) printf 'MPL-2.0\n' ;;
+    *io.chariox.selkies-version*)
+      case "$*" in *"$SELKIES_CAPABLE_IMAGE"*) printf '0.0.0.dev0\n' ;; esac
+      ;;
+    *io.chariox.selkies-source-revision*)
+      case "$*" in *"$SELKIES_CAPABLE_IMAGE"*) printf '%s\n' "$EXPECTED_SELKIES_REVISION" ;; esac
+      ;;
+    *io.chariox.selkies-source*)
+      case "$*" in *"$SELKIES_CAPABLE_IMAGE"*) printf 'https://github.com/selkies-project/selkies/commit/%s\n' "$EXPECTED_SELKIES_REVISION" ;; esac
+      ;;
+    *io.chariox.selkies-license*)
+      case "$*" in *"$SELKIES_CAPABLE_IMAGE"*) printf '%s\n' "$EXPECTED_SELKIES_LICENSE" ;; esac
+      ;;
     *'{{.Id}}'*) printf 'sha256:backup-image\n' ;;
   esac
   exit 0
@@ -1816,21 +1939,25 @@ if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
     exit 1
   fi
   case "$*" in
-    *saved-home.archive-sha256*) sed -n 's/^archive=//p' "$DOCKER_VOLUME" ;;
-    *saved-home.initialization-token*) sed -n 's/^token=//p' "$DOCKER_VOLUME" ;;
+    *io.chariox.saved-home.archive-sha256*) cat "$DOCKER_VOLUME.archive-sha256"; exit $? ;;
+    *io.chariox.saved-home.initialization-token*) cat "$DOCKER_VOLUME.initialization-token"; exit $? ;;
   esac
   exit 0
 fi
 if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then
-  rm -f "$DOCKER_VOLUME"
+  rm -f "$DOCKER_VOLUME" "$DOCKER_VOLUME.archive-sha256" "$DOCKER_VOLUME.initialization-token"
   exit 0
 fi
 if [ "$1" = "volume" ] && [ "$2" = "create" ]; then
   : > "$DOCKER_VOLUME"
   for argument in "$@"; do
     case "$argument" in
-      io.chariox.saved-home.archive-sha256=*) printf 'archive=%s\n' "${argument#*=}" >> "$DOCKER_VOLUME" ;;
-      io.chariox.saved-home.initialization-token=*) printf 'token=%s\n' "${argument#*=}" >> "$DOCKER_VOLUME" ;;
+      io.chariox.saved-home.archive-sha256=*)
+        printf '%s' "${argument#*=}" > "$DOCKER_VOLUME.archive-sha256"
+        ;;
+      io.chariox.saved-home.initialization-token=*)
+        printf '%s' "${argument#*=}" > "$DOCKER_VOLUME.initialization-token"
+        ;;
     esac
   done
   exit 0
@@ -1868,32 +1995,56 @@ exit 0
     }
     let path = std::env::join_paths(paths).expect("fake Docker PATH should join");
     let revision = format!("sha256:{}", "a".repeat(64));
-    let output = Command::new("bash")
-        .arg(script)
-        .arg("restore-state")
-        .env("PATH", path)
-        .env("TMPDIR", &root)
-        .env("DOCKER_LOG", &log)
-        .env("DOCKER_CONTAINER", &container)
-        .env("DOCKER_RUNNING", &running)
-        .env("DOCKER_VOLUME", &volume)
-        .env(
-            "EXPECTED_PROTOCOL",
-            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION.to_string(),
+    let selkies_lock: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("slice-linux-docker/selkies.lock.json"),
         )
-        .env("EXPECTED_REVISION", &revision)
-        .env("CHARIOX_SLICE_BUILD_CONTEXT_DIGEST", &revision)
-        .env("CHARIOX_SLICE_NAME", "saved-slice")
-        .env("CHARIOX_SLICE_HOME_VOLUME", "saved-slice-home")
-        .env("CHARIOX_SLICE_DOCKER_IMAGE", "backup-image")
-        .env("CHARIOX_SLICE_BASE_IMAGE", "runtime-image")
-        .env("CHARIOX_SLICE_BUILD_IMAGE", "never")
-        .env("CHARIOX_SLICE_SAVED_HOME_ARCHIVE", &archive)
-        .env("CHARIOX_SLICE_START_DESKTOP", "1")
-        .env("CHARIOX_SLICE_START_PROVIDER_SERVERS", "1")
-        .env("CHARIOX_SLICE_START_RUNTIME", "1")
-        .output()
-        .expect("slice restore command should execute");
+        .expect("Selkies lock should be readable"),
+    )
+    .expect("Selkies lock should be valid JSON");
+    let selkies_revision = selkies_lock["selkies"]["revision"]
+        .as_str()
+        .expect("Selkies lock should include its pinned revision");
+    let selkies_license = selkies_lock["selkies"]["license"]
+        .as_str()
+        .expect("Selkies lock should include its license");
+    let run_restore = |selkies_capable_image: &str| {
+        Command::new("bash")
+            .arg(&script)
+            .arg("restore-state")
+            .env("PATH", &path)
+            .env("TMPDIR", &root)
+            .env("DOCKER_LOG", &log)
+            .env("BROWSER_FIXTURE", &browser_fixture)
+            .env("CHARIOX_SLICE_ID", "synthetic-slice")
+            .env("CHARIOX_SLICE_OWNER_KERNEL_ID", "synthetic-owner-kernel")
+            .env("CHARIOX_SLICE_OWNER_MACHINE_ID", "synthetic-owner-machine")
+            .env("DOCKER_CONTAINER", &container)
+            .env("DOCKER_RUNNING", &running)
+            .env("DOCKER_VOLUME", &volume)
+            .env("DOCKER_RESTORE_STDIN", &restored_stdin)
+            .env(
+                "EXPECTED_PROTOCOL",
+                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION.to_string(),
+            )
+            .env("EXPECTED_REVISION", &revision)
+            .env("EXPECTED_SELKIES_REVISION", selkies_revision)
+            .env("EXPECTED_SELKIES_LICENSE", selkies_license)
+            .env("SELKIES_CAPABLE_IMAGE", selkies_capable_image)
+            .env("CHARIOX_SLICE_BUILD_CONTEXT_DIGEST", &revision)
+            .env("CHARIOX_SLICE_NAME", "saved-slice")
+            .env("CHARIOX_SLICE_HOME_VOLUME", "saved-slice-home")
+            .env("CHARIOX_SLICE_DOCKER_IMAGE", "backup-image")
+            .env("CHARIOX_SLICE_BASE_IMAGE", "runtime-image")
+            .env("CHARIOX_SLICE_BUILD_IMAGE", "never")
+            .env("CHARIOX_SLICE_SAVED_HOME_ARCHIVE", &archive)
+            .env("CHARIOX_SLICE_START_DESKTOP", "1")
+            .env("CHARIOX_SLICE_START_PROVIDER_SERVERS", "1")
+            .env("CHARIOX_SLICE_START_RUNTIME", "1")
+            .output()
+            .expect("slice restore command should execute")
+    };
+    let output = run_restore("runtime-image");
     assert!(
         output.status.success(),
         "slice restore failed: {}",
@@ -1913,8 +2064,25 @@ exit 0
     let create_volume = calls
         .iter()
         .position(|call| call.starts_with("volume create ") && call.ends_with(" saved-slice-home"))
-        .expect("replacement home volume should be created with saved-home labels");
+        .unwrap_or_else(|| panic!("missing labeled home volume creation: {calls:?}"));
     let create_container = position("create --init --name saved-slice ");
+    for label in [
+        "io.chariox.selkies-version",
+        "io.chariox.selkies-source-revision",
+        "io.chariox.selkies-source",
+        "io.chariox.selkies-license",
+    ] {
+        assert!(
+            calls
+                .iter()
+                .any(|call| call.contains(label) && call.ends_with(" backup-image")),
+            "restore must inspect the saved image's {label} capability label: {calls:?}"
+        );
+    }
+    assert!(
+        calls[create_container].ends_with(" runtime-image"),
+        "restore must reject the saved image's missing Selkies labels and use the authoritative runtime image: {calls:?}"
+    );
     let start_container = calls
         .iter()
         .position(|call| *call == "start saved-slice")
@@ -1931,13 +2099,20 @@ exit 0
             && start_container < stop_container,
         "restore lifecycle must be ordered: {calls:?}"
     );
+    assert_eq!(
+        std::fs::read(&restored_stdin).expect("restore should consume file stdin"),
+        std::fs::read(&archive).expect("selected archive should remain readable"),
+        "restore must stream the exact selected archive into the replacement volume"
+    );
+    assert!(calls.iter().any(|call| {
+        call.starts_with("exec -i -u root saved-slice-home-restore-")
+            && call.ends_with("chariox-home-restore -")
+    }));
     assert!(
-        calls.iter().any(|call| {
-            call.starts_with("cp -L ")
-                && call.contains(archive.to_string_lossy().as_ref())
-                && call.contains("saved-slice-home-restore-")
+        !calls.iter().any(|call| {
+            call.starts_with("cp -L ") && call.contains(archive.to_string_lossy().as_ref())
         }),
-        "restore must copy the selected archive into the replacement volume: {calls:?}"
+        "private restore must not stage the selected archive in a helper layer"
     );
     assert!(
         !calls
@@ -1967,6 +2142,29 @@ exit 0
         "replacement home volume should remain available"
     );
 
+    std::fs::write(&log, b"").expect("compatible-image Docker log should reset");
+    let compatible_output = run_restore("backup-image");
+    assert!(
+        compatible_output.status.success(),
+        "compatible saved-image restore failed: {}",
+        String::from_utf8_lossy(&compatible_output.stderr)
+    );
+    let compatible_calls_text =
+        std::fs::read_to_string(&log).expect("compatible-image Docker log should read");
+    let compatible_calls = compatible_calls_text.lines().collect::<Vec<_>>();
+    let compatible_create = compatible_calls
+        .iter()
+        .find(|call| call.starts_with("create --init --name saved-slice "))
+        .expect("compatible saved image should create the replacement container");
+    assert!(
+        compatible_create.ends_with(" backup-image"),
+        "a runtime-compatible saved image should be retained: {compatible_calls:?}"
+    );
+    assert!(
+        !running.exists(),
+        "compatible saved-image restore must also leave the replacement stopped"
+    );
+
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -1977,6 +2175,7 @@ fn local_docker_slice_rejects_mounting_development_control_root() {
             "kernel-1",
             "machine-1",
             CreateSliceInput {
+                source_slice_ref: None,
                 name: "project-dev-invalid".to_string(),
                 backend: SliceBackendKind::SshDocker,
                 os: "linux".to_string(),
@@ -2210,6 +2409,7 @@ fn local_docker_slice_runtime_starts_desktop_for_headless_slices() {
             "kernel-1",
             "machine-1",
             CreateSliceInput {
+                source_slice_ref: None,
                 name: "dev".to_string(),
                 backend: SliceBackendKind::LocalDocker,
                 os: "linux".to_string(),
@@ -2241,6 +2441,47 @@ fn local_docker_slice_runtime_starts_desktop_for_headless_slices() {
 }
 
 #[test]
+fn slice_worker_identity_launch_separates_display_alias_and_hosted_machine() {
+    let record = test_record();
+    for hosted_machine in [None, Some(record.owner_machine_id.clone())] {
+        let relay = LocalDockerSliceRelay {
+            relay_url: "wss://relay.example.test".into(),
+            container_relay_url: Some("wss://relay.example.test".into()),
+            relay_token: "synthetic-bootstrap-token".into(),
+            owner_public_key: Some("public-fixture".into()),
+            cloud_relay_config_json: None,
+            worker_machine_id: hosted_machine.clone(),
+        };
+        let mut command = Command::new("synthetic-provisioner");
+        configure_local_docker_slice_command(
+            &mut command,
+            &record,
+            Some(relay),
+            &test_options(),
+            true,
+        )
+        .unwrap();
+        let envs: std::collections::BTreeMap<_, _> = command
+            .get_envs()
+            .filter_map(|(key, value)| Some((key.to_str()?, value?.to_str()?)))
+            .collect();
+        assert_eq!(
+            envs.get("CHARIOX_SLICE_DAEMON_ID"),
+            Some(&record.worker_kernel_ref.as_str())
+        );
+        assert_eq!(
+            envs.get("CHARIOX_SLICE_DAEMON_ALIAS"),
+            Some(&format!("slice:{}", record.name).as_str())
+        );
+        let expected_machine = hosted_machine.unwrap_or_else(|| format!("slice:{}", record.id));
+        assert_eq!(
+            envs.get("CHARIOX_SLICE_MACHINE_ID"),
+            Some(&expected_machine.as_str())
+        );
+    }
+}
+
+#[test]
 fn local_docker_slice_runtime_projects_shared_relay_env() {
     let record = test_record();
     let options = test_options();
@@ -2250,6 +2491,7 @@ fn local_docker_slice_runtime_projects_shared_relay_env() {
         relay_token: "shared-token".to_string(),
         owner_public_key: Some("owner-public".to_string()),
         cloud_relay_config_json: None,
+        worker_machine_id: None,
     };
     let mut command = Command::new("slice-provisioner");
 
@@ -2294,6 +2536,7 @@ fn local_docker_slice_runtime_keeps_private_relay_url_unset_for_container() {
         relay_token: "slice-local-token".to_string(),
         owner_public_key: None,
         cloud_relay_config_json: None,
+        worker_machine_id: None,
     };
     let mut command = Command::new("slice-provisioner");
 
@@ -2319,6 +2562,7 @@ fn hosted_relay_discovery_uses_owner_metadata_credential() {
         relay_token: "worker-bootstrap-token".to_string(),
         owner_public_key: Some("owner-public".to_string()),
         cloud_relay_config_json: None,
+        worker_machine_id: None,
     };
     let mut owner_config = DaemonConfig::for_tests();
     owner_config.relay_token = Some("owner-metadata-token".to_string());
@@ -2341,6 +2585,7 @@ fn private_relay_discovery_uses_private_relay_credential() {
         relay_token: "slice-private-token".to_string(),
         owner_public_key: None,
         cloud_relay_config_json: None,
+        worker_machine_id: None,
     };
     let mut owner_config = DaemonConfig::for_tests();
     owner_config.relay_token = Some("owner-token".to_string());
@@ -2698,4 +2943,81 @@ fn release_kernel_finds_its_installed_slice_build_context_without_a_source_tree(
         bundled
     );
     std::fs::remove_dir_all(root).expect("fixture root should remove");
+}
+
+#[cfg(unix)]
+#[test]
+fn mp08_mp11_slice_sandbox_option_is_independent_of_broker_placement() {
+    let _guard = crate::env_lock::lock();
+    let name = "CHARIOX_SLICE_DOCKER_BROKER_REQUIRED";
+    let previous = std::env::var_os(name);
+    let mut config = DaemonConfig::for_tests();
+    for selected in [false, true] {
+        config
+            .user_config
+            .slices
+            .linux
+            .allow_provider_sandbox_compatibility = Some(selected);
+        std::env::remove_var(name);
+        let ordinary = LocalDockerSliceOptions::from_config(&config);
+        std::env::set_var(name, "1");
+        let managed = LocalDockerSliceOptions::from_config(&config);
+        // Restore before assertions so a RED test cannot contaminate the suite.
+        match &previous {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
+        }
+        assert_eq!(ordinary.allow_provider_sandbox_compatibility, selected);
+        assert_eq!(managed.allow_provider_sandbox_compatibility, selected);
+        let record = test_record();
+        let mut a = Command::new("unused");
+        let mut b = Command::new("unused");
+        configure_local_docker_slice_command(&mut a, &record, None, &ordinary, true).unwrap();
+        configure_local_docker_slice_command(&mut b, &record, None, &managed, true).unwrap();
+        assert_eq!(
+            a.get_envs().collect::<Vec<_>>(),
+            b.get_envs().collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn mp08_mp11_inherited_tuning_is_explicit_in_both_adapters() {
+    let _guard = crate::env_lock::lock();
+    let tuning = [
+        ("CHARIOX_SLICE_DOCKER_PIDS_LIMIT", "2048"),
+        ("CHARIOX_SLICE_DOCKER_NOFILE_LIMIT", "32768"),
+        ("CHARIOX_SLICE_MIN_FREE_MB", "768"),
+    ];
+    let previous = tuning.map(|(name, _)| (name, std::env::var_os(name)));
+    for (name, value) in tuning {
+        std::env::set_var(name, value);
+    }
+    let mut command = Command::new("unused-provisioner");
+    let result = configure_local_docker_slice_command(
+        &mut command,
+        &test_record(),
+        None,
+        &test_options(),
+        true,
+    );
+    for (name, value) in previous {
+        if let Some(value) = value {
+            std::env::set_var(name, value);
+        } else {
+            std::env::remove_var(name);
+        }
+    }
+    result.unwrap();
+    let projected = broker::provisioner_environment(&command);
+    for (name, value) in tuning {
+        assert_eq!(
+            projected.get(name).map(String::as_str),
+            Some(value),
+            "missing tuning {name}"
+        );
+        assert!(command
+            .get_envs()
+            .any(|(key, actual)| key == name && actual == Some(std::ffi::OsStr::new(value))));
+    }
 }

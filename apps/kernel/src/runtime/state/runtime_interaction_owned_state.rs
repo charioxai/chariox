@@ -56,6 +56,28 @@ impl KernelRuntimeOwnedState {
         Some((owner, interaction.kernel_operation_id()?.to_owned()))
     }
 
+    pub(super) fn update_provider_login_interaction(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        login: crate::session::RuntimeProviderLogin,
+    ) -> Result<(), DaemonError> {
+        let activity_mutation = self.begin_managed_activity_mutation();
+        let mut sessions = self.session_store.write();
+        let mut session = sessions.get_session(session_id)?;
+        let Some(interaction) = session.remove_active_interaction(interaction_id) else {
+            return Ok(());
+        };
+        session.add_active_interaction(interaction.with_provider_login(login));
+        sessions.restore_session(session);
+        activity_mutation.record();
+        drop(sessions);
+        self.session_snapshot(session_id)?;
+        self.terminal_stream
+            .notify_terminal_projection_change(session_id);
+        Ok(())
+    }
+
     /// `passkey_verified`: the answer proved the owner's presence (see
     /// `critical_approval_passkey`); a choice that requires the passkey is
     /// refused without it.

@@ -198,6 +198,7 @@ export type WaitingRoomPublicProjectSummary = RuntimeProject & {
 }
 
 export type WaitingRoomSessionActivitySummary = {
+  pending_interaction_count?: number
   agent_count: number
   working_agent_count: number
   active_prompt_count: number

@@ -5,8 +5,8 @@ use crate::agent::CreateAgentRequest;
 use crate::attachment::{AttachRequest, ClientCapabilityLevel};
 use crate::provider::LaunchProviderRequest;
 use crate::session::{
-    CreateSessionRequest, PromptSubmissionOutcome, RuntimeSession, WorkflowHandoffValidationPolicy,
-    WorkflowMessage, WorkflowNodeRunStatus, WorkflowRun, WorkflowRunStatus,
+    PromptSubmissionOutcome, RuntimeSession, WorkflowHandoffValidationPolicy, WorkflowMessage,
+    WorkflowNodeRunStatus, WorkflowRun, WorkflowRunStatus,
 };
 use crate::{DaemonApp, DaemonConfig};
 
@@ -30,10 +30,7 @@ fn create_scheduler_session_and_agent_in(
     worktree: &crate::test_support::TestWorktree,
 ) -> (RuntimeSession, String) {
     let (session, _default_agent) = crate::app::KernelSessionService::new(&mut *app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-scheduler",
-            worktree.path().display().to_string(),
-        ))
+        .create_session(worktree.session_request())
         .expect("session should exist");
     crate::app::KernelSessionService::new(app)
         .attach(AttachRequest::new(

@@ -47,7 +47,12 @@ impl Default for StartupTrustBridge {
 
 impl StartupTrustBridge {
     fn wait_for_interaction(&self) -> RuntimeInteraction {
+        self.wait_for_interaction_with_pump(|| {})
+    }
+
+    fn wait_for_interaction_with_pump(&self, mut pump: impl FnMut()) -> RuntimeInteraction {
         for _ in 0..500 {
+            pump();
             if let Some(interaction) = self
                 .interactions
                 .lock()
@@ -1826,9 +1831,7 @@ fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
         std::sync::Arc::new(bridge.clone());
     app.providers()
         .set_native_interaction_bridge(bridge_ref.clone());
-    let context_path = context_file.display().to_string();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while claude_headless_workspace_trust_interaction_id(&context_path).is_none() && std::time::Instant::now() < deadline {
+    let interaction = bridge.wait_for_interaction_with_pump(|| {
         crate::app::provider_output::ProviderOutputPump::new(&mut app)
             .pump_provider_output(crate::app::provider_output::ProviderOutputPumpRequest {
                 session_id: session.id(),
@@ -1837,12 +1840,7 @@ fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
                 initial_liveness_already_checked: false,
             })
             .expect("trust prompt should be projected by the normal output pump");
-        if claude_headless_workspace_trust_interaction_id(&context_path).is_some() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    let interaction = bridge.wait_for_interaction();
+    });
     assert_eq!(interaction.default_on_timeout(), Some("deny"));
     bridge.resolve_default_no();
     let mut settled = false;

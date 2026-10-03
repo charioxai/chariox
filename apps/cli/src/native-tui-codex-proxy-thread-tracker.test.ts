@@ -36,3 +36,17 @@ test("codex projection can initialize from upstream before the TUI starts a thre
 
   assert.deepEqual(projectedThreadIds, ["provider-thread", "tui-thread"])
 })
+
+test("codex ephemeral title threads stay outside the Room prompt and projection binding", () => {
+  const projectedThreadIds: string[] = []
+  const tracker = createCodexProjectionThreadTracker({
+    setThreadId: (threadId) => projectedThreadIds.push(threadId),
+    debug: () => {},
+  })
+  tracker.bindTuiThread("visible-thread")
+  tracker.bindTuiThread("title-thread", true)
+  tracker.observeUpstreamThread("title-thread")
+  assert.equal(tracker.isEphemeralThread("title-thread"), true)
+  assert.equal(tracker.isEphemeralThread("visible-thread"), false)
+  assert.deepEqual(projectedThreadIds, ["visible-thread"])
+})

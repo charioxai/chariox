@@ -172,6 +172,7 @@ impl KernelRuntimeState {
         session_id: &str,
         attachment_id: &str,
     ) -> Vec<crate::terminal::RuntimeNoticeRecord> {
+        self.publish_credential_copy_notices(session_id);
         self.owned
             .terminal_stream
             .drain_notice_records(session_id, attachment_id)

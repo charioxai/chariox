@@ -50,3 +50,19 @@ itself before readiness.
 Return only the JSON object requested by the caller. Do not return command output or a readiness
 claim. The kernel owns persistence, setup, validation, cancellation, retry, and readiness, and
 independently reruns every returned setup and validation command on this same worker.
+
+
+MP-08 Project environment manifest discovery is a separate source-kernel metadata-only
+utility pass on this same official provider path. The kernel supplies referenced names,
+file/line use sites, value locators, evidence digest and changed paths. Native read, shell,
+network, delegated-agent and MCP tools must be disabled for this pass: read-only access
+alone can expose git-ignored environment values. Never request or read `.env`, `.env.local`,
+`.envrc`, login environment, shell profiles or Vault values. The deterministic kernel
+resolver reads values and stores secrets directly in the Vault; the manifest has no value
+field. Default uncertain classifications to secret. Preserve unchanged previous entries,
+cover only evidence differences, and return referenced names, locators, statuses and
+package/toolchain/service hints in the requested manifest schema. Missing configuration
+belongs to the kernel's batched secret RuntimeInteraction, rather than a category-only
+`missing_user_inputs: project_configuration` setup failure. This pass neither applies a
+recipe nor establishes target readiness. Each kernel owns its manifest independently;
+every export refreshes its own digest and values, with no ongoing cross-kernel sync.

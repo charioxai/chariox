@@ -99,6 +99,10 @@ impl CommandRouter {
             .await
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keeps the existing session, worker and lease binding fields explicit without a second protocol representation."
+    )]
     pub(crate) fn relay_read_room_screenshot_chunk(
         &self,
         kernel_id: &str,
@@ -450,6 +454,38 @@ impl CommandRouter {
         .await
     }
 
+    pub(crate) async fn relay_query_leased_prompt_receipt(
+        &self,
+        leased_agent_id: &str,
+        home_prompt_id: &str,
+    ) -> Result<Option<crate::transport::relay_peer::LeasedPromptReceipt>, DaemonError> {
+        relay_peer_runtime::query_relay_leased_prompt_receipt(
+            &self.runtime_state,
+            leased_agent_id,
+            home_prompt_id,
+        )
+        .await
+    }
+
+    pub(crate) async fn relay_reconcile_leased_prompt_steer_receipt(
+        &self,
+        leased_agent_id: &str,
+        steer_id: &str,
+        target_home_prompt_id: &str,
+        worker_provider_run_id: &str,
+        execution_lease_id: &str,
+    ) -> Result<crate::transport::relay_peer::LeasedPromptReceipt, DaemonError> {
+        relay_peer_runtime::reconcile_relay_leased_prompt_steer_receipt(
+            &self.runtime_state,
+            leased_agent_id,
+            steer_id,
+            target_home_prompt_id,
+            worker_provider_run_id,
+            execution_lease_id,
+        )
+        .await
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn relay_steer_leased_prompt(
         &self,
@@ -472,6 +508,76 @@ impl CommandRouter {
             required_skills,
         )
         .await
+    }
+
+    pub(crate) async fn relay_export_project_environment(
+        &self,
+        context: crate::transport::relay_peer::RemoteSkillSyncContext,
+        interactive: bool,
+        target_name: String,
+        target: Option<crate::transport::relay_peer::ProjectEnvironmentExportTarget>,
+    ) -> Result<crate::transport::relay_peer::RelayPeerResponse, DaemonError> {
+        self.runtime_state
+            .export_leased_project_environment(context, interactive, target_name, target)
+            .await
+    }
+
+    pub(crate) async fn relay_fetch_project_private_file(
+        &self,
+        worker_id: &str,
+        context: crate::transport::relay_peer::RemoteNativeInteractionContext,
+        workspace_id: String,
+        path: String,
+    ) -> Result<crate::transport::relay_peer::RelayManagedContextChunk, DaemonError> {
+        self.runtime_state
+            .fetch_project_private_file(worker_id, context, workspace_id, path)
+            .await
+    }
+
+    pub(crate) async fn relay_read_project_environment(
+        &self,
+        context: crate::transport::relay_peer::RemoteSkillSyncContext,
+        adjust: bool,
+    ) -> Result<crate::transport::relay_peer::RelayPeerResponse, DaemonError> {
+        self.runtime_state
+            .read_leased_project_environment(context, adjust)
+            .await
+    }
+
+    pub(crate) async fn relay_use_project_environment(
+        &self,
+        context: crate::transport::relay_peer::RemoteSkillSyncContext,
+        project_id: String,
+    ) -> Result<bool, DaemonError> {
+        self.runtime_state
+            .use_leased_project_environment(context, project_id)
+            .await
+    }
+    pub(crate) async fn relay_read_leased_project_file(
+        &self,
+        context: crate::transport::relay_peer::RemoteSkillSyncContext,
+        workspace_id: String,
+        path: String,
+    ) -> Result<crate::transport::relay_peer::RelayManagedContextChunk, DaemonError> {
+        self.runtime_state
+            .read_leased_project_private_file(context, workspace_id, path)
+            .await
+    }
+    pub(crate) async fn relay_install_project_environment(
+        &self,
+        context: crate::transport::relay_peer::RemoteSkillSyncContext,
+        source_kernel_id: Option<String>,
+        layer: crate::managed_context::development::DevelopmentProjectEnvironment,
+        workspace_directories: std::collections::BTreeMap<String, String>,
+    ) -> Result<String, DaemonError> {
+        self.runtime_state
+            .install_leased_project_environment(
+                context,
+                source_kernel_id,
+                layer,
+                workspace_directories,
+            )
+            .await
     }
 
     pub(crate) async fn relay_ensure_remote_skill_packages(
@@ -530,6 +636,21 @@ impl CommandRouter {
         relay_peer_runtime::complete_relay_leased_prompt(&self.runtime_state, leased_agent_id).await
     }
 
+    pub(crate) async fn relay_resolve_leased_project_environment_setup_target(
+        &self,
+        leased_agent_id: &str,
+        home_session_id: String,
+        home_agent_id: String,
+    ) -> Result<(String, String), DaemonError> {
+        relay_peer_runtime::resolve_relay_leased_project_environment_setup_target(
+            &self.runtime_state,
+            leased_agent_id,
+            home_session_id,
+            home_agent_id,
+        )
+        .await
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn relay_start_leased_project_environment_setup(
         &self,
@@ -575,6 +696,34 @@ impl CommandRouter {
             operation_id,
             home_session_id,
             home_agent_id,
+        )
+        .await
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keeps the existing session, worker and lease binding fields explicit without a second protocol representation."
+    )]
+    pub(crate) async fn relay_acknowledge_leased_project_environment_setup_definition(
+        &self,
+        leased_agent_id: &str,
+        operation_id: String,
+        attempt: u32,
+        project_id: String,
+        home_session_id: String,
+        home_agent_id: String,
+        definition_digest: String,
+    ) -> Result<crate::transport::relay_peer::RelayProjectEnvironmentSetupDefinitionAck, DaemonError>
+    {
+        relay_peer_runtime::acknowledge_relay_leased_project_environment_setup_definition(
+            &self.runtime_state,
+            leased_agent_id,
+            operation_id,
+            attempt,
+            project_id,
+            home_session_id,
+            home_agent_id,
+            definition_digest,
         )
         .await
     }
@@ -656,8 +805,16 @@ impl CommandRouter {
     pub(crate) async fn relay_cancel_leased_prompt(
         &self,
         leased_agent_id: &str,
+        home_prompt_id: &str,
+        worker_provider_run_id: &str,
     ) -> Result<crate::session::PromptCancellation, DaemonError> {
-        relay_peer_runtime::cancel_relay_leased_prompt(&self.runtime_state, leased_agent_id).await
+        relay_peer_runtime::cancel_relay_leased_prompt(
+            &self.runtime_state,
+            leased_agent_id,
+            home_prompt_id,
+            worker_provider_run_id,
+        )
+        .await
     }
 
     pub(crate) async fn relay_leased_agent_provider_run_id(
@@ -759,11 +916,41 @@ impl CommandRouter {
         .await
     }
 
+    pub(crate) async fn relay_update_native_interaction(
+        &self,
+        worker_id: &str,
+        context: crate::transport::relay_peer::RemoteNativeInteractionContext,
+        interaction_id: String,
+        login: Option<crate::session::RuntimeProviderLogin>,
+    ) -> Result<(), DaemonError> {
+        self.runtime_state
+            .authorize_forwarded_interaction(worker_id, &context)?;
+        if login
+            .as_ref()
+            .is_some_and(|login| login.kernel_id != worker_id)
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "update provider login interaction",
+                message: "login execution kernel mismatch".into(),
+            });
+        }
+        self.runtime_state
+            .update_forwarded_provider_login_interaction(
+                &context.home_session_id,
+                &context.home_agent_id,
+                &interaction_id,
+                login,
+            )
+    }
+
     pub(crate) async fn relay_forward_native_interaction(
         &self,
+        worker_id: &str,
         context: crate::transport::relay_peer::RemoteNativeInteractionContext,
         interaction: crate::session::RuntimeInteraction,
     ) -> Result<crate::provider::ProviderNativeInteractionResolution, DaemonError> {
+        self.runtime_state
+            .authorize_forwarded_interaction(worker_id, &context)?;
         forward_relay_native_interaction(&self.runtime_state, context, interaction).await
     }
 }

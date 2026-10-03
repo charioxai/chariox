@@ -476,6 +476,8 @@ pub struct LaunchProviderRequest {
     /// every serialized request shape and uses a redacted debug projection.
     #[serde(skip)]
     pub(crate) provider_credential_env: super::ProviderCredentialEnvironment,
+    #[serde(skip)]
+    pub(crate) project_environment_revision: Option<String>,
     /// Host-side preparation HOME/PATH supplied by the kernel for an
     /// environment setup discovery or validation turn. This never crosses a
     /// provider request boundary; it is applied to the fresh runtime launch.
@@ -644,6 +646,7 @@ impl LaunchProviderRequest {
             provider_env_remove: Vec::new(),
             provider_account_env: BTreeMap::new(),
             provider_credential_env: super::ProviderCredentialEnvironment::default(),
+            project_environment_revision: None,
             preparation_environment: None,
             write_access_mode: ProviderWriteAccessMode::Unrestricted,
             execution_mode: None,
@@ -810,7 +813,8 @@ impl LaunchProviderRequest {
     }
 
     pub(crate) fn matches_existing_run_selection(&self, run: &super::RuntimeProviderRun) -> bool {
-        run.session_id() == self.session_id
+        run.project_environment_revision() == self.project_environment_revision.as_deref()
+            && run.session_id() == self.session_id
             && run.agent_instance_id() == self.agent_id.as_deref()
             && run.owner_user_id() == self.owner_user_id
             && run.adapter_key() == self.adapter_key

@@ -206,8 +206,14 @@ fn kernel_context_exports_one_unified_extension_set() {
         )
         .expect("credential should write");
 
+    fs::write(
+        isolation.join("user/user-rules.md"),
+        "Prefer clear Project names.",
+    )
+    .unwrap();
     let snapshot =
         export_kernel_context(test_export_request()).expect("kernel context should export");
+    assert!(snapshot.payload.dependencies.iter().any(|dependency| matches!(dependency, KernelExtensionDependency::UserRules {body} if body == "Prefer clear Project names.")));
     assert_eq!(snapshot.payload.extensions.len(), 4);
     assert!(snapshot
         .payload

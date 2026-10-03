@@ -20,6 +20,13 @@ impl KernelRuntimeState {
         started: &crate::app::StartedProviderLaunch,
         error: &DaemonError,
     ) {
+        if self
+            .try_provider_launch_auth_recovery(started, &error.to_string())
+            .await
+            .unwrap_or(false)
+        {
+            return;
+        }
         self.settle_provider_launch_failure_in_lane(started, error, None)
             .await;
     }

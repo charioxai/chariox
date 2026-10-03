@@ -84,8 +84,21 @@ the builder attestation at every Path-1 release activation. It also installs
 that public pin at `/etc/chariox/trusted-builder-public-key`,
 outside the signed release tree, and the Path-1 bootstrap service passes this
 path to the runtime for its own revalidation. A different existing pin is an
-error, not a rotation. The image preparation checks the installed pin before
-snapshotting; upgrades require the same external pin.
+error during image preparation, not an implicit rotation. For an explicitly
+authorized Path-1 upgrade across builder epochs, keep the current external pin
+in `CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY` and supply the next external pin through
+`CHARIOX_NEXT_TRUSTED_BUILDER_PUBLIC_KEY`. Omitting the latter preserves the
+current pin. Both inputs must be independently trusted, root-owned regular
+files outside the image. Release-signing key rotation still uses the optional
+fifth argument to `upgrade-image.sh`.
+
+The upgrade journals both public builder pins, switches the runtime pin while
+services are stopped, and restores the previous pin before rollback startup.
+Recovery checks the journal, installed pin and selected release before removing
+transaction evidence. Legacy Path-1 transactions without a builder-pin journal
+are refused as ambiguous; do not delete their journal or substitute a pin to
+force recovery. Retain their public history and resolve the interrupted old
+transaction with its matching reviewed tooling before attempting rotation.
 The packager
 verifies the detached builder signature, exact commit and tree IDs, target,
 and all five staged binary digests
@@ -233,7 +246,14 @@ compiling them again on the managed host. Ordinary local source builds retain
 the Cargo build path. The cache fingerprint covers the Dockerfile and all build
 inputs; base images, Debian snapshots, the Cargo lock, and the provider npm
 integrity lock are pinned. Host provider commands are installed with `npm ci`
-from the same signed lock. The script enables the bootstrap and rootless Docker
+from the same signed lock. Provider CLI policy lives in
+`deploy/managed-kernel/provider-versions.env`: Codex 0.159.3, OpenCode 1.18.23
+and Claude Code 2.1.212. Headed slice and publication builds verify their
+installed CLIs against that policy. Update both toolchain manifests and npm
+integrity locks together; `scripts/provider-cli-pins.test.mjs` rejects drift
+in the manifests, resolved lock entries, build checks and publication labels.
+This shared packaging policy supports MP-08/MP-11; source checks alone do not
+close MP-10 live acceptance. The script enables the bootstrap and rootless Docker
 services; the broker stays disabled and bootstrap republishes its one-claim
 endpoint from a privileged prestart on each supervisor restart. The script
 rejects runtime state, then removes package caches,
@@ -266,3 +286,39 @@ The final managed-machine firewall must have no inbound rules. It must allow the
 kernel's outbound HTTPS and WSS traffic. Put that firewall's numeric ID, the
 snapshot's numeric ID, and the signed release digest into the immutable Hetzner
 profile shared by Cloud and the infrastructure manager.
+
+## In-place release update (Path 1)
+
+A Cloud-managed machine changes its kernel release in place, keeping `~/.chariox`
+(plan, locked decisions for 2026-09-30). The machine runs
+`deploy/managed-kernel/upgrade-image.sh` as root with the target signed rootfs:
+it verifies the release, journals the transaction, migrates any legacy home,
+switches `current` atomically, restarts the storage services and the kernel, and
+rolls back automatically when the new kernel does not publish healthy presence
+under `/home/chariox/.chariox/kernels/active`. A crash at any phase is recovered
+by running the same command again.
+
+Newly packaged releases use signed manifest schema 3 and declare
+`managedUpdateEvidenceVersion: 1`. Cloud automatic updates require this target
+capability. Their updater retains identity-bound, durable committed or rolled-back
+results after recovery journal cleanup, so a restarted kernel can settle the exact
+Cloud attempt. The newer verifier still accepts schema 2 for current-release
+verification and explicit legacy rollback; Cloud automatic updates cannot select a
+schema 2 target.
+
+Legacy source runtimes are unsupported for an automatic transition to schema 3.
+Their installed verifier rejects the new signed manifest before activation. Merely
+replacing the updater script is insufficient: the legacy kernel does not durably
+bind its attempt to the source release and Cloud identity or pass the update ID.
+An operator transition that preserves `~/.chariox` and establishes an independently
+verified evidence-capable runtime would be a separate prerequisite. That bridge
+has not been implemented or validated. Reimaging is not the upgrade path. A fresh
+schema 3 installation is only a starting point for disposable validation of the
+automatic schema 3 A-to-B path.
+
+The retained bootstrap envelope keeps naming the provisioned release. After
+confirmation the kernel verifies its installed release against the receipt, and
+the receipt's grant binding (schema 2) covers the machine's identity, not its
+release, so an updated machine starts normally. Cloud authorizes the target
+release and records it once the machine reports it; an update Cloud did not
+authorize leaves Cloud's release record unchanged.

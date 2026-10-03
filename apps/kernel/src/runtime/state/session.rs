@@ -469,7 +469,7 @@ impl KernelRuntimeOwnedState {
         let session = self
             .session_store
             .read()
-            .resolve_session_ref(session_ref, workspace_id)?;
+            .resolve_session_ref_for_delete(session_ref, workspace_id)?;
         self.delete_session(session)
     }
 

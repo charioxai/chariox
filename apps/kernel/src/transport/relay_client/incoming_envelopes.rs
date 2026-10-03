@@ -180,6 +180,8 @@ pub(super) async fn handle_incoming_envelope(
             let active_dynamic_relay = active_dynamic_relay
                 .map(|(relay_url, relay_token)| (relay_url.to_string(), relay_token.to_string()));
             tokio::spawn(async move {
+                #[cfg(test)]
+                let response_kind = test_peer_response_kind(&router, &encrypted_request);
                 let relay_response = handle_daemon_peer_request(
                     &router,
                     &state,
@@ -189,6 +191,24 @@ pub(super) async fn handle_incoming_envelope(
                     encrypted_request,
                 )
                 .await;
+                #[cfg(test)]
+                let relay_response = {
+                    let mut relay_response = relay_response;
+                    if let Some(forget_receipts) = state
+                        .write()
+                        .await
+                        .test_take_lost_peer_response_payload(response_kind)
+                    {
+                        if forget_receipts {
+                            router
+                                .runtime_state()
+                                .test_forget_completed_browser_action_receipts();
+                        }
+                        relay_response.encrypted_response = None;
+                        relay_response.error = None;
+                    }
+                    relay_response
+                };
                 if let Err(error) = send_outgoing_envelope(
                     &outgoing_tx,
                     RelayEnvelope::DaemonIncomingPeerResponse {
@@ -349,12 +369,21 @@ pub(super) async fn handle_incoming_envelope(
         }
         RelayEnvelope::DaemonDisplayTunnelClientChunk { chunk } => {
             let stream_id = chunk.stream_id.clone();
-            state.write().await.try_send_display_stream_event(
+            super::display_ingress::forward_display_client_event(
+                state,
                 &stream_id,
                 RelayDisplayTunnelClientEvent::Chunk(chunk),
-            );
+            )
+            .await;
         }
-        RelayEnvelope::DaemonDisplayTunnelClientClose { stream_id, .. } => {
+        RelayEnvelope::DaemonDisplayTunnelClientClose { stream_id, error } => {
+            if let Some(error) = error {
+                crate::logging::warn_with_fields(
+                    "display.proxy",
+                    "relay closed display client",
+                    serde_json::json!({"stream_id": stream_id, "code": error.code}),
+                );
+            }
             state
                 .write()
                 .await
@@ -405,6 +434,40 @@ fn enqueue_relay_close(outgoing_tx: &RelayOutgoingSender) -> Result<(), DaemonEr
             reason: "relay configuration changed after peer response".to_string(),
         },
     )
+}
+
+#[cfg(test)]
+fn test_peer_response_kind(
+    router: &CommandRouter,
+    request: &chariox_relay::protocol::EncryptedRelayPayload,
+) -> super::connection_state::TestPeerResponseKind {
+    use super::connection_state::TestPeerResponseKind;
+    use crate::transport::relay_peer::RelayPeerRequest;
+    use crate::transport::room_browser_controller::RoomBrowserControllerCommand;
+    crate::transport::relay_crypto::decrypt_payload_for_private_key(
+        &router.relay_private_key(),
+        request,
+    )
+    .ok()
+    .and_then(|payload| serde_json::from_slice::<RelayPeerRequest>(&payload.plaintext).ok())
+    .map(|request| match request {
+        RelayPeerRequest::RoomBrowserController {
+            command:
+                RoomBrowserControllerCommand::Tab { .. }
+                | RoomBrowserControllerCommand::History { .. }
+                | RoomBrowserControllerCommand::Navigate { .. }
+                | RoomBrowserControllerCommand::Dialog { .. }
+                | RoomBrowserControllerCommand::Action { .. }
+                | RoomBrowserControllerCommand::Upload { .. }
+                | RoomBrowserControllerCommand::Permission { .. }
+                | RoomBrowserControllerCommand::ConfigureDownloads { .. },
+            ..
+        } => TestPeerResponseKind::BrowserMutation,
+        RelayPeerRequest::SubmitLeasedPrompt { .. } => TestPeerResponseKind::LeasedPrompt,
+        RelayPeerRequest::SteerLeasedPrompt { .. } => TestPeerResponseKind::LeasedSteer,
+        _ => TestPeerResponseKind::Other,
+    })
+    .unwrap_or(TestPeerResponseKind::Other)
 }
 
 #[cfg(test)]

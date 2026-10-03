@@ -117,7 +117,7 @@ impl KernelRuntimeState {
                 )))]
                 let active = false;
                 if active {
-                    let (source, previous) = self
+                    let previous = self
                         .owned
                         .session_store
                         .get_session(session_id)
@@ -126,20 +126,14 @@ impl KernelRuntimeState {
                             self.owned
                                 .prompt_state_owner
                                 .active_prompt_for_agent(&session, granted_agent.id())
-                                .map(|prompt| {
-                                    (
-                                        prompt.source_attachment_id().to_owned(),
-                                        prompt.prompt().to_owned(),
-                                    )
-                                })
+                                .map(|prompt| prompt.prompt().to_owned())
                         })
-                        .unwrap_or_else(|| ("chariox-runtime".into(), String::new()));
+                        .unwrap_or_default();
                     // Providers cache tools. Reuse the actual shared runtime MCP's
                     // established idle reload/resume, not a per-App MCP server.
                     self.remember_pending_runtime_tools_continuation(
                         session_id,
                         granted_agent.id(),
-                        &source,
                         &previous,
                     );
                     (granted_agent, "after_provider_reload", true)
@@ -164,7 +158,7 @@ impl KernelRuntimeState {
                 let granted_agent = self
                     .grant_agent_mcp(agent.id(), args.name.clone(), agent.owner_user_id())
                     .await?;
-                let (source_attachment_id, previous_prompt) = self
+                let previous_prompt = self
                     .owned
                     .session_store
                     .get_session(session_id)
@@ -173,18 +167,12 @@ impl KernelRuntimeState {
                         self.owned
                             .prompt_state_owner
                             .active_prompt_for_agent(&session, granted_agent.id())
-                            .map(|prompt| {
-                                (
-                                    prompt.source_attachment_id().to_string(),
-                                    prompt.prompt().to_string(),
-                                )
-                            })
+                            .map(|prompt| prompt.prompt().to_string())
                     })
-                    .unwrap_or_else(|| ("chariox-runtime".to_string(), String::new()));
+                    .unwrap_or_default();
                 self.remember_pending_mcp_continuation(
                     session_id,
                     granted_agent.id(),
-                    &source_attachment_id,
                     &args.name,
                     &previous_prompt,
                 );
@@ -272,7 +260,16 @@ impl KernelRuntimeState {
                         agent.owner_user_id(),
                     )
                     .await?;
-                (granted_agent, "now", false)
+                {
+                    let (effective, restart) = self.runtime_catalog_grant_effect(
+                        &granted_agent,
+                        agent.has_extension_grant(
+                            crate::extension::ExtensionKind::Script,
+                            &args.name,
+                        ),
+                    );
+                    (granted_agent, effective, restart)
+                }
             }
             "connector" => {
                 let connector_registry = connector_registry()?;
@@ -304,7 +301,16 @@ impl KernelRuntimeState {
                         agent.owner_user_id(),
                     )
                     .await?;
-                (granted_agent, "now", false)
+                {
+                    let (effective, restart) = self.runtime_catalog_grant_effect(
+                        &granted_agent,
+                        agent.has_extension_grant(
+                            crate::extension::ExtensionKind::Connector,
+                            &args.name,
+                        ),
+                    );
+                    (granted_agent, effective, restart)
+                }
             }
             _ => {
                 return Ok((

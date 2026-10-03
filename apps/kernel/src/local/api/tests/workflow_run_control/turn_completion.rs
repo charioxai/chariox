@@ -34,6 +34,7 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
         "# First node\nProduce a tiny JSON payload.\nUPSTREAM_PRIVATE_INSTRUCTION_TOKEN\n";
     const SECOND_PRIVATE_INSTRUCTIONS: &str =
         "# Second node\nSummarize the handoff.\nDOWNSTREAM_PRIVATE_INSTRUCTION_TOKEN\n";
+    let worktree = crate::test_support::TestWorktree::new("workflow-ack");
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(

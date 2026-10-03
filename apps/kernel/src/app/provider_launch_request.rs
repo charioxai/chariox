@@ -153,10 +153,16 @@ impl DaemonApp {
                     &profile.profile_id,
                     request.client_interface,
                 )?;
+            // MP-08 / MP-10 / MP-11: activation refreshes account credentials without
+            // dropping the Project bindings already resolved by the runtime.
+            let mut launch_environment = std::mem::take(&mut request.provider_credential_env);
+            for (name, value) in provider_credential_env.iter() {
+                launch_environment.insert(name, zeroize::Zeroizing::new(value.to_string()));
+            }
             request.account_profile = profile.profile_id;
             request = request
                 .with_provider_account_env(provider_account_env)
-                .with_provider_credential_env(provider_credential_env);
+                .with_provider_credential_env(launch_environment);
         }
         if request.resume_state.is_none() {
             if let Some(agent) = agent.as_ref() {
@@ -234,7 +240,12 @@ impl DaemonApp {
             mcp_servers,
         )?);
         request = apply_metaagent_launch_policy(request, agent.as_ref());
-        Ok(request)
+        crate::project_environment::attach_project_provider_environment(
+            &self.config,
+            &session,
+            agent.as_ref(),
+            request,
+        )
     }
 }
 
@@ -250,6 +261,45 @@ mod tests {
     use crate::provider::LaunchProviderRequest;
     use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
     use crate::session::CreateSessionRequest;
+
+    #[test]
+    fn mp08_mp10_mp11_account_activation_preserves_resolved_project_environment() {
+        let worktree = crate::test_support::TestWorktree::new("project-environment-activation");
+        let app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let session = app
+            .sessions_mut()
+            .create_session(CreateSessionRequest::new(
+                worktree.path().to_string_lossy(),
+                worktree.path().to_string_lossy(),
+            ))
+            .unwrap();
+        let mut environment = crate::provider::ProviderCredentialEnvironment::default();
+        environment.insert(
+            "APP_LABEL",
+            zeroize::Zeroizing::new("activation-fixture".into()),
+        );
+        environment.insert(
+            "SHELL_ONLY_SECRET",
+            zeroize::Zeroizing::new("synthetic-only".into()),
+        );
+        let prepared = app
+            .prepare_app_provider_launch_request(
+                LaunchProviderRequest::new(session.id(), "codex", "codex", "default", "fixture")
+                    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui)
+                    .with_provider_credential_env(environment),
+                "MP-08 / MP-10 / MP-11 activation fixture",
+            )
+            .unwrap();
+        assert!(prepared
+            .provider_credential_env
+            .iter()
+            .any(|(name, value)| name == "APP_LABEL" && value == "activation-fixture"));
+        assert!(prepared
+            .provider_credential_env
+            .iter()
+            .any(|(name, value)| name == "SHELL_ONLY_SECRET" && value == "synthetic-only"));
+        assert!(!format!("{prepared:?}").contains("synthetic-only"));
+    }
 
     #[test]
     fn launch_refreshes_unobserved_usage_before_applying_the_capacity_gate() {

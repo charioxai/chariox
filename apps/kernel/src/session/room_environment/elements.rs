@@ -19,9 +19,11 @@ pub(crate) struct EnvironmentElementTarget {
     pub(crate) controller_node_ref: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ElementReferenceRegistry {
+    #[serde(skip)]
     target_by_reference: BTreeMap<String, EnvironmentElementTarget>,
+    #[serde(skip)]
     reference_by_identity: BTreeMap<ElementIdentity, String>,
     next_sequence: u64,
 }

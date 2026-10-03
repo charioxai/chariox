@@ -7,6 +7,93 @@ use super::*;
 use crate::session::RuntimeSession;
 use crate::terminal::TerminalOutputKind;
 
+// MP-08 / MP-10: exercise the actual subscription loop, without another producer wakeup.
+#[tokio::test]
+async fn subscription_delivers_three_mib_burst_in_order_without_another_append() {
+    let mut app = crate::DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).expect("boot");
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace",
+            "worktree",
+        ))
+        .expect("create session");
+    let session_id = session.id().to_string();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            &session_id,
+            "burst-subscriber",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attach");
+    let attachment_id = attachment.id().to_string();
+    let expected: Vec<u8> = (0..3 * 1024 * 1024)
+        .map(|index| (index % 251) as u8)
+        .collect();
+    for bytes in expected.chunks(16 * 1024) {
+        app.fan_out_output(
+            &session_id,
+            "burst-run",
+            TerminalOutputKind::ProviderOutput,
+            None,
+            vec![attachment_id.clone()],
+            bytes,
+        );
+    }
+    let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
+        Arc::new(tokio::sync::Mutex::new(app)),
+        1,
+    ));
+    let runtime = Arc::new(KernelTransportRuntime::default());
+    let (priority_tx, _priority_rx) = mpsc::channel(1);
+    let (event_tx, mut event_rx) = mpsc::channel(256);
+    let (close_tx, mut close_rx) = mpsc::unbounded_channel();
+    let task = tokio::spawn(run_subscription_loop(
+        router,
+        runtime,
+        KernelOutgoingSender::new(priority_tx, event_tx),
+        close_tx,
+        Arc::new(AtomicBool::new(false)),
+        KernelSubscription {
+            session_id,
+            attachment_id,
+            subscription_scope: KernelSubscriptionScope::Session,
+        },
+    ));
+    let receipt = tokio::time::timeout(Duration::from_secs(3), async {
+        let mut delivered = Vec::new();
+        let mut heartbeats = 0;
+        while delivered.len() < expected.len() {
+            match event_rx.recv().await.expect("subscription remains open") {
+                KernelOutgoingFrame::Event { event, .. } => match *event {
+                    KernelEvent::TerminalOutput { records } => {
+                        for record in records {
+                            delivered.extend(record.bytes);
+                        }
+                    }
+                    KernelEvent::Heartbeat { .. } => heartbeats += 1,
+                    _ => {}
+                },
+                _ => panic!("event queue contains only events"),
+            }
+        }
+        (delivered, heartbeats)
+    })
+    .await;
+    task.abort();
+    let _ = task.await;
+    let (delivered, heartbeats) =
+        receipt.expect("subscriber drains the complete burst before heartbeat timeout");
+    assert_eq!(delivered, expected, "every byte arrives once and in order");
+    assert!(
+        heartbeats > 0,
+        "output delivery preserves heartbeat scheduling"
+    );
+    assert!(
+        close_rx.try_recv().is_err(),
+        "bounded output must not close a healthy subscriber"
+    );
+}
+
 #[test]
 fn subscription_wait_duration_uses_next_explicit_deadline() {
     let now = Instant::now();

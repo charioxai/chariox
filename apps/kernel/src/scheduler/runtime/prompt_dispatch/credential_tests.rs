@@ -13,7 +13,7 @@ enum Caller {
 }
 
 struct Fixture {
-    app: DaemonApp,
+    app: Option<DaemonApp>,
     root: PathBuf,
     previous_home: Option<std::ffi::OsString>,
     session_id: String,
@@ -43,6 +43,12 @@ impl Fixture {
         config.user_config.credential_vault.backend = CredentialVaultBackend::CharioxEncrypted;
         config.user_config.credential_vault.path =
             root.join("credentials.vault").display().to_string();
+        crate::secret::unlock_chariox_encrypted_vault(
+            &root.join("credentials.vault"),
+            "fixture passphrase",
+            crate::secret::VaultUnlockLease::KernelShutdown,
+        )
+        .unwrap();
         // Intentionally no relay: credential admission must happen before transport.
         config.relay_url = None;
         let mut app = DaemonApp::bootstrap(config).unwrap();
@@ -56,6 +62,13 @@ impl Fixture {
             .provider_account_profile_registry()
             .create_managed(DEFAULT_LOCAL_USER_ID, "claude", "Dispatch fixture")
             .unwrap();
+        crate::test_support::authenticate_provider_account(
+            &app.provider_account_profile_registry(),
+            DEFAULT_LOCAL_USER_ID,
+            "claude",
+            &profile.profile_id,
+        )
+        .expect("synthetic fixture account should be authenticated");
         let agent = KernelSessionService::new(&mut app)
             .spawn_agent(
                 CreateAgentRequest::new(session.id(), "claude")
@@ -87,7 +100,7 @@ impl Fixture {
             )
             .unwrap();
         Self {
-            app,
+            app: Some(app),
             root,
             previous_home,
             session_id: session.id().into(),
@@ -105,7 +118,7 @@ impl Fixture {
         )
         .unwrap();
         crate::provider::store_provider_account_credential(
-            self.app.config(),
+            self.app.as_ref().unwrap().config(),
             DEFAULT_LOCAL_USER_ID,
             "claude",
             &self.profile_id,
@@ -115,9 +128,36 @@ impl Fixture {
         .unwrap();
     }
 
-    fn dispatch(&mut self, caller: Caller) -> DaemonError {
+    fn runtime_dispatch(
+        &mut self,
+        caller: Caller,
+    ) -> (
+        crate::runtime::router::CommandRouter,
+        crate::app::KernelRemotePromptDispatch,
+    ) {
+        self.dispatch(caller)
+            .expect("caller should admit an intent without relay or credential I/O");
+        let mut app = self.app.take().unwrap();
+        let mut deferred = app.take_deferred_workflow_remote_prompt_dispatches();
+        assert_eq!(
+            deferred.len(),
+            1,
+            "caller must emit exactly one owned dispatch"
+        );
+        assert!(app
+            .take_deferred_workflow_remote_prompt_dispatches()
+            .is_empty());
+
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            1,
+        );
+        (router, deferred.remove(0))
+    }
+
+    fn dispatch(&mut self, caller: Caller) -> Result<(), DaemonError> {
         match caller {
-            Caller::Compatibility => KernelAgentService::new(&mut self.app)
+            Caller::Compatibility => KernelAgentService::new(self.app.as_mut().unwrap())
                 .submit_prompt(
                     &self.session_id,
                     &self.attachment_id,
@@ -125,7 +165,7 @@ impl Fixture {
                     "dispatch fixture",
                     Vec::new(),
                 )
-                .unwrap_err(),
+                .map(|_| ()),
             Caller::Queued => {
                 let prompt = PromptQueueItem::new(
                     "queued",
@@ -134,7 +174,16 @@ impl Fixture {
                     "queued fixture",
                     PromptStatus::Queued,
                 );
-                KernelAgentService::new(&mut self.app)
+                let prompt = match self
+                    .app
+                    .as_mut()
+                    .unwrap()
+                    .prompt_owner_submit_prepared_prompt(&self.session_id, prompt, true)?
+                {
+                    crate::session::PromptSubmissionOutcome::Queued { prompt, .. } => prompt,
+                    other => panic!("queued fixture must enter the owner queue: {other:?}"),
+                };
+                KernelAgentService::new(self.app.as_mut().unwrap())
                     .advance_next_queued_prompt_remote(
                         &self.session_id,
                         &self.agent_id,
@@ -144,26 +193,34 @@ impl Fixture {
                         None,
                         Some(&prompt),
                     )
-                    .unwrap_err()
+                    .map(|_| ())
             }
             Caller::Workflow => {
                 let workflow = self
                     .app
+                    .as_mut()
+                    .unwrap()
                     .sessions_mut()
                     .create_workflow(&self.session_id, None)
                     .unwrap();
                 let node = self
                     .app
+                    .as_mut()
+                    .unwrap()
                     .sessions_mut()
                     .add_workflow_node(&self.session_id, workflow.id(), &self.agent_id)
                     .unwrap();
                 let endpoint = self
                     .app
+                    .as_mut()
+                    .unwrap()
                     .sessions_mut()
                     .create_workflow_endpoint(&self.session_id, workflow.id(), node.id(), None)
                     .unwrap();
                 let run = self
                     .app
+                    .as_mut()
+                    .unwrap()
                     .sessions_mut()
                     .invoke_workflow_endpoint(
                         &self.session_id,
@@ -174,6 +231,8 @@ impl Fixture {
                     .unwrap();
                 let node_run_id = run.node_runs()[0].id();
                 self.app
+                    .as_mut()
+                    .unwrap()
                     .sessions_mut()
                     .prepare_workflow_turn(
                         &self.session_id,
@@ -186,7 +245,7 @@ impl Fixture {
                     )
                     .unwrap();
                 let prompt = match submit_claimed_workflow_prompt(
-                    &mut self.app,
+                    self.app.as_mut().unwrap(),
                     &self.session_id,
                     run.id(),
                     node_run_id,
@@ -198,8 +257,17 @@ impl Fixture {
                     PromptSubmissionOutcome::Started { prompt } => prompt,
                     other => panic!("workflow should start: {other:?}"),
                 };
-                dispatch_workflow_prompt(&mut self.app, &self.session_id, &self.agent_id, &prompt)
-                    .unwrap_err()
+                let dispatch = dispatch_workflow_prompt(
+                    self.app.as_mut().unwrap(),
+                    &self.session_id,
+                    &self.agent_id,
+                    &prompt,
+                )?;
+                assert!(
+                    dispatch.is_some(),
+                    "remote workflow dispatch should be deferred"
+                );
+                Ok(())
             }
         }
     }
@@ -217,13 +285,20 @@ impl Drop for Fixture {
     }
 }
 
-#[test]
-fn remote_dispatch_callers_require_vaulted_claude_token_before_transport() {
+#[tokio::test]
+async fn remote_dispatch_callers_require_vaulted_claude_token_before_transport() {
     crate::test_support::isolated_env_test!();
     let _env = crate::env_lock::lock();
-    for caller in [Caller::Workflow, Caller::Compatibility, Caller::Queued] {
+    for caller in [Caller::Compatibility, Caller::Queued] {
         let mut fixture = Fixture::new();
-        let error = fixture.dispatch(caller);
+
+        let (router, mut dispatch) = fixture.runtime_dispatch(caller);
+
+        let runtime = router.runtime_state();
+        let error = runtime
+            .submit_remote_prompt_to_worker_for_test(&mut dispatch)
+            .await
+            .expect_err("owned dispatch needs the vaulted token before transport");
         assert!(
             error.to_string().contains("remote Claude launch requires"),
             "{caller:?}: {error}"
@@ -231,35 +306,50 @@ fn remote_dispatch_callers_require_vaulted_claude_token_before_transport() {
     }
 }
 
-#[test]
-fn remote_dispatch_callers_surface_locked_vault_before_transport() {
+#[tokio::test]
+async fn remote_dispatch_callers_surface_locked_vault_before_transport() {
     crate::test_support::isolated_env_test!();
     let _env = crate::env_lock::lock();
-    for caller in [Caller::Workflow, Caller::Compatibility, Caller::Queued] {
+    for caller in [Caller::Compatibility, Caller::Queued] {
         let mut fixture = Fixture::new();
         fixture.store_token();
-        crate::secret::lock_chariox_encrypted_vault(&fixture.root.join("credentials.vault"))
+        crate::secret::lock_chariox_encrypted_vault(fixture.root.join("credentials.vault"))
             .unwrap();
         crate::secret::clear_vault_secret_process_cache().unwrap();
-        let error = fixture.dispatch(caller);
-        assert!(
-            crate::secret::is_chariox_vault_locked_error(&error),
-            "{caller:?}: {error}"
-        );
-        assert!(!error.to_string().contains("dispatch-token-canary"));
+
+        let (router, mut dispatch) = fixture.runtime_dispatch(caller);
+
+        let runtime = router.runtime_state();
+        let mut submission =
+            Box::pin(runtime.submit_remote_prompt_to_worker_for_test(&mut dispatch));
+        tokio::select! {
+            result = &mut submission => panic!("locked vault must hold transport: {result:?}"),
+            _ = tokio::time::sleep(std::time::Duration::from_millis(25)) => {}
+        }
+        let session = runtime
+            .session_snapshot(&fixture.session_id)
+            .await
+            .expect("session should project the vault gate");
+        let interaction = session
+            .active_interaction_for_agent(&fixture.agent_id)
+            .expect("locked vault must surface the kernel-owned interaction");
+        assert_eq!(interaction.title(), Some("Unlock Chariox Vault"));
+        assert!(!format!("{interaction:?}").contains("dispatch-token-canary"));
     }
 }
 
-#[test]
-fn remote_dispatch_callers_admit_vaulted_launch_and_reuse_active_run_without_token() {
+#[tokio::test]
+async fn remote_dispatch_callers_admit_vaulted_launch_and_reuse_active_run_without_token() {
     crate::test_support::isolated_env_test!();
     let _env = crate::env_lock::lock();
-    for caller in [Caller::Workflow, Caller::Compatibility, Caller::Queued] {
+    for caller in [Caller::Compatibility, Caller::Queued] {
         for active_run in [false, true] {
             let mut fixture = Fixture::new();
             if active_run {
                 fixture
                     .app
+                    .as_mut()
+                    .unwrap()
                     .agents()
                     .set_remote_execution_active_worker_provider_run_id(
                         &fixture.agent_id,
@@ -269,10 +359,29 @@ fn remote_dispatch_callers_admit_vaulted_launch_and_reuse_active_run_without_tok
             } else {
                 fixture.store_token();
             }
-            let error = fixture.dispatch(caller);
+
+            let (router, mut dispatch) = fixture.runtime_dispatch(caller);
+
+            let runtime = router.runtime_state();
+            let error = runtime
+                .submit_remote_prompt_to_worker_for_test(&mut dispatch)
+                .await
+                .expect_err("owned dispatch should reach transport after credential admission");
             assert!(error.to_string().contains("relay_url is not configured"),
                 "{caller:?}, active={active_run}: should reach transport after credential admission: {error}");
             assert!(!error.to_string().contains("dispatch-token-canary"));
         }
     }
+}
+
+#[test]
+fn remote_workflow_dispatch_returns_an_intent_without_opening_transport() {
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    let mut fixture = Fixture::new();
+    let result = fixture.dispatch(Caller::Workflow);
+    assert!(
+        result.is_ok(),
+        "workflow should defer transport: {result:?}"
+    );
 }

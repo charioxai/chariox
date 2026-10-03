@@ -7,9 +7,10 @@ use sha2::{Digest, Sha256};
 
 use super::development::MAX_PACKAGE_BYTES as MAX_DEVELOPMENT_BYTES;
 use super::development::{
-    import_development_context_with_publication, recover_development_context_publication,
-    DevelopmentContextImportRequest, DevelopmentContextPublicationReceipt,
-    DevelopmentRepositoryRole, DevelopmentSourceRepositoryBinding, MAX_PUBLICATION_RECEIPT_BYTES,
+    import_development_context_with_environment,
+    recover_development_context_publication_with_environment, DevelopmentContextImportRequest,
+    DevelopmentContextPublicationReceipt, DevelopmentRepositoryRole,
+    DevelopmentSourceRepositoryBinding, MAX_PUBLICATION_RECEIPT_BYTES,
 };
 use super::kernel::{
     cleanup_kernel_context_import, configured_managed_kernel_context_paths, import_kernel_context,
@@ -212,6 +213,7 @@ pub(crate) struct ManagedContextPackageApplicationRequest {
     pub expected_binding: ManagedContextPackageBinding,
     pub development_destination_root: PathBuf,
     pub target_private_key: String,
+    pub project_environment_target: Option<crate::config::DaemonConfig>,
     pub provider_account_target: Option<ManagedContextProviderAccountImportTarget>,
     pub git_credential_target: Option<ManagedContextGitCredentialImportTarget>,
 }
@@ -670,7 +672,38 @@ pub(crate) fn apply_managed_context_package(
             return Err(error);
         }
     };
+    let mut kernel_context_rollback = None;
     let imported_components = (|| {
+        // MP-08 / MP-10 / MP-11: Install/unlock the transferred Vault before selected
+        // Project values are committed to that target-owned Vault.
+        let kernel_context = match &extracted.kernel_context {
+            ManagedContextPackageKernel::Empty => ManagedContextImportedKernelContext::Empty,
+            ManagedContextPackageKernel::FromKernel(snapshot) => {
+                let (capability_root, vault_path) = configured_managed_kernel_context_paths()?;
+                let context_existed = capability_root.exists();
+                let rollback_vault_path = vault_path.clone();
+                let receipt = import_kernel_context(KernelContextImportRequest {
+                    snapshot: snapshot.as_ref().clone(),
+                    expected_source: TransferredVaultSourceBinding {
+                        context_id: request.expected_binding.plan.context_id.clone(),
+                        source_kernel_id: request.expected_binding.source_kernel_id.clone(),
+                        source_key_thumbprint: request
+                            .expected_binding
+                            .source_key_thumbprint
+                            .clone(),
+                    },
+                    target_kernel_id: request.expected_binding.target_kernel_id.clone(),
+                    target_private_key: request.target_private_key.clone(),
+                    capability_root,
+                    vault_path,
+                })?;
+                if !context_existed {
+                    kernel_context_rollback = Some((receipt.clone(), rollback_vault_path));
+                }
+                ManagedContextImportedKernelContext::FromKernel { receipt }
+            }
+        };
+
         let development = match (
             &extracted.development,
             &request.expected_binding.plan.development,
@@ -696,14 +729,45 @@ pub(crate) fn apply_managed_context_package(
                     expected_source_repositories: Some(repositories.clone()),
                     destination_root: request.development_destination_root.clone(),
                 };
-                let receipt = match recover_development_context_publication(
+                let environment_authority = request
+                    .project_environment_target
+                    .as_ref()
+                    .map(|config| {
+                        let mut config = config.clone();
+                        if matches!(
+                            &extracted.kernel_context,
+                            ManagedContextPackageKernel::FromKernel(_)
+                        ) {
+                            let (_, vault_path) = configured_managed_kernel_context_paths()?;
+                            config.user_config.credential_vault.backend =
+                                crate::config::CredentialVaultBackend::CharioxEncrypted;
+                            config.user_config.credential_vault.path =
+                                vault_path.to_string_lossy().into_owned();
+                        }
+                        Ok::<_, DaemonError>(
+                            crate::project_environment::ProjectEnvironmentImportAuthority {
+                                config,
+                                context_id: request.expected_binding.plan.context_id.clone(),
+                                source_kernel_id: request.expected_binding.source_kernel_id.clone(),
+                                source_key_thumbprint: request
+                                    .expected_binding
+                                    .source_key_thumbprint
+                                    .clone(),
+                                target_kernel_id: request.expected_binding.target_kernel_id.clone(),
+                            },
+                        )
+                    })
+                    .transpose()?;
+                let receipt = match recover_development_context_publication_with_environment(
                     &development_request,
                     &request.transfer_id,
+                    environment_authority.as_ref(),
                 )? {
                     Some(receipt) => receipt,
-                    None => import_development_context_with_publication(
+                    None => import_development_context_with_environment(
                         development_request,
                         request.transfer_id.clone(),
+                        environment_authority.as_ref(),
                     )?,
                 };
                 ManagedContextImportedDevelopment::FromSource {
@@ -717,33 +781,14 @@ pub(crate) fn apply_managed_context_package(
                 ))
             }
         };
-        let kernel_context = match &extracted.kernel_context {
-            ManagedContextPackageKernel::Empty => ManagedContextImportedKernelContext::Empty,
-            ManagedContextPackageKernel::FromKernel(snapshot) => {
-                let (capability_root, vault_path) = configured_managed_kernel_context_paths()?;
-                let receipt = import_kernel_context(KernelContextImportRequest {
-                    snapshot: snapshot.as_ref().clone(),
-                    expected_source: TransferredVaultSourceBinding {
-                        context_id: request.expected_binding.plan.context_id.clone(),
-                        source_kernel_id: request.expected_binding.source_kernel_id.clone(),
-                        source_key_thumbprint: request
-                            .expected_binding
-                            .source_key_thumbprint
-                            .clone(),
-                    },
-                    target_kernel_id: request.expected_binding.target_kernel_id.clone(),
-                    target_private_key: request.target_private_key.clone(),
-                    capability_root,
-                    vault_path,
-                })?;
-                ManagedContextImportedKernelContext::FromKernel { receipt }
-            }
-        };
         Ok::<_, DaemonError>((development, kernel_context))
     })();
     let (development, kernel_context) = match imported_components {
         Ok(imported) => imported,
         Err(error) => {
+            if let Some((receipt, vault_path)) = kernel_context_rollback {
+                cleanup_kernel_context_import(&receipt, &vault_path, &request.target_private_key)?;
+            }
             let git_rollback = rollback_imported_git_credentials(
                 request.git_credential_target.as_ref(),
                 &git_credentials,
@@ -793,13 +838,23 @@ fn import_provider_accounts(
             })?;
             let mut accounts = Vec::with_capacity(materializations.len());
             for materialization in materializations {
-                match target.registry.materialize_managed_context_replica(
-                    &target.owner_user_id,
-                    &request.expected_binding.plan.context_id,
-                    &request.expected_package_sha256,
-                    materialization,
-                ) {
-                    Ok(receipt) => accounts.push(receipt),
+                match target
+                    .registry
+                    .materialize_managed_context_replica(
+                        &target.owner_user_id,
+                        &request.expected_binding.plan.context_id,
+                        &request.expected_package_sha256,
+                        materialization,
+                    )
+                    .and_then(|receipt| {
+                        accounts.push(receipt);
+                        target.registry.record_credential_copy(
+                            &target.owner_user_id,
+                            materialization,
+                            &request.expected_binding.source_kernel_id,
+                        )
+                    }) {
+                    Ok(()) => {}
                     Err(error) => {
                         let imported =
                             ManagedContextImportedProviderAccounts::Selected { accounts };

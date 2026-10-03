@@ -72,6 +72,37 @@ mod provider_sessions;
 mod remote_leases;
 
 #[test]
+fn relay_leased_prompt_execution_profile_shape_is_versioned_and_required() {
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 410);
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        69
+    );
+    let mut expected = serde_json::json!({
+        "kind": "submit_leased_prompt",
+        "leased_agent_id": "leased-agent-1",
+        "expected_profile": {
+            "provider": "codex",
+            "account_profile": "account-123",
+            "model": "gpt-5.6-sol",
+            "effort": "low"
+        },
+        "prompt": "hello",
+        "attachments": []
+    });
+    let request: RelayPeerRequest = serde_json::from_value(expected.clone()).unwrap();
+    let actual = serde_json::to_value(request).unwrap();
+    assert_eq!(actual, expected);
+    let hash = Sha256::digest(serde_json::to_string(&actual).unwrap().as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "65b70265dd734626f4e65fbfd6923b918883378f16c33c38d6a15de237462b41"
+    );
+    expected.as_object_mut().unwrap().remove("expected_profile");
+    assert!(serde_json::from_value::<RelayPeerRequest>(expected).is_err());
+}
+
+#[test]
 fn relay_peer_workspace_live_sync_apply_shape_is_versioned() {
     assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 410);
 

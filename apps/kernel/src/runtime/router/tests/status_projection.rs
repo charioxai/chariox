@@ -91,7 +91,9 @@ async fn daemon_health_projection_reports_session_and_agent_mailboxes_inner() {
         attachment_id: attachment.id().to_string(),
         command: "/bin/true".to_string(),
         args: Vec::new(),
-        working_directory: None,
+        working_directory: Some(
+            std::env::temp_dir().join(format!("missing-health-worktree-{}", rand::random::<u64>())),
+        ),
         timeout_ms: Some(1_000),
     });
     let shell_command =
@@ -567,6 +569,13 @@ async fn daemon_health_reads_terminal_projection_without_app_lock() {
 #[tokio::test]
 async fn relay_status_uses_config_projection_without_app_lock() {
     let mut config = DaemonConfig::for_tests();
+    // The isolated runner has no HOME; keep vault configuration in this test's
+    // unique scratch namespace instead of resolving the operator's profile.
+    config.user_config.credential_vault.path = config
+        .local_socket_path
+        .with_extension("vault.json")
+        .display()
+        .to_string();
     config.relay_url = Some("ws://127.0.0.1:9".to_string());
     config.relay_token = Some("secret".to_string());
     config.host_machine_id = "machine-projected".to_string();
@@ -600,6 +609,36 @@ async fn relay_status_uses_config_projection_without_app_lock() {
             assert_eq!(status.relay_url.as_deref(), Some("ws://127.0.0.1:9"));
             assert!(status.relay_token_configured);
             assert_eq!(status.machine_id, "machine-projected");
+            #[cfg(target_os = "linux")]
+            {
+                let encoded = serde_json::to_value(&status).unwrap();
+                let identity = &encoded["runtime_process_identity"];
+                assert_eq!(
+                    identity["pid"],
+                    serde_json::json!(std::process::id()),
+                    "MP-10 must bind the authenticated product route to this Linux kernel process"
+                );
+                assert_eq!(
+                    identity["linux_boot_id"],
+                    serde_json::json!(std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+                        .unwrap()
+                        .trim())
+                );
+                assert!(identity["start_time_ticks"]
+                    .as_str()
+                    .unwrap()
+                    .chars()
+                    .all(|c| c.is_ascii_digit()));
+            }
+
+            assert_eq!(
+                status.capabilities,
+                crate::local::RUNTIME_CONTROL_CAPABILITIES
+            );
+            let registration = app.lock().await.relay_registration();
+            for capability in &status.capabilities {
+                assert!(registration.capabilities.contains(capability));
+            }
         }
         _ => panic!("unexpected relay response"),
     }

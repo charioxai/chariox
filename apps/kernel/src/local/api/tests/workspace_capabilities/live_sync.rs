@@ -173,11 +173,7 @@ fn local_request_api_reports_workspace_live_sync_ignore_rules_inner() {
     };
 
     assert_eq!(status.ignore.ignore_file.as_deref(), Some(".charioxignore"));
-    assert_eq!(status.ignore.rules, vec!["ignored/**", "*.secret"]);
-    assert_eq!(
-        std::fs::read_to_string(worktree.join(".charioxignore"))
-            .expect(".charioxignore should initialize from .gitignore"),
-        "ignored/\n*.secret\n# comment\n!keep\n"
-    );
+    assert_eq!(status.ignore.rules, vec!["ignored/**", "*.secret", "!keep"]);
+    assert!(!worktree.join(".charioxignore").exists());
     std::fs::remove_dir_all(worktree).expect("worktree should clean up");
 }

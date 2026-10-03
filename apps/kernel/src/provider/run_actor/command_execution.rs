@@ -145,6 +145,24 @@ pub(super) fn execute_utility_command(
         });
     }
     let (slot, mut state) = runtime_registry.take_claude_runtime(&run_id)?;
+    if policy.is_metadata_only() {
+        // MP-08: Fresh official Claude child: no prior conversation or project bindings.
+        let credentials = state.metadata_discovery_credentials();
+        let result = (|| {
+            let mut utility =
+                crate::provider::claude_runtime::initialize_claude_runtime_with_credentials(
+                    &run,
+                    &credentials,
+                )?
+                .state;
+            let result =
+                run_claude_utility_prompt_on_runtime(&run, &mut utility, &envelope, timeout);
+            drop(utility);
+            result
+        })();
+        runtime_registry.restore_claude_runtime_if_live(&run_id, &slot, state);
+        return result;
+    }
     let result = run_claude_utility_prompt_on_runtime(&run, &mut state, &envelope, timeout);
     runtime_registry.restore_claude_runtime_if_live(&run_id, &slot, state);
     result

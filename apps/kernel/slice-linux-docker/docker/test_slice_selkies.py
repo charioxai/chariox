@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Focused tests for the private Selkies lifecycle."""
 
+import http.client
 import importlib.util
 import importlib.resources
+import socketserver
+import threading
 import os
 from pathlib import Path
 import tempfile
@@ -134,6 +137,61 @@ class SelkiesStopTests(unittest.TestCase):
             self.assertTrue(process.terminated)
             self.assertTrue(process.killed)
             self.assertFalse((directory / "process.json").exists())
+
+
+class SelkiesHealthTests(unittest.TestCase):
+    # MP-08/MP-10: startup HTTP framing can be incomplete before the streamer is ready.
+    def test_malformed_and_incomplete_http_responses_are_not_yet_healthy(self):
+        for error in [http.client.BadStatusLine("GET /api/health HTTP/1.1\r\n"),
+                      http.client.IncompleteRead(b"O", 1),
+                      http.client.RemoteDisconnected("not ready")]:
+            with self.subTest(error=type(error).__name__), mock.patch.object(
+                    LIFECYCLE, "owned_process", return_value=object()), mock.patch.object(
+                    LIFECYCLE.urllib.request, "urlopen", side_effect=error):
+                self.assertFalse(LIFECYCLE.healthy({"port": 6080}))
+
+    def test_real_http_probe_recovers_after_a_malformed_startup_response(self):
+        class StartupHandler(socketserver.BaseRequestHandler):
+            attempts = 0
+
+            def handle(self):
+                request = self.request.recv(4096)
+                type(self).attempts += 1
+                if self.attempts == 1:
+                    self.request.sendall(request.split(b"\r\n", 1)[0] + b"\r\n")
+                else:
+                    self.request.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+
+        with socketserver.TCPServer(("127.0.0.1", 0), StartupHandler) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                with mock.patch.object(LIFECYCLE, "owned_process", return_value=object()):
+                    record = {"port": server.server_address[1]}
+                    self.assertFalse(LIFECYCLE.healthy(record))
+                    self.assertTrue(LIFECYCLE.healthy(record))
+            finally:
+                server.shutdown()
+                thread.join()
+
+    def test_health_requires_the_owned_process_and_exact_ok_body(self):
+        with mock.patch.object(LIFECYCLE, "owned_process", return_value=None), mock.patch.object(
+                LIFECYCLE.urllib.request, "urlopen") as request:
+            self.assertFalse(LIFECYCLE.healthy({"port": 6080}))
+            request.assert_not_called()
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.status = 200
+        response.read.return_value = b"NOT READY"
+        with mock.patch.object(LIFECYCLE, "owned_process", return_value=object()), mock.patch.object(
+                LIFECYCLE.urllib.request, "urlopen", return_value=response):
+            self.assertFalse(LIFECYCLE.healthy({"port": 6080}))
+
+    def test_unrelated_programming_errors_still_fail(self):
+        with mock.patch.object(LIFECYCLE, "owned_process", return_value=object()), mock.patch.object(
+                LIFECYCLE.urllib.request, "urlopen", side_effect=ValueError("invalid probe")):
+            with self.assertRaises(ValueError):
+                LIFECYCLE.healthy({"port": 6080})
 
 
 if __name__ == "__main__":

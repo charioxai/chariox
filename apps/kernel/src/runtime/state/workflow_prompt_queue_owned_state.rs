@@ -682,6 +682,7 @@ impl KernelRuntimeOwnedState {
         reason: &str,
         admit: impl FnOnce(&mut crate::session::SessionService) -> Result<Option<T>, DaemonError>,
     ) -> Result<Option<T>, DaemonError> {
+        let _admission = self.begin_managed_activity_admission()?;
         let activity_mutation = self.begin_managed_activity_mutation();
         let durable_state_store = self.durable_state_store.clone();
         let admitted = durable_state_store.with_workflow_runtime_transition_lock(|| {
@@ -719,6 +720,7 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
     ) -> Result<Option<crate::session::QueuedMetaagentTask>, DaemonError> {
+        let _admission = self.begin_managed_activity_admission()?;
         let activity_mutation = self.begin_managed_activity_mutation();
         let durable_state_store = self.durable_state_store.clone();
         let admitted = durable_state_store.with_workflow_runtime_transition_lock(|| {

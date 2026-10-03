@@ -161,7 +161,7 @@ test("managed environment API uses only shared LocalDaemon request variants", as
       },
     },
     { PrepareManagedEnvironmentContextTransfer: { environmentId: "environment-1" } },
-    { StartManagedContextTransfer: { ticket: ticket() } },
+    { StartManagedContextTransfer: { ticket: ticket(), interactive: true } },
     { GetManagedContextTransferStatus: { contextId: "context-1" } },
     { GetManagedContextLaunchTarget: { contextId: "context-1", planDigest: "sha256:plan" } },
   ])

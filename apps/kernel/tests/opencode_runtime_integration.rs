@@ -5,11 +5,11 @@ use std::time::{Duration, Instant};
 
 use chariox_kernel::attachment::{AttachRequest, ClientCapabilityLevel};
 use chariox_kernel::provider::{LaunchProviderRequest, ProviderRunState};
-use chariox_kernel::session::CreateSessionRequest;
 use chariox_kernel::terminal::TerminalOutputKind;
 use chariox_kernel::{DaemonApp, DaemonConfig};
 
 mod support;
+use support::kernel_websocket::ExecutionWorkspace;
 use support::runtime_integration::{
     collect_provider_output_until, collect_provider_records_until, create_opencode_fixture_script,
     opencode_env_guard, output_timeout_ms, render_terminal_output,
@@ -19,6 +19,7 @@ use support::runtime_integration::{
 #[test]
 fn shared_opencode_endpoint_keeps_prompt_queue_running_without_managed_process() {
     let _guard = opencode_env_guard();
+    let workspace = ExecutionWorkspace::new();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
     let previous_bin = env::var_os("CHARIOX_OPENCODE_BIN");
     let previous_port = env::var_os("CHARIOX_OPENCODE_PORT");
@@ -30,7 +31,7 @@ fn shared_opencode_endpoint_keeps_prompt_queue_running_without_managed_process()
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let session = app
         .sessions_mut()
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
         .attach(AttachRequest::new(
@@ -117,6 +118,7 @@ fn shared_opencode_endpoint_keeps_prompt_queue_running_without_managed_process()
 #[test]
 fn shared_opencode_idle_status_completes_the_prompt_without_hot_polling() {
     let _guard = opencode_env_guard();
+    let workspace = ExecutionWorkspace::new();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(100));
     let previous_bin = env::var_os("CHARIOX_OPENCODE_BIN");
     let previous_port = env::var_os("CHARIOX_OPENCODE_PORT");
@@ -128,7 +130,7 @@ fn shared_opencode_idle_status_completes_the_prompt_without_hot_polling() {
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let session = app
         .sessions_mut()
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
         .attach(AttachRequest::new(
@@ -214,6 +216,7 @@ fn shared_opencode_idle_status_completes_the_prompt_without_hot_polling() {
 #[test]
 fn event_stream_disconnect_reconnects_without_restarting_the_provider_run() {
     let _guard = opencode_env_guard();
+    let workspace = ExecutionWorkspace::new();
     let fixture_path = create_opencode_fixture_script();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
     mock_server.disconnect_next_event_stream();
@@ -226,7 +229,7 @@ fn event_stream_disconnect_reconnects_without_restarting_the_provider_run() {
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let session = app
         .sessions_mut()
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
         .attach(AttachRequest::new(
@@ -291,6 +294,7 @@ fn event_stream_disconnect_reconnects_without_restarting_the_provider_run() {
 #[test]
 fn event_stream_reconnect_retries_temporary_http_failures_without_restarting_the_provider_run() {
     let _guard = opencode_env_guard();
+    let workspace = ExecutionWorkspace::new();
     let fixture_path = create_opencode_fixture_script();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
     mock_server.disconnect_next_event_stream();
@@ -304,7 +308,7 @@ fn event_stream_reconnect_retries_temporary_http_failures_without_restarting_the
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let session = app
         .sessions_mut()
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
         .attach(AttachRequest::new(
@@ -376,6 +380,7 @@ fn event_stream_reconnect_retries_temporary_http_failures_without_restarting_the
 #[test]
 fn external_opencode_endpoint_accepts_prompts_and_streams_output() {
     let _guard = opencode_env_guard();
+    let workspace = ExecutionWorkspace::new();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
     let previous_bin = env::var_os("CHARIOX_OPENCODE_BIN");
     let previous_port = env::var_os("CHARIOX_OPENCODE_PORT");
@@ -387,7 +392,7 @@ fn external_opencode_endpoint_accepts_prompts_and_streams_output() {
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let session = app
         .sessions_mut()
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
         .attach(AttachRequest::new(
@@ -457,6 +462,7 @@ fn external_opencode_endpoint_accepts_prompts_and_streams_output() {
 #[test]
 fn launch_retries_temporary_event_subscription_failures() {
     let _guard = opencode_env_guard();
+    let workspace = ExecutionWorkspace::new();
     let fixture_path = create_opencode_fixture_script();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
     mock_server.fail_next_event_stream_attempts(2);
@@ -469,7 +475,7 @@ fn launch_retries_temporary_event_subscription_failures() {
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let session = app
         .sessions_mut()
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(workspace.session_request())
         .expect("session should be created");
 
     let run = app
@@ -501,6 +507,7 @@ fn launch_retries_temporary_event_subscription_failures() {
 #[test]
 fn shared_opencode_endpoint_routes_multi_agent_prompts_without_pty_exit() {
     let _guard = opencode_env_guard();
+    let workspace = ExecutionWorkspace::new();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
     let previous_bin = env::var_os("CHARIOX_OPENCODE_BIN");
     let previous_port = env::var_os("CHARIOX_OPENCODE_PORT");
@@ -511,7 +518,7 @@ fn shared_opencode_endpoint_routes_multi_agent_prompts_without_pty_exit() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let (session, default_agent) = app
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
         .attach(AttachRequest::new(
@@ -671,6 +678,7 @@ fn shared_opencode_endpoint_routes_multi_agent_prompts_without_pty_exit() {
 #[test]
 fn managed_opencode_fixture_without_target_port_fails_health_check() {
     let _guard = opencode_env_guard();
+    let workspace = ExecutionWorkspace::new();
     let fixture_path = create_opencode_fixture_script();
     let previous_bin = env::var_os("CHARIOX_OPENCODE_BIN");
     let previous_port = env::var_os("CHARIOX_OPENCODE_PORT");
@@ -681,7 +689,7 @@ fn managed_opencode_fixture_without_target_port_fails_health_check() {
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let session = app
         .sessions_mut()
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(workspace.session_request())
         .expect("session should be created");
 
     let error = app
@@ -723,6 +731,7 @@ fn managed_opencode_fixture_without_target_port_fails_health_check() {
 #[test]
 fn opencode_event_stream_does_not_depend_on_session_status_polling() {
     let _guard = opencode_env_guard();
+    let workspace = ExecutionWorkspace::new();
     let fixture_path = create_opencode_fixture_script();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
     mock_server.set_omit_session_status(true);
@@ -735,7 +744,7 @@ fn opencode_event_stream_does_not_depend_on_session_status_polling() {
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let session = app
         .sessions_mut()
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
         .attach(AttachRequest::new(
@@ -812,6 +821,7 @@ fn opencode_event_stream_does_not_depend_on_session_status_polling() {
 #[test]
 fn shared_opencode_tool_activity_keeps_prompt_alive_until_explicit_idle_after_followup_output() {
     let _guard = opencode_env_guard();
+    let workspace = ExecutionWorkspace::new();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(1_000));
     mock_server.set_emit_tool_call_before_completion(true);
     let previous_bin = env::var_os("CHARIOX_OPENCODE_BIN");
@@ -824,7 +834,7 @@ fn shared_opencode_tool_activity_keeps_prompt_alive_until_explicit_idle_after_fo
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let session = app
         .sessions_mut()
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
         .attach(AttachRequest::new(

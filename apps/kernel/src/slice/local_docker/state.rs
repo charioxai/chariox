@@ -241,23 +241,8 @@ pub fn validate_local_docker_slice_backup(
         })? {
             Some((size, digest)) => (size, digest, true),
             None => {
-                let metadata = std::fs::symlink_metadata(archive_path).map_err(|error| {
-                    DaemonError::LocalTransport {
-                        operation: OPERATION,
-                        message: format!(
-                            "backup `{}` archive is unavailable at {}: {error}",
-                            backup.id,
-                            archive_path.display()
-                        ),
-                    }
-                })?;
-                if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
-                    return Err(DaemonError::LocalTransport {
-                        operation: OPERATION,
-                        message: format!("backup `{}` archive is not a regular file", backup.id),
-                    });
-                }
-                (metadata.len(), file_sha256(archive_path, OPERATION)?, false)
+                let (size, digest) = file_sha256(archive_path, OPERATION)?;
+                (size, digest, false)
             }
         };
     if actual_size != expected_size || actual_digest != expected_digest {
@@ -1083,7 +1068,7 @@ fn archive_local_docker_home_volume(
 
 fn archive_local_docker_home_volume_with_helper(
     helper: &str,
-    volume: &str,
+    _volume: &str,
     archive_path: &Path,
     archive_scope: &str,
     archive_id: &str,
@@ -1102,6 +1087,8 @@ fn archive_local_docker_home_volume_with_helper(
             message: format!("docker start home archive helper `{helper}` failed with {status}"),
         });
     }
+    // A configured broker owns protected home capture; never fall back to an
+    // unprotected in-container archive.
     if broker::configured() {
         return broker::capture_home_archive(helper, archive_scope, archive_id)
             .map_err(|_| DaemonError::LocalTransport {
@@ -1113,88 +1100,14 @@ fn archive_local_docker_home_volume_with_helper(
                 message: "protected slice home capture is unavailable".to_string(),
             });
     }
-    let output = docker_command()
-        .args([
-            "exec",
-            "-u",
-            "root",
-            helper,
-            "bash",
-            "-lc",
-            "set -euo pipefail; cd /home-src; tar --zstd -cf /tmp/home.tar.zst .",
-        ])
-        .output()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation,
-            message: format!("failed to archive slice home volume `{volume}`: {error}"),
-        })?;
-    if !output.status.success() {
-        return Err(DaemonError::LocalTransport {
-            operation,
-            message: format!(
-                "home volume archive failed with status {}: {}{}",
-                output.status,
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            ),
-        });
-    }
-    if let Some(captured) = broker::capture_home_archive(helper, archive_scope, archive_id)
-        .map_err(|error| DaemonError::LocalTransport {
-            operation,
-            message: format!("failed to capture managed home archive: {error}"),
-        })?
-    {
-        return Ok(captured);
-    }
-    let status = docker_command()
-        .args([
-            "cp",
-            &format!("{helper}:/tmp/home.tar.zst"),
-            &archive_path.display().to_string(),
-        ])
-        .status()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation,
-            message: format!(
-                "failed to copy home archive from helper `{helper}` to `{}`: {error}",
-                archive_path.display()
-            ),
-        })?;
-    if status.success() {
-        let sha256 = file_sha256(archive_path, operation)?;
-        Ok((
-            archive_path.to_path_buf(),
-            file_size(archive_path).unwrap_or(0),
-            sha256,
-        ))
-    } else {
-        Err(DaemonError::LocalTransport {
-            operation,
-            message: format!(
-                "docker cp home archive from helper `{helper}` to `{}` failed with {status}",
-                archive_path.display()
-            ),
-        })
-    }
+    super::home_archive_capture::capture(helper, archive_path, operation)
 }
 
-fn file_sha256(path: &Path, operation: &'static str) -> Result<String, DaemonError> {
-    use sha2::{Digest, Sha256};
-
-    let mut file = std::fs::File::open(path).map_err(|error| DaemonError::LocalTransport {
-        operation,
-        message: format!("failed to open slice archive {}: {error}", path.display()),
-    })?;
-    let mut hasher = Sha256::new();
-    std::io::copy(&mut file, &mut hasher).map_err(|error| DaemonError::LocalTransport {
-        operation,
-        message: format!("failed to digest slice archive {}: {error}", path.display()),
-    })?;
-    Ok(format!("{:x}", hasher.finalize()))
+fn file_sha256(path: &Path, operation: &'static str) -> Result<(u64, String), DaemonError> {
+    super::home_archive_verify::digest(path, operation)
 }
 
-fn valid_sha256_digest(value: &str) -> bool {
+pub(super) fn valid_sha256_digest(value: &str) -> bool {
     value.len() == 64
         && value
             .bytes()
@@ -1471,6 +1384,6 @@ fn default_saved_state_path(
         .join(format!("{}-{}.json", backend, sanitize_state_component(os)))
 }
 
-fn file_size(path: &Path) -> Option<u64> {
-    std::fs::metadata(path).ok().map(|metadata| metadata.len())
-}
+#[cfg(all(test, unix))]
+#[path = "home_archive_capture_tests.rs"]
+mod home_archive_capture_tests;

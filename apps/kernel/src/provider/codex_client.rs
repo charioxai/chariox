@@ -60,6 +60,7 @@ pub struct CodexClient {
     /// read-only sandbox, but must not inherit its ordinary permission reply
     /// policy. This flag is intentionally client-local and never serialized.
     read_only_discovery_permissions: bool,
+    metadata_only_discovery: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,6 +70,13 @@ pub struct CodexRunSelection {
 }
 
 impl CodexClient {
+    pub(crate) fn with_metadata_only_discovery(mut self) -> Self {
+        self.read_only_discovery_permissions = true;
+        self.metadata_only_discovery = true;
+        self.discovery_read_root = None;
+        self
+    }
+
     pub fn new(
         provider_run_id: impl Into<String>,
         endpoint: impl Into<String>,
@@ -89,6 +97,7 @@ impl CodexClient {
             workspace_live_sync_roots: Vec::new(),
             discovery_read_root: None,
             read_only_discovery_permissions: false,
+            metadata_only_discovery: false,
         })
     }
 
@@ -1222,5 +1231,37 @@ mod tests {
                 reason: Some("interrupted".to_string()),
             })
         );
+    }
+}
+
+#[cfg(test)]
+mod metadata_discovery_tests {
+    use super::*;
+    #[test]
+    fn mp08_metadata_discovery_disables_host_context_tools_and_permissions() {
+        let client = CodexClient::new("metadata", "ws://127.0.0.1:1")
+            .unwrap()
+            .with_provider_config_overrides(&BTreeMap::from([(
+                "features.shell_tool".into(),
+                serde_json::json!(true),
+            )]))
+            .with_metadata_only_discovery();
+        let params = client
+            .thread_start_params(
+                Some("/tmp"),
+                None,
+                crate::provider::ProviderWriteAccessMode::WorkspaceLiveSyncTracked,
+                crate::provider::AgentExecutionMode::Plan,
+                crate::provider::AgentPermissionLevel::Required,
+                None,
+            )
+            .unwrap();
+        assert_eq!(params["ephemeral"], true);
+        assert_eq!(params["config"]["features.shell_tool"], false);
+        assert_eq!(params["config"]["features.unified_exec"], false);
+        assert_eq!(params["config"]["tools.view_image"], false);
+        assert_eq!(params["config"]["mcp_servers"], serde_json::json!({}));
+        assert_eq!(params["config"]["project_doc_max_bytes"], 0);
+        assert_eq!(params["config"]["web_search"], "disabled");
     }
 }

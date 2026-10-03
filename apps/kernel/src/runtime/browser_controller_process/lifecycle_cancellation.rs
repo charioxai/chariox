@@ -19,32 +19,89 @@ impl BrowserControllerProcessStore {
             Operation::Navigate { .. } => Response::Navigation { result: None },
             Operation::Dialog { .. } => Response::Dialog { result: None },
         };
-        self.perform_cancellable_operation(
+        let (method, params) = match operation {
+            Operation::Tab { action } => (
+                "browser.tab",
+                serde_json::json!({
+                    "target_id": target,
+                    "document_id": document,
+                    "action": action.as_str(),
+                }),
+            ),
+            Operation::History { action } => (
+                "browser.history",
+                serde_json::json!({
+                    "target_id": target,
+                    "document_id": document,
+                    "action": action.as_str(),
+                }),
+            ),
+            Operation::Navigate { url } => {
+                let url = normalize_browser_navigation_url(url.as_str())?;
+                (
+                    "browser.navigate",
+                    serde_json::json!({
+                        "target_id": target,
+                        "document_id": document,
+                        "url": url,
+                    }),
+                )
+            }
+            Operation::Dialog { action } => {
+                action.validate()?;
+                (
+                    "browser.dialog",
+                    serde_json::json!({
+                        "target_id": target,
+                        "document_id": document,
+                        "action": action.kind(),
+                        "prompt_text": action.prompt_text(),
+                    }),
+                )
+            }
+        };
+        self.perform_cancellable_tab_mutation(
             room,
             execution_id,
             fingerprint(target, document, operation)?,
             unavailable,
-            |ownership| match operation {
-                Operation::Tab { action } => ownership
-                    .manage_browser_tab(room, target, document, *action)
-                    .map(|result| Response::Tab {
+            target,
+            method,
+            params,
+            move |response| match operation {
+                Operation::Tab { action } => {
+                    let result =
+                        response.into_result::<BrowserControllerTabResult>("browser.tab")?;
+                    result.validate(target, document, *action)?;
+                    Ok(Response::Tab {
                         result: Some(result),
-                    }),
-                Operation::History { action } => ownership
-                    .navigate_browser_history(room, target, document, *action)
-                    .map(|result| Response::History {
+                    })
+                }
+                Operation::History { action } => {
+                    let result = response
+                        .into_result::<BrowserControllerHistoryResult>("browser.history")?;
+                    result.validate(target, *action)?;
+                    Ok(Response::History {
                         result: Some(result),
-                    }),
-                Operation::Navigate { url } => ownership
-                    .navigate_browser(room, target, document, url.as_str())
-                    .map(|result| Response::Navigation {
+                    })
+                }
+                Operation::Navigate { url } => {
+                    let expected_url = normalize_browser_navigation_url(url.as_str())?;
+                    let result = response
+                        .into_result::<BrowserControllerNavigationResult>("browser.navigate")?;
+                    result.validate(target, &expected_url)?;
+                    Ok(Response::Navigation {
                         result: Some(result),
-                    }),
-                Operation::Dialog { action } => ownership
-                    .handle_browser_dialog(room, target, document, action)
-                    .map(|result| Response::Dialog {
+                    })
+                }
+                Operation::Dialog { action } => {
+                    let result =
+                        response.into_result::<BrowserControllerDialogResult>("browser.dialog")?;
+                    result.validate(target, document, action)?;
+                    Ok(Response::Dialog {
                         result: Some(result),
-                    }),
+                    })
+                }
             },
         )
     }

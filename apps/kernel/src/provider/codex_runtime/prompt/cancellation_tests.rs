@@ -16,8 +16,10 @@ fn kernel_cancel_active_prompt_preserves_codex_thread_for_follow_up() {
     cancelled_codex_turn_continuity(true, "context after cancellation");
 }
 
+// Existing Codex threads receive hidden context as injected developer items
+// (release F). An empty context injects nothing; the thread is still kept.
 #[test]
-fn cancelled_codex_turn_can_clear_hidden_context_without_losing_thread() {
+fn cancelled_codex_turn_without_hidden_context_keeps_thread_and_injects_nothing() {
     cancelled_codex_turn_continuity(false, "");
 }
 
@@ -68,10 +70,8 @@ fn cancelled_codex_turn_continuity(through_kernel: bool, next_context: &str) {
             .unwrap();
         let mut socket = accept(stream).unwrap();
         let mut methods = Vec::new();
-        let mut subscribed = false;
         let mut applied_context = serde_json::Value::Null;
         let mut turn_count = 0;
-        let mut idle_reads = 0;
         loop {
             let message = socket.read().unwrap();
             let request: serde_json::Value =
@@ -80,31 +80,15 @@ fn cancelled_codex_turn_continuity(through_kernel: bool, next_context: &str) {
             methods.push(method.to_string());
             let result = match method {
                 "thread/start" => {
-                    subscribed = true;
                     applied_context = request["params"]["developerInstructions"].clone();
                     json!({"thread": {"id": if methods.len() == 1 { "thread-original" } else { "thread-new" }}, "model": "gpt-test"})
                 }
-                "thread/resume" => {
+                "thread/inject_items" => {
                     assert_eq!(request["params"]["threadId"], "thread-original");
-                    assert_ne!(
-                        request["params"]["developerInstructions"],
-                        "context before cancellation"
-                    );
-                    // A loaded subscribed thread ignores resume overrides.
-                    if !subscribed {
-                        assert!(idle_reads >= 2, "refresh must wait for authoritative idle");
-                        applied_context = request["params"]["developerInstructions"].clone();
-                        subscribed = true;
-                    }
-                    json!({"thread": {"id": "thread-original"}, "model": "gpt-test"})
-                }
-                "thread/read" => {
-                    idle_reads += 1;
-                    json!({"thread": {"id": "thread-original", "status": {"type": if idle_reads == 1 { "active" } else { "idle" }}}})
-                }
-                "thread/unsubscribe" => {
-                    subscribed = false;
-                    json!({"status": "unsubscribed"})
+                    let item = &request["params"]["items"][0];
+                    assert_eq!(item["role"], "developer");
+                    applied_context = item["content"][0]["text"].clone();
+                    json!({})
                 }
                 "turn/start" => {
                     turn_count += 1;
@@ -272,6 +256,14 @@ fn cancelled_codex_turn_continuity(through_kernel: bool, next_context: &str) {
         );
     }
     let (methods, applied_context) = server.join().unwrap();
+    if !through_kernel && next_context.is_empty() {
+        assert_eq!(applied_context, "context before cancellation");
+        assert_eq!(
+            methods,
+            ["thread/start", "turn/start", "turn/interrupt", "turn/start"]
+        );
+        return;
+    }
     assert_ne!(
         applied_context, "context before cancellation",
         "the follow-up must actually use updated provider instructions"
@@ -285,10 +277,7 @@ fn cancelled_codex_turn_continuity(through_kernel: bool, next_context: &str) {
             "thread/start",
             "turn/start",
             "turn/interrupt",
-            "thread/read",
-            "thread/read",
-            "thread/unsubscribe",
-            "thread/resume",
+            "thread/inject_items",
             "turn/start"
         ]
     );

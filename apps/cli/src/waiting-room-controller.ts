@@ -37,6 +37,8 @@ import {
   managedEnvironmentContextPlanInput,
   managedEnvironmentDraftBlockReason,
   managedEnvironmentIdFromMachineRef,
+  managedEnvironmentIsLaunchReady,
+  selectedManagedEnvironment,
   waitingRoomConfiguresNewManagedMachine,
   waitingRoomProjectDevelopmentSetup,
 } from "./waiting-room-managed-environments.js"
@@ -408,6 +410,10 @@ function waitingRoomManagedLaunchSelection(
     }
   }
   const environmentId = managedEnvironmentIdFromMachineRef(state.selectedMachineRef)
+  // MP-02/MP-08/MP-11: enrollment defaults apply only during preparation.
+  // Ready Machines use the ordinary cwd/Project/worker/slice launch path.
+  const environment = selectedManagedEnvironment(state, remote)
+  if (environment && managedEnvironmentIsLaunchReady(environment)) return undefined
   return environmentId ? { kind: "existing", environmentId } : undefined
 }
 

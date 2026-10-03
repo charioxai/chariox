@@ -113,7 +113,7 @@ async fn leased_prompt_steer_delivers_once_and_resets_for_the_next_turn() {
     let (_, next_turn_replayed) = router
         .relay_steer_leased_prompt(
             &leased_agent.id,
-            "home-queued-prompt-1",
+            "home-queued-prompt-2",
             "home-prompt-2",
             "REMOTE_STEER_ONCE",
             "",

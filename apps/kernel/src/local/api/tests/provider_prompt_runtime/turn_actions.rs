@@ -19,6 +19,8 @@ fn public_session_state_preserves_failed_settlement_termination_after_late_compl
         LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
         other => panic!("unexpected local response: {other:?}"),
     };
+    // Launch the provider up front so the admitted prompt starts deterministically.
+    harness.launch_workflow_test_provider(session.id(), agent.id());
     let attachment = match harness
         .dispatch(LocalDaemonRequest::AttachToSession(
             AttachToSessionRequest {
@@ -307,6 +309,8 @@ fn queued_native_tui_turn_projects_undo_action_after_provider_launch_inner() {
                     active.prompt() == prompt.prompt()
                         && active.pending_prompt_id().is_none()
                         && active.id() != prompt.id()
+                        && active.durable_delivery_phase()
+                            == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
                 })
         },
     );

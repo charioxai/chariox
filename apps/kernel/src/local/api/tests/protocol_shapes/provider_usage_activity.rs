@@ -1009,6 +1009,38 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
 }
 
 #[test]
+fn local_daemon_protocol_provider_run_room_browser_capability_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 410);
+
+    let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
+        "provider-run-browser-capability",
+        "session-1".to_string(),
+        Some("agent-1".to_string()),
+        "codex".to_string(),
+    );
+    provider_run.set_remote_extension_manifest(crate::extension::RemoteExtensionManifest {
+        room_browser_available: true,
+        ..crate::extension::RemoteExtensionManifest::default()
+    });
+
+    let response = LocalDaemonResponse::ProviderRun { provider_run };
+    let snapshot = serde_json::to_value(response).expect("response should serialize");
+    let manifest = snapshot
+        .pointer("/ProviderRun/provider_run/remote_extension_manifest")
+        .expect("home Room browser capability should serialize");
+    assert_eq!(
+        manifest,
+        &serde_json::json!({"room_browser_available": true})
+    );
+    let serialized = serde_json::to_string(manifest).expect("manifest snapshot should encode");
+    let hash = Sha256::digest(serialized.as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "e7190f31ffb024735e1241f18c98c8af31e87a865dd43d54da2c2bfd7cf78b83"
+    );
+}
+
+#[test]
 fn local_daemon_protocol_active_turn_phase_shape_is_versioned() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 410);
 

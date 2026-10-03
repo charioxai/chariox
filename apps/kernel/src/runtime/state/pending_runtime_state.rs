@@ -9,7 +9,7 @@ use pollers::PendingPollers;
 pub(super) struct PendingMcpContinuation {
     pub(super) session_id: String,
     pub(super) agent_id: String,
-    pub(super) source_attachment_id: String,
+
     pub(super) mcp_name: String,
     pub(super) previous_prompt: String,
     pub(super) reload_reason: super::ProviderReloadReason,

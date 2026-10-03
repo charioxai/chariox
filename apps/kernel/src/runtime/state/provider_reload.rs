@@ -391,7 +391,7 @@ fn provider_reload_snapshot_is_still_current(
     !has_active_prompt && current_run.is_some_and(|run| run.id() == expected_run_id)
 }
 
-fn policy_reload_launch_request(
+pub(super) fn policy_reload_launch_request(
     run: &crate::provider::RuntimeProviderRun,
     agent_id: &str,
     durable_resume_state: crate::provider::ProviderResumeState,
@@ -501,6 +501,7 @@ mod tests {
                     timeout_sec: Some(30),
                     version_hash: Some("fixture".into()),
                 }],
+                room_browser_available: false,
             });
         let run = crate::provider::RuntimeProviderRun::new(
             "run",
@@ -611,6 +612,18 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn provider_reload_environment_removal_fingerprint_is_order_independent() {
+        let fingerprint = |names: &[&str]| {
+            let mut request =
+                LaunchProviderRequest::new("session", "codex", "codex", "default", "model");
+            request.provider_env_remove = names.iter().map(|name| name.to_string()).collect();
+            super::ProviderLaunchFingerprint::from_request(&request)
+        };
+        assert_eq!(fingerprint(&["A", "B", "A"]), fingerprint(&["B", "A"]));
+        assert_ne!(fingerprint(&["A", "B"]), fingerprint(&["A"]));
     }
 
     #[test]

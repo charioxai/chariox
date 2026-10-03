@@ -242,6 +242,11 @@ impl KernelRuntimeState {
             session_id,
             slice_id,
         )?;
+        let capture_guard = self
+            .owned
+            .computer_input_executions
+            .capture_guard()
+            .map_err(screenshot_error)?;
         let root = config.operational_artifact_root();
         let staging = root.join("staging");
         std::fs::create_dir_all(&staging).map_err(|error| {
@@ -257,7 +262,8 @@ impl KernelRuntimeState {
             std::process::id()
         ));
         if let Err(error) =
-            super::tool_dispatch::capture_room_environment_screenshot(&staging_path).await
+            super::tool_dispatch::capture_room_environment_screenshot(&staging_path, capture_guard)
+                .await
         {
             let _ = std::fs::remove_file(&staging_path);
             return Err(error);
@@ -389,13 +395,8 @@ impl KernelRuntimeState {
                 .is_none()
                 .then(|| slice.worker_kernel_ref.clone()),
         };
-        crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
-            &config,
-            target,
-            request,
-            Duration::from_secs(15),
-        )
-        .await
+        self.send_room_slice_peer_request(&config, target, request, Duration::from_secs(15))
+            .await
     }
 }
 

@@ -48,11 +48,12 @@ export function waitingRoomSessionStatusLabel(
     readonly status?: string | null | undefined
     readonly activity?: Pick<
       WaitingRoomSessionActivitySummary,
-      "active_prompt_count" | "queued_prompt_count" | "working_agent_count" | "unread_idle_agent_count"
+      "active_prompt_count" | "queued_prompt_count" | "working_agent_count" | "unread_idle_agent_count" | "pending_interaction_count"
     > | null | undefined
   } | null | undefined,
   fallback = "-",
 ): string {
+  if ((session?.activity?.pending_interaction_count ?? 0) > 0) return "Needs you"
   return waitingRoomActivityBadgeLabel(waitingRoomSessionActivityBadgeState(session?.activity))
     ?? waitingRoomLifecycleStatusLabel(session?.status, fallback)
 }
@@ -122,7 +123,7 @@ export function waitingRoomSessionActivityHasUnreadIdleOutput(
 export function waitingRoomSessionActivityBadgeState(
   activity: Pick<
     WaitingRoomSessionActivitySummary,
-    "active_prompt_count" | "queued_prompt_count" | "working_agent_count" | "unread_idle_agent_count"
+    "active_prompt_count" | "queued_prompt_count" | "working_agent_count" | "unread_idle_agent_count" | "pending_interaction_count"
   > | null | undefined,
 ): WaitingRoomActivityBadgeState {
   const activeWork = waitingRoomSessionActivityHasActiveWork(activity)
@@ -164,7 +165,7 @@ export function waitingRoomSessionActivityNextAction(
   session: {
     readonly activity?: Pick<
       WaitingRoomSessionActivitySummary,
-      "missing_worker_provider_run_count" | "remote_extension_sync_issue_count" | "remote_extension_pending_revoke_count"
+      "missing_worker_provider_run_count" | "remote_extension_sync_issue_count" | "remote_extension_pending_revoke_count" | "pending_interaction_count"
     > | null | undefined
   } | null | undefined,
 ): string | null {
@@ -172,6 +173,7 @@ export function waitingRoomSessionActivityNextAction(
   if (!activity) {
     return null
   }
+  if ((activity.pending_interaction_count ?? 0) > 0) return "Attach to this session to review the pending request"
   if ((activity.missing_worker_provider_run_count ?? 0) > 0) {
     return remoteWorkerProviderRunRecoveryAction(null, null)
   }

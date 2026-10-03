@@ -3,6 +3,7 @@ import type {
   WaitingRoomTerminalView,
 } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
+import type { TerminalPairingLinkJoined } from "@chariox/kernel-client/kernel-types"
 import type { RelayCloudProfile } from "./preferences.js"
 import { parseAbsoluteInstantMs } from "@chariox/kernel-client/time"
 import {
@@ -10,6 +11,7 @@ import {
   connectCloudRelayRequest,
   createTerminalPairingLinkRequest,
   issueCloudRelayClientTokenRequest,
+  joinTerminalPairingLinkRequest,
   logoutCloudRelayRequest,
   pairCloudRelayClientRequest,
   pairCloudRelayMachineRequest,
@@ -19,6 +21,7 @@ import {
   startCloudRelayLoginRequest,
 } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
+import { sendWithProtocolMinimum } from "./protocol-minimum-diagnostic.js"
 
 export type RelayStatusView = WaitingRoomRelayStatusView
 export type TerminalTypeView = WaitingRoomTerminalView["terminal_type"]
@@ -205,19 +208,105 @@ export async function issueKernelCloudRelayClientToken(
   targetDaemonAlias: string,
   clientId: string,
   sessionId?: string | null,
+  publicKeyThumbprint?: string | null,
 ) {
-  const response = await client.send<Record<string, unknown>>(
-    issueCloudRelayClientTokenRequest(targetDaemonAlias, clientId, sessionId),
+  const request = issueCloudRelayClientTokenRequest(
+    targetDaemonAlias,
+    clientId,
+    sessionId,
+    publicKeyThumbprint,
   )
+  const response = publicKeyThumbprint
+    ? await sendWithProtocolMinimum<Record<string, unknown>>(
+      client.send.bind(client),
+      request,
+      {
+        capability: "CLI key-bound relay tokens",
+        requestVariant: "IssueCloudRelayClientToken",
+        unknownField: "public_key_thumbprint",
+        minimumProtocolVersion: 349,
+      },
+    )
+    : await client.send<Record<string, unknown>>(request)
   const payload = expectVariant<{
     profile: KernelCloudRelayProfile
     token: KernelCloudRelayRuntimeToken
   }>(response, "CloudRelayClientTokenIssued")
+  if (publicKeyThumbprint) {
+    requireRelayTokenKeyBinding(payload.token.relay_token, publicKeyThumbprint, "CLI key-bound relay token")
+  }
+  const targetDaemonId = relayTokenCanonicalTarget(payload.token.relay_token, targetDaemonAlias)
   return {
     relayUrl: payload.token.relay_url,
     relayToken: payload.token.relay_token,
     tokenExpiresAtMs: parseAbsoluteInstantMs(payload.token.token_expires_at),
+    ...(targetDaemonId ? { targetDaemonId } : {}),
     profile: relayCloudProfileFromKernel(payload.profile),
+  }
+}
+
+export async function joinKernelTerminalPairingLink(
+  client: LocalIpcClient,
+  pairingLink: string,
+  terminalId: string | null,
+  publicKeyThumbprint: string,
+): Promise<TerminalPairingLinkJoined> {
+  const response = await sendWithProtocolMinimum<Record<string, unknown>>(
+    client.send.bind(client),
+    joinTerminalPairingLinkRequest(
+      pairingLink,
+      terminalId,
+      "cli",
+      null,
+      publicKeyThumbprint,
+    ),
+    {
+      capability: "key-bound terminal pairing",
+      requestVariant: "JoinTerminalPairingLink",
+      unknownField: "public_key_thumbprint",
+      minimumProtocolVersion: 349,
+    },
+  )
+  const joined = expectVariant<TerminalPairingLinkJoined>(response, "TerminalPairingLinkJoined")
+  if (joined.pairing.public_key_thumbprint !== publicKeyThumbprint) {
+    throw new Error("terminal pairing response did not confirm this CLI relay identity")
+  }
+  if (!joined.relay_token?.trim()) {
+    throw new Error("key-bound terminal pairing requires a fresh protocol 349 relay token; the legacy token cannot be used for remote viewing")
+  }
+  requireRelayTokenKeyBinding(joined.relay_token, publicKeyThumbprint, "key-bound terminal pairing")
+  return joined
+}
+
+function requireRelayTokenKeyBinding(token: string, expectedThumbprint: string, capability: string): void {
+  const payload = relayTokenPayload(token)
+  if (!payload) {
+    throw new Error(`${capability} requires a relay token bound to this CLI's public key`)
+  }
+  if (payload.public_key_thumbprint !== expectedThumbprint) {
+    throw new Error(`${capability} was denied because Cloud relay did not bind the token to this CLI's public key`)
+  }
+}
+
+function relayTokenCanonicalTarget(token: string, requestedAlias: string): string | undefined {
+  // Project launch metadata from the kernel-issued token. This is not an
+  // authorization check: the relay verifies the signed token and target scope.
+  const targets = relayTokenPayload(token)?.allowed_targets
+  if (!Array.isArray(targets) || targets.length !== 1) return undefined
+  const target = targets[0]
+  return typeof target === "string" && target.trim() && target !== requestedAlias ? target : undefined
+}
+
+function relayTokenPayload(token: string): Record<string, unknown> | undefined {
+  if (token.length > 16_384) return undefined
+  const segments = token.trim().split(".")
+  if (segments.length !== 3 || !segments[0] || !segments[1] || !segments[2]) return undefined
+  try {
+    const payload: unknown = JSON.parse(Buffer.from(segments[1], "base64url").toString("utf8"))
+    return payload && typeof payload === "object" && !Array.isArray(payload)
+      ? payload as Record<string, unknown> : undefined
+  } catch {
+    return undefined
   }
 }
 

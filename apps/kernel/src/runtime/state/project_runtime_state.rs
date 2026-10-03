@@ -191,6 +191,15 @@ impl KernelRuntimeState {
             "project.delete",
         )?;
         let sessions = self.project_sessions_if_idle(project_id, "deleted").await?;
+        let config = self.owned.config_projection.snapshot();
+        let vault = crate::secret::project_environment_vault(&config)?;
+        crate::project_environment::remove_project_environment(
+            &crate::project_environment::ProjectEnvironmentStore::new(
+                &config.private_runtime_state_root(),
+            ),
+            project_id,
+            vault.as_ref(),
+        )?;
         let mut deleted_sessions = Vec::with_capacity(sessions.len());
         for session in sessions {
             let deleted = self.delete_session_ref(session.id(), None).await?;

@@ -187,9 +187,9 @@ fn protected_room_restart_preserves_retained_identity_and_validates_slice_bindin
     let legacy = load();
     legacy.validate().expect("legacy provisioned machine alias must still boot");
     let binding = legacy.room_environment_worker_binding.as_ref().unwrap();
-    assert!(binding.validate(&restarted.host_machine_id).is_err());
-    assert!(binding.validate("slice:synthetic-slice").is_ok());
-    assert!(binding.validate("slice:foreign-slice").is_err());
+    assert!(binding.validate(&legacy.daemon_id, &restarted.host_machine_id).is_err());
+    assert!(binding.validate(&legacy.daemon_id, "slice:synthetic-slice").is_ok());
+    assert!(binding.validate(&legacy.daemon_id, "slice:foreign-slice").is_err());
 }
 
 #[test]
@@ -510,6 +510,7 @@ fn managed_slice_owner_public_key_loads_from_runtime_environment() {
 fn load_from_env_imports_cli_cloud_profile_for_kernel_startup() {
     crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
+    std::env::remove_var("CHARIOX_HOME");
     let temp_home = std::env::temp_dir().join(format!(
         "chariox-config-cli-cloud-import-test-{}",
         generate_identity_suffix()
@@ -585,6 +586,7 @@ fn load_from_env_imports_cli_cloud_profile_for_kernel_startup() {
 fn persisted_daemon_cloud_profile_takes_precedence_over_cli_profile() {
     crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
+    std::env::remove_var("CHARIOX_HOME");
     let temp_home = std::env::temp_dir().join(format!(
         "chariox-config-daemon-cloud-precedence-test-{}",
         generate_identity_suffix()

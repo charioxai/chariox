@@ -1,3 +1,7 @@
+#[cfg(test)]
+use std::collections::HashMap;
+#[cfg(test)]
+use std::ffi::OsString;
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::thread::{self, ThreadId};
 
@@ -16,14 +20,21 @@ struct EnvLockInner {
 #[derive(Debug)]
 pub(crate) struct EnvGuard {
     inner: Option<&'static EnvLockInner>,
+    #[cfg(test)]
+    previous: HashMap<OsString, OsString>,
 }
 
 pub(crate) fn lock() -> EnvGuard {
     // An isolated fixture has no neighboring tests. Holding this process-wide
-    // lock across async kernel work would block its own provider worker thread.
+    // lock across async kernel work would block its own provider worker thread,
+    // and restoring an unlocked snapshot could undo that thread's writes. The
+    // disposable child process discards its environment on exit instead.
     #[cfg(test)]
     if crate::test_support::environment_test_isolated() {
-        return EnvGuard { inner: None };
+        return EnvGuard {
+            inner: None,
+            previous: HashMap::new(),
+        };
     }
     static LOCK: OnceLock<EnvLockInner> = OnceLock::new();
     let inner = LOCK.get_or_init(|| EnvLockInner {
@@ -59,7 +70,11 @@ pub(crate) fn lock() -> EnvGuard {
         }
     }
 
-    EnvGuard { inner: Some(inner) }
+    EnvGuard {
+        inner: Some(inner),
+        #[cfg(test)]
+        previous: std::env::vars_os().collect(),
+    }
 }
 
 impl Drop for EnvGuard {
@@ -72,6 +87,17 @@ impl Drop for EnvGuard {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         if state.owner == Some(thread_id) {
+            #[cfg(test)]
+            {
+                for (name, _) in std::env::vars_os() {
+                    if !self.previous.contains_key(&name) {
+                        std::env::remove_var(name);
+                    }
+                }
+                for (name, value) in &self.previous {
+                    std::env::set_var(name, value);
+                }
+            }
             state.depth = state.depth.saturating_sub(1);
             if state.depth == 0 {
                 state.owner = None;
@@ -79,4 +105,23 @@ impl Drop for EnvGuard {
             }
         }
     }
+}
+
+#[test]
+fn restores_environment_after_nested_scope_and_panic() {
+    let _outer = lock();
+    let name = "CHARIOX_TEST_ENV_GUARD_RESTORE";
+    std::env::remove_var(name);
+    {
+        let _inner = lock();
+        std::env::set_var(name, "inner");
+    }
+    assert!(std::env::var_os(name).is_none());
+    assert!(std::panic::catch_unwind(|| {
+        let _inner = lock();
+        std::env::set_var(name, "panic");
+        panic!("synthetic MP-08 fixture failure");
+    })
+    .is_err());
+    assert!(std::env::var_os(name).is_none());
 }

@@ -1,12 +1,10 @@
 use crate::support::kernel_websocket::*;
-use crate::support::test_worktree::TestWorktree;
 use chariox_kernel::attachment::ClientCapabilityLevel;
 use chariox_kernel::local::{
     AttachToSessionRequest, GetSessionStateRequest, LaunchProviderRunRequest, LocalDaemonRequest,
     SubmitPromptRequest,
 };
 use chariox_kernel::runtime_transport::run_kernel_websocket_server_on_listener;
-use chariox_kernel::session::CreateSessionRequest;
 use chariox_kernel::{DaemonApp, DaemonConfig};
 use serde_json::json;
 use tokio::sync::oneshot;
@@ -14,7 +12,7 @@ use tokio::sync::oneshot;
 #[test]
 fn kernel_websocket_replayed_prompt_submit_reuses_original_prompt() {
     crate::run_kernel_websocket_runtime_test(async {
-        let worktree = TestWorktree::new("prompt-replay");
+        let workspace = ExecutionWorkspace::new();
         let mut config = DaemonConfig::for_tests();
         let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
         config.kernel_websocket_port = kernel_websocket_port;
@@ -39,10 +37,7 @@ fn kernel_websocket_replayed_prompt_submit_reuses_original_prompt() {
         let create_response = send_request(
             &mut first_socket,
             "create-session-for-prompt-replay",
-            LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-                "workspace-prompt-replay",
-                worktree.path_string(),
-            )),
+            LocalDaemonRequest::CreateSession(workspace.session_request()),
         )
         .await;
         let session = &response_variant(&create_response, "SessionCreated")["session"];

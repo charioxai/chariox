@@ -342,6 +342,7 @@ pub(crate) async fn execute_get_room_environment_state_request(
     runtime_state: &KernelRuntimeState,
     request: GetRoomEnvironmentStateRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    runtime_state.schedule_room_environment_health_refresh(&request.session_id);
     runtime_state
         .room_environment_snapshot(&request.session_id)
         .map(|environment| LocalDaemonResponse::RoomEnvironmentState { environment })
@@ -382,6 +383,7 @@ pub(crate) async fn execute_get_room_environment_events_request(
     runtime_state: &KernelRuntimeState,
     request: GetRoomEnvironmentEventsRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    runtime_state.schedule_room_environment_health_refresh(&request.session_id);
     runtime_state
         .room_environment_events_after(&request.session_id, request.cursor)
         .map(|replay| LocalDaemonResponse::RoomEnvironmentEvents { replay })

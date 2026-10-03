@@ -11,7 +11,7 @@ pub(crate) enum EnvironmentReplayPlan {
     SnapshotRequired,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct EnvironmentEventLog {
     events: VecDeque<EnvironmentEvent>,
     capacity: usize,

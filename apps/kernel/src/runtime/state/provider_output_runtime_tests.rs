@@ -7,6 +7,9 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+mod inert_pty;
+use inert_pty::{spawn_inert_pty_for_run, InertPtyCleanup};
+
 async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
     let (
         config_projection,
@@ -143,42 +146,6 @@ fn assert_external_active_prompt_and_queued_chariox_prompt(
     );
 }
 
-/// Removes an inert fixture PTY on drop. Best effort: if the app lock is held,
-/// the `sleep 300` child simply exits on its own.
-struct InertPtyCleanup {
-    app: Arc<Mutex<DaemonApp>>,
-    provider_run_id: String,
-}
-
-impl Drop for InertPtyCleanup {
-    fn drop(&mut self) {
-        if let Ok(mut app) = self.app.try_lock() {
-            let _ = app.pty_mut().remove_process(&self.provider_run_id);
-        }
-    }
-}
-
-/// Gives a fixture provider run a live process (`sleep 300`), so liveness
-/// reconciliation does not treat the run as exited.
-fn spawn_inert_pty_for_run(app: &mut DaemonApp, provider_run_id: &str) {
-    app.pty_mut()
-        .spawn(crate::pty::PtySpawnRequest {
-            process_key: provider_run_id.to_string(),
-            provider_run_id: provider_run_id.to_string(),
-            program: "/bin/sh".to_string(),
-            args: ["-c", "exec sleep 300"]
-                .into_iter()
-                .map(str::to_string)
-                .collect(),
-            env: Default::default(),
-            env_remove: Vec::new(),
-            working_directory: None,
-            cols: 80,
-            rows: 24,
-        })
-        .expect("inert provider fixture PTY should stay live");
-}
-
 mod app_quiet_tool_guard;
 mod approval_lifetime;
 mod browser_import_execution_gate;
@@ -191,6 +158,8 @@ mod history_projection;
 mod large_codex_resume;
 mod leased_output;
 mod mcp_catalog_reload;
+#[cfg(unix)]
+mod project_queued_environment;
 mod prompt_cancellation;
 mod publication_settlement;
 mod pump_selection;
@@ -260,3 +229,163 @@ fn native_client_codex_runs_keep_structured_output_authority() {
 }
 
 mod file_pick_revocation;
+
+// MP-08/MP-10: capability continuations survive the requesting client's detach.
+#[tokio::test]
+async fn mcp_catalog_continuation_uses_kernel_attachment_after_client_detach() {
+    let scratch = std::env::temp_dir().join(format!(
+        "chariox-extfix-continuation-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&scratch).unwrap();
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(
+            crate::session::CreateSessionRequest::new(
+                scratch.to_string_lossy(),
+                scratch.to_string_lossy(),
+            )
+            .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
+        )
+        .unwrap();
+    let attachment = app
+        .attach(crate::attachment::AttachRequest::for_user(
+            session.id(),
+            "extfix-client",
+            crate::attachment::ClientCapabilityLevel::AutomationOnly,
+            agent.owner_user_id(),
+        ))
+        .unwrap();
+    let continuation = PendingMcpContinuation {
+        session_id: session.id().into(),
+        agent_id: agent.id().into(),
+        mcp_name: "mid_session_script".into(),
+        previous_prompt: "invoke the granted script".into(),
+        reload_reason: ProviderReloadReason::RuntimeToolCatalog,
+    };
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime.owned.detach(attachment.id()).unwrap();
+    let source = runtime
+        .ensure_mcp_continuation_attachment(&continuation)
+        .unwrap();
+    assert_ne!(source, attachment.id());
+    assert_eq!(
+        source,
+        runtime
+            .ensure_mcp_continuation_attachment(&continuation)
+            .unwrap()
+    );
+    let prepared = crate::app::KernelPreparedPromptSubmission {
+        session_id: session.id().into(),
+        prompt: crate::session::PromptQueueItem::new(
+            "extfix-continuation",
+            &source,
+            agent.id(),
+            &continuation.previous_prompt,
+            crate::session::PromptStatus::Queued,
+        ),
+        force_queue: false,
+        refresh_projection: true,
+    };
+    let submission = runtime.submit_prepared_prompt(prepared).await.unwrap();
+    assert!(matches!(
+        submission.outcome,
+        crate::session::PromptSubmissionOutcome::Started { .. }
+    ));
+    let attribution = runtime
+        .owned
+        .ensure_attachment_in_session(session.id(), &source)
+        .unwrap();
+    assert_eq!(attribution.owner_user_id(), agent.owner_user_id());
+    runtime.owned.detach(&source).unwrap();
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+// MP-08/MP-10: a persistent grant does not make a newly registered definition live.
+#[tokio::test]
+async fn mcp_catalog_reregistration_marks_existing_grant_pending_synchronously() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-extfix-registration-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(
+            crate::session::CreateSessionRequest::new(
+                root.to_string_lossy(),
+                root.to_string_lossy(),
+            )
+            .with_agent_defaults(crate::session::SessionAgentDefaults::new("opencode")),
+        )
+        .unwrap();
+    app.launch_provider(
+        crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "dev-stub",
+            "dev-stub",
+            "default",
+            "default",
+        )
+        .with_agent_id(agent.id()),
+    )
+    .unwrap();
+    // The inert launch selects dev-stub; restore the provider policy under test
+    // without launching or authenticating an official provider in this unit test.
+    app.agents()
+        .update_agent_profile(agent.id(), Some("opencode".into()), None, None)
+        .unwrap();
+    let agent = app
+        .agents()
+        .grant_extension(
+            agent.id(),
+            crate::extension::ExtensionGrant::script("extfix_registration", "extfix_python"),
+        )
+        .unwrap();
+    assert_eq!(agent.provider(), "opencode");
+    let app = Arc::new(Mutex::new(app));
+    let mut runtime = owned_runtime_state(&app).await;
+    // MP-08/MP-10: other daemon fixtures reuse agent IDs in the shared
+    // continuation store. This catalog-only fixture owns an empty store.
+    runtime.owned.pending_mcp_continuations = PendingMcpContinuationStore::default();
+    let previous = runtime.runtime_catalog_signature_for_agent(&agent);
+    assert_eq!(
+        runtime.runtime_catalog_grant_effect(&agent, true),
+        ("now", false)
+    );
+    let source = root.join("fixture.py");
+    std::fs::write(&source, "def run() -> str:\n    \"\"\"Return a fixture result.\"\"\"\n    return 'ok'\n\ndef test_run():\n    \"\"\"Validate fixture.\"\"\"\n    assert run() == 'ok'\n").unwrap();
+    let registry = crate::script::CharioxScriptRegistry::new(vec![
+        crate::script::CharioxScriptRegistry::project_root(&root),
+    ]);
+    registry
+        .install(
+            &source,
+            Some("extfix_registration"),
+            &crate::script::CharioxEnvironmentConfig {
+                name: "extfix_python".into(),
+                runtime: crate::script::CharioxEnvironmentRuntime::Python {
+                    python: "/usr/bin/python3".into(),
+                },
+            },
+        )
+        .unwrap();
+    runtime.runtime_catalog_registration_changed(&agent, &previous);
+    assert_eq!(
+        runtime.runtime_catalog_grant_effect(&agent, true),
+        ("after_provider_reload", true),
+        "MP-08/MP-10 re-registration must report the outstanding reload"
+    );
+    runtime
+        .owned
+        .pending_provider_reloads
+        .write()
+        .remove(agent.id());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+mod credential_copy_recovery;

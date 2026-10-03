@@ -3301,10 +3301,19 @@ impl KernelRuntimeState {
         &self,
         dispatch: &crate::app::KernelPromptDispatch,
     ) -> Result<(), DaemonError> {
+        self.enqueue_prompt_dispatch_with_acceptance(dispatch)
+            .await
+            .map(|_| ())
+    }
+
+    pub(super) async fn enqueue_prompt_dispatch_with_acceptance(
+        &self,
+        dispatch: &crate::app::KernelPromptDispatch,
+    ) -> Result<bool, DaemonError> {
         {
             let owned = &self.owned;
             if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
-                return Ok(());
+                return Ok(false);
             }
             let has_managed_process = owned
                 .provider_process_tracking
@@ -3324,13 +3333,13 @@ impl KernelRuntimeState {
                     )
                     .await?;
                 if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
-                    return Ok(());
+                    return Ok(false);
                 }
             }
             let result = self
-                .enqueue_prompt_dispatch_after_liveness(dispatch, owned)
+                .enqueue_prompt_dispatch_after_liveness_with_acceptance(dispatch, owned)
                 .await;
-            if result.is_ok() {
+            if result.as_ref().is_ok_and(|accepted| *accepted) {
                 owned.update_metaagent_event_prompt_delivery_for_prompt(
                     &dispatch.prompt_id,
                     crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Delivered,
@@ -3395,11 +3404,24 @@ impl KernelRuntimeState {
         dispatch: &crate::app::KernelPromptDispatch,
         owned: &KernelRuntimeOwnedState,
     ) -> Result<(), DaemonError> {
+        self.enqueue_prompt_dispatch_after_liveness_with_acceptance(dispatch, owned)
+            .await
+            .map(|_| ())
+    }
+
+    pub(super) async fn enqueue_prompt_dispatch_after_liveness_with_acceptance(
+        &self,
+        dispatch: &crate::app::KernelPromptDispatch,
+        owned: &KernelRuntimeOwnedState,
+    ) -> Result<bool, DaemonError> {
         if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
-            return Ok(());
+            return Ok(false);
         }
         if let Some(rerouted) = self.dispatch_off_finished_turn_substitute(dispatch).await? {
-            return Box::pin(self.enqueue_prompt_dispatch_after_liveness(&rerouted, owned)).await;
+            return Box::pin(
+                self.enqueue_prompt_dispatch_after_liveness_with_acceptance(&rerouted, owned),
+            )
+            .await;
         }
         if !dispatch.steering {
             let provider_run = owned
@@ -3480,7 +3502,7 @@ impl KernelRuntimeState {
                 mode,
                 dispatch.steering,
             );
-            return result;
+            return result.map(|()| true);
         }
         if !internal_recovery
             && !crate::scheduler::runtime::is_workflow_prompt_attachment(
@@ -3562,6 +3584,9 @@ impl KernelRuntimeState {
             }
         }
         if !has_managed_process {
+            if dispatch.steering {
+                return Ok(false);
+            }
             if !dispatch.steering {
                 let session = owned.session_store.get_session(&dispatch.session_id)?;
                 let Some(_settlement_claim) = owned
@@ -3573,7 +3598,7 @@ impl KernelRuntimeState {
                         &dispatch.provider_run_id,
                     )
                 else {
-                    return Ok(());
+                    return Ok(false);
                 };
                 owned.note_prompt_started(&dispatch.provider_run_id);
                 owned.mark_active_prompt_delivery(
@@ -3586,7 +3611,7 @@ impl KernelRuntimeState {
                 )?;
                 owned.consume_failed_requests(&dispatch.agent_id, &dispatch.prompt_id);
             }
-            return Ok(());
+            return Ok(true);
         }
         if uses_claude_native_bridge {
             let dispatch_with_handoff = crate::app::KernelPromptDispatch {
@@ -3674,7 +3699,7 @@ impl KernelRuntimeState {
                         &dispatch.provider_run_id,
                     )
                 else {
-                    return Ok(());
+                    return Ok(false);
                 };
                 owned.note_prompt_started(&dispatch.provider_run_id);
                 owned.mark_active_prompt_delivery(
@@ -3686,7 +3711,7 @@ impl KernelRuntimeState {
                     provider_run.provider_session_id().map(str::to_string),
                 )?;
             }
-            return Ok(());
+            return Ok(true);
         }
         let provider_run_id = dispatch.provider_run_id.clone();
         let writer = self
@@ -3724,7 +3749,7 @@ impl KernelRuntimeState {
                     &dispatch.provider_run_id,
                 )
             else {
-                return Ok(());
+                return Ok(false);
             };
             owned.note_prompt_started(&dispatch.provider_run_id);
             owned.mark_active_prompt_delivery(
@@ -3736,7 +3761,7 @@ impl KernelRuntimeState {
                 provider_run.provider_session_id().map(str::to_string),
             )?;
         }
-        Ok(())
+        Ok(true)
     }
 
     pub(super) async fn fail_prompt_dispatch(
@@ -3748,6 +3773,18 @@ impl KernelRuntimeState {
         let dispatch_owns_active_prompt = self
             .owned
             .prompt_dispatch_matches_active_prompt(&dispatch)?;
+        if dispatch_owns_active_prompt {
+            let run = self
+                .owned
+                .provider_store
+                .get_run(&dispatch.provider_run_id)?;
+            if self
+                .try_provider_auth_recovery(&run, &error.to_string(), Some(&dispatch.prompt_id))
+                .await?
+            {
+                return Ok(());
+            }
+        }
         let failed_provider_run = dispatch_owns_active_prompt
             .then(|| {
                 self.owned
@@ -4027,6 +4064,14 @@ impl KernelRuntimeState {
             // Accepted prompts and their entry receipts remain for authoritative
             // restart. A failed writer cannot authorize new provider dispatch.
             return;
+        }
+        for (session_id, agent_id) in dispatches.project_queue_promotions {
+            let state = self.clone();
+            tokio::spawn(async move {
+                state
+                    .advance_project_queued_prompt_after_settlement(&session_id, &agent_id)
+                    .await;
+            });
         }
         for task in dispatches.starting_metaagent_tasks {
             let state = self.clone();

@@ -64,6 +64,19 @@ test("managed publication ACL validation accepts only the exact principal set", 
   }
 })
 
+async function fixtureIdentity(bin, root) {
+  const subuid = join(root, "subuid")
+  await writeFile(subuid, "chariox-docker:231072:65536\n")
+  await writeFile(join(bin, "id"), `#!/bin/sh
+case "$*" in
+  '-u chariox') printf '999\n' ;;
+  '-u chariox-docker') printf '995\n' ;;
+  *) exit 1 ;;
+esac
+`, { mode: 0o755 })
+  return subuid
+}
+
 test("managed publication helper reports recursive getfacl failure with a redacted code", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-publication-access-test-"))
   context.after(() => rm(root, { recursive: true, force: true }))
@@ -75,9 +88,10 @@ test("managed publication helper reports recursive getfacl failure with a redact
   await mkdir(repository, { recursive: true })
   await writeFile(join(repository, "file"), "content")
   await mkdir(bin)
+  const subuid = await fixtureIdentity(bin, root)
   const source = (await readFile(helperUrl, "utf8"))
     .replace("share_root=/var/lib/chariox-slice-share", `share_root=${share}`)
-    .replace(/\[ "\$\(grep -Fxc[\s\S]*?\n  \|\| fail "chariox-docker subordinate UID mapping is not pinned"/, ":")
+    .replace("/etc/subuid", subuid)
   const helper = join(root, "managed-publication-access.sh")
   await writeFile(helper, source, { mode: 0o755 })
   await writeFile(join(root, "managed-publication-acl.awk"), await readFile(validatorUrl), { mode: 0o644 })
@@ -113,8 +127,10 @@ test("managed publication grant verifies the repository ACL it installs", async 
   await mkdir(bin)
   await writeFile(join(repository, "file"), "content\n")
   const helper = join(root, "managed-publication-access.sh")
+  const subuid = await fixtureIdentity(bin, root)
   const source = (await readFile(helperUrl, "utf8"))
     .replace("share_root=/var/lib/chariox-slice-share", `share_root=${share}`)
+    .replace("/etc/subuid", subuid)
   await writeFile(helper, source, { mode: 0o755 })
   await writeFile(join(root, "managed-publication-acl.awk"), await readFile(validatorUrl), { mode: 0o644 })
   await writeFile(join(bin, "setfacl"), "#!/bin/sh\nexit 0\n", { mode: 0o755 })

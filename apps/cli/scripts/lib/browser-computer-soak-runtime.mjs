@@ -2,7 +2,6 @@ import { appendFile, chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, read
 import { createWriteStream, readFileSync, readlinkSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { execFile, spawn } from "node:child_process"
-import http from "node:http"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
@@ -17,9 +16,13 @@ import {
   buildSoakPaths,
   detachedLaunchSummary,
   gateFingerprint,
+  imageSourceMatches,
   validateCompletedSoakResult,
   validateGatePrerequisites,
 } from "./browser-computer-soak.mjs"
+
+import { startActiveSoakFixture, waitForFixtureMarker } from "./browser-computer-soak-fixture.mjs"
+import { includeSoakSupervisor, verifiedSoakSupervisor } from "./soak-supervisor.mjs"
 
 const execFileAsync = promisify(execFile)
 const schema = "chariox.browser_computer_soak.v1"
@@ -49,6 +52,7 @@ export function buildSanitizedChildEnvironment(base, additions = {}) {
 export function buildDetachedRunnerEnvironment(base, options) {
   return buildSanitizedChildEnvironment(base, {
     ...engineConnectionEnvironment(base),
+    CHARIOX_SOAK_SUPERVISOR_IDENTITY: base?.CHARIOX_SOAK_SUPERVISOR_IDENTITY,
     CHARIOX_SLICE_IMAGE: options.imageRef,
     CHARIOX_SLICE_IMAGE_SIGNATURE_KEY: options.imageSignatureKey,
     CHARIOX_CONTAINER_ENGINE: options.containerEngine,
@@ -126,7 +130,7 @@ export async function resolveVerifiedImage({ imageRef, signatureKey, engine = "d
     : candidates.find((entry) => entry.slice(0, entry.lastIndexOf("@")) === repository)
   if (!identity) throw new Error("image engine RepoDigest does not match the configured repository")
   const sourceRevision = inspected?.Config?.Labels?.["io.chariox.runtime-source-revision"]
-  if (!/^[0-9a-f]{40}$/.test(sourceRevision ?? "")) throw new Error("verified image is missing its source revision label")
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sourceRevision ?? "")) throw new Error("verified image is missing its source revision label")
   const digest = identity.slice(identity.lastIndexOf("@") + 1)
   const keyBytes = await readKey(signatureKey).catch(() => { throw new Error("image signature key unavailable") })
   if (!Buffer.isBuffer(keyBytes) || keyBytes.length === 0 || keyBytes.length > 64 * 1024) throw new Error("image signature key is empty or unreasonably large")
@@ -162,7 +166,7 @@ export async function inspectDigestBoundRuntime({ containerId, image, source }, 
   if (!/^[0-9a-f]{12,64}$/.test(containerId ?? "")) {
     throw new Error("runtime container identity is required")
   }
-  if (image?.sourceRevision !== source?.commit) {
+  if (!imageSourceMatches(image?.sourceRevision, source)) {
     throw new Error("verified image source revision does not match the clean source commit")
   }
   const environment = buildSanitizedChildEnvironment(baseEnvironment, engineConnectionEnvironment(baseEnvironment))
@@ -184,7 +188,7 @@ export async function inspectDigestBoundRuntime({ containerId, image, source }, 
     throw new Error("runtime image does not match the verified image digest and engine image ID")
   }
   const sourceRevision = inspected?.Config?.Labels?.["io.chariox.runtime-source-revision"]
-  if (!/^[0-9a-f]{40}$/.test(sourceRevision ?? "") || sourceRevision !== image.sourceRevision) {
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sourceRevision ?? "") || sourceRevision !== image.sourceRevision) {
     throw new Error("runtime source revision does not match the clean source commit")
   }
   return { containerId: inspected.Id, imageId: inspected.Image, identity: inspected.Config.Image, sourceRevision, running: true }
@@ -239,7 +243,7 @@ export function assertFinalDetachPrerequisites(options, provenance) {
 export function attributableNetworkDelta(baseline, current, attribution) {
   if (baseline?.attribution?.exclusive !== true || attribution?.exclusive !== true
     || baseline.attribution.namespace !== attribution.namespace) {
-    throw new Error(`attributable network accounting unavailable${attribution?.foreignPids?.length ? `; foreign namespace PIDs: ${attribution.foreignPids.join(",")}` : ""}`)
+    throw new Error(`attributable network accounting unavailable${attribution?.foreignPids?.length ? `; foreign namespace PIDs: ${attribution.foreignPids.join(",")}` : ""}${attribution?.unreadablePids?.length ? `; unreadable PIDs: ${attribution.unreadablePids.join(",")}` : ""}${attribution?.mismatchedOwnedPids?.length ? `; mismatched owned PIDs: ${attribution.mismatchedOwnedPids.join(",")}` : ""}`)
   }
   const difference = current?.totalBytes - baseline?.totalBytes
   if (!Number.isFinite(difference) || difference < 0) throw new Error("owned network counters regressed or are invalid")
@@ -535,7 +539,7 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
       XDG_RUNTIME_DIR: runtimeRoot,
     })
     await assertRuntimeStillAvailable(allocation)
-    fixture = await startFixtureServer()
+    fixture = await startActiveSoakFixture()
     const xvfb = await spawnLogged("xvfb", "Xvfb", [display, "-screen", "0", "800x600x24", "-ac", "+extension", "RANDR", "+extension", "XTEST"], {
       env: environment, cwd: repoRoot, logsRoot,
     })
@@ -557,7 +561,7 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
       "--window-size=800,600",
       fixture.url,
     ]
-    owned.set("chromium", await spawnLogged("chromium", "chromium", chromiumArgs, { env: environment, cwd: repoRoot, logsRoot }))
+    owned.set("chromium", await spawnLogged("chromium", "/usr/lib/chromium/chromium", chromiumArgs, { env: environment, cwd: repoRoot, logsRoot }))
     await waitForHttp(`http://127.0.0.1:${allocation.debugPort}/json/version`, 20_000)
 
     const selkies = await execJson("/opt/chariox-selkies/bin/python", [path.join(sourceRoot, "slice-selkies.py"), "start"], {
@@ -621,15 +625,13 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
           action: { kind: "fill", text: marker },
         })
         structuredBrowserActions += 1
-        const observedMarker = await fetch(`${fixture.url}health`, { signal: AbortSignal.timeout(2_000) })
-          .then((response) => response.text())
-        if (observedMarker !== marker) throw new Error("Chromium mutation did not reach the active fixture")
+        const fixtureProof = await waitForFixtureMarker(fixture.url, marker)
         chromiumMutations += 1
         stream.requestKeyframe()
         const inputProof = await verifyComputerInputEffect({ iteration: iterations, cwd: repoRoot, env: environment })
         computerInputs += 1
         const screenshotPath = path.join(paths.runDir, "latest-screen.png")
-        await execFileAsync("scrot", [screenshotPath], { cwd: repoRoot, env: environment, timeout: 10_000 })
+        await execFileAsync("scrot", ["--overwrite", screenshotPath], { cwd: repoRoot, env: environment, timeout: 10_000 })
         const screenshotDigest = createHash("sha256").update(await readFile(screenshotPath)).digest("hex")
         screenshotDigests.add(screenshotDigest)
         computerScreenshots += 1
@@ -645,6 +647,7 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
           computerScreenshots,
           computerInputs,
           inputProof,
+          fixtureProof,
           screenshotDigest,
           stream: stream.metrics(),
         })}\n`, { mode: 0o600 })
@@ -970,6 +973,7 @@ async function captureOwnedIdentities(entries) {
 async function mergeSampledIdentities(existing, processes) {
   const identities = [...existing]
   for (const entry of processes) {
+    if (entry.scope === "supervisor") continue
     const identity = await processIdentity(entry.pid)
     if (identity && !identities.some((candidate) => processIdentityMatches(candidate, identity))) {
       identities.push({ name: `descendant:${entry.command}`, ...identity })
@@ -992,7 +996,7 @@ export async function processIdentity(pid, {
     if (!/^\d+$/.test(startedAtTicks ?? "") || !Number.isSafeInteger(processGroupId) || typeof executable !== "string") return null
     return { pid, startedAtTicks, executable, processGroupId }
   } catch (error) {
-    if (error?.code === "ENOENT") return null
+    if (error?.code === "ENOENT" || error?.code === "ESRCH") return null
     throw error
   }
 }
@@ -1349,7 +1353,9 @@ async function resourceSnapshot(label, rootPids, diskPath) {
     pid: Number(pid), ppid: Number(ppid), rssKb: Number(rss), cpuPercent: Number(cpu), command,
   })).filter((row) => Number.isSafeInteger(row.pid) && Number.isSafeInteger(row.ppid))
   const ownedIds = descendantIds(rows, rootPids)
-  const ownedRows = rows.filter((row) => ownedIds.has(row.pid))
+  const supervisor = await verifiedSoakSupervisor()
+  const ownedRows = includeSoakSupervisor(rows, ownedIds, supervisor)
+  for (const row of ownedRows) ownedIds.add(row.pid)
   const disk = await import("node:fs/promises").then(({ statfs }) => statfs(diskPath))
   const openFiles = (await Promise.all([...ownedIds].map(async (pid) => {
     try { return (await readdir(`/proc/${pid}/fd`)).length } catch { return 0 }
@@ -1402,6 +1408,7 @@ export async function networkNamespaceAttribution(ownedIds, maximumForeignPids =
   currentPid = process.pid,
   listProc = () => readdir("/proc"),
   readNamespace = (candidate) => readlink(candidate),
+  readNetworkDevices = (candidate) => readFile(candidate, "utf8"),
 } = {}) {
   let namespace
   try { namespace = await readNamespace(`/proc/${currentPid}/ns/net`) } catch {
@@ -1410,6 +1417,8 @@ export async function networkNamespaceAttribution(ownedIds, maximumForeignPids =
   const foreignPids = []
   const unreadablePids = []
   const mismatchedOwnedPids = []
+  const observedNamespaces = new Map()
+  const isolated = new Map()
   let names
   try { names = await listProc() } catch {
     return { exclusive: false, namespace, foreignPids, unreadablePids, reason: "network namespace inventory unavailable" }
@@ -1423,9 +1432,30 @@ export async function networkNamespaceAttribution(ownedIds, maximumForeignPids =
       unreadablePids.push(pid)
       continue
     }
-    if (ownedIds.has(pid)) {
-      if (observed !== namespace) mismatchedOwnedPids.push(pid)
-    } else if (observed === namespace) {
+    observedNamespaces.set(pid, observed)
+    if (ownedIds.has(pid) && observed !== namespace) {
+      try {
+        // Chromium isolates renderers in an empty network namespace. It can
+        // contribute no unaccounted traffic only while loopback is all-zero.
+        const devices = (await readNetworkDevices(`/proc/${pid}/net/dev`)).split("\n")
+          .filter(line => line.includes(":"))
+        const empty = devices.length === 1 && devices[0].split(":")[0].trim() === "lo"
+          && devices[0].split(":")[1].trim().split(/\s+/).length === 16
+          && devices[0].split(":")[1].trim().split(/\s+/).every(value => /^0+$/.test(value))
+        if (!empty || await readNamespace(`/proc/${pid}/ns/net`) !== observed) {
+          mismatchedOwnedPids.push(pid)
+        } else {
+          const proof = isolated.get(observed) ?? { namespace: observed, pids: [], networkBytes: 0 }
+          proof.pids.push(pid)
+          isolated.set(observed, proof)
+        }
+      } catch {
+        unreadablePids.push(pid)
+      }
+    }
+  }
+  for (const [pid, observed] of observedNamespaces) {
+    if (!ownedIds.has(pid) && (observed === namespace || isolated.has(observed))) {
       foreignPids.push(pid)
       if (foreignPids.length >= maximumForeignPids) break
     }
@@ -1436,6 +1466,7 @@ export async function networkNamespaceAttribution(ownedIds, maximumForeignPids =
     foreignPids,
     unreadablePids,
     mismatchedOwnedPids,
+    isolatedOwnedNamespaces: [...isolated.values()],
     reason: unreadablePids.length > 0 || mismatchedOwnedPids.length > 0 ? "network namespace inventory incomplete" : undefined,
   }
 }
@@ -1490,18 +1521,25 @@ export async function captureSourceIdentity(repoRoot, {
   baseEnvironment = process.env,
 } = {}) {
   const run = (command, args, options) => runHostHelper(command, args, options, { exec, baseEnvironment })
-  const [{ stdout: commit }, { stdout: tree }, { stdout: branch }, { stdout: status }] = await Promise.all([
+  const [{ stdout: commit }, { stdout: tree }, { stdout: branch }, { stdout: status }, { stdout: runtimeSourceRevision }] = await Promise.all([
     run("git", ["-c", `safe.directory=${repoRoot}`, "rev-parse", "HEAD"], { cwd: repoRoot, timeout: 10_000 }),
     run("git", ["-c", `safe.directory=${repoRoot}`, "rev-parse", "HEAD^{tree}"], { cwd: repoRoot, timeout: 10_000 }),
     run("git", ["-c", `safe.directory=${repoRoot}`, "branch", "--show-current"], { cwd: repoRoot, timeout: 10_000 }),
     run("git", ["-c", `safe.directory=${repoRoot}`, "status", "--short"], { cwd: repoRoot, timeout: 10_000 }),
+    // Use the provisioner's exact path inventory and digest implementation.
+    // Pass the repository as a shell argument; never interpolate a path into code.
+    run("bash", ["-o", "pipefail", "-c",
+      'git -c safe.directory="$1" -C "$1" ls-files --cached --others --exclude-standard Cargo.toml Cargo.lock adapters/rust apps/aegs-dummy apps/kernel apps/relay examples/workflow-code packages/aegs-sdk packages/event-protocol | python3 "$1/apps/kernel/slice-linux-docker/slice-command-guard.py" digest-paths "$1"',
+      "soak-runtime-source", repoRoot], { cwd: repoRoot, timeout: 60_000 }),
   ])
-  return { commit: commit.trim(), tree: tree.trim(), branch: branch.trim(), dirty: status.trim() !== "" }
+  if (!/^[0-9a-f]{64}$/.test(runtimeSourceRevision.trim())) throw new Error("could not identify the slice runtime source digest")
+  return { commit: commit.trim(), tree: tree.trim(), branch: branch.trim(), dirty: status.trim() !== "", runtimeSourceRevision: runtimeSourceRevision.trim() }
 }
 
 async function assertSourceUnchanged(repoRoot, expected) {
   const observed = await captureSourceIdentity(repoRoot)
-  if (observed.dirty || observed.commit !== expected?.commit || observed.tree !== expected?.tree || observed.branch !== expected?.branch) {
+  if (observed.dirty || observed.commit !== expected?.commit || observed.tree !== expected?.tree || observed.branch !== expected?.branch
+    || observed.runtimeSourceRevision !== expected?.runtimeSourceRevision) {
     throw new Error("source changed after provenance capture")
   }
 }
@@ -1619,37 +1657,6 @@ function commandEvidence({ options, paths, allocation }) {
     `--max-open-files ${options.limits.maxOpenFiles}`,
     `--max-network-mib ${options.limits.maxNetworkBytes / 1024 / 1024}`,
   ].join(" ")
-}
-
-async function startFixtureServer() {
-  let marker = "SOAK-00000000"
-  let bytes = 0
-  const server = http.createServer((request, response) => {
-    bytes += Buffer.byteLength(`${request.method ?? ""} ${request.url ?? ""}`)
-    if (request.url === "/health") {
-      response.writeHead(200, { "content-type": "text/plain", "cache-control": "no-store" })
-      bytes += Buffer.byteLength(marker)
-      return response.end(marker)
-    }
-    if (request.url?.startsWith("/mark?")) {
-      marker = new URL(request.url, "http://127.0.0.1").searchParams.get("value") ?? marker
-      response.writeHead(204, { "cache-control": "no-store" })
-      return response.end()
-    }
-    response.writeHead(200, { "content-type": "text/html", "cache-control": "no-store" })
-    const body = `<!doctype html><title>Chariox active soak</title><style>body{font:24px sans-serif;background:#14213d;color:#fff}main{padding:60px}input{font-size:28px;width:520px}.pulse{width:120px;height:120px;background:#fca311;animation:pulse 1s infinite alternate}@keyframes pulse{to{transform:translateX(320px);background:#2ec4b6}}</style><main><label>Soak marker <input id="marker" value="${marker}"></label><p id="echo">${marker}</p><div class="pulse"></div></main><script>const field=document.querySelector('#marker');field.addEventListener('input',()=>{document.querySelector('#echo').textContent=field.value;document.title=field.value;fetch('/mark?value='+encodeURIComponent(field.value)).catch(()=>{})})</script>`
-    bytes += Buffer.byteLength(body)
-    response.end(body)
-  })
-  await new Promise((resolve, reject) => server.once("error", reject).listen(0, "127.0.0.1", resolve))
-  const port = server.address().port
-  const url = `http://127.0.0.1:${port}/`
-  return {
-    url,
-    port,
-    metrics: () => ({ bytes }),
-    close: () => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
-  }
 }
 
 async function waitForDisplay(display, env) {

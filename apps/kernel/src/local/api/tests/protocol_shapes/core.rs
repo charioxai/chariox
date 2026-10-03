@@ -16,6 +16,8 @@ fn local_daemon_protocol_waiting_room_git_credentials_shape_is_versioned() {
             external_provider_sessions_has_more: false,
             external_provider_sessions_next_cursor: None,
             relay_status: RelayStatus {
+                runtime_process_identity: None,
+                capabilities: Vec::new(),
                 configured: true,
                 connected: true,
                 relay_url: Some("wss://relay.example.test".to_string()),
@@ -491,6 +493,7 @@ fn local_daemon_protocol_waiting_room_activity_shape_is_versioned() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 410);
 
     let summary = crate::local::WaitingRoomSessionActivitySummary {
+        pending_interaction_count: 2,
         agent_count: 4,
         working_agent_count: 1,
         active_prompt_count: 1,
@@ -507,6 +510,7 @@ fn local_daemon_protocol_waiting_room_activity_shape_is_versioned() {
     assert_eq!(
         serde_json::to_value(summary).expect("waiting-room activity summary should encode"),
         serde_json::json!({
+            "pending_interaction_count": 2,
             "agent_count": 4,
             "working_agent_count": 1,
             "active_prompt_count": 1,
@@ -941,6 +945,10 @@ fn local_daemon_protocol_remote_agent_binding_shape_is_versioned() {
             crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
         ))
     );
+    // Keep this full-agent hash stable across peer version bumps; the current
+    // advertised peer version is pinned explicitly above.
+    snapshot["AgentMovedToRemote"]["agent"]["remote_execution"]["relay_peer_protocol_version"] =
+        serde_json::json!(57);
     let serialized = serde_json::to_string(&snapshot).expect("remote agent snapshot should encode");
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(

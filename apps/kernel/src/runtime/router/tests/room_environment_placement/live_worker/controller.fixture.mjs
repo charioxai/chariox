@@ -3,6 +3,7 @@
 import { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { fixtureUploadBrowser } from "./upload-browser.fixture.mjs";
 
 const [directory, pidFile] = process.argv.slice(2);
 const { BrowserControllerStdioServer } = await import(pathToFileURL(join(directory, "browser-controller.mjs")));
@@ -12,7 +13,9 @@ const { BrowserCdpClient } = await import(pathToFileURL(join(directory, "browser
 // assertions and retain every PID so cleanup can prove that none leaked.
 writeFileSync(pidFile, String(process.pid));
 appendFileSync(`${pidFile}s`, `${process.pid}\n`);
+const uploadBrowser = await fixtureUploadBrowser(directory, dirname(pidFile));
 const stateFile = join(dirname(pidFile), "chromium-state.json");
+const actionRequestEvidencePath = join(dirname(pidFile), "controller-action-requests.ndjson");
 let state = existsSync(stateFile)
   ? JSON.parse(readFileSync(stateFile, "utf8"))
   : { open: true, saved: false, clickCount: 0, pressed: false, note: "", submitted: null, focused: "worker-save" };
@@ -25,6 +28,8 @@ state.historyIndex ??= state.history.length - 1;
 state.documentSequence ??= 1;
 const persist = () => writeFileSync(stateFile, JSON.stringify(state));
 const subscribers = new Set();
+let actionRequestSequence = 0;
+let activeActionRequestRef = null;
 const emit = (message) => {
   for (const subscriber of subscribers) subscriber(message);
 };
@@ -38,6 +43,7 @@ const chromium = {
   close: async () => { state.open = false; persist(); },
   async send(method, params = {}, sessionId) {
     switch (method) {
+      case "SystemInfo.getProcessInfo": return (await uploadBrowser.ensure()).processInfo;
       case "Target.getTargets": {
         const externalNavigation = join(dirname(pidFile), "external-browser-navigation");
         if (existsSync(externalNavigation)) {
@@ -110,6 +116,14 @@ const chromium = {
       case "Runtime.evaluate": return { result: { value:
         state.focusedTarget === (sessionId === "worker-popup-session" ? "worker-popup" : "worker-tab")
       } };
+      case "Page.bringToFront":
+        if (sessionId !== "worker-popup-session" && sessionId !== "worker-cdp-session") {
+          throw new Error(`Unexpected CDP session for Page.bringToFront: ${sessionId}`);
+        }
+        state.activateCount = (state.activateCount ?? 0) + 1;
+        state.focusedTarget = sessionId === "worker-popup-session" ? "worker-popup" : "worker-tab";
+        persist();
+        return {};
       case "Target.activateTarget":
         state.activateCount = (state.activateCount ?? 0) + 1;
         state.focusedTarget = params.targetId;
@@ -134,7 +148,7 @@ const chromium = {
         properties: [{ name: "focused", value: { value: state.focused === "worker-note" } }],
       }] };
       case "DOMSnapshot.captureSnapshot": return {
-        strings: ["#document", "BUTTON", "", "Save on worker", "https://worker.test/", "INPUT", "type", "file", "IFRAME", "DIV", "#document-fragment", "open", "https://frame.worker.test/"],
+        strings: ["#document", "BUTTON", "", "Save on worker", "https://worker.test/", "INPUT", "type", existsSync(join(dirname(pidFile), "secret-input-mode")) ? "password" : "file", "IFRAME", "DIV", "#document-fragment", "open", "https://frame.worker.test/"],
         documents: [{ documentURL: 4, nodes: {
           parentIndex: [-1, 0, 0, 0, 0, 4, 5], nodeType: [9, 1, 1, 1, 1, 11, 1], nodeName: [0, 1, 5, 8, 9, 10, 1],
           nodeValue: [2, 3, 2, 2, 2, 2, 2], backendNodeId: [100, 103, 104, 105, 106, 107, 108], attributes: [[], [], [6, 7], [], [], [], []],
@@ -170,7 +184,25 @@ const chromium = {
         // test releases it. No Chariox state or controller behavior is mocked.
         if ((params.objectId === "worker-save" && existsSync(join(dirname(pidFile), "hold-click"))) ||
             (params.objectId === "worker-note" && existsSync(join(dirname(pidFile), "hold-fill")))) {
+          appendFileSync(actionRequestEvidencePath, `${JSON.stringify({
+            event: "fixture_actionability_wait",
+            request_ref: activeActionRequestRef,
+            object_id: params.objectId,
+            state: "disabled",
+          })}\n`);
           return { result: { value: { state: "disabled" } } };
+        }
+        if (params.functionDeclaration.includes("function(text, append, expectedDocumentUrl, submit)")) {
+          const [text, , expectedDocumentUrl] = params.arguments.map(argument => argument.value);
+          if (state.url !== expectedDocumentUrl) return { result: { value: { ok: false, reason: "target_url_changed" } } };
+          if (params.objectId !== "worker-note" || !existsSync(join(dirname(pidFile), "secret-input-mode"))) {
+            return { result: { value: { ok: false, reason: "target_not_masked" } } };
+          }
+          // Acknowledge the external DOM value setter without retaining input.
+          state.secretInputMatches = text === "home-room-vault-regression-value";
+          state.secretInputCount = (state.secretInputCount ?? 0) + 1;
+          persist();
+          return { result: { value: { ok: true } } };
         }
         if (params.functionDeclaration.includes("requestSubmit")) {
           state.submitted = state.note;
@@ -312,7 +344,38 @@ const browser = new BrowserCdpClient({
     connectionFactory: async () => chromium,
     downloadDirectory: join(dirname(pidFile), "downloads"),
     uploadRoots: [dirname(pidFile)],
+    stageUploads: uploadBrowser.stageUploads,
 });
+const performBrowserAction = browser.performAction.bind(browser);
+browser.performAction = async (request, options = {}) => {
+  const requestRef = `${process.pid}-${++actionRequestSequence}`;
+  const evidence = {
+    request_ref: requestRef,
+    method: "browser.action",
+    target_id: request?.target_id,
+    document_id: request?.document_id,
+    node_ref: request?.node_ref,
+    action_kind: request?.action?.kind,
+  };
+  const record = (event, errorCode) => appendFileSync(actionRequestEvidencePath, `${JSON.stringify({
+    ...evidence,
+    event,
+    ...(errorCode ? { error_code: errorCode } : {}),
+  })}\n`);
+  const previousRequestRef = activeActionRequestRef;
+  activeActionRequestRef = requestRef;
+  record("controller_request_entered");
+  try {
+    const result = await performBrowserAction(request, options);
+    record("controller_request_completed");
+    return result;
+  } catch (error) {
+    record("controller_request_failed", error?.code ?? "unknown");
+    throw error;
+  } finally {
+    activeActionRequestRef = previousRequestRef;
+  }
+};
 // This fixture supplies the worker observation that a real slice controller
 // obtains from its own namespace. It is deliberately test-only: production
 // BrowserControllerStdioServer uses browser-controller-resources.mjs to scan
@@ -323,6 +386,7 @@ const fixtureResourceInventory = async () => ({
 });
 const uploadFiles = browser.uploadFiles.bind(browser);
 browser.uploadFiles = async (request, options = {}) => {
+  Object.assign(chromium, await uploadBrowser.ensure());
   const observedAbort = () => writeFileSync(join(dirname(pidFile), "upload-cancel-observed"), "cancel observed");
   options.signal?.addEventListener("abort", observedAbort, { once: true });
   try { return await uploadFiles(request, options); }

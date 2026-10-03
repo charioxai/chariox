@@ -514,6 +514,7 @@ mod tests {
                 &app.config().daemon_id,
                 &app.config().host_machine_id,
                 crate::slice::CreateSliceInput {
+                    source_slice_ref: None,
                     name: "snapshot-restore".to_string(),
                     backend: crate::slice::SliceBackendKind::LocalDocker,
                     os: "linux".to_string(),
@@ -607,6 +608,7 @@ mod tests {
                 &app.config().daemon_id,
                 &app.config().host_machine_id,
                 crate::slice::CreateSliceInput {
+                    source_slice_ref: None,
                     name: "linux-dev".to_string(),
                     backend: crate::slice::SliceBackendKind::LocalDocker,
                     os: "linux".to_string(),

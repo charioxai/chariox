@@ -35,14 +35,19 @@ impl RoomEnvironmentWorkerBinding {
         })
     }
 
-    pub(super) fn validate(&self, machine_id: &str) -> Result<(), DaemonError> {
+    pub(super) fn validate(&self, kernel_id: &str, machine_id: &str) -> Result<(), DaemonError> {
         let key = crate::transport::relay_crypto::decode_public_key(&self.home_public_key);
         // Protected boot has already verified the retained machine/kernel keys.
         // Its machine ID is not the legacy slice:<id> alias; the provisioner
         // supplies the slice record ID separately in both fresh and restored boots.
+        // Unprotected workers keep the private slice:<id> alias, or a hosted
+        // worker ref scoped to its authenticated parent Machine.
         let matches_slice = match self.provisioned_slice_id.as_deref() {
             Some(slice_id) => slice_id == self.slice_id,
-            None => machine_id == format!("slice:{}", self.slice_id),
+            None => {
+                machine_id == format!("slice:{}", self.slice_id)
+                    || crate::slice::machine_scoped_slice_worker_ref(kernel_id, machine_id)
+            }
         };
         if [&self.home_kernel_id, &self.session_id, &self.slice_id]
             .iter()
@@ -54,7 +59,7 @@ impl RoomEnvironmentWorkerBinding {
             return Err(DaemonError::InvalidConfig {
                 field: "room_environment_worker_binding",
                 message:
-                    "requires a home kernel, public key, Room, and matching provisioned slice ID or legacy machine alias",
+                    "requires a home kernel, public key, Room, and matching provisioned slice ID, private slice alias, or machine-scoped slice identity",
             });
         }
         Ok(())
@@ -93,5 +98,113 @@ impl DaemonConfig {
         }
         config.cloud_relay = None;
         Some(config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bound_config() -> DaemonConfig {
+        let mut config = DaemonConfig::for_tests();
+        config.room_environment_worker_binding = Some(RoomEnvironmentWorkerBinding {
+            provisioned_slice_id: None,
+            home_kernel_id: "home-kernel".into(),
+            home_public_key: config.relay_public_key.clone(),
+            session_id: "room-a".into(),
+            slice_id: "local-slice".into(),
+        });
+        config
+    }
+
+    fn hosted_config() -> DaemonConfig {
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/slice-worker-identity.json"
+        )))
+        .unwrap();
+        let case = &vectors["cases"][0];
+        let mut config = bound_config();
+        config.daemon_id = case["workerKernelRef"].as_str().unwrap().into();
+        config.host_machine_id = case["machineId"].as_str().unwrap().into();
+        config
+    }
+
+    #[test]
+    fn room_worker_binding_accepts_hosted_canonical_parent_machine() {
+        hosted_config()
+            .validate()
+            .expect("hosted worker uses its authenticated parent Machine");
+    }
+
+    #[test]
+    fn room_worker_binding_rejects_foreign_machine_and_unqualified_kernel() {
+        for (kernel, machine) in [
+            (None, "foreign-machine"),
+            (Some("slice:drill"), "machine-a"),
+            (Some("ordinary-kernel"), "machine-a"),
+        ] {
+            let mut config = hosted_config();
+            if let Some(kernel) = kernel {
+                config.daemon_id = kernel.into();
+            }
+            config.host_machine_id = machine.into();
+            assert!(matches!(
+                config.validate(),
+                Err(DaemonError::InvalidConfig {
+                    field: "room_environment_worker_binding",
+                    ..
+                })
+            ));
+        }
+    }
+
+    #[test]
+    fn room_worker_binding_preserves_private_synthetic_machine() {
+        let mut config = bound_config();
+        config.daemon_id = "private-worker".into();
+        config.host_machine_id = "slice:local-slice".into();
+        config
+            .validate()
+            .expect("private workers keep their synthetic Machine identity");
+        config.host_machine_id = "slice:another-slice".into();
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn room_worker_binding_keeps_exact_home_room_and_slice_authority() {
+        let mut config = hosted_config();
+        let binding = config.room_environment_worker_binding.as_ref().unwrap();
+        assert!(binding.permits(
+            "home-kernel",
+            &config.relay_public_key,
+            "room-a",
+            "local-slice"
+        ));
+        assert!(!binding.permits(
+            "other-home",
+            &config.relay_public_key,
+            "room-a",
+            "local-slice"
+        ));
+        assert!(!binding.permits(
+            "home-kernel",
+            &config.relay_public_key,
+            "room-b",
+            "local-slice"
+        ));
+        assert!(!binding.permits(
+            "home-kernel",
+            &config.relay_public_key,
+            "room-a",
+            "other-slice"
+        ));
+        config
+            .room_environment_worker_binding
+            .as_mut()
+            .unwrap()
+            .home_public_key
+            .clear();
+        assert!(config.validate().is_err());
     }
 }

@@ -262,3 +262,196 @@ async fn rejects_cross_room_spawn_before_worktree_mutation() {
         "reject by Room ownership, not by an incidental offline-worker failure"
     );
 }
+
+#[test]
+fn room_environment_friendly_alias_rejects_foreign_room_before_execution() {
+    run_test(friendly_alias_rejects_foreign_room_before_execution);
+}
+
+#[test]
+fn room_environment_friendly_alias_rejects_active_operation_before_execution() {
+    run_test(friendly_alias_rejects_active_operation_before_execution);
+}
+
+async fn friendly_alias_rejects_foreign_room_before_execution() {
+    friendly_alias_admission(false).await;
+}
+
+async fn friendly_alias_rejects_active_operation_before_execution() {
+    friendly_alias_admission(true).await;
+}
+
+async fn friendly_alias_admission(busy: bool) {
+    let mut failures = Vec::new();
+    for path in ["spawn", "batch", "create", "move"] {
+        let state = TestState::new();
+        let (router, rooms) = state.router();
+        create_desktop(&router, "desktop").await;
+        let slices = router.app.lock().await.slices().clone();
+        let record = slices.resolve("desktop").unwrap();
+        assert_eq!(
+            record.worker_kernel_ref.len(),
+            135,
+            "use the new default identity"
+        );
+        slices
+            .set_worker_presence(
+                "desktop",
+                Some(record.worker_kernel_ref.clone()),
+                Some(record.owner_machine_id.clone()),
+                vec!["codex".to_string()],
+                1,
+            )
+            .unwrap();
+        dispatch_json(&router, bind(&rooms[0], "desktop"))
+            .await
+            .unwrap();
+        let active = busy.then(|| slices.try_begin_operation("desktop", "state.save").unwrap());
+        let room = if busy { &rooms[0] } else { &rooms[1] };
+        let agents_query = json!({"ListAgents":{"session_id":room}});
+        let before_agents = dispatch_json(&router, agents_query.clone()).await.unwrap();
+        let sessions_query = json!({"ListSessions":null});
+        let before_sessions = dispatch_json(&router, sessions_query.clone())
+            .await
+            .unwrap();
+        let before_slice = dispatch_json(&router, json!({"GetSlice":{"slice_ref":"desktop"}}))
+            .await
+            .unwrap();
+        let agent_id = before_agents["AgentsListed"]["agents"][0]["id"]
+            .as_str()
+            .unwrap();
+        let request = match path {
+            "spawn" => json!({"SpawnAgent":{"session_id":room,"kernel_ref":"slice:desktop"}}),
+            "batch" => json!({"SpawnAgents":{"session_id":room,"agents":[
+                {"provider":"codex"}, {"provider":"codex","kernel_ref":"slice:desktop"}
+            ]}}),
+            "create" => json!({"CreateSession":{"workspace_id":"other-workspace",
+                "worktree_id":"other-worktree","kernel_ref":"slice:desktop"}}),
+            "move" => json!({"MoveAgentToRemote":{"session_id":room,
+                "agent_ref":agent_id,"machine_ref":"slice:desktop"}}),
+            _ => unreachable!(),
+        };
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            dispatch_json(&router, request),
+        )
+        .await
+        .expect("admission must settle before worker contact")
+        .unwrap_err()
+        .to_string();
+        let expected = if busy {
+            "active `state.save` operation"
+        } else {
+            "environment_slice_access_denied"
+        };
+        if !error.contains(expected) {
+            failures.push(format!(
+                "{path}: expected preflight {expected}, got {error}"
+            ));
+        }
+        assert_eq!(
+            dispatch_json(&router, agents_query).await.unwrap(),
+            before_agents
+        );
+        assert_eq!(
+            dispatch_json(&router, sessions_query).await.unwrap(),
+            before_sessions
+        );
+        assert_eq!(
+            dispatch_json(&router, json!({"GetSlice":{"slice_ref":"desktop"}}))
+                .await
+                .unwrap(),
+            before_slice
+        );
+        drop(active);
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn room_environment_friendly_alias_shares_canonical_admission_without_authorizing_alias() {
+    run_test(friendly_alias_shares_canonical_admission_without_authorizing_alias);
+}
+
+async fn friendly_alias_shares_canonical_admission_without_authorizing_alias() {
+    let state = TestState::new();
+    let (router, rooms) = state.router();
+    create_desktop(&router, "desktop").await;
+    let slices = router.app.lock().await.slices().clone();
+    let record = slices.resolve("desktop").unwrap();
+    dispatch_json(&router, bind(&rooms[0], "desktop"))
+        .await
+        .unwrap();
+    let admission = router
+        .runtime_state
+        .guard_slice_execution(
+            Some(&rooms[0]),
+            [
+                (None, Some("slice:desktop")),
+                (None, Some(record.worker_kernel_ref.as_str())),
+            ],
+            "agent.spawn",
+        )
+        .unwrap();
+    assert_eq!(
+        admission.slice_ids,
+        vec![Some(record.id.clone()), Some(record.id.clone())]
+    );
+    assert!(slices.try_begin_operation("desktop", "state.save").is_err());
+    assert!(
+        slices
+            .resolve_by_worker_kernel_ref("slice:desktop")
+            .is_none(),
+        "friendly input resolution must not widen identity authorization"
+    );
+    drop(admission);
+    assert!(slices.try_begin_operation("desktop", "state.save").is_ok());
+    assert_eq!(
+        router
+            .runtime_state
+            .guard_slice_execution(
+                Some(&rooms[0]),
+                [(None, Some("ordinary-remote-worker"))],
+                "agent.spawn",
+            )
+            .unwrap()
+            .slice_ids,
+        vec![None]
+    );
+}
+
+#[test]
+fn room_environment_friendly_alias_rejects_canonical_collision() {
+    run_test(friendly_alias_rejects_canonical_collision);
+}
+
+async fn friendly_alias_rejects_canonical_collision() {
+    let state = TestState::new();
+    let (router, rooms) = state.router();
+    create_desktop(&router, "desktop").await;
+    dispatch_json(&router, bind(&rooms[0], "desktop"))
+        .await
+        .unwrap();
+    dispatch_json(
+        &router,
+        json!({"CreateSlice":{
+            "name":"other", "base":"clean", "display_mode":"headed",
+            "worker_kernel_ref":"slice:desktop"
+        }}),
+    )
+    .await
+    .unwrap();
+    let error = dispatch_json(
+        &router,
+        json!({"SpawnAgent":{
+            "session_id":rooms[1], "kernel_ref":"slice:desktop"
+        }}),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("ambiguous slice execution reference"),
+        "{error}"
+    );
+}

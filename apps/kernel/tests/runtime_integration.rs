@@ -21,6 +21,7 @@ use tokio::sync::{oneshot, Mutex as TokioMutex};
 mod support;
 use support::kernel_websocket::{
     connect_with_retry, reserved_kernel_listener, response_variant, send_request, unused_tcp_port,
+    ExecutionWorkspace,
 };
 use support::runtime_integration::{
     collect_terminal_output_until, wait_for_local_provider_run_ready,
@@ -29,11 +30,12 @@ use support::runtime_integration::{
 
 #[test]
 fn session_lifecycle_round_trip_cleans_runtime_state() {
+    let workspace = ExecutionWorkspace::new();
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let session = app
         .sessions_mut()
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
         .attach(AttachRequest::new(
@@ -70,11 +72,12 @@ fn session_lifecycle_round_trip_cleans_runtime_state() {
 
 #[test]
 fn attachments_can_queue_prompts_and_receive_queue_notifications() {
+    let workspace = ExecutionWorkspace::new();
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let session = app
         .sessions_mut()
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(workspace.session_request())
         .expect("session should be created");
     let first = app
         .attach(AttachRequest::new(
@@ -140,11 +143,12 @@ fn attachments_can_queue_prompts_and_receive_queue_notifications() {
 
 #[test]
 fn detaching_attachment_preserves_queued_prompts_and_promotes_via_remaining_attachment() {
+    let workspace = ExecutionWorkspace::new();
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let session = app
         .sessions_mut()
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(workspace.session_request())
         .expect("session should be created");
     let first = app
         .attach(AttachRequest::new(
@@ -229,11 +233,12 @@ fn detaching_attachment_preserves_queued_prompts_and_promotes_via_remaining_atta
 
 #[test]
 fn completing_a_prompt_without_provider_completion_still_emits_a_terminal_completion_record() {
+    let workspace = ExecutionWorkspace::new();
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let session = app
         .sessions_mut()
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
         .attach(AttachRequest::new(
@@ -278,6 +283,7 @@ fn completing_a_prompt_without_provider_completion_still_emits_a_terminal_comple
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn workflow_runs_progress_without_terminal_pumps() {
+    let workspace = ExecutionWorkspace::new();
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
@@ -285,7 +291,7 @@ async fn workflow_runs_progress_without_terminal_pumps() {
     let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
     let session = app
         .sessions_mut()
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(workspace.session_request())
         .expect("session should be created");
     let _attachment = app
         .attach(AttachRequest::new(
@@ -417,11 +423,12 @@ async fn workflow_runs_progress_without_terminal_pumps() {
 
 #[test]
 fn provider_run_switching_parks_previous_run_and_records_terminal_input() {
+    let workspace = ExecutionWorkspace::new();
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let session = app
         .sessions_mut()
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(workspace.session_request())
         .expect("session should be created");
     let source = app
         .attach(AttachRequest::new(
@@ -491,14 +498,14 @@ fn local_request_surface_supports_prompt_queue_and_config_updates() {
 }
 
 fn local_request_surface_supports_prompt_queue_and_config_updates_inner() {
-    let worktree = support::test_worktree::TestWorktree::new("integration");
+    let workspace = ExecutionWorkspace::new();
     let app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let client = LocalDaemonClient::new(app).expect("local daemon client should start");
 
     let session = match client
         .send(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-integration", worktree.path_string()),
+            workspace.session_request(),
         ))
         .expect("session create should succeed")
     {
@@ -624,11 +631,12 @@ fn local_request_surface_supports_prompt_queue_and_config_updates_inner() {
 
 #[test]
 fn prompt_queue_advances_after_provider_output_goes_idle() {
+    let workspace = ExecutionWorkspace::new();
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let session = app
         .sessions_mut()
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
         .attach(AttachRequest::new(
@@ -683,11 +691,12 @@ fn prompt_queue_advances_after_provider_output_goes_idle() {
 
 #[test]
 fn parked_provider_runs_should_not_produce_unexpected_exit_notices() {
+    let workspace = ExecutionWorkspace::new();
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let session = app
         .sessions_mut()
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(workspace.session_request())
         .expect("session should be created");
     let _attachment = app
         .attach(AttachRequest::new(

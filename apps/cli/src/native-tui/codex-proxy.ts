@@ -56,6 +56,7 @@ export function createCodexProjectionThreadTracker(options: {
 }) {
   let tuiThreadId: string | null = null
   let projectedThreadId: string | null = null
+  const ephemeralThreadIds = new Set<string>()
 
   const setProjectedThreadId = (threadId: string) => {
     if (projectedThreadId === threadId) return
@@ -64,11 +65,18 @@ export function createCodexProjectionThreadTracker(options: {
   }
 
   return {
-    bindTuiThread: (threadId: string) => {
+    bindTuiThread: (threadId: string, ephemeral = false) => {
+      if (ephemeral) {
+        ephemeralThreadIds.add(threadId)
+        return
+      }
       tuiThreadId = threadId
       setProjectedThreadId(threadId)
     },
-    observeUpstreamThread: (threadId: string) => {
+    isEphemeralThread: (threadId: string) => ephemeralThreadIds.has(threadId),
+    observeUpstreamThread: (threadId: string, ephemeral = false) => {
+      if (ephemeral) ephemeralThreadIds.add(threadId)
+      if (ephemeralThreadIds.has(threadId)) return
       if (tuiThreadId && threadId !== tuiThreadId) {
         options.debug("upstream_thread_started_ignored_for_projection", {
           tuiThreadId,
@@ -97,6 +105,7 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
     downstream: CodexDownstream
     originalId: unknown
     method: string | undefined
+    ephemeral: boolean
   }>()
   let nextUpstreamRequestId = 1
   let upstreamSocket: WebSocket | null = null
@@ -171,6 +180,7 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
       downstream,
       originalId: message.id,
       method: message.method,
+      ephemeral: message.params?.ephemeral === true,
     })
     sendUpstream({ ...message, id: upstreamId })
   }
@@ -224,11 +234,11 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
       }
       pendingRequests.delete(message.id)
       const routedMessage = { ...message, id: pending.originalId }
-      if (pending.method === "thread/start" && message.result) {
+      if (pending.method === "thread/start" && pending.downstream.kind !== "kernel" && message.result) {
         const threadId = extractCodexThreadId(message)
         if (threadId) {
-          projectionThreadTracker.bindTuiThread(threadId)
-          bindObservedThread(options, threadId)
+          projectionThreadTracker.bindTuiThread(threadId, pending.ephemeral)
+          if (!pending.ephemeral) bindObservedThread(options, threadId)
         }
       }
       sendDownstream(pending.downstream, routedMessage)
@@ -238,8 +248,18 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
     if (message.method === "thread/started") {
       const thread = message.params?.thread
       if (thread && typeof thread === "object" && "id" in thread && typeof thread.id === "string") {
-        projectionThreadTracker.observeUpstreamThread(thread.id)
+        projectionThreadTracker.observeUpstreamThread(thread.id, "ephemeral" in thread && thread.ephemeral === true)
       }
+    }
+    const notificationThreadId = message.params?.threadId
+      ?? (message.params?.thread as { id?: unknown } | undefined)?.id
+    if (typeof notificationThreadId === "string" && projectionThreadTracker.isEphemeralThread(notificationThreadId)) {
+      // The kernel provider client consumes a run's output stream. Utility
+      // output would otherwise settle or overwrite the visible Room turn.
+      for (const downstream of downstreams) {
+        if (downstream.kind !== "kernel") sendDownstream(downstream, message)
+      }
+      return
     }
     broadcast(message)
   }
@@ -291,12 +311,16 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
         options.debug("tui_connected", { agentId: options.agentId, downstreams: downstreamCounts() })
       }
       if (message.method === "thread/start") {
-        downstream.kind = "tui"
+        if (downstream.kind !== "kernel") downstream.kind = "tui"
         options.debug("tui_thread_start", { agentId: options.agentId, downstreams: downstreamCounts() })
         forwardRequest(downstream, message)
         return
       }
-      if (message.method === "turn/start" && downstream.kind !== "kernel") {
+      // Provider utility threads (for example automatic task titles) must not
+      // become Room user prompts or replace the visible native thread.
+      const threadId = message.params?.threadId
+      const ephemeral = typeof threadId === "string" && projectionThreadTracker.isEphemeralThread(threadId)
+      if (message.method === "turn/start" && downstream.kind !== "kernel" && !ephemeral) {
         void handleCodexNativeTurnStart(
           message,
           options,

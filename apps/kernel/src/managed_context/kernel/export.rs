@@ -166,6 +166,19 @@ pub fn export_kernel_context(
     }
 
     let mut dependencies = Vec::new();
+    let rules_path = sources.user_rules_root.join("user-rules.md");
+    if rules_path.exists() {
+        let body = String::from_utf8(read_bounded_regular_file(&rules_path, 64 * 1024)?)
+            .map_err(|_| kernel_context_error("user rules must be UTF-8"))?;
+        if body.contains('\0') {
+            return Err(kernel_context_error("user rules contain NUL"));
+        }
+        push_dependency(
+            &mut dependencies,
+            &mut budget,
+            KernelExtensionDependency::UserRules { body },
+        )?;
+    }
     export_environments(
         &sources.environment_root,
         sources.original_environment_root.as_deref(),
@@ -892,6 +905,7 @@ fn push_dependency(
         ));
     }
     match &dependency {
+        KernelExtensionDependency::UserRules { .. } => budget.consume_files(1)?,
         KernelExtensionDependency::Environment {
             runtime:
                 PortableEnvironmentRuntime::Python { files, .. }

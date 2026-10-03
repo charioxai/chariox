@@ -924,3 +924,10 @@ fn secret_error(operation: &'static str, message: String) -> DaemonError {
 
 #[cfg(test)]
 mod tests;
+
+/// MP-08: Kernel-only scoped Project resolution; no client receives the store or values.
+pub(crate) fn project_environment_vault(
+    config: &crate::config::DaemonConfig,
+) -> Result<Arc<dyn CredentialVaultStore>, DaemonError> {
+    vault_store_for_config(&config.user_config.credential_vault)
+}

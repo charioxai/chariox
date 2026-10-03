@@ -204,7 +204,7 @@ async fn standard_worker_does_not_infer_project_transfer() {
     );
 }
 
-fn init_test_repository(root: &Path, filename: &str, contents: &str) {
+pub(super) fn init_test_repository(root: &Path, filename: &str, contents: &str) {
     std::fs::create_dir_all(root).expect("test repository should exist");
     run_git(root, &["init", "-b", "main"]);
     run_git(root, &["config", "user.email", "chariox@example.test"]);
