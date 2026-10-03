@@ -1,3 +1,6 @@
+#[cfg(all(not(test), not(debug_assertions)))]
+const _: () = chariox_app_runtime::assert_production_build();
+
 fn main() -> Result<(), chariox_kernel::DaemonError> {
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--version")) {
         println!("chariox-managed-bootstrap {}", env!("CARGO_PKG_VERSION"));

@@ -6,7 +6,10 @@ description = "Kernel-owned Chariox App worker transport and lifecycle services"
 license = "MIT"
 
 [features]
-# Fixed, unsandboxed native test fixture only. Release builds reject this feature.
+# Fixed, unsandboxed native test fixture only. Release-mode tests must target
+# --lib; integration tests also build normal binaries and need the debug profile.
+# Every new production binary linking this crate must const-evaluate
+# assert_production_build() under cfg(all(not(test), not(debug_assertions))).
 test-fixtures = []
 
 [dependencies]
