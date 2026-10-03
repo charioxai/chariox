@@ -886,7 +886,17 @@ fi
 current_protocol=$(protocol_version "$current_link/usr/local/bin/chariox-kernel")
 target_protocol=$(protocol_version "$image_root/usr/local/bin/chariox-kernel")
 node "$script_root/managed-kernel-upgrade-state.mjs" validate-protocol-transition \
-  "$current_link" "$current_protocol" "$image_root" "$target_protocol" $apps_rollback_override
+  "$current_link" "$current_protocol" "$image_root" "$target_protocol"
+if [ "$current_protocol" -ge 410 ] && [ "$target_protocol" -lt 410 ]; then
+  apps_state=$(python3 "$script_root/apps-rollback-state.py" "$install_root")
+  if [ "$apps_state" != absent ]; then
+    if [ "$apps_rollback_override" != --allow-apps-rollback ]; then
+      echo "rollback across the Apps boundary with App state is blocked; --allow-apps-rollback is required" >&2
+      exit 1
+    fi
+    echo "WARNING: Apps rollback override enabled. The pre-Apps kernel cannot use App state; App state survival and later recovery are unproven. Preserve a backup before continuing." >&2
+  fi
+fi
 
 release_name=${expected_new_digest#sha256:}
 published_release=$releases_root/$release_name

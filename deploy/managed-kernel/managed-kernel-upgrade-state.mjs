@@ -299,8 +299,7 @@ async function readTransitionPolicy(releaseRoot, expectedProtocol) {
   return policy
 }
 
-async function validateProtocolTransition(currentRoot, currentProtocol, targetRoot, targetProtocol, override) {
-  if (override !== undefined && override !== "--allow-apps-rollback") fail("invalid Apps rollback override")
+async function validateProtocolTransition(currentRoot, currentProtocol, targetRoot, targetProtocol) {
   if (!Number.isSafeInteger(currentProtocol) || currentProtocol < 1
     || !Number.isSafeInteger(targetProtocol) || targetProtocol < 1) {
     fail("managed kernel protocol transition is invalid")
@@ -312,12 +311,6 @@ async function validateProtocolTransition(currentRoot, currentProtocol, targetRo
   const policy = await readTransitionPolicy(newerRoot, newerProtocol)
   if (!policy.upgradeFrom.includes(olderProtocol) || !policy.rollbackTo.includes(olderProtocol)) {
     fail(`local daemon protocol transition ${currentProtocol} to ${targetProtocol} is not reciprocally authorized`)
-  }
-  if (currentProtocol >= 410 && targetProtocol < 410) {
-    if (override !== "--allow-apps-rollback") {
-      fail("rollback across the Apps boundary is blocked; --allow-apps-rollback is required because App state survival is unproven")
-    }
-    console.error("WARNING: Apps rollback override enabled. The pre-Apps kernel cannot use App state; App state survival and later recovery are unproven. Preserve a backup before continuing.")
   }
 }
 
@@ -424,9 +417,9 @@ async function run(args) {
     await removeStateFile(resolve(values[0]))
     return
   }
-  if (operation === "validate-protocol-transition" && (values.length === 4 || values.length === 5)) {
+  if (operation === "validate-protocol-transition" && values.length === 4) {
     await validateProtocolTransition(
-      resolve(values[0]), Number(values[1]), resolve(values[2]), Number(values[3]), values[4],
+      resolve(values[0]), Number(values[1]), resolve(values[2]), Number(values[3]),
     )
     return
   }

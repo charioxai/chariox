@@ -37,24 +37,21 @@ test("protocol 410 retains admitted predecessor contracts and rejects ambiguous 
     const fixturePolicy = join(newRoot, POLICY_RELATIVE_PATH)
     await mkdir(dirname(fixturePolicy), { recursive: true })
     await writeFile(fixturePolicy, JSON.stringify(policy), { mode: 0o600, flag: "wx" })
-    const transition = (fromRoot, from, toRoot, to, override) => execFileSync(process.execPath, [
+    const transition = (fromRoot, from, toRoot, to) => execFileSync(process.execPath, [
       UPGRADE_STATE_SCRIPT,
       "validate-protocol-transition",
       fromRoot,
       String(from),
       toRoot,
       String(to),
-      ...(override ? [override] : []),
     ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
 
     // Policy fixtures do not prove real-binary persisted-state migration.
     for (const version of [343, 367, 368, 369, 370, 371, 372, 373, 374, 375, 376]) {
       const oldRoot = join(scratch, `protocol-${version}`)
       assert.equal(transition(oldRoot, version, newRoot, 410), "")
-      assert.throws(() => transition(newRoot, 410, oldRoot, version), /Apps boundary is blocked/)
-      assert.equal(transition(newRoot, 410, oldRoot, version, "--allow-apps-rollback"), "")
+      assert.equal(transition(newRoot, 410, oldRoot, version), "")
     }
-    assert.equal(transition(newRoot, 410, newRoot, 410), "")
     // 377..409 are unreleased Apps Phase 1 numbers (renumbered above release F).
     for (const version of [312, 325, 333, 339, 342, ...Array.from({ length: 23 }, (_, index) => 344 + index), ...Array.from({ length: 33 }, (_, index) => 377 + index)]) {
       const oldRoot = join(scratch, `protocol-${version}`)

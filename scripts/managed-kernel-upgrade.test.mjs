@@ -155,8 +155,7 @@ test("repository release policy admits reviewed predecessors and matches the run
       [target, runtimeProtocol, current, olderProtocol],
     ]) {
       const result = spawnSync(process.execPath, [upgradeState, "validate-protocol-transition",
-        currentRoot, String(currentProtocol), targetRoot, String(targetProtocol),
-        ...(currentProtocol >= 410 && targetProtocol < 410 ? ["--allow-apps-rollback"] : [])], { encoding: "utf8" })
+        currentRoot, String(currentProtocol), targetRoot, String(targetProtocol)], { encoding: "utf8" })
       assert.equal(result.status, 0, result.stderr)
     }
   }
@@ -1911,7 +1910,7 @@ test("managed kernel upgrade accepts the signed repository protocol fixture tran
     await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
     `releases/${harness.target.digest.slice("sha256:".length)}`,
   )
-  const rollback = harness.run({}, ["--allow-apps-rollback",
+  const rollback = harness.run({}, [
     harness.current.rootfs,
     harness.target.digest,
     harness.current.digest,
@@ -2021,15 +2020,51 @@ test("Apps rollback requires an explicit override and warns before pre-Apps acti
   })
   const upgraded = harness.run()
   assert.equal(upgraded.status, 0, upgraded.stderr)
+  const database = join(harness.installRoot, "home/chariox/.chariox/state/kernel.db")
+  await mkdir(dirname(database), {recursive: true})
+  const createState = spawnSync("python3", ["-c", "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('CREATE TABLE app_state_migrations (installation_id TEXT)'); c.commit(); c.close()", database], {encoding: "utf8"})
+  assert.equal(createState.status, 0, createState.stderr)
+  const before = await readFile(database)
   const args = [harness.current.rootfs, harness.target.digest, harness.current.digest, harness.trustedKey]
   const refused = harness.run({}, args)
   assert.equal(refused.status, 1)
-  assert.match(refused.stderr, /Apps boundary is blocked/)
+  assert.match(refused.stderr, /Apps boundary with App state is blocked/)
   assert.equal(await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
     `releases/${harness.target.digest.slice("sha256:".length)}`)
   const allowed = harness.run({}, ["--allow-apps-rollback", ...args])
   assert.equal(allowed.status, 0, allowed.stderr)
   assert.match(allowed.stderr, /WARNING:.*App state survival/)
+  assert.deepEqual(await readFile(database), before)
+  assert.equal(await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
+    `releases/${harness.current.digest.slice("sha256:".length)}`)
+})
+
+test("a failed overridden Apps downgrade restores the previous Apps release", async (context) => {
+  const harness = await makeHarness(context, {
+    currentProtocol: 376, targetProtocol: 410,
+    targetTransitionPolicy: {schemaVersion: 1, protocol: 410, upgradeFrom: [376, 410], rollbackTo: [376, 410]},
+  })
+  assert.equal(harness.run().status, 0)
+  await put(join(harness.state, "fail-health-once"), "fail\n")
+  const downgrade = harness.run({}, ["--allow-apps-rollback", harness.current.rootfs,
+    harness.target.digest, harness.current.digest, harness.trustedKey])
+  assert.equal(downgrade.status, 1)
+  assert.match(downgrade.stderr, /restored previous managed kernel release/)
+  assert.equal(await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
+    `releases/${harness.target.digest.slice("sha256:".length)}`)
+  assert.equal(await lstat(join(harness.installRoot, "usr/lib/chariox/.managed-kernel-upgrade")).then(() => true, () => false), false)
+})
+
+test("failed upgrade with no App state automatically rolls back across the boundary", async (context) => {
+  const harness = await makeHarness(context, {
+    currentProtocol: 376, targetProtocol: 410,
+    targetTransitionPolicy: {schemaVersion: 1, protocol: 410, upgradeFrom: [376, 410], rollbackTo: [376, 410]},
+  })
+  await put(join(harness.state, "fail-health-once"), "fail\n")
+  const result = harness.run()
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /restored previous managed kernel release/)
+  assert.doesNotMatch(result.stderr, /Apps boundary|Apps rollback override/)
   assert.equal(await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
     `releases/${harness.current.digest.slice("sha256:".length)}`)
 })
