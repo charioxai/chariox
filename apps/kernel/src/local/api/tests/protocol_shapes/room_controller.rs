@@ -1018,12 +1018,12 @@ fn computer_secret_target_protocol_374_peer_67_is_hashed() {
     );
 }
 
-// MP-08/MP-10/MP-11: no value or provider-chosen clearance parameter crosses this seam.
+// MP-08/MP-10/MP-11: legacy wire compatibility only; runtime clearance is rejected.
 #[test]
-fn room_secret_observation_clearance_protocol_378_peer_69_is_hashed() {
+fn legacy_secret_observation_wire_protocol_411_peer_70_is_hashed() {
     use crate::transport::room_browser_controller::RoomBrowserControllerResult;
     use sha2::{Digest, Sha256};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 378);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 411);
     assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 70);
     let command =
         serde_json::to_value(RoomBrowserControllerCommand::ClearSecretObservation).unwrap();
