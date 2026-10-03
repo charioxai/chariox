@@ -57,7 +57,7 @@ impl DaemonConfig {
             .filter(|value| !value.is_empty());
         let env_relay_configured = env_relay_url.is_some() || env_relay_token.is_some();
         let daemon_id = if protected_slice_identity_required() {
-            runtime_identity.daemon_id.clone()
+            protected_slice_daemon_id(&runtime_identity.daemon_id)
         } else {
             env::var("CHARIOX_DAEMON_ID")
                 .ok()
@@ -360,6 +360,22 @@ fn parse_event_generator_management_targets(
         }
     }
     Ok(targets)
+}
+
+/// A protected slice boots from its retained keys and machine identity, never
+/// from ambient identity. A local Docker slice worker is named on the relay by
+/// the provisioner's canonical per-creation ref, scoped to the owning Machine,
+/// and the home discovers and routes to the worker by that exact ref. Accept
+/// only that form, for the provisioned owner Machine; any other value keeps
+/// the retained kernel id.
+fn protected_slice_daemon_id(retained_kernel_id: &str) -> String {
+    let owner_machine_id = env::var("CHARIOX_SLICE_OWNER_MACHINE_ID").unwrap_or_default();
+    env::var("CHARIOX_DAEMON_ID")
+        .ok()
+        .filter(|worker_ref| {
+            crate::slice::machine_scoped_slice_worker_ref(worker_ref, owner_machine_id.trim())
+        })
+        .unwrap_or_else(|| retained_kernel_id.to_string())
 }
 
 pub(super) fn runtime_display_machine_name() -> Option<String> {

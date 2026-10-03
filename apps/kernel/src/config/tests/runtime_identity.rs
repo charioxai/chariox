@@ -193,6 +193,87 @@ fn protected_room_restart_preserves_retained_identity_and_validates_slice_bindin
 }
 
 #[test]
+fn protected_slice_announces_its_canonical_worker_ref_with_retained_keys() {
+    use sha2::{Digest, Sha256};
+    let _guard = crate::env_lock::lock();
+    let directory = env::temp_dir().join(format!(
+        "chariox-protected-worker-ref-{}",
+        generate_identity_suffix()
+    ));
+    fs::create_dir(&directory).expect("create isolated synthetic identity fixture");
+    struct Restore(Vec<(&'static str, Option<std::ffi::OsString>)>, std::path::PathBuf);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            for (name, value) in self.0.drain(..) {
+                unsafe { restore_env_var(name, value) };
+            }
+            let _ = fs::remove_dir_all(&self.1);
+        }
+    }
+    let names = ["HOME", "CHARIOX_HOME", "CHARIOX_SLICE_PRIVATE_ROOT", "CHARIOX_KERNEL_HOST",
+        "CHARIOX_KERNEL_PORT", "CHARIOX_DAEMON_ID", "CHARIOX_MACHINE_ID",
+        "CHARIOX_SLICE_OWNER_MACHINE_ID", "CHARIOX_SLICE_ID",
+        "CHARIOX_ROOM_ENVIRONMENT_HOME_KERNEL_ID", "CHARIOX_ROOM_ENVIRONMENT_HOME_PUBLIC_KEY",
+        "CHARIOX_ROOM_ENVIRONMENT_SESSION_ID", "CHARIOX_ROOM_ENVIRONMENT_SLICE_ID",
+        "CHARIOX_RELAY_URL", "CHARIOX_RELAY_TOKEN", "CHARIOX_CLOUD_RELAY_CONFIG_JSON"];
+    let _restore = Restore(
+        names.into_iter().map(|name| (name, env::var_os(name))).collect(),
+        directory.clone(),
+    );
+    let worker_ref_for = |machine: &str| {
+        format!("slice:{:x}:{}", Sha256::digest(machine.as_bytes()), "0".repeat(64))
+    };
+    let worker_ref = worker_ref_for("synthetic-owner-machine");
+    unsafe {
+        for name in ["CHARIOX_RELAY_URL", "CHARIOX_RELAY_TOKEN", "CHARIOX_CLOUD_RELAY_CONFIG_JSON",
+            "CHARIOX_SLICE_ID", "CHARIOX_ROOM_ENVIRONMENT_HOME_KERNEL_ID",
+            "CHARIOX_ROOM_ENVIRONMENT_HOME_PUBLIC_KEY", "CHARIOX_ROOM_ENVIRONMENT_SESSION_ID",
+            "CHARIOX_ROOM_ENVIRONMENT_SLICE_ID"] {
+            env::remove_var(name);
+        }
+        env::set_var("HOME", &directory);
+        env::set_var("CHARIOX_HOME", &directory);
+        env::set_var("CHARIOX_SLICE_PRIVATE_ROOT", "/var/lib/chariox/slice-private");
+        env::set_var("CHARIOX_KERNEL_HOST", "127.0.0.1");
+        env::set_var("CHARIOX_KERNEL_PORT", "43119");
+        env::set_var("CHARIOX_MACHINE_ID", "slice:synthetic-slice");
+        env::set_var("CHARIOX_SLICE_OWNER_MACHINE_ID", "synthetic-owner-machine");
+        env::set_var("CHARIOX_DAEMON_ID", &worker_ref);
+    }
+    let load = || DaemonConfig::load_from_env_with_identity_loader(|_, _| RuntimeIdentity {
+        daemon_id: "retained-kernel".to_string(),
+        machine_id: "retained-machine".to_string(),
+        machine_alias: None,
+        daemon_alias: None,
+        relay_public_key: "synthetic-public".to_string(),
+        relay_private_key: "synthetic-private-sentinel".to_string(),
+    });
+    // The home discovers the worker by its canonical per-creation ref; the
+    // retained keys and machine identity stay authoritative.
+    let config = load();
+    assert_eq!(config.daemon_id, worker_ref);
+    assert_eq!(config.host_machine_id, "retained-machine");
+    assert_eq!(config.relay_public_key, "synthetic-public");
+    // No other ambient value can rename the retained kernel.
+    for foreign in [
+        "foreign-kernel".to_string(),
+        "slice:synthetic-slice".to_string(),
+        worker_ref_for("foreign-owner-machine"),
+    ] {
+        unsafe { env::set_var("CHARIOX_DAEMON_ID", &foreign) };
+        assert_eq!(load().daemon_id, "retained-kernel", "{foreign}");
+    }
+    unsafe {
+        env::set_var("CHARIOX_DAEMON_ID", &worker_ref);
+        env::remove_var("CHARIOX_SLICE_OWNER_MACHINE_ID");
+    }
+    assert_eq!(load().daemon_id, "retained-kernel");
+    // Unprotected workers keep using the provisioned id as before.
+    unsafe { env::remove_var("CHARIOX_SLICE_PRIVATE_ROOT") };
+    assert_eq!(load().daemon_id, worker_ref);
+}
+
+#[test]
 fn chariox_home_owns_config_identity_state_and_runtime_paths() {
     crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
