@@ -177,7 +177,7 @@ test("workflow extension inspection shows a missing App with recovery and no inv
     appendNotice: (text) => notices.push(text),
   })
   await handleWorkflowNodeCommand(harness.deps, harness.context, ["node", "extensions", "node-1"])
-  assert.match(notices[0]!, /Todo.*Missing App binding/)
+  assert.match(notices[0]!, /app:installed \(Todo\).*Missing App binding/)
   assert.match(notices[0]!, /Reinstall the App, then bind it to this agent/)
   assert.doesNotMatch(notices[0]!, /App ·|\d+\.\d+\.\d+/)
   harness.deps.getAppInstallation = async () => { throw new Error("temporarily unavailable") }
