@@ -322,3 +322,11 @@ the receipt's grant binding (schema 2) covers the machine's identity, not its
 release, so an updated machine starts normally. Cloud authorizes the target
 release and records it once the machine reports it; an update Cloud did not
 authorize leaves Cloud's release record unchanged.
+
+Managed rollback from local protocol 410 or later to a pre-Apps protocol is
+blocked by default because durable App state survival has not been proved.
+An operator may explicitly pass `--allow-apps-rollback` before the positional
+arguments to `upgrade-image.sh`; this prints an App state warning and still
+requires the signed reciprocal transition policy. Preserve a state backup first.
+Automatic recovery of an incomplete upgrade transaction retains its existing
+previous-to-target validation; this override governs deliberate release downgrades.

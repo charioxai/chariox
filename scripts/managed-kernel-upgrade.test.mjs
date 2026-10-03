@@ -155,7 +155,8 @@ test("repository release policy admits reviewed predecessors and matches the run
       [target, runtimeProtocol, current, olderProtocol],
     ]) {
       const result = spawnSync(process.execPath, [upgradeState, "validate-protocol-transition",
-        currentRoot, String(currentProtocol), targetRoot, String(targetProtocol)], { encoding: "utf8" })
+        currentRoot, String(currentProtocol), targetRoot, String(targetProtocol),
+        ...(currentProtocol >= 410 && targetProtocol < 410 ? ["--allow-apps-rollback"] : [])], { encoding: "utf8" })
       assert.equal(result.status, 0, result.stderr)
     }
   }
@@ -1910,7 +1911,7 @@ test("managed kernel upgrade accepts the signed repository protocol fixture tran
     await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
     `releases/${harness.target.digest.slice("sha256:".length)}`,
   )
-  const rollback = harness.run({}, [
+  const rollback = harness.run({}, ["--allow-apps-rollback",
     harness.current.rootfs,
     harness.target.digest,
     harness.current.digest,
@@ -2011,6 +2012,26 @@ test("a signed transition policy permits post-success rollback to its declared p
     await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
     `releases/${harness.current.digest.slice("sha256:".length)}`,
   )
+})
+
+test("Apps rollback requires an explicit override and warns before pre-Apps activation", async (context) => {
+  const harness = await makeHarness(context, {
+    currentProtocol: 376, targetProtocol: 410,
+    targetTransitionPolicy: {schemaVersion: 1, protocol: 410, upgradeFrom: [376, 410], rollbackTo: [376, 410]},
+  })
+  const upgraded = harness.run()
+  assert.equal(upgraded.status, 0, upgraded.stderr)
+  const args = [harness.current.rootfs, harness.target.digest, harness.current.digest, harness.trustedKey]
+  const refused = harness.run({}, args)
+  assert.equal(refused.status, 1)
+  assert.match(refused.stderr, /Apps boundary is blocked/)
+  assert.equal(await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
+    `releases/${harness.target.digest.slice("sha256:".length)}`)
+  const allowed = harness.run({}, ["--allow-apps-rollback", ...args])
+  assert.equal(allowed.status, 0, allowed.stderr)
+  assert.match(allowed.stderr, /WARNING:.*App state survival/)
+  assert.equal(await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
+    `releases/${harness.current.digest.slice("sha256:".length)}`)
 })
 
 const legacyUpdaterCommit = "8fa9246ea60b52a988da17a28652e61475ff52cd"
