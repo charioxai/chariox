@@ -1922,7 +1922,7 @@ fn malformed_local_request_replies_with_its_request_id() {
     }));
     assert_eq!(request_id, "req-unknown-variant");
     assert_eq!(error.code, "invalid_request");
-    assert!(error.message.contains("This kernel (protocol 410) does not support this request; update the Chariox client or kernel so both match."));
+    assert!(error.message.contains(&format!("This kernel (protocol {}) does not support this request; update the Chariox client or kernel so both match.", crate::local::LOCAL_DAEMON_PROTOCOL_VERSION)));
 }
 
 #[test]

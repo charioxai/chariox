@@ -37,10 +37,10 @@ test("declined, expired, foreign and malformed offers never act", async () => {
       { copy: async () => assert.fail(), openLink: async () => assert.fail() }))
   }
 })
-test("host not_found explains missing, expired or other-session offers without taking an action", async () => {
+test("host not_found explains missing, answered, expired or other-session offers without taking an action", async () => {
   await assert.rejects(acceptAppHostOffer("s", "op", async () => ({ AppRequestFailed: { code: "not_found" } }), () => assert.fail(),
     { copy: async () => assert.fail(), openLink: async () => assert.fail() }), {
-    message: "That App host offer is missing, expired, or belongs to another session",
+    message: "That App host offer is missing, already answered, expired, or belongs to another session",
   })
 })
 test("unknown host acceptance on an older kernel names the minimum and upgrade action", async () => {

@@ -31,7 +31,7 @@ async fn request_decode_refusal_uses_existing_relay_message_field() {
         let error = outcome.error.unwrap();
         assert_eq!(error.code, "invalid_request");
         assert!(!error.retryable);
-        assert!(error.message.contains("This kernel (protocol 410) does not support this request; update the Chariox client or kernel so both match."));
+        assert!(error.message.contains(&format!("This kernel (protocol {}) does not support this request; update the Chariox client or kernel so both match.", crate::local::LOCAL_DAEMON_PROTOCOL_VERSION)));
     }
 }
 

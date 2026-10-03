@@ -3,20 +3,70 @@ export type * from "@chariox/kernel-client/ipc"
 
 import { LocalIpcClient as KernelClient } from "@chariox/kernel-client/ipc"
 import { kernelFeatureMinimum, requireKernelFeatureProtocol } from "./kernel-feature-minimum.js"
-import { loadLocalKernelPresences, localKernelEndpoint } from "./local-kernel-presence.js"
+import { loadLocalKernelPresences, localKernelEndpoint, localKernelPresenceFreshnessMs } from "./local-kernel-presence.js"
+
+type AdvertisedProtocol = { version: number | undefined; expiresAtMs: number }
 
 export class LocalIpcClient extends KernelClient {
+  private advertisedProtocol: AdvertisedProtocol | undefined
+  private protocolLookup: Promise<AdvertisedProtocol> | undefined
+
+  constructor(...args: ConstructorParameters<typeof KernelClient>) {
+    super(...args)
+    this.onKernelEvent(event => {
+      if (event.event === "transport_closed") this.clearAdvertisedProtocol()
+    })
+  }
+
   override async send<TResponse>(request: unknown): Promise<TResponse> {
     if (kernelFeatureMinimum(request)) {
-      const presences = loadLocalKernelPresences()
-      let version = presences.find(value => localKernelEndpoint(value) === this.socketPath)?.protocolVersion
-      if (version === undefined && !/^wss?:\/\//i.test(this.socketPath)
-        && presences.some(value => value.protocolVersion !== undefined)) {
-        const reply = await super.send<{ RelayStatus?: { status?: { daemon_id?: string } } }>({ RelayStatus: null })
-        version = presences.find(value => value.kernelId === reply.RelayStatus?.status?.daemon_id)?.protocolVersion
-      }
-      requireKernelFeatureProtocol(request, version)
+      requireKernelFeatureProtocol(request, (await this.kernelProtocol()).version)
     }
     return super.send<TResponse>(request)
+  }
+
+  override async close(): Promise<void> {
+    this.clearAdvertisedProtocol()
+    await super.close()
+  }
+
+  override destroy(): void {
+    this.clearAdvertisedProtocol()
+    super.destroy()
+  }
+
+  private clearAdvertisedProtocol(): void {
+    this.advertisedProtocol = undefined
+    this.protocolLookup = undefined
+  }
+
+  private async kernelProtocol(): Promise<AdvertisedProtocol> {
+    if (this.advertisedProtocol && this.advertisedProtocol.expiresAtMs > Date.now()) return this.advertisedProtocol
+    if (this.protocolLookup) return this.protocolLookup
+    const lookup = this.resolveAdvertisedProtocol()
+    this.protocolLookup = lookup
+    try {
+      const result = await lookup
+      if (this.protocolLookup === lookup) this.advertisedProtocol = result
+      return result
+    } finally {
+      if (this.protocolLookup === lookup) this.protocolLookup = undefined
+    }
+  }
+
+  private async resolveAdvertisedProtocol(): Promise<AdvertisedProtocol> {
+    const now = Date.now()
+    const presences = loadLocalKernelPresences(undefined, now)
+    let presence = presences.find(value => localKernelEndpoint(value) === this.socketPath)
+    if (presence?.protocolVersion === undefined && !/^wss?:\/\//i.test(this.socketPath)
+      && presences.some(value => value.protocolVersion !== undefined)) {
+      const reply = await super.send<{ RelayStatus?: { status?: { daemon_id?: string } } }>({ RelayStatus: null })
+      presence = presences.find(value => value.kernelId === reply.RelayStatus?.status?.daemon_id)
+    }
+    return {
+      version: presence?.protocolVersion,
+      expiresAtMs: Math.min(now + localKernelPresenceFreshnessMs,
+        (presence?.heartbeatAtMs ?? now) + localKernelPresenceFreshnessMs),
+    }
   }
 }

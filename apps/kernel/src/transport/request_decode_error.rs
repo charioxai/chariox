@@ -26,7 +26,7 @@ mod tests {
             let error = serde_json::from_str::<LocalDaemonRequest>(payload).unwrap_err();
             let message = message("invalid request", &error);
             assert!(message.starts_with(&format!("invalid request: {error}")));
-            assert!(message.ends_with("This kernel (protocol 410) does not support this request; update the Chariox client or kernel so both match."));
+            assert!(message.ends_with(&format!("This kernel (protocol {}) does not support this request; update the Chariox client or kernel so both match.", crate::local::LOCAL_DAEMON_PROTOCOL_VERSION)));
         }
     }
 

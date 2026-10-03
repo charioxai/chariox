@@ -3,7 +3,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 
 const presenceSchemaVersion = 1
-const presenceFreshnessMs = 30_000
+export const localKernelPresenceFreshnessMs = 30_000
 const maximumLocalKernelPresences = 128
 
 export type LocalKernelPresence = {
@@ -59,7 +59,7 @@ function readPresence(path: string, nowMs: number): LocalKernelPresence[] {
       || (record.port ?? 0) < 1
       || (record.port ?? 0) > 65_535
       || !record.heartbeat_at_ms
-      || Math.abs(nowMs - record.heartbeat_at_ms) > presenceFreshnessMs
+      || Math.abs(nowMs - record.heartbeat_at_ms) > localKernelPresenceFreshnessMs
     ) {
       return []
     }

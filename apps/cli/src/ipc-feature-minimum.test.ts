@@ -26,6 +26,14 @@ test("CLI transport gates fresh WebSocket and Unix advertisements and preserves 
     else process.env.CHARIOX_ACTIVE_KERNEL_REGISTRY_DIR = previous
     rmSync(root, { recursive: true, force: true })
   })
+  let now = Date.now()
+  context.mock.method(Date, "now", () => now)
+  const handlers: Array<Parameters<KernelClient["onKernelEvent"]>[0]> = []
+  context.mock.method(KernelClient.prototype, "onKernelEvent", (handler: Parameters<KernelClient["onKernelEvent"]>[0]) => {
+    handlers.push(handler)
+    return () => {}
+  })
+  const disconnect = () => handlers.forEach(handler => handler({ event: "transport_closed", message: "test reconnect" }))
   const requests: unknown[] = []
   context.mock.method(KernelClient.prototype, "send", async (request: unknown) => {
     requests.push(request)
@@ -43,8 +51,12 @@ test("CLI transport gates fresh WebSocket and Unix advertisements and preserves 
   await assert.rejects(client.send(request), /kernel too old: App host actions needs protocol ≥409; this kernel is 388; update the kernel/)
   assert.deepEqual(requests, [])
   publish(409)
+  await assert.rejects(client.send(request), /this kernel is 388/)
+  now += 30001
+  publish(409)
   await client.send(request)
   assert.deepEqual(requests, [request])
+  disconnect()
   publish(388, Date.now() - 60000)
   await client.send(request)
   publish(388)
@@ -56,8 +68,20 @@ test("CLI transport gates fresh WebSocket and Unix advertisements and preserves 
   context.after(() => unix.close())
   requests.length = 0
   await assert.rejects(unix.send(request), /App host actions needs protocol ≥409; this kernel is 388/)
+  await assert.rejects(unix.send(request), /this kernel is 388/)
   assert.deepEqual(requests, [{ RelayStatus: null }])
   publish(410)
-  await unix.send(request)
-  assert.deepEqual(requests, [{ RelayStatus: null }, { RelayStatus: null }, request])
+  disconnect()
+  await Promise.all([unix.send(request), unix.send(request)])
+  assert.deepEqual(requests, [{ RelayStatus: null }, { RelayStatus: null }, request, request])
+  // A fresh but unrelated advertisement must not cause repeated identity probes.
+  unix.destroy()
+  writeFileSync(join(root, "kernel.json"), JSON.stringify({ schema_version: 1, kernel_id: "other",
+    machine_id: "m", host: "127.0.0.1", port: 43121, heartbeat_at_ms: now, local_daemon_protocol_version: 388 }))
+  const unmatched = new LocalIpcClient(join(root, "unmatched.sock"))
+  context.after(() => unmatched.close())
+  requests.length = 0
+  await Promise.all([unmatched.send(request), unmatched.send(request)])
+  await unmatched.send(request)
+  assert.deepEqual(requests, [{ RelayStatus: null }, request, request, request])
 })

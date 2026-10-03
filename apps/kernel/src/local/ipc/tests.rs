@@ -62,7 +62,7 @@ fn request_decode_refusal_uses_legacy_unix_error_field_and_keeps_supported_reque
                     serde_json::from_slice(&super::read_async_frame(&mut stream).await.unwrap())
                         .unwrap();
                 assert!(result["response"].is_null());
-                assert!(result["error"].as_str().unwrap().contains("This kernel (protocol 410) does not support this request; update the Chariox client or kernel so both match."));
+                assert!(result["error"].as_str().unwrap().contains(&format!("This kernel (protocol {}) does not support this request; update the Chariox client or kernel so both match.", crate::local::LOCAL_DAEMON_PROTOCOL_VERSION)));
             }
         }
         let mut stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();

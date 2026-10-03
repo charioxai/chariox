@@ -40,7 +40,7 @@ export async function acceptAppHostOffer(
     minimumProtocolVersion: appHostActionMinimumProtocolVersion,
   })
   if ((response.AppRequestFailed as { code?: unknown } | undefined)?.code === "not_found") {
-    throw new Error("That App host offer is missing, expired, or belongs to another session")
+    throw new Error("That App host offer is missing, already answered, expired, or belongs to another session")
   }
   const accepted = response.AppHostActionAccepted as { operation_id?: unknown; action?: { kind?: unknown; text?: unknown; url?: unknown } } | undefined
   if (accepted?.operation_id !== operationId) throw new Error("That App host request is unavailable, already answered, or expired")
