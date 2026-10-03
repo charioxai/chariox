@@ -1607,6 +1607,25 @@ exit 0
 #[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
 async fn slice_pending_backup_restore_acknowledgement_survives_crash_and_broker_outage() {
+    async fn restart_after_owner_exit(config: &DaemonConfig) -> DaemonApp {
+        timeout(Duration::from_secs(10), async {
+            loop {
+                match DaemonApp::bootstrap(config.clone()) {
+                    Ok(app) => return app,
+                    Err(crate::error::DaemonError::LocalTransport {
+                        operation: "durable_state.acquire_owner",
+                        message,
+                    }) if message == "durable state is already owned by another kernel" => {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    Err(error) => panic!("restart should bootstrap: {error}"),
+                }
+            }
+        })
+        .await
+        .expect("the dropped kernel's background owners should exit")
+    }
+
     let _environment = crate::env_lock::lock();
     let root = RuntimeTransportTempDir::new("slice-restore-acknowledgement");
     let config = restore_interruption_config(root.path());
@@ -1740,8 +1759,7 @@ async fn slice_pending_backup_restore_acknowledgement_survives_crash_and_broker_
         "CHARIOX_SLICE_DOCKER_BROKER_REQUIRED",
         std::ffi::OsStr::new("1"),
     );
-    let blocked = DaemonApp::bootstrap(config.clone())
-        .expect("a broker outage must not prevent kernel startup");
+    let blocked = restart_after_owner_exit(&config).await;
     assert_eq!(
         blocked.slices().list_pending_restore_acknowledgements(),
         vec![owed.clone()]
@@ -1768,7 +1786,7 @@ async fn slice_pending_backup_restore_acknowledgement_survives_crash_and_broker_
     // Restart with the broker repaired: reconciliation acknowledges, and the
     // next restore starts and commits.
     let app = Arc::new(Mutex::new(
-        DaemonApp::bootstrap(config.clone()).expect("kernel should restart"),
+        restart_after_owner_exit(&config).await,
     ));
     let router = CommandRouter::with_interactive_capacity(
         Arc::clone(&app),

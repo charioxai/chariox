@@ -329,6 +329,7 @@ fn suspend_deadline_terminates_worker_without_dormancy_or_shutdown_overlap() {
     wait(|| all_reaped(&observations));
     assert!(!control.is_app_dormant("alice", "installed"));
     assert_eq!(names(&frames(&observations, 0)), ["startup", "suspend"]);
+    wait(|| !control.lifecycle().has_pending_owner("alice", "installed"));
     assert_eq!(
         store
             .app_worker_status("alice", "installed")
