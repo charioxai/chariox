@@ -14,6 +14,7 @@ async fn applies_authenticated_mouse_and_keyboard_input_without_a_browser_contro
     worker_state.config.host_machine_id = "slice:slice-1".to_string();
     worker_state.config.room_environment_worker_binding =
         Some(crate::config::RoomEnvironmentWorkerBinding {
+            provisioned_slice_id: None,
             home_kernel_id: "home-kernel".to_string(),
             home_public_key: home.relay_public_key.clone(),
             session_id: "room-1".to_string(),
