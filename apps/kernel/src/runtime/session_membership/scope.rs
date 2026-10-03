@@ -541,7 +541,22 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::ClearWorkflowPromptQueue(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
-        LocalDaemonRequest::RequestKernelSudo(_)
+        LocalDaemonRequest::AcceptAppHostAction(_)
+        | LocalDaemonRequest::AdjustProjectEnvironment(_)
+        | LocalDaemonRequest::CreateDisposableWorker(_)
+        | LocalDaemonRequest::GetDisposableWorker(_)
+        | LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(_)
+        | LocalDaemonRequest::GetManagedEnvironmentReleaseUpdate(_)
+        | LocalDaemonRequest::GetProjectEnvironmentManifest(_)
+        | LocalDaemonRequest::KeepDisposableWorkerRunning(_)
+        | LocalDaemonRequest::KeepManagedEnvironmentRunning(_)
+        | LocalDaemonRequest::PrepareDisposableWorkerContextTransfer(_)
+        | LocalDaemonRequest::QueryFreshRemoteMachineKernels(_)
+        | LocalDaemonRequest::ReleaseDisposableWorker(_)
+        | LocalDaemonRequest::RequestManagedEnvironmentReleaseUpdate(_)
+        | LocalDaemonRequest::RestoreAppDataSnapshot(_)
+        | LocalDaemonRequest::RevokeAppFileGrants(_)
+        | LocalDaemonRequest::RequestKernelSudo(_)
         | LocalDaemonRequest::RequestKernelAccess(_)
         | LocalDaemonRequest::ListKernelAccessGrants(_)
         | LocalDaemonRequest::RevokeKernelAccessGrant(_)

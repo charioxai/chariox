@@ -62,6 +62,10 @@ impl KernelRuntimeState {
             Some(SessionMembershipScope::SessionRef {
                 session_ref,
                 workspace_id,
+            })
+            | Some(SessionMembershipScope::DeleteSessionRef {
+                session_ref,
+                workspace_id,
             }) => self
                 .owned
                 .session_store
@@ -112,7 +116,7 @@ impl KernelRuntimeState {
         let forbidden = matches!(
             request,
             LocalDaemonRequest::RespondToInteraction(_)
-                | LocalDaemonRequest::RequestNativeProviderInteraction(_)
+                | LocalDaemonRequest::RequestNativeProviderTurnInteraction(_)
                 | LocalDaemonRequest::ArmDeploymentCredentialEnrollment(_)
                 | LocalDaemonRequest::ExportDebugBundle(_)
                 | LocalDaemonRequest::ImportExternalProviderAgent(_)

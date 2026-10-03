@@ -238,6 +238,7 @@ impl KernelRuntimeState {
             interaction,
             tx,
             None,
+            None,
             Some(session.owner_user_id()),
         )?;
         // Secret-entry and vault-management prompts go only to terminals.

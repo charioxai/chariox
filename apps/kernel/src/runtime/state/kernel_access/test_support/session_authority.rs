@@ -26,6 +26,55 @@ pub(super) fn external_command(request: &LocalDaemonRequest, grant: &str) -> Ker
 }
 
 #[tokio::test]
+async fn kernel_access_main_requests_keep_session_scope_and_owner_decisions() {
+    let worktree = crate::test_support::TestWorktree::new("access-main-requests");
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
+            .unwrap();
+    let (allowed, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let (other, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+        Arc::new(Mutex::new(app)),
+        32,
+    );
+    let state = router.runtime_state();
+    let grant = state.insert_access_grant_for_test(allowed.id());
+    let delete = |id: &str| {
+        LocalDaemonRequest::DeleteSession(crate::local::DeleteSessionRequest {
+            session_ref: id.into(),
+            workspace_id: None,
+        })
+    };
+    assert!(state
+        .authorize_external_request(&grant, &delete(allowed.id()))
+        .is_ok());
+    assert!(state
+        .authorize_external_request(&grant, &delete(other.id()))
+        .is_err());
+    // A session ID on a host offer does not delegate the owner's decision.
+    let host_offer =
+        LocalDaemonRequest::AcceptAppHostAction(crate::local::AcceptAppHostActionRequest {
+            session_id: allowed.id().into(),
+            operation_id: "owner-offer".into(),
+        });
+    assert!(state
+        .authorize_external_request(&grant, &host_offer)
+        .is_err());
+    let file_grants =
+        LocalDaemonRequest::RevokeAppFileGrants(crate::local::RevokeAppFileGrantsRequest {
+            installation_id: "owner-installation".into(),
+            operation_id: None,
+        });
+    assert!(state
+        .authorize_external_request(&grant, &file_grants)
+        .is_err());
+}
+
+#[tokio::test]
 async fn kernel_access_destroy_refuses_another_same_owner_session_agent() {
     let worktree = crate::test_support::TestWorktree::new("access-session-target");
     let mut app =
