@@ -29,7 +29,6 @@ fn run_workflow_turn_completion_large_stack_test(name: &str, test: fn()) {
 
 fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_validation_passes_inner(
 ) {
-    let worktree = crate::test_support::TestWorktree::new("local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_validation_passes_inner");
     const FIRST_PRIVATE_INSTRUCTIONS: &str =
         "# First node\nProduce a tiny JSON payload.\nUPSTREAM_PRIVATE_INSTRUCTION_TOKEN\n";
     const SECOND_PRIVATE_INSTRUCTIONS: &str =

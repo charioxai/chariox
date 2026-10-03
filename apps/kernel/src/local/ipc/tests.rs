@@ -300,6 +300,8 @@ fn local_ipc_round_trip_exercises_session_and_terminal_flow() {
 #[cfg(target_os = "linux")]
 #[test]
 fn local_ipc_resource_telemetry_round_trip_returns_complete_kernel_snapshot() {
+    // The kernel log root follows CHARIOX_HOME/HOME, which parallel fixtures change.
+    crate::test_support::isolated_env_test!();
     run_local_ipc_async_test("local-ipc-resource-telemetry-round-trip", 2, || async {
         std::fs::create_dir_all(crate::logging::default_log_root())
             .expect("kernel log root should be available");
