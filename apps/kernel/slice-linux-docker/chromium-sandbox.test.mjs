@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import test from "node:test";
 
 test("Chromium container profile changes only the three namespace syscall rules", async () => {
@@ -61,4 +61,28 @@ test("browser recovery drill uses the production task cap without extra swap", a
   const drill = await readFile(new URL("./live-browser-profile-drill.mjs", import.meta.url), "utf8");
   assert.equal(drill.match(/"--pids-limit", "(\d+)"/)[1], provisioner.match(/CHARIOX_SLICE_DOCKER_PIDS_LIMIT:-(\d+)/)[1]);
   assert.equal(drill.match(/"--memory", "([^"]+)"/)[1], drill.match(/"--memory-swap", "([^"]+)"/)[1]);
+});
+
+test("browser profile drill runs the image-selected display server with its helper files", async () => {
+  const [screen, drill, helpers] = await Promise.all([
+    readFile(new URL("./docker/slice-screen.sh", import.meta.url), "utf8"),
+    readFile(new URL("./slice-browser-profile.drill.mjs", import.meta.url), "utf8"),
+    readdir(new URL("./docker/", import.meta.url)),
+  ]);
+  // The drill repoints CHARIOX_SLICE_ROOT at a copy, so every file the desktop
+  // helper loads from its root must be in that copy (Xorg aborts without its config).
+  const filter = drill.match(/const runtimeFile = \/(.+)\/;/);
+  assert.ok(filter, "the drill declares one runtime copy filter");
+  const runtimeFile = new RegExp(filter[1]);
+  const loaded = new Set([...screen.matchAll(/\$ROOT\/([A-Za-z0-9_.-]+)/g)]
+    .map(([, name]) => name).filter((name) => name !== "logs"));
+  assert.ok(loaded.has("xorg-dummy.conf"));
+  for (const name of loaded) {
+    assert.ok(helpers.includes(name), `${name} ships from docker/`);
+    assert.match(name, runtimeFile, `drill runtime copy omits ${name}`);
+  }
+  // Recovery must keep the same display process, whichever server the image selects.
+  assert.doesNotMatch(drill, /"pgrep", \["-x", "Xvfb"\]/);
+  assert.match(drill, /const displayServer = env\.CHARIOX_SLICE_DISPLAY_SERVER \|\| "Xvfb";/);
+  assert.equal(drill.match(/"pgrep", \["-x", displayServer\]/g)?.length, 2);
 });

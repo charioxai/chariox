@@ -56,7 +56,7 @@ node apps/kernel/slice-linux-docker/live-browser-profile-drill.mjs
 ```
 
 The driver never builds/downloads an image. The image needs Node 22, Chromium,
-Xvfb, Openbox, x11vnc, websockify/noVNC, xdotool, Python and zstd. Source must be
+the display server it selects (Xorg with the dummy driver, or Xvfb), Openbox, x11vnc, websockify/noVNC, xdotool, Python and zstd. Source must be
 visible to the Docker daemon for a read-only mount. This focused fixture uses
 the noVNC desktop backend only to exercise the shared Chromium lifecycle, not to
 validate or select the product's streaming backend.
