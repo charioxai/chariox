@@ -57,6 +57,8 @@ const EXPECTED_ARTIFACTS = new Map([
   ["chariox-build-attestation-signature", { path: "/usr/lib/chariox/build-attestation.sig", type: "file" }],
   ["chariox-builder-public-key", { path: "/usr/lib/chariox/builder-public-key", type: "file" }],
 ])
+// Releases built before Apps carry none of these; any later release carries all of them.
+const APP_ARTIFACT_NAMES = ["chariox-app-package", "chariox-app-storage", "chariox-app-storage.service"]
 
 function fail(message) {
   throw new Error(message)
@@ -194,13 +196,15 @@ async function verifyPath1BuilderAttestation(
     ["artifacts", "schemaVersion", "sourceCommit", "sourceTree", "target"],
     "builder attestation",
   )
+  // A release with the App artifact set attests its two App binaries after the runtime binaries.
+  const attestsAppBinaries = verifiedArtifactDigests.has("chariox-app-package")
   if (
     attestation.schemaVersion !== 1 ||
     attestation.sourceCommit !== manifest.sourceCommit ||
     attestation.sourceTree !== manifest.sourceTree ||
     attestation.target !== MANAGED_BUILD_TARGET ||
     !Array.isArray(attestation.artifacts) ||
-    attestation.artifacts.length !== 5
+    attestation.artifacts.length !== (attestsAppBinaries ? 5 : 3)
   ) {
     fail("builder attestation source identity or target does not match the signed release")
   }
@@ -211,8 +215,10 @@ async function verifyPath1BuilderAttestation(
     ["chariox-kernel", verifiedArtifactDigests.get("chariox-kernel")],
     ["chariox-managed-bootstrap", verifiedArtifactDigests.get("chariox-managed-bootstrap")],
     ["chariox-relay", await sha256File(relayPath)],
-    ["chariox-app-package", verifiedArtifactDigests.get("chariox-app-package")],
-    ["chariox-app-storage", verifiedArtifactDigests.get("chariox-app-storage")],
+    ...(attestsAppBinaries ? [
+      ["chariox-app-package", verifiedArtifactDigests.get("chariox-app-package")],
+      ["chariox-app-storage", verifiedArtifactDigests.get("chariox-app-storage")],
+    ] : []),
   ]
   for (const [index, artifact] of attestation.artifacts.entries()) {
     validateObjectKeys(artifact, ["name", "sha256"], "builder attestation artifact")
@@ -345,6 +351,14 @@ async function verifyImageRelease(
     fail("release contains an incomplete Path-1 data-volume admission artifact set")
   }
   const hasDataVolumeAdmission = dataVolumeArtifactCount === dataVolumeArtifactNames.length
+  // Releases built before Apps stay verifiable for rollback, but never with a partial App set.
+  const appArtifactCount = manifest.artifacts.filter(
+    (artifact) => APP_ARTIFACT_NAMES.includes(artifact?.name),
+  ).length
+  if (appArtifactCount !== 0 && appArtifactCount !== APP_ARTIFACT_NAMES.length) {
+    fail("release contains an incomplete App artifact set")
+  }
+  const hasAppArtifacts = appArtifactCount === APP_ARTIFACT_NAMES.length
   if (selectedTopology === "path1" && !hasDataVolumeAdmission) {
     fail("Path-1 releases must include data-volume admission and both ordering drop-ins")
   }
@@ -352,6 +366,7 @@ async function verifyImageRelease(
     - (hasWorkerService ? 0 : 1)
     - (hasPath1Service ? 0 : 1)
     - (hasDataVolumeAdmission ? 0 : dataVolumeArtifactNames.length)
+    - (hasAppArtifacts ? 0 : APP_ARTIFACT_NAMES.length)
   if (!hasWorkerService) {
     const workerPath = artifactPath(rootfs, EXPECTED_ARTIFACTS.get("chariox-disposable-worker-bootstrap.service").path)
     const workerExists = await lstat(workerPath).then(() => true, (error) => {
@@ -376,6 +391,16 @@ async function verifyImageRelease(
         return false
       })
       if (artifactExists) fail(`release contains an undeclared data-volume artifact: ${name}`)
+    }
+  }
+  if (!hasAppArtifacts) {
+    for (const name of APP_ARTIFACT_NAMES) {
+      const artifactPathname = artifactPath(rootfs, EXPECTED_ARTIFACTS.get(name).path)
+      const artifactExists = await lstat(artifactPathname).then(() => true, (error) => {
+        if (error.code !== "ENOENT") throw error
+        return false
+      })
+      if (artifactExists) fail(`release contains an undeclared App artifact: ${name}`)
     }
   }
   if (manifest.artifacts.length !== expectedArtifactCount) {

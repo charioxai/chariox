@@ -900,6 +900,13 @@ else
     "$pending_release/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d"
   install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-kernel" "$pending_release/usr/local/bin/chariox-kernel"
   install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-managed-bootstrap" "$pending_release/usr/local/bin/chariox-managed-bootstrap"
+  # The verified image carries the whole App set or, if built before Apps, none of it.
+  if path_exists "$image_root/usr/local/bin/chariox-app-package"; then
+    install -d -o root -g root -m 0755 "$pending_release/usr/libexec"
+    install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-app-package" "$pending_release/usr/local/bin/chariox-app-package"
+    install -o root -g root -m 0755 "$image_root/usr/libexec/chariox-app-storage" "$pending_release/usr/libexec/chariox-app-storage"
+    install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-app-storage.service" "$pending_release/etc/systemd/system/chariox-app-storage.service"
+  fi
   for release_file in release-manifest.json release-manifest.sig release-public-key build-attestation.json build-attestation.sig builder-public-key; do
     install -o root -g root -m 0644 "$image_root/usr/lib/chariox/$release_file" "$pending_release/usr/lib/chariox/$release_file"
   done

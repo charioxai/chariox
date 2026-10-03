@@ -240,10 +240,14 @@ async function effectiveCharioxIdentity() {
   return { uid: 0, gid: 0 }
 }
 
-async function makeRelease(root, label, protocol, privateKey, publicKey, transitionPolicy = null, includeWorkerService = false, builderKeys = null, manifestSchema = 3) {
+async function makeRelease(root, label, protocol, privateKey, publicKey, transitionPolicy = null, includeWorkerService = false, builderKeys = null, manifestSchema = 3, includeAppArtifacts = true) {
   const rootfs = join(root, `image-${label}`)
   const kernel = join(rootfs, "usr/local/bin/chariox-kernel")
   const supervisor = join(rootfs, "usr/local/bin/chariox-managed-bootstrap")
+  // Releases built before Apps carry no App binaries or App storage unit.
+  const appPackage = join(rootfs, "usr/local/bin/chariox-app-package")
+  const appStorage = join(rootfs, "usr/libexec/chariox-app-storage")
+  const appStorageService = join(rootfs, "etc/systemd/system/chariox-app-storage.service")
   const managedService = join(rootfs, `etc/systemd/system/${serviceName}`)
   const rootlessService = join(rootfs, "etc/systemd/system/chariox-rootless-docker.service")
   const brokerService = join(rootfs, "etc/systemd/system/chariox-slice-broker.service")
@@ -256,6 +260,11 @@ async function makeRelease(root, label, protocol, privateKey, publicKey, transit
   const allocatorDataVolumeDropIn = join(repositoryRoot, "apps/kernel/slice-linux-docker/chariox-slice-disk-quota-allocator.path1-data-volume.conf")
   await put(kernel, `#!/bin/sh\nif [ "\$1" = "--print-local-daemon-protocol-version" ]; then echo ${protocol}; exit 0; fi\nexit 1\n`, 0o755)
   await put(supervisor, `#!/bin/sh\necho supervisor-${label}\n`, 0o755)
+  if (includeAppArtifacts) {
+    await put(appPackage, `#!/bin/sh\necho app-package-${label}\n`, 0o755)
+    await put(appStorage, `#!/bin/sh\necho app-storage-${label}\n`, 0o755)
+    await put(appStorageService, await readFile(join(repositoryRoot, "deploy/managed-kernel/chariox-app-storage.service")))
+  }
   await put(managedService, `[Service]\nExecStart=/usr/local/bin/chariox-managed-bootstrap\n# ${label}\n`)
   await put(rootlessService, `[Service]\n# rootless ${label}\n`)
   await put(brokerService, `[Service]\n# broker ${label}\n`)
@@ -289,6 +298,10 @@ async function makeRelease(root, label, protocol, privateKey, publicKey, transit
         { name: "chariox-kernel", sha256: await sha256File(kernel) },
         { name: "chariox-managed-bootstrap", sha256: await sha256File(supervisor) },
         { name: "chariox-relay", sha256: await sha256File(relay) },
+        ...(includeAppArtifacts ? [
+          { name: "chariox-app-package", sha256: await sha256File(appPackage) },
+          { name: "chariox-app-storage", sha256: await sha256File(appStorage) },
+        ] : []),
       ],
     }))
     await put(attestation, attestationBytes)
@@ -311,6 +324,13 @@ async function makeRelease(root, label, protocol, privateKey, publicKey, transit
     ["chariox-build-attestation-signature", "/usr/lib/chariox/build-attestation.sig", attestationSignature, "file"],
     ["chariox-builder-public-key", "/usr/lib/chariox/builder-public-key", builderKey, "file"],
   ]
+  if (includeAppArtifacts) {
+    artifactSpecs.push(
+      ["chariox-app-package", "/usr/local/bin/chariox-app-package", appPackage, "file"],
+      ["chariox-app-storage", "/usr/libexec/chariox-app-storage", appStorage, "file"],
+      ["chariox-app-storage.service", "/etc/systemd/system/chariox-app-storage.service", appStorageService, "file"],
+    )
+  }
   const artifacts = []
   if (includeWorkerService) {
     const path = "/etc/systemd/system/chariox-disposable-worker-bootstrap.service"
@@ -387,6 +407,7 @@ async function makeHarness(context, {
   rotateBuilder = false,
   currentManifestSchema = 3,
   targetManifestSchema = 3,
+  currentAppArtifacts = true,
   updaterPath = upgrade,
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), "chariox-managed-upgrade-"))
@@ -404,6 +425,7 @@ async function makeHarness(context, {
   const current = await makeRelease(
     root, "current", currentProtocol, privateKey, publicKey, currentTransitionPolicy,
     path1Release || workerCapableCurrent || receiptKind === "allocation_worker", builderKeys, currentManifestSchema,
+    currentAppArtifacts,
   )
   const target = await makeRelease(
     root, "target", targetProtocol, privateKey, publicKey, targetTransitionPolicy, true, targetBuilderKeys, targetManifestSchema,
@@ -905,6 +927,28 @@ test("managed kernel upgrade atomically advances the release and receipt without
     `start ${serviceName}`,
     `is-active --quiet ${serviceName}`,
   ])
+})
+
+test("managed kernel upgrade stages the App artifact set when advancing from a release built before Apps", async (context) => {
+  const harness = await makeHarness(context, { currentAppArtifacts: false })
+  const result = harness.run()
+  assert.equal(result.status, 0, result.stderr)
+  const targetRelease = join(harness.installRoot, `usr/lib/chariox/releases/${harness.target.digest.slice("sha256:".length)}`)
+  assert.equal(
+    await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
+    `releases/${harness.target.digest.slice("sha256:".length)}`,
+  )
+  for (const [path, contents, mode] of [
+    ["usr/local/bin/chariox-app-package", "#!/bin/sh\necho app-package-target\n", 0o755],
+    ["usr/libexec/chariox-app-storage", "#!/bin/sh\necho app-storage-target\n", 0o755],
+    ["etc/systemd/system/chariox-app-storage.service",
+      await readFile(join(repositoryRoot, "deploy/managed-kernel/chariox-app-storage.service"), "utf8"), 0o644],
+  ]) {
+    assert.equal(await readFile(join(targetRelease, path), "utf8"), contents)
+    assert.equal((await stat(join(targetRelease, path))).mode & 0o777, mode)
+  }
+  const previousRelease = join(harness.installRoot, `usr/lib/chariox/releases/${harness.current.digest.slice("sha256:".length)}`)
+  assert.equal(await lstat(join(previousRelease, "usr/local/bin/chariox-app-package")).then(() => true, () => false), false)
 })
 
 test("Path-1 upgrade rejects effective home or worker drop-ins before recovery or service mutation", async (context) => {
@@ -1986,7 +2030,10 @@ async function legacyUpdater() {
 test("the exact legacy installed updater rejects the current signed target before commit or interruption", async (context) => {
   const updaterPath = await legacyUpdater()
   for (const mode of ["commit", "interruption"]) {
-    const harness = await makeHarness(context, { currentManifestSchema: 2, targetManifestSchema: 3, updaterPath })
+    // The legacy updater's installed release predates Apps; only the target carries the App set.
+    const harness = await makeHarness(context, {
+      currentManifestSchema: 2, targetManifestSchema: 3, currentAppArtifacts: false, updaterPath,
+    })
     const attemptPath = join(harness.installRoot, "home/chariox/.chariox/release-update-attempt.json")
     const legacyAttempt = { updateId: cloudUpdateId, targetRuntimeReleaseDigest: harness.target.digest }
     await put(attemptPath, `${JSON.stringify(legacyAttempt)}\n`, 0o600)

@@ -4,9 +4,12 @@ import { fileURLToPath } from "node:url"
 import { spawnSync } from "node:child_process"
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url))
+// Mirrors SLICE_BUILD_CONTEXT_SOURCES in scripts/package-managed-kernel-release.mjs.
 const SLICE_BUILD_CONTEXT_SOURCES = [
   "Cargo.toml",
   "Cargo.lock",
+  "deploy/local-linux/provision-docker-admission-locks.py",
+  "deploy/managed-kernel/chariox-docker-admission-locks.service",
   "adapters/rust",
   "apps/aegs-dummy",
   "apps/browser-session-import",
@@ -16,6 +19,9 @@ const SLICE_BUILD_CONTEXT_SOURCES = [
   "deploy/managed-kernel",
   "examples/workflow-code",
   "packages/aegs-sdk",
+  "packages/app-package",
+  "packages/app-runtime",
+  "packages/app-sdk",
   "packages/event-protocol",
 ]
 const SLICE_BUILD_CONTEXT_PATH = "/usr/lib/chariox/slice-build-context"

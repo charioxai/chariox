@@ -54,9 +54,13 @@ test("publication Rust build consumes the workspace lock and every kernel path d
     assert.ok(copy < kernelBuild, `${requiredCopy} must happen before the kernel build`)
   }
 
-  const kernelPathDependencies = [...kernelCargo.matchAll(/^\s*[\w-]+\s*=\s*\{[^\n}]*path\s*=\s*"([^"]+)"/gm)]
-    .map((match) => match[1])
-  assert.deepEqual(kernelPathDependencies.sort(), ["../../packages/app-runtime", "../../packages/event-protocol", "../relay"])
+  // A crate may appear in both dependencies and dev-dependencies (app-runtime adds test fixtures).
+  const kernelPathDependencies = [...new Set(
+    [...kernelCargo.matchAll(/^\s*[\w-]+\s*=\s*\{[^\n}]*path\s*=\s*"([^"]+)"/gm)].map((match) => match[1]),
+  )]
+  assert.deepEqual(kernelPathDependencies.sort(), [
+    "../../packages/app-package", "../../packages/app-runtime", "../../packages/event-protocol", "../relay",
+  ])
   assert.match(
     rustStage,
     /test "\$\(target\/release\/chariox-kernel --print-local-daemon-protocol-version\)"/,
