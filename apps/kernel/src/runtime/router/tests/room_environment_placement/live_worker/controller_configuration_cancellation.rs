@@ -45,6 +45,14 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str, agent: &str, tab: &
         })
         .catch_unwind()
         .await;
+        if assertions.is_err() {
+            eprintln!(
+                "configuration hold diagnostic: finished={} marker={} physical_delta={}",
+                operation.is_finished(),
+                pending.exists(),
+                physical_count(fixture, counter) - before
+            );
+        }
         std::fs::remove_file(&hold).unwrap();
         let result = timeout(Duration::from_secs(5), operation)
             .await
