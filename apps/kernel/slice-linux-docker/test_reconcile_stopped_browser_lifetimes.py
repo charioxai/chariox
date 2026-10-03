@@ -50,13 +50,32 @@ class Docker:
                 "StartedAt": str(self.reads) if self.change else "2026-09-27T00:00:00Z", "FinishedAt": "2026-09-27T01:00:00Z"}}]).encode()
         if args[0] == "cp" and args[-1] == "-":
             return self.data
-        if args[:3] == ("cp", "-a", "-"):
+        if args[:2] == ("cp", "-"):
             self.writes.append((args, data))
             return b""
         raise AssertionError(args)
 
 
 class ReconciliationTests(unittest.TestCase):
+    def test_retirement_preserves_numeric_owners_without_named_user_lookup(self):
+        docker = Docker()
+        def request(*args, **kwargs):
+            if args[0] == "cp" and args[-1] != "-":
+                # Docker 20.10 archive mode resolves Config.User against the
+                # daemon's passwd database; the worker's named user is absent.
+                if "-a" in args:
+                    raise RuntimeError('getent unable to find entry "slice" in passwd database')
+                with tarfile.open(fileobj=io.BytesIO(kwargs["data"]), mode="r:*") as stream:
+                    members = stream.getmembers()
+                    self.assertEqual(len(members), 2)
+                    for member in members:
+                        self.assertEqual((member.uid, member.gid, member.mode), (1001, 1001, 0o600))
+                docker.writes.append((args, kwargs["data"]))
+                return b""
+            return docker(*args, **kwargs)
+        self.assertEqual(module.reconcile(IDENTITY, LABELS, request)["retired"], 1)
+        self.assertEqual(len(docker.writes), 1)
+
     def test_missing_lifecycle_uses_head_status_not_docker_cli_error_rendering(self):
         for message in ("No such file or directory", "Could not find the file", "localized error"):
             docker = Docker()
@@ -220,8 +239,11 @@ class ReconciliationTests(unittest.TestCase):
             return docker(*args, **kwargs)
         result = module.reconcile(IDENTITY, LABELS, request)
         self.assertEqual(result["legacyEntries"], 1)
+        self.assertEqual(docker.writes[0][0][:2], ("cp", "-"))
         with tarfile.open(fileobj=io.BytesIO(docker.writes[0][1])) as proof:
-            self.assertEqual(proof.getmembers()[0].name, "legacy-container-retired.json")
+            member = proof.getmembers()[0]
+            self.assertEqual((member.uid, member.gid, member.mode), (1001, 1001, 0o600))
+            self.assertEqual(member.name, "legacy-container-retired.json")
             self.assertEqual(json.load(proof.extractfile(proof.getmembers()[0]))["entries"], [entry])
 
     def test_legacy_root_stat_rejects_public_or_symlink_directory(self):
