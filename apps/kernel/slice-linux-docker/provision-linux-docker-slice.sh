@@ -1052,8 +1052,9 @@ ensure_container() {
       # The worker kernel launches providers through an inner bubblewrap user,
       # PID, and mount namespace. Docker's default seccomp, AppArmor, and
       # system-path masks block that setup before bubblewrap can install the
-      # narrower provider boundary. Managed hosts run this container in the
-      # dedicated rootless daemon; all placements must explicitly opt in. These
+      # narrower provider boundary. Managed hosts use a dedicated rootless
+      # daemon; explicit DEV enrollment uses a rootful unmapped engine.
+      # Ordinary local placements must explicitly opt in. These
       # are Bubblewrap's documented setup capabilities; the provider receives
       # none of them because the inner sandbox uses --cap-drop ALL.
       docker_create_args+=(

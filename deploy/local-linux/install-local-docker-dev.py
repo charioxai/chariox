@@ -28,6 +28,8 @@ def publish(path, payload, mode):
     finally: os.close(fd)
 
 p = argparse.ArgumentParser(description=__doc__)
+p.add_argument('--allow-provider-sandbox-compatibility', action='store_true', required=True,
+    help='Grant rootful unmapped DEV workers SYS_ADMIN, NET_ADMIN, SYS_PTRACE, disabled seccomp, unmasked paths and the selected AppArmor profile; container uid 0 maps to host uid 0')
 p.add_argument('--source', required=True, type=pathlib.Path)
 p.add_argument('--user', required=True)
 p.add_argument('--worker-image', required=True)

@@ -142,6 +142,9 @@ export function verifyLocalHelperTopology(enrollment, info) {
 // Runtime compatibility and installed-helper provenance are distinct pins.
 export function localDevRuntimeEnvironment(enrollment) {
   validateLocalDevEnrollment(enrollment, enrollment.ownerUid)
-  return {CHARIOX_SLICE_LOCAL_DEV_RUNTIME_REVISION: enrollment.workerRuntimeRevision,
+  // Explicit local DEV enrollment grants the provider namespace compatibility
+  // required by the broker isolation probe. Ordinary local slices remain opt-in.
+  return {CHARIOX_SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY: "1",
+    CHARIOX_SLICE_LOCAL_DEV_RUNTIME_REVISION: enrollment.workerRuntimeRevision,
     CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: enrollment.sourceDigest}
 }

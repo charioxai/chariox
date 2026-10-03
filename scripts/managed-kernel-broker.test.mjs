@@ -1194,7 +1194,7 @@ test("Phase 1 local DEV broker runs unbounded slices without release F's managed
     PROVISIONER: process.execPath, DOCKER_HOST: "unix:///run/docker.sock", MAX_OUTPUT_BYTES: 1024,
     LOCAL_AUTHORITY: { enrollment: { ownerUid: 1000 } },
     verifiedProtectedAuthority: () => { authorityChecks++ },
-    localDevRuntimeEnvironment: () => ({}),
+    localDevRuntimeEnvironment: () => ({CHARIOX_SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY: "1"}),
     VERIFIED_BUILD_CONTEXT_DIGEST: "", protectedLayouts: { complete: () => {} },
     validateRequest: () => {},
     fail: message => { throw new Error(message) },
@@ -1216,12 +1216,13 @@ test("Phase 1 local DEV broker runs unbounded slices without release F's managed
     brokerLifetime: new AbortController(), BROKER_OUTPUT_ROOT: "/synthetic/logs", join,
     runBrokerCommand: async (command, args, options) => {
       commands.push([command, ...args])
+      if (command === process.execPath) assert.equal(options.env.CHARIOX_SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY, "1", "enrolled DEV grant overrides the kernel default")
       return spawnSync(process.execPath, ["-e", "process.stdout.write('ran')"], options)
     },
   })
   const slice = "chariox-slice-local"
   const requests = [
-    ...["provision", "restore-state", "recover", "destroy"].map(action => ({ kind: "provisioner", action, files: [], environment: { CHARIOX_SLICE_NAME: slice } })),
+    ...["provision", "restore-state", "recover", "destroy"].map(action => ({ kind: "provisioner", action, files: [], environment: { CHARIOX_SLICE_NAME: slice, CHARIOX_SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY: "0" } })),
     { kind: "docker", args: ["start", slice] },
     { kind: "docker", args: ["unpause", slice] },
   ]
