@@ -165,6 +165,7 @@ test("local Linux root install is idempotent, merges owners and uninstalls", { s
   try {
     const first = h.install(["alice"])
     assert.equal(first.status, 0, first.out)
+    assert.match(await h.log("apparmor"), /^-Q -K .*\n-r /)
     for (const line of [
       /verify and install the signed App runtime [0-9a-f]{64} from /,
       /enrolled runtime [0-9a-f]{64} revision 1 \(was none\)/,
@@ -310,6 +311,32 @@ test("restricted kernel with an incompatible AppArmor parser fails actionably be
     assert.deepEqual(created(h), [])
     assert.equal(await h.log("runtime-install"), "")
     assert.doesNotMatch(await h.log("systemctl"), /^start |^restart |^enable /m)
+  } finally {
+    await rm(h.base, { recursive: true, force: true })
+  }
+})
+
+
+test("unrestricted kernel unloads a previously loaded native-entry profile before removal", { skip: !linux }, async () => {
+  const h = await harness()
+  try {
+    assert.equal(h.install(["alice"]).status, 0)
+    const profile = p(h, "etc/apparmor.d/chariox-app-bwrap")
+    const loaded = p(h, "sys/kernel/security/apparmor/profiles")
+    assert.match(await readFile(loaded, "utf8"), /chariox-app-bwrap/)
+    // Model a later boot on a kernel that no longer exposes the restriction.
+    await rm(p(h, "proc/sys/kernel/apparmor_restrict_unprivileged_userns"))
+    await h.reset("apparmor")
+    const dry = h.install(["alice"], ["--dry-run"])
+    assert.equal(dry.status, 0, dry.out)
+    assert.ok(existsSync(profile))
+    assert.match(await readFile(loaded, "utf8"), /chariox-app-bwrap/)
+    assert.equal(await h.log("apparmor"), "")
+    const result = h.install(["alice"])
+    assert.equal(result.status, 0, result.out)
+    assert.equal(await h.log("apparmor"), `-R ${profile}\n`)
+    assert.equal(await readFile(loaded, "utf8"), "")
+    assert.equal(existsSync(profile), false)
   } finally {
     await rm(h.base, { recursive: true, force: true })
   }
