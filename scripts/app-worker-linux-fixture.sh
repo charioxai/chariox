@@ -30,8 +30,13 @@ for fixture_name in package runtime good-data good-tmp weak-data weak-tmp bad-da
   if [[ "$fixture_name" == runtime || "$fixture_name" == bad-data ]]; then
     fixture_flags="rw,nodev,nosuid,exec,size=8m,mode=0700,uid=$fixture_uid,gid=$fixture_gid"
   fi
+  # Installed runtimes are host-root owned, seen as overflow UID in the worker.
+  if [[ "$fixture_name" == runtime ]]; then
+    fixture_flags="rw,nodev,nosuid,exec,size=8m,mode=0755,uid=0,gid=0"
+  fi
   mount -t tmpfs -o "$fixture_flags" chariox-native-fixture "$fixture_mounts/$fixture_name"
 done
+chmod 755 "$fixture_mounts/package"
 printf 'private supervisor fixture\n' > "$fixture_scratch/secret"
 chmod 600 "$fixture_scratch/secret"
 ln -s "$fixture_scratch/secret" "$fixture_mounts/package/escape"

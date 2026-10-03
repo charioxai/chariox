@@ -128,6 +128,7 @@ async function inspectWorker(running) {
 }
 
 try {
+  assert.equal((await stat(path.join(mounts, 'runtime'))).uid, 0);
   const running = start('good');
   await waitReady(running);
   await assert.rejects(access(path.join(mounts, 'good-data/constructor-ran')));
@@ -150,6 +151,23 @@ try {
   ]) assert.equal(checks[name], 'ok', JSON.stringify(result));
   assert.ok(!result.stdout.includes(':FAIL'));
   outcomes.push({ name: 'production-native-boundary', passed: true, observed, checks });
+
+  // The runtime-only overflow-owner exception must never admit a package root.
+  const packageRoot = path.join(mounts, 'package');
+  const packageMode = 'ro,nodev,nosuid,noexec';
+  execFileSync('/usr/bin/mount', ['-o', 'remount,rw,nodev,nosuid,noexec', packageRoot]);
+  await chown(packageRoot, 0, 0);
+  execFileSync('/usr/bin/mount', ['-o', `remount,${packageMode}`, packageRoot]);
+  try {
+    const untrusted = await start('good').completed;
+    assert.equal(untrusted.code, 101, JSON.stringify(untrusted));
+    assert.equal(untrusted.ready.length, 0);
+    outcomes.push({ name: 'root-owned-package-rejected-before-readiness', passed: true });
+  } finally {
+    execFileSync('/usr/bin/mount', ['-o', 'remount,rw,nodev,nosuid,noexec', packageRoot]);
+    await chown(packageRoot, uid, gid);
+    execFileSync('/usr/bin/mount', ['-o', `remount,${packageMode}`, packageRoot]);
+  }
 
   const bad = start('bad');
   const badResult = await bad.completed;
