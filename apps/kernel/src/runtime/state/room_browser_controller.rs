@@ -61,10 +61,11 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         viewport: crate::session::CanonicalViewport,
+        browser_bar_visible: bool,
     ) -> Result<Response, DaemonError> {
         self.room_browser_controller_command_inner(
             session_id,
-            Command::Reconcile { viewport },
+            Command::Reconcile { viewport, browser_bar_visible },
             false,
             true,
             None,

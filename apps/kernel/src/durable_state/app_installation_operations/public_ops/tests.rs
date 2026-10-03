@@ -68,7 +68,7 @@ fn input() -> InstallInput {
 
 #[test]
 fn preparing_ack_replay_and_cancel_survive_reopen_without_creating_a_stage() {
-    let mut f = Fixture::new();
+    let f = Fixture::new();
     let initial = f.reserve("request");
     assert_eq!(initial.phase, InstallPhase::Preparing);
     assert!(initial.review.is_none());
@@ -106,8 +106,9 @@ fn preparing_ack_replay_and_cancel_survive_reopen_without_creating_a_stage() {
         .is_err());
     // Release this kernel's ownership, keeping the database, before reopening.
     let database = f.store.path().to_path_buf();
-    let directory = std::mem::take(&mut f.path);
-    drop(f);
+    let Fixture { store, _root } = f;
+    store.fence_writer().unwrap();
+    drop(store);
     let reopened = DurableKernelStateStore::open_owned(database).unwrap();
     assert_eq!(
         cancelled,
@@ -116,7 +117,7 @@ fn preparing_ack_replay_and_cancel_survive_reopen_without_creating_a_stage() {
             .unwrap()
     );
     drop(reopened);
-    let _ = std::fs::remove_dir_all(directory);
+    drop(_root);
 }
 
 #[test]
