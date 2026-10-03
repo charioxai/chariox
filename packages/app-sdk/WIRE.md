@@ -97,6 +97,17 @@ instead of adding an unbounded work queue. A handler that ignores cancellation
 keeps its execution slot occupied. The host process supervisor enforces the
 remaining execution and OS resource budget.
 
+The 16 executing-handler limit intentionally stays below the kernel's 64
+pending-call limit to preserve the worker's execution and resource bounds.
+SDK peer refusals use `APP_BUSY` and `retryable: true`; their message names
+`app_handler_capacity_full` or `app_pending_capacity_full` and says
+`retry after 500 ms`. Refused calls never start and are not automatically retried.
+SDK-local errors also expose that string as `cause` and `500` as `retryAfterMs`;
+the SDK reconstructs those properties only for its exact capacity messages.
+Neither property is serialized: the error envelope above is unchanged. The App
+view page's existing `code`/`message` projection retains the cause and hint in
+the message, but does not expose those SDK properties or `retryable`.
+
 Per-call execution is capped at 30 seconds; the effective inbound deadline is
 the earlier of `deadline_ms` and the current time plus 30 seconds. Frame assembly
 and each queued write have a 30-second absolute deadline, beginning when the

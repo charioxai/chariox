@@ -25,6 +25,8 @@ export type LifecycleEvent = 'health_check' | 'startup' | 'suspend' | 'resume' |
 export class AppError extends Error {
   readonly code: string;
   readonly retryable: boolean;
+  /** SDK peer capacity refusal hint; the caller chooses whether to retry. */
+  readonly retryAfterMs?: number;
   constructor(code: string, message: string, options?: { retryable?: boolean; cause?: unknown });
 }
 

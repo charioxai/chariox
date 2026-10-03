@@ -35,7 +35,7 @@ export class AppPeer {
       return Promise.reject(new AppError('INVALID_ARGUMENT', 'App request deadline is outside its budget'));
     }
     if (this.#pending.size >= this.limits.maxPending) {
-      return Promise.reject(new AppError('BUSY', 'Too many pending App requests', { retryable: true }));
+      return Promise.reject(peerBusyError('app_pending_capacity_full'));
     }
     const id = `${this.#prefix}${++this.#counter}`;
     return new Promise((resolve, reject) => {
@@ -115,7 +115,7 @@ export class AppPeer {
           const pending = this.#pending.get(message.id);
           if (!pending) return; // A timed-out or cancelled call cannot be revived.
           pending.settle(Object.hasOwn(message, 'error')
-            ? new AppError(message.error.code, message.error.message, message.error) : undefined, message.result);
+            ? responseError(message.error) : undefined, message.result);
           break;
         }
         case 'request':
@@ -135,7 +135,7 @@ export class AppPeer {
   #dispatch(message) {
     if (this.#active.has(message.id)) throw protocolError('Duplicate active App call identity');
     if (this.#active.size >= this.limits.maxHandlers) {
-      this.#control({ kind: 'response', id: message.id, error: wireError(new AppError('BUSY', 'App handler capacity is full', { retryable: true })) });
+      this.#control({ kind: 'response', id: message.id, error: wireError(peerBusyError('app_handler_capacity_full')) });
       return;
     }
     const deadline = Math.min(message.deadline_ms, Date.now() + this.limits.maxDeadlineMs);
@@ -184,6 +184,28 @@ export class AppPeer {
     this.unsubscribe?.();
     this.transport.close();
   }
+}
+
+const PEER_BUSY_CAUSES = ['app_pending_capacity_full', 'app_handler_capacity_full'];
+const BUSY_RETRY_AFTER_MS = 500;
+
+function busyMessage(cause) {
+  return `${cause}; retry after ${BUSY_RETRY_AFTER_MS} ms`;
+}
+
+function peerBusyError(cause) {
+  return Object.assign(new AppError('APP_BUSY', busyMessage(cause), { retryable: true, cause }),
+    { retryAfterMs: BUSY_RETRY_AFTER_MS });
+}
+
+function responseError(error) {
+  // The worker wire carries only code/message/retryable. Reconstruct local
+  // metadata for our exact capacity refusals, never for an arbitrary App error.
+  if (error.code === 'APP_BUSY' && error.retryable === true) {
+    const cause = PEER_BUSY_CAUSES.find((cause) => error.message === busyMessage(cause));
+    if (cause) return peerBusyError(cause);
+  }
+  return new AppError(error.code, error.message, error);
 }
 
 // The refused value's location and problem, never the App's own error text.
