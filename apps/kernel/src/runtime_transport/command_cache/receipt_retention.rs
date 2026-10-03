@@ -106,7 +106,10 @@ impl ReceiptRetention {
         write: impl FnOnce(&mut fs::File, &[u8]) -> io::Result<()>,
     ) -> io::Result<()> {
         if self.append_unavailable {
-            return Err(io::Error::other("expiry marker append needs recovery"));
+            return Err(io::Error::new(
+                io::ErrorKind::OutOfMemory,
+                at_most_once::ReceiptCapacityError,
+            ));
         }
         let marker = Self::identity(command_id);
         let path = Self::marker_path(path);
@@ -126,12 +129,17 @@ impl ReceiptRetention {
             ));
         }
         // An ambiguous write must fail closed in this process too.
-        self.expired.insert(Self::digest(command_id));
+        let digest = Self::digest(command_id);
+        let inserted = self.expired.insert(digest);
         if let Err(error) = write(&mut file, format!("{marker}\n").as_bytes()) {
             // Restore the append boundary before allowing another eviction. If
             // that fails, wait for startup's torn-tail recovery, failing closed.
             if file.set_len(before).and_then(|()| file.sync_all()).is_err() {
                 self.append_unavailable = true;
+            } else if inserted {
+                // The marker is definitely absent and its response is intact.
+                // Do not let a later, different eviction filter that response.
+                self.expired.remove(&digest);
             }
             return Err(error);
         }

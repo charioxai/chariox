@@ -457,3 +457,67 @@ fn marker_storage_bound_returns_typed_capacity_without_writing_a_marker() {
         COMMAND_RESULT_CACHE_MAX_BYTES
     );
 }
+
+#[tokio::test]
+async fn rolled_back_marker_cannot_drop_its_receipt_when_another_identity_is_evicted() {
+    let journal = Journal::new();
+    let cache = journal.cache(2);
+    for id in ["y", "x"] {
+        accept(&cache, id).await;
+        settle(&cache, id).await;
+    }
+    drop(cache);
+    let old = crate::session::unix_epoch_ms() - APP_RECEIPT_RETENTION_MS - 60_000;
+    let records = fs::read_to_string(&journal.0)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            let mut value: Value = serde_json::from_str(line).unwrap();
+            if value["command_id"] == "x" {
+                value["completed_at_ms"] = old.into();
+                value["result"]["completed_at_ms"] = old.into();
+            }
+            serde_json::to_string(&value).unwrap() + "\n"
+        })
+        .collect::<String>();
+    fs::write(&journal.0, records).unwrap();
+    let cache = journal.cache(2); // Y is older in LRU order but still protected.
+    let mut retention = cache.receipt_retention.lock().await;
+    assert!(retention
+        .expire_with_write(&journal.0, "x", |file, bytes| {
+            file.write_all(&bytes[..32])?;
+            Err(io::Error::other("injected partial append"))
+        })
+        .is_err());
+    assert!(!retention.contains("x"));
+    drop(retention);
+    // Advance the retention age of Y, without touching its earlier LRU position.
+    if let Some(CommandResultEntry::Completed(y)) = cache.results.lock().await.get_mut("y") {
+        y.completed_at_ms = old;
+    }
+    journal.age();
+    accept(&cache, "z").await; // Evicts Y, not the failed identity X.
+    settle(&cache, "z").await;
+    replay(&cache, "x").await;
+    drop(cache);
+    let cache = journal.cache(2);
+    replay(&cache, "x").await; // Must retain the response, never dispatch X again.
+    replay(&cache, "z").await;
+    assert!(cache
+        .reserve_at_most_once("y", &fingerprint(), Value::Null)
+        .await
+        .is_err_and(|e| at_most_once::is_receipt_expired_error(&e)));
+}
+
+#[test]
+fn unavailable_append_returns_capacity_before_mutating_another_identity() {
+    let journal = Journal::new();
+    let mut retention = ReceiptRetention {
+        append_unavailable: true,
+        ..ReceiptRetention::default()
+    };
+    let error = retention.expire(&journal.0, "fresh-control").unwrap_err();
+    assert!(at_most_once::is_receipt_capacity_error(&error));
+    assert!(!retention.contains("fresh-control"));
+    assert!(!ReceiptRetention::marker_path(&journal.0).exists());
+}
