@@ -13,6 +13,7 @@ import type {
 } from "@chariox/kernel-client/kernel-types"
 
 import { defaultKernelEndpoint } from "./kernel-publication-client.js"
+import { publicationTakesRequests } from "./publication-config.js"
 import { normalizeFinalOutput } from "./publication-final-output.js"
 import { pumpPublicationRuntime } from "./publication-runtime-pump.js"
 import { publicationHealthDetails } from "./publication-provider-readiness.js"
@@ -46,7 +47,7 @@ export async function publicationStatusPayload(
 }
 
 function basePublicationStatusPayload(publication: WorkflowPublicationConfig) {
-  const transport = publication.transport ?? "human_http"
+  const transport = publication.transport ?? (publication.kind === "event_based" ? "event_based" : "human_http")
   const payload: Record<string, unknown> = {
     status: "running",
     publication_id: publication.publication_id,
@@ -58,7 +59,7 @@ function basePublicationStatusPayload(publication: WorkflowPublicationConfig) {
     queue_ref: publication.queue_ref ?? "default",
     transport,
   }
-  if (transport !== "schedule_only") {
+  if (publicationTakesRequests(publication)) {
     payload.mode = publication.mode ?? "sync"
     payload.route = publication.route ?? "/*"
     payload.methods = publication.methods ?? ["GET", "POST"]

@@ -9,9 +9,10 @@ fn list_provider_processes_uses_warmed_projection_without_app_lock() {
 }
 
 async fn list_provider_processes_uses_warmed_projection_without_app_lock_inner() {
+    let worktree = crate::test_support::TestWorktree::new("list-provider-processes-uses");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let session_id = session.id().to_string();
     let agent_id = agent.id().to_string();
@@ -97,9 +98,10 @@ fn list_provider_processes_blocks_teardown_for_per_agent_active_prompt_without_a
 
 async fn list_provider_processes_blocks_teardown_for_per_agent_active_prompt_without_app_lock_inner(
 ) {
+    let worktree = crate::test_support::TestWorktree::new("list-provider-processes-blocks");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, focused_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let session_id = session.id().to_string();
     let focused_agent_id = focused_agent.id().to_string();
@@ -178,9 +180,11 @@ fn provider_process_projection_invalidates_when_prompt_state_changes() {
 }
 
 async fn provider_process_projection_invalidates_when_prompt_state_changes_inner() {
+    let worktree =
+        crate::test_support::TestWorktree::new("provider-process-projection-invalidates");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let session_id = session.id().to_string();
     let agent_id = agent.id().to_string();
@@ -271,13 +275,16 @@ fn provider_process_projection_stores_canonical_unfiltered_snapshot() {
 async fn provider_process_projection_stores_canonical_unfiltered_snapshot_inner() {
     let mut app = crate::test_support::bootstrap_authenticated_app(DaemonConfig::for_tests())
         .expect("daemon should boot");
+    let mut worktrees = Vec::new();
     for (idx, provider, model) in [(1, "claude-code", "sonnet"), (2, "codex", "gpt-5.4")] {
+        let worktree = crate::test_support::TestWorktree::new(&format!("canonical-snapshot-{idx}"));
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new(
                 format!("workspace-{idx}"),
-                format!("worktree-{idx}"),
+                worktree.path().display().to_string(),
             ))
             .expect("session should be created");
+        worktrees.push(worktree);
         launch_test_provider(
             &mut app,
             session.id(),
@@ -332,9 +339,10 @@ fn provider_process_projection_updates_after_teardown() {
 }
 
 async fn provider_process_projection_updates_after_teardown_inner() {
+    let worktree = crate::test_support::TestWorktree::new("provider-process-projection-updates");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let session_id = session.id().to_string();
     let agent_id = agent.id().to_string();
@@ -390,9 +398,10 @@ fn provider_process_teardown_only_terminates_caller_owned_processes() {
 }
 
 async fn provider_process_teardown_only_terminates_caller_owned_processes_inner() {
+    let worktree = crate::test_support::TestWorktree::new("provider-process-teardown-only");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, local_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let session_id = session.id().to_string();
     let (_, invite) = app
@@ -507,11 +516,12 @@ fn teardown_provider_processes_refreshes_session_projection_without_app_lock() {
 }
 
 async fn teardown_provider_processes_refreshes_session_projection_without_app_lock_inner() {
+    let worktree = crate::test_support::TestWorktree::new("teardown-provider-processes-refreshes");
     let mut config = DaemonConfig::for_tests();
     config.provider_runtime_init_delay_ms = 25;
     let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let session_id = session.id().to_string();
     let agent_id = agent.id().to_string();

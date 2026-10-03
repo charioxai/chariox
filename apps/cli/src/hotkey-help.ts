@@ -1,3 +1,4 @@
+import { approvalShortcutLabel } from "./approval-shortcuts.js"
 import { HOTKEY_TOGGLE_LABEL } from "./hotkeys.js"
 
 export type HotkeyItem = {
@@ -17,6 +18,7 @@ const GLOBAL_HOTKEYS: HotkeyItem[] = [
 ]
 
 const SESSION_HOTKEYS: HotkeyItem[] = [
+  { keys: `${approvalShortcutLabel()} · /approvals`, description: "Open pending approvals; critical actions need your passkey." },
   { keys: "Enter", description: "Submit the current prompt." },
   { keys: "Shift+Enter", description: "Insert a newline in the prompt." },
   { keys: "Tab", description: "Cycle focus to the next agent or workflow node." },

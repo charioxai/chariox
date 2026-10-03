@@ -128,8 +128,7 @@ function formatAgentListProviderRunHealth(
 }
 
 function formatAgentProvider(agent: AgentInstance): string {
-  const provider = agent.primary_provider ?? agent.provider
-  const model = agent.primary_model ?? agent.model
+  const { provider, model } = agent
   if (!model) {
     return provider
   }
@@ -230,13 +229,6 @@ export function formatAgentInspectSummary(
     ...formatAgentRemoteExtensionSyncLines(agent),
     `substitutes: ${formatAgentSubstitutesInline(agent)}`,
   ]
-  const activeSubstitute = agent.active_substitute_index
-  if (activeSubstitute != null) {
-    lines.push(`active substitute: ${activeSubstitute}`)
-  }
-  if (agent.last_substitution) {
-    lines.push(`last substitution: ${agent.last_substitution.reason}`)
-  }
   lines.push(`created: ${formatTimestamp(agent.created_at_ms)}`)
   lines.push(`last activity: ${formatTimestamp(agent.last_activity_at_ms)}`)
   return lines.join("\n")
@@ -300,15 +292,11 @@ export function formatAgentSubstituteSummary(
     return `${formatAgentRef(agent)} has no substitutes`
   }
   const lines = substitutes.map((substitute, index) => {
-    const marker = agent.active_substitute_index === index ? "*" : "-"
     const variant = substitute.variant ? `/${substitute.variant}` : ""
-    return `${marker} ${index}: ${substitute.provider}/${substitute.model}${variant}${formatSubstituteAccountSuffix(substitute.provider, substitute.account_profile, resolveAccountLabel)}`
+    return `- ${index}: ${substitute.provider}/${substitute.model}${variant}${formatSubstituteAccountSuffix(substitute.provider, substitute.account_profile, resolveAccountLabel)}`
   })
   const timeout = agent.substitution_timeout_ms == null ? "default" : `${agent.substitution_timeout_ms}ms`
-  const footer = agent.last_substitution?.reason
-    ? `\nlast substitution: ${agent.last_substitution.reason}`
-    : ""
-  return `${formatAgentRef(agent)} substitutes (${substitutes.length}, timeout ${timeout}):\n${lines.join("\n")}${footer}`
+  return `${formatAgentRef(agent)} substitutes (${substitutes.length}, timeout ${timeout}):\n${lines.join("\n")}`
 }
 
 function formatAgentPlacement(agent: AgentInstance, slice: SliceRecord | null = null): string {
@@ -470,9 +458,8 @@ function formatAgentSubstitutesInline(agent: AgentInstance): string {
     return "none"
   }
   return substitutes.map((substitute, index) => {
-    const marker = agent.active_substitute_index === index ? "*" : ""
     const variant = substitute.variant ? `/${substitute.variant}` : ""
-    return `${marker}${index}:${substitute.provider}/${substitute.model}${variant}`
+    return `${index}:${substitute.provider}/${substitute.model}${variant}`
   }).join(", ")
 }
 

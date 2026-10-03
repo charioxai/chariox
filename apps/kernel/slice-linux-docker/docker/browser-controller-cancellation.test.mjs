@@ -37,6 +37,7 @@ test("stdio cancellation interrupts a waiting action without losing the browser"
         case "Network.enable":
         case "Inspector.enable":
         case "Runtime.releaseObject": return {};
+        case "Runtime.evaluate": return { result: { value: true } };
         case "Input.dispatchMouseEvent":
           if (params.type === "mousePressed") presses += 1;
           if (params.type === "mouseReleased") releases += 1;

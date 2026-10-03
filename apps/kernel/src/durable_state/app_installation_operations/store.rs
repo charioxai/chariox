@@ -1,0 +1,300 @@
+use super::*;
+use rusqlite::{params, OptionalExtension, Transaction};
+
+pub(super) const OWNER_RECEIPTS: i64 = 4096;
+pub(super) const TOTAL_RECEIPTS: i64 = 16384;
+pub(super) fn sql<T>(value: rusqlite::Result<T>) -> Result<T> {
+    value.map_err(|error| {
+        crate::durable_state::storage_full::observe(&error);
+        InstallOperationError::Storage
+    })
+}
+/// A COMMIT that failed on a full disk did not commit: an ordinary storage
+/// failure. Any other COMMIT failure may have committed.
+pub(super) fn commit_failed(error: rusqlite::Error) -> InstallOperationError {
+    if crate::durable_state::storage_full::observe(&error) {
+        InstallOperationError::Storage
+    } else {
+        InstallOperationError::CommitUnknown
+    }
+}
+pub(super) fn identity(value: &str) -> Result<()> {
+    if value.is_empty() || value.len() > 128 || value.chars().any(char::is_control) {
+        Err(InstallOperationError::Invalid)
+    } else {
+        Ok(())
+    }
+}
+pub(super) fn now() -> Result<i64> {
+    i64::try_from(crate::session::unix_epoch_ms()).map_err(|_| InstallOperationError::Storage)
+}
+pub(super) fn limit(value: &AppOperationBudget) -> Result<()> {
+    value.check().map_err(|_| InstallOperationError::Stopped)
+}
+pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
+    // An installation has one first-install operation and any number of
+    // update operations; at most one of them is unfinished (see `reserve`).
+    let schema = "CREATE TABLE IF NOT EXISTS app_installation_operations (
+        owner_id TEXT NOT NULL, request_id TEXT NOT NULL, installation_id TEXT NOT NULL,
+        package_digest TEXT NOT NULL, phase TEXT NOT NULL CHECK(phase IN ('preparing','approval','starting','committed','cancelled','failed')),
+        attempt TEXT, approval_json TEXT, failure TEXT,
+        cleanup_pending INTEGER NOT NULL DEFAULT 0 CHECK(cleanup_pending IN (0,1)),
+        created_ms INTEGER NOT NULL CHECK(created_ms>=0), updated_ms INTEGER NOT NULL CHECK(updated_ms>=0),
+        session_id TEXT, upload_handle TEXT, review_json TEXT, interaction_id TEXT,
+        base_generation INTEGER NOT NULL DEFAULT 0 CHECK(base_generation>=0),
+        generation INTEGER NOT NULL DEFAULT 1 CHECK(generation>=0),
+        deployment_consent TEXT, deployment_id TEXT,
+        PRIMARY KEY(owner_id,request_id));
+        CREATE INDEX IF NOT EXISTS app_installation_operations_installation
+        ON app_installation_operations(installation_id);";
+    let existing: Option<String> = connection.query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name='app_installation_operations'", [], |r|r.get(0)).optional()?;
+    match existing {
+        Some(sql) if !sql.contains("base_generation") => {
+            // Earlier layouts are first installs only (generation 1 of base 0).
+            let columns = if sql.contains("'preparing'") {
+                "owner_id,request_id,installation_id,package_digest,phase,attempt,approval_json,failure,cleanup_pending,created_ms,updated_ms,session_id,upload_handle,review_json,interaction_id"
+            } else {
+                "owner_id,request_id,installation_id,package_digest,phase,attempt,approval_json,failure,cleanup_pending,created_ms,updated_ms"
+            };
+            let tx = connection.unchecked_transaction()?;
+            tx.execute_batch(
+                "ALTER TABLE app_installation_operations RENAME TO app_installation_operations_old;",
+            )?;
+            tx.execute_batch(schema)?;
+            tx.execute_batch(&format!(
+                "INSERT INTO app_installation_operations({columns})
+                 SELECT {columns} FROM app_installation_operations_old;
+                 DROP TABLE app_installation_operations_old;"
+            ))?;
+            tx.commit()?;
+        }
+        _ => connection.execute_batch(schema)?,
+    }
+    // Protocol 367: deployment copy installs.
+    let deployments: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('app_installation_operations')
+         WHERE name='deployment_consent')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !deployments {
+        connection.execute_batch(
+            "ALTER TABLE app_installation_operations ADD COLUMN deployment_consent TEXT;
+             ALTER TABLE app_installation_operations ADD COLUMN deployment_id TEXT;",
+        )?;
+    }
+    Ok(())
+}
+
+/// The highest attempt among an owner's requests named `<prefix><attempt>`.
+pub(super) fn latest_attempt(
+    connection: &Connection,
+    owner: &str,
+    prefix: &str,
+) -> Result<Option<u32>> {
+    identity(owner)?;
+    identity(prefix)?;
+    let latest: Option<i64> = sql(connection.query_row(
+        "SELECT MAX(CAST(substr(request_id,length(?2)+1) AS INTEGER)) FROM app_installation_operations
+         WHERE owner_id=?1 AND substr(request_id,1,length(?2))=?2",
+        params![owner, prefix],
+        |r| r.get(0),
+    ))?;
+    Ok(latest.and_then(|attempt| u32::try_from(attempt).ok()))
+}
+pub(super) fn load(
+    connection: &Connection,
+    owner: &str,
+    request: &str,
+) -> Result<Option<InstallOperation>> {
+    identity(owner)?;
+    identity(request)?;
+    type Row = (
+        String,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        bool,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        i64,
+        i64,
+        Option<String>,
+        Option<String>,
+    );
+    let row: Option<Row> = sql(connection
+        .query_row(
+            "SELECT installation_id,package_digest,phase,attempt,failure,cleanup_pending,session_id,upload_handle,review_json,interaction_id,base_generation,generation,deployment_consent,deployment_id
+         FROM app_installation_operations WHERE owner_id=?1 AND request_id=?2",
+            params![owner, request],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?,
+                    r.get(12)?, r.get(13)?,
+                ))
+            },
+        )
+        .optional())?;
+    row.map(
+        |(
+            installation,
+            package_digest,
+            phase,
+            attempt,
+            failure,
+            cleanup_pending,
+            session,
+            upload,
+            review,
+            interaction_id,
+            base_generation,
+            generation,
+            deployment_consent,
+            deployment_id,
+        )| {
+            let base_generation =
+                u64::try_from(base_generation).map_err(|_| InstallOperationError::Storage)?;
+            let generation =
+                u64::try_from(generation).map_err(|_| InstallOperationError::Storage)?;
+            let input = match (session, upload) {
+                (Some(session_id), Some(upload_handle)) => Some(InstallInput {
+                    session_id,
+                    upload_handle,
+                    update: (base_generation > 0).then(|| UpdateTarget {
+                        installation_id: installation.clone(),
+                        expected_generation: base_generation,
+                    }),
+                    deployment: deployment_consent.zip(deployment_id).map(
+                        |(consent, deployment_id)| DeploymentInstall {
+                            consent,
+                            deployment_id,
+                        },
+                    ),
+                }),
+                (None, None) => None,
+                _ => return Err(InstallOperationError::Storage),
+            };
+            let review = review
+                .map(|json| serde_json::from_str(&json).map_err(|_| InstallOperationError::Storage))
+                .transpose()?;
+            // The owner's decision is recorded with the staged release. It only
+            // informs status, so a missing record reads as not yet approved.
+            let approved = connection
+                .query_row(
+                    "SELECT json_extract(record_json,'$.decision.status') FROM app_installation_updates
+                     WHERE installation_id=?1 AND generation=?2",
+                    params![installation, generation as i64],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .ok()
+                .flatten()
+                .as_deref()
+                == Some("approved");
+            Ok(InstallOperation {
+                input,
+                review,
+                interaction_id,
+                request_id: request.into(),
+                // An update's generation is allocated when it is staged; 0
+                // until then (the operation is still preparing).
+                token: StageToken {
+                    installation_id: installation,
+                    base_generation,
+                    generation,
+                },
+                package_digest,
+                phase: match phase.as_str() {
+                    "preparing" => InstallPhase::Preparing,
+                    "approval" => InstallPhase::AwaitingApproval,
+                    "starting" => InstallPhase::Starting,
+                    "committed" => InstallPhase::Committed,
+                    "cancelled" => InstallPhase::Cancelled,
+                    "failed" => InstallPhase::Failed,
+                    _ => return Err(InstallOperationError::Storage),
+                },
+                attempt,
+                failure,
+                cleanup_pending,
+                approved,
+            })
+        },
+    )
+    .transpose()
+}
+pub(super) fn require_start(
+    tx: &Transaction<'_>,
+    admission: &ApprovedFirstInstall,
+) -> Result<InstallOperation> {
+    let operation = load(tx, &admission.owner, &admission.request_id)?
+        .ok_or(InstallOperationError::NotFound)?;
+    if operation.phase != InstallPhase::Starting
+        || operation.attempt.as_deref() != Some(admission.attempt.as_str())
+        || operation.token != *admission.binding.token()
+        || operation.package_digest != admission.binding.package_digest()
+    {
+        return Err(InstallOperationError::Conflict);
+    }
+    let recorded = approval(tx, &admission.owner, &admission.request_id)?;
+    if recorded.as_ref() != Some(&admission.approval)
+        || admission
+            .binding
+            .require_approved_in(tx, &admission.owner, &admission.trust)
+            .map_err(|_| InstallOperationError::Stale)?
+            != admission.approval
+    {
+        return Err(InstallOperationError::Stale);
+    }
+    Ok(operation)
+}
+pub(super) fn approval(
+    connection: &Connection,
+    owner: &str,
+    request: &str,
+) -> Result<Option<CapabilityApproval>> {
+    let json: Option<String> = sql(connection.query_row(
+        "SELECT approval_json FROM app_installation_operations WHERE owner_id=?1 AND request_id=?2",
+        params![owner, request],
+        |r| r.get(0),
+    ))?;
+    json.map(|value| serde_json::from_str(&value).map_err(|_| InstallOperationError::Storage))
+        .transpose()
+}
+pub(super) fn admit(tx: &Transaction<'_>, owner: &str) -> Result<()> {
+    // Without timestamp-bound request IDs, deleting receipts could resurrect a
+    // cancelled install on delayed replay. Retain identities and backpressure.
+    let (total, owned, pending, owned_pending): (i64, i64, i64, i64) = sql(tx.query_row(
+        "SELECT count(*),coalesce(sum(owner_id=?1),0),
+         coalesce(sum(phase IN ('preparing','approval','starting')),0),
+         coalesce(sum(owner_id=?1 AND phase IN ('preparing','approval','starting')),0)
+         FROM app_installation_operations",
+        [owner],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    ))?;
+    if total >= TOTAL_RECEIPTS || owned >= OWNER_RECEIPTS || pending >= 32 || owned_pending >= 8 {
+        return Err(InstallOperationError::Limit);
+    }
+    Ok(())
+}
+pub(super) fn candidates(
+    connection: &Connection,
+    after: Option<(&str, &str)>,
+) -> Result<Vec<(String, String)>> {
+    let mut statement = sql(connection.prepare("SELECT o.owner_id,o.request_id FROM app_installation_operations o
+        JOIN app_installation_updates u ON u.installation_id=o.installation_id AND u.generation=o.generation
+        WHERE o.phase IN ('preparing','approval','starting') AND json_extract(u.record_json,'$.decision.status')='approved'
+        AND (?1 IS NULL OR (o.owner_id,o.request_id)>(?1,?2)) ORDER BY o.owner_id,o.request_id LIMIT 8"))?;
+    let rows = sql(
+        statement.query_map(params![after.map(|v| v.0), after.map(|v| v.1)], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        }),
+    )?;
+    sql(rows.collect())
+}

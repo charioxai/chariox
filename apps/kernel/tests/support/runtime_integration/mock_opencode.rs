@@ -28,6 +28,7 @@ struct MockOpenCodeState {
 }
 
 struct MockOpenCodeSessionState {
+    permission: Option<Value>,
     status: String,
     messages: Vec<Value>,
 }
@@ -243,6 +244,7 @@ fn handle_mock_opencode_request(
                 state.sessions.insert(
                     session_id.clone(),
                     MockOpenCodeSessionState {
+                        permission: None,
                         status: "idle".to_string(),
                         messages: Vec::new(),
                     },
@@ -250,6 +252,22 @@ fn handle_mock_opencode_request(
                 session_id
             };
             json!({ "id": session_id })
+        }
+        ("PATCH", path) if path.starts_with("/session/") && !path[9..].contains('/') => {
+            let session_id = path.strip_prefix("/session/").unwrap();
+            let payload: Value = serde_json::from_slice(&request.body)
+                .expect("session permission patch should be JSON");
+            assert!(
+                payload["permission"].is_array(),
+                "permission rules must be an array"
+            );
+            let mut state = state.lock().expect("mock state should not be poisoned");
+            let session = state
+                .sessions
+                .get_mut(session_id)
+                .expect("permission patch must target an existing native session");
+            session.permission = Some(payload["permission"].clone());
+            json!({ "id": session_id, "permission": session.permission })
         }
         ("GET", "/session/status") => {
             let state = state.lock().expect("mock state should not be poisoned");
@@ -336,6 +354,16 @@ fn handle_mock_opencode_request(
                 .and_then(|value| value.strip_suffix("/prompt_async"))
                 .expect("prompt path should include a session id")
                 .to_string();
+            assert!(
+                state
+                    .lock()
+                    .expect("mock state should not be poisoned")
+                    .sessions
+                    .get(&session_id)
+                    .and_then(|session| session.permission.as_ref())
+                    .is_some(),
+                "native session permissions must be synchronized before a prompt"
+            );
             state
                 .lock()
                 .expect("mock state should not be poisoned")

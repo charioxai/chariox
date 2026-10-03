@@ -902,11 +902,11 @@ fn waiting_room_public_agent_summaries(
                 alias: agent.alias().map(ToOwned::to_owned),
                 created_at_ms: agent.created_at_ms(),
                 last_prompt_sent_at_ms: agent.last_prompt_sent_at_ms(),
-                provider: agent.primary_provider().to_string(),
+                provider: agent.provider().to_string(),
                 account_profile: agent.account_profile().unwrap_or("default").to_string(),
                 account_label: None,
-                model: agent.primary_model().map(ToOwned::to_owned),
-                variant: agent.primary_effort().map(ToOwned::to_owned),
+                model: agent.model().map(ToOwned::to_owned),
+                variant: agent.effort().map(ToOwned::to_owned),
                 mode: effective_config.mode.as_str().to_string(),
                 permission: Some(effective_config.permission_level.as_str().to_string()),
                 workspace_id: workspace_id.clone(),
@@ -1218,6 +1218,7 @@ mod tests {
         status: crate::slice::SliceStatus,
     ) -> crate::slice::SliceRecord {
         crate::slice::SliceRecord {
+            source_slice_ref: None,
             id: id.to_string(),
             name: id.to_string(),
             owner_kernel_id: "daemon".to_string(),
@@ -1258,6 +1259,8 @@ mod tests {
 
     fn disconnected_relay_status() -> RelayStatus {
         RelayStatus {
+            runtime_process_identity: None,
+            capabilities: Vec::new(),
             configured: false,
             connected: false,
             relay_url: None,
@@ -1980,6 +1983,8 @@ mod tests {
         let metaagent_events = MetaagentEventStore::default();
         let projection = WaitingRoomSessionSummaryProjectionStore::default();
         let relay_status = RelayStatus {
+            runtime_process_identity: None,
+            capabilities: Vec::new(),
             configured: false,
             connected: false,
             relay_url: None,
@@ -2106,6 +2111,8 @@ mod tests {
             false,
             None,
             RelayStatus {
+                runtime_process_identity: None,
+                capabilities: Vec::new(),
                 configured: false,
                 connected: false,
                 relay_url: None,

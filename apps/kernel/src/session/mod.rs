@@ -8,6 +8,7 @@ mod prompt_runtime;
 mod queued_metaagent_task;
 mod room_environment;
 mod runtime_interactions;
+pub use runtime_interactions::NativeInteractionOrigin;
 mod runtime_project;
 mod runtime_session;
 mod runtime_worktrees;
@@ -45,16 +46,17 @@ pub use project_environment::{
 };
 pub use room_environment::{
     agent_environment_actor_id, human_environment_actor_id, human_environment_actor_label,
-    ActionAdmission, ActionCancellationOutcome, CanonicalViewport, EnvironmentAction,
-    EnvironmentActionArguments, EnvironmentActionCancellationReason, EnvironmentActionFailureCode,
+    ActionAdmission, ActionCancellationOutcome, AppPanelLayout, AppPanelPlacement,
+    CanonicalViewport, EnvironmentAction, EnvironmentActionArguments,
+    EnvironmentActionCancellationReason, EnvironmentActionFailureCode,
     EnvironmentActionHistoryPage, EnvironmentActionOutcome, EnvironmentActionRequest,
     EnvironmentActionState, EnvironmentActionTerminal, EnvironmentActor, EnvironmentActorColor,
-    EnvironmentActorKind, EnvironmentActorPresence, EnvironmentComponent,
+    EnvironmentActorKind, EnvironmentActorPresence, EnvironmentAppPanel, EnvironmentComponent,
     EnvironmentComponentHealth, EnvironmentComponentHealthState, EnvironmentError,
     EnvironmentEvent, EnvironmentEventKind, EnvironmentLifecycle, EnvironmentMode,
     EnvironmentPointer, EnvironmentPointerButton, EnvironmentPointerPosition, EnvironmentReplay,
-    EnvironmentTab, InputOwnership, InputTarget, PendingInputTakeover, RoomEnvironment,
-    RoomEnvironmentSnapshot, TakeoverOutcome,
+    EnvironmentTab, EnvironmentTabApp, InputOwnership, InputTarget, PendingInputTakeover,
+    RoomEnvironment, RoomEnvironmentSnapshot, TakeoverOutcome,
 };
 pub(crate) use room_environment::{
     EnvironmentElementTarget, EnvironmentTabObservation, EnvironmentTabRuntimeBinding,
@@ -78,8 +80,9 @@ pub use types::{
     PromptDetachEffect, PromptOrigin, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
     QueuedMetaagentTask, RuntimeInteraction, RuntimeInteractionChoice,
     RuntimeInteractionChoiceStyle, RuntimeInteractionCustomChoice, RuntimeInteractionInputKind,
-    RuntimeInteractionKind, RuntimeInteractionLevel, RuntimeSession, RuntimeWorktreeAssignment,
-    SchedulerState, SessionAgentDefaults, SessionCollaborationAgentCounts, SessionConfigState,
+    RuntimeInteractionKind, RuntimeInteractionLevel, RuntimeInteractionSubject,
+    RuntimeProviderLogin, RuntimeSession, RuntimeWorktreeAssignment, SchedulerState,
+    SessionAgentDefaults, SessionCollaborationAgentCounts, SessionConfigState,
     SessionExecutionMode, SessionInvite, SessionMember, SessionStatus, WorkflowArtifactRef,
     WorkflowCanvasLayout, WorkflowCanvasLayoutPatch, WorkflowCanvasPoint,
     WorkflowCodeSourceBinding, WorkflowCodeSourceOrigin, WorkflowCompletionSnapshot,
@@ -87,23 +90,23 @@ pub use types::{
     WorkflowEdgeEndpointSide, WorkflowEndpointDefinition, WorkflowFailureEvent,
     WorkflowFailureKind, WorkflowFailurePolicy, WorkflowFailurePolicyMode, WorkflowHandoffPayload,
     WorkflowIntermediateOutput, WorkflowMessage, WorkflowNodeDefinition, WorkflowNodeRun,
-    WorkflowNodeRunStatus, WorkflowNodeThinkingTrace, WorkflowOutputPayload,
-    WorkflowPromptQueueDefinition, WorkflowPublicationDefinition,
-    WorkflowPublicationInvocationEnvelope, WorkflowQueuedPrompt, WorkflowQueuedPromptSource,
-    WorkflowQueuedPromptStatus, WorkflowRun, WorkflowRunOutputSubmission, WorkflowRunStatus,
-    WorkflowRuntimeToolCallEvent, WorkflowScheduleDefinition, WorkflowScheduleOverlapPolicy,
-    WorkflowScheduleTrigger, WorkflowSchemaDefinition, WorkflowTurnEnvelope,
-    WorkflowTurnOutputSubmissions, WorkflowTurnRuntimeState, WorkflowTurnSubmissionKind,
-    WorkflowWatchdogDefinition, WorkflowWatchdogPolicy, WorkspaceLinkAttachment,
-    WorkspaceLinkDefinition, WorktreeIsolationMode, DEFAULT_LOCAL_USER_ID,
-    DEFAULT_SESSION_MAX_AGENTS, DEFAULT_WORKFLOW_CODE_MAX_AGENTS,
-    DEFAULT_WORKFLOW_CODE_MAX_CONCURRENT, DEFAULT_WORKFLOW_CODE_MAX_EDGES,
-    DEFAULT_WORKFLOW_CODE_MAX_ENDPOINTS, DEFAULT_WORKFLOW_CODE_MAX_GENERATED_PROMPT_BYTES,
-    DEFAULT_WORKFLOW_CODE_MAX_NODES, DEFAULT_WORKFLOW_CODE_MAX_QUEUES,
-    DEFAULT_WORKFLOW_CODE_MAX_SCHEMA_BYTES, DEFAULT_WORKFLOW_CODE_MAX_WATCHDOGS,
-    DEFAULT_WORKFLOW_CODE_SCRIPT_MEMORY_BYTES, DEFAULT_WORKFLOW_CODE_SCRIPT_TIMEOUT_MS,
-    DEFAULT_WORKFLOW_RUN_MAX_TURNS_SAFETY_LIMIT, DEFAULT_WORKFLOW_SCHEDULE_MAX_RUNS,
-    DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS,
+    WorkflowNodeRunStatus, WorkflowNodeThinkingTrace, WorkflowOrigin, WorkflowOriginReason,
+    WorkflowOriginSurface, WorkflowOutputPayload, WorkflowPromptQueueDefinition,
+    WorkflowPublicationDefinition, WorkflowPublicationInvocationEnvelope, WorkflowQueuedPrompt,
+    WorkflowQueuedPromptSource, WorkflowQueuedPromptStatus, WorkflowRun,
+    WorkflowRunOutputSubmission, WorkflowRunStatus, WorkflowRuntimeToolCallEvent,
+    WorkflowScheduleDefinition, WorkflowScheduleOverlapPolicy, WorkflowScheduleTrigger,
+    WorkflowSchemaDefinition, WorkflowTurnEnvelope, WorkflowTurnOutputSubmissions,
+    WorkflowTurnRuntimeState, WorkflowTurnSubmissionKind, WorkflowWatchdogDefinition,
+    WorkflowWatchdogPolicy, WorkspaceLinkAttachment, WorkspaceLinkDefinition,
+    WorktreeIsolationMode, DEFAULT_LOCAL_USER_ID, DEFAULT_SESSION_MAX_AGENTS,
+    DEFAULT_WORKFLOW_CODE_MAX_AGENTS, DEFAULT_WORKFLOW_CODE_MAX_CONCURRENT,
+    DEFAULT_WORKFLOW_CODE_MAX_EDGES, DEFAULT_WORKFLOW_CODE_MAX_ENDPOINTS,
+    DEFAULT_WORKFLOW_CODE_MAX_GENERATED_PROMPT_BYTES, DEFAULT_WORKFLOW_CODE_MAX_NODES,
+    DEFAULT_WORKFLOW_CODE_MAX_QUEUES, DEFAULT_WORKFLOW_CODE_MAX_SCHEMA_BYTES,
+    DEFAULT_WORKFLOW_CODE_MAX_WATCHDOGS, DEFAULT_WORKFLOW_CODE_SCRIPT_MEMORY_BYTES,
+    DEFAULT_WORKFLOW_CODE_SCRIPT_TIMEOUT_MS, DEFAULT_WORKFLOW_RUN_MAX_TURNS_SAFETY_LIMIT,
+    DEFAULT_WORKFLOW_SCHEDULE_MAX_RUNS, DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS,
 };
 pub(crate) use types::{DurablePromptDeliveryPhase, DurablePromptPrivateState};
 pub(crate) use workflow_definition::{
@@ -116,11 +119,10 @@ pub use workflow_instances::{
     WorkflowEndpointRuntimeInstance, WorkflowEndpointRuntimeInstanceStatus,
 };
 pub use workflow_publication::{
-    WorkflowEventBinding, WorkflowEventBindingStatus, WorkflowEventDeliveryReceipt,
-    WorkflowPublicationRuntimeMaterialization, WorkflowPublicationSnapshot,
-    WorkflowPublicationSourceSessionSnapshot, WORKFLOW_PUBLICATION_KIND_EVENT_BASED,
-    WORKFLOW_PUBLICATION_KIND_INGRESS, WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY,
-    WORKFLOW_PUBLICATION_WORKSPACE_ROOT,
+    WorkflowEventDeliveryReceipt, WorkflowPublicationRuntimeMaterialization,
+    WorkflowPublicationSnapshot, WorkflowPublicationSourceSessionSnapshot,
+    WORKFLOW_PUBLICATION_KIND_EVENT_BASED, WORKFLOW_PUBLICATION_KIND_INGRESS,
+    WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY, WORKFLOW_PUBLICATION_WORKSPACE_ROOT,
 };
 pub(crate) use workflow_scheduling::{WorkflowQueuedPromptInput, WorkflowScheduleReconfiguration};
 pub(crate) use workspace_links::normalize_workspace_link_repo_root;
@@ -135,3 +137,5 @@ pub(crate) fn is_zero(value: &usize) -> bool {
 pub use agent_prompt_scheduling::{
     AgentPromptSchedule, AgentPromptScheduleDispatch, AgentPromptScheduleKind,
 };
+
+pub(crate) use service::{PreparedWorkflowQueueRun, WorkflowQueueRun};

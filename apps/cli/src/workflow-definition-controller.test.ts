@@ -23,6 +23,18 @@ test("workflow definition controller creates workflows and selects the new canva
   }])
 })
 
+test("workflow definition controller gives an agent its one-node workflow", async () => {
+  const created = { workflow: workflow("workflow-agent", "agent-1-trigger"), endpoint: { id: "endpoint-1" }, session: session("session-agent") }
+  const harness = createHarness({ CreateAgentWorkflow: { AgentWorkflowCreated: created } })
+
+  const payload = await harness.controller.createAgentWorkflow("agent-1", "trigger", null)
+
+  assert.equal(payload.endpoint.id, "endpoint-1")
+  assert.equal(harness.selectedWorkflowId, "workflow-agent")
+  assert.equal(harness.appliedSession?.id, "session-agent")
+  assert.deepEqual(Object.keys(harness.requests[0] ?? {}), ["CreateAgentWorkflow"])
+})
+
 test("workflow definition controller lists and resolves workflows", async () => {
   const item = workflow("workflow-1", "Main")
   const harness = createHarness({

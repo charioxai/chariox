@@ -5,9 +5,9 @@ export async function openExternalUrl(url: string): Promise<boolean> {
   const command = process.platform === "darwin"
     ? "open"
     : process.platform === "win32"
-      ? "cmd"
+      ? "rundll32.exe"
       : "xdg-open"
-  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url]
+  const args = process.platform === "win32" ? ["url.dll,FileProtocolHandler", url] : [url]
   return await new Promise((resolve) => {
     const child = spawn(command, args, {
       detached: true,

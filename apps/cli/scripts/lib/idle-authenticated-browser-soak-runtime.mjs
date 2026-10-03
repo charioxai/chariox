@@ -6,6 +6,7 @@ import http from "node:http"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
+import { includeSoakSupervisor, verifiedSoakSupervisor } from "./soak-supervisor.mjs"
 import { promisify } from "node:util"
 
 import {
@@ -218,7 +219,21 @@ async function executeSoak({ options, paths, allocation, source, provenance, bas
       await assertOwnedAlive(controller.child, controllerIdentity, "browser-controller")
       const elapsed = monotonicMs() - soakStartedMonotonic
       if (!controlledRestartCompleted && elapsed >= restartAt) {
+        await raceActive(checkpoint("before_restart"))
         allowOwnedTermination(chromium)
+        // MP-08 / MP-10: let Chromium flush its persistent profile before restart.
+        const version = await fetch(`http://127.0.0.1:${allocation.debugPort}/json/version`).then(response => response.json())
+        await new Promise((resolve, reject) => {
+          const socket = new WebSocket(version.webSocketDebuggerUrl)
+          const timer = setTimeout(() => { socket.close(); reject(new Error("graceful Browser.close timed out")) }, 5000)
+          socket.onopen = () => socket.send(JSON.stringify({id: 1, method: "Browser.close"}))
+          socket.onmessage = event => {
+            const message = JSON.parse(event.data)
+            if (message.id === 1 && !message.error) { clearTimeout(timer); socket.close(); resolve() }
+          }
+          socket.onerror = () => { clearTimeout(timer); reject(new Error("graceful Browser.close failed")) }
+        })
+        await sleep(250)
         const stopped = await terminateOwnedTree("chromium-controlled-restart", chromiumIdentity)
         if (!stopped.ok) throw new Error("controlled Chromium restart could not stop the exact owned tree")
         await waitForLogClosed(chromium)
@@ -302,11 +317,13 @@ async function executeSoak({ options, paths, allocation, source, provenance, bas
   async function checkpoint(label) {
     const health = assertControllerReady(await controller.request("health"), controller.child.pid)
     await assertOwnedAlive(controller.child, controllerIdentity, "browser-controller")
-    const reconciled = await controller.request("browser.reconcile", { viewport: { css_width: 800, css_height: 600, device_scale_factor: 1 } })
-    const tab = reconciled.tabs.find(entry => entry.url?.startsWith(fixture.baseUrl)) ?? reconciled.tabs[0]
+    let reconciled = await controller.request("browser.reconcile", { viewport: { css_width: 800, css_height: 600, device_scale_factor: 1, desktop_pixel_width: 800, desktop_pixel_height: 600 } })
+    let tab = reconciled.tabs.find(entry => entry.url?.startsWith(fixture.baseUrl)) ?? reconciled.tabs[0]
     if (!tab) throw new Error("Browser Controller returned no Chromium tab")
-    const beforeRequests = counters.authenticatedSessionChecks
-    await waitForFreshAuthenticatedRequest(fixture, beforeRequests, Math.min(10_000, options.healthIntervalSeconds * 1_000 + 2_000))
+    const beforeRequests = ["initial", "restart", "final"].includes(label) ? fixture.authenticatedRequests : counters.authenticatedSessionChecks
+    await waitForFreshAuthenticatedRequest(fixture, beforeRequests, Math.max(10_000, options.healthIntervalSeconds * 1_000 + 2_000))
+    reconciled = await controller.request("browser.reconcile", { viewport: { css_width: 800, css_height: 600, device_scale_factor: 1, desktop_pixel_width: 800, desktop_pixel_height: 600 } })
+    tab = reconciled.tabs.find(entry => entry.url?.startsWith(fixture.baseUrl)) ?? reconciled.tabs[0]
     const snapshot = await controller.request("browser.snapshot", { target_id: tab.target_id, document_id: tab.document_id })
     if (!JSON.stringify(snapshot).includes("Authenticated synthetic session")) throw new Error("synthetic authenticated page was not observable")
     if (!JSON.stringify(snapshot).includes(markerDigest)) throw new Error("Chromium did not observe the persistent profile marker")
@@ -491,7 +508,7 @@ async function resourceSnapshot(label, rootPids, diskPath) {
   const rows = stdout.split("\n").map(line => line.trim().split(/\s+/, 5)).filter(parts => parts.length === 5)
     .map(([pid, ppid, rss, cpu, command]) => ({ pid: Number(pid), ppid: Number(ppid), rssKb: Number(rss), cpuPercent: Number(cpu), command }))
   const ids = descendantIds(rows, rootPids)
-  const owned = rows.filter(row => ids.has(row.pid))
+  const owned = includeSoakSupervisor(rows, ids, await verifiedSoakSupervisor())
   const disk = await statfs(diskPath)
   return { label, at: new Date().toISOString(), host: { totalMemoryBytes: os.totalmem(), freeMemoryBytes: os.freemem(), loadAverage: os.loadavg() },
     disk: { path: diskPath, availableBytes: Number(disk.bavail) * Number(disk.bsize), totalBytes: Number(disk.blocks) * Number(disk.bsize) },
@@ -668,7 +685,7 @@ export async function validateTerminalIdleSoakEvidence(paths, forbidden, logsRoo
 }
 
 function spawnSoakChromium({ profileRoot, debugPort, url, cwd, logsRoot }) {
-  return spawnLogged("chromium", "chromium", [
+  return spawnLogged("chromium", "/usr/lib/chromium/chromium", [
     "--headless=new", `--user-data-dir=${profileRoot}`, "--password-store=basic", "--no-first-run",
     "--no-default-browser-check", "--disable-sync", "--disable-dev-shm-usage", "--disable-gpu",
     "--remote-debugging-address=127.0.0.1", `--remote-debugging-port=${debugPort}`, url,

@@ -342,6 +342,7 @@ pub(crate) async fn execute_get_room_environment_state_request(
     runtime_state: &KernelRuntimeState,
     request: GetRoomEnvironmentStateRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    runtime_state.schedule_room_environment_health_refresh(&request.session_id);
     runtime_state
         .room_environment_snapshot(&request.session_id)
         .map(|environment| LocalDaemonResponse::RoomEnvironmentState { environment })
@@ -358,10 +359,31 @@ pub(crate) async fn execute_get_room_environment_resource_inventory_request(
         .map(|inventory| LocalDaemonResponse::RoomEnvironmentResourceInventory { inventory })
 }
 
+pub(crate) async fn execute_get_room_environment_tab_accessibility_request(
+    runtime_state: &KernelRuntimeState,
+    request: crate::local::GetRoomEnvironmentTabAccessibilityRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let snapshot = runtime_state
+        .capture_browser_environment_snapshot(&request.session_id, &request.tab_id)
+        .await?;
+    let (nodes, truncated) =
+        crate::runtime::room_tab_outline::outline(&snapshot.accessibility_nodes);
+    Ok(LocalDaemonResponse::RoomEnvironmentTabAccessibility {
+        accessibility: crate::local::RoomEnvironmentTabAccessibility {
+            session_id: snapshot.session_id,
+            tab_id: snapshot.tab_id,
+            document_revision: snapshot.document_revision,
+            nodes,
+            truncated: truncated || snapshot.accessibility_truncated,
+        },
+    })
+}
+
 pub(crate) async fn execute_get_room_environment_events_request(
     runtime_state: &KernelRuntimeState,
     request: GetRoomEnvironmentEventsRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    runtime_state.schedule_room_environment_health_refresh(&request.session_id);
     runtime_state
         .room_environment_events_after(&request.session_id, request.cursor)
         .map(|replay| LocalDaemonResponse::RoomEnvironmentEvents { replay })
@@ -427,6 +449,9 @@ pub(crate) async fn execute_session_read_request(
             .map(|binding| LocalDaemonResponse::RoomEnvironmentSlice { binding }),
         LocalDaemonRequest::GetRoomEnvironmentResourceInventory(request) => {
             execute_get_room_environment_resource_inventory_request(runtime_state, request).await
+        }
+        LocalDaemonRequest::GetRoomEnvironmentTabAccessibility(request) => {
+            execute_get_room_environment_tab_accessibility_request(runtime_state, request).await
         }
         LocalDaemonRequest::GetRoomEnvironmentEvents(request) => {
             execute_get_room_environment_events_request(runtime_state, request).await

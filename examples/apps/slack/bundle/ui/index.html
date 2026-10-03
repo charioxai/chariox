@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Slack</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Slack</h1>
+      <label class="filter">Show
+        <select id="kind" aria-label="Show">
+          <option value="">everything</option>
+          <option value="mentioned">mentions</option>
+          <option value="channel_message">channel messages</option>
+          <option value="reaction_added">reactions</option>
+        </select>
+      </label>
+    </header>
+    <p id="status" role="status" aria-live="polite"></p>
+    <ul id="notifications" aria-label="Slack notifications"></ul>
+    <p id="empty" class="hint" hidden>No Slack notifications yet. The owner connects Slack once, then routes
+      each event type here with <code>/app inbox add</code> and <code>--connection</code>, and chooses the
+      workflow that handles them with <code>/app automation add … notifications notification</code>.</p>
+    <button id="clear" class="link" type="button">Clear</button>
+  </main>
+</body>
+</html>

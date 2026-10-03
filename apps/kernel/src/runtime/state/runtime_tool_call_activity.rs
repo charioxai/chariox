@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use super::ProviderOutputDeadlineStore;
 
 #[derive(Clone, Default)]
-pub(super) struct RuntimeToolCallActivity {
+pub(crate) struct RuntimeToolCallActivity {
     counts: Arc<Mutex<BTreeMap<String, usize>>>,
 }
 
@@ -36,7 +36,7 @@ impl RuntimeToolCallActivity {
         }
     }
 
-    pub(super) fn active_count(&self, provider_run_id: &str) -> usize {
+    pub(crate) fn active_count(&self, provider_run_id: &str) -> usize {
         self.counts
             .lock()
             .expect("runtime tool activity poisoned")

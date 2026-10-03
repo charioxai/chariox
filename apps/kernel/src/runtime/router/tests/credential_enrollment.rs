@@ -272,6 +272,8 @@ fn interaction_response(
         interaction_id: interaction_id.to_string(),
         choice_id: "submit_callback".to_string(),
         custom_reply: Some(callback.to_string()),
+        passkey: None,
+        passkey_remember_minutes: None,
     })
 }
 
@@ -281,6 +283,8 @@ async fn resolve_cancel(env: &EnrollmentTestEnv, interaction_id: &str, command_i
         interaction_id: interaction_id.to_string(),
         choice_id: "cancel".to_string(),
         custom_reply: None,
+        passkey: None,
+        passkey_remember_minutes: None,
     });
     dispatch_boxed(
         &env.local_router,
@@ -537,6 +541,8 @@ async fn run_matching_credential_service_cancel_scenario() {
             interaction_id,
             choice_id: choice_id.to_string(),
             custom_reply,
+            passkey: None,
+            passkey_remember_minutes: None,
         });
         let error = dispatch_boxed(
             &env.relay_router,
@@ -555,6 +561,8 @@ async fn run_matching_credential_service_cancel_scenario() {
         interaction_id: interaction.id().to_string(),
         choice_id: "cancel".to_string(),
         custom_reply: None,
+        passkey: None,
+        passkey_remember_minutes: None,
     });
     let cancel_response = dispatch_boxed(
         &env.relay_router,

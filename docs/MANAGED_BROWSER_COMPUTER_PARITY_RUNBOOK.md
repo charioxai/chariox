@@ -14,14 +14,22 @@ Browser, Computer, prompt, provider, Git, or vault payloads.
 ## Prerequisites
 
 1. A fresh OpenShip machine with no prior drill Room, slice, browser profile,
-   or active kernel target.
+   or active kernel target. The existing Hetzner allocation may qualify through
+   the provider-supported destructive rebuild approved in the canonical plan's
+   2026-09-21 reuse decision. A kernel reinstall alone does not qualify.
 2. The exact managed image `sha256:` digest, exact base64 Ed25519 signature,
    pinned signer public-key fingerprint, and a successful release verifier
    result. Never copy a signing private key to the target or config.
 3. Exact clean OSS and Cloud 40-character SHAs. The image must identify the OSS
    SHA and the attended Web deployment must identify the Cloud SHA.
-4. Kernel protocol 322 or newer, exact relay protocol and released relay
-   version, and a fresh heartbeat for the expected immutable kernel/machine.
+4. A kernel compatible with the released adapter and client, exact relay
+   protocol and released relay version, and a fresh heartbeat for the expected
+   immutable kernel/machine. The complete Path-1 flow additionally requires
+   protocol 367 home controls and the connected kernel's explicit
+   `disposable_worker_control_v1` and `managed_environment_keep_running_v1`
+   capability markers. Protocol numbers alone cannot identify support across
+   divergent development branches. An older browser-only capability minimum
+   does not admit the complete flow.
 5. Released Web, local TUI, and remote TUI clients, authenticated through their
    normal product paths. Do not pass their cookies or tokens to this harness.
 6. Codex, OpenCode, and Claude advertised through official provider harnesses.
@@ -50,6 +58,40 @@ Browser, Computer, prompt, provider, Git, or vault payloads.
 10. Conservative ceilings for RSS, CPU, free memory/disk, heartbeat age, and
    post-cleanup RSS/disk deltas, with enough reserve to complete cleanup.
 
+### Approved rebuild and in-place upgrade are separate gates
+
+For `MP-07` and `MP-10`, follow the canonical plan's locked reuse decision.
+The reviewed kernel running locally authorizes the rebuild through the normal
+Cloud/provider path. Settle useful turns and retain source, evidence, and the
+verified signed release before destroying the host, including any builder on
+that host. Record the provider rebuild request and completion, clean image,
+new boot and runtime identities, enrollment, relay registration, exact release,
+and absence of old processes, service state, runtime roots, and Cloud rows.
+
+Do not require a 339/312 state-preserving compatibility bridge before this
+approved rebuild. The old worker state is disposable under that decision;
+reenrollment and retirement of the old identities are required. In-place
+upgrade, rollback, crash-safe migration, and later persistence/recreation
+remain separate acceptance gates. The rebuild permission does not authorize
+deleting other retained machines or disabling their automatic shutdown.
+
+### Storage and signing-key retention
+
+Keep source worktrees free of build outputs and runtime state. Use an explicit
+remote build-output directory and check its free-space reserve before and
+during builds. Record the exact process or unit that owns each temporary
+directory; settle it before cleanup. Retain small result receipts separately
+from rebuildable compiler caches, archives, and image exports.
+
+Release and builder private signing keys are durable credentials, not build
+artifacts. Store them outside disposable task/build directories with mode0600,
+and maintain a separately protected backup. Record only public fingerprints in
+evidence. Before artifact cleanup, inventory retained credentials and trust
+pins explicitly; never recursively delete their parent as build scratch.
+Recovery must verify the original public identity before signing. If the
+private signer is lost, stop signing and obtain an explicit trust-rotation
+decision. A public key or an unrelated development signer cannot replace it.
+
 Create a regular mode-0600 metadata JSON file outside both repositories. It
 contains no credential or secret value:
 
@@ -64,7 +106,32 @@ contains no credential or secret value:
   },
   "inspector": {
     "identity": "<reviewed independent inspector identity>",
-    "sha256": "sha256:<64 lowercase hex>"
+    "sha256": "sha256:<64 lowercase hex>",
+    "observations": {
+      "cloudInventoryModule": {
+        "path": "<absolute reviewed read-only Cloud inventory module path>",
+        "identity": "<reviewed Cloud inventory identity>",
+        "sha256": "sha256:<64 lowercase hex>"
+      },
+      "host": "<SSH host alias for the worker>",
+      "cloudInventory": {
+        "accountId": "<owning Cloud account>",
+        "realmId": "<owning relay realm>",
+        "userId": "<user requesting normal managed DELETE>"
+      },
+      "machineOwnership": {
+        "kind": "run_owned",
+        "machineId": "<immutable managed machine id>",
+        "creationReceipt": {
+          "runId": "cha-16-YYYYMMDD-HHMMSS",
+          "machineId": "<immutable managed machine id>",
+          "kernelId": "<immutable kernel id>",
+          "managedEnvironmentId": "<Cloud managed environment id>",
+          "providerServerId": "<provider server id>",
+          "createOperationId": "<normal CREATE operation id>"
+        }
+      }
+    }
   },
   "image": {
     "digest": "sha256:<64 lowercase hex>",
@@ -91,6 +158,32 @@ contains no credential or secret value:
   "stepTimeoutMs": 600000
 }
 ```
+
+The inventory module must export `createManagedParityCloudInventory` and declare
+the reviewed module identity required by the inspector loader. Pin its current
+hash together with the inspector; an older module without retirement evidence
+cannot validate run-owned cleanup. Use `preexisting` ownership only for an
+explicitly retained machine, never to avoid run-owned deletion proof.
+
+For run-owned cleanup, `retirementProof.authority` must be
+`normal-managed-delete`. Bind account, realm, user, environment, machine, kernel
+and CREATE operation to the metadata above. Include the successful normal DELETE
+operation, its deterministic `parity-cleanup-<sha256(runId)>` idempotency key,
+completed time and desired revision; the DELETED environment must have observed
+that revision. The machine must be REVOKED with leases disabled and a revocation
+time. Census counts `activeCredentials`, `unrevokedTokens`, `unrevokedGrants` and
+`nonRevokedTargets` must all be zero. Include one
+`managed_environment_deleted` tombstone for the machine and each owned kernel.
+These database observations do not replace independent provider absence or
+physical process, volume and profile cleanup checks.
+
+`retainedHeartbeatRows` projects heartbeat data from retained relay target rows,
+not a separate heartbeat identifier namespace. Its `id` must be the target row
+ID, `kernelId` must equal that target's `daemonId`, and `lastHeartbeatAt` must
+match exactly. Record those target IDs in `ownedHeartbeatIds` and
+`queriedHeartbeatIds`. Retained targets must be REVOKED and scoped to the exact
+account, realm, machine and owned kernels. Preserve historical counts in the
+evidence rather than pretending revoked history was physically deleted.
 
 ## Exact live command
 

@@ -20,6 +20,10 @@ New managed Machines default to every authenticated, transferable profile discov
 
 Existing effective default roots migrate once into the durable registry with stable profile IDs and public labels. `default` resolves the currently selected default; it is not a replacement for a stored profile ID. Static provider-profile configuration is not a second source of truth.
 
+Linking a provider directory already registered under the same owner and provider returns an error identifying the existing profile. Duplicate authenticated identities across separate directories remain rejected by refresh.
+
+Profiles created without a label follow the authenticated account email's local part. A rename makes the label user-owned, even when the chosen label equals the current automatic name. Colliding automatic labels receive a numeric suffix; reserved or invalid email names leave the last label unchanged. Legacy profiles without naming metadata treat provider-number aliases and names matching the last observed email local part as automatic; other labels are preserved.
+
 ### Claude native login and legacy profiles
 
 A successful native `claude auth status` does not prove that a directory-linked Chariox profile is signed in. First compare the selected profile's credential scope with the native invocation. Preserve the real macOS HOME. Do not copy credentials, log out, or start another login merely because the two status results differ.

@@ -143,6 +143,7 @@ mod tests {
 
     #[test]
     fn terminal_turn_trace_is_disabled_by_default() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_lock();
         let dir = std::env::temp_dir().join(format!(
             "chariox-terminal-turn-trace-disabled-{}",
@@ -165,6 +166,7 @@ mod tests {
 
     #[test]
     fn terminal_turn_trace_writes_when_enabled() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_lock();
         let dir = std::env::temp_dir().join(format!(
             "chariox-terminal-turn-trace-enabled-{}",

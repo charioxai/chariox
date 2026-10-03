@@ -425,10 +425,21 @@ impl TerminalStreamStore {
         session_id: &str,
         attachment_id: &str,
     ) -> Vec<TerminalOutputRecord> {
-        self.shard(session_id)
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .drain_output_records(session_id, attachment_id)
+        let (records, pending) = {
+            let mut shard = self
+                .shard(session_id)
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let records = shard.drain_output_records(session_id, attachment_id);
+            let pending = shard.has_pending_output_records(session_id, attachment_id);
+            (records, pending)
+        };
+        // Bounded local and relay drains must schedule the next batch even when
+        // the producer has finished. Keep wakeups scoped to this attachment.
+        if pending {
+            self.record_change_for_attachment_ids(session_id, &[attachment_id.to_string()]);
+        }
+        records
     }
 
     pub fn has_pending_output_records(&self, session_id: &str, attachment_id: &str) -> bool {

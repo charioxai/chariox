@@ -18,13 +18,13 @@ test("slice save acknowledgement-loss dry-run records an exact serial kernel com
   try {
     await execFile(process.execPath, [scriptPath, "--dry-run", "--report", reportPath])
     const report = JSON.parse(await readFile(reportPath, "utf8"))
-    assert.equal(report.schema, "chariox.slice_save_ack_loss_fault_drill.v1")
+    assert.equal(report.schema, "chariox.slice_save_ack_loss_fault_drill.v2")
     assert.equal(report.status, "dry-run")
     assert.deepEqual(report.caseIds, [
-      "fault.response-loss",
-      "effect.backend-exactly-once",
-      "replay.same-process",
-      "replay.kernel-restart",
+      "fault.refusal-response-loss",
+      "effect.backend-not-dispatched",
+      "refusal.replay.same-process",
+      "refusal.replay.kernel-restart",
       "guard.command-conflict",
       "cleanup.resources",
     ])
@@ -83,7 +83,9 @@ test("fault-drill failed child preserves status and an early diagnostic after lo
     assert.equal(report.resources.length, 3)
     for (const sample of report.resources) {
       assert.equal(typeof sample.disk, "string")
-      assert.equal(sample.diskPath, path.resolve(scriptPath, "..", "..", "..", ".."))
+      assert.equal(sample.diskPath, process.platform === "darwin"
+        ? "/System/Volumes/Data"
+        : path.resolve(scriptPath, "..", "..", "..", ".."))
       assert(Number.isSafeInteger(sample.diskAvailableBytes))
       assert(sample.diskAvailableBytes > 0)
     }

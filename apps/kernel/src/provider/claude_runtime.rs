@@ -22,6 +22,7 @@ const DEFAULT_CLAUDE_TURN_STALL_TIMEOUT: Duration = Duration::from_secs(60);
 mod events;
 mod input;
 mod process;
+mod runtime_tool_wait;
 mod state;
 mod tool_transcript;
 pub(crate) mod usage;
@@ -30,6 +31,9 @@ mod watchdog;
 use events::apply_claude_message;
 use input::claude_user_content;
 use process::{spawn_claude_child, stop_child, write_json_line, ClaudeRuntimeMessage};
+pub(crate) use runtime_tool_wait::{
+    begin_claude_runtime_tool_wait, claude_runtime_tool_wait_pending, ClaudeRuntimeToolWait,
+};
 pub(crate) use state::{ClaudeRunSelection, ClaudeRuntimeBinding, ClaudeRuntimeState};
 use usage::apply_claude_usage_capture;
 use watchdog::ClaudeTurnStallAction;
@@ -292,6 +296,18 @@ fn apply_claude_turn_stall_policy(
     state: &mut ClaudeRuntimeState,
     batch: &mut ProviderPromptSignalBatch,
 ) -> Result<(), DaemonError> {
+    if claude_runtime_tool_wait_pending(run.id()) {
+        // Claude emits nothing while it waits on a runtime tool call, a
+        // person's decision included; that is not a stall.
+        state.turn_watchdog.record_runtime_message(Instant::now());
+        return Ok(());
+    }
+    // A reported native tool still owns work while it runs without output.
+    // Its result, explicit cancellation, or child exit settles that ownership;
+    // elapsed quiet time alone cannot establish a stalled provider turn.
+    if state.tool_transcript.has_pending_tools() {
+        return Ok(());
+    }
     match state
         .turn_watchdog
         .action(Instant::now(), claude_turn_stall_timeout())
@@ -451,6 +467,7 @@ fn restart_claude_runtime(
         &claude_args_without_resume(&state.args),
         run.execution_mode(),
         run.permission_level(),
+        state.mcp_config_file.is_some() && run.runtime_mcp_auth_token().is_some(),
     );
     let mut args = base_args.clone();
     if let Some(session_id) = resume_session_id {
@@ -674,6 +691,56 @@ mod tests {
     }
 
     #[test]
+    fn a_runtime_tool_call_in_flight_is_not_a_turn_stall() {
+        let (mut state, mut batch) = parser_state();
+        let run = RuntimeProviderRun::new(
+            "run-runtime-tool-stall",
+            &LaunchProviderRequest::new("session-1", "claude", "claude", "default", "sonnet"),
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "test-claude".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: Default::default(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("test-claude-runtime".to_string()),
+            },
+        );
+        let now = std::time::Instant::now();
+        let Some(stalled_since) =
+            now.checked_sub(super::claude_turn_stall_timeout() + std::time::Duration::from_secs(1))
+        else {
+            return;
+        };
+        state.turn_watchdog.begin(stalled_since);
+        assert_ne!(
+            state
+                .turn_watchdog
+                .action(now, super::claude_turn_stall_timeout()),
+            super::watchdog::ClaudeTurnStallAction::Wait,
+            "the turn has been silent past the stall timeout"
+        );
+
+        let wait = super::begin_claude_runtime_tool_wait(run.id());
+        super::apply_claude_turn_stall_policy(&run, &mut state, &mut batch)
+            .expect("stall policy should run");
+        drop(wait);
+
+        assert_eq!(state.active_turn_id.as_deref(), Some("turn-1"));
+        assert!(!batch.prompt_completed);
+        assert!(batch.terminal_failure.is_none());
+        assert_eq!(
+            state.turn_watchdog.action(
+                std::time::Instant::now(),
+                super::claude_turn_stall_timeout()
+            ),
+            super::watchdog::ClaudeTurnStallAction::Wait
+        );
+    }
+
+    #[test]
     fn claude_args_without_resume_removes_stale_session_argument() {
         let args = vec![
             "--model".to_string(),
@@ -789,6 +856,70 @@ cat >/dev/null
 
         drop(binding);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancelled_claude_turn_resumes_same_session_for_follow_up() {
+        let worktree = crate::test_support::TestWorktree::new("claude-cancel-continuity");
+        let trace = worktree.path().join("argv.log");
+        let run = RuntimeProviderRun::new(
+            "provider-run-cancel-continuity",
+            &LaunchProviderRequest::new("room", "claude", "claude", "default", "sonnet"),
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::External,
+                process_label: "claude-fixture".to_string(),
+                pty_target: None,
+                pty_program: Some("/bin/sh".to_string()),
+                pty_args: vec![
+                    "-c".to_string(),
+                    r#"
+printf 'argv' >> "$CLAUDE_TEST_TRACE"
+for arg in "$@"; do printf '\t%s' "$arg" >> "$CLAUDE_TEST_TRACE"; done
+printf '\n' >> "$CLAUDE_TEST_TRACE"
+while IFS= read -r line; do printf 'input:%s\n' "$line" >> "$CLAUDE_TEST_TRACE"; done
+"#
+                    .to_string(),
+                    "fixture".to_string(),
+                ],
+                pty_env: BTreeMap::from([(
+                    "CLAUDE_TEST_TRACE".to_string(),
+                    trace.display().to_string(),
+                )]),
+                pty_env_remove: Vec::new(),
+                working_directory: Some(worktree.path().to_path_buf()),
+                structured_endpoint: None,
+            },
+        );
+        let mut binding = initialize_claude_runtime(&run).unwrap();
+        let session_id = binding.state.session_id().unwrap().to_string();
+        let envelope = crate::prompt_assembly::PromptEnvelope::new(
+            "remember cancelled context",
+            "",
+            Vec::new(),
+            crate::prompt_assembly::PromptManifest::current(),
+        );
+        submit_claude_prompt(&run, &mut binding.state, &envelope).unwrap();
+        wait_for_trace_lines(&trace, 2);
+        super::abort_claude_turn(&run, &mut binding.state).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let contents = std::fs::read_to_string(&trace).unwrap_or_default();
+            if contents.lines().any(|line| {
+                line.starts_with("argv\t") && line.ends_with(&format!("\t--resume\t{session_id}"))
+            }) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "abort must resume the original Claude session"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        submit_claude_prompt(&run, &mut binding.state, &envelope).unwrap();
+        assert_eq!(binding.state.session_id(), Some(session_id.as_str()));
+        assert!(binding.state.active_turn_id.is_some());
+        drop(binding);
     }
 
     #[test]
@@ -1223,6 +1354,155 @@ cat >/dev/null
             &mut second_completed,
         );
         assert_eq!(second_completed.chunks[0].bytes, b" message");
+    }
+
+    fn thinking_then_text_stream(
+        state: &mut ClaudeRuntimeState,
+        deltas: &[&str],
+    ) -> ProviderPromptSignalBatch {
+        let mut streamed = ProviderPromptSignalBatch::default();
+        for event in [
+            json!({ "type": "message_start", "message": { "id": "msg-1" } }),
+            json!({ "type": "content_block_start", "index": 0, "content_block": { "type": "thinking", "thinking": "" } }),
+            json!({ "type": "content_block_start", "index": 1, "content_block": { "type": "text", "text": "" } }),
+        ]
+        .into_iter()
+        .chain(deltas.iter().map(|text| {
+            json!({ "type": "content_block_delta", "index": 1, "delta": { "type": "text_delta", "text": text } })
+        })) {
+            apply_claude_message("run-1", state, json!({ "type": "stream_event", "event": event }), &mut streamed);
+        }
+        streamed
+    }
+
+    // Claude Code sends one `assistant` event per content block: the reply
+    // that streamed as block 1 (after a thinking block) arrives as block 0.
+    fn split_thinking_then_text_snapshots(
+        state: &mut ClaudeRuntimeState,
+        text: &str,
+    ) -> ProviderPromptSignalBatch {
+        let mut completed = ProviderPromptSignalBatch::default();
+        for block in [
+            json!({ "type": "thinking", "thinking": "" }),
+            json!({ "type": "text", "text": text }),
+        ] {
+            apply_claude_message(
+                "run-1",
+                state,
+                json!({ "type": "assistant", "message": { "id": "msg-1", "content": [block] } }),
+                &mut completed,
+            );
+        }
+        completed
+    }
+
+    #[test]
+    fn split_assistant_snapshot_after_thinking_does_not_repeat_streamed_text() {
+        let (mut state, _) = parser_state();
+        let streamed = thinking_then_text_stream(&mut state, &["hello ", "world"]);
+        let text: Vec<u8> = streamed
+            .chunks
+            .iter()
+            .flat_map(|chunk| chunk.bytes.clone())
+            .collect();
+        assert_eq!(text, b"hello world");
+
+        let completed = split_thinking_then_text_snapshots(&mut state, "hello world");
+        assert!(
+            completed.chunks.is_empty(),
+            "the streamed reply was emitted again"
+        );
+
+        let mut duplicate = ProviderPromptSignalBatch::default();
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({ "type": "assistant", "message": { "id": "msg-1", "content": [{ "type": "text", "text": "hello world" }] } }),
+            &mut duplicate,
+        );
+        assert!(duplicate.chunks.is_empty());
+
+        let mut late = ProviderPromptSignalBatch::default();
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({ "type": "stream_event", "event": { "type": "content_block_delta", "index": 1, "delta": { "type": "text_delta", "text": "world" } } }),
+            &mut late,
+        );
+        assert!(
+            late.chunks.is_empty(),
+            "a late delta of the completed block was emitted"
+        );
+    }
+
+    #[test]
+    fn split_assistant_snapshot_after_thinking_emits_only_the_unstreamed_rest() {
+        let (mut state, _) = parser_state();
+        thinking_then_text_stream(&mut state, &["hello "]);
+
+        let completed = split_thinking_then_text_snapshots(&mut state, "hello world");
+        assert_eq!(completed.chunks.len(), 1);
+        assert_eq!(completed.chunks[0].kind, TerminalOutputKind::ProviderOutput);
+        assert_eq!(completed.chunks[0].bytes, b"world");
+    }
+
+    #[test]
+    fn later_text_block_extending_an_earlier_one_is_not_repeated() {
+        let (mut state, _) = parser_state();
+        let mut batch = ProviderPromptSignalBatch::default();
+        let stream = |state: &mut ClaudeRuntimeState,
+                      batch: &mut ProviderPromptSignalBatch,
+                      event: serde_json::Value| {
+            apply_claude_message(
+                "run-1",
+                state,
+                json!({ "type": "stream_event", "event": event }),
+                batch,
+            );
+        };
+        let snapshot = |state: &mut ClaudeRuntimeState,
+                        batch: &mut ProviderPromptSignalBatch,
+                        text: &str| {
+            apply_claude_message(
+                "run-1",
+                state,
+                json!({ "type": "assistant", "message": { "id": "msg-1", "content": [{ "type": "text", "text": text }] } }),
+                batch,
+            );
+        };
+        stream(
+            &mut state,
+            &mut batch,
+            json!({ "type": "message_start", "message": { "id": "msg-1" } }),
+        );
+        stream(
+            &mut state,
+            &mut batch,
+            json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "OK" } }),
+        );
+        snapshot(&mut state, &mut batch, "OK");
+        // Block 2 (after a tool_use at 1) starts with block 0's whole text.
+        stream(
+            &mut state,
+            &mut batch,
+            json!({ "type": "content_block_delta", "index": 2, "delta": { "type": "text_delta", "text": "O" } }),
+        );
+        let text: Vec<u8> = batch
+            .chunks
+            .iter()
+            .flat_map(|chunk| chunk.bytes.clone())
+            .collect();
+        assert_eq!(text, b"OKO");
+
+        let mut completed = ProviderPromptSignalBatch::default();
+        snapshot(&mut state, &mut completed, "OK, done.");
+        assert_eq!(completed.chunks.len(), 1);
+        assert_eq!(completed.chunks[0].bytes, b"K, done.");
+
+        let mut repeated = ProviderPromptSignalBatch::default();
+        snapshot(&mut state, &mut repeated, "OK, done.");
+        snapshot(&mut state, &mut repeated, "OK");
+        assert!(repeated.chunks.is_empty());
     }
 
     #[test]

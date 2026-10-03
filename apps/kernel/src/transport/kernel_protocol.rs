@@ -592,19 +592,18 @@ fn changed_workflow_runs(
     snapshot: &SessionSnapshotProjection,
     previous_snapshot: Option<&SessionSnapshotProjection>,
 ) -> Vec<WorkflowRun> {
-    let Some(previous_snapshot) = previous_snapshot else {
-        return snapshot.session.workflow_runs().to_vec();
-    };
     let previous_runs = previous_snapshot
-        .session
-        .workflow_runs()
-        .iter()
+        .into_iter()
+        .flat_map(|snapshot| snapshot.session.workflow_runs())
         .map(|run| (run.id(), run))
         .collect::<BTreeMap<_, _>>();
     snapshot
         .session
         .workflow_runs()
         .iter()
+        // MP-08/MP-10: archival publishes the authoritative terminal update.
+        // A hot-snapshot diff must not duplicate that same terminal transition.
+        .filter(|run| !run.status().is_terminal())
         .filter(|run| previous_runs.get(run.id()).copied() != Some(*run))
         .cloned()
         .collect()

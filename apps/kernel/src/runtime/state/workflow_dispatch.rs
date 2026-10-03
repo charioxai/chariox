@@ -211,7 +211,7 @@ impl KernelRuntimeOwnedState {
         Ok(prepared)
     }
 
-    fn workflow_fail_node_after_dispatch_error(
+    pub(super) fn workflow_fail_node_after_dispatch_error(
         &self,
         session_id: &str,
         workflow_run_id: &str,

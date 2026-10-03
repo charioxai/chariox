@@ -16,6 +16,7 @@ import {
   respondToInteractionRequest,
   steerQueuedPromptRequest,
   submitPromptRequest,
+  type InteractionPasskeyProof,
 } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
 import { launchProviderRun } from "./provider-api.js"
@@ -163,11 +164,15 @@ export async function respondToInteraction(
   interactionId: string,
   choiceId: string,
   customReply: string | null,
+  proof?: InteractionPasskeyProof | null,
 ): Promise<RuntimeSession> {
   const response = await client.send<Record<string, unknown>>(
-    respondToInteractionRequest(sessionId, interactionId, choiceId, customReply),
+    respondToInteractionRequest(sessionId, interactionId, choiceId, customReply, proof),
   )
-  const payload = expectVariant<{ session: RuntimeSession }>(response, "InteractionResponded")
+  const payload = expectVariant<{ interaction_id: string; session: RuntimeSession }>(response, "InteractionResponded")
+  if (payload.interaction_id !== interactionId || payload.session?.id !== sessionId) {
+    throw new Error("interaction response identity mismatch")
+  }
   return normalizeRuntimeSession(payload.session)
 }
 

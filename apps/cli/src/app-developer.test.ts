@@ -1,0 +1,107 @@
+import assert from "node:assert/strict"
+import { test } from "node:test"
+import { chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { pathToFileURL } from "node:url"
+import { LOCAL_DAEMON_PROTOCOL_VERSION } from "@chariox/kernel-client"
+import { locateAppPackageBinary, packAppPackage, runAppDeveloperCommand, type AppDeveloperDeps } from "./app-developer.js"
+import { runAppCommand } from "./app-command.js"
+
+function harness(response = { status: 0, stdout: '{"ok":true,"result":{"status":"fixture"}}' }) {
+  const calls: { binary: string, args: readonly string[] }[] = []
+  const output: string[] = []
+  const deps: AppDeveloperDeps = {
+    locateBinary: async () => "/installed/chariox-app-package",
+    execute: async (binary, args) => { calls.push({ binary, args }); return response },
+    write: (text) => { output.push(text) },
+  }
+  return { calls, output, deps }
+}
+
+test("developer commands use one local package tool with current protocol and no kernel", async () => {
+  for (const action of ["create", "pack", "validate", "manifest", "inspect", "keygen"]) {
+    const h = harness()
+    assert.equal(await runAppCommand(["app", action, "space ; $(touch no-file)"], {
+      createClient: () => { throw new Error("must not connect") }, write: () => { throw new Error("wrong output path") }, developer: h.deps,
+    }), true)
+    assert.deepEqual(h.calls[0], {
+      binary: "/installed/chariox-app-package",
+      args: [action, "space ; $(touch no-file)", ...(["create", "pack", "validate", "manifest"].includes(action) ? ["--kernel-protocol", String(LOCAL_DAEMON_PROTOCOL_VERSION)] : [])],
+    })
+    assert.equal(JSON.parse(h.output[0]!).status, "fixture")
+  }
+})
+
+test("developer argument and response failures are bounded and do not claim success", async () => {
+  const h = harness()
+  await assert.rejects(runAppDeveloperCommand(["create", "--kernel-protocol", "1"], h.deps), /supplies its current protocol/)
+  await assert.rejects(runAppDeveloperCommand(["create", "x".repeat(4097)], h.deps), /bounds/)
+  assert.equal(h.calls.length, 0)
+  assert.equal(await runAppDeveloperCommand(["list"], h.deps), false)
+  for (const response of [
+    { status: 2, stdout: '{"ok":false,"error":{"code":"INVALID_SIGNATURE","message":"signature rejected"}}' },
+    { status: 0, stdout: "not json" }, { status: 1, stdout: '{"ok":true,"result":{}}' },
+  ]) {
+    const failed = harness(response)
+    await assert.rejects(runAppDeveloperCommand(["inspect", "sample.cxapp"], failed.deps))
+    assert.deepEqual(failed.output, [])
+  }
+})
+
+test("an explicit helper must be absolute and executable; it never falls back", async (context) => {
+  const root = await mkdtemp(join(await realpath(tmpdir()), "chariox-app-helper-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const binary = join(root, "chariox-app-package")
+  await writeFile(binary, "#!/bin/sh\nexit 0\n", { mode: 0o600 })
+  await assert.rejects(locateAppPackageBinary({ CHARIOX_APP_PACKAGE_BIN: "relative-helper" }), /absolute/)
+  await assert.rejects(locateAppPackageBinary({ CHARIOX_APP_PACKAGE_BIN: binary }), /not an executable/)
+  await chmod(binary, 0o755)
+  assert.equal(await locateAppPackageBinary({ CHARIOX_APP_PACKAGE_BIN: binary }), binary)
+  await assert.rejects(locateAppPackageBinary({ CHARIOX_APP_PACKAGE_BIN: join(root, "missing") }), /not an executable/)
+})
+
+test("source helper discovery uses module checkout and explicit target directory", async (context) => {
+  const root = await mkdtemp(join(await realpath(tmpdir()), "chariox-app-source-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  await mkdir(join(root, "packages/app-package"), { recursive: true })
+  await writeFile(join(root, "packages/app-package/Cargo.toml"), "[package]\n")
+  const target = join(root, "external-build")
+  await mkdir(join(target, "debug"), { recursive: true })
+  const binary = join(target, "debug/chariox-app-package")
+  await writeFile(binary, "#!/bin/sh\nexit 0\n", { mode: 0o755 })
+  // An explicitly selected checkout target takes precedence over installed tools.
+  assert.equal(await locateAppPackageBinary({ CARGO_TARGET_DIR: target }, pathToFileURL(join(root, "apps/cli/dist/app-developer.js")).href), binary)
+})
+
+test("a compiled release executable uses the helper beside it; a source run never does", async (context) => {
+  const root = await mkdtemp(join(await realpath(tmpdir()), "chariox-app-release-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  await mkdir(join(root, "bin"))
+  const chariox = join(root, "bin/chariox")
+  const binary = join(root, "bin/chariox-app-package")
+  await writeFile(chariox, "", { mode: 0o755 })
+  await writeFile(binary, "#!/bin/sh\nexit 0\n", { mode: 0o755 })
+  await symlink(chariox, join(root, "chariox-link"))
+  const moduleUrl = pathToFileURL(join(root, "elsewhere/app-developer.js")).href
+  assert.equal(await locateAppPackageBinary({}, moduleUrl, { version: "0.2.0", executable: chariox }), binary)
+  // An installed symlink to the executable still finds the bundle's helper.
+  assert.equal(await locateAppPackageBinary({}, moduleUrl, { version: "0.2.0", executable: join(root, "chariox-link") }), binary)
+  // The explicit helper still wins.
+  const explicit = join(root, "explicit-helper")
+  await writeFile(explicit, "#!/bin/sh\nexit 0\n", { mode: 0o755 })
+  assert.equal(await locateAppPackageBinary({ CHARIOX_APP_PACKAGE_BIN: explicit }, moduleUrl, { version: "0.2.0", executable: chariox }), explicit)
+  // Run from source (no release version), Bun or Node's own directory is never searched.
+  const fromSource = await locateAppPackageBinary({}, moduleUrl, { version: undefined, executable: chariox }).catch((error: Error) => error)
+  assert.notEqual(fromSource, binary)
+})
+
+test("the dev loop packs through the same pack command and returns its verified identity", async () => {
+  const digest = `sha256:${"b".repeat(64)}`
+  const h = harness({ status: 0, stdout: JSON.stringify({ ok: true, result: { status: "packed-locally", manifest: { appId: "com.example.todo", version: "1.0.3" }, packageDigest: digest } }) })
+  assert.deepEqual(await packAppPackage({ bundle: "/a/bundle", manifest: "/a/app.json", key: "/k/private", output: "/t/app-dev.cxapp" }, h.deps), { appId: "com.example.todo", version: "1.0.3", packageDigest: digest })
+  assert.deepEqual(h.calls[0]!.args, ["pack", "--bundle", "/a/bundle", "--manifest", "/a/app.json", "--key", "/k/private", "--output", "/t/app-dev.cxapp", "--kernel-protocol", String(LOCAL_DAEMON_PROTOCOL_VERSION)])
+  assert.deepEqual(h.output, [])
+  const failed = harness({ status: 3, stdout: '{"ok":false,"error":{"code":"INVALID_DEVELOPER_KEY","message":"manifest publisher key ID does not match the private signing key"}}' })
+  await assert.rejects(packAppPackage({ bundle: "b", manifest: "m", key: "k", output: "o.cxapp" }, failed.deps), /INVALID_DEVELOPER_KEY: manifest publisher key ID/)
+})

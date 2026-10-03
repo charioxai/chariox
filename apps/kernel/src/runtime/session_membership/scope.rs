@@ -11,6 +11,10 @@ pub(crate) enum SessionMembershipScope {
         session_ref: String,
         workspace_id: Option<String>,
     },
+    DeleteSessionRef {
+        session_ref: String,
+        workspace_id: Option<String>,
+    },
     AttachmentId(String),
 }
 
@@ -31,15 +35,23 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::CancelBrowserImport(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::OpenAppView(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::SetAppViewPanel(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::ListSessions(_) => Some(SessionMembershipScope::AllSessions),
         LocalDaemonRequest::ResolveSession(request) => Some(SessionMembershipScope::SessionRef {
             session_ref: request.session_ref.clone(),
             workspace_id: request.workspace_id.clone(),
         }),
-        LocalDaemonRequest::DeleteSession(request) => Some(SessionMembershipScope::SessionRef {
-            session_ref: request.session_ref.clone(),
-            workspace_id: request.workspace_id.clone(),
-        }),
+        LocalDaemonRequest::DeleteSession(request) => {
+            Some(SessionMembershipScope::DeleteSessionRef {
+                session_ref: request.session_ref.clone(),
+                workspace_id: request.workspace_id.clone(),
+            })
+        }
         LocalDaemonRequest::DetachFromSession(request) => Some(
             SessionMembershipScope::AttachmentId(request.attachment_id.clone()),
         ),
@@ -156,7 +168,7 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::RespondToInteraction(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
-        LocalDaemonRequest::RequestNativeProviderInteraction(request) => Some(
+        LocalDaemonRequest::RequestNativeProviderTurnInteraction(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
         LocalDaemonRequest::GetSessionState(request) => Some(SessionMembershipScope::SessionId(
@@ -169,6 +181,9 @@ pub(crate) fn request_session_scope(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
         LocalDaemonRequest::GetRoomEnvironmentResourceInventory(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::GetRoomEnvironmentTabAccessibility(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
         LocalDaemonRequest::CaptureRoomEnvironmentScreenshot(request) => Some(
@@ -198,6 +213,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::UpdateRoomEnvironmentViewport(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::SetRoomBrowserBar(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::UpdateRoomEnvironmentPointer(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
@@ -324,6 +342,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::CreateWorkflow(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::CreateAgentWorkflow(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::ValidateWorkflowCode(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
@@ -388,21 +409,6 @@ pub(crate) fn request_session_scope(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
         LocalDaemonRequest::DisableWorkflowPublication(request) => Some(
-            SessionMembershipScope::SessionId(request.session_id.clone()),
-        ),
-        LocalDaemonRequest::CreateWorkflowEventBinding(request) => Some(
-            SessionMembershipScope::SessionId(request.session_id.clone()),
-        ),
-        LocalDaemonRequest::ListWorkflowEventBindings(request) => Some(
-            SessionMembershipScope::SessionId(request.session_id.clone()),
-        ),
-        LocalDaemonRequest::SetWorkflowEventBindingStatus(request) => Some(
-            SessionMembershipScope::SessionId(request.session_id.clone()),
-        ),
-        LocalDaemonRequest::TransferWorkflowEventBinding(request) => Some(
-            SessionMembershipScope::SessionId(request.source_session_id.clone()),
-        ),
-        LocalDaemonRequest::TestWorkflowEventBinding(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
         LocalDaemonRequest::ControlWorkflowPublicationRuntime(request) => Some(
@@ -569,9 +575,10 @@ mod tests {
 
     use crate::attachment::ClientCapabilityLevel;
     use crate::local::{
-        ArmDeploymentCredentialEnrollmentRequest, AttachToSessionRequest, DetachFromSessionRequest,
-        LaunchProviderRunRequest, LaunchProviderRunsRequest, ListSessionsRequest,
-        QueryRecallRequest, RelayStatusRequest, ResolveSessionRequest, RespondToInteractionRequest,
+        ArmDeploymentCredentialEnrollmentRequest, AttachToSessionRequest, DeleteSessionRequest,
+        DetachFromSessionRequest, LaunchProviderRunRequest, LaunchProviderRunsRequest,
+        ListSessionsRequest, QueryRecallRequest, RelayStatusRequest, ResolveSessionRequest,
+        RespondToInteractionRequest,
     };
 
     #[test]
@@ -588,6 +595,16 @@ mod tests {
             Some(SessionMembershipScope::SessionRef {
                 session_ref: "session-alias".to_string(),
                 workspace_id: Some("workspace-1".to_string()),
+            })
+        );
+        assert_eq!(
+            request_session_scope(&LocalDaemonRequest::DeleteSession(DeleteSessionRequest {
+                session_ref: "session-id".to_string(),
+                workspace_id: None,
+            })),
+            Some(SessionMembershipScope::DeleteSessionRef {
+                session_ref: "session-id".to_string(),
+                workspace_id: None,
             })
         );
         assert_eq!(
@@ -617,6 +634,8 @@ mod tests {
                     interaction_id: "interaction-1".to_string(),
                     choice_id: "cancel".to_string(),
                     custom_reply: None,
+                    passkey: None,
+                    passkey_remember_minutes: None,
                 },
             )),
             Some(SessionMembershipScope::SessionId("session-1".to_string()))

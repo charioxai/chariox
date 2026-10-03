@@ -1,0 +1,415 @@
+//! One HTTP/1 exchange over a directly owned socket. There is no connection
+//! pool, environment proxy, ambient cookie jar, or implicit redirect/retry.
+mod body;
+mod progress;
+
+use super::{
+    dns::DnsConfig, limits::LifetimeLease, policy::ApprovedTarget, HttpError, Result, CHUNK_BYTES,
+    MAX_RESPONSE_BYTES, NETWORK_INACTIVITY, STREAM_LIFETIME,
+};
+use bytes::Bytes;
+use http_body_util::BodyExt;
+use hyper::{
+    body::{Body, Incoming},
+    client::conn::http1,
+    header, Request,
+};
+use hyper_util::rt::TokioIo;
+use std::{
+    future::Future,
+    io,
+    net::SocketAddr,
+    pin::Pin,
+    sync::{
+        atomic::{AtomicU8, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    net::TcpStream,
+    sync::{mpsc, oneshot, watch},
+    time::Instant,
+};
+use tokio_rustls::{
+    rustls::{self, pki_types::ServerName},
+    TlsConnector,
+};
+
+pub(super) use body::{UploadBody, UploadPort};
+
+/// Metadata is bounded and contains no Set-Cookie or proxy-authentication data.
+#[derive(Debug, Clone)]
+pub(super) struct ResponseHead {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub url: String,
+}
+pub(super) struct ReceivePort {
+    pub headers: oneshot::Receiver<Result<ResponseHead>>,
+    pub chunks: mpsc::Receiver<Result<Bytes>>,
+}
+pub(super) struct Exchange {
+    upload: UploadBody,
+    headers: Option<oneshot::Sender<Result<ResponseHead>>>,
+    chunks: mpsc::Sender<Result<Bytes>>,
+    /// A protected effect: the kernel's approved body, spent approval.
+    effect: bool,
+}
+
+/// How far an exchange got. A protected effect whose request may have reached
+/// the origin, with no response head yet, has an unknown outcome: the origin
+/// may have acted even though its reply was lost.
+const UNSENT: u8 = 0;
+const SENT: u8 = 1;
+const ANSWERED: u8 = 2;
+fn lost_reply(effect: bool, phase: &AtomicU8, error: HttpError) -> HttpError {
+    if effect && phase.load(Ordering::Acquire) == SENT {
+        HttpError::OutcomeUncertain
+    } else {
+        error
+    }
+}
+#[cfg(test)]
+impl Exchange {
+    pub(super) fn fixture_parts(
+        self,
+    ) -> (
+        UploadBody,
+        oneshot::Sender<Result<ResponseHead>>,
+        mpsc::Sender<Result<Bytes>>,
+    ) {
+        (self.upload, self.headers.unwrap(), self.chunks)
+    }
+}
+pub(super) fn channels(has_body: bool) -> (UploadPort, ReceivePort, Exchange) {
+    exchange(body::channel(has_body), false)
+}
+/// A protected effect's exchange: the approved parameters are the whole body.
+pub(super) fn fixed_channels(bytes: Bytes) -> (UploadPort, ReceivePort, Exchange) {
+    exchange(body::fixed(bytes), true)
+}
+fn exchange(
+    (upload, body): (UploadPort, UploadBody),
+    effect: bool,
+) -> (UploadPort, ReceivePort, Exchange) {
+    let (send_head, headers) = oneshot::channel();
+    let (send_chunks, chunks) = mpsc::channel(2);
+    (
+        upload,
+        ReceivePort { headers, chunks },
+        Exchange {
+            upload: body,
+            headers: Some(send_head),
+            chunks: send_chunks,
+            effect,
+        },
+    )
+}
+
+/// Opens the one TCP socket to a numeric address that DNS policy already
+/// checked. It receives no host name, so nothing below policy resolves again.
+pub(super) type Dial = Arc<dyn Fn(SocketAddr) -> Dialing + Send + Sync>;
+pub(super) type Dialing = Pin<Box<dyn Future<Output = io::Result<TcpStream>> + Send>>;
+
+pub(super) struct HttpTransport {
+    dns: DnsConfig,
+    tls: TlsConnector,
+    dial: Dial,
+}
+impl HttpTransport {
+    pub(super) fn system() -> Result<Self> {
+        Ok(Self {
+            dns: DnsConfig::system()?,
+            tls: Self::tls()?,
+            dial: Arc::new(|address: SocketAddr| -> Dialing {
+                Box::pin(TcpStream::connect(address))
+            }),
+        })
+    }
+    /// The production policy and codec with a test resolver and dialer.
+    #[cfg(test)]
+    pub(super) fn fixture(dns: DnsConfig, dial: Dial) -> Self {
+        Self {
+            dns,
+            tls: Self::tls().unwrap(),
+            dial,
+        }
+    }
+    fn tls() -> Result<TlsConnector> {
+        let roots =
+            rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let mut config = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .map_err(|_| HttpError::Tls)?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+        config.alpn_protocols = vec![b"http/1.1".to_vec()];
+        Ok(TlsConnector::from(Arc::new(config)))
+    }
+
+    /// The supervisor retains the task until completion and supplies the one
+    /// kernel pool reservation. Only enqueue this after the existing writer's
+    /// exact current installation/publisher approval fence succeeds. The lease
+    /// grants capacity, not connection credentials or operation approval.
+    pub(super) async fn run(
+        &self,
+        target: ApprovedTarget,
+        mut exchange: Exchange,
+        mut stopped: watch::Receiver<bool>,
+        lease: LifetimeLease,
+        admitted: Instant,
+    ) -> Result<()> {
+        let result = self
+            .perform(&target, &mut exchange, &mut stopped, &lease, admitted)
+            .await;
+        if let Err(error) = result {
+            if let Some(headers) = exchange.headers.take() {
+                let _ = headers.send(Err(error));
+            }
+            // A blocked reader cannot keep a failed socket open. Error detail
+            // is also retained by the task result; EOF is interpreted with it.
+            let _ = exchange.chunks.try_send(Err(error));
+        }
+        // All direct socket futures have dropped. Any DNS panic fallback still
+        // owns a clone until its aborted driver actually drops its socket.
+        drop(lease);
+        result
+    }
+
+    async fn perform(
+        &self,
+        target: &ApprovedTarget,
+        exchange: &mut Exchange,
+        stopped: &mut watch::Receiver<bool>,
+        lease: &LifetimeLease,
+        admitted: Instant,
+    ) -> Result<()> {
+        let initial_deadline = admitted + Duration::from_secs(30);
+        let lifetime = admitted + STREAM_LIFETIME;
+        let addresses = self
+            .dns
+            .resolve(target, initial_deadline, stopped.clone(), lease.clone())
+            .await?;
+        let mut connected = None;
+        for selected in addresses {
+            if super::stopped(stopped) {
+                return Err(HttpError::Cancelled);
+            }
+            let attempt = initial_deadline.min(Instant::now() + Duration::from_secs(5));
+            let socket = tokio::select! {
+                biased;
+                _ = super::cancelled(stopped) => return Err(HttpError::Cancelled),
+                _ = tokio::time::sleep_until(attempt) => None,
+                result = (self.dial)(selected) => result.ok(),
+            };
+            if let Some(socket) = socket {
+                // This is the actual connected endpoint, before TLS/HTTP bytes.
+                target.require_connected(
+                    selected,
+                    socket.peer_addr().map_err(|_| HttpError::Network)?,
+                )?;
+                socket.set_nodelay(true).map_err(|_| HttpError::Network)?;
+                connected = Some(socket);
+                break;
+            }
+            if Instant::now() >= initial_deadline {
+                return Err(HttpError::Deadline);
+            }
+        }
+        let socket = connected.ok_or(HttpError::Network)?;
+        let progress = progress::Progress::new();
+        let socket = progress::ObservedIo::new(socket, progress.clone());
+        if target.url().scheme() == "https" {
+            let name = match target.url().host().ok_or(HttpError::Invalid)? {
+                url::Host::Domain(name) => {
+                    ServerName::try_from(name.to_owned()).map_err(|_| HttpError::Invalid)?
+                }
+                url::Host::Ipv4(ip) => ServerName::IpAddress(ip.into()),
+                url::Host::Ipv6(ip) => ServerName::IpAddress(ip.into()),
+            };
+            let tls = tokio::select! {
+                biased;
+                _ = super::cancelled(stopped) => return Err(HttpError::Cancelled),
+                _ = tokio::time::sleep_until(initial_deadline) => return Err(HttpError::Deadline),
+                result = tls_handshake(&self.tls, name, socket) => result?,
+            };
+            exchange_io(tls, target, exchange, stopped, progress, lifetime).await
+        } else {
+            exchange_io(socket, target, exchange, stopped, progress, lifetime).await
+        }
+    }
+}
+
+/// The handshake with the checked peer, verified against the URL's host. Any
+/// failure (certificate, name, protocol version, or a peer that does not
+/// speak TLS) is `Tls`, so the App can tell it from a network failure.
+async fn tls_handshake<I: AsyncRead + AsyncWrite + Unpin>(
+    tls: &TlsConnector,
+    name: ServerName<'static>,
+    io: I,
+) -> Result<tokio_rustls::client::TlsStream<I>> {
+    tls.connect(name, io).await.map_err(|_| HttpError::Tls)
+}
+
+async fn exchange_io<I: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
+    io: I,
+    target: &ApprovedTarget,
+    exchange: &mut Exchange,
+    stopped: &mut watch::Receiver<bool>,
+    progress: progress::Progress,
+    lifetime: Instant,
+) -> Result<()> {
+    let mut builder = http1::Builder::new();
+    builder
+        .max_headers(64)
+        .max_buf_size(CHUNK_BYTES)
+        .writev(false);
+    let (sender, connection) = builder
+        .handshake::<_, UploadBody>(TokioIo::new(io))
+        .await
+        .map_err(|_| HttpError::Network)?;
+    let phase = AtomicU8::new(UNSENT);
+    let effect = exchange.effect;
+    let operation = exchange.perform(sender, target, &phase);
+    tokio::pin!(operation, connection);
+    let mut connection_done = false;
+    loop {
+        tokio::select! {
+            biased;
+            _ = super::cancelled(stopped) => return Err(HttpError::Cancelled),
+            _ = tokio::time::sleep_until(lifetime) => {
+                return Err(lost_reply(effect, &phase, HttpError::Deadline))
+            }
+            _ = progress.inactive(NETWORK_INACTIVITY) => {
+                return Err(lost_reply(effect, &phase, HttpError::Deadline))
+            }
+            result = &mut operation => return result,
+            result = &mut connection, if !connection_done => {
+                result.map_err(|_| lost_reply(effect, &phase, HttpError::Network))?;
+                connection_done = true;
+            }
+        }
+    }
+}
+
+impl Exchange {
+    async fn perform(
+        &mut self,
+        mut sender: http1::SendRequest<UploadBody>,
+        target: &ApprovedTarget,
+        phase: &AtomicU8,
+    ) -> Result<()> {
+        if matches!(*target.method(), hyper::Method::GET | hyper::Method::HEAD)
+            && !self.upload.is_end_stream()
+        {
+            return Err(HttpError::Invalid);
+        }
+        let mut request = Request::builder()
+            .method(target.method().clone())
+            .uri(&target.url()[url::Position::BeforePath..url::Position::AfterQuery])
+            .body(std::mem::replace(&mut self.upload, UploadBody::empty()))
+            .map_err(|_| HttpError::Invalid)?;
+        *request.headers_mut() = target.headers().clone();
+        request.headers_mut().insert(
+            header::HOST,
+            hyper::header::HeaderValue::from_str(
+                &target.url()[url::Position::BeforeHost..url::Position::AfterPort],
+            )
+            .map_err(|_| HttpError::Invalid)?,
+        );
+        request.headers_mut().insert(
+            header::ACCEPT_ENCODING,
+            hyper::header::HeaderValue::from_static("identity"),
+        );
+        request.headers_mut().insert(
+            header::CONNECTION,
+            hyper::header::HeaderValue::from_static("close"),
+        );
+        phase.store(SENT, Ordering::Release);
+        let response = match sender.try_send_request(request).await {
+            Ok(response) => response,
+            // hyper hands the request back only when none of it was written.
+            Err(error) if error.message().is_some() => {
+                phase.store(UNSENT, Ordering::Release);
+                return Err(HttpError::Network);
+            }
+            Err(_) => return Err(lost_reply(self.effect, phase, HttpError::Network)),
+        };
+        // Any received response, including a gateway's 5xx, is the answer.
+        phase.store(ANSWERED, Ordering::Release);
+        if response.status().as_u16() == 101 {
+            return Err(HttpError::Invalid);
+        }
+        if response
+            .body()
+            .size_hint()
+            .upper()
+            .is_some_and(|bytes| bytes > MAX_RESPONSE_BYTES)
+        {
+            return Err(HttpError::Limit);
+        }
+        let mut headers = Vec::new();
+        let mut count = 0usize;
+        for (name, value) in response.headers() {
+            count = count
+                .checked_add(name.as_str().len())
+                .and_then(|n| n.checked_add(value.as_bytes().len()))
+                .ok_or(HttpError::Limit)?;
+            if count > 16 * 1024 {
+                return Err(HttpError::Limit);
+            }
+            if matches!(
+                name.as_str(),
+                "set-cookie" | "proxy-authenticate" | "proxy-authorization"
+            ) {
+                continue;
+            }
+            // Header values are Latin-1 bytes, not arbitrary UTF-8. Preserve
+            // their byte values in the bounded SDK string representation.
+            headers.push((
+                name.to_string(),
+                value.as_bytes().iter().map(|b| char::from(*b)).collect(),
+            ));
+        }
+        let head = ResponseHead {
+            status: response.status().as_u16(),
+            headers,
+            url: target.url().to_string(),
+        };
+        self.headers
+            .take()
+            .ok_or(HttpError::Invalid)?
+            .send(Ok(head))
+            .map_err(|_| HttpError::Cancelled)?;
+        self.download(response.into_body()).await
+    }
+    async fn download(&self, mut body: Incoming) -> Result<()> {
+        let mut received = 0u64;
+        while let Some(frame) = body.frame().await {
+            let frame = frame.map_err(|_| HttpError::Network)?;
+            if let Ok(mut bytes) = frame.into_data() {
+                received = received
+                    .checked_add(bytes.len() as u64)
+                    .ok_or(HttpError::Limit)?;
+                if received > MAX_RESPONSE_BYTES {
+                    return Err(HttpError::Limit);
+                }
+                while !bytes.is_empty() {
+                    let next = bytes.split_to(bytes.len().min(CHUNK_BYTES));
+                    self.chunks
+                        .send(Ok(next))
+                        .await
+                        .map_err(|_| HttpError::Cancelled)?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests;

@@ -15,6 +15,7 @@ pub(crate) fn execute_managed_context_outbound_request(
     relay_state: Arc<RwLock<RelayClientState>>,
     store: ManagedContextOutboundOperationStore,
     provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
+    runtime: crate::runtime::state::KernelRuntimeState,
     caller_user_id: &str,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -27,6 +28,8 @@ pub(crate) fn execute_managed_context_outbound_request(
                 store,
                 provider_account_profiles,
                 request.ticket,
+                Some(runtime),
+                request.interactive,
             )?;
             Ok(LocalDaemonResponse::ManagedContextTransferStarted { status })
         }

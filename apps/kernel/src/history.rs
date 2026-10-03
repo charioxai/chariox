@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
 
+pub(crate) mod leased_projection;
 mod operational_archive;
 mod operational_legacy_import;
 mod operational_query;
@@ -550,6 +551,7 @@ pub struct OperationalHistoryStore {
     path: PathBuf,
     connection: Arc<Mutex<Connection>>,
     legacy_import_lock: Arc<Mutex<()>>,
+    projection_schema_initialized: Arc<AtomicBool>,
     read_connections: Arc<Vec<Mutex<Connection>>>,
     next_read_connection: Arc<AtomicU64>,
     next_sequence: Arc<AtomicU64>,
@@ -649,6 +651,7 @@ impl OperationalHistoryStore {
             path,
             connection: Arc::new(Mutex::new(connection)),
             legacy_import_lock: Arc::new(Mutex::new(())),
+            projection_schema_initialized: Arc::new(AtomicBool::new(false)),
             read_connections: Arc::new(read_connections),
             next_read_connection: Arc::new(AtomicU64::new(0)),
             next_sequence: Arc::new(AtomicU64::new(max_sequence + 1)),

@@ -35,10 +35,10 @@ entry (including protected entries, which are resettable but not editable).
 ## Context minimization
 
 Workflow instructions and event context are assembled by the scheduler's prompt-injection service. Event
-reply context stays structured and internal. Workflow-only runtime actions (including `reply_to_event`)
-are absent from ordinary provider tool lists and are projected when a provider run is selected for workflow
-execution (or is a leased workflow worker). The runtime dispatcher still revalidates the active workflow
-turn, binding, and invocation before any provider call.
+provider context stays structured and internal. Workflow-only runtime actions are absent from ordinary
+provider tool lists and are projected when a provider run is selected for workflow execution (or is a
+leased workflow worker). The runtime dispatcher still revalidates the active workflow turn and invocation
+before any provider call.
 
 Do not place credentials, raw provider catalogs, installation metadata, or unbounded event payloads in a
 prompt. Add a new Markdown template only when the text is an agent-directed instruction; protocol errors,

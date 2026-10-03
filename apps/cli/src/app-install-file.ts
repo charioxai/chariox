@@ -1,0 +1,379 @@
+/** Terminal-owned local file upload. Kernel approval and execution stay remote. */
+import { randomUUID } from "node:crypto"
+import { isAbsolute, resolve } from "node:path"
+import { setTimeout as delay } from "node:timers/promises"
+import {
+  beginAppPackageUploadRequest, putAppPackageUploadChunkRequest, abortAppPackageUploadRequest,
+  beginAppInstallRequest, beginAppUpdateRequest, getAppInstallOperationRequest, cancelAppInstallOperationRequest, getAppInstallationRequest,
+  getAppInstallationJournalRequest,
+} from "@chariox/kernel-client/ipc-requests"
+import type { AppInstallationSummary, AppInstallOperationSummary, AppPackageUploadSummary } from "@chariox/kernel-client/kernel-types"
+import { AppFileSource, checkCancelled, chunkBytes, InstallCancelled, InstallFileChanged } from "./app-install-file/source.js"
+
+type Send = (request: Record<string, unknown>) => Promise<Record<string, unknown>>
+export type InstallProgress = { phase: "hashing" | "uploading"; bytes: number; total: number }
+type Attempt = {
+  path: string; session: string; update?: { installation: string; generation?: string }; uploadRequest: string; request: string; cancelled: boolean;
+  digest?: string; size?: number; handle?: string; beginSent: boolean; status?: AppInstallOperationSummary; closed: boolean;
+  /** The kernel took the upload's bytes into the operation and the upload was aborted: never abort it again. */
+  released?: boolean;
+}
+export class KernelFailure extends Error { constructor(readonly code: string) { super(messages[code] ?? `App request failed: ${code}`) } }
+/** A followed operation's status could not be read for ten polls in a row. */
+export class FollowLostContact extends Error {
+  constructor(request: string) { super(`Lost contact with the kernel while following App operation ${request}.`) }
+}
+class ConnectionFailure extends Error { constructor() { super("Connection interrupted. Run the same /app install or update command to resume this attempt, or /app cancel to cancel it.") } }
+/** Finished install/update operation phases. */
+export const terminalPhases = new Set(["committed", "cancelled", "failed"])
+/** Unfinished install/update operation phases. */
+export const activePhases = new Set(["preparing", "awaiting_approval", "queued", "starting"])
+const messages: Record<string, string> = {
+  unauthorized: "This connection is not authorized to install Apps.", busy: "App requests are busy. Try again shortly.",
+  conflict: "The App operation or installation changed; check /app operation, or /app cancel and try again.", not_found: "App operation or upload was not found.",
+  storage_unavailable: "App storage is unavailable. Retry this operation when the kernel is available.",
+  limit_exceeded: "The kernel's App storage or operation limit has been reached.",
+}
+
+/** One transfer per terminal; reconnect retries retain the exact original IDs. */
+export class AppFileInstaller {
+  private attempt: Attempt | undefined
+  private running: Promise<AppInstallOperationSummary> | undefined
+  private cleaning: Promise<AppInstallOperationSummary | undefined> | undefined
+  private disposed = false
+  private readonly closing = new AbortController()
+  private readonly following = new Map<string, Promise<AppInstallOperationSummary>>()
+  private operations = new Set<Promise<unknown>>()
+  constructor(private send: Send, private progress: (value: InstallProgress) => void = () => {},
+    private cwd: string = terminalCwd(), private followPollMs = 1_000) {}
+
+  install(selected: string, session: string): Promise<AppInstallOperationSummary> {
+    return this.start(selected, session)
+  }
+
+  /** Same transfer and operation as install; the kernel replaces the release at the generation read first. */
+  update(installation: string, selected: string, session: string): Promise<AppInstallOperationSummary> {
+    if (!installation || Buffer.byteLength(installation) > 128) return Promise.reject(new Error("Invalid App installation ID"))
+    return this.start(selected, session, installation)
+  }
+
+  private start(selected: string, session: string, installation?: string): Promise<AppInstallOperationSummary> {
+    if (this.disposed) return Promise.reject(new Error("This terminal is closing"))
+    if (this.running) return Promise.reject(new Error("An App upload is already running. Use /app cancel to stop it."))
+    if (!session || Buffer.byteLength(session) > 128) return Promise.reject(new Error(`Attach to a session before ${installation ? "updating" : "installing"} an App`))
+    const path = resolve(this.cwd, selected)
+    let attempt = this.attempt
+    if (!attempt || attempt.closed) {
+      attempt = { path, session, ...(installation ? { update: { installation } } : {}), uploadRequest: `app-upload-${randomUUID()}`, request: `app-${installation ? "update" : "install"}-${randomUUID()}`, cancelled: false, beginSent: false, closed: false }
+      this.attempt = attempt
+    } else if (attempt.path !== path || attempt.session !== session || attempt.update?.installation !== installation) {
+      return Promise.reject(new Error("Another App installation or update is retained. Use /app operation or /app cancel before selecting another file."))
+    }
+    const operation = this.transfer(attempt).catch(async (error: unknown) => {
+      if (!(installation && error instanceof KernelFailure && error.code === "conflict")) throw error
+      throw new Error(await this.competingUpdate(installation, attempt.update?.generation).catch(() => null) ?? error.message)
+    })
+    this.running = operation
+    void operation.finally(() => { if (this.running === operation) this.running = undefined }).catch(() => {})
+    return operation
+  }
+
+  /** On a conflict, what another client's update of the installation is doing,
+   * judged against the generation this attempt read before it began, or that
+   * the installation cannot be reinstalled into because its data was deleted. */
+  private async competingUpdate(installation: string, read?: string): Promise<string | null> {
+    const current = (await this.send(getAppInstallationRequest(installation))).AppInstallation as { installation?: AppInstallationSummary } | undefined
+    const found = current?.installation
+    if (found && !found.active_release && found.pending_generation == null && found.data_kept === false) {
+      return `App ${installation} is uninstalled and its data was deleted, so nothing is left to reinstall into. Install the App again instead.`
+    }
+    const reply = await this.send(getAppInstallationJournalRequest(installation))
+    const journal = reply.AppInstallationJournal as { updates?: Array<{ phase: string; generation: string; release?: { version?: string } }> } | undefined
+    const latest = journal?.updates?.[0]
+    const release = latest && `version ${latest.release?.version ?? "unknown"} (generation ${latest.generation})`
+    const newer = latest && read !== undefined && BigInt(latest.generation) > BigInt(read)
+    if (latest && newer && latest.phase === "committed") return `Another client just updated this App to ${release}. Run the update again if you still want this file.`
+    if (latest && newer && latest.phase !== "aborted") return `Another update of this App is in progress: ${release} is ${latest.phase}. Wait for it, then check /app status ${installation}.`
+    return `Another client's update of this App is being prepared. Wait for it, then check /app status ${installation}.`
+  }
+
+  /** The open attempt this terminal retains (e.g. after a connection failure), if any. */
+  retained(): { path: string; request: string; digest?: string; installation?: string; begun: boolean } | undefined {
+    const attempt = this.attempt
+    if (!attempt || attempt.closed) return undefined
+    return { path: attempt.path, request: attempt.request, ...(attempt.digest ? { digest: attempt.digest } : {}), ...(attempt.update ? { installation: attempt.update.installation } : {}), begun: attempt.beginSent }
+  }
+
+  /** Drops the local record of a retained attempt whose operation is terminal; the kernel receipt stays queryable by ID. */
+  discardRetained(): boolean {
+    const attempt = this.attempt
+    if (!attempt || this.running || !(attempt.closed || terminalPhases.has(attempt.status?.phase ?? ""))) return false
+    this.attempt = undefined
+    return true
+  }
+
+  status(requestId?: string): Promise<AppInstallOperationSummary> {
+    return this.own(() => this.loadStatus(requestId))
+  }
+
+  private async loadStatus(requestId?: string): Promise<AppInstallOperationSummary> {
+    const attempt = this.attempt
+    const request = requestId ?? attempt?.request
+    if (!request) throw new Error("No App installation in this terminal. Use /app operation <request-id> to inspect another attempt.")
+    const status = operation(await this.request(getAppInstallOperationRequest(request), () => false), request)
+    if (attempt?.request === request) { attempt.status = status; await this.releaseUpload(attempt, status) }
+    return status
+  }
+
+  cancel(requestId?: string): Promise<AppInstallOperationSummary | undefined> {
+    return this.own(() => this.cancelAttempt(requestId))
+  }
+
+  /** Polls an operation until it ends, reporting each phase it moves to. An
+   * operation has one poller: following it again joins that one. It stops
+   * early, returning the last phase seen, when `until` passes or this terminal
+   * closes. A failed status read is retried at the next poll; a kernel refusal
+   * other than busy, or ten failures in a row, rejects. */
+  follow(value: AppInstallOperationSummary, report: (value: AppInstallOperationSummary) => void,
+    { pollMs = this.followPollMs, until = Infinity }: { pollMs?: number; until?: number } = {}): Promise<AppInstallOperationSummary> {
+    const running = this.following.get(value.request_id)
+    if (running) return running
+    const job = this.poll(value, report, pollMs, until).finally(() => this.following.delete(value.request_id))
+    this.following.set(value.request_id, job)
+    return job
+  }
+
+  /** Whether `follow` is polling this operation now. */
+  isFollowing(request: string): boolean {
+    return this.following.has(request)
+  }
+
+  private async poll(value: AppInstallOperationSummary, report: (value: AppInstallOperationSummary) => void,
+    pollMs: number, until: number): Promise<AppInstallOperationSummary> {
+    for (let failures = 0; !terminalPhases.has(value.phase) && Date.now() < until;) {
+      try { await delay(pollMs, undefined, { signal: this.closing.signal }) } catch { break }
+      let next: AppInstallOperationSummary
+      try { next = await this.status(value.request_id) } catch (error) {
+        if (this.disposed) break
+        if (error instanceof KernelFailure && error.code !== "busy") throw error
+        if (++failures < 10) continue
+        throw new FollowLostContact(value.request_id)
+      }
+      failures = 0
+      if (next.phase !== value.phase) report(next)
+      value = next
+    }
+    return value
+  }
+
+  private async cancelAttempt(requestId?: string): Promise<AppInstallOperationSummary | undefined> {
+    const attempt = this.attempt
+    if (requestId && requestId !== attempt?.request) return operation(await this.request(cancelAppInstallOperationRequest(requestId), () => false), requestId)
+    if (!attempt) throw new Error("No App installation in this terminal")
+    attempt.cancelled = true
+    // Never race Abort ahead of an outstanding Begin/PutChunk/BeginInstall.
+    // The transfer retains its exact request until the transport settles it.
+    await this.running?.catch(() => {})
+    return this.cleanup(attempt)
+  }
+
+  /** Caller owns this promise through terminal shutdown; begun installs remain kernel-owned. */
+  async dispose(): Promise<void> {
+    this.disposed = true
+    this.closing.abort()
+    const attempt = this.attempt
+    if (!attempt) { await Promise.allSettled([...this.operations]); return }
+    if (!attempt.beginSent) attempt.cancelled = true
+    await this.running?.catch(() => {})
+    await Promise.allSettled([...this.operations])
+    await this.cleaning?.catch(() => {})
+    if (!attempt.beginSent) await this.cleanup(attempt).catch(() => {})
+  }
+
+  private own<T>(run: () => Promise<T>): Promise<T> {
+    if (this.disposed) return Promise.reject(new Error("This terminal is closing"))
+    if (this.operations.size >= 2) return Promise.reject(new Error("An App status or cancellation request is already pending"))
+    const job = run()
+    this.operations.add(job)
+    void job.finally(() => this.operations.delete(job)).catch(() => {})
+    return job
+  }
+
+  private async transfer(attempt: Attempt): Promise<AppInstallOperationSummary> {
+    const cancelled = () => attempt.cancelled || (this.disposed && !attempt.beginSent)
+    let source: AppFileSource | undefined
+    // Only a Begin sent by this call can have been refused by the kernel; a
+    // resumed attempt's failed status read must not cancel a live operation.
+    let begunHere = false
+    try {
+      checkCancelled(cancelled)
+      if (attempt.beginSent) {
+        try { return await this.loadStatus(attempt.request) } catch (error) { if (!(error instanceof KernelFailure) || error.code !== "not_found") throw error }
+      }
+      // Read once per attempt: a resumed Begin must repeat the exact same fence.
+      const generation = attempt.update && (attempt.update.generation ??= await this.generation(attempt.update.installation, cancelled))
+      source = await AppFileSource.open(attempt.path, this.cwd, cancelled, (bytes, total) => this.progress({ phase: "hashing", bytes, total }))
+      if (attempt.digest && (attempt.digest !== source.digest || attempt.size !== source.size)) throw new InstallFileChanged()
+      attempt.digest = source.digest; attempt.size = source.size
+      const upload = uploadStatus(await this.request(beginAppPackageUploadRequest({ requestId: attempt.uploadRequest, expectedSize: source.size, sha256: source.digest }), cancelled), source)
+      attempt.handle = upload.handle
+      checkCancelled(cancelled)
+      if (upload.phase === "aborted") throw new Error("This upload was cancelled or expired. Cancel the retained attempt before installing again.")
+      if (upload.accepted_bytes !== source.size && upload.accepted_bytes % chunkBytes !== 0) throw new Error("Kernel returned an invalid App upload offset")
+      for (let offset = upload.accepted_bytes; offset < source.size;) {
+        checkCancelled(cancelled)
+        const chunk = await source.chunk(offset)
+        const next = uploadStatus(await this.request(putAppPackageUploadChunkRequest({ handle: upload.handle, offset, dataBase64: chunk.bytes.toString("base64"), chunkSha256: chunk.sha256 }), cancelled), source)
+        if (next.handle !== upload.handle || next.accepted_bytes !== offset + chunk.bytes.length || next.phase !== "receiving") throw new Error("Kernel returned an inconsistent App upload receipt")
+        offset = next.accepted_bytes
+        this.progress({ phase: "uploading", bytes: offset, total: source.size })
+      }
+      await source.unchanged()
+      checkCancelled(cancelled)
+      attempt.beginSent = true
+      begunHere = true
+      const begin = { sessionId: attempt.session, requestId: attempt.request, uploadHandle: upload.handle, expectedPackageDigest: source.digest }
+      const status = operation(await this.request(attempt.update && generation ? beginAppUpdateRequest({ ...begin, installationId: attempt.update.installation, expectedGeneration: generation }) : beginAppInstallRequest(begin), cancelled), attempt.request)
+      attempt.status = status
+      checkCancelled(cancelled)
+      await this.releaseUpload(attempt, status)
+      return status
+    } catch (error) {
+      // A Begin the kernel refused (not one lost in transport) never took the upload.
+      const refused = error instanceof KernelFailure && begunHere && !attempt.status
+      if (error instanceof InstallCancelled || error instanceof InstallFileChanged || refused) await this.cleanup(attempt).catch(() => {})
+      throw error
+    } finally { await source?.close() }
+  }
+
+  private async generation(installation: string, cancelled: () => boolean): Promise<string> {
+    const reply = await this.request(getAppInstallationRequest(installation), cancelled).catch((error: unknown) => {
+      throw error instanceof KernelFailure && error.code === "not_found" ? new Error("App installation not found.") : error
+    })
+    const value = (reply.AppInstallation as { installation?: AppInstallationSummary } | undefined)?.installation
+    if (value?.installation_id !== installation || !/^[1-9]\d{0,19}$/.test(value.generation)) throw new Error("Kernel returned an invalid App installation")
+    return value.generation
+  }
+
+  private cleanup(attempt: Attempt): Promise<AppInstallOperationSummary | undefined> {
+    if (this.cleaning) return this.cleaning
+    const clean = (async () => {
+      let status = attempt.status
+      if (attempt.beginSent) {
+        try { status = operation(await this.request(cancelAppInstallOperationRequest(attempt.request), () => false), attempt.request) }
+        catch (error) {
+          if (error instanceof KernelFailure && error.code === "conflict") status = await this.loadStatus(attempt.request)
+          else if (!(error instanceof KernelFailure) || error.code !== "not_found") throw error
+        }
+      }
+      if (status && activePhases.has(status.phase)) return status
+      if (!attempt.handle && attempt.digest && attempt.size) {
+        const reply = await this.request(beginAppPackageUploadRequest({ requestId: attempt.uploadRequest, expectedSize: attempt.size, sha256: attempt.digest }), () => false)
+        const upload = reply.AppPackageUploadStatus as { upload?: { handle?: unknown } } | undefined
+        if (typeof upload?.upload?.handle !== "string" || !/^upload_[0-9a-f]{64}$/.test(upload.upload.handle)) throw new Error("Kernel returned an invalid upload receipt")
+        attempt.handle = upload.upload.handle
+      }
+      if (attempt.handle && !attempt.released) await this.request(abortAppPackageUploadRequest(attempt.handle), () => false)
+      attempt.closed = true
+      if (status) attempt.status = status
+      return status
+    })()
+    this.cleaning = clean
+    void clean.finally(() => { if (this.cleaning === clean) this.cleaning = undefined }).catch(() => {})
+    return clean
+  }
+
+  private async releaseUpload(attempt: Attempt, status: AppInstallOperationSummary): Promise<void> {
+    if (status.phase === "preparing") return
+    if (attempt.handle && !attempt.released) {
+      await this.request(abortAppPackageUploadRequest(attempt.handle), () => false).then(() => { attempt.released = true }, () => {})
+    }
+    if (terminalPhases.has(status.phase)) attempt.closed = true
+  }
+
+  private async request(request: Record<string, unknown>, cancelled: () => boolean): Promise<Record<string, unknown>> {
+    for (let retry = 0; retry < 3; retry++) {
+      checkCancelled(cancelled)
+      try {
+        const response = await this.send(request)
+        const failure = response.AppRequestFailed as { code?: unknown } | undefined
+        if (!failure) return response
+        const code = typeof failure.code === "string" ? failure.code : "invalid_response"
+        if (code !== "busy" || retry === 2) throw new KernelFailure(code)
+      } catch (error) {
+        if (error instanceof KernelFailure || error instanceof InstallCancelled) throw error
+        if (retry === 2) throw new ConnectionFailure()
+      }
+      await delay(200)
+    }
+    throw new ConnectionFailure()
+  }
+}
+
+function uploadStatus(reply: Record<string, unknown>, source: AppFileSource): AppPackageUploadSummary {
+  const value = (reply.AppPackageUploadStatus as { upload?: AppPackageUploadSummary } | undefined)?.upload
+  if (!value || !/^upload_[0-9a-f]{64}$/.test(value.handle) || value.expected_size !== source.size || value.sha256 !== source.digest || !Number.isSafeInteger(value.accepted_bytes) || value.accepted_bytes < 0 || value.accepted_bytes > source.size || !["receiving", "finalized", "aborted"].includes(value.phase)) throw new Error("Kernel returned an invalid App upload receipt")
+  return value
+}
+function operation(reply: Record<string, unknown>, request: string): AppInstallOperationSummary {
+  const value = (reply.AppInstallOperationStatus as { operation?: AppInstallOperationSummary } | undefined)?.operation
+  if (!value || value.request_id !== request || !(activePhases.has(value.phase) || terminalPhases.has(value.phase))) throw new Error("Kernel returned an invalid App installation receipt")
+  return value
+}
+
+const installFailures: Record<string, string> = {
+  app_install_publisher_not_enrolled: "This publisher must be enrolled in the kernel before installation.",
+  app_install_publisher_revoked: "This publisher has been revoked in the kernel.",
+  app_install_package_rejected: "The kernel rejected the package contents.",
+  // One message per stable package error code (V-PKG-03).
+  app_install_package_invalid_arguments: "The package request was invalid.",
+  app_install_package_io: "The kernel could not read the package.",
+  app_install_package_invalid_developer_key: "The package's developer key is invalid.",
+  app_install_package_invalid_archive: "The file is not a valid .cxapp archive.",
+  app_install_package_archive_limit: "The package exceeds the archive size or file-count limits.",
+  app_install_package_invalid_path: "The package contains an invalid file path.",
+  app_install_package_duplicate_path: "The package contains the same file path twice.",
+  app_install_package_invalid_manifest: "The package manifest is invalid.",
+  app_install_package_invalid_schema: "A tool, event or state schema in the package is invalid.",
+  app_install_package_incompatible_protocol: "The App needs a kernel protocol version this kernel does not support.",
+  app_install_package_incompatible_sdk: "The App was built with an SDK version this kernel does not support.",
+  app_install_package_incompatible_contract: "The App's declared contract is not supported by this kernel.",
+  app_install_package_incompatible_resource_policy: "The App requests more resources than this kernel allows.",
+  app_install_package_untrusted_publisher: "The package's publisher is not trusted by this kernel.",
+  app_install_package_invalid_signature: "The package signature is invalid.",
+  app_install_package_integrity_mismatch: "The package contents do not match its signed digest.",
+  app_install_package_missing_entry: "The package is missing a file its manifest declares.",
+  app_install_package_unexpected_entry: "The package contains a file its manifest does not declare.",
+  app_install_package_unsupported_feature: "The App uses a feature this kernel does not support.",
+  app_install_invalid_request: "The kernel rejected the App install request.",
+  app_install_upload_aborted: "The upload was cancelled before preparation. Select the file again.",
+  app_install_upload_digest_mismatch: "The uploaded file changed during upload. Select the file again.",
+  app_install_release_limit: "The App release exceeds the kernel's size or file-count limits.",
+  app_install_release_unsafe: "The kernel refused to store this App release safely.",
+  app_install_release_archive_mismatch: "The staged package no longer matches the upload. Try again.",
+  app_install_upload_missing_or_expired: "The upload expired before preparation. Select the file again.",
+  app_install_approval_expired: "The approval request expired.",
+  app_install_insufficient_storage: "The kernel has insufficient App storage.",
+  app_update_schema_downgrade: "This release's data schema is older than the installed App's; App data is never migrated to an older schema.",
+}
+
+/** Friendly text for an operation's kernel failure code; unknown codes are shown only when well-formed. */
+export function formatInstallFailure(failure: string): string {
+  if (Object.hasOwn(installFailures, failure)) return installFailures[failure]!
+  return (/^app_(?:install|update)_[a-z_]{1,96}$/.test(failure) ? `Kernel failure: ${failure}.` : "The kernel could not complete the App operation.")
+}
+
+export function formatInstallOperation(value: AppInstallOperationSummary): string {
+  const label = { preparing: "Preparing App", awaiting_approval: "Awaiting approval in the operation's session", queued: "Approved; waiting for a free App worker slot to start", starting: "Starting App", committed: "App operation complete", cancelled: "App operation cancelled", failed: "App operation failed" }[value.phase]
+  const detail = value.failure ? ` ${formatInstallFailure(value.failure)}` : ""
+  const next = terminalPhases.has(value.phase) ? "" : " Use /app operation for status; /app cancel to cancel before it completes."
+  return `${label}${value.installation_id ? `: ${value.installation_id}` : ""}.${detail} Operation ${value.request_id}.${next}`
+}
+
+export function formatInstallProgress(value: InstallProgress): string {
+  return `${value.phase === "hashing" ? "Checking App file" : "Uploading App"}: ${Math.floor(value.bytes * 100 / value.total)}%`
+}
+export function terminalCwd(): string {
+  const captured = process.env.CHARIOX_CLI_ORIGINAL_CWD
+  return captured && isAbsolute(captured) ? captured : process.cwd()
+}

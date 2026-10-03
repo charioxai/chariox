@@ -74,7 +74,7 @@ pub(crate) fn ensure_opencode_account_endpoint(
     command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
     for name in crate::account_profile::provider_auth_env_vars("opencode") {
         command.env_remove(name);
     }
@@ -84,6 +84,8 @@ pub(crate) fn ensure_opencode_account_endpoint(
             message: format!("failed to start profile-specific OpenCode server: {error}"),
         }
     })?;
+    let diagnostic =
+        super::super::startup_diagnostic::ProviderStartupDiagnostic::capture(&mut child);
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if endpoint_is_healthy(&endpoint) {
@@ -105,7 +107,10 @@ pub(crate) fn ensure_opencode_account_endpoint(
         {
             return Err(DaemonError::LocalTransport {
                 operation: "ensure_opencode_account_endpoint",
-                message: format!("profile-specific OpenCode server exited early: {status}"),
+                message: format!(
+                    "profile-specific OpenCode server exited early: {status}; {}",
+                    diagnostic.summary()
+                ),
             });
         }
         if Instant::now() >= deadline {
@@ -113,7 +118,10 @@ pub(crate) fn ensure_opencode_account_endpoint(
             let _ = child.wait();
             return Err(DaemonError::LocalTransport {
                 operation: "ensure_opencode_account_endpoint",
-                message: "timed out waiting for profile-specific OpenCode server".to_string(),
+                message: format!(
+                    "timed out waiting for profile-specific OpenCode server; {}",
+                    diagnostic.summary()
+                ),
             });
         }
         sleep(Duration::from_millis(100));

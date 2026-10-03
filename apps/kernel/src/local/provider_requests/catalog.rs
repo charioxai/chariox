@@ -17,6 +17,8 @@ use super::super::api::{
 };
 use super::blocking::block_on_relay_query;
 
+mod probe_capture;
+
 pub(crate) const PROVIDER_CATALOG_CACHE_TTL: Duration = Duration::from_secs(5);
 
 pub(crate) fn provider_command_catalogs_response() -> Result<LocalDaemonResponse, DaemonError> {
@@ -310,6 +312,18 @@ pub(crate) fn refresh_provider_account_profile_response(
         }
         Some("claude") => {
             let status = claude_auth_status(provider, &profile.profile_id, &environment)?;
+            if status.auth_state != "authenticated"
+                && crate::provider::provider_account_credential_registered(
+                    owner_user_id,
+                    provider,
+                    &profile.profile_id,
+                )?
+            {
+                // Launches use the profile's vault setup token, which was
+                // verified with Claude when it was stored. Reading it back
+                // needs the vault, so keep that observation and its time.
+                return Ok(profile);
+            }
             let usage = if status.auth_state == "authenticated" {
                 let executable = resolve_claude_executable()?;
                 crate::provider::probe_claude_account_usage(
@@ -378,12 +392,7 @@ fn claude_auth_status(
     ] {
         command.env_remove(name);
     }
-    let output = command
-        .output()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "get_provider_auth_status",
-            message: format!("failed to run Claude auth status: {error}"),
-        })?;
+    let output = bounded_status_output(command, "Claude auth status")?;
     // The managed launcher can fail before Claude executes. Exit 1 alone
     // therefore does not establish that the user's account is logged out.
     // Never include provider stdout/stderr in the diagnostic: it may contain
@@ -412,6 +421,39 @@ fn claude_auth_status(
     ))
 }
 
+/// A provider status, version or usage probe answers in seconds. A stalled one
+/// must not hold its caller, such as the post-import refresh, forever: past the
+/// deadline the owned process and inherited pipe writers are stopped.
+const PROVIDER_STATUS_PROBE_TIMEOUT: Duration = Duration::from_secs(60);
+
+fn bounded_status_output(
+    command: Command,
+    label: &str,
+) -> Result<std::process::Output, DaemonError> {
+    bounded_output(command, label, PROVIDER_STATUS_PROBE_TIMEOUT)
+}
+
+fn bounded_output(
+    command: Command,
+    label: &str,
+    timeout: Duration,
+) -> Result<std::process::Output, DaemonError> {
+    probe_capture::capture(command, timeout).map_err(|error| DaemonError::LocalTransport {
+        operation: "get_provider_auth_status",
+        message: match error {
+            probe_capture::CaptureError::TimedOut => format!(
+                "{label} did not answer within {}s; authentication state is inconclusive",
+                timeout.as_secs()
+            ),
+            probe_capture::CaptureError::OutputLimit => format!(
+                "{label} exceeded the {} byte output limit; authentication state is inconclusive",
+                probe_capture::OUTPUT_LIMIT
+            ),
+            probe_capture::CaptureError::Io(error) => format!("failed to capture {label}: {error}"),
+        },
+    })
+}
+
 fn opencode_auth_status(
     account_profile: &str,
     environment: &BTreeMap<String, String>,
@@ -425,18 +467,16 @@ fn opencode_auth_status(
         "opencode:auth-status",
     )?;
     remove_account_auth_environment(&mut command, "opencode");
-    let output = command
-        .output()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "get_provider_auth_status",
-            message: format!("failed to run OpenCode auth list: {error}"),
-        })?;
+    let output = bounded_status_output(command, "OpenCode auth list")?;
     if !output.status.success() {
         return Err(DaemonError::LocalTransport {
             operation: "get_provider_auth_status",
             message: format!(
-                "OpenCode auth list failed ({}); authentication state is inconclusive",
-                output.status
+                "OpenCode auth list failed ({}); authentication state is inconclusive; {}",
+                output.status,
+                crate::provider::startup_diagnostic::summarize_provider_startup_output(
+                    &output.stderr
+                ),
             ),
         });
     }
@@ -492,7 +532,8 @@ fn opencode_usage_snapshot(
         )
         .ok()?;
         remove_account_auth_environment(&mut command, "opencode");
-        let output = command.output().ok()?;
+        let output =
+            bounded_output(command, "OpenCode usage", PROVIDER_STATUS_PROBE_TIMEOUT).ok()?;
         serde_json::from_slice::<serde_json::Value>(&output.stdout).ok()
     });
     if let Some(used) = local_stats
@@ -824,18 +865,16 @@ fn remove_account_auth_environment(command: &mut Command, provider: &str) {
 }
 
 fn command_version(executable: &std::path::Path) -> Result<String, DaemonError> {
-    let output = crate::provider::managed_isolated_utility_command(
-        executable.display().to_string(),
-        vec!["--version".to_string()],
-        BTreeMap::new(),
-        None,
-        "provider:version",
-    )?
-    .output()
-    .map_err(|error| DaemonError::LocalTransport {
-        operation: "provider_version",
-        message: error.to_string(),
-    })?;
+    let output = bounded_status_output(
+        crate::provider::managed_isolated_utility_command(
+            executable.display().to_string(),
+            vec!["--version".to_string()],
+            BTreeMap::new(),
+            None,
+            "provider:version",
+        )?,
+        "provider version",
+    )?;
     let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
     (!text.is_empty())
         .then_some(text)
@@ -864,18 +903,16 @@ fn find_numeric_field(value: &serde_json::Value, keys: &[&str]) -> Option<f64> {
 
 fn claude_version() -> Result<String, DaemonError> {
     let executable = resolve_claude_executable()?;
-    let output = crate::provider::managed_isolated_utility_command(
-        executable.display().to_string(),
-        vec!["--version".to_string()],
-        BTreeMap::new(),
-        None,
-        "claude:version",
-    )?
-    .output()
-    .map_err(|error| DaemonError::LocalTransport {
-        operation: "get_provider_auth_status",
-        message: format!("failed to read Claude version: {error}"),
-    })?;
+    let output = bounded_status_output(
+        crate::provider::managed_isolated_utility_command(
+            executable.display().to_string(),
+            vec!["--version".to_string()],
+            BTreeMap::new(),
+            None,
+            "claude:version",
+        )?,
+        "Claude version",
+    )?;
     if !output.status.success() {
         return Err(DaemonError::LocalTransport {
             operation: "get_provider_auth_status",
@@ -1323,6 +1360,7 @@ mod tests {
 
     #[test]
     fn provider_auth_status_reports_claude_launcher_failure_without_login_advice() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-claude-auth-failure-{}-{}",
@@ -1424,6 +1462,7 @@ mod tests {
 
     #[test]
     fn provider_auth_status_accepts_claude_provider_modes() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let path =
             std::env::temp_dir().join(format!("chariox-claude-auth-status-{}", std::process::id()));
@@ -1945,5 +1984,48 @@ exit 2
             OpenCodeCredentialInspection::Malformed
         );
         let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod bounded_output_tests {
+    use super::*;
+
+    #[test]
+    fn a_stalled_status_probe_is_killed_at_its_deadline() {
+        let mut quick = Command::new("sh");
+        quick.args(["-c", "printf ok"]);
+        let output = bounded_output(quick, "quick probe", Duration::from_secs(10)).unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"ok");
+
+        // A launcher that exits while a descendant still holds its pipes.
+        let mut detached = Command::new("sh");
+        detached.args(["-c", "sleep 30 & printf ok"]);
+        let started = std::time::Instant::now();
+        let output = bounded_output(detached, "detached probe", Duration::from_secs(10)).unwrap();
+        assert_eq!(output.stdout, b"ok");
+        assert!(started.elapsed() < Duration::from_secs(5));
+
+        let survived = std::env::temp_dir().join(format!(
+            "chariox-bounded-probe-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let mut stalled = Command::new("sh");
+        stalled.args([
+            "-c",
+            &format!("(sleep 1; touch '{}') & sleep 30", survived.display()),
+        ]);
+        let started = std::time::Instant::now();
+        let error = bounded_output(stalled, "stalled probe", Duration::from_millis(200))
+            .expect_err("a stalled probe fails at its deadline");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(error.to_string().contains("stalled probe did not answer"));
+        std::thread::sleep(Duration::from_secs(2));
+        assert!(
+            !survived.exists(),
+            "the timed-out probe's descendant is ended"
+        );
     }
 }

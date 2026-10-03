@@ -4,6 +4,10 @@ use crate::provider::LaunchProviderRequest;
 
 pub(super) fn dev_stub_pty_args(model: &str) -> Vec<String> {
     let script = match model {
+        #[cfg(test)]
+        "controlled-cancel-idle" => Some(
+            "stty -echo 2>/dev/null || true; trap '' INT; : > controlled-cancel-ready; while :; do IFS= read -r _line || sleep 1; done".to_string(),
+        ),
         "workflow-drill-node-1" => Some(dev_stub_workflow_output_script(
             "workflow drill node 1",
             1842,

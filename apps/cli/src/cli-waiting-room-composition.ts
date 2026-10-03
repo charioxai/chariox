@@ -3,7 +3,9 @@ import { mergeExternalProviderSessionsSorted } from "@chariox/kernel-client/exte
 import { updateAgentConfig, updateAgentProfile } from "./agent-api.js"
 import { createDetachedKernelConnectController } from "./detached-kernel-connect-controller.js"
 import { importExternalProviderSession, listExternalProviderSessions } from "./external-provider-session-api.js"
-import type { RuntimeSession, SliceRecord } from "./cli-types.js"
+import type { SliceRecord } from "./cli-types.js"
+import type { RuntimeSession } from "@chariox/kernel-client/kernel-types"
+import { prepareWaitingRoomEnrolledLaunch, waitingRoomManagedEnvironmentKernelRef } from "./waiting-room-enrolled-launch.js"
 import {
   saveProviderPreferences,
   saveUiPreferences,
@@ -83,6 +85,7 @@ import {
   clearStagedWaitingRoomWorktreeSelection,
 } from "./waiting-room-worktrees.js"
 import { existingProjectSelectionId } from "./waiting-room-projects.js"
+import { waitingRoomProjectEnvironmentSetupInput } from "./waiting-room-project-setup.js"
 import {
   managedEnvironmentMachineRef,
   selectedManagedEnvironment,
@@ -173,32 +176,6 @@ export type CliWaitingRoomCompositionDeps = {
   applySessionState: AnyFn
   setProviderRunState: AnyFn
   appendNotice: AnyFn
-}
-
-export async function createManagedSessionAfterProjectSetup(input: {
-  assertActive(): void
-  createSession(): Promise<RuntimeSession>
-  prepareProject(session: RuntimeSession): Promise<void>
-  deleteSession(session: RuntimeSession): Promise<void>
-  formatError(error: unknown): string
-}): Promise<RuntimeSession> {
-  input.assertActive()
-  const session = await input.createSession()
-  try {
-    input.assertActive()
-    await input.prepareProject(session)
-    input.assertActive()
-    return session
-  } catch (error) {
-    try {
-      await input.deleteSession(session)
-    } catch (cleanupError) {
-      throw new Error(
-        `${input.formatError(error)}; failed to remove unprepared managed session ${session.id}: ${input.formatError(cleanupError)}`,
-      )
-    }
-    throw error
-  }
 }
 
 export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionDeps) {
@@ -569,15 +546,14 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     nowMs: Date.now,
   })
 
-  type PendingManagedProjectPreparation = {
-    readonly token: symbol
-    readonly workspacePath: string
-    readonly worktreePath: string
-    readonly assertActive: () => void
-    readonly prepareProject: (session: RuntimeSession) => Promise<void>
-    claimed: boolean
+  const prepareProjectEnvironment = async (session: RuntimeSession, assertActive?: () => void) => {
+    await projectEnvironmentSetupProjection.ensureReady(waitingRoomProjectEnvironmentSetupInput(session), {
+      ...(assertActive ? { assertActive } : {}),
+      delay: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      nowMs: Date.now,
+      isRetryableTransportError: (error) => error instanceof LocalIpcError && error.retryable,
+    })
   }
-  let pendingManagedProjectPreparation: PendingManagedProjectPreparation | null = null
 
   const prepareManagedSessionLaunch = async (
     launch: WaitingRoomLaunchConfig,
@@ -611,22 +587,27 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
         }
       }
       expectedMachineRef = managedEnvironmentMachineRef(environment.environmentId)
+      const kernelRef = waitingRoomManagedEnvironmentKernelRef(launch, environment)
       deps.setWaitingRoomState({
         ...deps.waitingRoomState(),
         selectedMachineRef: expectedMachineRef,
         managedRepositoryRoot: environment.managedRepositoryRoot,
-        ...(environment.runtimeKernelId ? { selectedKernelRef: environment.runtimeKernelId } : {}),
+        ...(kernelRef ? { selectedKernelRef: kernelRef } : {}),
       })
       expectedOwnershipRevision = deps.waitingRoomLaunchOwnershipRevision()
       deps.rebuildTranscript()
     }
     const prepared = await managedEnvironmentLaunchController.prepare(selection, {
+      selectedKernelRef: launch.ownerKernelRef,
       assertActive,
       environmentChanged,
       progress: (message) => deps.flashFooter(message, "info"),
     })
     try {
       assertActive()
+      if (prepared.kind === "enrolled") {
+        return prepareWaitingRoomEnrolledLaunch({ launch, prepared, assertActive, prepareProjectEnvironment })
+      }
       deps.setPendingWorkspaceTarget(prepared.workspacePath)
       deps.setPendingWorktreeTarget(prepared.worktreePath)
       clearStagedWaitingRoomWorktreeSelection()
@@ -651,20 +632,6 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       })
       expectedOwnershipRevision = deps.waitingRoomLaunchOwnershipRevision()
       deps.rebuildTranscript()
-      const projectPreparation: PendingManagedProjectPreparation = {
-        token: Symbol("managed Project preparation"),
-        workspacePath: prepared.workspacePath,
-        worktreePath: prepared.worktreePath,
-        assertActive,
-        prepareProject: prepared.prepareProject,
-        claimed: false,
-      }
-      pendingManagedProjectPreparation = projectPreparation
-      const clearProjectPreparation = () => {
-        if (pendingManagedProjectPreparation?.token === projectPreparation.token) {
-          pendingManagedProjectPreparation = null
-        }
-      }
       return {
         launch: {
           ...ordinaryLaunch,
@@ -673,12 +640,11 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
           projectSelection: prepared.projectSelection,
         },
         assertActive,
+        prepareProject: prepared.prepareProject,
         commit: async () => {
-          clearProjectPreparation()
           await prepared.commit()
         },
         rollback: async () => {
-          clearProjectPreparation()
           await prepared.rollback()
         },
       }
@@ -725,7 +691,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     openTerminalPairingDialog: deps.openTerminalPairingDialog,
     openSessionBrowserDialog: deps.openSessionBrowserDialog,
     createSession: async (workspacePath, worktreePath, launch) => {
-      const create = () => createSession(deps.client, workspacePath, worktreePath, undefined, {
+      return await createSession(deps.client, workspacePath, worktreePath, undefined, {
         provider: launch.provider,
         model: launch.model,
         effort: launch.effort,
@@ -733,26 +699,8 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
         execution_mode: launch.execution_mode,
         permission_level: launch.permission_level,
       }, launch.sliceRef, launch.workspaceLiveSyncMode, launch.sliceRef ? null : (launch.workerKernelRef ?? null), null, launch.projectSelection)
-      const preparation = pendingManagedProjectPreparation
-      if (!preparation) {
-        return await create()
-      }
-      if (preparation.workspacePath !== workspacePath
-        || preparation.worktreePath !== worktreePath) {
-        throw new Error("managed Project setup no longer matches the staged workspace")
-      }
-      if (preparation.claimed) {
-        throw new Error("managed Project setup is already preparing this launch")
-      }
-      preparation.claimed = true
-      return await createManagedSessionAfterProjectSetup({
-        assertActive: preparation.assertActive,
-        createSession: create,
-        prepareProject: preparation.prepareProject,
-        deleteSession: (session) => deleteSessionByRef(deps.client, session.id, workspacePath).then(() => {}),
-        formatError: deps.formatError,
-      })
     },
+    prepareProjectEnvironment,
     deleteCreatedSession: async (sessionId, workspacePath) => {
       await deleteSessionByRef(deps.client, sessionId, workspacePath)
     },
@@ -875,7 +823,9 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
         selectedKernelRef: environment.runtimeKernelId ?? "",
       })
       deps.rebuildTranscript()
-      await startSessionFromWaitingRoomDefaults()
+      // MP-02/MP-08/MP-11: a reimage cutover retains transactional connection
+      // ownership while the enrolled adapter preserves ordinary launch choices.
+      await startSessionFromWaitingRoomDefaults({ kind: "existing", environmentId: environment.environmentId })
     },
     createIdempotencyKey: randomUUID,
     delay: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),

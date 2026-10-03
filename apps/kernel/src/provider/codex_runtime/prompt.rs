@@ -4,7 +4,6 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 
 use crate::error::DaemonError;
 use crate::prompt_assembly::PromptEnvelope;
@@ -46,6 +45,7 @@ pub fn submit_codex_prompt(
         .map(|path| path.to_string_lossy().to_string());
     let model = normalize_codex_model(run.model());
     let effort = normalize_variant(run.variant());
+    let existing_thread = state.thread_ready() || state.pending_thread_id().is_some();
     if let Err(error) = ensure_codex_thread_ready(
         &client,
         run,
@@ -53,20 +53,33 @@ pub fn submit_codex_prompt(
         cwd.as_deref(),
         model.as_deref(),
         hidden_context_for_provider(&envelope.hidden_system_context),
-        envelope.steering,
     ) {
         state.buffered_notifications.push(CodexNotification::Error {
             message: error.to_string(),
         });
         return Ok(());
     }
-    let turn_input_prompt = codex_turn_input_prompt(
-        &envelope.visible_user_prompt,
-        &envelope.hidden_system_context,
-        state.turn_input_includes_hidden_context(),
-    );
-    let input = codex_input(&turn_input_prompt, &envelope.attachments);
+    // Every existing thread keeps its conversation and provider identity.
+    // Fresh thread/start already carries this context; later refreshes use the
+    // same documented developer-item seam as native/resumed threads.
     let thread_id = state.thread_id().to_string();
+    if existing_thread {
+        if let Some(context) = hidden_context_for_provider(&envelope.hidden_system_context) {
+            if let Err(error) = client.thread_inject_hidden_context(
+                &mut state.socket,
+                &mut state.next_request_id,
+                &thread_id,
+                context,
+                &mut state.buffered_notifications,
+            ) {
+                state.buffered_notifications.push(CodexNotification::Error {
+                    message: error.to_string(),
+                });
+                return Ok(());
+            }
+        }
+    }
+    let input = codex_input(&envelope.visible_user_prompt, &envelope.attachments);
     let active_steering_turn_id = envelope.steering.then(|| {
         state
             .active_turn_id
@@ -151,56 +164,13 @@ fn ensure_codex_thread_ready(
     cwd: Option<&str>,
     model: Option<&str>,
     developer_instructions: Option<&str>,
-    steering: bool,
 ) -> Result<(), DaemonError> {
-    if codex_active_steering_preserves_thread(
-        state.thread_ready(),
-        state.active_turn_id.is_some(),
-        steering,
-    ) {
-        return Ok(());
-    }
-    let desired_fingerprint = developer_instructions_fingerprint(developer_instructions);
-    if state.thread_ready()
-        && state.developer_instructions_fingerprint() == Some(desired_fingerprint.as_str())
-    {
-        return Ok(());
-    }
-    if state.thread_ready() && !state.context_hot_reload_enabled() {
-        return Ok(());
-    }
     if state.thread_ready() {
-        if state.active_turn_id.is_some() {
-            return Err(DaemonError::ProviderProtocol {
-                provider_run_id: run.id().to_string(),
-                operation: "thread/hot-reload",
-                message: "cannot hot reload Codex hidden context while a turn is active"
-                    .to_string(),
-            });
-        }
-        crate::logging::info_with_fields(
-            "daemon.provider.codex",
-            "hot reloading codex thread for changed hidden context",
-            serde_json::json!({
-                "provider_run_id": run.id(),
-                "previous_thread_id": state.thread_id(),
-            }),
-        );
+        return Ok(());
     }
     let deadline = Instant::now() + CODEX_MCP_THREAD_INIT_RETRY_TIMEOUT;
     loop {
-        let result = if state.thread_ready() {
-            client.thread_start(
-                &mut state.socket,
-                &mut state.next_request_id,
-                cwd,
-                model,
-                run.write_access_mode(),
-                run.execution_mode(),
-                run.permission_level(),
-                developer_instructions,
-            )
-        } else if let Some(thread_id) = state.pending_thread_id().map(str::to_string) {
+        let result = if let Some(thread_id) = state.pending_thread_id().map(str::to_string) {
             // No new turn has been submitted yet. Resume may replay old item
             // deltas and uncorrelated legacy abort/error events; they must not
             // enter the buffer later drained for the newly admitted prompt.
@@ -231,11 +201,7 @@ fn ensure_codex_thread_ready(
         };
         match result {
             Ok(thread) => {
-                if state.thread_ready() {
-                    state.replace_thread(thread.thread.id, Some(desired_fingerprint));
-                } else {
-                    state.mark_thread_ready(thread.thread.id, Some(desired_fingerprint));
-                }
+                state.mark_thread_ready(thread.thread.id);
                 return Ok(());
             }
             Err(error) if is_codex_mcp_handshake_timeout(&error) && Instant::now() < deadline => {
@@ -254,38 +220,334 @@ fn ensure_codex_thread_ready(
     }
 }
 
-fn codex_active_steering_preserves_thread(
-    thread_ready: bool,
-    active_turn: bool,
-    steering: bool,
-) -> bool {
-    thread_ready && active_turn && steering
+fn hidden_context_for_provider(value: &str) -> Option<&str> {
+    let value = value.trim();
+    (!value.is_empty()).then_some(value)
 }
+
+fn is_codex_mcp_handshake_timeout(error: &DaemonError) -> bool {
+    let DaemonError::ProviderProtocol {
+        operation, message, ..
+    } = error
+    else {
+        return false;
+    };
+
+    matches!(*operation, "thread/start" | "thread/resume")
+        && message.contains("required MCP servers failed to initialize")
+        && message.contains("timed out handshaking with MCP server")
+}
+
+pub fn abort_codex_turn(
+    provider_run_id: &str,
+    state: &mut CodexRuntimeState,
+) -> Result<(), DaemonError> {
+    let Some(turn_id) = state.active_turn_id.clone() else {
+        return Ok(());
+    };
+    let thread_id = state.thread_id().to_string();
+    let client = CodexClient::new(provider_run_id, state.endpoint())?;
+    let deadline = Instant::now() + CODEX_TURN_INTERRUPT_RETRY_TIMEOUT;
+    loop {
+        match client.turn_interrupt(
+            &mut state.socket,
+            &mut state.next_request_id,
+            &thread_id,
+            &turn_id,
+            &mut state.buffered_notifications,
+        ) {
+            Ok(()) => {
+                note_codex_turn_interrupt_accepted(
+                    &mut state.active_turn_id,
+                    &mut state.turn_tracker,
+                    &mut state.buffered_notifications,
+                );
+                return Ok(());
+            }
+            Err(error) if codex_turn_interrupt_is_waiting_for_task_start(&error) => {
+                if !state.ephemeral
+                    && client
+                        .thread_turns_list(
+                            &mut state.socket,
+                            &mut state.next_request_id,
+                            &thread_id,
+                            &mut state.buffered_notifications,
+                        )
+                        .is_ok_and(|response| codex_turn_is_terminal(&response, &turn_id))
+                {
+                    note_codex_turn_interrupt_accepted(
+                        &mut state.active_turn_id,
+                        &mut state.turn_tracker,
+                        &mut state.buffered_notifications,
+                    );
+                    return Ok(());
+                }
+                if Instant::now() >= deadline {
+                    return Err(error);
+                }
+                sleep(CODEX_TURN_INTERRUPT_RETRY_INTERVAL);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn codex_turn_interrupt_is_waiting_for_task_start(error: &DaemonError) -> bool {
+    matches!(
+        error,
+        DaemonError::ProviderProtocol {
+            operation: "turn/interrupt",
+            message,
+            ..
+        } if message.contains("no active turn to interrupt")
+    )
+}
+
+fn codex_turn_is_terminal(response: &Value, turn_id: &str) -> bool {
+    response
+        .get("data")
+        .and_then(Value::as_array)
+        .and_then(|turns| {
+            turns
+                .iter()
+                .find(|turn| turn.get("id").and_then(Value::as_str) == Some(turn_id))
+        })
+        .and_then(|turn| turn.get("status"))
+        .and_then(Value::as_str)
+        .is_some_and(|status| matches!(status, "completed" | "failed" | "cancelled" | "canceled"))
+}
+
+fn note_codex_turn_interrupt_accepted(
+    active_turn_id: &mut Option<String>,
+    turn_tracker: &mut CodexTurnTracker,
+    buffered_notifications: &mut Vec<CodexNotification>,
+) {
+    *active_turn_id = None;
+    turn_tracker.reset_for_started();
+    // These notifications were received before the interrupt acknowledgement and belong to the
+    // cancelled turn. Carrying them into the next FIFO submit would project stale output onto the
+    // promoted prompt, which the kernel has already made authoritative.
+    buffered_notifications.clear();
+}
+
+pub(super) fn codex_turn_id_from_start_response(response: &Value) -> Option<String> {
+    response
+        .get("turn")
+        .and_then(|turn| turn.get("id"))
+        .and_then(Value::as_str)
+        .or_else(|| response.get("id").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+#[cfg(test)]
+mod cancellation_tests;
 
 #[cfg(test)]
 mod prompt_tests {
     use super::{
-        codex_active_steering_preserves_thread, codex_turn_interrupt_is_waiting_for_task_start,
-        codex_turn_is_terminal, note_codex_turn_interrupt_accepted, CodexNotification,
-        CodexTurnTracker,
+        codex_turn_interrupt_is_waiting_for_task_start, codex_turn_is_terminal,
+        note_codex_turn_interrupt_accepted, CodexNotification, CodexTurnTracker,
     };
     use crate::error::DaemonError;
     use crate::prompt_assembly::{PromptEnvelope, PromptManifest};
     use crate::provider::{
         AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
     };
+    use crate::session::PromptAttachment;
     use serde_json::json;
     use std::collections::BTreeMap;
     use std::net::TcpListener;
     use std::thread;
     use tokio_tungstenite::tungstenite::{accept, connect, Message};
 
+    // MP-08/MP-10: native input and Chariox-origin input share this provider seam.
     #[test]
-    fn active_steering_preserves_the_existing_codex_thread() {
-        assert!(codex_active_steering_preserves_thread(true, true, true));
-        assert!(!codex_active_steering_preserves_thread(true, true, false));
-        assert!(!codex_active_steering_preserves_thread(true, false, true));
-        assert!(!codex_active_steering_preserves_thread(false, true, true));
+    fn native_codex_turns_keep_hidden_context_out_of_user_input() {
+        assert_codex_hidden_context_continuity(false, false);
+    }
+
+    // MP-08/MP-10: managed initialization and resume must keep the first
+    // conversation when a later prompt refreshes hidden runtime context.
+    #[test]
+    fn managed_codex_hidden_context_refresh_preserves_conversation() {
+        assert_codex_hidden_context_continuity(true, false);
+    }
+
+    #[test]
+    fn resumed_codex_hidden_context_refresh_preserves_conversation() {
+        assert_codex_hidden_context_continuity(true, true);
+    }
+
+    fn assert_codex_hidden_context_continuity(managed: bool, resumed: bool) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fixture");
+        let address = listener.local_addr().expect("fixture address");
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept fixture");
+            let mut socket = accept(stream).expect("upgrade fixture");
+            let mut requests = Vec::new();
+            if managed {
+                let init = read_json_request(
+                    &mut socket,
+                    if resumed {
+                        "thread/resume"
+                    } else {
+                        "thread/start"
+                    },
+                );
+                assert!(init["params"]["developerInstructions"]
+                    .as_str()
+                    .unwrap()
+                    .contains("FIRST"));
+                if resumed {
+                    assert_eq!(init["params"]["threadId"], "native-thread");
+                }
+                socket
+                    .send(Message::Text(
+                        json!({"id": init["id"], "result": {
+                            "thread": {"id": "native-thread"}, "model": "gpt-6.1-sol"
+                        }})
+                        .to_string()
+                        .into(),
+                    ))
+                    .expect("initialize thread");
+            }
+            for index in 0..2 {
+                let context = if managed && !resumed && index == 0 {
+                    // Fresh thread/start already supplied its developer context.
+                    serde_json::Value::Null
+                } else {
+                    let context = read_json_request(&mut socket, "thread/inject_items");
+                    socket
+                        .send(Message::Text(
+                            json!({"id": context["id"], "result": {}})
+                                .to_string()
+                                .into(),
+                        ))
+                        .expect("inject context");
+                    context
+                };
+                let request = read_json_request(&mut socket, "turn/start");
+                socket
+                    .send(Message::Text(
+                        json!({
+                            "id": request["id"],
+                            "result": {"turn": {"id": format!("turn-{index}")}}
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .expect("admit turn");
+                requests.push((context, request));
+            }
+            let rejected = read_json_request(&mut socket, "thread/inject_items");
+            socket
+                .send(Message::Text(
+                    json!({
+                        "id": rejected["id"],
+                        "error": {"code": -32601, "message": "context injection unavailable"}
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .expect("reject context");
+            // A rejected bridge must not fall back to a visible turn.
+            assert!(!matches!(socket.read(), Ok(Message::Text(_))));
+            requests
+        });
+        let endpoint = format!("ws://{address}");
+        let (socket, _) = connect(&endpoint).expect("connect fixture");
+        let request = LaunchProviderRequest::new("session", "codex", "codex", "default", "default")
+            .with_agent_id("agent");
+        let run = RuntimeProviderRun::new(
+            "run",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::External,
+                process_label: "fixture".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        let mut state = if managed {
+            super::super::state::CodexRuntimeState::pending(
+                endpoint,
+                resumed.then(|| "native-thread".to_string()),
+                socket,
+                1,
+            )
+        } else {
+            super::super::state::CodexRuntimeState::new(
+                endpoint,
+                "native-thread".to_string(),
+                socket,
+                1,
+            )
+        };
+        for hidden in [
+            "<runtime-instructions>FIRST</runtime-instructions>",
+            "<native-permission-instructions>SECOND</native-permission-instructions>",
+        ] {
+            state.active_turn_id = None;
+            super::submit_codex_prompt(
+                &run,
+                &mut state,
+                &PromptEnvelope::new(
+                    "visible prompt",
+                    hidden,
+                    vec![PromptAttachment::new(
+                        "file:///tmp/native%20image.png",
+                        "image/png",
+                        None,
+                    )],
+                    PromptManifest::current(),
+                ),
+            )
+            .expect("submit prompt");
+        }
+        state.active_turn_id = None;
+        super::submit_codex_prompt(
+            &run,
+            &mut state,
+            &PromptEnvelope::new(
+                "must not submit",
+                "hidden rejected",
+                Vec::new(),
+                PromptManifest::current(),
+            ),
+        )
+        .expect("provider rejection is projected through notifications");
+        assert!(state.active_turn_id.is_none());
+        assert!(state.buffered_notifications.iter().any(|notification| matches!(
+            notification, CodexNotification::Error { message } if message.contains("context injection unavailable")
+        )));
+        drop(state);
+        let requests = server.join().expect("join fixture");
+        for ((context, request), marker) in requests.iter().zip(["FIRST", "SECOND"]) {
+            assert_eq!(request["params"]["threadId"], "native-thread");
+            assert_eq!(
+                request["params"]["input"],
+                json!([
+                    {"type": "text", "text": "visible prompt"},
+                    {"type": "localImage", "path": "/tmp/native image.png"}
+                ])
+            );
+            if context.is_null() {
+                continue;
+            }
+            assert_eq!(context["params"]["threadId"], "native-thread");
+            assert_eq!(context["params"]["items"][0]["role"], "developer");
+            assert!(context["params"]["items"][0]["content"][0]["text"]
+                .as_str()
+                .expect("hidden channel")
+                .contains(marker));
+        }
     }
 
     #[test]
@@ -439,7 +701,24 @@ mod prompt_tests {
                 ))
                 .expect("send large resume response");
 
+            let context = read_json_request(&mut socket, "thread/inject_items");
+            assert_eq!(context["params"]["items"][0]["role"], "developer");
+            assert_eq!(
+                context["params"]["items"][0]["content"][0]["text"],
+                "resumed hidden context"
+            );
+            socket
+                .send(Message::Text(
+                    json!({"id": context["id"], "result": {}})
+                        .to_string()
+                        .into(),
+                ))
+                .expect("inject resumed context");
             let turn_request = read_json_request(&mut socket, "turn/start");
+            assert_eq!(
+                turn_request["params"]["input"],
+                json!([{"type": "text", "text": "continue after the failed prompt"}])
+            );
             socket
                 .send(Message::Text(
                     json!({
@@ -506,7 +785,7 @@ mod prompt_tests {
             &mut state,
             &PromptEnvelope::new(
                 "continue after the failed prompt",
-                "",
+                "resumed hidden context",
                 Vec::new(),
                 PromptManifest::current(),
             ),
@@ -675,173 +954,5 @@ mod prompt_tests {
             serde_json::from_str(&text).expect("parse Codex request payload");
         assert_eq!(request["method"], expected_method);
         request
-    }
-}
-
-fn developer_instructions_fingerprint(value: Option<&str>) -> String {
-    format!("{:x}", Sha256::digest(value.unwrap_or_default().as_bytes()))
-}
-
-fn hidden_context_for_provider(value: &str) -> Option<&str> {
-    let value = value.trim();
-    (!value.is_empty()).then_some(value)
-}
-
-fn codex_turn_input_prompt(
-    visible_user_prompt: &str,
-    hidden_system_context: &str,
-    include_hidden_context: bool,
-) -> String {
-    if !include_hidden_context || hidden_system_context.trim().is_empty() {
-        return visible_user_prompt.to_string();
-    }
-    match (hidden_system_context.trim(), visible_user_prompt.trim()) {
-        ("", visible) => visible.to_string(),
-        (hidden, "") => hidden.to_string(),
-        // Provider-native and resumed threads cannot reliably retrofit developer
-        // instructions. Keep the handoff first and the workflow contract last so
-        // the raw payload does not become the turn's final instruction.
-        (hidden, visible) => format!("{visible}\n\n{hidden}"),
-    }
-}
-
-fn is_codex_mcp_handshake_timeout(error: &DaemonError) -> bool {
-    let DaemonError::ProviderProtocol {
-        operation, message, ..
-    } = error
-    else {
-        return false;
-    };
-
-    matches!(*operation, "thread/start" | "thread/resume")
-        && message.contains("required MCP servers failed to initialize")
-        && message.contains("timed out handshaking with MCP server")
-}
-
-pub fn abort_codex_turn(
-    provider_run_id: &str,
-    state: &mut CodexRuntimeState,
-) -> Result<(), DaemonError> {
-    let Some(turn_id) = state.active_turn_id.clone() else {
-        return Ok(());
-    };
-    let thread_id = state.thread_id().to_string();
-    let client = CodexClient::new(provider_run_id, state.endpoint())?;
-    let deadline = Instant::now() + CODEX_TURN_INTERRUPT_RETRY_TIMEOUT;
-    loop {
-        match client.turn_interrupt(
-            &mut state.socket,
-            &mut state.next_request_id,
-            &thread_id,
-            &turn_id,
-            &mut state.buffered_notifications,
-        ) {
-            Ok(()) => {
-                note_codex_turn_interrupt_accepted(
-                    &mut state.active_turn_id,
-                    &mut state.turn_tracker,
-                    &mut state.buffered_notifications,
-                );
-                return Ok(());
-            }
-            Err(error) if codex_turn_interrupt_is_waiting_for_task_start(&error) => {
-                if client
-                    .thread_turns_list(
-                        &mut state.socket,
-                        &mut state.next_request_id,
-                        &thread_id,
-                        &mut state.buffered_notifications,
-                    )
-                    .is_ok_and(|response| codex_turn_is_terminal(&response, &turn_id))
-                {
-                    note_codex_turn_interrupt_accepted(
-                        &mut state.active_turn_id,
-                        &mut state.turn_tracker,
-                        &mut state.buffered_notifications,
-                    );
-                    return Ok(());
-                }
-                if Instant::now() >= deadline {
-                    return Err(error);
-                }
-                sleep(CODEX_TURN_INTERRUPT_RETRY_INTERVAL);
-            }
-            Err(error) => return Err(error),
-        }
-    }
-}
-
-fn codex_turn_interrupt_is_waiting_for_task_start(error: &DaemonError) -> bool {
-    matches!(
-        error,
-        DaemonError::ProviderProtocol {
-            operation: "turn/interrupt",
-            message,
-            ..
-        } if message.contains("no active turn to interrupt")
-    )
-}
-
-fn codex_turn_is_terminal(response: &Value, turn_id: &str) -> bool {
-    response
-        .get("data")
-        .and_then(Value::as_array)
-        .and_then(|turns| {
-            turns
-                .iter()
-                .find(|turn| turn.get("id").and_then(Value::as_str) == Some(turn_id))
-        })
-        .and_then(|turn| turn.get("status"))
-        .and_then(Value::as_str)
-        .is_some_and(|status| matches!(status, "completed" | "failed" | "cancelled" | "canceled"))
-}
-
-fn note_codex_turn_interrupt_accepted(
-    active_turn_id: &mut Option<String>,
-    turn_tracker: &mut CodexTurnTracker,
-    buffered_notifications: &mut Vec<CodexNotification>,
-) {
-    *active_turn_id = None;
-    turn_tracker.reset_for_started();
-    // These notifications were received before the interrupt acknowledgement and belong to the
-    // cancelled turn. Carrying them into the next FIFO submit would project stale output onto the
-    // promoted prompt, which the kernel has already made authoritative.
-    buffered_notifications.clear();
-}
-
-pub(super) fn codex_turn_id_from_start_response(response: &Value) -> Option<String> {
-    response
-        .get("turn")
-        .and_then(|turn| turn.get("id"))
-        .and_then(Value::as_str)
-        .or_else(|| response.get("id").and_then(Value::as_str))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::codex_turn_input_prompt;
-
-    #[test]
-    fn attached_or_resumed_codex_thread_receives_hidden_context_in_turn_input() {
-        let prompt = codex_turn_input_prompt(
-            "<workflow-handoff-payloads>20</workflow-handoff-payloads>",
-            "<node-level-prompt>subtract 9</node-level-prompt>",
-            true,
-        );
-
-        assert_eq!(
-            prompt,
-            "<workflow-handoff-payloads>20</workflow-handoff-payloads>\n\n<node-level-prompt>subtract 9</node-level-prompt>"
-        );
-    }
-
-    #[test]
-    fn new_managed_codex_thread_keeps_hidden_context_in_developer_instructions() {
-        let prompt = codex_turn_input_prompt("visible handoff", "hidden instructions", false);
-
-        assert_eq!(prompt, "visible handoff");
     }
 }

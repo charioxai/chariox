@@ -181,7 +181,12 @@ async fn exercise_recovery_gate() {
         .find(|actor| actor.actor_id == human_environment_actor_id(DEFAULT_LOCAL_USER_ID))
         .unwrap();
     let human_error = state
-        .wait_for_human_action_admission(session.id(), actor, &queued[0])
+        .wait_for_human_action_admission(
+            session.id(),
+            actor,
+            &queued[0],
+            tokio::time::Instant::now() + crate::slice::ENVIRONMENT_USE_ADMISSION_TIMEOUT,
+        )
         .await
         .unwrap_err();
     assert!(human_error
@@ -210,7 +215,12 @@ async fn exercise_recovery_gate() {
     // The waiter can observe promotion to Running before it notices recovery.
     // Since it has not dispatched yet, it must retire that Action too.
     state
-        .wait_for_human_action_admission(session.id(), actor, &active_id)
+        .wait_for_human_action_admission(
+            session.id(),
+            actor,
+            &active_id,
+            tokio::time::Instant::now() + crate::slice::ENVIRONMENT_USE_ADMISSION_TIMEOUT,
+        )
         .await
         .unwrap_err();
     assert_eq!(

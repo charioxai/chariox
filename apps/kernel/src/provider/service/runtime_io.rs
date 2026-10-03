@@ -292,13 +292,22 @@ impl ProviderProcessService {
                 ),
             });
         }
-        let envelope = PromptAssemblyService::from_env()?.assemble_provider_turn(
-            run,
-            visible_user_prompt,
-            Some(hidden_system_context),
-            Vec::new(),
-            PromptAssemblyMode::UtilityTurn,
-        )?;
+        let envelope = if policy.is_metadata_only() {
+            crate::prompt_assembly::PromptEnvelope::new(
+                visible_user_prompt,
+                hidden_system_context,
+                Vec::new(),
+                crate::prompt_assembly::PromptManifest::current(),
+            )
+        } else {
+            PromptAssemblyService::from_env()?.assemble_provider_turn(
+                run,
+                visible_user_prompt,
+                Some(hidden_system_context),
+                Vec::new(),
+                PromptAssemblyMode::UtilityTurn,
+            )?
+        };
         self.run_actor_mailbox.run_utility(
             run.id().to_string(),
             run.clone(),
@@ -418,6 +427,11 @@ impl ProviderProcessService {
                 settlement_retry_attempt: 0,
             },
         );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn use_manual_output_polls_for_tests(&self) {
+        self.run_actor_mailbox.use_manual_output_polls_for_tests();
     }
 
     #[cfg(test)]

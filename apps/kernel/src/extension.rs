@@ -4,6 +4,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static REMOTE_EXTENSION_INVOCATION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExtensionKind {
@@ -11,6 +15,7 @@ pub enum ExtensionKind {
     Skill,
     Script,
     Connector,
+    App,
 }
 
 impl ExtensionKind {
@@ -20,6 +25,7 @@ impl ExtensionKind {
             Self::Skill => "skill",
             Self::Script => "script",
             Self::Connector => "connector",
+            Self::App => "app",
         }
     }
 }
@@ -51,11 +57,15 @@ pub enum ExtensionExecutionLocation {
 pub struct RemoteExtensionManifest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<RemoteExtensionTool>,
+    /// Home-authoritative Room browser capability for this remote agent.
+    /// Older peers omit it, which is equivalent to having no Room browser Environment.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub room_browser_available: bool,
 }
 
 impl RemoteExtensionManifest {
     pub fn is_empty(&self) -> bool {
-        self.tools.is_empty()
+        self.tools.is_empty() && !self.room_browser_available
     }
 
     pub fn manifest_hash(&self) -> String {
@@ -94,7 +104,12 @@ impl RemoteExtensionManifest {
         self.tools
             .iter()
             .filter(|tool| tool.execution_location == ExtensionExecutionLocation::Home)
-            .filter(|tool| matches!(tool.kind, ExtensionKind::Script | ExtensionKind::Connector))
+            .filter(|tool| {
+                matches!(
+                    tool.kind,
+                    ExtensionKind::Script | ExtensionKind::Connector | ExtensionKind::App
+                )
+            })
             .map(|tool| crate::transport::runtime_tools::RuntimeToolSpec {
                 name: tool.tool_name.clone(),
                 description: tool.description.clone(),
@@ -304,8 +319,10 @@ mod tests {
             tools: vec![
                 tool(ExtensionKind::Script, "home_script"),
                 tool(ExtensionKind::Connector, "home_connector_lookup"),
+                tool(ExtensionKind::App, "home_app_action"),
                 tool(ExtensionKind::Mcp, "home_browser"),
             ],
+            ..RemoteExtensionManifest::default()
         };
 
         let specs = manifest
@@ -313,7 +330,10 @@ mod tests {
             .map(|spec| spec.name)
             .collect::<Vec<_>>();
 
-        assert_eq!(specs, vec!["home_script", "home_connector_lookup"]);
+        assert_eq!(
+            specs,
+            vec!["home_script", "home_connector_lookup", "home_app_action"]
+        );
         assert_eq!(
             manifest.home_proxy_mcp_server_names().collect::<Vec<_>>(),
             vec!["home_browser"]
@@ -328,8 +348,10 @@ mod tests {
             tools: vec![
                 tool(ExtensionKind::Script, "home_script"),
                 tool(ExtensionKind::Connector, "home_connector_lookup"),
+                tool(ExtensionKind::App, "home_app_action"),
                 tool(ExtensionKind::Mcp, "worker_browser"),
             ],
+            ..RemoteExtensionManifest::default()
         }
         .without_mcp_tools();
 
@@ -339,7 +361,7 @@ mod tests {
                 .iter()
                 .map(|tool| tool.tool_name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["home_script", "home_connector_lookup"]
+            vec!["home_script", "home_connector_lookup", "home_app_action"]
         );
     }
 
@@ -350,6 +372,7 @@ mod tests {
                 tool(ExtensionKind::Script, "shared_name"),
                 tool(ExtensionKind::Connector, "shared_name"),
             ],
+            ..RemoteExtensionManifest::default()
         };
 
         let error = manifest
@@ -363,12 +386,33 @@ mod tests {
     fn remote_manifest_hash_changes_with_projected_tools() {
         let first = RemoteExtensionManifest {
             tools: vec![tool(ExtensionKind::Script, "home_script")],
+            ..RemoteExtensionManifest::default()
         };
         let second = RemoteExtensionManifest {
             tools: vec![tool(ExtensionKind::Script, "home_script_v2")],
+            ..RemoteExtensionManifest::default()
         };
 
         assert_ne!(first.manifest_hash(), second.manifest_hash());
+    }
+
+    #[test]
+    fn room_browser_manifest_capability_defaults_false_and_distinguishes_removal() {
+        let absent: RemoteExtensionManifest = serde_json::from_value(serde_json::json!({}))
+            .expect("legacy manifest should deserialize");
+        assert!(!absent.room_browser_available);
+        assert!(absent.is_empty());
+
+        let available = RemoteExtensionManifest {
+            room_browser_available: true,
+            ..RemoteExtensionManifest::default()
+        };
+        assert!(!available.is_empty());
+        assert_eq!(
+            serde_json::to_value(&available).expect("capability should serialize"),
+            serde_json::json!({"room_browser_available": true})
+        );
+        assert!(RemoteExtensionManifest::default().is_empty());
     }
 
     #[test]
@@ -395,6 +439,31 @@ mod tests {
 }
 
 impl ExtensionGrant {
+    /// Bind an existing installation. This does not install or activate it.
+    pub fn app(installation_id: impl Into<String>) -> Self {
+        Self::new(ExtensionKind::App, installation_id)
+    }
+
+    pub(crate) fn validate_app_binding(&self) -> Result<(), crate::error::DaemonError> {
+        if self.kind != ExtensionKind::App
+            || self.name.is_empty()
+            || self.name.len() > 128
+            || self
+                .name
+                .chars()
+                .any(|c| c.is_whitespace() || c.is_control())
+            || self.environment.is_some()
+            || self.credential.is_some()
+            || self.max_safety.is_some()
+        {
+            return Err(crate::error::DaemonError::LocalTransport {
+                operation: "agent.extension.grant",
+                message: "App bindings require only an installation ID; environment, credential and safety overrides are not accepted".into(),
+            });
+        }
+        Ok(())
+    }
+
     pub fn new(kind: ExtensionKind, name: impl Into<String>) -> Self {
         Self {
             kind,

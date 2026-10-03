@@ -806,6 +806,7 @@ fn slice_record(
     last_error: Option<&str>,
 ) -> SliceRecord {
     SliceRecord {
+        source_slice_ref: None,
         id: id.to_string(),
         name: name.to_string(),
         owner_kernel_id: "kernel-home".to_string(),

@@ -94,3 +94,32 @@ export type ProjectEnvironmentSetupStatus = {
   readonly created_at_ms: number
   readonly updated_at_ms: number
 }
+
+// MP-08: metadata only; secret values are absent from every Project manifest projection.
+export type ProjectEnvironmentUse = { readonly path: string; readonly line: number }
+export type ProjectEnvironmentLocator =
+  | { readonly kind: "env_file"; readonly path: string; readonly key: string }
+  | { readonly kind: "workspace_environment"; readonly name: string }
+  | { readonly kind: "config_file"; readonly path: string }
+  | { readonly kind: "vault"; readonly service: string; readonly key: string }
+  | { readonly kind: "missing" }
+export type ProjectEnvironmentManifestEntry = {
+  readonly name: string
+  readonly workspace_id: string
+  readonly kind: "variable" | "config_file"
+  readonly classification: "secret" | "non_secret"
+  readonly excluded?: boolean
+  readonly uses: readonly ProjectEnvironmentUse[]
+  readonly locator: ProjectEnvironmentLocator
+  readonly status: "found" | "missing" | "problem"
+}
+export type ProjectEnvironmentManifest = {
+  readonly schema_version: 1
+  readonly project_id: string
+  readonly evidence_digest: string
+  readonly entries: readonly ProjectEnvironmentManifestEntry[]
+  readonly private_files?: readonly {readonly workspace_id: string; readonly path: string; readonly bring: boolean; readonly reason: string}[]
+  readonly toolchain_hints: readonly string[]
+  readonly package_hints: readonly string[]
+  readonly service_hints: readonly string[]
+}

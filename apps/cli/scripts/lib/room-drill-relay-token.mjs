@@ -2,7 +2,7 @@ import { createHmac } from "node:crypto"
 import { roomDrillCompanionTimeoutMs } from "./room-drill-companion-budget.mjs"
 
 export function roomDrillRelayToken({ issuer, secret, machineId, subject, subjectKind,
-  actions, userId = null, env = process.env, nowMs = Date.now(), minimumLifetimeMs = 0 }) {
+  actions, userId = null, publicKeyThumbprint = null, env = process.env, nowMs = Date.now(), minimumLifetimeMs = 0 }) {
   // Static fixture credentials have no hosted renewal service. Cover the
   // bounded companion wait plus provisioning and cleanup, not just setup.
   // Browser-issued credentials retain their normal expiry/renewal behavior.
@@ -30,7 +30,7 @@ export function roomDrillRelayToken({ issuer, secret, machineId, subject, subjec
     machine_id: subjectKind === "kernel" ? machineId : null,
     client_id: subjectKind === "client" ? subject : null,
     session_id: null,
-    public_key_thumbprint: null,
+    public_key_thumbprint: publicKeyThumbprint,
     entitlements_version: "room-pointer-drill",
   }
   const payload = Buffer.from(JSON.stringify(claims)).toString("base64url")

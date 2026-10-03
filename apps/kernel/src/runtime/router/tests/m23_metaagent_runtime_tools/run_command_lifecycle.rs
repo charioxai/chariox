@@ -468,6 +468,7 @@ async fn metaagent_run_command_allows_agent_slice_placement_and_safe_lifecycle_c
             &daemon_id,
             &host_machine_id,
             crate::slice::CreateSliceInput {
+                source_slice_ref: None,
                 name: "linux-dev".to_string(),
                 backend: crate::slice::SliceBackendKind::LocalDocker,
                 os: "linux".to_string(),

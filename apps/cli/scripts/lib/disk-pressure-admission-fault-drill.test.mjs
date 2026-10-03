@@ -9,11 +9,11 @@ import {
 } from "./disk-pressure-admission-fault-drill.mjs"
 
 const probe = {
-  schema: "chariox.disk_pressure_admission_probe.v1",
-  activeStateRemainsConsistent: true,
-  admissionClosesBeforeEnospc: true,
+  schema: "chariox.disk_pressure_admission_probe.v2",
+  independentAdmissionRejectsLowCapacity: true,
+  independentAdmissionAcceptsRecoveredCapacity: true,
   lastKnownGoodPreserved: true,
-  resourceRecoveryRecorded: true,
+  unsupportedCaptureRefusesBeforeMutation: true,
   reserveBytes: 2 * 1024 * 1024 * 1024,
 }
 
@@ -32,6 +32,15 @@ test("disk pressure drill requires rejection, preservation, and recovery", () =>
   assert.deepEqual(
     parseDiskPressureAdmissionProbe(`noise\nCHARIOX_DISK_PRESSURE_PROBE:${JSON.stringify(probe)}\n`),
     probe,
+  )
+  // Single-threaded libtest prints the probe on the test's status line.
+  assert.deepEqual(
+    parseDiskPressureAdmissionProbe(`test ${DISK_PRESSURE_ADMISSION_TEST_NAME} ... CHARIOX_DISK_PRESSURE_PROBE:${JSON.stringify(probe)}\nok`),
+    probe,
+  )
+  assert.throws(
+    () => parseDiskPressureAdmissionProbe(`test ${DISK_PRESSURE_ADMISSION_TEST_NAME} ... CHARIOX_DISK_PRESSURE_PROBE:${JSON.stringify({ ...probe, schema: "chariox.disk_pressure_admission_probe.v1" })}`),
+    /schema must be/,
   )
   assert.throws(
     () => parseDiskPressureAdmissionProbe(`CHARIOX_DISK_PRESSURE_PROBE:${JSON.stringify({ ...probe, lastKnownGoodPreserved: false })}`),

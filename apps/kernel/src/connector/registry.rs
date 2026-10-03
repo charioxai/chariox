@@ -51,6 +51,7 @@ impl CharioxConnectorRegistry {
                 ),
             })?;
         atomic_write_private(&path, payload.as_bytes(), "connector.register")?;
+        crate::transport::mcp_server::catalog_changed();
         Ok((definition, path))
     }
 
@@ -81,6 +82,7 @@ impl CharioxConnectorRegistry {
                 ),
             })?;
         atomic_write_private(&path, payload.as_bytes(), "connector.upsert")?;
+        crate::transport::mcp_server::catalog_changed();
         Ok((definition.clone(), path))
     }
 
@@ -93,6 +95,7 @@ impl CharioxConnectorRegistry {
             })?;
         let definition = Self::read_yaml(&path)?;
         fs::remove_file(&path).map_err(io_error("connector.remove"))?;
+        crate::transport::mcp_server::catalog_changed();
         Ok((definition, path))
     }
 

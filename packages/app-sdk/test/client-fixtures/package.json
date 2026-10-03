@@ -1,0 +1,9 @@
+{
+  "name": "chariox-fetch-client-fixtures",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@octokit/request": "10.0.16",
+    "eventsource-parser": "4.1.0"
+  }
+}

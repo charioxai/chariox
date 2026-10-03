@@ -14,6 +14,15 @@ impl DaemonApp {
         session: &RuntimeSession,
         agent_id: Option<&str>,
     ) -> Result<Vec<SessionHistoryEntry>, DaemonError> {
+        self.ensure_session_history_imported(session)?;
+        self.operational_history
+            .load_session_history_entries(session.id(), agent_id)
+    }
+
+    pub(crate) fn ensure_session_history_imported(
+        &self,
+        session: &RuntimeSession,
+    ) -> Result<(), DaemonError> {
         if !self
             .operational_history
             .legacy_fallback_disabled(session.id())?
@@ -34,9 +43,7 @@ impl DaemonApp {
                                 "error": error.to_string(),
                             }),
                         );
-                        return self
-                            .operational_history
-                            .load_session_history_entries(session.id(), agent_id);
+                        return Ok(());
                     }
                     Err(error) => return Err(error),
                 };
@@ -57,8 +64,7 @@ impl DaemonApp {
                 }
             }
         }
-        self.operational_history
-            .load_session_history_entries(session.id(), agent_id)
+        Ok(())
     }
 }
 

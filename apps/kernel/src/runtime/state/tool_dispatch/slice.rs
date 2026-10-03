@@ -5,6 +5,7 @@ use wait_timeout::ChildExt;
 use crate::error::DaemonError;
 use crate::runtime::state::KernelRuntimeState;
 
+mod computer_secret;
 mod controller_browser;
 mod controller_browser_compatibility;
 mod controller_browser_projection;
@@ -12,6 +13,7 @@ mod controller_browser_runtime;
 mod controller_computer;
 mod controller_computer_observation;
 mod slice_browser;
+pub(crate) use computer_secret::{capture_computer_secret_target, run_room_secret_text_input};
 use slice_browser::*;
 
 const DEFAULT_SLICE_SCREEN_COMMAND_TIMEOUT_MS: u64 = 70_000;
@@ -69,9 +71,14 @@ impl KernelRuntimeState {
                 let image_path = args
                     .path
                     .unwrap_or_else(|| "/tmp/chariox-slice-screenshot.png".to_string());
-                let output =
-                    run_slice_screen_command(vec!["screenshot".to_string(), image_path.clone()])
-                        .await?;
+                let output = run_slice_screen_command_with_capture(
+                    vec!["screenshot".to_string(), image_path.clone()],
+                    self.owned
+                        .computer_input_executions
+                        .capture_guard()
+                        .map_err(room_computer_input_error)?,
+                )
+                .await?;
                 let mut payload = slice_tool_payload(&slice_id, agent_id, &output);
                 payload["image_path"] = serde_json::Value::String(image_path.clone());
                 payload["mime_type"] = serde_json::Value::String("image/png".to_string());
@@ -103,7 +110,14 @@ impl KernelRuntimeState {
                 if let Some(image_path) = args.image_path {
                     command_args.push(image_path);
                 }
-                let output = run_slice_screen_command(command_args).await?;
+                let output = run_slice_screen_command_with_capture(
+                    command_args,
+                    self.owned
+                        .computer_input_executions
+                        .capture_guard()
+                        .map_err(room_computer_input_error)?,
+                )
+                .await?;
                 let mut payload = slice_tool_payload(&slice_id, agent_id, &output);
                 payload["text"] = serde_json::Value::String(output.stdout.as_str().to_string());
                 return Ok(crate::transport::runtime_tools::RuntimeToolResult {
@@ -128,7 +142,14 @@ impl KernelRuntimeState {
                 if let Some(image_path) = args.image_path {
                     command_args.push(image_path);
                 }
-                let output = run_slice_screen_command(command_args).await?;
+                let output = run_slice_screen_command_with_capture(
+                    command_args,
+                    self.owned
+                        .computer_input_executions
+                        .capture_guard()
+                        .map_err(room_computer_input_error)?,
+                )
+                .await?;
                 return Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: output.success,
                     payload: slice_find_text_payload(&slice_id, agent_id, &output),
@@ -598,6 +619,21 @@ impl std::fmt::Debug for SliceScreenCommandOutput {
     }
 }
 
+async fn run_slice_screen_command_with_capture(
+    args: Vec<String>,
+    capture_guard: tokio::sync::OwnedRwLockReadGuard<()>,
+) -> Result<SliceScreenCommandOutput, DaemonError> {
+    run_slice_screen_command_inner_with_output_policy(
+        args,
+        None,
+        None,
+        None,
+        false,
+        Some(capture_guard),
+    )
+    .await
+}
+
 async fn run_slice_screen_command(
     args: Vec<String>,
 ) -> Result<SliceScreenCommandOutput, DaemonError> {
@@ -607,29 +643,33 @@ async fn run_slice_screen_command(
 pub(in crate::runtime::state) async fn execute_room_computer_observation(
     call: crate::transport::relay_peer::RemoteRoomComputerObservationCall,
     artifact_path: Option<std::path::PathBuf>,
+    capture_guard: tokio::sync::OwnedRwLockReadGuard<()>,
 ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-    let output = match &call {
+    let args = match &call {
         crate::transport::relay_peer::RemoteRoomComputerObservationCall::ScreenStatus => {
-            run_slice_screen_command(vec!["status".to_string()]).await?
+            vec!["status".to_string()]
         }
         crate::transport::relay_peer::RemoteRoomComputerObservationCall::Ocr { .. } => {
             let mut args = vec!["ocr".to_string()];
             if let Some(path) = artifact_path.as_ref() {
                 args.push(room_computer_artifact_path(path)?);
             }
-            run_slice_screen_command(args).await?
+            args
         }
         crate::transport::relay_peer::RemoteRoomComputerObservationCall::FindText {
             query, ..
         } => {
-            let query = validated_slice_find_text_query(query)?;
-            let mut args = vec!["find-text".to_string(), query];
+            let mut args = vec![
+                "find-text".to_string(),
+                validated_slice_find_text_query(query)?,
+            ];
             if let Some(path) = artifact_path.as_ref() {
                 args.push(room_computer_artifact_path(path)?);
             }
-            run_slice_screen_command(args).await?
+            args
         }
     };
+    let output = run_slice_screen_command_with_capture(args, capture_guard).await?;
     let is_find_text = matches!(
         &call,
         crate::transport::relay_peer::RemoteRoomComputerObservationCall::FindText { .. }
@@ -669,6 +709,7 @@ fn room_computer_artifact_path(path: &std::path::Path) -> Result<String, DaemonE
 
 pub(in crate::runtime::state) async fn capture_room_environment_screenshot(
     destination: &std::path::Path,
+    capture_guard: tokio::sync::OwnedRwLockReadGuard<()>,
 ) -> Result<(), DaemonError> {
     let destination = destination
         .to_str()
@@ -676,8 +717,11 @@ pub(in crate::runtime::state) async fn capture_room_environment_screenshot(
             operation: "environment.screenshot.capture",
             message: "screenshot destination is not valid UTF-8".to_string(),
         })?;
-    let output =
-        run_slice_screen_command(vec!["screenshot".to_string(), destination.to_string()]).await?;
+    let output = run_slice_screen_command_with_capture(
+        vec!["screenshot".to_string(), destination.to_string()],
+        capture_guard,
+    )
+    .await?;
     if !output.success {
         return Err(DaemonError::LocalTransport {
             operation: "environment.screenshot.capture",
@@ -715,16 +759,30 @@ async fn run_slice_screen_command_inner(
     stdin: Option<zeroize::Zeroizing<String>>,
     timeout_override_ms: Option<u64>,
 ) -> Result<SliceScreenCommandOutput, DaemonError> {
-    run_slice_screen_command_inner_with_output_policy(args, stdin, timeout_override_ms, None, false)
-        .await
+    run_slice_screen_command_inner_with_output_policy(
+        args,
+        stdin,
+        timeout_override_ms,
+        None,
+        false,
+        None,
+    )
+    .await
 }
 
 async fn run_slice_screen_command_inner_exact_stdout(
     args: Vec<String>,
     timeout_override_ms: Option<u64>,
 ) -> Result<SliceScreenCommandOutput, DaemonError> {
-    run_slice_screen_command_inner_with_output_policy(args, None, timeout_override_ms, None, true)
-        .await
+    run_slice_screen_command_inner_with_output_policy(
+        args,
+        None,
+        timeout_override_ms,
+        None,
+        true,
+        None,
+    )
+    .await
 }
 
 async fn run_slice_screen_command_inner_with_cancellation(
@@ -739,6 +797,7 @@ async fn run_slice_screen_command_inner_with_cancellation(
         timeout_override_ms,
         cancellation,
         false,
+        None,
     )
     .await
 }
@@ -749,11 +808,13 @@ async fn run_slice_screen_command_inner_with_output_policy(
     timeout_override_ms: Option<u64>,
     cancellation: Option<crate::runtime::computer_input_execution::ComputerInputCancellation>,
     preserve_stdout: bool,
+    capture_guard: Option<tokio::sync::OwnedRwLockReadGuard<()>>,
 ) -> Result<SliceScreenCommandOutput, DaemonError> {
     let tool_path = std::env::var("CHARIOX_SLICE_SCREEN_TOOL")
         .unwrap_or_else(|_| "/opt/chariox-slice/slice-screen.sh".to_string());
     let sensitive_output = preserve_stdout || stdin.is_some();
     tokio::task::spawn_blocking(move || {
+        let _capture_guard = capture_guard;
         let mut command = std::process::Command::new(&tool_path);
         command
             .args(&args)
@@ -1253,30 +1314,6 @@ pub(crate) async fn run_room_clipboard_read(
     )
 }
 
-pub(crate) async fn run_room_secret_text_input(
-    input: crate::transport::room_browser_controller::RoomComputerSecretInput,
-    cancellation: crate::runtime::computer_input_execution::ComputerInputCancellation,
-) -> Result<(), DaemonError> {
-    let output = run_slice_screen_command_inner_with_cancellation(
-        vec!["computer-secret-paste-stdin".to_string()],
-        Some(input.into_zeroizing()),
-        Some(ROOM_COMPUTER_INPUT_TIMEOUT_MS),
-        Some(cancellation),
-    )
-    .await?;
-    if output.success {
-        Ok(())
-    } else {
-        Err(room_computer_input_error(&format!(
-            "slice computer secret helper exited with status {}",
-            output
-                .status_code
-                .map(|code| code.to_string())
-                .unwrap_or_else(|| "unknown".to_string())
-        )))
-    }
-}
-
 pub(crate) async fn reset_room_computer_input() -> Result<(), DaemonError> {
     let output = run_slice_screen_command_inner(
         vec!["computer-input-reset".to_string()],
@@ -1738,6 +1775,7 @@ mod tests {
 
     #[tokio::test]
     async fn slice_screen_command_times_out() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-slice-timeout-test-{}",

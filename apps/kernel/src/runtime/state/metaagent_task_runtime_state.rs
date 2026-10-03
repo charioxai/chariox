@@ -138,6 +138,7 @@ impl KernelRuntimeState {
         ),
         DaemonError,
     > {
+        let _admission = self.owned.begin_managed_activity_admission()?;
         let (task, session) = self
             .mutate_metaagent_task_session_with_result(
                 session_id,
@@ -191,6 +192,7 @@ impl KernelRuntimeState {
             let _ = self.owned.agent_store.deactivate_agent_meta_mode(agent_id);
             return Err(error);
         }
+        let _admission = self.owned.begin_managed_activity_admission()?;
         let activity_mutation = self.owned.begin_managed_activity_mutation();
         let session_result = (|| {
             let mut sessions = self.owned.session_store.write();
@@ -200,6 +202,7 @@ impl KernelRuntimeState {
             Ok(session) => session,
             Err(error) => {
                 drop(activity_mutation);
+                drop(_admission);
                 let _ = self
                     .sync_remote_leased_agent_meta_mode(session_id, agent_id, false)
                     .await;
@@ -223,6 +226,7 @@ impl KernelRuntimeState {
             .activate_agent_meta_mode(agent_id, task_id)
         {
             drop(activity_mutation);
+            drop(_admission);
             let _ = self
                 .sync_remote_leased_agent_meta_mode(session_id, agent_id, false)
                 .await;
@@ -595,19 +599,11 @@ impl KernelRuntimeState {
                     .is_some();
                 if queued_prompt.is_some() && !has_active_prompt {
                     if metaagent.remote_execution().is_some() {
-                        if let Some(mut submission) =
-                            self.owned.advance_next_queued_remote_prompt_dispatch(
-                                &request.session_id,
-                                &request.metaagent_id,
-                            )?
-                        {
-                            self.finish_owned_prompt_submission_workflow_start(&mut submission)
-                                .await?;
-                            self.spawn_remote_prompt_projection_drain_if_needed(&submission);
-                            if let Some(dispatch) = submission.remote_dispatch.take() {
-                                self.spawn_remote_prompt_dispatch(dispatch);
-                            }
-                        }
+                        self.spawn_next_queued_remote_prompt(
+                            &request.session_id,
+                            &request.metaagent_id,
+                        )
+                        .await?;
                     } else {
                         let provider_run_id = self
                             .owned

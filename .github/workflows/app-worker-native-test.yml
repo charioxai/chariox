@@ -1,0 +1,100 @@
+name: App worker bootstrap and native containment
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'apps/app-worker/src/**'
+      - 'apps/app-worker/tests/**'
+      - 'apps/app-worker/sandbox.lock.json'
+      - 'packages/app-sdk/**'
+      - 'scripts/test-app-worker-linux-ci.sh'
+      - 'scripts/app-worker-linux-fixture.sh'
+      - '.github/workflows/app-worker-native-test.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: app-worker-native-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.20.0'
+      - name: Verify trusted bootstrap and SDK channel
+        run: node --test --test-concurrency=1 apps/app-worker/tests/bootstrap.test.mjs
+      - name: Install small native fixture build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gcc libc6-dev binutils meson ninja-build libcap-dev pkg-config apparmor
+      - name: Build and verify the native boundary
+        id: fixture
+        run: bash scripts/test-app-worker-linux-ci.sh
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: native-linux-fixture-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ steps.fixture.outputs.evidence }}
+          if-no-files-found: error
+          retention-days: 7
+      - name: Remove owned fixture state
+        if: always() && steps.fixture.outputs.scratch != ''
+        env:
+          FIXTURE_SCRATCH: ${{ steps.fixture.outputs.scratch }}
+        run: |
+          fixture_temp="$(realpath -e -- "$RUNNER_TEMP")"
+          case "$FIXTURE_SCRATCH" in
+            "$fixture_temp"/chariox-sandbox.*)
+              sudo systemctl stop "chariox-native-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.service" >/dev/null 2>&1 || true
+              if [[ -f "$FIXTURE_SCRATCH/chariox-native.apparmor" ]]; then
+                sudo apparmor_parser -R "$FIXTURE_SCRATCH/chariox-native.apparmor" >/dev/null 2>&1 || true
+              fi
+              sudo rm -rf -- "$FIXTURE_SCRATCH"
+              ;;
+            *) echo 'Refusing unexpected fixture scratch path.' >&2; exit 1 ;;
+          esac
+
+  native-macos:
+    needs: native-linux
+    runs-on: macos-14
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.20.0'
+      - name: Verify development macOS native boundary and bootstrap
+        run: |
+          set -o pipefail
+          {
+            git rev-parse HEAD
+            uname -sm
+            sw_vers
+            /usr/bin/clang --version
+            node --test --test-concurrency=1 apps/app-worker/tests/bootstrap.test.mjs apps/app-worker/tests/native-launcher.test.mjs
+          } 2>&1 | tee "$RUNNER_TEMP/native-macos.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-macos-fixture-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/native-macos.log
+          if-no-files-found: error
+          retention-days: 7
+      - name: Remove owned fixture state
+        if: always()
+        run: |
+          rm -f -- "$RUNNER_TEMP/native-macos.log"
+          rm -rf -- "$HOME/.chariox/dev/apps-phase1/bootstrap-tests" "$HOME/.chariox/dev/apps-phase1/native-launcher-tests"

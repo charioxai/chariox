@@ -1,17 +1,18 @@
 use std::collections::{BTreeMap, VecDeque};
 
 use super::model::{
-    EnvironmentError, EnvironmentTab, EnvironmentTabObservation, EnvironmentTabRuntimeBinding,
+    EnvironmentError, EnvironmentTab, EnvironmentTabApp, EnvironmentTabObservation,
+    EnvironmentTabRuntimeBinding,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct TabState {
     controller_target_id: String,
     document_id: Option<String>,
     tab: EnvironmentTab,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct TabRegistry {
     tabs: BTreeMap<String, TabState>,
     tab_id_by_controller_target: BTreeMap<String, String>,
@@ -70,6 +71,7 @@ impl TabRegistry {
                     title,
                     document_revision: 1,
                     focused,
+                    app: None,
                 },
             },
         );
@@ -135,6 +137,7 @@ impl TabRegistry {
                                 title: observation.title,
                                 document_revision: 1,
                                 focused: false,
+                                app: None,
                             },
                         },
                     );
@@ -175,6 +178,19 @@ impl TabRegistry {
         if self.focused_tab_id != next_focus {
             self.focused_tab_id = next_focus;
             changed = true;
+        }
+        changed
+    }
+
+    /// Marks App view Tabs by controller target; true when any Tab changed.
+    pub(crate) fn set_apps(&mut self, apps: &BTreeMap<String, EnvironmentTabApp>) -> bool {
+        let mut changed = false;
+        for state in self.tabs.values_mut() {
+            let app = apps.get(&state.controller_target_id).cloned();
+            if state.tab.app != app {
+                state.tab.app = app;
+                changed = true;
+            }
         }
         changed
     }

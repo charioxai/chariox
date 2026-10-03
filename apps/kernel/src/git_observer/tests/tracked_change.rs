@@ -123,11 +123,7 @@ fn tracked_workspace_live_sync_change_filters_charioxignore_patterns() {
         .expect("allowed tracked path should remain");
 
     assert_eq!(change.changed_paths, vec!["src/lib.rs"]);
-    assert_eq!(
-        std::fs::read_to_string(root.join(".charioxignore"))
-            .expect(".charioxignore should initialize"),
-        "ignored/\n*.secret\n"
-    );
+    assert!(!root.join(".charioxignore").exists());
 
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -151,11 +147,7 @@ fn tracked_workspace_live_sync_change_initializes_empty_charioxignore_without_gi
         .expect("tracked paths should remain when no ignore file exists");
 
     assert_eq!(change.changed_paths, vec!["src/lib.rs", "token.secret"]);
-    assert_eq!(
-        std::fs::read_to_string(root.join(".charioxignore"))
-            .expect(".charioxignore should initialize"),
-        ""
-    );
+    assert!(!root.join(".charioxignore").exists());
 
     let _ = std::fs::remove_dir_all(&root);
 }

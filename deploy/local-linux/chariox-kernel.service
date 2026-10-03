@@ -1,0 +1,30 @@
+# The local Chariox kernel, a systemd --user unit of its ordinary owner.
+# install-user.sh installs it; install-root.sh enrolled this unit's `apps`
+# child as the owner's App cgroup root.
+[Unit]
+Description=Chariox kernel
+# A crash-looping kernel stops restarting after 5 failures in 5 minutes.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+Environment=CHARIOX_HOME=%h/.chariox
+Environment=CHARIOX_LOG_DIR=%h/.chariox/logs
+Environment=CHARIOX_KERNEL_HOST=127.0.0.1
+EnvironmentFile=-%h/.config/chariox/kernel.env
+# The kernel and its Apps own only this unit's delegated subtree.
+Delegate=cpu memory pids
+DelegateSubgroup=supervisor
+# Prepares the `apps` subtree from the supervisor subgroup, then execs the
+# kernel. No ExecStartPre/Post: see start-kernel.sh.
+ExecStart=%h/.local/lib/chariox/start-kernel.sh %h/.local/bin/chariox-kernel
+KillMode=control-group
+TimeoutStopSec=60s
+# Restart after a crash (owner decision, 2026-09-30); a clean stop stays stopped.
+# Apps and pending work recover through the kernel's own startup recovery.
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target

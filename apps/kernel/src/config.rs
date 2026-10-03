@@ -31,6 +31,7 @@ pub use credentials::{
     UserCredentialMetadataConfig, UserCredentialSourceConfig, UserCredentialUse,
     UserCredentialVaultConfig,
 };
+pub use identity::prepare_protected_slice_identity;
 #[cfg(test)]
 use identity::{generate_identity_suffix, RuntimeIdentity};
 pub(crate) use identity::{load_or_create_managed_runtime_identity, ManagedRuntimeIdentity};
@@ -161,8 +162,8 @@ pub struct DaemonConfig {
     pub relay_request_timeout_ms: u64,
     pub accept_remote_leases: bool,
     pub kernel_runtime_role: KernelRuntimeRole,
-    /// Maximum concurrent remote execution leases accepted by this kernel.
-    /// `None` preserves the ordinary remote-worker behavior of no fixed limit.
+    /// Optional operator limit on leased turns running at once; further turns
+    /// wait for a slot. Idle leased agents never count. `None` means no limit.
     pub remote_lease_capacity: Option<usize>,
     pub lease_worker_home_caller: Option<LeaseWorkerHomeCaller>,
     lease_worker_home_caller_parse_error: bool,
@@ -289,10 +290,17 @@ impl DaemonConfig {
     }
 
     pub fn for_tests() -> Self {
+        // Test-state paths must not capture another fixture's temporary TMPDIR
+        // while its environment guard owns and will remove that directory.
+        #[cfg(test)]
+        let _environment = crate::env_lock::lock();
         static TEST_SOCKET_COUNTER: AtomicU64 = AtomicU64::new(0);
 
         let index = TEST_SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
         let mut config = Self::new("daemon-test", "machine-test", "tester");
+        // Test kernels share a host with the live kernel and may use its default MCP URL.
+        // Their global orphan sweep must never terminate the live kernel's providers.
+        config.provider_process_orphan_ttl_ms = u64::MAX;
         config.kernel_websocket_write_delay_ms = 0;
         config.local_socket_path = std::env::temp_dir().join("chariox-tests").join(format!(
             "daemon-test-{}-{}.sock",
@@ -343,6 +351,7 @@ impl DaemonConfig {
                 .display()
                 .to_string(),
         );
+        config.user_config_path = config.durable_state_path().with_file_name("config.toml");
         config.user_config.workflow.max_queues_per_workflow = Some(10);
         config.user_config.providers.workspace_live_sync =
             crate::config::WorkspaceLiveSyncConfig::from_mode(

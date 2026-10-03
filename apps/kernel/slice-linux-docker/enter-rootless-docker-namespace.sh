@@ -30,6 +30,14 @@ done
   exit 1
 }
 
+# Only the installed broker needs protected host ancestry admission. Run the
+# fixed helper before nsenter; a namespace-root environment flag is not proof.
+case "${2:-}" in
+  */managed-docker-broker.mjs)
+    /usr/bin/node "$(dirname "$0")/protected-namespace-entry.mjs" --prepare "$child_pid"
+    ;;
+esac
+
 # The mount namespace supplies RootlessKit's private resolv.conf. Keep its
 # network namespace paired with it, including Docker CLI registry-auth calls.
 exec /usr/bin/nsenter --target "$child_pid" --user --mount --net -- "$@"

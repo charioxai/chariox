@@ -18,39 +18,147 @@ fn calculate_agent_layout_expands_past_six_agents() {
     );
 }
 
-#[test]
-fn substitute_deactivation_restores_primary_without_default_model() {
-    let mut agent = AgentInstance::new(
+fn agent(provider: &str, model: &str) -> AgentInstance {
+    AgentInstance::new(
         "agent-1",
         "agent-1",
         "session-1",
         None,
-        "opencode",
-        None,
+        provider,
+        Some(model.to_string()),
         None,
         None,
         GridPosition::new(0, 0, 1, 1),
-    );
-    agent.set_primary_profile("opencode", None, None);
-    agent.add_substitute(AgentSubstituteProfile::new(
-        "codex",
-        "gpt-5.4",
-        Some("medium".to_string()),
-    ));
+    )
+}
 
-    let activated = agent.activate_substitute(0, "manual");
+#[test]
+fn agent_persisted_on_a_substitute_loads_on_its_primary_profile() {
+    let legacy = serde_json::json!({
+        "id": "agent-1",
+        "agent_ref": "agent-1",
+        "session_id": "session-1",
+        "alias": null,
+        "provider": "codex",
+        "model": "gpt-5.4",
+        "effort": "max",
+        "account_profile": "codex-personal",
+        "primary_provider": "codex",
+        "primary_model": "gpt-6.1-sol",
+        "primary_effort": "high",
+        "primary_account_profile": "codex-work",
+        "substitutes": [
+            {"provider": "codex", "model": "gpt-5.4", "variant": "max",
+             "account_profile": "codex-personal"}
+        ],
+        "active_substitute_index": 0,
+        "last_substitution": {"substitute_index": 0, "reason": "usage limit", "activated_at_ms": 1},
+        "provider_resume_state": {"codex_thread_id": "substitute-account-thread"},
+        "state": "Idle",
+        "is_processing": false,
+        "position": {"row": 0, "col": 0, "row_span": 1, "col_span": 1},
+        "created_at_ms": 1,
+        "last_activity_at_ms": 1
+    });
+
+    let restored: AgentInstance = serde_json::from_value(legacy).expect("legacy agent loads");
+
+    assert_eq!(restored.provider(), "codex");
+    assert_eq!(restored.model(), Some("gpt-6.1-sol"));
+    assert_eq!(restored.effort(), Some("high"));
+    assert_eq!(restored.account_profile(), Some("codex-work"));
+    assert!(
+        restored.provider_resume_state().is_empty(),
+        "the substitute's provider session never resumes under the primary"
+    );
+    assert_eq!(restored.substitutes().len(), 1, "the fallback list is kept");
+    let reserialized = serde_json::to_value(&restored).expect("agent serializes");
+    for retired in [
+        "primary_provider",
+        "primary_model",
+        "primary_effort",
+        "primary_account_profile",
+        "active_substitute_index",
+        "last_substitution",
+    ] {
+        assert!(reserialized.get(retired).is_none(), "{retired} is retired");
+    }
+}
+
+#[test]
+fn legacy_primary_snapshot_without_an_active_substitute_does_not_revert_later_edits() {
+    // A returned-to-primary agent kept its stale `primary_*` snapshot; the
+    // live profile is authoritative and must not be rolled back on load.
+    let mut current = serde_json::to_value(agent("codex", "gpt-6.1-sol")).unwrap();
+    current["primary_provider"] = serde_json::json!("opencode");
+    current["primary_model"] = serde_json::json!("deepseek-v4-pro");
+    current["last_substitution"] = serde_json::Value::Null;
+    current["provider_resume_state"] = serde_json::json!({"codex_thread_id": "primary-thread"});
+
+    let restored: AgentInstance = serde_json::from_value(current).expect("agent loads");
+
+    assert_eq!(restored.provider(), "codex");
+    assert_eq!(restored.model(), Some("gpt-6.1-sol"));
+    assert!(
+        !restored.provider_resume_state().is_empty(),
+        "the configured profile keeps its own provider session"
+    );
+}
+
+#[test]
+fn legacy_substitute_on_the_default_account_restores_the_default_primary_account() {
+    let mut legacy = serde_json::to_value(agent("claude", "claude-opus-5-5")).unwrap();
+    legacy["account_profile"] = serde_json::json!("claude-personal");
+    legacy["primary_provider"] = serde_json::json!("codex");
+    legacy["primary_model"] = serde_json::json!("gpt-6.1-sol");
+    legacy["active_substitute_index"] = serde_json::json!(0);
+
+    let restored: AgentInstance = serde_json::from_value(legacy).expect("agent loads");
+
+    assert_eq!(restored.provider(), "codex");
+    assert_eq!(restored.effort(), None);
+    assert_eq!(restored.account_profile(), None);
+    assert_eq!(restored.provider_account_profile(), "default");
+}
+
+#[test]
+fn substitute_list_edits_keep_order_and_never_change_the_configured_profile() {
+    let mut agent = agent("claude", "claude-opus-4-8");
+    for (provider, model) in [
+        ("opencode", "opencode-go/deepseek-v4-pro"),
+        ("opencode", "deepseek-v4-pro"),
+        ("codex", "gpt-5.6-sol"),
+    ] {
+        agent.add_substitute(AgentSubstituteProfile::new(provider, model, None));
+    }
+    let models = |agent: &AgentInstance| {
+        agent
+            .substitutes()
+            .iter()
+            .map(|profile| profile.model.clone())
+            .collect::<Vec<_>>()
+    };
+
+    assert!(agent.move_substitute(1, 0));
     assert_eq!(
-        activated.as_ref().map(|profile| profile.provider.as_str()),
-        Some("codex")
+        models(&agent),
+        [
+            "deepseek-v4-pro",
+            "opencode-go/deepseek-v4-pro",
+            "gpt-5.6-sol"
+        ]
     );
-    assert_eq!(agent.provider(), "codex");
-    assert_eq!(agent.model(), Some("gpt-5.4"));
-    assert_eq!(agent.effort(), Some("medium"));
-
-    agent.deactivate_substitute();
-    assert_eq!(agent.provider(), "opencode");
-    assert_eq!(agent.model(), None);
-    assert_eq!(agent.effort(), None);
+    assert!(agent.remove_substitute(0).is_some());
+    assert_eq!(
+        models(&agent),
+        ["opencode-go/deepseek-v4-pro", "gpt-5.6-sol"]
+    );
+    assert!(!agent.move_substitute(2, 0));
+    assert!(agent.remove_substitute(2).is_none());
+    agent.clear_substitutes();
+    assert!(agent.substitutes().is_empty());
+    assert_eq!(agent.provider(), "claude");
+    assert_eq!(agent.model(), Some("claude-opus-4-8"));
 }
 
 #[test]
@@ -76,282 +184,6 @@ fn substitute_profile_preserves_account_profile_binding_and_default_semantics() 
         serde_json::from_str(r#"{"provider":"codex","model":"gpt-5.4"}"#)
             .expect("legacy substitute profile should deserialize");
     assert_eq!(legacy.account_profile, None);
-
-    let mut agent = AgentInstance::new(
-        "agent-1",
-        "agent-1",
-        "session-1",
-        None,
-        "opencode",
-        None,
-        None,
-        None,
-        GridPosition::new(0, 0, 1, 1),
-    );
-    agent.add_substitute(bound.clone());
-    let activated = agent.activate_substitute(0, "manual");
-    assert_eq!(
-        activated.map(|profile| profile.account_profile),
-        Some(Some("work".to_string()))
-    );
-}
-
-#[test]
-fn substitute_activation_switches_account_and_deactivation_restores_primary_account() {
-    let mut agent = AgentInstance::new(
-        "agent-1",
-        "agent-1",
-        "session-1",
-        None,
-        "opencode",
-        None,
-        None,
-        None,
-        GridPosition::new(0, 0, 1, 1),
-    );
-    agent.set_account_profile(Some("primary-work".to_string()));
-    agent.set_primary_profile("opencode", Some("gpt-5.4".to_string()), None);
-    agent.add_substitute(
-        AgentSubstituteProfile::new("codex", "gpt-5.4", None)
-            .with_account_profile(Some("substitute-personal".to_string())),
-    );
-
-    agent.activate_substitute(0, "manual");
-    assert_eq!(agent.provider(), "codex");
-    assert_eq!(agent.account_profile(), Some("substitute-personal"));
-
-    // A chained activation keeps the original primary account for restore.
-    agent.add_substitute(
-        AgentSubstituteProfile::new("claude", "sonnet", None)
-            .with_account_profile(Some("claude-second".to_string())),
-    );
-    agent.activate_substitute(1, "manual");
-    assert_eq!(agent.account_profile(), Some("claude-second"));
-
-    agent.deactivate_substitute();
-    assert_eq!(agent.provider(), "opencode");
-    assert_eq!(agent.account_profile(), Some("primary-work"));
-}
-
-#[test]
-fn legacy_persisted_unbound_substitute_keeps_default_fallback_until_rebound() {
-    // New substitutes can no longer be created without a bound stable account
-    // (the kernel add seam resolves or rejects). This test constrains the
-    // dynamic default fallback to LEGACY persisted records only: an existing
-    // substitute deserialized without `account_profile` keeps launching via
-    // the default sentinel, and returning to primary still restores the exact
-    // primary profile.
-    let mut agent = AgentInstance::new(
-        "agent-1",
-        "agent-1",
-        "session-1",
-        None,
-        "opencode",
-        Some("gpt-5.4".to_string()),
-        None,
-        None,
-        GridPosition::new(0, 0, 1, 1),
-    );
-    agent.set_account_profile(Some("primary-work".to_string()));
-    agent.set_primary_profile("opencode", Some("gpt-5.4".to_string()), None);
-    let mut substitute = AgentSubstituteProfile::new("codex", "gpt-5.4", None);
-    substitute.account_profile = None;
-    agent.add_substitute(substitute);
-    // Simulate the legacy persisted record (no account binding on disk).
-    let mut restored: AgentInstance =
-        serde_json::from_str(&serde_json::to_string(&agent).expect("agent should serialize"))
-            .expect("agent should deserialize");
-    assert_eq!(restored.substitutes()[0].account_profile, None);
-
-    restored.activate_substitute(0, "manual");
-    assert_eq!(restored.account_profile(), None);
-    assert_eq!(restored.provider_account_profile(), "default");
-
-    restored.deactivate_substitute();
-    assert_eq!(restored.provider(), "opencode");
-    assert_eq!(restored.account_profile(), Some("primary-work"));
-}
-
-#[test]
-fn default_primary_round_trips_persistence_and_restores_default_account() {
-    let mut agent = AgentInstance::new(
-        "agent-1",
-        "agent-1",
-        "session-1",
-        None,
-        "opencode",
-        Some("gpt-5.4".to_string()),
-        None,
-        None,
-        GridPosition::new(0, 0, 1, 1),
-    );
-    agent.set_primary_profile("opencode", Some("gpt-5.4".to_string()), None);
-    agent.add_substitute(
-        AgentSubstituteProfile::new("codex", "gpt-5.4", None)
-            .with_account_profile(Some("substitute-personal".to_string())),
-    );
-    agent.activate_substitute(0, "manual");
-
-    // Persistence round-trip: the stored primary snapshot (including its
-    // default account) survives serialize/deserialize.
-    let serialized = serde_json::to_string(&agent).expect("agent should serialize");
-    let mut restored: AgentInstance =
-        serde_json::from_str(&serialized).expect("agent should deserialize");
-    restored.deactivate_substitute();
-    assert_eq!(restored.provider(), "opencode");
-    assert_eq!(restored.model(), Some("gpt-5.4"));
-    assert_eq!(restored.account_profile(), None);
-    assert_eq!(restored.provider_account_profile(), "default");
-}
-
-#[test]
-fn named_primary_round_trips_persistence_and_restores_named_account() {
-    let mut agent = AgentInstance::new(
-        "agent-1",
-        "agent-1",
-        "session-1",
-        None,
-        "opencode",
-        Some("gpt-5.4".to_string()),
-        None,
-        None,
-        GridPosition::new(0, 0, 1, 1),
-    );
-    agent.set_account_profile(Some("primary-work".to_string()));
-    agent.set_primary_profile("opencode", Some("gpt-5.4".to_string()), None);
-    agent.add_substitute(
-        AgentSubstituteProfile::new("codex", "gpt-5.4", None)
-            .with_account_profile(Some("substitute-personal".to_string())),
-    );
-    agent.activate_substitute(0, "manual");
-    assert_eq!(agent.provider(), "codex");
-    assert_eq!(agent.account_profile(), Some("substitute-personal"));
-
-    let serialized = serde_json::to_string(&agent).expect("agent should serialize");
-    let mut restored: AgentInstance =
-        serde_json::from_str(&serialized).expect("agent should deserialize");
-    restored.deactivate_substitute();
-    assert_eq!(restored.provider(), "opencode");
-    assert_eq!(restored.model(), Some("gpt-5.4"));
-    assert_eq!(restored.effort(), None);
-    assert_eq!(restored.account_profile(), Some("primary-work"));
-}
-
-#[test]
-fn switching_substitutes_does_not_overwrite_stored_primary_and_removing_active_restores() {
-    let mut agent = AgentInstance::new(
-        "agent-1",
-        "agent-1",
-        "session-1",
-        None,
-        "opencode",
-        Some("gpt-5.4".to_string()),
-        Some("high".to_string()),
-        None,
-        GridPosition::new(0, 0, 1, 1),
-    );
-    agent.set_account_profile(Some("primary-work".to_string()));
-    agent.set_primary_profile(
-        "opencode",
-        Some("gpt-5.4".to_string()),
-        Some("high".to_string()),
-    );
-    agent.add_substitute(
-        AgentSubstituteProfile::new("codex", "gpt-5.4", None)
-            .with_account_profile(Some("substitute-a".to_string())),
-    );
-    agent.add_substitute(
-        AgentSubstituteProfile::new("claude", "sonnet", None)
-            .with_account_profile(Some("substitute-b".to_string())),
-    );
-
-    agent.activate_substitute(0, "manual");
-    agent.activate_substitute(1, "manual");
-    assert_eq!(agent.provider(), "claude");
-    assert_eq!(agent.account_profile(), Some("substitute-b"));
-
-    // Removing the ACTIVE substitute returns to the exact primary profile.
-    agent.remove_substitute(1);
-    assert_eq!(agent.active_substitute_index(), None);
-    assert_eq!(agent.provider(), "opencode");
-    assert_eq!(agent.model(), Some("gpt-5.4"));
-    assert_eq!(agent.effort(), Some("high"));
-    assert_eq!(agent.account_profile(), Some("primary-work"));
-
-    // Clearing with an active substitute also restores atomically.
-    agent.activate_substitute(0, "manual");
-    agent.clear_substitutes();
-    assert_eq!(agent.provider(), "opencode");
-    assert_eq!(agent.model(), Some("gpt-5.4"));
-    assert_eq!(agent.effort(), Some("high"));
-    assert_eq!(agent.account_profile(), Some("primary-work"));
-}
-
-#[test]
-fn moving_substitutes_preserves_order_and_tracks_the_active_profile_identity() {
-    let mut agent = AgentInstance::new(
-        "agent-1",
-        "agent-1",
-        "session-1",
-        None,
-        "claude",
-        Some("claude-opus-4-8".to_string()),
-        Some("high".to_string()),
-        None,
-        GridPosition::new(0, 0, 1, 1),
-    );
-    for (provider, model) in [
-        ("opencode", "opencode-go/deepseek-v4-pro"),
-        ("opencode", "deepseek-v4-pro"),
-        ("codex", "gpt-5.6-sol"),
-    ] {
-        agent.add_substitute(AgentSubstituteProfile::new(provider, model, None));
-    }
-    agent.activate_substitute(1, "resource exhausted");
-
-    assert!(agent.move_substitute(1, 0));
-    assert_eq!(
-        agent
-            .substitutes()
-            .iter()
-            .map(|profile| profile.model.as_str())
-            .collect::<Vec<_>>(),
-        vec![
-            "deepseek-v4-pro",
-            "opencode-go/deepseek-v4-pro",
-            "gpt-5.6-sol"
-        ]
-    );
-    assert_eq!(agent.active_substitute_index(), Some(0));
-    assert_eq!(
-        agent
-            .last_substitution()
-            .map(|record| record.substitute_index),
-        Some(0)
-    );
-    assert_eq!(agent.model(), Some("deepseek-v4-pro"));
-
-    assert!(agent.move_substitute(2, 0));
-    assert_eq!(agent.active_substitute_index(), Some(1));
-    assert_eq!(
-        agent
-            .last_substitution()
-            .map(|record| record.substitute_index),
-        Some(1)
-    );
-    assert_eq!(agent.model(), Some("deepseek-v4-pro"));
-
-    agent.remove_substitute(0);
-    assert_eq!(agent.active_substitute_index(), Some(0));
-    assert_eq!(
-        agent
-            .last_substitution()
-            .map(|record| record.substitute_index),
-        Some(0)
-    );
-    assert_eq!(agent.model(), Some("deepseek-v4-pro"));
-    assert!(!agent.move_substitute(3, 0));
-    assert!(!agent.move_substitute(0, 3));
 }
 
 #[test]
@@ -375,13 +207,13 @@ fn workflow_runtime_materialization_preserves_config_without_live_state() {
         AgentSubstituteProfile::new("codex", "gpt-5.6-sol", Some("high".to_string()))
             .with_account_profile(Some("codex-work".to_string())),
     );
-    source.activate_substitute(0, "resource exhausted");
     source.set_provider_resume_state(
         crate::provider::ProviderResumeState::from_opencode_session_id("provider-session-secret"),
     );
     source.set_state(AgentState::Working);
     source.set_processing(true);
 
+    let substitutes = source.substitutes().to_vec();
     let runtime = source.materialized_for_workflow_runtime(
         "agent-runtime",
         "runtime-ref",
@@ -389,17 +221,11 @@ fn workflow_runtime_materialization_preserves_config_without_live_state() {
         "/isolated",
     );
 
-    assert_eq!(runtime.provider(), "codex");
-    assert_eq!(runtime.model(), Some("gpt-5.6-sol"));
+    assert_eq!(runtime.provider(), "opencode");
+    assert_eq!(runtime.model(), Some("x-preview-f-free"));
     assert_eq!(runtime.effort(), Some("high"));
-    assert_eq!(runtime.account_profile(), Some("codex-work"));
-    assert_eq!(runtime.active_substitute_index(), Some(0));
-    assert_eq!(
-        runtime
-            .last_substitution()
-            .map(|record| record.reason.as_str()),
-        Some("resource exhausted")
-    );
+    assert_eq!(runtime.account_profile(), Some("zen"));
+    assert_eq!(runtime.substitutes(), substitutes);
     assert_eq!(
         runtime.execution_mode_override(),
         Some(crate::provider::AgentExecutionMode::Build)

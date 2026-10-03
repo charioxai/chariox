@@ -177,7 +177,7 @@ fn project_workspace_membership_updates_through_the_local_api() {
     let first = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new(
-                "workspace-primary",
+                primary_worktree.path().display().to_string(),
                 primary_worktree.path().display().to_string(),
             )
             .with_project_selection(SessionProjectSelection::New),
@@ -193,8 +193,8 @@ fn project_workspace_membership_updates_through_the_local_api() {
             UpdateProjectWorkspacesRequest {
                 project_id: first.project_id().to_string(),
                 workspace_ids: vec![
-                    "workspace-primary".to_string(),
-                    "workspace-supporting".to_string(),
+                    primary_worktree.path().display().to_string(),
+                    supporting_worktree.path().display().to_string(),
                 ],
             },
         ))
@@ -205,13 +205,16 @@ fn project_workspace_membership_updates_through_the_local_api() {
     };
     assert_eq!(
         project.workspace_ids(),
-        &["workspace-primary", "workspace-supporting"]
+        &[
+            primary_worktree.path().display().to_string(),
+            supporting_worktree.path().display().to_string()
+        ]
     );
 
     let supporting = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new(
-                "workspace-supporting",
+                supporting_worktree.path().display().to_string(),
                 supporting_worktree.path().display().to_string(),
             )
             .with_project_selection(SessionProjectSelection::Existing {
@@ -223,7 +226,10 @@ fn project_workspace_membership_updates_through_the_local_api() {
         LocalDaemonResponse::SessionCreated { session, .. } => session,
         other => panic!("unexpected local response: {other:?}"),
     };
-    assert_eq!(supporting.workspace_id(), "workspace-supporting");
+    assert_eq!(
+        supporting.workspace_id(),
+        supporting_worktree.path().to_str().unwrap()
+    );
     assert_eq!(supporting.project_id(), first.project_id());
 }
 
@@ -235,7 +241,7 @@ fn archived_default_project_rejects_default_session_creation_until_restored() {
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new(
-                "workspace-default-archive",
+                first_worktree.path().display().to_string(),
                 first_worktree.path().display().to_string(),
             ),
         ))
@@ -253,7 +259,7 @@ fn archived_default_project_rejects_default_session_creation_until_restored() {
     let error = harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new(
-                "workspace-default-archive",
+                first_worktree.path().display().to_string(),
                 second_worktree.path().display().to_string(),
             ),
         ))
@@ -570,6 +576,67 @@ fn local_request_api_resolves_and_deletes_sessions_by_ref() {
         _ => panic!("unexpected local response"),
     };
     assert!(listed.is_empty());
+}
+
+#[test]
+fn deleting_session_removes_agents_but_keeps_saved_provider_conversations() {
+    for provider in ["codex", "claude", "opencode"] {
+        let worktree = crate::test_support::TestWorktree::new("delete-saved-conversation");
+        let harness = LocalRouterTestHarness::new();
+        let (session, agent) = match harness
+            .dispatch(LocalDaemonRequest::CreateSession(
+                worktree.session_request(),
+            ))
+            .unwrap()
+        {
+            LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+            other => panic!("unexpected response {other:?}"),
+        };
+        let store = harness.with_app(|app| app.external_provider_session_index_store());
+        let provider_session_id = format!("saved-{provider}");
+        let external_session_id = format!("{provider}:default:{provider_session_id}");
+        store.upsert(
+            serde_json::from_value(serde_json::json!({
+                "owner_user_id": crate::session::DEFAULT_LOCAL_USER_ID,
+                "external_session_id": external_session_id,
+                "provider": provider,
+                "provider_session_id": provider_session_id,
+                "title": "Saved conversation from deleted room",
+                "last_modified_at_ms": 1,
+                "account_profile": "default",
+                "capabilities": {"can_read_history": true}
+            }))
+            .unwrap(),
+        );
+        store.mark_attached(&external_session_id, session.id(), agent.id());
+        let list = || {
+            store.list(&crate::local::ListExternalProviderSessionsRequest {
+                provider: Some(provider.to_string()),
+                cursor: None,
+                limit: None,
+            })
+        };
+        assert!(list().sessions.is_empty());
+        harness
+            .dispatch(LocalDaemonRequest::DeleteSession(DeleteSessionRequest {
+                session_ref: session.id().to_string(),
+                workspace_id: None,
+            }))
+            .unwrap();
+        harness.with_app(|app| {
+            assert!(
+                app.agents().get_agent(agent.id()).is_err(),
+                "deleted room must not leave a live agent"
+            );
+            assert!(app.sessions().get_session(session.id()).is_err());
+        });
+        let saved = list();
+        assert_eq!(saved.sessions.len(), 1);
+        assert_eq!(saved.sessions[0].provider_session_id, provider_session_id);
+        assert!(saved.sessions[0].attached_session_ids.is_empty());
+        assert!(saved.sessions[0].attached_agent_ids.is_empty());
+        assert!(!saved.sessions[0].attached_to_chariox);
+    }
 }
 
 #[test]

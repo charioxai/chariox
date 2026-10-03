@@ -15,7 +15,7 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str) {
     worker_relay_state
         .write()
         .await
-        .test_lose_next_peer_response_payload();
+        .test_lose_next_browser_mutation_response(false);
 
     let result = fixture
         .home
@@ -72,7 +72,7 @@ async fn check_missing_receipt_fails_closed(fixture: &LiveWorker, token: &str) {
     worker_relay_state
         .write()
         .await
-        .test_lose_next_peer_response_payload_and_forget_action_receipts();
+        .test_lose_next_browser_mutation_response(true);
 
     let error = fixture
         .home

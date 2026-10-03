@@ -5,7 +5,8 @@ import type {
   RelayTarget,
   RelayUnsubscribeFrame,
 } from "./kernel-transport-frames.js"
-import { encryptRelayPayload, relayPublicKeyFromPrivateKey } from "./relay-crypto.js"
+import { decryptRelayPayload, encryptRelayPayload, type RelayClientIdentity } from "./relay-crypto.js"
+import type { EncryptedRelayPayload } from "./kernel-transport-frames.js"
 
 export function buildRelayConnectFrame(authToken: string | null, target: RelayTarget | null): RelayConnectFrame {
   if (!authToken) {
@@ -26,7 +27,8 @@ export function normalizeRelayRequest(
   request: unknown,
   target: RelayTarget | null,
   daemonPublicKey: string | null,
-): { frame: RelayRequestFrame; privateKey: Buffer } {
+  identity?: RelayClientIdentity | null,
+): { frame: RelayRequestFrame; decryptResponse: (payload: EncryptedRelayPayload) => string } {
   const resolvedTarget = requireRelayTarget(target)
   if (!daemonPublicKey) {
     throw new Error("relay daemon public key is required")
@@ -36,7 +38,17 @@ export function normalizeRelayRequest(
     request,
   }
   const plaintext = Buffer.from(JSON.stringify(command), "utf8")
-  const { privateKey, payload } = encryptRelayPayload(daemonPublicKey, plaintext)
+  const ephemeral = identity ? null : encryptRelayPayload(daemonPublicKey, plaintext)
+  const payload = identity
+    ? identity.encrypt(daemonPublicKey, plaintext)
+    : ephemeral!.payload
+  const decryptResponse = identity
+    ? (response: EncryptedRelayPayload) => identity.decrypt(response, daemonPublicKey)
+    : (response: EncryptedRelayPayload) => decryptRelayPayloadFromExpectedSender(
+      ephemeral!.privateKey,
+      response,
+      daemonPublicKey,
+    )
   return {
     frame: {
       kind: "client_request",
@@ -44,8 +56,19 @@ export function normalizeRelayRequest(
       target: resolvedTarget,
       encrypted_request: payload,
     },
-    privateKey,
+    decryptResponse,
   }
+}
+
+export function decryptRelayPayloadFromExpectedSender(
+  privateKey: Buffer,
+  payload: EncryptedRelayPayload,
+  expectedSenderPublicKey: string,
+): string {
+  if (!expectedSenderPublicKey || payload.sender_public_key !== expectedSenderPublicKey) {
+    throw new Error("relay sender identity mismatch")
+  }
+  return decryptRelayPayload(privateKey, payload)
 }
 
 function relayCommandEnvelope(value: unknown): { command_id: string; request: unknown } | null {
@@ -95,13 +118,13 @@ export function buildRelaySubscribeFrame(input: {
 export function buildRelayUnsubscribeFrame(
   requestId: string,
   subscriptionId: string,
-  privateKey: Buffer,
+  clientPublicKey: string,
 ): RelayUnsubscribeFrame {
   return {
     kind: "client_unsubscribe",
     request_id: requestId,
     subscription_id: subscriptionId,
-    client_public_key: relayPublicKeyFromPrivateKey(privateKey),
+    client_public_key: clientPublicKey,
   }
 }
 

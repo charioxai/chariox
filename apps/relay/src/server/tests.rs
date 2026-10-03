@@ -5,6 +5,7 @@ mod peer;
 mod registry;
 mod routing;
 mod runtime_client;
+mod slice_identity;
 mod subscription;
 
 use super::*;

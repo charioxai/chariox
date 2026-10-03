@@ -33,6 +33,7 @@ mod managed_context_bridge;
 pub(crate) use managed_context_bridge::{
     RelayManagedContextArmRequest, RelayManagedContextChunkRequest,
 };
+mod app_event_routes;
 mod meta_runtime_command;
 mod pre_lane_dispatch;
 mod priority_dispatch;
@@ -56,6 +57,9 @@ pub(crate) struct CommandRouter {
     workflow_runtime: WorkflowRuntime,
     aegs_management_http_client: crate::runtime::event_catalog_control::AegsManagementHttpClient,
     event_connection_lanes: event_connection_lifecycle::EventConnectionOperationLanes,
+    /// Held from an event route's interest check until it is stored, so two
+    /// routes (App or workflow) cannot both claim one interest.
+    event_interest_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
     provider_runtime_lanes: ProviderRunOperationLanes,
     focus_projection: FocusedAgentProjection,
     session_projection: SessionStateProjectionStore,
@@ -194,6 +198,11 @@ mod tests {
 
     mod agent_messaging;
     mod agent_prompt_schedules;
+    mod app_bindings;
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    mod app_open;
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    mod app_tools;
     mod browser_import;
     mod credential_enrollment;
     mod interactive_command_admission;
@@ -205,6 +214,9 @@ mod tests {
     mod remote_agent_message_origin;
     mod remote_authorization;
     mod remote_workspace_live_sync_authorization;
+    // Kernel resource telemetry reads /proc; other platforms report it as unsupported.
+    mod agent_workflow;
+    #[cfg(target_os = "linux")]
     mod resource_telemetry;
     mod room_environment_placement;
     mod runtime_persistence;

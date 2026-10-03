@@ -80,18 +80,18 @@ impl WorkspaceIdentityMonitor {
                 current_identity: current_identity.clone(),
                 generation: 0,
             });
-        if record.root != root || record.current_identity != current_identity {
-            record.root = root.clone();
-            record.current_identity = current_identity.clone();
+        if record.root != root || !same_workspace(&record.current_identity, &current_identity) {
             record.generation += 1;
         }
+        record.root = root.clone();
+        record.current_identity = current_identity.clone();
         WorkspaceIdentitySnapshot {
-            root: root.clone(),
+            root,
             baseline_identity: record.baseline_identity.clone(),
             current_identity,
             generation: record.generation,
             identity_changed: record.generation > 0,
-            valid: record.root == root && record.current_identity == record.baseline_identity,
+            valid: same_workspace(&record.current_identity, &record.baseline_identity),
         }
     }
 
@@ -117,7 +117,7 @@ impl WorkspaceIdentityMonitor {
             if record.generation > 0 {
                 identity_changed_provider_runs += 1;
             }
-            let valid = record.current_identity == record.baseline_identity;
+            let valid = same_workspace(&record.current_identity, &record.baseline_identity);
             if !valid {
                 invalid_provider_runs += 1;
             }
@@ -151,6 +151,18 @@ impl WorkspaceIdentityMonitor {
     }
 }
 
+/// Commits move `head_commit` without leaving the repo, branch, or worktree,
+/// so the head is reported but never treated as a workspace identity change.
+fn same_workspace(left: &WorkspaceIdentity, right: &WorkspaceIdentity) -> bool {
+    WorkspaceIdentity {
+        head_commit: None,
+        ..left.clone()
+    } == WorkspaceIdentity {
+        head_commit: None,
+        ..right.clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::WorkspaceIdentityMonitor;
@@ -181,6 +193,29 @@ mod tests {
         assert!(snapshot.identity_changed);
         assert_eq!(snapshot.baseline_identity, first);
         assert_eq!(snapshot.current_identity, second);
+        assert_eq!(snapshot.generation, 1);
+    }
+
+    #[test]
+    fn provider_workspace_stays_valid_when_commits_move_head() {
+        let monitor = WorkspaceIdentityMonitor::default();
+        let mut identity = crate::io::WorkspaceIdentity::local("root-a");
+        identity.branch = Some("main".to_string());
+        identity.head_commit = Some("commit-1".to_string());
+        monitor.observe_provider_run("run-1", "/repo".into(), identity.clone());
+
+        identity.head_commit = Some("commit-2".to_string());
+        let snapshot = monitor.observe_provider_run("run-1", "/repo".into(), identity.clone());
+
+        assert!(snapshot.valid);
+        assert!(!snapshot.identity_changed);
+        assert_eq!(snapshot.current_identity, identity);
+        assert_eq!(monitor.health_snapshot().issues.len(), 0);
+
+        identity.branch = Some("other".to_string());
+        let snapshot = monitor.observe_provider_run("run-1", "/repo".into(), identity);
+
+        assert!(!snapshot.valid);
         assert_eq!(snapshot.generation, 1);
     }
 

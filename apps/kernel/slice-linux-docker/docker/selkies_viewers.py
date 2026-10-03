@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import time
 import urllib.request
 
 import psutil
@@ -27,11 +28,23 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 @contextmanager
-def locked_state():
+def locked_state(timeout=None):
     directory = lifecycle.state_directory()
     descriptor = os.open(directory / "lifecycle.lock", os.O_RDWR | os.O_CREAT, 0o600)
     with os.fdopen(descriptor, "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        if timeout is None:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        else:
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise PrivateStreamError("private streamer lock timed out")
+                    time.sleep(min(0.05, remaining))
         yield directory, lifecycle.read_state(directory)
 
 

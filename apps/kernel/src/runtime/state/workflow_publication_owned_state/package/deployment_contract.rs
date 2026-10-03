@@ -3,12 +3,20 @@ use sha2::{Digest, Sha256};
 
 use super::*;
 
+/// The kernel protocol a package's contract requires. A deployment's bind and
+/// recovery re-export its package and compare digests, so this is the package
+/// format's version, not the exporting kernel's: raising it with every kernel
+/// protocol would fail every deployment bound before the upgrade. Raise it only
+/// when a package needs a newer kernel to run.
+pub(crate) const PACKAGE_PROTOCOL_VERSION: u32 = 367;
+
 pub(super) fn workflow_publication_deployment_contract_json(
     publication: &crate::session::WorkflowPublicationDefinition,
     publication_value: &serde_json::Value,
     snapshot: &crate::local::WorkflowPublicationSnapshot,
     agent_app: Option<&serde_json::Value>,
     requirements: &serde_json::Value,
+    apps: Option<&serde_json::Value>,
     package_files: &[crate::local::WorkflowPublicationPackageFile],
 ) -> Result<serde_json::Value, DaemonError> {
     let package_digest = super::workflow_publication_package_digest(package_files)?;
@@ -31,6 +39,17 @@ pub(super) fn workflow_publication_deployment_contract_json(
         .and_then(serde_json::Value::as_bool)
         == Some(true);
 
+    let mut capabilities = capability_ceiling(
+        agent_app,
+        requirements,
+        &provider_requirements,
+        &network_destinations,
+    );
+    // Protocol 366: the Apps the deployed copy installs (`apps.json`).
+    if let Some(apps) = apps {
+        capabilities["apps"] = apps["apps"].clone();
+    }
+
     Ok(serde_json::json!({
         "schema_version": 1,
         "package_id": package_digest,
@@ -52,13 +71,13 @@ pub(super) fn workflow_publication_deployment_contract_json(
         "compatibility": {
             "package_version": super::workflow_publication_package_version(agent_app),
             "minimum_kernel_version": env!("CARGO_PKG_VERSION"),
-            "minimum_local_daemon_protocol_version": crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+            "minimum_local_daemon_protocol_version": PACKAGE_PROTOCOL_VERSION,
         },
         "routes": [route],
         "provider_requirements": provider_requirements,
         "credential_slots": credential_slots,
         "configuration": deployment_configuration(snapshot),
-        "capabilities": capability_ceiling(agent_app, requirements, &provider_requirements, &network_destinations),
+        "capabilities": capabilities,
         "resources": resource_hints(snapshot, agent_app),
         "presentation": {
             "kind": if enabled_agent_app { "agent_app" } else { "workflow_endpoint" },

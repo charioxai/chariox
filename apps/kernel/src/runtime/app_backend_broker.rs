@@ -1,0 +1,223 @@
+//! Namespace routing on the worker's one existing SDK channel. Identity and
+//! data descriptors come from the actual process, never from request fields.
+use super::{
+    app_files_broker::AppFilesBroker,
+    app_http::{AppHttpBroker, HttpContext},
+    app_state_broker::AppStorageBroker,
+    app_worker::AppWorkerError,
+};
+use crate::durable_state::DurableKernelStateStore;
+use chariox_app_package::VerifiedPackage;
+use chariox_app_runtime::{
+    app_outbox::EventCatalog,
+    wire::RemoteError,
+    worker_peer::{Broker, BrokerFuture, BrokerRequest},
+    worker_process::WorkerProcess,
+};
+use std::sync::Arc;
+use tokio::sync::Semaphore;
+
+pub(crate) fn broker(
+    store: DurableKernelStateStore,
+    owner: String,
+    catalog: Arc<EventCatalog>,
+    admission: Arc<Semaphore>,
+    process: &WorkerProcess,
+    package: &VerifiedPackage<'_>,
+    http: HttpContext,
+    event_config: super::app_lifecycle::EventConfig,
+) -> Result<Arc<dyn Broker>, AppWorkerError> {
+    Ok(Arc::new(build(
+        store,
+        owner,
+        catalog,
+        admission,
+        process,
+        package,
+        http,
+        event_config,
+    )?))
+}
+fn build(
+    store: DurableKernelStateStore,
+    owner: String,
+    catalog: Arc<EventCatalog>,
+    admission: Arc<Semaphore>,
+    process: &WorkerProcess,
+    package: &VerifiedPackage<'_>,
+    http: HttpContext,
+    event_config: super::app_lifecycle::EventConfig,
+) -> Result<BackendBroker, AppWorkerError> {
+    let data = process
+        .private_data()
+        .map_err(|_| AppWorkerError::Unavailable)?;
+    if data.installation_id() != catalog.installation_id()
+        || data.generation() != catalog.generation()
+        || data.release_digest() != catalog.app_catalog().package_digest()
+    {
+        return Err(AppWorkerError::Identity);
+    }
+    let fence = Arc::new(tokio::sync::RwLock::new(()));
+    Ok(BackendBroker {
+        host: super::app_host_broker::AppHostBroker::new(
+            store.clone(),
+            owner.clone(),
+            catalog.clone(),
+            admission.clone(),
+        ),
+        connections: super::app_connection_broker::AppConnectionBroker::new(
+            store.clone(),
+            owner.clone(),
+            catalog.installation_id().to_owned(),
+            package.manifest().capabilities.connections.clone(),
+            admission.clone(),
+            event_config,
+        ),
+        state: AppStorageBroker::new(
+            store.clone(),
+            owner.clone(),
+            catalog.clone(),
+            admission.clone(),
+            fence.clone(),
+        ),
+        http: AppHttpBroker::new(
+            store.clone(),
+            owner.clone(),
+            catalog.app_catalog().clone(),
+            package,
+            data.clone(),
+            admission.clone(),
+            http,
+        )
+        .map_err(|_| AppWorkerError::Identity)?,
+        validation: super::app_validation_broker::AppValidationBroker::new(
+            store.clone(),
+            owner.clone(),
+            catalog.installation_id().to_owned(),
+            catalog.generation(),
+            package,
+            admission.clone(),
+        )
+        .ok_or(AppWorkerError::Identity)?,
+        logs: super::app_log_broker::AppLogBroker::new(
+            store.clone(),
+            owner.clone(),
+            catalog.installation_id().to_owned(),
+            admission.clone(),
+        ),
+        file_grants: super::app_file_grant_broker::AppFileGrantBroker::new(
+            store.clone(),
+            owner.clone(),
+            catalog.clone(),
+            admission.clone(),
+            data.clone(),
+            package,
+        ),
+        snapshots: super::app_snapshot_broker::AppSnapshotBroker::new(
+            store.clone(),
+            owner.clone(),
+            catalog.clone(),
+            admission.clone(),
+            data.clone(),
+            fence.clone(),
+        ),
+        files: AppFilesBroker::new(store, owner, catalog, admission, data),
+        fence,
+    })
+}
+#[derive(Clone)]
+struct BackendBroker {
+    host: super::app_host_broker::AppHostBroker,
+    state: AppStorageBroker,
+    logs: super::app_log_broker::AppLogBroker,
+    validation: super::app_validation_broker::AppValidationBroker,
+    files: AppFilesBroker,
+    file_grants: super::app_file_grant_broker::AppFileGrantBroker,
+    http: AppHttpBroker,
+    snapshots: super::app_snapshot_broker::AppSnapshotBroker,
+    connections: super::app_connection_broker::AppConnectionBroker,
+    /// SDK writes share it; a quiescent snapshot holds it alone.
+    fence: Arc<tokio::sync::RwLock<()>>,
+}
+impl Broker for BackendBroker {
+    fn take_response_guard(
+        &self,
+        id: &str,
+    ) -> Option<Box<dyn chariox_app_runtime::worker_peer::ResponsePublication>> {
+        self.http.take_response_guard(id)
+    }
+    fn begin_draining(&self) {
+        self.http.begin_draining();
+    }
+    fn drain(&self) -> chariox_app_runtime::worker_peer::BrokerDrainFuture {
+        let http = self.http.clone();
+        Box::pin(async move {
+            http.drain().await;
+        })
+    }
+    fn handle(&self, request: BrokerRequest) -> BrokerFuture {
+        let delegate = self.clone();
+        Box::pin(async move {
+            match request.method.as_str() {
+                name if name.starts_with("state.")
+                    || name.starts_with("events.")
+                    || name.starts_with("schedule.")
+                    || name == "migration.step" =>
+                {
+                    delegate.state.dispatch(request).await
+                }
+                name if name.starts_with("http.") => delegate.http.dispatch(request).await,
+                "files.atomic_replace" => {
+                    let _write = delegate.fence.read().await;
+                    delegate.files.dispatch(request).await
+                }
+                "files.import" => {
+                    let _write = delegate.fence.read().await;
+                    delegate.file_grants.dispatch(request).await
+                }
+                "files.snapshot" => delegate.snapshots.dispatch(request).await,
+                "connections.list" | "connections.action" => {
+                    delegate.connections.dispatch(request).await
+                }
+                "host.pick_file" | "host.pick_file_status" | "files.export" => {
+                    delegate.file_grants.dispatch(request).await
+                }
+                "host.clipboard_write" | "host.open_link" => delegate.host.dispatch(request).await,
+                "log.write" => delegate.logs.dispatch(request).await,
+                "validation.request" | "validation.status" => {
+                    delegate.validation.dispatch(request).await
+                }
+                _ => Err(RemoteError {
+                    code: "METHOD_UNAVAILABLE".into(),
+                    message: "App capability is unavailable".into(),
+                    retryable: Some(false),
+                }),
+            }
+        })
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn fixture_http(
+    store: DurableKernelStateStore,
+    owner: String,
+    catalog: Arc<EventCatalog>,
+    admission: Arc<Semaphore>,
+    process: &WorkerProcess,
+    package: &VerifiedPackage<'_>,
+    http: HttpContext,
+    network: Arc<super::app_http::fixture::NetworkFixture>,
+) -> Result<Arc<dyn Broker>, AppWorkerError> {
+    let broker = build(
+        store,
+        owner,
+        catalog,
+        admission,
+        process,
+        package,
+        http,
+        Default::default(),
+    )?;
+    broker.http.fixture_network(network);
+    Ok(Arc::new(broker))
+}

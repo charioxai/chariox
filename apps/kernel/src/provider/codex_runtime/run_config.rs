@@ -10,7 +10,7 @@ pub(super) fn codex_client_for_run(
     endpoint: &str,
     native_interaction_bridge: Option<Arc<dyn ProviderNativeInteractionBridge>>,
 ) -> Result<CodexClient, DaemonError> {
-    Ok(CodexClient::new(run.id(), endpoint)?
+    let client = CodexClient::new(run.id(), endpoint)?
         .with_runtime_context(Some(run.session_id()), run.agent_instance_id())
         .with_runtime_mcp_binding(run.runtime_mcp_server_url(), run.runtime_mcp_auth_token())
         .with_native_interaction_bridge(native_interaction_bridge)
@@ -18,7 +18,12 @@ pub(super) fn codex_client_for_run(
         .with_provider_config_overrides(run.provider_config_overrides())
         .with_write_access_mode(run.write_access_mode())
         .with_discovery_read_root(run.working_directory().map(std::path::PathBuf::as_path))
-        .with_workspace_live_sync_roots(run.workspace_live_sync_roots()))
+        .with_workspace_live_sync_roots(run.workspace_live_sync_roots());
+    Ok(if run.metadata_only_discovery() {
+        client.with_metadata_only_discovery()
+    } else {
+        client
+    })
 }
 
 pub(super) fn normalize_codex_model(model: &str) -> Option<String> {

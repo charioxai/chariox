@@ -1,6 +1,6 @@
 use std::fmt;
 #[cfg(unix)]
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
@@ -11,14 +11,32 @@ use crate::slice::SliceRecord;
 
 use super::{broker::docker_command, local_docker_container_name, LocalDockerSliceOptions};
 
-const SNAPSHOT_DISK_RESERVE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const ARCHIVE_OVERHEAD_BYTES: u64 = 16 * 1024 * 1024;
 const ARCHIVE_OVERHEAD_PERCENT: u64 = 5;
 const ARCHIVE_ENTRY_OVERHEAD_BYTES: u64 = 8 * 1024;
-#[cfg(unix)]
-const UNIX_DISK_ADMISSION_LOCK_PATH: &str = "/tmp/chariox-docker-disk-admission.lock";
 const WINDOWS_DISK_ADMISSION_LOCK_NAME: &str = r"Global\CharioxDockerDiskAdmission";
 static PROCESS_DISK_ADMISSION_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
+thread_local! {
+    static TEST_DISK_ADMISSION_PATH: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn with_test_disk_admission_lock_path<T>(
+    path: &Path,
+    operation: impl FnOnce() -> T,
+) -> T {
+    struct Restore(Option<PathBuf>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TEST_DISK_ADMISSION_PATH.with(|value| *value.borrow_mut() = self.0.take());
+        }
+    }
+    let previous = TEST_DISK_ADMISSION_PATH.with(|value| value.replace(Some(path.to_owned())));
+    let _restore = Restore(previous);
+    operation()
+}
 
 pub(super) struct SliceDiskAdmissionGuard {
     _process: MutexGuard<'static, ()>,
@@ -187,7 +205,7 @@ pub(super) fn validate_slice_snapshot_disk_admission(
     let capacity = SliceSnapshotDiskCapacity {
         host_available_bytes: host_available_space(&options.root)?,
         docker_available_bytes: measurement.docker_available_bytes,
-        reserve_bytes: SNAPSHOT_DISK_RESERVE_BYTES,
+        reserve_bytes: super::home_archive_capture::minimum_free_bytes(),
         shared_storage_pool: docker_and_state_share_filesystem(&options.root),
     };
     evaluate_slice_snapshot_disk_admission(capacity, demand).map_err(|error| {
@@ -333,31 +351,37 @@ fn nearest_existing_ancestor(path: &Path) -> Option<&Path> {
 
 #[cfg(unix)]
 fn acquire_disk_admission_lock() -> Result<DiskAdmissionLock, DaemonError> {
+    #[cfg(test)]
+    if let Some(path) = TEST_DISK_ADMISSION_PATH.with(|value| value.borrow().clone()) {
+        // A test may give its synthetic Docker engine a private lock file
+        // instead of the process-owned fixture lock.
+        use std::os::unix::fs::OpenOptionsExt;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&path);
+        return lock_disk_admission_file(&path, file);
+    }
     let path = disk_admission_lock_path();
-    let mut options = OpenOptions::new();
-    options.read(true).write(true).create(true).truncate(false);
-    use std::os::unix::fs::OpenOptionsExt;
-    options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    let file = options.open(&path).map_err(|error| {
+    let file = super::admission_lock::open(&path);
+    lock_disk_admission_file(&path, file)
+}
+
+#[cfg(unix)]
+fn lock_disk_admission_file(
+    path: &Path,
+    file: std::io::Result<File>,
+) -> Result<DiskAdmissionLock, DaemonError> {
+    let file = file.map_err(|error| {
         disk_measurement_error(&format!(
             "failed to open Docker disk admission lock {}: {error}",
             path.display()
         ))
     })?;
-    if !file
-        .metadata()
-        .map_err(|error| {
-            disk_measurement_error(&format!(
-                "failed to inspect Docker disk admission lock {}: {error}",
-                path.display()
-            ))
-        })?
-        .is_file()
-    {
-        return Err(disk_measurement_error(
-            "Docker disk admission lock is not a regular file",
-        ));
-    }
     FileExt::lock_exclusive(&file).map_err(|error| {
         disk_measurement_error(&format!(
             "failed to lock Docker disk admission at {}: {error}",
@@ -369,7 +393,7 @@ fn acquire_disk_admission_lock() -> Result<DiskAdmissionLock, DaemonError> {
 
 #[cfg(unix)]
 fn disk_admission_lock_path() -> PathBuf {
-    PathBuf::from(UNIX_DISK_ADMISSION_LOCK_PATH)
+    super::admission_lock::path("disk")
 }
 
 #[cfg(windows)]
@@ -378,7 +402,16 @@ fn acquire_disk_admission_lock() -> Result<DiskAdmissionLock, DaemonError> {
     use windows_sys::Win32::Foundation::{CloseHandle, WAIT_ABANDONED, WAIT_OBJECT_0};
     use windows_sys::Win32::System::Threading::{CreateMutexW, WaitForSingleObject, INFINITE};
 
+    #[cfg(not(test))]
     let name = windows_disk_admission_lock_name_wide();
+    #[cfg(test)]
+    let name: Vec<u16> = format!(
+        "Local\\CharioxDockerDiskAdmissionTest-{}",
+        std::process::id()
+    )
+    .encode_utf16()
+    .chain(std::iter::once(0))
+    .collect();
     let handle = unsafe { CreateMutexW(ptr::null(), 0, name.as_ptr()) };
     if handle.is_null() {
         return Err(disk_measurement_error(&format!(
@@ -523,6 +556,7 @@ mod tests {
 
     #[test]
     fn concurrent_slice_waiter_does_not_enter_quiescence_before_admission() {
+        crate::test_support::isolated_env_test!();
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::{mpsc, Arc};
         use std::time::Duration;

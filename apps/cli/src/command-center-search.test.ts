@@ -18,6 +18,14 @@ test("command center search ranks direct matches before aliases and caps results
   assert.equal(cappedMatches.length, 20)
 })
 
+test("command center search ranks the shorter of two equal matches first, whatever the catalog order", () => {
+  const nested = commandItem("app-publisher-cancel", "cancel", "/app publisher cancel")
+  const direct = commandItem("app-cancel", "cancel", "/app cancel ")
+
+  assert.deepEqual(filterCommandCenterItems([nested, direct], "cancel").map((item) => item.id), ["app-cancel", "app-publisher-cancel"])
+  assert.deepEqual(filterCommandCenterItems([direct, nested], "cancel").map((item) => item.id), ["app-cancel", "app-publisher-cancel"])
+})
+
 function commandItem(id: string, label: string, value: string, searchAliases: string[] = []): CommandCenterItem {
   return {
     id,

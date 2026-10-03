@@ -129,6 +129,7 @@ fn directory_tree_file_and_git_capabilities_run_through_capability_boundary() {
 
 #[test]
 fn screenshot_capability_returns_structured_unavailable_result() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     std::env::set_var("CHARIOX_SCREENSHOT_DISABLE", "1");
     let mut app =

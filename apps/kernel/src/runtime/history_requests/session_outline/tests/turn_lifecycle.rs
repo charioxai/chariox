@@ -267,6 +267,68 @@ fn outline_latest_chariox_turn_uses_hidden_prompt_settlement_timestamp() {
 }
 
 #[test]
+fn outline_chariox_turn_ignores_observer_settlement_from_an_earlier_provider_turn() {
+    let context = HistoryEventTurnContext {
+        session_id: Some("session-1".to_string()),
+        agent_id: Some("agent-1".to_string()),
+        turn_id: Some("prompt-2".to_string()),
+        prompt_id: Some("prompt-2".to_string()),
+        provider_run_id: Some("run-2".to_string()),
+        ..HistoryEventTurnContext::default()
+    };
+    let mut prompt = HistoryEvent::transcript(
+        10,
+        &SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "next task"),
+        context.clone(),
+    );
+    prompt.timestamp_ms = 100_000;
+    // The observer imports the previous provider turn's completion after the
+    // new prompt started, so it lands inside this turn's history range.
+    let mut previous_completion = SessionHistoryEntry::external_provider_observed(
+        "session-1",
+        Some("run-2"),
+        "agent-1",
+        SessionHistoryEntryKind::ProviderStatus,
+        "codex task_complete",
+        "codex",
+        "thread-1",
+        Some("task_complete-previous".to_string()),
+        Some(50_000),
+    );
+    previous_completion.external_observation =
+        Some(crate::history::SessionHistoryExternalObservation {
+            settles_active_prompt: true,
+            passive_telemetry: false,
+        });
+    let mut previous_completion =
+        HistoryEvent::transcript(11, &previous_completion, context.clone());
+    previous_completion.timestamp_ms = 50_000;
+    let mut output = HistoryEvent::transcript(
+        12,
+        &SessionHistoryEntry::provider_output(
+            "session-1",
+            "run-2",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderOutput,
+            None,
+            "still working",
+        ),
+        context,
+    );
+    output.timestamp_ms = 101_000;
+
+    let turn = outline_turn_from_events(
+        &prompt,
+        vec![prompt.clone(), previous_completion, output],
+        false,
+    )
+    .expect("running Chariox turn should be outlined");
+
+    assert_eq!(turn.lifecycle, SessionHistoryOutlineTurnLifecycle::Open);
+    assert_eq!(turn.completed_at_ms, None);
+}
+
+#[test]
 fn outline_cancelled_chariox_turn_preserves_cancelled_lifecycle() {
     let context = HistoryEventTurnContext {
         session_id: Some("session-1".to_string()),
