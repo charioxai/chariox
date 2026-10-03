@@ -231,5 +231,5 @@ overflow-owner check, and the leased storage helper's supplementary-group
 clearing handshake. The service kernel also needs `chariox-slice`; the App
 observer must keep rejecting that extra group until the handshake clears it.
 Do not widen the worker's accepted groups to make an older deployment start.
-Candidate-k includes those prerequisites; older input branches may require them
-before a signed managed-unit start can be qualified.
+Installations without the leased-helper supplementary-group clearing handshake
+must add it before a signed managed-unit start can be qualified.
