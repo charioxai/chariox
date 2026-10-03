@@ -323,16 +323,58 @@ pub(super) fn parse_notification(message: JsonRpcMessage) -> Option<CodexNotific
                 .filter(|reason| !reason.is_empty())
                 .map(str::to_string),
         }),
-        "error" => Some(CodexNotification::Error {
-            message: params
-                .get("error")
-                .and_then(|error| error.get("message"))
+        "error" => {
+            let error = params.get("error").unwrap_or(&Value::Null);
+            let message = error
+                .get("message")
                 .and_then(Value::as_str)
-                .unwrap_or("Codex reported an unknown error")
-                .to_string(),
-        }),
+                .unwrap_or("Codex reported an unknown error");
+            // A retried error is progress, not a failure; keep its text as sent.
+            let message = if params.get("willRetry").and_then(Value::as_bool) == Some(true) {
+                message.to_string()
+            } else {
+                codex_error_text(error, message)
+            };
+            Some(CodexNotification::Error { message })
+        }
         _ => None,
     }
+}
+
+/// Codex's message for a turn error, framed with its structured
+/// `codexErrorInfo` (the rollout's `codex_error_info`) when present.
+pub(crate) fn codex_error_text(error: &Value, message: &str) -> String {
+    match codex_error_info_code(error) {
+        Some(code) => crate::provider::provider_coded_failure_text("Codex", &code, message),
+        None => message.to_string(),
+    }
+}
+
+/// The code in snake case: a string variant, or the single key of an object
+/// variant such as `{"httpConnectionFailed": {"httpStatusCode": 502}}`.
+fn codex_error_info_code(error: &Value) -> Option<String> {
+    let info = error
+        .get("codexErrorInfo")
+        .or_else(|| error.get("codex_error_info"))?;
+    let variant = match info {
+        Value::String(code) => code.as_str(),
+        Value::Object(fields) if fields.len() == 1 => fields.keys().next()?.as_str(),
+        _ => return None,
+    };
+    let mut code = String::with_capacity(variant.len() + 4);
+    for ch in variant.chars() {
+        if ch.is_ascii_uppercase() {
+            if !code.is_empty() {
+                code.push('_');
+            }
+            code.push(ch.to_ascii_lowercase());
+        } else if ch.is_ascii_alphanumeric() || ch == '_' {
+            code.push(ch);
+        } else {
+            return None;
+        }
+    }
+    (!code.is_empty()).then_some(code)
 }
 
 pub(super) fn rpc_error_message(message: &JsonRpcMessage) -> Option<String> {
@@ -372,11 +414,16 @@ fn parse_turn_completed_notification(params: &Value) -> Option<CodexNotification
             .to_string(),
         error_message: turn
             .get("error")
-            .and_then(|error| error.get("message"))
-            .and_then(Value::as_str)
-            .or_else(|| turn.get("errorMessage").and_then(Value::as_str))
-            .or_else(|| turn.get("error_message").and_then(Value::as_str))
-            .map(str::to_string),
+            .and_then(|error| {
+                let message = error.get("message").and_then(Value::as_str)?;
+                Some(codex_error_text(error, message))
+            })
+            .or_else(|| {
+                turn.get("errorMessage")
+                    .or_else(|| turn.get("error_message"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            }),
         items: turn
             .get("items")
             .and_then(Value::as_array)

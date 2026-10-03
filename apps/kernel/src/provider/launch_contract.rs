@@ -476,6 +476,8 @@ pub struct LaunchProviderRequest {
     /// every serialized request shape and uses a redacted debug projection.
     #[serde(skip)]
     pub(crate) provider_credential_env: super::ProviderCredentialEnvironment,
+    #[serde(skip)]
+    pub(crate) project_environment_revision: Option<String>,
     /// Host-side preparation HOME/PATH supplied by the kernel for an
     /// environment setup discovery or validation turn. This never crosses a
     /// provider request boundary; it is applied to the fresh runtime launch.
@@ -498,23 +500,19 @@ pub struct LaunchProviderRequest {
     pub client_interface: ProviderClientInterface,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_provider_import: Option<ExternalProviderImportMetadata>,
-    /// Workflow-only capability snapshot. This is intentionally omitted from
-    /// the wire shape unless enabled; it controls whether the provider may
-    /// discover the event reply action for this run.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub workflow_event_reply_enabled: bool,
-    /// Workflow-only capability snapshot for bounded provider event context.
-    /// This is independent from reply mode: an event may permit context reads
-    /// while replies remain disabled.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub workflow_event_context_enabled: bool,
-    /// Workflow-only capability snapshot for explicitly enabled provider actions.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub workflow_event_actions_enabled: bool,
+    /// Runtime-only: this launch reruns one failed turn on an agent substitute.
+    #[serde(skip)]
+    pub(crate) turn_substitute: Option<TurnSubstitute>,
 }
 
-fn is_false(value: &bool) -> bool {
-    !*value
+/// Marks a provider run that reruns the failed turn `prompt_id` on an agent
+/// substitute. `tried` lists the substitutes this turn has run on, in order;
+/// the last is this run's. The run serves only that turn; the next turn
+/// starts on the agent's configured profile again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TurnSubstitute {
+    pub(crate) prompt_id: String,
+    pub(crate) tried: Vec<crate::agent::AgentSubstituteProfile>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -648,6 +646,7 @@ impl LaunchProviderRequest {
             provider_env_remove: Vec::new(),
             provider_account_env: BTreeMap::new(),
             provider_credential_env: super::ProviderCredentialEnvironment::default(),
+            project_environment_revision: None,
             preparation_environment: None,
             write_access_mode: ProviderWriteAccessMode::Unrestricted,
             execution_mode: None,
@@ -656,9 +655,7 @@ impl LaunchProviderRequest {
             structured_endpoint: None,
             client_interface: ProviderClientInterface::Chariox,
             external_provider_import: None,
-            workflow_event_reply_enabled: false,
-            workflow_event_context_enabled: false,
-            workflow_event_actions_enabled: false,
+            turn_substitute: None,
         }
     }
 
@@ -677,6 +674,18 @@ impl LaunchProviderRequest {
 
     pub fn with_owner_user_id(mut self, owner_user_id: impl Into<String>) -> Self {
         self.owner_user_id = owner_user_id.into();
+        self
+    }
+
+    /// Marks a launch that reruns one failed turn on a substitute. The agent's
+    /// saved provider sessions belong to its configured profile, so the
+    /// substitute starts a new session (`Some(empty)` suppresses them during
+    /// launch preparation) and receives the conversation as a context handoff.
+    pub(crate) fn with_turn_substitute(mut self, turn_substitute: Option<TurnSubstitute>) -> Self {
+        if turn_substitute.is_some() {
+            self.resume_state = Some(ProviderResumeState::default());
+        }
+        self.turn_substitute = turn_substitute;
         self
     }
 
@@ -803,23 +812,9 @@ impl LaunchProviderRequest {
         self
     }
 
-    pub fn with_workflow_event_reply(mut self, enabled: bool) -> Self {
-        self.workflow_event_reply_enabled = enabled;
-        self
-    }
-
-    pub fn with_workflow_event_context(mut self, enabled: bool) -> Self {
-        self.workflow_event_context_enabled = enabled;
-        self
-    }
-
-    pub fn with_workflow_event_actions(mut self, enabled: bool) -> Self {
-        self.workflow_event_actions_enabled = enabled;
-        self
-    }
-
     pub(crate) fn matches_existing_run_selection(&self, run: &super::RuntimeProviderRun) -> bool {
-        run.session_id() == self.session_id
+        run.project_environment_revision() == self.project_environment_revision.as_deref()
+            && run.session_id() == self.session_id
             && run.agent_instance_id() == self.agent_id.as_deref()
             && run.owner_user_id() == self.owner_user_id
             && run.adapter_key() == self.adapter_key

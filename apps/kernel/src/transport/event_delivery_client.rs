@@ -59,10 +59,7 @@ struct DeliveryAcceptanceQueue {
 impl DeliveryAcceptanceQueue {
     fn new(runtime_state: KernelRuntimeState) -> Self {
         Self::with_acceptor(Arc::new(move |delivery| {
-            runtime_state
-                .accept_workflow_event_delivery(delivery)
-                .map(|_| ())
-                .map_err(|error| error.to_string())
+            runtime_state.accept_event_delivery(delivery)
         }))
     }
 
@@ -117,9 +114,7 @@ pub(crate) fn event_delivery_status(
         aeds_url: config.event_delivery_url.clone(),
         last_connected_at_ms: health.last_connected_at_ms,
         last_error: health.last_error,
-        active_route_count: runtime_state
-            .active_event_route_claims(&config.daemon_id)
-            .len(),
+        active_route_count: runtime_state.active_app_route_count(),
     }
 }
 
@@ -230,7 +225,7 @@ async fn connect_once(
         .map_err(|error| format!("failed to connect to AEDS: {error}"))?;
     let (mut sink, mut stream) = websocket.split();
     let mut environments =
-        runtime_state.event_delivery_resumes(&config.kernel_id, &config.environment_id);
+        runtime_state.event_delivery_resumes(&config.kernel_id, &config.environment_id)?;
     let mut route_signature =
         serde_json::to_string(&environments).map_err(|error| error.to_string())?;
     send(
@@ -390,10 +385,22 @@ async fn connect_once(
                 }
             }
             _ = reconciliation.tick() => {
-                environments = runtime_state.event_delivery_resumes(
+                // A failed read skips this round; the last claims stay.
+                let next = match runtime_state.event_delivery_resumes(
                     &config.kernel_id,
                     &config.environment_id,
-                );
+                ) {
+                    Ok(next) => next,
+                    Err(error) => {
+                        crate::logging::warn_with_fields(
+                            "daemon.event_delivery",
+                            "event route reconciliation skipped",
+                            serde_json::json!({"error": error}),
+                        );
+                        continue;
+                    }
+                };
+                environments = next;
                 let next_signature =
                     serde_json::to_string(&environments).map_err(|error| error.to_string())?;
                 if next_signature != route_signature {
@@ -430,41 +437,44 @@ async fn reconcile_aegs_subscriptions(
     config: &EventDeliveryClientConfig,
 ) -> Result<(), String> {
     let mut generator_management_targets = config.generator_management_targets.clone();
-    let generator_ids = runtime_state
-        .event_generator_subscription_claims()
-        .keys()
-        .cloned()
-        .collect::<Vec<_>>();
-    for generator_id in generator_ids {
+    let mut claims = runtime_state.event_generator_subscription_claims()?;
+    // Each generator reconciles on its own: one that is down, unresolvable, or
+    // refuses must not keep the others from receiving their subscriptions.
+    let mut failures = Vec::new();
+    for generator_id in claims.keys() {
         let current_config = config.config_projection.snapshot();
         let request = crate::local::LocalDaemonRequest::ListEventConnections(
             crate::local::ListEventConnectionsRequest {
-                generator_id: Some(generator_id),
+                generator_id: Some(generator_id.clone()),
                 cursor: None,
                 limit: 1,
             },
         );
-        let targets =
-            crate::runtime::event_catalog_control::resolve_event_generator_management_targets(
-                runtime_state,
-                &config.config_projection,
-                &current_config,
-                current_config
-                    .cloud_relay
-                    .as_ref()
-                    .map(|profile| profile.user_id.as_str())
-                    .unwrap_or("kernel"),
-                &request,
-            )
-            .await
-            .map_err(|error| error.to_string())?;
-        generator_management_targets.extend(targets);
+        match crate::runtime::event_catalog_control::resolve_event_generator_management_targets(
+            runtime_state,
+            &config.config_projection,
+            &current_config,
+            current_config
+                .cloud_relay
+                .as_ref()
+                .map(|profile| profile.user_id.as_str())
+                .unwrap_or("kernel"),
+            &request,
+        )
+        .await
+        {
+            Ok(targets) => generator_management_targets.extend(targets),
+            Err(error) => failures.push(format!("{generator_id}: {error}")),
+        }
     }
     if generator_management_targets.is_empty() {
-        return Ok(());
+        return if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures.join("; "))
+        };
     }
     let kernel_owner_id = config.kernel_id.clone();
-    let mut claims = runtime_state.event_generator_subscription_claims();
     for generator_id in generator_management_targets.keys() {
         let request = chariox_event_protocol::AegsSubscriptionReconcileRequest {
             owner_id: config.kernel_id.clone(),
@@ -472,15 +482,20 @@ async fn reconcile_aegs_subscriptions(
             subscriptions: claims.remove(generator_id).unwrap_or_default(),
         };
         let target =
-            crate::runtime::event_catalog_control::select_event_generator_management_target(
+            match crate::runtime::event_catalog_control::select_event_generator_management_target(
                 &generator_management_targets,
                 generator_id,
                 &request.owner_id,
-            )
-            .map_err(|error| error.to_string())?;
+            ) {
+                Ok(target) => target,
+                Err(error) => {
+                    failures.push(error.to_string());
+                    continue;
+                }
+            };
         let generator_id = generator_id.clone();
         let kernel_owner_id = kernel_owner_id.clone();
-        tokio::task::spawn_blocking(move || {
+        let result = tokio::task::spawn_blocking(move || {
             let url = format!("{}/v1/subscriptions/reconcile", target.url);
             let encoded = serde_json::to_string(&request).map_err(|error| error.to_string())?;
             let response =
@@ -509,9 +524,17 @@ async fn reconcile_aegs_subscriptions(
             Ok::<(), String>(())
         })
         .await
-        .map_err(|error| error.to_string())??;
+        .map_err(|error| error.to_string())
+        .and_then(|result| result);
+        if let Err(error) = result {
+            failures.push(error);
+        }
     }
-    Ok(())
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
 }
 
 fn record_connected() {
@@ -860,6 +883,122 @@ mod tests {
         server.await.expect("heartbeat fixture should complete");
         shutdown_tx.send(true).expect("stop connector");
         connector.await.expect("join connector");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unreachable_generator_does_not_block_another_generators_subscriptions() {
+        use std::io::{Read, Write};
+        // A generator that answers every reconcile authoritatively.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let received = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let server_received = received.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().take(4) {
+                let mut stream = stream.unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0u8; 8192];
+                loop {
+                    let count = stream.read(&mut buffer).unwrap_or(0);
+                    request.extend_from_slice(&buffer[..count]);
+                    let text = String::from_utf8_lossy(&request);
+                    if count == 0
+                        || text.split_once("\r\n\r\n").is_some_and(|(head, body)| {
+                            head.lines()
+                                .find_map(|line| line.strip_prefix("content-length: "))
+                                .or_else(|| {
+                                    head.lines()
+                                        .find_map(|line| line.strip_prefix("Content-Length: "))
+                                })
+                                .and_then(|length| length.trim().parse::<usize>().ok())
+                                .is_some_and(|length| body.len() >= length)
+                        })
+                    {
+                        break;
+                    }
+                }
+                server_received
+                    .lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&request).into_owned());
+                let body = r#"{"accepted_binding_ids":[],"authoritative":true}"#;
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        let target = |url: String| crate::config::EventGeneratorManagementTarget {
+            url,
+            token: "token".into(),
+            expires_at_ms: None,
+            owner_ids: None,
+            owner_scoped: None,
+        };
+        let targets = BTreeMap::from([
+            (
+                "dev.chariox.down".to_string(),
+                target("http://127.0.0.1:1".into()),
+            ),
+            (
+                "dev.chariox.up".to_string(),
+                target(format!("http://{address}")),
+            ),
+        ]);
+        let mut daemon_config = crate::config::DaemonConfig::for_tests();
+        daemon_config.event_generator_management_targets = targets.clone();
+        let app = crate::app::DaemonApp::bootstrap(daemon_config.clone())
+            .expect("test daemon should bootstrap");
+        let store = app.durable_state_store();
+        let runtime_state = runtime_state_from_app(app);
+        rusqlite::Connection::open(store.path())
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO app_installations(installation_id,app_id,owner_id,generation,allocated_generation,active_json)
+                 VALUES('app','dev.chariox.app','local',1,1,'{}')",
+            )
+            .unwrap();
+        for generator_id in ["dev.chariox.down", "dev.chariox.up"] {
+            store
+                .app_inbox(
+                    crate::durable_state::app_inbox::AppInboxOperation::CreateRoute {
+                        route: chariox_app_runtime::app_inbox::InboxRoute {
+                            route_id: format!("route-{generator_id}"),
+                            owner_id: "local".into(),
+                            installation_id: "app".into(),
+                            event_name: "received".into(),
+                            source_event_type: "thing.happened".into(),
+                            source_event_version: 1,
+                            active: true,
+                            source: Some(chariox_app_runtime::app_inbox::InboxSource {
+                                generator_id: generator_id.into(),
+                                connection_id: "connection-1".into(),
+                                connection_scope: "scope".into(),
+                                filter_json: "null".into(),
+                            }),
+                        },
+                        now_ms: 1,
+                    },
+                )
+                .unwrap();
+        }
+        let config = EventDeliveryClientConfig {
+            url: None,
+            token: None,
+            kernel_id: "kernel-test".to_string(),
+            environment_id: "environment-test".to_string(),
+            generator_management_targets: targets,
+            config_projection: DaemonConfigProjectionStore::new(daemon_config),
+        };
+        let error = reconcile_aegs_subscriptions(&runtime_state, &config)
+            .await
+            .expect_err("the unreachable generator is reported");
+        assert!(error.contains("dev.chariox.down"), "{error}");
+        let received = received.lock().unwrap();
+        assert_eq!(received.len(), 1, "the reachable generator was reconciled");
+        assert!(received[0].starts_with("PUT /v1/subscriptions/reconcile"));
+        assert!(received[0].contains("dev.chariox.up") && received[0].contains("thing.happened"));
     }
 
     fn runtime_state_from_app(app: crate::app::DaemonApp) -> KernelRuntimeState {

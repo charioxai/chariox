@@ -1,5 +1,7 @@
 use super::*;
+use crate::provider::claude_runtime::apply_claude_turn_stall_policy;
 use crate::provider::claude_runtime::{drain_claude_events, process::ClaudeRuntimeMessage};
+use std::time::{Duration, Instant};
 
 fn drain(messages: Vec<serde_json::Value>) -> ProviderPromptSignalBatch {
     let (mut state, _) = parser_state();
@@ -105,4 +107,50 @@ fn claude_handler_bounds_unsupported_rejection_written_to_provider() {
         .iter()
         .any(|notice| notice.contains("truncated to resource limits")));
     assert!(batch.chunks.is_empty());
+}
+
+#[test]
+fn quiet_active_claude_tool_survives_the_native_stall_guard() {
+    let (mut state, mut batch) = parser_state();
+    let run = RuntimeProviderRun::new(
+        "quiet-tool-run",
+        &LaunchProviderRequest::new(
+            "quiet-tool-session",
+            "claude",
+            "claude",
+            "default",
+            "sonnet",
+        ),
+        ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "quiet-tool-fixture".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: Default::default(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("quiet-tool-fixture".to_string()),
+        },
+    );
+    let stale = Instant::now() - Duration::from_secs(61);
+    state.turn_watchdog.begin(stale);
+    state.turn_watchdog.record_runtime_message(stale);
+    handle_claude_tool_uses(run.id(), &mut state,
+        &json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"quiet-bash","name":"Bash","input":{"command":"sleep 70"}}]}}),
+        &mut batch).unwrap();
+    apply_claude_turn_stall_policy(&run, &mut state, &mut batch).unwrap();
+    assert!(
+        batch.terminal_failure.is_none(),
+        "an active quiet tool is still owned work, not a stalled provider turn"
+    );
+    assert!(!batch.prompt_completed);
+    handle_claude_tool_uses(run.id(), &mut state,
+        &json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"quiet-bash","content":""}]}}),
+        &mut batch).unwrap();
+    apply_claude_turn_stall_policy(&run, &mut state, &mut batch).unwrap();
+    assert!(
+        batch.terminal_failure.is_some(),
+        "the guard remains active after the tool has settled"
+    );
 }

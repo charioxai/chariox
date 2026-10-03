@@ -12,6 +12,7 @@ fn temp_root(name: &str) -> PathBuf {
 
 #[test]
 fn managed_user_isolation_preserves_repository_scoped_mcps() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let isolation_root = temp_root("managed-slice-isolation");
     std::env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", &isolation_root);

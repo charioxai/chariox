@@ -1,0 +1,7 @@
+:root { color-scheme: light dark; font: 16px/1.5 system-ui, sans-serif; }
+body { margin: 0; }
+main { max-width: 42rem; margin: auto; padding: 2rem; }
+#campaign-body { white-space: pre-wrap; }
+#status { color: GrayText; }
+label { display: block; margin-top: 2rem; }
+textarea { box-sizing: border-box; width: 100%; font: inherit; padding: .75rem; }

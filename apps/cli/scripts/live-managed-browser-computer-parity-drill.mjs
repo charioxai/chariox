@@ -357,6 +357,13 @@ export async function runManagedBrowserComputerParityLive({
     if (watchdogInFlight) await watchdogInFlight
   }
 
+  if (typeof inspector?.setBeforeMachineDelete === "function") {
+    inspector.setBeforeMachineDelete(async ({ signal: retirementSignal }) => {
+      await stopWatchdog()
+      return capture("before-delete", { signal: retirementSignal })
+    })
+  }
+
   const faultGuard = await runBrowserComputerFaultGuard({
     faultAt: requestedFaultAt,
     now,
@@ -411,7 +418,10 @@ export async function runManagedBrowserComputerParityLive({
         }
       } finally {
         try {
-          await capture("after")
+          const retirement = inspector?.getMachineRetirementEvidence?.()
+          if (retirement?.kind !== "run_owned_machine_deleted"
+            || retirement.providerAbsence?.authority !== "hetzner-api"
+            || retirement.providerAbsence?.httpStatus !== 404) await capture("after")
         } finally {
           activeCheckpoint = null
         }
@@ -430,8 +440,12 @@ export async function runManagedBrowserComputerParityLive({
     },
   })
 
+  const machineRetirement = inspector?.getMachineRetirementEvidence?.() ?? null
   const resourceEvaluation = evaluateBrowserComputerResourceCaps(samples, normalizedCaps, {
     additionalSamples: watchdogSamples,
+    terminalPhase: machineRetirement?.kind === "run_owned_machine_deleted"
+      && machineRetirement.providerAbsence?.authority === "hetzner-api"
+      && machineRetirement.providerAbsence?.httpStatus === 404 ? "before-delete" : "after",
   })
   const placementFailure = report?.status === "passed" && placementEvaluation?.ok !== true
   const failed = faultGuard.status !== "passed"
@@ -483,6 +497,7 @@ export async function runManagedBrowserComputerParityLive({
       fault: faultGuard,
       resourcePreflight,
       resourceSamples: samples,
+      machineRetirement,
       watchdogSamples,
       watchdog: {
         intervalMs: watchdogIntervalMs,
@@ -540,6 +555,17 @@ function evaluateManagedParityPlacement(report, expected) {
     && proofs.every((proof) => proof.tabId === proofs[0].tabId)
   if (browser && computer && browser.actionId === computer.actionId) {
     violations.push("browser_computer_action_identity_reused")
+  }
+  if (browser && computer && browser.actorId !== computer.actorId) {
+    violations.push("browser_computer_actor_mismatch")
+  }
+  if (Object.hasOwn(expected, "actorId")) {
+    if (typeof expected.actorId !== "string" || !/^agent:.+/.test(expected.actorId)) {
+      violations.push("expected_actor_invalid")
+    } else {
+      if (browser && browser.actorId !== expected.actorId) violations.push("browser_action_actor_mismatch")
+      if (computer && computer.actorId !== expected.actorId) violations.push("computer_action_actor_mismatch")
+    }
   }
   if (proofs.length === 3 && new Set(proofs.map((proof) => proof.environmentId)).size !== 1) {
     violations.push("browser_computer_web_view_environment_mismatch")
@@ -686,6 +712,7 @@ async function main() {
   let incompleteRunDir = null
   let incompleteEvidenceManifestPath = null
   let transport = null
+  let inspector = null
   const interruption = new AbortController()
   const interrupt = () => interruption.abort()
   process.once("SIGINT", interrupt)
@@ -720,7 +747,7 @@ async function main() {
       signal: interruption.signal,
       config,
     })
-    const inspector = await importedInspector.createManagedBrowserComputerParityInspector({
+    inspector = await importedInspector.createManagedBrowserComputerParityInspector({
       evidenceRoot: runDir,
       runId: config.runId,
       config,
@@ -764,6 +791,7 @@ async function main() {
     process.stderr.write("managed browser/computer parity harness failed before producing validated evidence\n")
     process.exitCode = 1
   } finally {
+    await inspector?.close?.().catch(() => {})
     await transport?.close?.().catch(() => {})
     process.removeListener("SIGINT", interrupt)
     process.removeListener("SIGTERM", interrupt)

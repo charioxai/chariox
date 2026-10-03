@@ -195,10 +195,15 @@ async fn structured_terminal_failure_settles_and_persists_single_provider_error(
         .iter()
         .filter(|record| record.kind == crate::terminal::TerminalOutputKind::ProviderError)
         .collect::<Vec<_>>();
-    assert_eq!(provider_errors.len(), 1);
+    // The provider error once, then the failed turn's "not carried out" entry.
+    assert_eq!(provider_errors.len(), 2);
     assert_eq!(
         String::from_utf8_lossy(&provider_errors[0].bytes),
         "Provider prompt dispatch failed: Unsupported parameter: 'reasoning.summary' is not supported with the 'gpt-5.3-codex-spark' model."
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&provider_errors[1].bytes),
+        "Request not carried out: Unsupported parameter: 'reasoning.summary' is not supported with the 'gpt-5.3-codex-spark' model. It was dropped; send it again to retry."
     );
     let durable_errors = runtime
         .owned
@@ -656,8 +661,23 @@ async fn structured_submit_resume_failure_clears_agent_and_session_state() {
     connection
         .execute_batch("DROP TRIGGER fail_resume_clear_append;")
         .expect("resume clear failure trigger should be removed");
-    tokio::time::sleep(std::time::Duration::from_millis(125)).await;
-    runtime.owned.reap_structured_prompt_jobs();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            runtime.owned.reap_structured_prompt_jobs();
+            if runtime
+                .owned
+                .session_snapshot(session.id())
+                .unwrap()
+                .active_provider_run_id()
+                .is_none()
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("resume invalidation retry should become durable");
 
     let session_state = runtime
         .owned
@@ -832,8 +852,25 @@ async fn structured_prompt_acknowledgement_retries_until_profile_and_delivery_ar
              END;",
         )
         .expect("delivery failure trigger should install");
-    tokio::time::sleep(std::time::Duration::from_millis(125)).await;
-    runtime.owned.reap_structured_prompt_jobs();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            runtime.owned.reap_structured_prompt_jobs();
+            if runtime
+                .owned
+                .agent_store
+                .get_agent(agent.id())
+                .unwrap()
+                .provider_resume_state()
+                .codex_thread_id()
+                == Some("codex-thread-acknowledged")
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("acknowledgement profile retry should become durable");
     connection
         .execute_batch("DROP TRIGGER fail_ack_delivery_append;")
         .expect("delivery failure trigger should be removed");
@@ -859,8 +896,25 @@ async fn structured_prompt_acknowledgement_retries_until_profile_and_delivery_ar
         Some("codex-thread-acknowledged"),
     );
 
-    tokio::time::sleep(std::time::Duration::from_millis(225)).await;
-    runtime.owned.reap_structured_prompt_jobs();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            runtime.owned.reap_structured_prompt_jobs();
+            if runtime
+                .owned
+                .session_snapshot(session.id())
+                .unwrap()
+                .active_prompt_for_agent(agent.id())
+                .unwrap()
+                .durable_delivery_phase()
+                == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("acknowledgement delivery retry should become durable");
 
     let active_prompt = runtime
         .owned

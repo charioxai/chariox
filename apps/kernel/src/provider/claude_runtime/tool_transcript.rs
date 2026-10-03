@@ -109,6 +109,10 @@ impl PendingTool {
 }
 
 impl ClaudeToolTranscript {
+    pub(super) fn has_pending_tools(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
     pub(super) fn observe(&mut self, value: &Value) -> Vec<Value> {
         self.unsupported_results.clear();
         let kind = value.get("type").and_then(Value::as_str);

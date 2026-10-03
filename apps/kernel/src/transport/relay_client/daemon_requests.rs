@@ -1,5 +1,8 @@
 //! Inbound browser/client relay request dispatch to the kernel command router.
 
+#[cfg(test)]
+mod app_tests;
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -24,7 +27,7 @@ use super::sender_identity::{
     validate_browser_import_sender,
 };
 
-const MAX_BROWSER_IMPORT_ENCRYPTED_BYTES: usize = 768 * 1024;
+pub(super) const MAX_BROWSER_IMPORT_ENCRYPTED_BYTES: usize = 768 * 1024;
 const MAX_ACTIVE_BROWSER_IMPORT_DELIVERIES: usize = 32;
 static ACTIVE_BROWSER_IMPORT_DELIVERIES: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
@@ -105,6 +108,13 @@ pub(super) async fn handle_daemon_request(
     };
     let (request_kind, command_id, bind_import_response, result) = match message {
         ParsedRelayClientMessage::Request(request) => {
+            if let Err(error) = validate_cli_relay_sender_key(&request.request, &client_public_key)
+            {
+                return RelayRequestOutcome {
+                    encrypted_response: None,
+                    error: Some(error),
+                };
+            }
             if let Err(error) = validate_browser_import_sender(
                 &request.request,
                 caller_identity.as_ref(),
@@ -291,6 +301,92 @@ pub(super) async fn handle_daemon_request(
     }
 }
 
+fn validate_cli_relay_sender_key(
+    request: &LocalDaemonRequest,
+    encrypted_sender_public_key: &str,
+) -> Result<(), RelayError> {
+    let claimed_thumbprint = match request {
+        LocalDaemonRequest::JoinTerminalPairingLink(request) => {
+            request.public_key_thumbprint.as_deref()
+        }
+        LocalDaemonRequest::IssueCloudRelayClientToken(request) => {
+            request.public_key_thumbprint.as_deref()
+        }
+        _ => return Ok(()),
+    };
+    let Some(claimed_thumbprint) = claimed_thumbprint else {
+        // Legacy pairing and unbound client-token requests retain non-viewer behavior.
+        return Ok(());
+    };
+    let sender_thumbprint =
+        crate::runtime::terminal_pairings::public_key_thumbprint(encrypted_sender_public_key);
+    if claimed_thumbprint == sender_thumbprint {
+        return Ok(());
+    }
+    Err(relay_error(
+        "unauthorized",
+        "CLI relay key thumbprint does not match its encrypted relay sender key",
+        false,
+    ))
+}
+
+#[cfg(test)]
+mod cli_relay_sender_tests {
+    use super::*;
+
+    #[test]
+    fn terminal_pairing_join_requires_proof_of_the_claimed_cli_key() {
+        let sender_public_key = "Y2xpLXB1YmxpYy1rZXk=";
+        let thumbprint =
+            crate::runtime::terminal_pairings::public_key_thumbprint(sender_public_key);
+        let request = LocalDaemonRequest::JoinTerminalPairingLink(
+            crate::local::JoinTerminalPairingLinkRequest {
+                pairing_link: "chariox-terminal-pair-v1.test".to_string(),
+                terminal_id: Some("cli-terminal-1".to_string()),
+                terminal_type: Some(crate::local::TerminalType::Cli),
+                alias: None,
+                public_key_thumbprint: Some(thumbprint),
+            },
+        );
+
+        assert!(validate_cli_relay_sender_key(&request, sender_public_key).is_ok());
+        assert!(validate_cli_relay_sender_key(&request, "foreign-public-key").is_err());
+    }
+
+    #[test]
+    fn key_bound_client_token_request_requires_the_encrypted_cli_key() {
+        let sender_public_key = "Y2xpLXB1YmxpYy1rZXk=";
+        let thumbprint =
+            crate::runtime::terminal_pairings::public_key_thumbprint(sender_public_key);
+        let request = LocalDaemonRequest::IssueCloudRelayClientToken(
+            crate::local::IssueCloudRelayClientTokenRequest {
+                target_daemon_alias: "home".to_string(),
+                client_id: "cli-terminal-1".to_string(),
+                session_id: None,
+                public_key_thumbprint: Some(thumbprint),
+            },
+        );
+
+        assert!(validate_cli_relay_sender_key(&request, sender_public_key).is_ok());
+        assert!(validate_cli_relay_sender_key(&request, "foreign-public-key").is_err());
+    }
+
+    #[test]
+    fn legacy_terminal_pairing_join_without_thumbprint_remains_non_viewer_compatible() {
+        let request = LocalDaemonRequest::JoinTerminalPairingLink(
+            crate::local::JoinTerminalPairingLinkRequest {
+                pairing_link: "chariox-terminal-pair-v1.test".to_string(),
+                terminal_id: Some("cli-terminal-1".to_string()),
+                terminal_type: Some(crate::local::TerminalType::Cli),
+                alias: None,
+                public_key_thumbprint: None,
+            },
+        );
+
+        assert!(validate_cli_relay_sender_key(&request, "any-key").is_ok());
+    }
+}
+
 #[derive(Debug)]
 enum ParsedRelayClientMessage {
     Request(ParsedRelayClientRequest),
@@ -380,7 +476,9 @@ async fn dispatch_relay_client_request(
         {
             CommandReservation::Wait(wait_rx) => {
                 return match wait_rx.await {
-                    Ok(cached) => cached_relay_dispatch_outcome(cached.response, cached.error),
+                    Ok(cached) => {
+                        cached_relay_dispatch_outcome(cached.response_value(), cached.error)
+                    }
                     Err(_) => RelayDispatchOutcome::RelayError(relay_error(
                         "duplicate_command_unavailable",
                         "original duplicate command result was unavailable",
@@ -456,6 +554,28 @@ mod tests {
     use crate::agent::{AgentInstance, GridPosition, RemoteAgentBinding};
     use crate::local::LocalDaemonResponse;
     use base64::Engine;
+
+    #[test]
+    fn the_largest_app_file_answer_fits_one_relayed_request() {
+        use crate::durable_state::app_file_grants::{MAX_FILES, MAX_TOTAL_BYTES};
+        let share = MAX_TOTAL_BYTES / MAX_FILES;
+        let files = (0..MAX_FILES)
+            .map(|index| crate::local::AppFileContents {
+                name: format!("{index}{}", "n".repeat(254)),
+                contents_base64: base64::engine::general_purpose::STANDARD.encode(vec![0u8; share]),
+            })
+            .collect();
+        let request =
+            crate::local::LocalDaemonRequest::GrantAppFile(crate::local::GrantAppFileRequest {
+                session_id: "s".repeat(128),
+                operation_id: "o".repeat(128),
+                files,
+            });
+        let plaintext =
+            serde_json::json!({ "command_id": "c".repeat(128), "request": request }).to_string();
+        // AES-GCM adds a 16-byte tag to the plaintext.
+        assert!(plaintext.len() + 16 <= super::MAX_BROWSER_IMPORT_ENCRYPTED_BYTES);
+    }
 
     #[test]
     fn pre_reimage_observation_uses_the_normal_encrypted_daemon_request_envelope() {

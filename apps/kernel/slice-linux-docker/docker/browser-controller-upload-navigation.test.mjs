@@ -64,6 +64,7 @@ function uploadFixture(scope, boundary) {
     calls,
     upload: () => withBrowserActionFrame({ connection, sessionId: "page-session", targetId: "page",
       documentId: "page-document", nodeRef: scope === "page" ? "backend:1" : "frame:child:child-document:backend:1",
-      filePaths: ["/uploads/report.txt"], uploadRoots: ["/uploads"], fileSystem }, uploadBrowserFiles),
+      filePaths: ["/uploads/report.txt"], uploadRoots: ["/uploads"], fileSystem,
+      stageUploads: async ({ files }) => ({ files, markExposed() {}, async discard() {} }) }, uploadBrowserFiles),
   };
 }

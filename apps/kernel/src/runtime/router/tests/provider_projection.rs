@@ -95,18 +95,16 @@ fn provider_batch_launch_accepts_multiple_agents_with_one_kernel_request() {
 }
 
 async fn provider_batch_launch_accepts_multiple_agents_with_one_kernel_request_inner() {
+    let worktree = crate::test_support::TestWorktree::new("provider-batch-multiple-agents");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, first_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-batch",
-            "worktree-batch",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let second_agent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
                 .with_alias("batch-launch-agent")
-                .with_worktree("worktree-batch"),
+                .with_worktree(worktree.path().display().to_string()),
         )
         .expect("second agent should be created");
     let session_id = session.id().to_string();
@@ -158,7 +156,7 @@ async fn provider_batch_launch_accepts_multiple_agents_with_one_kernel_request_i
     else {
         panic!("unexpected launch response");
     };
-    assert!(failures.is_empty());
+    assert!(failures.is_empty(), "{failures:?}");
     assert_eq!(provider_runs.len(), 2);
     assert_eq!(
         provider_runs[0].agent_id.as_deref(),
@@ -354,18 +352,14 @@ fn provider_batch_launch_accepts_mixed_sessions_with_one_kernel_request() {
 }
 
 async fn provider_batch_launch_accepts_mixed_sessions_with_one_kernel_request_inner() {
+    let first_worktree = crate::test_support::TestWorktree::new("provider-batch-mixed-1");
+    let second_worktree = crate::test_support::TestWorktree::new("provider-batch-mixed-2");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (first_session, first_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-batch-mixed-1",
-            "worktree-batch-mixed-1",
-        ))
+        .create_session(first_worktree.session_request())
         .expect("first session should be created");
     let (second_session, second_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-batch-mixed-2",
-            "worktree-batch-mixed-2",
-        ))
+        .create_session(second_worktree.session_request())
         .expect("second session should be created");
     let first_session_id = first_session.id().to_string();
     let second_session_id = second_session.id().to_string();
@@ -421,7 +415,7 @@ async fn provider_batch_launch_accepts_mixed_sessions_with_one_kernel_request_in
     else {
         panic!("unexpected launch response");
     };
-    assert!(failures.is_empty());
+    assert!(failures.is_empty(), "{failures:?}");
     assert_eq!(provider_runs.len(), 2);
     assert_eq!(provider_runs[0].index, 0);
     assert_eq!(provider_runs[1].index, 1);
@@ -461,9 +455,10 @@ fn get_provider_run_uses_warmed_projection_without_app_lock() {
 }
 
 async fn get_provider_run_uses_warmed_projection_without_app_lock_inner() {
+    let worktree = crate::test_support::TestWorktree::new("get-provider-run-uses");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let session_id = session.id().to_string();
     let agent_id = agent.id().to_string();
@@ -567,11 +562,12 @@ fn provider_run_projection_tracks_async_launch_completion() {
 }
 
 async fn provider_run_projection_tracks_async_launch_completion_inner() {
+    let worktree = crate::test_support::TestWorktree::new("provider-run-projection-tracks");
     let mut config = DaemonConfig::for_tests();
     config.provider_runtime_init_delay_ms = 25;
     let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let session_id = session.id().to_string();
     let agent_id = agent.id().to_string();

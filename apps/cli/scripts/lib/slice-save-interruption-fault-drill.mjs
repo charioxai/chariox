@@ -35,7 +35,7 @@ export function buildSliceSaveInterruptionCargoArgs() {
 export function parseSliceSaveInterruptionProbe(output) {
   const line = String(output ?? "")
     .split("\n")
-    .map((candidate) => candidate.trim())
+    .map((candidate) => candidate.trim().replace(/^test \S+ \.\.\. /, ""))
     .findLast((candidate) => candidate.startsWith(PROBE_PREFIX))
   if (!line) throw new Error(`slice save interruption output is missing ${PROBE_SCHEMA}`)
 

@@ -29,9 +29,11 @@ mod opencode_runtime;
 mod process_info;
 mod prompt_signals;
 mod registry;
+pub(crate) mod renewal_failure;
 mod run_actor;
 mod runtime_run;
 mod service;
+pub(crate) mod startup_diagnostic;
 mod termination;
 mod types;
 mod workspace_live_sync_policy;
@@ -40,14 +42,21 @@ mod workspace_write_fence;
 #[cfg(test)]
 pub(crate) use account_credential::provider_account_credential_id;
 pub(crate) use account_credential::{
+    launch_uses_vault_credential, provider_account_credential_registered,
     provider_account_credential_uses_vault, resolve_provider_account_credentials,
     resolve_provider_account_credentials_for_launch, store_provider_account_credential,
     validate_provider_account_credential_input, CLAUDE_OAUTH_TOKEN_ENV,
 };
-pub(crate) use claude::ensure_claude_native_hidden_context_fits;
 pub(crate) use claude::probe_claude_account_usage;
 pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
+pub(crate) use claude::{
+    ensure_claude_native_hidden_context_fits, CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS,
+    CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
+};
+#[cfg(test)]
+pub(crate) use claude_runtime::claude_runtime_tool_wait_pending;
 pub(crate) use claude_runtime::ClaudeRuntimeState;
+pub(crate) use claude_runtime::{begin_claude_runtime_tool_wait, ClaudeRuntimeToolWait};
 #[cfg(test)]
 pub(crate) use claude_runtime::{
     drain_claude_events, initialize_claude_runtime, submit_claude_prompt,
@@ -74,6 +83,7 @@ pub(crate) use external_observation::{
     observed_role, text_from_content, ExternalProviderObservationPolicy,
     ObservedExternalProviderTurn, ObservedExternalProviderTurnRole,
 };
+pub(crate) use launch_contract::TurnSubstitute;
 pub use launch_contract::{
     canonical_external_provider_session_id, canonical_profile_external_provider_session_id,
     default_provider_control_capabilities, external_provider_import_model,
@@ -114,7 +124,8 @@ pub use opencode_client::{
 pub use process_info::{ProviderProcessInfo, ProviderProcessStatus};
 pub(crate) use prompt_signals::{
     classify_provider_substitutable_failure_text, classify_provider_terminal_failure_output_text,
-    classify_provider_terminal_failure_text, claude_native_stop_failure, provider_retry_status,
+    classify_provider_terminal_failure_text, claude_native_stop_failure,
+    provider_coded_failure_text, provider_retry_status, provider_turn_failure_reason,
     PROVIDER_CONNECTION_RETRY_MERGE_KEY,
 };
 pub use prompt_signals::{
@@ -133,7 +144,9 @@ pub(crate) use runtime_run::{
 pub use runtime_run::{ProviderRunTokenUsage, RuntimeProviderRun};
 pub use service::{ProviderProcessService, ProviderProcessServiceStore};
 pub(crate) use service::{ProviderRunLivenessReconciliation, ProviderRuntimeBinding};
-pub(crate) use termination::{provider_launch_failure_diagnostic, sanitize_provider_diagnostic};
+pub(crate) use termination::{
+    provider_launch_failure_diagnostic, redact_provider_diagnostic, sanitize_provider_diagnostic,
+};
 pub use termination::{ProviderRunTermination, ProviderRunTerminationCategory};
 pub(crate) use types::provider_workspace_live_sync_mode_for_session;
 pub use types::{
@@ -178,6 +191,17 @@ pub(crate) fn provider_run_uses_claude_native_bridge(run: &RuntimeProviderRun) -
         && (!run.client_interface().is_chariox() || provider_run_is_claude_headless(run))
 }
 
+/// Claude `-p` runs in Build mode with the `Required` level route tool
+/// approvals through the runtime MCP `chariox.permission_prompt` tool, as
+/// their launch flags say; native TUI runs use the hook instead. Other runs
+/// neither list nor answer it.
+pub(crate) fn provider_run_uses_claude_permission_prompt_tool(run: &RuntimeProviderRun) -> bool {
+    run.adapter_key() == "claude"
+        && provider_run_uses_structured_prompt_io(run)
+        && run.execution_mode() == AgentExecutionMode::Build
+        && run.permission_level() == AgentPermissionLevel::Required
+}
+
 pub(crate) fn provider_run_uses_structured_prompt_io(run: &RuntimeProviderRun) -> bool {
     run.adapter_key() == "codex"
         || (run.adapter_key() == "claude"
@@ -185,6 +209,14 @@ pub(crate) fn provider_run_uses_structured_prompt_io(run: &RuntimeProviderRun) -
             && !provider_run_uses_claude_native_bridge(run))
         || run.adapter_key() == "opencode"
         || (run.adapter_key() == "dev-stub" && run.provider() == "slow-structured")
+}
+
+pub(crate) fn provider_run_requires_authoritative_turn_completion(
+    run: &RuntimeProviderRun,
+) -> bool {
+    ProviderRegistry::new()
+        .resolve(run.adapter_key())
+        .is_some_and(|adapter| adapter.requires_authoritative_turn_completion())
 }
 
 pub(crate) fn provider_run_supports_selection_sync(run: &RuntimeProviderRun) -> bool {
@@ -199,6 +231,13 @@ pub(crate) fn provider_run_waits_for_workflow_publication_completion(
     run: &RuntimeProviderRun,
 ) -> bool {
     matches!(run.adapter_key(), "codex" | "claude")
+}
+
+// A notification handler alone does not guarantee visibility in an active turn.
+// Codex logs changes; OpenCode refreshes asynchronously. Until live immediate
+// turn visibility is verified, both use the official reload/resume fallback.
+pub(crate) fn provider_runtime_catalog_requires_reload(provider: &str) -> bool {
+    provider != "dev-stub"
 }
 
 pub(crate) fn provider_run_reuses_run_for_mcp_continuation_reload(
@@ -268,11 +307,17 @@ pub(crate) fn provider_run_uses_runtime_structured_utility_prompt(
 pub(crate) enum ProviderUtilityExecutionPolicy {
     ExistingRun,
     ReadOnlyDiscovery,
+    /// MP-08: No source reads, commands, MCPs, host instructions or prior thread.
+    MetadataOnlyDiscovery,
 }
 
 impl ProviderUtilityExecutionPolicy {
+    pub(crate) fn is_metadata_only(self) -> bool {
+        matches!(self, Self::MetadataOnlyDiscovery)
+    }
+
     pub(crate) fn is_read_only_discovery(self) -> bool {
-        matches!(self, Self::ReadOnlyDiscovery)
+        matches!(self, Self::ReadOnlyDiscovery | Self::MetadataOnlyDiscovery)
     }
 }
 
@@ -405,6 +450,17 @@ mod tests {
         assert!(!provider_run_waits_for_workflow_publication_completion(
             &opencode
         ));
+    }
+
+    #[test]
+    fn runtime_catalog_refresh_uses_official_provider_policy() {
+        assert!(!super::provider_runtime_catalog_requires_reload("dev-stub"));
+        for provider in ["codex", "opencode", "claude", "claude-headless", "unknown"] {
+            assert!(
+                super::provider_runtime_catalog_requires_reload(provider),
+                "MP-08/MP-10 {provider} must use the documented resume fallback"
+            );
+        }
     }
 
     #[test]

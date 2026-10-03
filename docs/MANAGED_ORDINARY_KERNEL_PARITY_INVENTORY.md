@@ -86,6 +86,65 @@ Capture probes must be supplied by the provider/remote boundary through the
 `CHARIOX_PARITY_*` context fields. Missing context produces a missing result,
 not a pass.
 
+For MP-10 product-route capture, set `CHARIOX_KERNEL_URL` to the selected
+kernel's normal loopback WebSocket endpoint or its authenticated TLS relay
+endpoint. A relay capture uses the existing
+`CHARIOX_PARITY_PROJECT_SETUP_RELAY_TOKEN` context and an exact kernel locator in
+`CHARIOX_PARITY_CAPTURE_EVIDENCE_JSON`; credentials must stay in the approved
+provider context and must never appear in endpoint URLs, logs, or manifests.
+The locator does not establish capture authority. The collector obtains the
+provider run, session, prompt, attachments, and kernel identity from the normal
+product client, then independently checks the provider-child ancestry and the
+running signed kernel executable through Linux process metadata.
+
+MP-10 admission and evidence signing are separate. The HMAC in
+`CHARIOX_PARITY_SIGNING_KEY` is created by the campaign runner (at least 16
+random bytes), held privately until both manifests have been compared, then
+removed. Both legs and the comparator must use the same campaign key. It is
+never installed in the kernel and cannot authenticate a WebSocket connection.
+
+An ordinary loopback kernel may be started without local bearer authentication.
+If configured, the existing client accepts `CHARIOX_KERNEL_LOCAL_AUTH_TOKEN`
+or its one-shot `CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE`, bound to the exact
+loopback endpoint. The collector consumes it through the normal client and
+passes the admitted context only to its owned probes, keeping it out of Git,
+provider-version commands and evidence. It does not mint a kernel bearer.
+
+Path-1 bootstrap creates a random local bearer under
+`$CHARIOX_HOME/managed-runtime-auth/`; the kernel consumes and unlinks that file
+before launching providers. Do not extract or inherit this bootstrap credential.
+Use an already authenticated controller's ordinary
+`ResolveKernelClientConnection { kernel_ref: <exact-kernel-id> }` request to
+obtain an account- or machine-authorized target-scoped relay connection. This
+uses the existing Cloud token issuer and relay admission. Supply the returned
+`relay_url`, `relay_token`, and exact `kernel_id` through the approved private
+capture context named above. Never print the response or put its token in a
+command, prompt, URL, or evidence. A missing approved context is an admission
+prerequisite failure, not an instruction to disable loopback authentication.
+`IssueCloudRelayClientToken` also supports key-bound tokens, but the current
+collector creates independent ephemeral relay keys per client: such a token
+cannot be substituted without sharing its normal client identity with every
+observer. Use the normal resolved connection contract for this collector.
+
+MP-03 requires `CHARIOX_PARITY_CONTROL_FILE` and
+`CHARIOX_PARITY_CONTROL_SIBLING` to identify real selected control protection
+and an unrelated sibling under the same parent. The probe observes Unix access
+as the provider user; the control file must deny combined read/write access,
+while the parent and sibling support workspace operations. No qualified proof
+schema or producer exists for `CHARIOX_PARITY_CONTROL_PROTECTION_EVIDENCE_JSON`;
+its former caller-boolean fallback is removed. Missing paths, an accessible
+control file, or an unavailable parent/sibling fail closed. A synthetic sentinel
+only proves the probe boundary, not protection of actual product control roots.
+
+Product-route process binding requires local protocol 371's
+`RelayStatus.runtime_process_identity`. Boot ID, PID, and process start ticks
+must agree with the independent Linux observation before and after collection.
+Loopback captures also verify TCP listener ownership. Legacy or non-Linux
+status without this optional field fails product-route capture rather than
+substituting caller-supplied process identity. The existing Unix IPC capture
+remains supported for kernels that actually expose that transport. Neither a
+source-test pass nor a transport-only probe supplies missing acceptance rows.
+
 Comparison is a separate fail-closed operation:
 
 ```bash

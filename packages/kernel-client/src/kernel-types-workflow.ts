@@ -7,6 +7,13 @@ export type WorkflowDefinition = {
   alias: string | null
   prompt?: string | null
   controlled_by_metaagent_id?: string | null
+  /** Set on a workflow generated when an agent got a trigger or deployment. */
+  origin?: {
+    source_agent_id: string
+    reason: "trigger" | "deploy"
+    surface: "web" | "tui" | "cli"
+    created_at_ms: number
+  }
   created_at_ms?: number
   revision?: number
   code_source?: WorkflowCodeSourceBinding | null
@@ -712,6 +719,16 @@ export type WorkflowPublicationDefinition = {
   creation_operation_key?: string | null
   creation_request_digest?: string | null
   runtime_materialization?: { key: string; agent_id_map: Record<string, string> }
+  /** The App plan of the owner's latest deployment export (377: per release). */
+  apps?: WorkflowPublicationApps
+  /** Protocol 377: each exported release's App plan by package digest, newest last. */
+  release_app_plans?: { package_digest: string; plan: WorkflowPublicationApps }[]
+  /** A plan a publication pinned before 377, kept for its releases of then. */
+  pre_release_app_plan?: WorkflowPublicationApps
+  /** Releases whose plans were pruned; they have no App plan. */
+  pruned_release_digests?: string[]
+  /** Protocol 378: each exported release's inputs digest by package digest, newest last. */
+  release_inputs?: { package_digest: string; inputs_digest: string }[]
   status?: string | null
   open_url?: string | null
   viewer_url?: string | null
@@ -732,33 +749,46 @@ export type WorkflowPublicationDefinition = {
   updated_at_ms: number
 }
 
+/** Protocol 366: the Apps a publication's workflow uses, pinned at its first
+ * deployment preparation (`apps.json` and `capabilities.apps` in its package). */
+export type WorkflowPublicationApps = {
+  schema: "chariox.publication-apps.v1"
+  apps: WorkflowPublicationApp[]
+}
+
+export type WorkflowPublicationApp = {
+  installation_id: string
+  app_id: string
+  version: string
+  publisher_id: string
+  publisher_key_id: string
+  publisher_key_fingerprint: string
+  package_digest: string
+  schema_version: number
+  capabilities_digest: string
+  grants: { agent_id: string; node_ids: string[] }[]
+  automations: {
+    automation_id: string
+    event_name: string
+    event_version: number
+    endpoint_id: string
+    queue_id: string
+    scheduled: boolean
+  }[]
+  inbox_routes: {
+    route_id: string
+    event_name: string
+    source_event_type: string
+    source_event_version: number
+    connection: { generator_id: string; connection_id: string; connection_scope: string } | null
+  }[]
+  connections: { generator_id: string; connection_id: string; actions: string[] }[]
+}
+
 export type WorkflowPublicationRuntimeLogEntry = {
   at_ms: number
   level: string
   message: string
-}
-
-export type WorkflowEventBindingStatus = "active" | "paused" | "conflict" | "tombstoned"
-
-export type WorkflowEventBinding = {
-  id: string
-  publication_id: string
-  generator_id: string
-  generator_version: string
-  manifest_digest: string
-  connection_id: string
-  connection_scope: string
-  event_type: string
-  event_type_version: number
-  filter?: unknown
-  event_interest_key: string
-  environment_id: string
-  endpoint_id: string
-  queue_ref?: string | null
-  revision: number
-  status: WorkflowEventBindingStatus
-  created_at_ms: number
-  updated_at_ms: number
 }
 
 export type WorkflowEventDeliveryReceipt = {

@@ -17,7 +17,7 @@ runLocalRustFaultDrill({
   argv: process.argv.slice(2),
   repoRoot,
   name: "live-disk-pressure-admission-fault-drill.mjs",
-  description: "Runs the exact kernel probe for fail-closed slice snapshot disk admission.",
+  description: "Tests independent snapshot disk admission and unsupported capture refusal; does not prove successful capture.",
   schema: "chariox.disk_pressure_admission_fault_drill.v1",
   caseIds: DISK_PRESSURE_ADMISSION_CASE_IDS,
   cargoArgs: buildDiskPressureAdmissionCargoArgs(),

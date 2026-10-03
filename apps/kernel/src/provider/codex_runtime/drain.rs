@@ -17,9 +17,21 @@ pub fn drain_codex_events(
     state: &mut CodexRuntimeState,
     native_interaction_bridge: Option<std::sync::Arc<dyn ProviderNativeInteractionBridge>>,
 ) -> Result<CodexPollResult, DaemonError> {
-    let client = codex_client_for_run(run, state.endpoint(), native_interaction_bridge)?;
+    if state.active_turn_id.is_none() {
+        state.native_approval_origin = None;
+    }
+    let client = codex_client_for_run(run, state.endpoint(), native_interaction_bridge)?
+        .with_native_approval_context(
+            state.native_approval_origin.clone(),
+            state.active_turn_id.clone(),
+        );
     let client = if state.read_only_discovery_permissions() || run.read_only_discovery() {
         client.with_read_only_discovery_permissions()
+    } else {
+        client
+    };
+    let client = if state.ephemeral {
+        client.with_metadata_only_discovery()
     } else {
         client
     };
@@ -95,7 +107,9 @@ pub fn drain_codex_events(
         completion_recovery_evidence,
         std::time::Instant::now(),
     );
-    if authoritative_backfill_due {
+    // MP-08 / MP-10 / MP-11: Ephemeral metadata threads have no durable turn list.
+    // Settle only their native item/completion notifications.
+    if authoritative_backfill_due && !state.ephemeral {
         backfill_completed_turn(
             &client,
             state,
@@ -188,6 +202,71 @@ mod tests {
     use super::drain_codex_events;
 
     #[test]
+    fn mp08_mp10_mp11_ephemeral_metadata_turn_settles_without_durable_backfill() {
+        use crate::provider::CodexNotification;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let (done_tx, done_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut socket = accept(stream).unwrap();
+            done_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            socket
+                .get_mut()
+                .set_read_timeout(Some(Duration::from_millis(20)))
+                .unwrap();
+            assert!(
+                socket.read().is_err(),
+                "ephemeral thread requested durable backfill"
+            );
+        });
+        let (socket, _) = connect(&endpoint).unwrap();
+        let request = LaunchProviderRequest::new("session", "codex", "codex", "default", "default");
+        let run = RuntimeProviderRun::new(
+            "ephemeral-run",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "fixture".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: vec![],
+                pty_env: BTreeMap::new(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: Some(endpoint.clone()),
+            },
+        );
+        let mut state = CodexRuntimeState::new(endpoint, "ephemeral-thread".into(), socket, 1);
+        state.ephemeral = true;
+        state.set_read_only_discovery_permissions(true);
+        state.active_turn_id = Some("turn".into());
+        state.buffered_notifications = vec![
+            CodexNotification::ItemCompleted {
+                item: json!({"id":"item", "type":"agentMessage", "text":"{\n  \"schema_version\": 1\n}"}),
+            },
+            CodexNotification::TurnCompleted {
+                turn_id: "turn".into(),
+                status: "completed".into(),
+                error_message: None,
+                items: vec![],
+            },
+        ];
+        let poll = drain_codex_events(&run, &mut state, None).unwrap();
+        assert!(poll.prompt_completed);
+        assert!(poll.terminal_failure.is_none());
+        assert_eq!(
+            poll.chunks
+                .iter()
+                .flat_map(|chunk| chunk.bytes.clone())
+                .collect::<Vec<_>>(),
+            b"{\n  \"schema_version\": 1\n}"
+        );
+        done_tx.send(()).unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
     fn read_only_discovery_policy_survives_event_drain_reconstruction_after_turn_start() {
         struct DiscoveryWorkspace(std::path::PathBuf);
         impl Drop for DiscoveryWorkspace {
@@ -210,6 +289,7 @@ mod tests {
         let (turn_start_returned_tx, turn_start_returned_rx) = mpsc::channel();
         let (permission_sent_tx, permission_sent_rx) = mpsc::channel();
         let (response_received_tx, response_received_rx) = mpsc::channel();
+        let (drain_finished_tx, drain_finished_rx) = mpsc::channel();
         let server = thread::spawn(move || {
             let (stream, _) = listener.accept().expect("accept Codex websocket client");
             let mut socket = accept(stream).expect("upgrade Codex websocket fixture");
@@ -274,7 +354,7 @@ mod tests {
                 ))
                 .expect("send turn/start response");
             turn_start_returned_rx
-                .recv_timeout(Duration::from_secs(1))
+                .recv_timeout(Duration::from_secs(10))
                 .expect("client should finish turn/start before permission request");
             socket
                 .send(Message::Text(
@@ -296,10 +376,6 @@ mod tests {
                     .into(),
                 ))
                 .expect("send post-turn-start permission request");
-            // `drain_codex_events` intentionally performs a bounded
-            // nonblocking read. Give the loopback peer time to deliver the
-            // frame before releasing the client-side barrier below.
-            thread::sleep(Duration::from_millis(50));
             permission_sent_tx
                 .send(())
                 .expect("notify client that permission request was sent");
@@ -323,6 +399,9 @@ mod tests {
             response_received_tx
                 .send(())
                 .expect("notify client that permission response was received");
+            drain_finished_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("client must finish draining before the server closes");
         });
 
         let endpoint = format!("ws://{address}");
@@ -400,15 +479,28 @@ mod tests {
             .send(())
             .expect("notify server that turn/start returned");
         permission_sent_rx
-            .recv_timeout(Duration::from_secs(1))
+            .recv_timeout(Duration::from_secs(10))
             .expect("server should send the permission request");
 
-        let poll = drain_codex_events(&run, &mut state, None).expect("event drain should succeed");
-        assert!(poll.terminal_failure.is_none());
-        assert!(!poll.prompt_completed);
-        response_received_rx
-            .recv_timeout(Duration::from_secs(1))
-            .expect("server should receive the read-only permission response");
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let poll =
+                drain_codex_events(&run, &mut state, None).expect("event drain should succeed");
+            assert!(poll.terminal_failure.is_none());
+            assert!(!poll.prompt_completed);
+            match response_received_rx.try_recv() {
+                Ok(()) => break,
+                Err(mpsc::TryRecvError::Empty) if std::time::Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                result => {
+                    panic!("server should receive the read-only permission response: {result:?}")
+                }
+            }
+        }
+        drain_finished_tx
+            .send(())
+            .expect("release the mock server after draining");
         drop(state);
         server.join().expect("join Codex websocket fixture");
     }

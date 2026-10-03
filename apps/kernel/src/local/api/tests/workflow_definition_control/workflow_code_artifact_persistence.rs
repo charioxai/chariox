@@ -576,7 +576,10 @@ fn local_request_api_rejects_invalid_workflow_code_artifact_create_without_persi
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new(workspace_root.display().to_string(), "worktree-invalid"),
+            CreateSessionRequest::new(
+                workspace_root.display().to_string(),
+                workspace_root.display().to_string(),
+            ),
         ))
         .expect("session create should succeed")
     {
@@ -640,7 +643,10 @@ fn local_request_api_rejects_invalid_workflow_code_artifact_update_without_overw
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new(workspace_root.display().to_string(), "worktree-invalid"),
+            CreateSessionRequest::new(
+                workspace_root.display().to_string(),
+                workspace_root.display().to_string(),
+            ),
         ))
         .expect("session create should succeed")
     {
@@ -720,7 +726,10 @@ fn local_request_api_rejects_invalid_workflow_code_artifact_import() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new(workspace_root.display().to_string(), "worktree-invalid"),
+            CreateSessionRequest::new(
+                workspace_root.display().to_string(),
+                workspace_root.display().to_string(),
+            ),
         ))
         .expect("session create should succeed")
     {

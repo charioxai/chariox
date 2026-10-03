@@ -145,10 +145,31 @@ impl KernelRuntimeState {
         }
         let mut forked_agent = self.spawn_agent(create_request).await?;
         for grant in source_agent.extension_grants() {
+            // App bindings take the checked, audited binding path.
+            if grant.kind == crate::extension::ExtensionKind::App {
+                if let Some(agent) = self
+                    .copy_agent_app_grant(forked_agent.id(), grant.clone(), &caller_user_id)
+                    .await?
+                {
+                    forked_agent = agent;
+                }
+                continue;
+            }
             forked_agent = self
                 .owned
                 .agent_store
                 .grant_extension(forked_agent.id(), grant.clone())?;
+        }
+        // The fork is the person's new focus agent: like a person's spawn, it
+        // gets the App of the Room's focused App Tab.
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        if self
+            .bind_foreground_app(&request.session_id)
+            .await
+            .as_deref()
+            == Some(forked_agent.id())
+        {
+            forked_agent = self.owned.agent_store.get_agent(forked_agent.id())?;
         }
         for substitute in source_agent.substitutes() {
             forked_agent = self
@@ -161,19 +182,6 @@ impl KernelRuntimeState {
                 forked_agent.id(),
                 source_agent.substitution_timeout_ms(),
             )?;
-        }
-        if let Some(index) = source_agent.active_substitute_index() {
-            if index < forked_agent.substitutes().len() {
-                forked_agent = self
-                    .owned
-                    .agent_store
-                    .activate_agent_substitute(
-                        forked_agent.id(),
-                        index,
-                        "forked from source agent",
-                    )?
-                    .0;
-            }
         }
 
         let launch_request = crate::local::LaunchProviderRunRequest {
@@ -229,16 +237,7 @@ impl KernelRuntimeState {
                     agent_id: focused_agent_id.to_string(),
                 });
         };
-        let matches = agents
-            .into_iter()
-            .filter(|agent| {
-                agent.id() == reference
-                    || agent.agent_ref() == reference
-                    || agent.alias() == Some(reference)
-                    || agent.id().starts_with(reference)
-                    || agent.agent_ref().starts_with(reference)
-            })
-            .collect::<Vec<_>>();
+        let matches = agents_named(agents, reference);
         match matches.as_slice() {
             [agent] => Ok(agent.clone()),
             [] => Err(DaemonError::LocalTransport {
@@ -317,5 +316,71 @@ impl KernelRuntimeState {
             }
         });
         Ok(accepted)
+    }
+}
+
+/// The agents a reference names: those whose id, ref or alias is exactly the
+/// reference, otherwise those whose id or ref starts with it. `agent-1` names
+/// agent-1 even when agent-10 and agent-17 exist.
+fn agents_named(
+    agents: Vec<crate::agent::AgentInstance>,
+    reference: &str,
+) -> Vec<crate::agent::AgentInstance> {
+    let (exact, others): (Vec<_>, Vec<_>) = agents.into_iter().partition(|agent| {
+        agent.id() == reference
+            || agent.agent_ref() == reference
+            || agent.alias() == Some(reference)
+    });
+    if !exact.is_empty() {
+        return exact;
+    }
+    others
+        .into_iter()
+        .filter(|agent| {
+            agent.id().starts_with(reference) || agent.agent_ref().starts_with(reference)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod agent_reference_tests {
+    use super::agents_named;
+
+    fn agent(id: &str, agent_ref: &str, alias: Option<&str>) -> crate::agent::AgentInstance {
+        crate::agent::AgentInstance::new(
+            id,
+            agent_ref,
+            "session",
+            alias.map(str::to_owned),
+            "dev-stub",
+            None,
+            None,
+            None,
+            crate::agent::GridPosition::new(0, 0, 1, 1),
+        )
+    }
+
+    fn named(reference: &str) -> Vec<String> {
+        let agents = vec![
+            agent("agent-1", "13821dea", None),
+            agent("agent-10", "e443b972", Some("stub-deploy")),
+            agent("agent-17", "2126576e", Some("fresh-todo")),
+        ];
+        agents_named(agents, reference)
+            .iter()
+            .map(|agent| agent.id().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn an_exact_agent_id_ref_or_alias_wins_over_prefixes() {
+        assert_eq!(named("agent-1"), ["agent-1"]);
+        assert_eq!(named("13821dea"), ["agent-1"]);
+        assert_eq!(named("fresh-todo"), ["agent-17"]);
+        // Prefixes still resolve when nothing matches exactly.
+        assert_eq!(named("1382"), ["agent-1"]);
+        assert_eq!(named("agent-17"), ["agent-17"]);
+        assert_eq!(named("agent-"), ["agent-1", "agent-10", "agent-17"]);
+        assert!(named("agent-2").is_empty());
     }
 }

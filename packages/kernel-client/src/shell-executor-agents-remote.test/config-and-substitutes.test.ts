@@ -212,48 +212,15 @@ test("executeShellCommand clears agent mode override through dedicated config re
 
 test("executeShellCommand manages agent substitutes", async () => {
   const baseAgent = makeAgent()
-  const substituteAgent = makeAgent({
-    provider: "codex",
-    model: "gpt-5.4",
-    effort: "medium",
-    substitutes: [{ provider: "codex", model: "gpt-5.4", variant: "medium" }],
-    active_substitute_index: 0,
-  })
   const fake = fakeClient((request) => {
     if ("ListAgents" in request) {
       return { AgentsListed: { agents: [baseAgent] } }
     }
     if ("UpdateAgentSubstitutes" in request) {
-      const payload = request.UpdateAgentSubstitutes as {
-        action: Record<string, unknown>
-      }
-      if ("Add" in payload.action) {
-        return {
-          AgentConfigUpdated: {
-            agent: makeAgent({ substitutes: [{ provider: "codex", model: "gpt-5.4", variant: "medium" }] }),
-            session: makeSession(),
-          },
-        }
-      }
-      if ("Activate" in payload.action) {
-        return { AgentConfigUpdated: { agent: substituteAgent, session: makeSession({ agents: [substituteAgent] }) } }
-      }
-    }
-    if ("LaunchProviderRun" in request) {
       return {
-        ProviderRunLaunchAccepted: {
-          provider_run: {
-            id: "run-sub",
-            session_id: "session-1",
-            agent_instance_id: "agent-1",
-            adapter_key: "codex",
-            provider: "codex",
-            account_profile: "default",
-            model: "gpt-5.4",
-            variant: "medium",
-            usage_tokens_total: null,
-            state: "Starting",
-          },
+        AgentConfigUpdated: {
+          agent: makeAgent({ substitutes: [{ provider: "codex", model: "gpt-5.4", variant: "medium" }] }),
+          session: makeSession(),
         },
       }
     }
@@ -277,14 +244,12 @@ test("executeShellCommand manages agent substitutes", async () => {
   )
   assert.equal(addResult.ok, true)
   assert.match(addResult.message ?? "", /substitute added/)
-  assert.equal(activateResult.ok, true)
-  assert.match(activateResult.message ?? "", /activated substitute 0/)
+  assert.equal(activateResult.ok, false, "substitutes run only for a failed turn")
+  assert.match(activateResult.message ?? "", /usage: agent substitute list\|add\|remove\|move\|clear\|timeout/)
   assert.deepEqual(fake.requests.map((request) => Object.keys(request)[0]), [
     "ListAgents",
     "UpdateAgentSubstitutes",
     "ListAgents",
-    "UpdateAgentSubstitutes",
-    "LaunchProviderRun",
   ])
   const addRequest = fake.requests[1]
   assert.ok(addRequest && "UpdateAgentSubstitutes" in addRequest)
@@ -300,7 +265,7 @@ test("executeShellCommand manages agent substitutes", async () => {
   })
 })
 
-test("executeShellCommand reorders substitutes and resets to the starter", async () => {
+test("executeShellCommand reorders substitutes", async () => {
   const starter = makeAgent({
     provider: "claude",
     model: "claude-opus-4-8",
@@ -313,45 +278,18 @@ test("executeShellCommand reorders substitutes and resets to the starter", async
   })
   const reordered = makeAgent({
     ...starter,
-    provider: "opencode",
-    model: "deepseek-v4-pro",
     substitutes: [
       { provider: "opencode", model: "deepseek-v4-pro", variant: "high" },
       { provider: "opencode-go", model: "deepseek-v4-pro", variant: "high" },
       { provider: "codex", model: "gpt-5.6-sol", variant: "high" },
     ],
-    active_substitute_index: 0,
   })
   const fake = fakeClient((request) => {
     if ("ListAgents" in request) {
       return { AgentsListed: { agents: [starter] } }
     }
     if ("UpdateAgentSubstitutes" in request) {
-      const payload = request.UpdateAgentSubstitutes as { action: Record<string, unknown> }
-      if ("Move" in payload.action) {
-        return { AgentConfigUpdated: { agent: reordered, session: makeSession({ agents: [reordered] }) } }
-      }
-      if ("Primary" in payload.action) {
-        return { AgentConfigUpdated: { agent: starter, session: makeSession({ agents: [starter] }) } }
-      }
-    }
-    if ("LaunchProviderRun" in request) {
-      return {
-        ProviderRunLaunchAccepted: {
-          provider_run: {
-            id: "run-starter",
-            session_id: "session-1",
-            agent_instance_id: "agent-1",
-            adapter_key: "claude",
-            provider: "claude",
-            account_profile: "default",
-            model: "claude-opus-4-8",
-            variant: "high",
-            usage_tokens_total: null,
-            state: "Starting",
-          },
-        },
-      }
+      return { AgentConfigUpdated: { agent: reordered, session: makeSession({ agents: [reordered] }) } }
     }
     throw new Error(`unexpected request ${JSON.stringify(request)}`)
   })
@@ -363,17 +301,13 @@ test("executeShellCommand reorders substitutes and resets to the starter", async
   })
 
   const moveResult = await executeShellCommand(parseShellCommand("agent substitute move 1 0"), context, { client: fake.client })
-  const resetResult = await executeShellCommand(parseShellCommand("agent substitute reset"), context, { client: fake.client })
 
   assert.equal(moveResult.ok, true)
   assert.match(moveResult.message ?? "", /substitute moved from 1 to 0/)
-  assert.equal(resetResult.ok, true)
-  assert.match(resetResult.message ?? "", /reset to starter profile/)
   const updateActions = fake.requests
     .filter((request) => "UpdateAgentSubstitutes" in request)
     .map((request) => (request.UpdateAgentSubstitutes as { action: unknown }).action)
   assert.deepEqual(updateActions, [
     { Move: { from_index: 1, to_index: 0 } },
-    { Primary: {} },
   ])
 })

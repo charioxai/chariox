@@ -18,9 +18,13 @@ assert.ok(["seed", "restore"].includes(phase), "expected seed or restore");
 assert.equal(process.env.CHARIOX_DISPOSABLE_BROWSER_DRILL, "1", "disposable container required");
 const runtime = await mkdtemp(path.join(tmpdir(), "chariox-profile-drill-"));
 await mkdir(path.join(runtime, "logs"));
-for (const name of ["browser-cdp.mjs", "slice-selkies.py", "selkies_viewers.py", "tint2rc"]) {
-  await copyFile(path.join(source, "docker", name), path.join(runtime, name));
+// Copy the production helper closure, including browser lifetime/upload owners.
+for (const name of await readdir(path.join(source, "docker"))) {
+  if (name.endsWith(".mjs") || name.endsWith(".py") || name.endsWith(".json") || name === "tint2rc") {
+    await copyFile(path.join(source, "docker", name), path.join(runtime, name));
+  }
 }
+
 const env = { ...process.env, CHARIOX_SLICE_ROOT: runtime, CHARIOX_SLICE_VIEWER_BACKEND: "novnc" };
 // Exercise both ordinary configuration and an explicitly empty override.
 if (phase === "seed") delete env.CHARIOX_SLICE_CHROME_TRUSTED_INSECURE_ORIGINS;
@@ -71,7 +75,7 @@ await new Promise((resolve, reject) => {
 const client = new BrowserCdpClient();
 try {
   await screen("start");
-  const connection = await client.ensureConnection();
+  const connection = await connect();
   await assertSandbox(connection);
   const session = await openFixture(connection, phase === "seed" ? "/login" : "/");
   await assertStorage(connection, session, phase);
@@ -90,12 +94,16 @@ try {
   await client.close();
   await screen("stop");
   await screen("start");
-  let restarted = await client.ensureConnection();
+  let restarted = await connect();
   await assertSandbox(restarted);
   let restartedSession = await openFixture(restarted, "/");
   await assertStorage(restarted, restartedSession, `${phase}-restart`);
   const displayPid = (await exec("pgrep", ["-x", "Xvfb"])).stdout;
   for (const fault of ["closed", "killed"]) {
+    // Seed each cold lifetime independently; graceful loss cannot contaminate
+    // the crash check and masquerade as an archive-restoration failure.
+    restartedSession = await openFixture(restarted, "/login");
+    await assertStorage(restarted, restartedSession, `${phase}-before-${fault}`);
     if (fault === "closed") await restarted.send("Browser.close");
     else await exec("pkill", ["-KILL", "-f", "^/usr/lib/chromium/chromium( |$)"]);
     await client.close();
@@ -106,7 +114,7 @@ try {
     // Reopen through the product URL action while keeping the desktop alive.
     const url = `${origin}/cold-fallback-${fault}`;
     await screen("open-url", url);
-    restarted = await client.ensureConnection();
+    restarted = await connect();
     await assertSandbox(restarted);
     const target = await waitFor(async () => {
       const { targetInfos } = await restarted.send("Target.getTargets");
@@ -243,6 +251,20 @@ async function evaluate(connection, session, expression) {
   const response = await connection.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, session);
   assert.equal(response.exceptionDetails, undefined, "fixture script must not throw");
   return response.result?.value;
+}
+
+// Chromium answers CDP a few seconds after the desktop starts, more on a
+// capped CPU.
+async function connect() {
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    try {
+      return await client.ensureConnection();
+    } catch (error) {
+      if (Date.now() > deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
 }
 
 async function waitFor(check) {

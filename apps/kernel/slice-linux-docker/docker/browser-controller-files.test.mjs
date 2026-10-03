@@ -4,8 +4,13 @@ import test from "node:test";
 import {
   configureBrowserDownloads,
   cancelBrowserDownload,
-  uploadBrowserFiles,
+  uploadBrowserFiles as productionUploadBrowserFiles,
 } from "./browser-controller-files.mjs";
+
+// These fake-FS cases exercise CDP policy. Real byte binding is covered by
+// browser-controller-upload-binding.test.mjs using the production stager.
+const uploadBrowserFiles = options => productionUploadBrowserFiles({ ...options,
+  stageUploads: async ({ files }) => ({ files, markExposed() {}, async discard() {} }) });
 
 test("download cancellation only targets observed downloads in the current browser generation", async () => {
   const calls = [];

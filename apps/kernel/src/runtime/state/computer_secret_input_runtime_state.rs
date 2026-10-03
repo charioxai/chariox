@@ -5,11 +5,59 @@ use super::KernelRuntimeState;
 const COMPUTER_SECRET_APPROVAL_TIMEOUT_SEC: u64 = 30;
 
 impl KernelRuntimeState {
+    pub(crate) fn computer_screen_capture_guard(
+        &self,
+    ) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, DaemonError> {
+        self.owned
+            .computer_input_executions
+            .capture_guard()
+            .map_err(|message| DaemonError::LocalTransport {
+                operation: "environment.computer.capture",
+                message: message.to_string(),
+            })
+    }
+
+    pub(super) async fn computer_secret_input_target(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<crate::transport::room_browser_controller::RoomComputerSecretTarget, DaemonError>
+    {
+        use crate::transport::room_browser_controller::{
+            RoomBrowserControllerCommand, RoomBrowserControllerResult,
+        };
+        let agent = self.owned.agent_store.get_agent(agent_id)?;
+        if agent.session_id() != session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: session_id.into(),
+                agent_id: agent_id.into(),
+            });
+        }
+        let result = self
+            .room_browser_controller_command(
+                session_id,
+                RoomBrowserControllerCommand::ComputerSecretTarget,
+            )
+            .await?;
+        let RoomBrowserControllerResult::ComputerSecretTarget { target } = result else {
+            return Err(computer_secret_approval_error(
+                "worker returned an invalid focused desktop target",
+            ));
+        };
+        if !target.valid() {
+            return Err(computer_secret_approval_error(
+                "worker returned an invalid focused desktop target",
+            ));
+        }
+        Ok(target)
+    }
+
     pub(super) async fn ensure_computer_secret_input_approved(
         &self,
         session_id: &str,
         agent_id: &str,
         credential_id: &str,
+        target: &crate::transport::room_browser_controller::RoomComputerSecretTarget,
     ) -> Result<(), DaemonError> {
         let interaction = crate::session::RuntimeInteraction::new(
             format!(
@@ -21,7 +69,8 @@ impl KernelRuntimeState {
             crate::session::RuntimeInteractionLevel::Critical,
             Some("Computer credential input".to_string()),
             format!(
-                "Allow `{credential_id}` to be typed into the currently focused desktop control? Continue only if that control masks secret input. Chariox will preserve the current desktop focus and will not use the clipboard."
+                "Allow `{credential_id}` to be typed into native window {}, focused control {} at {:?}? Confirm that this focused field masks secret input; approving an unmasked field can expose the credential. Chariox aborts if the observable focus or window changes and withholds agent screen captures while typing, without using the clipboard.",
+                target.active_window, target.focus_window, target.geometry
             ),
             vec![
                 crate::session::RuntimeInteractionChoice::new(

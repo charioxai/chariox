@@ -14,7 +14,7 @@ fn local_request_api_manages_session_workspace_links_inner() {
     let worktree_id = worktree.to_string_lossy().to_string();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", &worktree_id),
+            CreateSessionRequest::new(&worktree_id, &worktree_id),
         ))
         .expect("session create should succeed")
     {
@@ -250,7 +250,7 @@ fn workspace_link_mutations_preserve_spawned_agents_in_session_projection_inner(
     let worktree_id = worktree.to_string_lossy().to_string();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", &worktree_id),
+            CreateSessionRequest::new(&worktree_id, &worktree_id),
         ))
         .expect("session create should succeed")
     {
@@ -351,7 +351,7 @@ fn attach_workspace_link_rejects_non_git_worktree_targets_inner() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", root.to_string_lossy()),
+            CreateSessionRequest::new(root.to_string_lossy(), root.to_string_lossy()),
         ))
         .expect("session create should succeed")
     {

@@ -16,3 +16,5 @@ export const CHROME_UPDATE_THROTTLE_MS = 48
 export const TURN_COMPLETION_QUIET_MS = 1_500
 export const COMMAND_CENTER_OVERLAY_FOOTPRINT = 3
 export const ATTACHED_PROMPT_PLACEHOLDER = "Write your next prompt here"
+export const NO_FOCUS_PROMPT_PLACEHOLDER = "No focus agent: /agent focus <agent> or /agent spawn"
+export const NO_FOCUS_AGENT_MESSAGE = "No focus agent: use /agent focus <agent> or /agent spawn, or address one with @<alias>."

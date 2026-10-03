@@ -1,6 +1,9 @@
 import { createRequire } from "node:module"
 import { readdir, stat } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
+import { createManagedParityObserverHooks } from "./managed-browser-computer-parity-observer-hooks.mjs"
+
+export const MANAGED_BROWSER_COMPUTER_PARITY_ADAPTER_IDENTITY = "chariox-managed-parity-product-transport-v1"
 
 const OPERATOR_ENDPOINT_ENV = "CHARIOX_MANAGED_PARITY_HOME_KERNEL_URL"
 const TARGET_KERNEL_ENV = "CHARIOX_MANAGED_PARITY_TARGET_KERNEL_REF"
@@ -221,11 +224,13 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
   }
 
   const ownedResources = {
+    observerHooks: createManagedParityObserverHooks(),
     sliceId: null,
     expectedRoomId: null,
     attachmentIds: new Set(),
     attachmentsByClient: new Map(),
     agentIds: new Set(),
+    providerAgentId: null,
     identity: null,
     stableIdentity: null,
     detachedAttachmentIds: new Set(),
@@ -290,6 +295,7 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
   }
 
   const transport = {
+    setLifecycleObserver(observer) { ownedResources.observerHooks.bind(observer) },
     resourceScope: "managed-target",
     targetId: targetMachineRef ?? targetKernelRef ?? null,
     targetKernelRef,
@@ -351,13 +357,15 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
       )
     },
     async run(step, request, { signal, onPersistenceMutation } = {}) {
+      const cleanup = step.startsWith("cleanup.")
+      ownedResources.observerHooks.admit({ cleanup })
       if (signal?.aborted) {
         throw new Error(`managed parity ${step} was aborted before the public request`)
       }
       if (requiresCompatibilityPreflight && step === "preflight") {
         await transport.assertCompatibilityPreflight({ signal })
       }
-      if (requiresCompatibilityPreflight && step !== "preflight" && !compatibilityResult) {
+      if (requiresCompatibilityPreflight && step !== "preflight" && !cleanup && !compatibilityResult) {
         throw new Error(`managed parity ${step} requires compatibility preflight before any target operation`)
       }
       if (productionOperationAdapter && typeof productionOperationAdapter[step] === "function") {
@@ -1576,14 +1584,38 @@ async function runKernelProviderAction({
   const beforeAttachments = await readSessionAttachmentIds({ client, requestApi, roomId: binding.roomId, signal })
   const { runRoomRealProviderAction } = await import("./live-room-real-provider.mjs")
   const beforeAgents = await readRoomAgentRecords({ client, requestApi, roomId: binding.roomId, signal })
+  const agent = ownedResources.providerAgentId
+    ? beforeAgents.get(ownedResources.providerAgentId)
+    : null
+  if (ownedResources.providerAgentId && !agent) {
+    throw new Error("managed parity provider agent is no longer in the Room")
+  }
   let result
   let actionError
   try {
     result = await runRoomRealProviderAction({
-      client,
+      client: {
+        ...client,
+        async send(request) {
+          ownedResources.observerHooks.admit()
+          const response = await client.send(request)
+          const spawned = response?.AgentSpawned?.agent
+          if (hasText(spawned?.id)) {
+            ownedResources.agentIds.add(spawned.id)
+            await observeOwnedResources(ownedResources, "observeCreated", { kind: "agent.spawn", agent: spawned }, { signal })
+          }
+          const attachment = response?.SessionAttached?.attachment
+          if (hasText(attachment?.id)) {
+            ownedResources.attachmentIds.add(attachment.id)
+            await observeOwnedResources(ownedResources, "observeCreated", { kind: "room.attach", attachment }, { signal })
+          }
+          return response
+        },
+      },
       requests: requestApi,
       sessionId: binding.roomId,
       sliceId,
+      ...(agent ? { agent } : {}),
       workspace: request.worktreeId
         ?? parityConfig?.worktreeId
         ?? parityConfig?.provider?.worktreeId,
@@ -1614,7 +1646,17 @@ async function runKernelProviderAction({
       ownedResources.agentIds.add(agentId)
     }
   }
-  if (result?.agentId) ownedResources.agentIds.add(requireText(result.agentId, `selkies.${mode} provider agent id`))
+  if (result?.agentId) {
+    const agentId = requireText(result.agentId, `selkies.${mode} provider agent id`)
+    if (ownedResources.providerAgentId && ownedResources.providerAgentId !== agentId) {
+      throw new Error("managed parity Browser and Computer actions used different Room agents")
+    }
+    if (!afterAgents.has(agentId)) {
+      throw new Error("managed parity provider action returned an unregistered Room agent")
+    }
+    ownedResources.agentIds.add(agentId)
+    ownedResources.providerAgentId = agentId
+  }
   if (actionError) throw actionError
   await rememberNewSessionAttachments({
     client,
@@ -2447,8 +2489,8 @@ async function runPersistenceMutations({
     throw new Error("managed parity persistence has no kernel-managed execution seam")
   }
   const requestLedger = []
-  const executionClient = wrapPersistenceExecutionClient(client, requestLedger)
-  const executionIdentityClient = wrapPersistenceExecutionClient(identityClient, requestLedger)
+  const executionClient = wrapPersistenceExecutionClient(client, requestLedger, ownedResources, signal)
+  const executionIdentityClient = wrapPersistenceExecutionClient(identityClient, requestLedger, ownedResources, signal)
   const raw = await runMethod.call(persistenceAdapter, {
     ...persistenceAdapterInput({
       client: executionClient,
@@ -2469,18 +2511,27 @@ async function runPersistenceMutations({
   return normalizePersistenceEvidence(raw, ownedResources, plan, capturedLifecycleResults)
 }
 
-function wrapPersistenceExecutionClient(client, requestLedger) {
+function wrapPersistenceExecutionClient(client, requestLedger, ownedResources, signal) {
   if (!client || typeof client.send !== "function") {
     throw new Error("managed parity persistence execution requires a public client send seam")
   }
   return {
     ...client,
     async send(request) {
+      ownedResources.observerHooks.admit()
+      if (Object.hasOwn(request, "StopSlice") || Object.hasOwn(request, "SaveSliceState")) {
+        await observeOwnedResources(ownedResources, "beforeRetire", { kind: "slice.persist", request }, { signal })
+      }
       const response = await client.send(request)
       requestLedger.push({
         request: redactManagedValue(request),
         response: redactManagedValue(response),
       })
+      if (Object.hasOwn(response ?? {}, "SliceStarted")) {
+        await observeOwnedResources(ownedResources, "observeCreated", {
+          kind: "slice.restore", slice: response.SliceStarted.slice,
+        }, { signal })
+      }
       return response
     },
     ...(typeof client.close === "function"
@@ -3248,6 +3299,7 @@ async function runSelkiesCreate({
   ownedResources.sliceId = createdSliceId
   ownedResources.detachedAttachmentIds.clear()
   ownedResources.cleanupEvidence = null
+  await observeOwnedResources(ownedResources, "observeCreated", { kind: "slice.create", slice: created }, { signal })
   validateCreatedSlice(created, {
     roomId,
     workerKernelRef,
@@ -3284,6 +3336,7 @@ async function runSelkiesCreate({
     "SliceStarted",
     "selkies.create slice start",
   ).slice
+  await observeOwnedResources(ownedResources, "observeCreated", { kind: "slice.start", slice: started }, { signal })
   validateStartedSlice(started, {
     sliceId: ownedResources.sliceId,
     roomId,
@@ -3414,6 +3467,7 @@ async function runDisplayBackendCreate({
   ownedResources.sliceId = requireText(created?.id, "SliceCreated.slice.id")
   ownedResources.detachedAttachmentIds.clear()
   ownedResources.cleanupEvidence = null
+  await observeOwnedResources(ownedResources, "observeCreated", { kind: "slice.create", slice: created }, { signal })
   validateCreatedSlice(created, {
     roomId,
     workerKernelRef,
@@ -3438,6 +3492,7 @@ async function runDisplayBackendCreate({
     sliceLifecycleTimeoutMs,
   )
   const started = responseVariant(startResponse, "SliceStarted", "novnc.create slice start").slice
+  await observeOwnedResources(ownedResources, "observeCreated", { kind: "slice.start", slice: started }, { signal })
   validateStartedSlice(started, {
     sliceId: ownedResources.sliceId,
     roomId,
@@ -3510,6 +3565,7 @@ async function runSelkiesDestroy({
     throw new Error(`managed parity ${step} cannot verify the created target identity`)
   }
   const attachmentIds = [...ownedResources.attachmentIds]
+  await observeOwnedResources(ownedResources, "beforeRetire", { kind: "slice.destroy" }, { signal })
   await captureCleanupMeasurements({
     displayClient,
     identityClient,
@@ -3573,6 +3629,8 @@ async function runCleanup({
 }) {
   const sliceId = ownedResources.sliceId
   const attachmentIds = [...ownedResources.attachmentIds]
+  let measurementFailure = null
+  await observeOwnedResources(ownedResources, "beforeRetire", { kind: "run.cleanup" }, { cleanup: true, signal })
   if (sliceId) {
     const roomId = ownedResources.identity?.roomId ?? ownedResources.expectedRoomId
     await captureCleanupMeasurements({
@@ -3586,7 +3644,7 @@ async function runCleanup({
       sliceId,
       signal,
       step: "cleanup.perform",
-    })
+    }).catch((error) => { measurementFailure = error })
     await detachOwnedAttachments({ displayClient, requestApi, ownedResources, signal, step: "cleanup.perform" })
     await retireOwnedAgents({
       displayClient,
@@ -3605,14 +3663,15 @@ async function runCleanup({
       step: "cleanup.perform",
       sliceLifecycleTimeoutMs,
     })
-    ownedResources.cleanupMeasurements.postDelete = await observePostDeleteRoom({
+    const postDelete = await observePostDeleteRoom({
       displayClient,
       requestApi,
       roomId,
       sliceId,
       signal,
       step: "cleanup.perform",
-    })
+    }).catch((error) => { measurementFailure ??= error; return null })
+    if (ownedResources.cleanupMeasurements) ownedResources.cleanupMeasurements.postDelete = postDelete
   }
   const previousEvidence = ownedResources.cleanupEvidence
   const roomId = previousEvidence?.identity?.roomId
@@ -3635,6 +3694,8 @@ async function runCleanup({
     reason: "cleanup",
   })
   clearOwnedResources(ownedResources)
+  ownedResources.observerHooks.assertHealthy()
+  if (measurementFailure) throw measurementFailure
   return { cleaned: true, sliceId, attachmentIds }
 }
 
@@ -4273,6 +4334,7 @@ function clearOwnedResources(ownedResources) {
   ownedResources.attachmentIds.clear()
   ownedResources.attachmentsByClient.clear()
   ownedResources.agentIds.clear()
+  ownedResources.providerAgentId = null
   ownedResources.identity = null
 }
 
@@ -4593,7 +4655,18 @@ async function resolveAttachment({
   )
   ownedResources.attachmentIds.add(attachmentId)
   ownedResources.attachmentsByClient.set(clientKey, attachmentId)
+  await observeOwnedResources(ownedResources, "observeCreated", { kind: "room.attach", attachment }, { signal })
   return { attachmentId, owned: true }
+}
+
+async function observeOwnedResources(ownedResources, method, receipt, options) {
+  await ownedResources.observerHooks.observe(method, {
+    roomId: ownedResources.identity?.roomId ?? ownedResources.expectedRoomId,
+    sliceId: ownedResources.sliceId,
+    attachmentIds: [...ownedResources.attachmentIds],
+    agentIds: [...ownedResources.agentIds],
+    ...receipt,
+  }, options)
 }
 
 async function receiveDisplayMessageUntil(stream, signal, deadline, matches, description) {

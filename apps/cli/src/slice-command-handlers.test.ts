@@ -207,6 +207,8 @@ test("slice command screen resolves focused agent slice and opens endpoint", asy
       slice({
         id: "slice-1",
         name: "linux-dev",
+        display_mode: "headed",
+        display_endpoint: { slice_id: "slice-1", kind: "novnc", url: "http://127.0.0.1:6080", access: "local" },
         worker_kernel_id: "kernel-slice",
         worker_machine_id: "machine-slice",
       }),
@@ -243,14 +245,72 @@ test("slice command screen fails closed without slice metadata lookup", async ()
   assert.equal(harness.footers.at(-1)?.tone, "error")
 })
 
+test("slice command screen reports a running headless slice as unavailable", async () => {
+  const harness = sliceHarness({
+    slices: [slice({
+      id: "slice-headless",
+      name: "automation",
+      display_mode: "headless",
+      display_endpoint: null,
+    })],
+    endpoint: { slice_id: "slice-headless", kind: "selkies", url: "wss://relay.invalid/fake", access: "tunnel" },
+  })
+
+  await handleSliceSlashCommand(harness.deps, command("screen", "automation"))
+
+  assert.deepEqual(harness.displayEndpointRefs, [])
+  assert.deepEqual(harness.viewerTargets, [])
+  assert.match(harness.footers.at(-1)?.message ?? "", /automation.*headless/i)
+  assert.match(harness.footers.at(-1)?.message ?? "", /headed/i)
+})
+
+test("slice command screen projects an offline Selkies worker as an actionable error", async () => {
+  const harness = sliceHarness({
+    slices: [slice({
+      id: "slice-1",
+      name: "linux-dev",
+      owner_kernel_id: "kernel-home",
+      worker_kernel_ref: "worker-1",
+      display_mode: "headed",
+      display_endpoint: { slice_id: "slice-1", kind: "selkies", url: "http://127.0.0.1:45500/", access: "local" },
+    })],
+    roomBinding: {
+      session_id: "session-1",
+      slice_id: "slice-1",
+      owner_kernel_id: "kernel-home",
+      worker_kernel_ref: "worker-1",
+    },
+    endpointError: new Error("worker is offline or stale; relay peer is not connected"),
+  })
+
+  await handleSliceSlashCommand(harness.deps, command("screen", "linux-dev"))
+
+  assert.deepEqual(harness.displayEndpointRefs, ["slice-1"])
+  assert.deepEqual(harness.viewerTargets, [])
+  assert.match(harness.footers.at(-1)?.message ?? "", /stale or offline/i)
+  assert.match(harness.footers.at(-1)?.message ?? "", /check the worker and relay/)
+  assert.equal(harness.displayEndpointScopes[0]?.sessionId, "session-1")
+  assert.equal(harness.displayEndpointScopes[0]?.attachmentId, "attachment-1")
+  assert.doesNotMatch(JSON.stringify([harness.footers, harness.notices]), /127\.0\.0\.1|viewerPublicKey|stream_id/)
+})
+
 test("slice command screen scopes Selkies returned after stale slice metadata", async () => {
   const harness = sliceHarness({
-    slices: [slice({ id: "slice-1", name: "linux-dev" })],
+    slices: [slice({
+      id: "slice-1",
+      name: "linux-dev",
+      display_mode: "headed",
+      display_endpoint: { slice_id: "slice-1", kind: "selkies", url: "http://127.0.0.1:45500/", access: "local" },
+    })],
     endpoint: { slice_id: "slice-1", kind: "selkies", url: "wss://relay.invalid/secret", access: "tunnel" },
   })
   await handleSliceSlashCommand(harness.deps, command("screen", "linux-dev"))
   assert.deepEqual(harness.viewerTargets, [{ sessionId: "session-1", agentId: "agent-1", sliceId: "slice-1" }])
+  assert.deepEqual(harness.displayEndpointRefs, ["slice-1"])
   assert.deepEqual(harness.openedUrls, [])
+  assert.equal(harness.displayEndpointScopes[0]?.sessionId, "session-1")
+  assert.equal(harness.displayEndpointScopes[0]?.attachmentId, "attachment-1")
+  assert.equal(typeof harness.displayEndpointScopes[0]?.viewerPublicKey, "string")
   assert.doesNotMatch(JSON.stringify([harness.notices, harness.footers]), /secret/)
 })
 
@@ -259,15 +319,17 @@ test("slice command screen routes Selkies through the scoped Cloud viewer target
     slices: [slice({
       id: "slice-1",
       name: "linux-dev",
+      display_mode: "headed",
       display_endpoint: { slice_id: "slice-1", kind: "selkies", url: "wss://relay.invalid/secret", access: "tunnel" },
     })],
+    endpoint: { slice_id: "slice-1", kind: "selkies", url: "wss://relay.example/display/display-1/stream", access: "tunnel" },
   })
 
   await handleSliceSlashCommand(harness.deps, command("screen", "linux-dev"))
 
   assert.deepEqual(harness.roomRequests, [{ GetRoomEnvironmentSlice: { session_id: "session-1" } }])
   assert.deepEqual(harness.viewerTargets, [{ sessionId: "session-1", agentId: "agent-1", sliceId: "slice-1" }])
-  assert.deepEqual(harness.displayEndpointRefs, [])
+  assert.deepEqual(harness.displayEndpointRefs, ["slice-1"])
   assert.deepEqual(harness.openedUrls, [])
   assert.match(harness.notices.at(-1) ?? "", /^Opening slice screen in Chariox Cloud\.\nurl=https:\/\/cloud\.test\/view\?view_target=session-1%3Aagent-1%3Aslice-1\nbrowser=opened$/)
   assert.doesNotMatch(JSON.stringify([harness.notices, harness.viewerTargets]), /secret|viewer_public_key|stream_id|peer_public_key/)
@@ -282,7 +344,12 @@ test("slice command screen rejects missing or mismatched Room bindings for Selki
   for (const entry of cases) {
     await t.test(entry.name, async () => {
       const harness = sliceHarness({
-        slices: [slice({ id: "slice-1", name: "linux-dev", display_endpoint: { slice_id: "slice-1", kind: "selkies", url: "wss://relay.invalid", access: "tunnel" } })],
+        slices: [slice({
+          id: "slice-1",
+          name: "linux-dev",
+          display_mode: "headed",
+          display_endpoint: { slice_id: "slice-1", kind: "selkies", url: "http://127.0.0.1:45500/", access: "local" },
+        })],
         roomBinding: entry.binding,
       })
       await handleSliceSlashCommand(harness.deps, command("screen", "linux-dev"))
@@ -294,12 +361,18 @@ test("slice command screen rejects missing or mismatched Room bindings for Selki
 
 test("slice command screen fails clearly when the Cloud viewer is not configured", async () => {
   const harness = sliceHarness({
-    slices: [slice({ id: "slice-1", name: "linux-dev", display_endpoint: { slice_id: "slice-1", kind: "selkies", url: "wss://relay.invalid", access: "tunnel" } })],
+    slices: [slice({
+      id: "slice-1",
+      name: "linux-dev",
+      display_mode: "headed",
+      display_endpoint: { slice_id: "slice-1", kind: "selkies", url: "http://127.0.0.1:45500/", access: "local" },
+    })],
+    endpoint: { slice_id: "slice-1", kind: "selkies", url: "wss://relay.example/display/display-1/stream", access: "tunnel" },
     viewerConfigured: false,
   })
   await handleSliceSlashCommand(harness.deps, command("screen", "linux-dev"))
   assert.equal(harness.footers.at(-1)?.message, "Chariox Cloud Web View is not configured; run /cloud link first")
-  assert.deepEqual(harness.displayEndpointRefs, [])
+  assert.deepEqual(harness.displayEndpointRefs, ["slice-1"])
 })
 
 test("slice command focused lookup prefers explicit agent bindings", async () => {
@@ -308,6 +381,8 @@ test("slice command focused lookup prefers explicit agent bindings", async () =>
       slice({
         id: "slice-1",
         name: "wrong-by-worker",
+        display_mode: "headed",
+        display_endpoint: { slice_id: "slice-1", kind: "novnc", url: "http://127.0.0.1:6080", access: "local" },
         worker_kernel_id: "kernel-slice",
         worker_machine_id: "machine-slice",
         agent_ids: ["agent-other"],
@@ -315,6 +390,8 @@ test("slice command focused lookup prefers explicit agent bindings", async () =>
       slice({
         id: "slice-2",
         name: "right-by-agent",
+        display_mode: "headed",
+        display_endpoint: { slice_id: "slice-2", kind: "novnc", url: "http://127.0.0.1:6081", access: "local" },
         worker_kernel_id: "kernel-slice",
         worker_machine_id: "machine-slice",
         agent_ids: ["agent-1"],
@@ -716,6 +793,7 @@ function sliceHarness(options: {
   readonly slices?: SliceRecord[]
   readonly focusedAgent?: Partial<AgentInstance>
   readonly endpoint?: SliceDisplayEndpoint
+  readonly endpointError?: Error
   readonly importedAuthStatus?: string
   readonly removedAuthStatus?: string
   readonly roomBinding?: { session_id: string; slice_id: string; owner_kernel_id: string; worker_kernel_ref: string } | null
@@ -725,6 +803,7 @@ function sliceHarness(options: {
   const footers: Array<{ message: string; tone: "info" | "error" }> = []
   const createdSlices: Array<Parameters<NonNullable<SliceCommandHandlerDeps["createSlice"]>>[0]> = []
   const displayEndpointRefs: string[] = []
+  const displayEndpointScopes: Array<{ sessionId: string; attachmentId: string; viewerPublicKey: string }> = []
   const openedUrls: string[] = []
   const importedAuth: Array<{ sliceRef: string; provider: string; accountProfile: string }> = []
   const removedAuth: Array<{ sliceRef: string; provider: string; accountProfile: string }> = []
@@ -759,9 +838,15 @@ function sliceHarness(options: {
     },
     sendRoomEnvironmentRequest: async <TResponse>(request: unknown) => {
       roomRequests.push(request)
+      const boundSlice = slices.find((entry) => entry.id === "slice-1") ?? slice()
       const binding = Object.prototype.hasOwnProperty.call(options, "roomBinding")
         ? options.roomBinding ?? null
-        : { session_id: "session-1", slice_id: "slice-1", owner_kernel_id: "kernel", worker_kernel_ref: "worker" }
+        : {
+            session_id: "session-1",
+            slice_id: "slice-1",
+            owner_kernel_id: boundSlice.owner_kernel_id,
+            worker_kernel_ref: boundSlice.worker_kernel_ref,
+          }
       return { RoomEnvironmentSlice: { binding } } as TResponse
     },
     ...(options.viewerConfigured === false ? {} : { openRoomViewer: async (target: { sessionId: string; agentId: string; sliceId: string }) => {
@@ -812,8 +897,10 @@ function sliceHarness(options: {
         },
       }
     },
-    getSliceDisplayEndpoint: async (sliceRef) => {
+    getSliceDisplayEndpoint: async (sliceRef, room) => {
       displayEndpointRefs.push(sliceRef)
+      if (room) displayEndpointScopes.push(room)
+      if (options.endpointError) throw options.endpointError
       return endpoint
     },
     getSliceLogs: async (sliceRef, tailLines) => {
@@ -906,7 +993,7 @@ function sliceHarness(options: {
       }
     },
   }
-  return { deps, notices, footers, createdSlices, displayEndpointRefs, openedUrls, importedAuth, removedAuth, startedAuthLogins, stoppedSlices, deletedSlices, logRequests, auditRequests, savedStates, stateStatusRequests, resetStates, backups, restoredBackups, roomRequests, viewerTargets }
+  return { deps, notices, footers, createdSlices, displayEndpointRefs, displayEndpointScopes, openedUrls, importedAuth, removedAuth, startedAuthLogins, stoppedSlices, deletedSlices, logRequests, auditRequests, savedStates, stateStatusRequests, resetStates, backups, restoredBackups, roomRequests, viewerTargets }
 }
 
 function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {

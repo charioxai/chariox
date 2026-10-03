@@ -34,6 +34,20 @@ impl KernelRuntimeState {
             .to_string())
     }
 
+    pub(crate) async fn resolve_session_ref_id_for_delete(
+        &self,
+        session_ref: &str,
+        workspace_id: Option<&str>,
+    ) -> Result<String, DaemonError> {
+        Ok(self
+            .owned
+            .session_store
+            .read()
+            .resolve_session_ref_for_delete(session_ref, workspace_id)?
+            .id()
+            .to_string())
+    }
+
     pub(crate) async fn attachment_session_id(
         &self,
         attachment_id: &str,

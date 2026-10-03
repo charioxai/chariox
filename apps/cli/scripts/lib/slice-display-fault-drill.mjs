@@ -31,6 +31,8 @@ export function buildDisplayFaultDockerArgs({ containerName, image, sourceRoot }
     "--read-only",
     "--security-opt",
     "no-new-privileges",
+    "--security-opt",
+    `seccomp=${path.join(sourceRoot, "chromium-seccomp.json")}`,
     "--tmpfs",
     "/tmp:rw,nosuid,nodev,size=384m,mode=1777",
     "--tmpfs",

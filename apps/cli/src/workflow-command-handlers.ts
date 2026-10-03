@@ -1,3 +1,4 @@
+import type { AppInstallationSummary } from "@chariox/kernel-client/kernel-types"
 import type {
   AgentInstance,
   RuntimeAttachment,
@@ -33,6 +34,7 @@ import {
   handleWorkflowAliasCommand,
   handleWorkflowDeleteCommand,
   handleWorkflowListCommand,
+  handleWorkflowFromAgentCommand,
   handleWorkflowNewCommand,
   handleWorkflowRootCommand,
   handleWorkflowShowCommand,
@@ -99,6 +101,7 @@ export type WorkflowCommandHandlerDeps = {
   replaceWorkflowDefinitions: (workflows: WorkflowDefinition[]) => void
   upsertWorkflowDefinition: (workflow: WorkflowDefinition) => void
   createWorkflow: (alias?: string | null) => Promise<WorkflowCreatePayload>
+  createAgentWorkflow?: (agentId: string, reason: "trigger" | "deploy", alias?: string | null) => Promise<{ workflow: WorkflowDefinition; endpoint: { id: string }; session: RuntimeSession }>
   listWorkflows: () => Promise<WorkflowDefinition[]>
   resolveWorkflow: (workflowRef: string) => Promise<WorkflowResolvePayload>
   assignWorkflowAlias: (workflowId: string, alias: string) => Promise<WorkflowDefinition | null>
@@ -219,6 +222,9 @@ export type WorkflowCommandHandlerDeps = {
     maxTurns: number | null,
   ) => Promise<WorkflowNodePayload>
   grantAgentMcp?: (agentRef: string, name: string) => Promise<AgentInstance>
+  getAppInstallation?: (installationId: string) => Promise<AppInstallationSummary | null>
+  grantAgentApp?: (agentRef: string, installationId: string) => Promise<AgentInstance>
+  revokeAgentApp?: (agentRef: string, installationId: string) => Promise<AgentInstance>
   revokeAgentMcp?: (agentRef: string, name: string) => Promise<AgentInstance>
   grantAgentSkill?: (agentRef: string, name: string) => Promise<AgentInstance>
   revokeAgentSkill?: (agentRef: string, name: string) => Promise<AgentInstance>
@@ -269,6 +275,11 @@ export async function handleWorkflowSlashCommand(
 
   if (subcommand === "new") {
     await handleWorkflowNewCommand(deps, args)
+    return
+  }
+
+  if (subcommand === "from-agent") {
+    await handleWorkflowFromAgentCommand(deps, args)
     return
   }
 

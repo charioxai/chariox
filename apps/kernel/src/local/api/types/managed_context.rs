@@ -10,6 +10,8 @@ pub use crate::managed_context::outbound_service::{
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StartManagedContextTransferRequest {
     pub ticket: ManagedContextTransferTicket,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub interactive: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

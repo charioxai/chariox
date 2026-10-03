@@ -6,6 +6,7 @@ use futures_util::FutureExt;
 
 #[test]
 fn room_environment_worker_lease_release_cleans_its_agents_and_preserves_other_leases() {
+    crate::test_support::isolated_env_test!();
     run_test(lease_release_cleans_its_agents_and_preserves_other_leases);
 }
 

@@ -116,12 +116,13 @@ async fn lease_worker_rejects_public_session_authority_requests_before_side_effe
 
 #[tokio::test]
 async fn general_kernel_preserves_public_session_creation() {
+    let worktree =
+        crate::test_support::TestWorktree::new("general_kernel_preserves_public_session_creation");
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("general kernel should bootstrap"),
     ));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
-    let request =
-        LocalDaemonRequest::CreateSession(CreateSessionRequest::new("workspace", "worktree"));
+    let request = LocalDaemonRequest::CreateSession(worktree.session_request());
     let command = KernelCommand::from_local_request("general-create", None, None, &request);
     assert!(matches!(
         router.dispatch(command, request).await,

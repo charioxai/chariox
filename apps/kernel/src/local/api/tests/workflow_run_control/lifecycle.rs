@@ -97,10 +97,13 @@ fn run_workflow_run_lifecycle_large_stack_test(name: &str, test: impl FnOnce() +
 }
 
 fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs_inner(provider: &str) {
+    let worktree = crate::test_support::TestWorktree::new(
+        "local_request_api_invokes_lists_gets_and_cancels_workflow_runs_inner",
+    );
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-1"),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {
@@ -408,7 +411,7 @@ fn local_request_api_enqueues_into_a_disabled_workflow_queue_without_launching_i
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-disabled-queue", "worktree-disabled-queue"),
+            harness.fixture_session_request("workspace-disabled-queue"),
         ))
         .expect("session create should succeed")
     {
@@ -515,10 +518,11 @@ fn local_request_api_enqueues_into_a_disabled_workflow_queue_without_launching_i
 }
 
 fn stopping_workflow_dispatches_next_queued_workflow_prompt_inner() {
+    let worktree = crate::test_support::TestWorktree::new("queued-after-stop");
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-queued-after-stop", "worktree-queued-after-stop"),
+            worktree.session_request(),
         ))
         .expect("session should create")
     {
@@ -762,12 +766,13 @@ fn stopping_workflow_dispatches_next_queued_workflow_prompt_inner() {
 }
 
 fn local_request_api_queues_concurrent_invocations_for_one_endpoint_inner() {
+    let worktree = crate::test_support::TestWorktree::new("concurrent-launch");
     const INVOCATION_COUNT: usize = 12;
 
     let harness = std::sync::Arc::new(LocalRouterTestHarness::new());
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-concurrent-launch", "worktree-concurrent-launch"),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {
@@ -917,13 +922,11 @@ fn local_request_api_queues_concurrent_invocations_for_one_endpoint_inner() {
 // only after it becomes idle, and that workflow/run identity survives a hot
 // state round trip (the same serialization the kernel restart restores from).
 fn local_request_api_two_workflow_multi_node_collision_drill_inner() {
+    let worktree = crate::test_support::TestWorktree::new("concurrency-audit-drill");
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new(
-                "workspace-concurrency-audit-drill",
-                "worktree-concurrency-audit-drill",
-            ),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {
@@ -1310,13 +1313,11 @@ fn local_request_api_two_workflow_multi_node_collision_drill_inner() {
 }
 
 fn local_request_api_serializes_two_workflows_sharing_an_agent_inner() {
+    let worktree = crate::test_support::TestWorktree::new("shared-agent-workflows");
     let harness = std::sync::Arc::new(LocalRouterTestHarness::new());
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new(
-                "workspace-shared-agent-workflows",
-                "worktree-shared-agent-workflows",
-            ),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {
@@ -1500,7 +1501,7 @@ fn local_request_api_runs_independent_workflows_concurrently_inner() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-independent-workflows", "worktree-root"),
+            harness.fixture_session_request("workspace-independent-workflows"),
         ))
         .expect("session create should succeed")
     {

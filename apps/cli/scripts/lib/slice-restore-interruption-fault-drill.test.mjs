@@ -9,8 +9,9 @@ import {
 } from "./slice-restore-interruption-fault-drill.mjs"
 
 const probe = {
-  schema: "chariox.slice_restore_interruption_probe.v1",
-  childInterruptedAfterReplacement: true,
+  schema: "chariox.slice_restore_interruption_probe.v2",
+  childInterruptedDuringStartupRecovery: true,
+  postTargetCreationInterruptionStillRequiresProtectedLiveFixture: true,
   durableIntentSurvived: true,
   rollbackRestoredOnRestart: true,
   partialRuntimeRemoved: true,
@@ -33,8 +34,8 @@ test("slice restore interruption drill runs only the exact kernel library probe"
     "--nocapture",
   ])
   assert.deepEqual(SLICE_RESTORE_INTERRUPTION_CASE_IDS, [
-    "fault.restore-after-container-create",
-    "journal.intent-before-mutation",
+    "fault.interrupted-startup-recovery",
+    "journal.retained-pending-intent",
     "recovery.startup-rollback",
     "state.last-known-good",
     "cleanup.partial-runtime",
@@ -57,6 +58,14 @@ test("slice restore interruption drill requires durable rollback and exact clean
   )
   assert.throws(
     () => parseSliceRestoreInterruptionProbe("test result: ok"),
-    /missing chariox\.slice_restore_interruption_probe\.v1/,
+    /missing chariox\.slice_restore_interruption_probe\.v2/,
   )
+})
+
+// libtest may write the test name on the same line as --nocapture output.
+test("probe accepts the actual libtest prefix and rejects stale or broadened evidence", () => {
+  assert.deepEqual(parseSliceRestoreInterruptionProbe(`test ${SLICE_RESTORE_INTERRUPTION_TEST_NAME} ... CHARIOX_SLICE_RESTORE_INTERRUPTION_PROBE:${JSON.stringify(probe)}\nok`), probe)
+  assert.throws(() => parseSliceRestoreInterruptionProbe(`CHARIOX_SLICE_RESTORE_INTERRUPTION_PROBE:${JSON.stringify({ ...probe, schema: "chariox.slice_restore_interruption_probe.v1" })}`), /schema must be/)
+  assert.throws(() => parseSliceRestoreInterruptionProbe(`CHARIOX_SLICE_RESTORE_INTERRUPTION_PROBE:${JSON.stringify({ ...probe, postTargetCreationInterruptionStillRequiresProtectedLiveFixture: false })}`), /postTargetCreationInterruptionStillRequiresProtectedLiveFixture must be true/)
+  assert.throws(() => parseSliceRestoreInterruptionProbe(`CHARIOX_SLICE_RESTORE_INTERRUPTION_PROBE:${JSON.stringify({ ...probe, claimedFullCapture: true })}`), /fields do not match/)
 })

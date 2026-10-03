@@ -31,6 +31,8 @@ pub(crate) struct LocalRouterTestHarness {
     runtime: Runtime,
     app: Arc<Mutex<DaemonApp>>,
     router: CommandRouter,
+    session_worktrees:
+        std::sync::Mutex<std::collections::BTreeMap<String, crate::test_support::TestWorktree>>,
 }
 
 impl LocalRouterTestHarness {
@@ -66,7 +68,23 @@ impl LocalRouterTestHarness {
                 .expect("test runtime should start"),
             app,
             router,
+            session_worktrees: std::sync::Mutex::new(std::collections::BTreeMap::new()),
         }
+    }
+
+    /// Keep real fixture directories alive for the full router fixture lifetime.
+    pub(crate) fn fixture_session_request(
+        &self,
+        label: &str,
+    ) -> crate::session::CreateSessionRequest {
+        let mut worktrees = self
+            .session_worktrees
+            .lock()
+            .expect("fixture worktrees should lock");
+        worktrees
+            .entry(label.to_string())
+            .or_insert_with(|| crate::test_support::TestWorktree::new(label))
+            .session_request()
     }
 
     pub(crate) fn dispatch(

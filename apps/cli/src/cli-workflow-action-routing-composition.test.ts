@@ -8,6 +8,7 @@ import type {
   WorkflowQueuedPrompt,
   WorkflowRun,
 } from "./cli-types.js"
+import { LocalIpcClient } from "./ipc.js"
 import { createCliAppWorkflowActionComposition } from "./cli-app-workflow-composition.js"
 import { createCliCommandActionComposition } from "./cli-command-action-composition.js"
 
@@ -15,6 +16,7 @@ test("workflow capabilities survive app and command action composition", async (
   const requests: Record<string, any>[] = []
   const footers: string[] = []
   const notices: string[] = []
+  const clipboard: string[] = []
   let selectedWorkflowId: string | null = "workflow-1"
   let workspaceScreenMode = "workflow"
   let state = session({ workflows: [workflow()] })
@@ -22,79 +24,85 @@ test("workflow capabilities survive app and command action composition", async (
   const queue = workflowQueue()
   const run = workflowRun()
 
-  const client = {
-    send: async (request: Record<string, any>): Promise<Record<string, unknown>> => {
-      requests.push(request)
-      if (request.PauseWorkflowRun) {
-        return { WorkflowRunPaused: { workflow_run: { ...run, status: "Paused" }, session: state } }
-      }
-      if (request.GetWorkflowRun) {
-        return { WorkflowRun: { workflow_run: run } }
-      }
-      if (request.ListWorkflowPromptQueues) {
-        return { WorkflowPromptQueuesListed: { queues: [queue] } }
-      }
-      if (request.ListQueuedWorkflowPrompts) {
-        return { QueuedWorkflowPromptsListed: { queued_prompts: [queuedPrompt] } }
-      }
-      if (request.CreateWorkflowPromptQueue) {
-        return { WorkflowPromptQueueCreated: { queue, session: state } }
-      }
-      if (request.UpdateWorkflowPromptQueue) {
-        const body = request.UpdateWorkflowPromptQueue
-        return {
-          WorkflowPromptQueueUpdated: {
-            queue: {
-              ...queue,
-              alias: body.alias ?? queue.alias,
-              priority: body.priority ?? queue.priority,
-              enabled: body.enabled ?? queue.enabled,
-            },
-            session: state,
+  const respondToWorkflowRequest = async (request: Record<string, any>): Promise<Record<string, unknown>> => {
+    requests.push(request)
+    if (request.AcceptAppHostAction) {
+      return { AppHostActionAccepted: { operation_id: request.AcceptAppHostAction.operation_id, action: { kind: "clipboard_write", text: "accepted copy" } } }
+    }
+    if (request.PauseWorkflowRun) {
+      return { WorkflowRunPaused: { workflow_run: { ...run, status: "Paused" }, session: state } }
+    }
+    if (request.GetWorkflowRun) {
+      return { WorkflowRun: { workflow_run: run } }
+    }
+    if (request.ListWorkflowPromptQueues) {
+      return { WorkflowPromptQueuesListed: { queues: [queue] } }
+    }
+    if (request.ListQueuedWorkflowPrompts) {
+      return { QueuedWorkflowPromptsListed: { queued_prompts: [queuedPrompt] } }
+    }
+    if (request.CreateWorkflowPromptQueue) {
+      return { WorkflowPromptQueueCreated: { queue, session: state } }
+    }
+    if (request.UpdateWorkflowPromptQueue) {
+      const body = request.UpdateWorkflowPromptQueue
+      return {
+        WorkflowPromptQueueUpdated: {
+          queue: {
+            ...queue,
+            alias: body.alias ?? queue.alias,
+            priority: body.priority ?? queue.priority,
+            enabled: body.enabled ?? queue.enabled,
           },
-        }
+          session: state,
+        },
       }
-      if (request.UpdateQueuedWorkflowPrompt) {
-        return { QueuedWorkflowPromptUpdated: { queued_prompt: queuedPrompt, session: state } }
+    }
+    if (request.UpdateQueuedWorkflowPrompt) {
+      return { QueuedWorkflowPromptUpdated: { queued_prompt: queuedPrompt, session: state } }
+    }
+    if (request.RemoveQueuedWorkflowPrompt) {
+      return { QueuedWorkflowPromptRemoved: { queued_prompt: queuedPrompt, session: state } }
+    }
+    if (request.ClearWorkflowPromptQueue) {
+      return { WorkflowPromptQueueCleared: { queued_prompts: [queuedPrompt], session: state } }
+    }
+    if (request.RemoveWorkflowPromptQueue) {
+      return { WorkflowPromptQueueRemoved: { queue, session: state } }
+    }
+    if (request.BindWorkflowEndpoint) {
+      const body = request.BindWorkflowEndpoint
+      const endpoint = { id: "endpoint-1", alias: "start", entry_node_id: body.entry_node_id }
+      return { WorkflowEndpointBound: { endpoint, workflow: workflow({ endpoints: [endpoint] }), session: state } }
+    }
+    if (request.ResolveWorkflow) {
+      return { WorkflowResolved: { workflow: state.workflows?.[0] ?? workflow() } }
+    }
+    if (request.ApplyWorkflowDesignOp) {
+      const op = request.ApplyWorkflowDesignOp.op
+      if (op.kind === "endpoint_update") {
+        state = session({
+          workflows: [workflow({
+            endpoints: [{
+              ...workflow().endpoints![0]!,
+              ...(op.patch.alias !== undefined ? { alias: op.patch.alias } : {}),
+              ...(op.patch.entry_node_id !== undefined ? { entry_node_id: op.patch.entry_node_id } : {}),
+            }],
+          })],
+        })
+      } else if (op.kind === "endpoint_remove") {
+        state = session({ workflows: [workflow({ endpoints: [] })] })
+      } else if (op.kind === "workflow_remove") {
+        state = session({ workflows: [] })
       }
-      if (request.RemoveQueuedWorkflowPrompt) {
-        return { QueuedWorkflowPromptRemoved: { queued_prompt: queuedPrompt, session: state } }
-      }
-      if (request.ClearWorkflowPromptQueue) {
-        return { WorkflowPromptQueueCleared: { queued_prompts: [queuedPrompt], session: state } }
-      }
-      if (request.RemoveWorkflowPromptQueue) {
-        return { WorkflowPromptQueueRemoved: { queue, session: state } }
-      }
-      if (request.BindWorkflowEndpoint) {
-        const body = request.BindWorkflowEndpoint
-        const endpoint = { id: "endpoint-1", alias: "start", entry_node_id: body.entry_node_id }
-        return { WorkflowEndpointBound: { endpoint, workflow: workflow({ endpoints: [endpoint] }), session: state } }
-      }
-      if (request.ResolveWorkflow) {
-        return { WorkflowResolved: { workflow: state.workflows?.[0] ?? workflow() } }
-      }
-      if (request.ApplyWorkflowDesignOp) {
-        const op = request.ApplyWorkflowDesignOp.op
-        if (op.kind === "endpoint_update") {
-          state = session({
-            workflows: [workflow({
-              endpoints: [{
-                ...workflow().endpoints![0]!,
-                ...(op.patch.alias !== undefined ? { alias: op.patch.alias } : {}),
-                ...(op.patch.entry_node_id !== undefined ? { entry_node_id: op.patch.entry_node_id } : {}),
-              }],
-            })],
-          })
-        } else if (op.kind === "endpoint_remove") {
-          state = session({ workflows: [workflow({ endpoints: [] })] })
-        } else if (op.kind === "workflow_remove") {
-          state = session({ workflows: [] })
-        }
-        return { WorkflowDesignOpAccepted: { session: state } }
-      }
-      throw new Error(`unexpected request ${Object.keys(request)[0] ?? "unknown"}`)
-    },
+      return { WorkflowDesignOpAccepted: { session: state } }
+    }
+    throw new Error(`unexpected request ${Object.keys(request)[0] ?? "unknown"}`)
+  }
+  const client = new LocalIpcClient("/unused-workflow-test.sock")
+  client.send = async <TResponse>(request: unknown): Promise<TResponse> => {
+    const response = await respondToWorkflowRequest(request as Record<string, any>)
+    return response as TResponse
   }
 
   const workflowActions = createCliAppWorkflowActionComposition({
@@ -123,6 +131,8 @@ test("workflow capabilities survive app and command action composition", async (
 
   const handlers = createCliCommandActionComposition({
     ...workflowActions,
+    lastViewedAppHostOperationId: () => "0123456789abcdef0123456789abcdef",
+    appHostTerminal: { copy: async (text: string) => { clipboard.push(text) }, openLink: async () => false },
     client,
     options: { clientId: "cli-1", accountProfile: "default", model: "default", effort: "", provider: "opencode" },
     preferencesState: () => ({}),
@@ -177,6 +187,12 @@ test("workflow capabilities survive app and command action composition", async (
     selectedWorkflowId: () => selectedWorkflowId,
     refreshSplitPaneFocusRepaint: () => {},
   } as any)
+
+  state = { ...state, active_interactions: [{ id: "app_host_0123456789abcdef0123456789abcdef", kernel_operation_id: "host_action:0123456789abcdef0123456789abcdef", kind: "permission", level: "warning", requested_at_ms: 1, title: "Copy", message: "copy", choices: [{ id: "decline", label: "Decline", reply: "deny" }] }] }
+  await handlers.handleAppCommand({ kind: "app", raw: "/app host accept", args: ["host", "accept"] })
+  assert.deepEqual(clipboard, ["accepted copy"])
+  assert.deepEqual(requests.pop(), { AcceptAppHostAction: { session_id: state.id, operation_id: "0123456789abcdef0123456789abcdef" } })
+  notices.length = 0
 
   const execute = (args: string[]) => handlers.handleWorkflowCommand({
     kind: "workflow",

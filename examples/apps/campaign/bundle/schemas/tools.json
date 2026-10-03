@@ -1,0 +1,13 @@
+{
+  "tools": [
+    {
+      "name": "read_campaign",
+      "description": "Read the active campaign, refreshing approved data at most once per minute. Returns explicit cache expiry and refresh status.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    }
+  ]
+}

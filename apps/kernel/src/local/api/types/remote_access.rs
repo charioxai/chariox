@@ -81,6 +81,10 @@ pub struct JoinTerminalPairingLinkRequest {
     pub terminal_type: Option<TerminalType>,
     #[serde(default)]
     pub alias: Option<String>,
+    /// The receiving CLI's persistent relay key. New clients receive a fresh
+    /// relay token bound to this key after proving possession in the request.
+    #[serde(default)]
+    pub public_key_thumbprint: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

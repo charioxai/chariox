@@ -5,6 +5,7 @@ import {
   applyProviderPreferenceDefaults,
   parseArgs,
   resolveConfiguredCloudRelayApiUrl,
+  terminalPairingLinkFromArgs,
 } from "./cli-options.js"
 
 test("parseArgs applies terminal pairing links", () => {
@@ -26,6 +27,12 @@ test("parseArgs applies terminal pairing links", () => {
     targetDaemonId: "kernel-1",
     targetDaemonAlias: "devbox",
   })
+})
+
+test("terminal pairing bootstrap retrieves only the pairing-link argument", () => {
+  const link = "chariox-terminal-pair-v1.fixture"
+  assert.equal(terminalPairingLinkFromArgs(["--session", "session-1", "--pairing-link", link]), link)
+  assert.equal(terminalPairingLinkFromArgs(["--session", "session-1"]), null)
 })
 
 test("parseArgs rejects invalid option combinations", () => {
@@ -83,13 +90,18 @@ test("parseArgs help lists remote runtime once next to kernel health", () => {
   assert.match(output, /\/provider processes \[n\]\s+list daemon-tracked provider processes/)
   assert.match(output, /\/provider processes teardown <n>\s+tear down safe daemon-tracked provider processes/)
   assert.match(output, /\/extension import\s+import provider MCPs and skills into Chariox/)
-  assert.match(output, /\/extension grant\s+grant mcp, skill, script, or connector capabilities to an agent/)
+  assert.match(output, /\/extension grant\s+grant mcp, skill, script, connector, or app capabilities to an agent/)
   assert.match(output, /\/extension revoke\s+revoke an extension from an agent/)
   assert.match(output, /\/extension grants\s+show worker-local, home-proxy, and skill snapshot grants/)
   assert.match(output, /\/extension sync-status\s+show home-proxy manifest sync and recovery for an agent/)
   assert.match(output, /\/extension sync-retry\s+retry home-proxy manifest projection after worker reconnect/)
   assert.match(output, /\/extension audit\s+show home extension audit events and denials for an agent/)
   assert.match(output, /\/notifications \.\.\.\s+discover, install, inspect, reconnect, and remove notification services/)
+  // The App lines come from the shared catalog (app-command-parity.test.ts).
+  assert.match(output, /\/app status INSTALLATION\s+show an App installation/)
+  assert.match(output, /\/app install "FILE\.cxapp"\s+install an App/)
+  assert.doesNotMatch(output, /\/app pack\b/)
+  assert.match(output, /chariox app create\|keygen\|.*\|install\|update\|list\|/)
   assert.match(output, /\/agent spawn \[a\] \[m\] \[--dir d\] \[--worktree d --branch b\] \[--machine r\|--kernel k\|--slice off\|new\|s\] \[--slice-display headless\|headed\] spawn a local, remote, or slice agent/)
   assert.match(output, /\/slice state \[s\]\s+show saved slice state and restart requirements/)
   assert.match(output, /\/slice save-state \[s\]\s+save slice state after shutdown or agent restart/)

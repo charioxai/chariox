@@ -33,8 +33,8 @@ fn detaching_last_attachment_parks_and_reattaching_resumes_same_provider_run() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let worktree = crate::test_support::TestWorktree::new("session-provider-reattach");
-    let session = app
-        .sessions_mut()
+    // A session is created with its default agent: attaching creates none.
+    let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
         .expect("session should be created");
 
@@ -388,6 +388,11 @@ fn ended_sessions_reopen_on_attach_and_preserve_history() {
 
     assert_eq!(reopened.session_id(), session.id());
     assert_eq!(reopened_session.status(), SessionStatus::Parked);
+    assert_eq!(
+        app.agents().get_session_agents(session.id()).len(),
+        1,
+        "an ended session gets its default agent back when reopened"
+    );
     assert_eq!(reopened_session.attachment_ids().len(), 1);
     assert!(history
         .iter()

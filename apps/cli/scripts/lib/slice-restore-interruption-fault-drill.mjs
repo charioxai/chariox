@@ -1,6 +1,6 @@
 export const SLICE_RESTORE_INTERRUPTION_CASE_IDS = Object.freeze([
-  "fault.restore-after-container-create",
-  "journal.intent-before-mutation",
+  "fault.interrupted-startup-recovery",
+  "journal.retained-pending-intent",
   "recovery.startup-rollback",
   "state.last-known-good",
   "cleanup.partial-runtime",
@@ -8,12 +8,13 @@ export const SLICE_RESTORE_INTERRUPTION_CASE_IDS = Object.freeze([
 ])
 
 export const SLICE_RESTORE_INTERRUPTION_TEST_NAME =
-  "runtime_transport::tests::slice_backup_restore_interruption_after_container_creation_rolls_back_on_restart"
+  "runtime_transport::tests::slice_pending_backup_restore_interruption_rolls_back_on_restart"
 
 const PROBE_PREFIX = "CHARIOX_SLICE_RESTORE_INTERRUPTION_PROBE:"
-const PROBE_SCHEMA = "chariox.slice_restore_interruption_probe.v1"
+const PROBE_SCHEMA = "chariox.slice_restore_interruption_probe.v2"
 const BOOLEAN_FIELDS = Object.freeze([
-  "childInterruptedAfterReplacement",
+  "childInterruptedDuringStartupRecovery",
+  "postTargetCreationInterruptionStillRequiresProtectedLiveFixture",
   "durableIntentSurvived",
   "rollbackRestoredOnRestart",
   "partialRuntimeRemoved",
@@ -38,7 +39,7 @@ export function buildSliceRestoreInterruptionCargoArgs() {
 export function parseSliceRestoreInterruptionProbe(output) {
   const line = String(output ?? "")
     .split("\n")
-    .map((candidate) => candidate.trim())
+    .map((candidate) => candidate.trim().replace(/^test \S+ \.\.\. /, ""))
     .findLast((candidate) => candidate.startsWith(PROBE_PREFIX))
   if (!line) throw new Error(`slice restore interruption output is missing ${PROBE_SCHEMA}`)
 

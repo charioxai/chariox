@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The Chariox kernel, one per logged-in user, in that user's gui domain.
+     Restarted after a crash, not after a clean stop (as the Linux unit's
+     Restart=on-failure); start-kernel.sh sets its environment. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>dev.chariox.kernel</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/libexec/chariox/start-kernel.sh</string>
+	</array>
+	<key>LimitLoadToSessionType</key>
+	<string>Aqua</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ThrottleInterval</key>
+	<integer>5</integer>
+	<key>ExitTimeOut</key>
+	<integer>60</integer>
+</dict>
+</plist>

@@ -6,7 +6,9 @@ export const RESOURCE_EXHAUSTION_CASE_IDS = Object.freeze([
 export const PROCESS_LIMIT_HEADROOM = "32"
 export const PROCESS_LIMIT_SHELL = [
   'if [ "$(uname -s)" = "Linux" ]; then',
-  'current_tasks="$(ps -eLo uid= | awk -v uid="$(id -u)" \'$1 == uid { count += 1 } END { print count + 0 }\')"',
+  'probe_uid="$(id -u)"',
+  'if [ "$probe_uid" = "0" ]; then probe_uid=65534; fi',
+  'current_tasks="$(ps -eLo uid= | awk -v uid="$probe_uid" \'$1 == uid { count += 1 } END { print count + 0 }\')"',
   "else",
   'current_tasks="$(ps -u "$(id -u)" -o pid= | wc -l | tr -d \' \')"',
   "fi",

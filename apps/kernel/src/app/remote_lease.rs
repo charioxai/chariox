@@ -12,6 +12,7 @@ use crate::session::CreateSessionRequest;
 mod git_observation;
 mod mcp_availability;
 mod native_provider;
+mod project_environment;
 mod projection;
 mod prompt_attachments;
 mod prompt_lifecycle;
@@ -19,9 +20,10 @@ mod provider_account;
 mod provider_run;
 mod relay_context;
 mod skill_sync;
+mod turn_capacity;
 
-pub(crate) use projection::RemoteProviderFailure;
 pub(crate) use prompt_lifecycle::PreparedLeasedProviderRun;
+pub(crate) use turn_capacity::LeasedTurnWaitingForCapacity;
 
 // Keep only small worker-generated IDs, not completed agents or prompt history.
 // Expiry or a worker restart must fail closed rather than infer successful cleanup.
@@ -57,7 +59,7 @@ fn leased_agent_cleanup_error(agent_id: &str, source: DaemonError) -> DaemonErro
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub(crate) struct LeaseCallerBinding {
     pub(crate) home_kernel_id: String,
     pub(crate) authenticated_machine_id: String,
@@ -134,7 +136,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         home_agent_metaagent: bool,
         owner_user_id: &str,
     ) -> Result<ExecutionLease, DaemonError> {
-        if !self.app.accepting_remote_leases() {
+        if !self.app.config.accept_remote_leases {
             return Err(DaemonError::RemoteLeasesDisabled {
                 machine_id: self.app.config.host_machine_id.clone(),
             });
@@ -235,8 +237,19 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .app
             .leased_agent_callers
             .get(leased_agent_id)
-            .or_else(|| self.app.completed_leased_agent_callers.get(leased_agent_id));
-        if owner == Some(caller) {
+            .or_else(|| self.app.completed_leased_agent_callers.get(leased_agent_id))
+            .cloned()
+            .or_else(|| {
+                self.app
+                    .worker_steer_receipts
+                    .caller_for_leased_agent(leased_agent_id)
+            })
+            .or_else(|| {
+                self.app
+                    .worker_prompt_receipts
+                    .caller_for_leased_agent(leased_agent_id)
+            });
+        if owner.as_ref() == Some(caller) {
             Ok(())
         } else {
             Err(DaemonError::LeaseCallerUnauthorized {
@@ -759,7 +772,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
                             .map(|_| ())
                     }
                 }
-                LeasedAgentCleanupPhase::BackingSessionDelete => {
+                LeasedAgentCleanupPhase::BackingSessionDelete => (|| {
+                    self.app
+                        .operational_history_store()
+                        .delete_leased_projection_state(
+                            &agent.backing_session_id,
+                            &agent.backing_agent_id,
+                        )?;
                     if backing_session_still_used {
                         Ok(())
                     } else {
@@ -768,7 +787,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                             .delete_session(&agent.backing_session_id)
                             .map(|_| ())
                     }
-                }
+                })(),
             };
             result.map_err(|error| leased_agent_cleanup_error(leased_agent_id, error))?;
             let Some(next) = phase.next() else {
@@ -845,6 +864,21 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     .to_string(),
             });
         }
+        self.leased_project_target(
+            leased_agent_id,
+            home_session_id,
+            home_agent_id,
+            workspace_id,
+        )
+    }
+
+    pub(crate) fn leased_project_target(
+        &self,
+        leased_agent_id: &str,
+        home_session_id: &str,
+        home_agent_id: &str,
+        workspace_id: Option<&str>,
+    ) -> Result<LeasedProjectEnvironmentSetupTarget, DaemonError> {
         let leased_agent = self
             .app
             .leased_agents
@@ -921,33 +955,22 @@ impl<'a> RemoteLeaseRuntime<'a> {
         })
     }
 
-    pub(crate) fn leased_workflow_event_capabilities_for_backing_prompt(
+    pub(crate) fn is_leased_workflow_backing_prompt(
         &self,
         session_id: &str,
         agent_id: &str,
         backing_prompt_id: &str,
-    ) -> Option<(bool, bool, bool)> {
-        self.app
-            .leased_workflow_turns
-            .values()
-            .find(|binding| {
-                binding.backing_prompt_id == backing_prompt_id
-                    && self
-                        .app
-                        .leased_agents
-                        .get(&binding.leased_agent_id)
-                        .is_some_and(|agent| {
-                            agent.backing_session_id == session_id
-                                && agent.backing_agent_id == agent_id
-                        })
-            })
-            .map(|binding| {
-                (
-                    binding.context.event_reply_enabled,
-                    binding.context.event_context_enabled,
-                    binding.context.event_actions_enabled,
-                )
-            })
+    ) -> bool {
+        self.app.leased_workflow_turns.values().any(|binding| {
+            binding.backing_prompt_id == backing_prompt_id
+                && self
+                    .app
+                    .leased_agents
+                    .get(&binding.leased_agent_id)
+                    .is_some_and(|agent| {
+                        agent.backing_session_id == session_id && agent.backing_agent_id == agent_id
+                    })
+        })
     }
 
     pub(crate) fn activate_leased_workflow_prompt(
@@ -1282,7 +1305,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
     pub(crate) fn leased_workflow_turn_binding_for_test(
         &self,
         home_prompt_id: &str,
-    ) -> Option<(String, String, bool)> {
+    ) -> Option<(String, String)> {
         self.app
             .leased_workflow_turns
             .values()
@@ -1291,7 +1314,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 (
                     binding.backing_prompt_id.clone(),
                     binding.provider_run_id.clone(),
-                    binding.context.event_reply_enabled,
                 )
             })
     }
@@ -1314,6 +1336,33 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .values()
             .filter(|binding| binding.home_prompt_id == home_prompt_id)
             .count()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_execution_lease_home_kernel_for_test(
+        &mut self,
+        lease_id: &str,
+        home_kernel_id: &str,
+    ) {
+        self.app
+            .execution_leases
+            .get_mut(lease_id)
+            .expect("fixture lease should exist")
+            .home_kernel_id = home_kernel_id.to_string();
+        self.app
+            .execution_lease_callers
+            .get_mut(lease_id)
+            .expect("fixture lease caller should exist")
+            .home_kernel_id = home_kernel_id.to_string();
+        for (id, agent) in &self.app.leased_agents {
+            if agent.lease_id == lease_id {
+                self.app
+                    .leased_agent_callers
+                    .get_mut(id)
+                    .expect("fixture leased caller should exist")
+                    .home_kernel_id = home_kernel_id.to_string();
+            }
+        }
     }
 
     #[cfg(test)]
@@ -1350,6 +1399,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod catalog_admission;
     mod profile_admission;
 
     #[test]

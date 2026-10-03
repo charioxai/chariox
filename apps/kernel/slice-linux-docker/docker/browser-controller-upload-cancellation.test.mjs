@@ -41,6 +41,7 @@ test(`stdio upload cancellation during ${boundary} reports the physical outcome 
   const waiters = new Map();
   lines.on("line", (line) => { const response = JSON.parse(line); waiters.get(response.id)?.resolve(response); });
   const browser = new BrowserCdpClient({ connectionFactory: async () => chromium,
+    stageUploads: async ({ files }) => ({ files, markExposed() {}, async discard() {} }),
     uploadRoots: ["/uploads"], fileSystem: {
       realpath: async (value) => value,
       stat: async (value) => { if (value.endsWith("report.txt")) await pause("filesystem");

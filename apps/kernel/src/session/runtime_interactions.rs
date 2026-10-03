@@ -2,6 +2,12 @@ use serde::{Deserialize, Serialize};
 
 use super::types::unix_epoch_ms;
 
+mod subject;
+pub use subject::RuntimeInteractionSubject;
+
+#[cfg(test)]
+mod subject_tests;
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeInteractionKind {
@@ -32,6 +38,11 @@ pub struct RuntimeInteractionChoice {
     reply: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     style: Option<RuntimeInteractionChoiceStyle>,
+    /// Answering with this choice needs the Chariox passkey (the vault
+    /// passphrase) or an open remember window. Only kernel-operation
+    /// decisions may set it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    requires_passkey: bool,
 }
 
 impl RuntimeInteractionChoice {
@@ -46,7 +57,19 @@ impl RuntimeInteractionChoice {
             label: label.into(),
             reply: reply.into(),
             style,
+            requires_passkey: false,
         }
+    }
+
+    /// Marks a critical approval: the kernel accepts it only with a verified
+    /// passkey or within the owner's remember window.
+    pub(crate) fn requiring_passkey(mut self) -> Self {
+        self.requires_passkey = true;
+        self
+    }
+
+    pub fn requires_passkey(&self) -> bool {
+        self.requires_passkey
     }
 
     pub fn id(&self) -> &str {
@@ -160,10 +183,41 @@ fn runtime_interaction_input_kind_is_text(kind: &RuntimeInteractionInputKind) ->
     *kind == RuntimeInteractionInputKind::Text
 }
 
+/// Captured by the producer before handing an approval to an asynchronous bridge.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "scope", rename_all = "snake_case")]
+pub enum NativeInteractionOrigin {
+    Prompt {
+        provider_run_id: String,
+        prompt_id: String,
+    },
+    NativeTurn {
+        provider_run_id: String,
+        native_turn_id: String,
+    },
+    /// Workspace trust is requested before a task is dispatched.
+    ProviderStartup { provider_run_id: String },
+}
+
+impl NativeInteractionOrigin {
+    pub fn provider_run_id(&self) -> &str {
+        match self {
+            Self::Prompt {
+                provider_run_id, ..
+            }
+            | Self::NativeTurn {
+                provider_run_id, ..
+            }
+            | Self::ProviderStartup { provider_run_id } => provider_run_id,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeInteraction {
     id: String,
-    agent_id: String,
+    #[serde(flatten)]
+    subject: RuntimeInteractionSubject,
     kind: RuntimeInteractionKind,
     level: RuntimeInteractionLevel,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -176,7 +230,31 @@ pub struct RuntimeInteraction {
     timeout_sec: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     default_on_timeout: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    native_origin: Option<NativeInteractionOrigin>,
     requested_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    project_environment_review: Option<crate::project_environment::ProjectEnvironmentReview>,
+    /// Ephemeral provider-native login UI, never model context or history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider_login: Option<RuntimeProviderLogin>,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeProviderLogin {
+    pub kernel_id: String,
+    pub login: crate::provider::ProviderLoginStart,
+    pub terminal_output_base64: String,
+}
+
+impl std::fmt::Debug for RuntimeProviderLogin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RuntimeProviderLogin")
+            .field("kernel_id", &self.kernel_id)
+            .field("login", &self.login)
+            .field("terminal_output_base64", &"[REDACTED]")
+            .finish()
+    }
 }
 
 impl RuntimeInteraction {
@@ -195,7 +273,9 @@ impl RuntimeInteraction {
     ) -> Self {
         Self {
             id: id.into(),
-            agent_id: agent_id.into(),
+            subject: RuntimeInteractionSubject::Agent {
+                agent_id: agent_id.into(),
+            },
             kind,
             level,
             title,
@@ -204,16 +284,96 @@ impl RuntimeInteraction {
             custom_choice,
             timeout_sec,
             default_on_timeout,
+            native_origin: None,
             requested_at_ms: unix_epoch_ms(),
+            project_environment_review: None,
+            provider_login: None,
         }
+    }
+
+    pub fn native_origin(&self) -> Option<&NativeInteractionOrigin> {
+        self.native_origin.as_ref()
+    }
+
+    pub fn with_native_origin(mut self, origin: Option<NativeInteractionOrigin>) -> Self {
+        self.native_origin = origin;
+        self
+    }
+
+    pub fn with_project_environment_review(
+        mut self,
+        review: crate::project_environment::ProjectEnvironmentReview,
+    ) -> Self {
+        self.project_environment_review = Some(review);
+        self
     }
 
     pub fn id(&self) -> &str {
         &self.id
     }
 
-    pub fn agent_id(&self) -> &str {
-        &self.agent_id
+    pub fn agent_id(&self) -> Option<&str> {
+        self.subject.agent_id()
+    }
+
+    pub fn kernel_operation_id(&self) -> Option<&str> {
+        self.subject.kernel_operation_id()
+    }
+
+    pub fn subject(&self) -> &RuntimeInteractionSubject {
+        &self.subject
+    }
+
+    pub(crate) fn valid_subject(&self) -> bool {
+        self.subject.valid()
+    }
+
+    /// A kernel-owned decision, projected without creating an agent or prompt.
+    /// Only the dedicated registration path binds its authenticated owner.
+    pub(crate) fn for_kernel_operation(
+        id: impl Into<String>,
+        operation_id: impl Into<String>,
+        title: impl Into<String>,
+        message: impl Into<String>,
+        choices: Vec<RuntimeInteractionChoice>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            subject: RuntimeInteractionSubject::KernelOperation {
+                kernel_operation_id: operation_id.into(),
+            },
+            kind: RuntimeInteractionKind::Permission,
+            level: RuntimeInteractionLevel::Warning,
+            title: Some(title.into()),
+            message: message.into(),
+            choices,
+            custom_choice: None,
+            timeout_sec: Some(300),
+            default_on_timeout: None,
+            native_origin: None,
+            requested_at_ms: unix_epoch_ms(),
+            project_environment_review: None,
+            provider_login: None,
+        }
+    }
+
+    /// A kernel decision that must close before its subject expires.
+    pub(crate) fn with_timeout_sec(mut self, seconds: u64) -> Self {
+        self.timeout_sec = Some(seconds);
+        self
+    }
+
+    pub fn with_provider_login(mut self, login: RuntimeProviderLogin) -> Self {
+        self.provider_login = Some(login);
+        self
+    }
+
+    pub(crate) fn provider_login_is_human_only(&self) -> bool {
+        self.provider_login.is_some() || self.id.starts_with("provider-auth-recovery:")
+    }
+
+    pub fn provider_login(&self) -> Option<&RuntimeProviderLogin> {
+        self.provider_login.as_ref()
     }
 
     pub fn kind(&self) -> RuntimeInteractionKind {
@@ -257,7 +417,9 @@ impl RuntimeInteraction {
     }
 
     pub fn with_agent_id(mut self, agent_id: impl Into<String>) -> Self {
-        self.agent_id = agent_id.into();
+        self.subject = RuntimeInteractionSubject::Agent {
+            agent_id: agent_id.into(),
+        };
         self
     }
 }

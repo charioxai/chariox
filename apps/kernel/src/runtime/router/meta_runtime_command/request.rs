@@ -115,6 +115,7 @@ pub(super) fn meta_slice_request(args: &[String]) -> Result<LocalDaemonRequest, 
             }
             Ok(LocalDaemonRequest::GetSlice(SliceRefRequest {
                 slice_ref: slice_ref.clone(),
+                interactive: false,
             }))
         }
         Some("start") => meta_slice_ref_request(args, "start", LocalDaemonRequest::StartSlice),
@@ -193,6 +194,7 @@ fn meta_slice_ref_request(
     }
     Ok(request(SliceRefRequest {
         slice_ref: slice_ref.clone(),
+        interactive: false,
     }))
 }
 
@@ -974,3 +976,5 @@ pub(super) fn meta_kernel_command_without_request(
 pub(super) fn metaagent_command_client_id(metaagent_id: &str) -> String {
     format!("metaagent:{metaagent_id}:commands")
 }
+mod app_binding;
+pub(super) use app_binding::meta_app_binding_request;

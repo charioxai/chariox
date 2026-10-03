@@ -489,23 +489,16 @@ impl SessionService {
         watchdog_id: Option<String>,
         publication_invocation: Option<WorkflowPublicationInvocationEnvelope>,
     ) -> Result<WorkflowQueuedPrompt, DaemonError> {
-        let queue_ref = queue_ref.unwrap_or("default");
-        let workflow = self.resolve_workflow_ref(session_id, workflow_id)?;
-        let queue_id =
-            self.resolve_workflow_prompt_queue_ref(session_id, workflow.id(), queue_ref)?;
-        let endpoint =
-            self.resolve_workflow_endpoint_ref(session_id, workflow.id(), endpoint_id)?;
-        self.validate_workflow_runnable(session_id, &workflow, &endpoint)?;
-        let queued = WorkflowQueuedPrompt::new(crate::session::WorkflowQueuedPromptInput {
-            id: self.next_workflow_queued_prompt_id(),
-            queue_id,
-            workflow_id: workflow.id().to_string(),
-            endpoint_id: endpoint.id().to_string(),
+        let queued = self.prepare_workflow_prompt_with_publication_invocation(
+            session_id,
+            workflow_id,
+            endpoint_id,
             prompt,
-            publication_invocation,
+            queue_ref,
             source,
-            schedule_id: watchdog_id,
-        });
+            watchdog_id,
+            publication_invocation,
+        )?;
         let session =
             self.store
                 .get_mut(session_id)
@@ -513,6 +506,39 @@ impl SessionService {
                     session_id: session_id.to_string(),
                 })?;
         Ok(session.enqueue_workflow_prompt(queued))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_workflow_prompt_with_publication_invocation(
+        &mut self,
+        session_id: &str,
+        workflow_id: &str,
+        endpoint_id: &str,
+        prompt: Option<String>,
+        queue_ref: Option<&str>,
+        source: WorkflowQueuedPromptSource,
+        watchdog_id: Option<String>,
+        publication_invocation: Option<WorkflowPublicationInvocationEnvelope>,
+    ) -> Result<WorkflowQueuedPrompt, DaemonError> {
+        let queue_ref = queue_ref.unwrap_or("default");
+        let workflow = self.resolve_workflow_ref(session_id, workflow_id)?;
+        let queue_id =
+            self.resolve_workflow_prompt_queue_ref(session_id, workflow.id(), queue_ref)?;
+        let endpoint =
+            self.resolve_workflow_endpoint_ref(session_id, workflow.id(), endpoint_id)?;
+        self.validate_workflow_runnable(session_id, &workflow, &endpoint)?;
+        Ok(WorkflowQueuedPrompt::new(
+            crate::session::WorkflowQueuedPromptInput {
+                id: self.next_workflow_queued_prompt_id(),
+                queue_id,
+                workflow_id: workflow.id().to_string(),
+                endpoint_id: endpoint.id().to_string(),
+                prompt,
+                publication_invocation,
+                source,
+                schedule_id: watchdog_id,
+            },
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -936,7 +962,7 @@ impl SessionService {
         }
     }
 
-    fn validate_workflow_runnable(
+    pub(crate) fn validate_workflow_runnable(
         &self,
         session_id: &str,
         workflow: &WorkflowDefinition,

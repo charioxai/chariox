@@ -48,7 +48,8 @@ impl OpenCodeClient {
         {
             body["system"] = json!(system);
         }
-        let parsed_model = parse_model(model).map_err(|model| {
+        let selected_model = self.validated_model(model)?;
+        let parsed_model = parse_model(selected_model.as_deref()).map_err(|model| {
             self.protocol_error(
                 "opencode_prompt_model",
                 format!(
@@ -100,7 +101,7 @@ pub(super) fn parse_model(model: Option<&str>) -> Result<Option<(&str, &str)>, &
     if value.is_empty() || value == "default" {
         return Ok(None);
     }
-    let (provider_id, model_id) = value.split_once('/').unwrap_or(("opencode", value));
+    let (provider_id, model_id) = value.split_once('/').ok_or(value)?;
     if provider_id.is_empty() || model_id.is_empty() {
         return Err(value);
     }

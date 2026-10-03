@@ -329,6 +329,7 @@ pub(crate) fn is_workflow_command(request: &LocalDaemonRequest) -> bool {
 fn workflow_session_id(request: &LocalDaemonRequest) -> Option<String> {
     Some(match request {
         LocalDaemonRequest::CreateWorkflow(request) => request.session_id.clone(),
+        LocalDaemonRequest::CreateAgentWorkflow(request) => request.session_id.clone(),
         LocalDaemonRequest::ValidateWorkflowCode(request) => request.session_id.clone(),
         LocalDaemonRequest::ApplyWorkflowCode(request) => request.session_id.clone(),
         LocalDaemonRequest::ApplyWorkflowCodeArtifact(request) => request.session_id.clone(),
@@ -367,13 +368,6 @@ fn workflow_session_id(request: &LocalDaemonRequest) -> Option<String> {
         LocalDaemonRequest::GetWorkflowPublication(request) => request.session_id.clone(),
         LocalDaemonRequest::ExportWorkflowPublicationPackage(request) => request.session_id.clone(),
         LocalDaemonRequest::DisableWorkflowPublication(request) => request.session_id.clone(),
-        LocalDaemonRequest::CreateWorkflowEventBinding(request) => request.session_id.clone(),
-        LocalDaemonRequest::ListWorkflowEventBindings(request) => request.session_id.clone(),
-        LocalDaemonRequest::SetWorkflowEventBindingStatus(request) => request.session_id.clone(),
-        LocalDaemonRequest::TransferWorkflowEventBinding(request) => {
-            request.source_session_id.clone()
-        }
-        LocalDaemonRequest::TestWorkflowEventBinding(request) => request.session_id.clone(),
         LocalDaemonRequest::MaterializeWorkflowPublication(request) => {
             format!("publication-materialize:{}", request.publication_id)
         }

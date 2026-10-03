@@ -39,6 +39,10 @@ pub enum DaemonError {
         "browser controller restarted at generation {runtime_generation} before the operation"
     )]
     BrowserControllerRecoveryRequired { runtime_generation: u64 },
+    /// App open diagnostics use the existing non-retryable request-error
+    /// envelope. This internal error is not a serialized protocol type.
+    #[error("App view unavailable: {message}")]
+    AppViewUnavailable { message: String },
     #[error("internal invariant `{operation}` failed: {message}")]
     InternalInvariant {
         operation: &'static str,

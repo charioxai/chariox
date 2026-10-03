@@ -1,7 +1,7 @@
-//! Provider reload policy for launch-time runtime changes.
+//! Provider reload policy for launch inputs and the shared runtime tool catalog.
 //!
 //! This module owns the shared decision and relaunch path for changes that require a provider
-//! process to be started with different launch inputs.
+//! process to refresh its launch inputs or discover a changed runtime catalog.
 
 use super::*;
 
@@ -24,14 +24,62 @@ pub(crate) enum ProviderReloadTrigger {
 pub(crate) enum ProviderReloadOutcome {
     Unaffected,
     Reloaded,
+    ToolsRefreshed,
     Deferred,
+}
+
+/// Runtime MCP tools can change without changing the server URL or provider
+/// launch arguments. Keep that cause typed through the existing idle queue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ProviderReloadReason {
+    LaunchInputs(String),
+    RuntimeToolCatalog,
+    RuntimeToolCatalogAndLaunchInputs(String),
+}
+impl ProviderReloadReason {
+    pub(super) fn label(&self) -> &str {
+        match self {
+            Self::LaunchInputs(label) | Self::RuntimeToolCatalogAndLaunchInputs(label) => label,
+            Self::RuntimeToolCatalog => "runtime tool catalog",
+        }
+    }
+    pub(super) fn merge(self, previous: &Self) -> Self {
+        match (self, previous) {
+            (Self::RuntimeToolCatalogAndLaunchInputs(label), _) => {
+                Self::RuntimeToolCatalogAndLaunchInputs(label)
+            }
+            (
+                Self::LaunchInputs(label),
+                Self::RuntimeToolCatalog | Self::RuntimeToolCatalogAndLaunchInputs(_),
+            ) => Self::RuntimeToolCatalogAndLaunchInputs(label),
+            (
+                Self::RuntimeToolCatalog,
+                Self::LaunchInputs(label) | Self::RuntimeToolCatalogAndLaunchInputs(label),
+            ) => Self::RuntimeToolCatalogAndLaunchInputs(label.clone()),
+            (reason, _) => reason,
+        }
+    }
+    fn includes_catalog(&self) -> bool {
+        matches!(
+            self,
+            Self::RuntimeToolCatalog | Self::RuntimeToolCatalogAndLaunchInputs(_)
+        )
+    }
+    fn requires_reload(
+        &self,
+        current: &ProviderLaunchFingerprint,
+        desired: &ProviderLaunchFingerprint,
+    ) -> bool {
+        self.includes_catalog() || current != desired
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProviderLaunchFingerprint {
     runtime_mcp_server_url: Option<String>,
     mcp_servers: Vec<crate::mcp::CharioxMcpServerConfig>,
-    provider_env_remove: Vec<String>,
+    // Compare request inputs, before adapter and isolation augmentation.
+    provider_env_remove: Option<std::collections::BTreeSet<String>>,
     provider_config_overrides: std::collections::BTreeMap<String, serde_json::Value>,
     write_access_mode: crate::provider::ProviderWriteAccessMode,
     execution_mode: crate::provider::AgentExecutionMode,
@@ -43,7 +91,9 @@ impl ProviderLaunchFingerprint {
         Self {
             runtime_mcp_server_url: run.runtime_mcp_server_url().map(str::to_string),
             mcp_servers: run.mcp_servers().to_vec(),
-            provider_env_remove: run.pty_env_remove().to_vec(),
+            provider_env_remove: run
+                .requested_provider_env_remove()
+                .map(|names| names.iter().cloned().collect()),
             provider_config_overrides: run.provider_config_overrides().clone(),
             write_access_mode: run.write_access_mode(),
             execution_mode: run.execution_mode(),
@@ -58,7 +108,7 @@ impl ProviderLaunchFingerprint {
                 .as_ref()
                 .map(|binding| binding.server_url.clone()),
             mcp_servers: request.mcp_servers.clone(),
-            provider_env_remove: request.provider_env_remove.clone(),
+            provider_env_remove: Some(request.provider_env_remove.iter().cloned().collect()),
             provider_config_overrides: request.provider_config_overrides.clone(),
             write_access_mode: request.write_access_mode,
             execution_mode: request.execution_mode.unwrap_or_default(),
@@ -139,8 +189,47 @@ impl KernelRuntimeState {
         agent_id: &str,
         reason: &str,
     ) -> Result<ProviderReloadOutcome, DaemonError> {
+        self.reload_agent_provider_for_reason(
+            session_id,
+            agent_id,
+            ProviderReloadReason::LaunchInputs(reason.into()),
+        )
+        .await
+    }
+
+    /// Lifecycle/grant callers refresh the existing shared MCP. Busy agents use
+    /// the same deferred reload queue; no prompt or workflow is created here.
+    pub(crate) async fn refresh_agent_runtime_tool_catalog(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<ProviderReloadOutcome, DaemonError> {
+        if let Some(run) = self
+            .owned
+            .provider_run_projection
+            .get_for_agent(session_id, agent_id)
+        {
+            self.owned
+                .provider_run_projection
+                .catalog_changes()
+                .invalidate(run.id());
+        }
+        self.reload_agent_provider_for_reason(
+            session_id,
+            agent_id,
+            ProviderReloadReason::RuntimeToolCatalog,
+        )
+        .await
+    }
+
+    async fn reload_agent_provider_for_reason(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        reason: ProviderReloadReason,
+    ) -> Result<ProviderReloadOutcome, DaemonError> {
         match self
-            .reload_agent_provider_if_idle(session_id, agent_id, reason)
+            .reload_agent_provider_if_idle_for_reason(session_id, agent_id, &reason)
             .await?
         {
             ProviderReloadOutcome::Deferred => {
@@ -151,12 +240,25 @@ impl KernelRuntimeState {
         }
     }
 
-    pub(super) async fn reload_agent_provider_if_idle(
+    pub(super) async fn reload_agent_provider_if_idle_for_reason(
         &self,
         session_id: &str,
         agent_id: &str,
-        reason: &str,
+        cause: &ProviderReloadReason,
     ) -> Result<ProviderReloadOutcome, DaemonError> {
+        // A leased provider is owned by the worker. Its run identity must be
+        // replaced through the authenticated lease launch/prompt handshake;
+        // a local reload would neither refresh that process nor rebind home.
+        if self
+            .owned
+            .agent_store
+            .get_agent(agent_id)?
+            .remote_execution()
+            .is_some()
+        {
+            return Ok(ProviderReloadOutcome::Unaffected);
+        }
+        let reason = cause.label();
         let (launch_request, runtime_init_delay_ms, terminated_run_id) = {
             let owned = &self.owned;
             if owned
@@ -229,9 +331,19 @@ impl KernelRuntimeState {
                 return Ok(ProviderReloadOutcome::Deferred);
             }
             let run = current_run.expect("current provider run was checked above");
-            if ProviderLaunchFingerprint::from_run(&run)
-                == ProviderLaunchFingerprint::from_request(&launch_request)
+            // An in-place tool refresh must not swallow a simultaneous launch
+            // configuration/permission change retained by the common queue.
+            if cause.includes_catalog()
+                && !run.client_interface().is_chariox()
+                && ProviderLaunchFingerprint::from_run(&run)
+                    == ProviderLaunchFingerprint::from_request(&launch_request)
             {
+                return self.refresh_native_runtime_catalog(run).await;
+            }
+            if !cause.requires_reload(
+                &ProviderLaunchFingerprint::from_run(&run),
+                &ProviderLaunchFingerprint::from_request(&launch_request),
+            ) {
                 return Ok(ProviderReloadOutcome::Unaffected);
             }
 
@@ -279,7 +391,7 @@ fn provider_reload_snapshot_is_still_current(
     !has_active_prompt && current_run.is_some_and(|run| run.id() == expected_run_id)
 }
 
-fn policy_reload_launch_request(
+pub(super) fn policy_reload_launch_request(
     run: &crate::provider::RuntimeProviderRun,
     agent_id: &str,
     durable_resume_state: crate::provider::ProviderResumeState,
@@ -293,6 +405,8 @@ fn policy_reload_launch_request(
     )
     .with_agent_id(agent_id)
     .with_owner_user_id(run.owner_user_id().to_string())
+    .with_client_interface(run.client_interface())
+    .with_remote_extension_manifest(run.remote_extension_manifest().clone())
     .with_variant(run.variant().map(str::to_string))
     .with_resume_state(durable_resume_state);
     if let Some((home, path)) = run.preparation_environment() {
@@ -335,6 +449,182 @@ mod tests {
         active_agent_provider_run_ids_for_session, policy_reload_launch_request,
         provider_reload_snapshot_is_still_current,
     };
+
+    #[test]
+    fn runtime_catalog_refresh_is_required_even_when_launch_inputs_are_identical() {
+        use super::{ProviderLaunchFingerprint, ProviderReloadReason};
+        let run = provider_run("run", "session", Some("agent"));
+        let request = policy_reload_launch_request(&run, "agent", ProviderResumeState::default());
+        let current = ProviderLaunchFingerprint::from_run(&run);
+        let desired = ProviderLaunchFingerprint::from_request(&request);
+        assert_eq!(current, desired);
+        assert!(!ProviderReloadReason::LaunchInputs("configuration".into())
+            .requires_reload(&current, &desired));
+        assert!(ProviderReloadReason::RuntimeToolCatalog.requires_reload(&current, &desired));
+        let changed = ProviderLaunchFingerprint {
+            permission_level: crate::provider::AgentPermissionLevel::Required,
+            ..desired
+        };
+        assert!(ProviderReloadReason::LaunchInputs("permissions".into())
+            .requires_reload(&current, &changed));
+    }
+
+    #[test]
+    fn runtime_catalog_cause_survives_pending_launch_configuration_updates() {
+        use super::ProviderReloadReason;
+        let catalog = ProviderReloadReason::RuntimeToolCatalog;
+        let config = ProviderReloadReason::LaunchInputs("new permissions".into());
+        let combined =
+            ProviderReloadReason::RuntimeToolCatalogAndLaunchInputs("new permissions".into());
+        assert_eq!(config.clone().merge(&catalog), combined);
+        assert_eq!(catalog.clone().merge(&config), combined);
+        assert_eq!(catalog.merge(&combined), combined);
+        assert_eq!(combined.clone().merge(&config), combined);
+    }
+
+    #[test]
+    fn catalog_reload_preserves_native_interface_and_home_tool_manifest() {
+        let request = LaunchProviderRequest::new("session", "codex", "codex", "default", "model")
+            .with_agent_id("agent")
+            .with_client_interface(crate::provider::ProviderClientInterface::NativeTui)
+            .with_remote_extension_manifest(crate::extension::RemoteExtensionManifest {
+                tools: vec![crate::extension::RemoteExtensionTool {
+                    kind: crate::extension::ExtensionKind::App,
+                    name: "installed".into(),
+                    tool_name: "app_fixture_echo".into(),
+                    description: "Fixture".into(),
+                    input_schema: serde_json::json!({"type":"object"}),
+                    authority: crate::extension::ExtensionAuthority::Home,
+                    definition_origin: crate::extension::ExtensionDefinitionOrigin::Home,
+                    execution_location: crate::extension::ExtensionExecutionLocation::Home,
+                    safety: None,
+                    timeout_sec: Some(30),
+                    version_hash: Some("fixture".into()),
+                }],
+                room_browser_available: false,
+            });
+        let run = crate::provider::RuntimeProviderRun::new(
+            "run",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "fixture".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        let reload = policy_reload_launch_request(&run, "agent", ProviderResumeState::default());
+        assert_eq!(reload.client_interface, request.client_interface);
+        assert_eq!(
+            reload.remote_extension_manifest,
+            request.remote_extension_manifest
+        );
+    }
+
+    #[test]
+    fn provider_reload_fingerprint_matches_adapter_and_isolation_launch_inputs() {
+        crate::test_support::isolated_env_test!();
+        let _env = crate::env_lock::lock();
+        let profile = crate::test_support::TestWorktree::new("reload-fingerprint-claude-profile");
+        let previous = std::env::var_os("CHARIOX_MANAGED_PROVIDER_ISOLATION");
+        std::env::remove_var("CHARIOX_MANAGED_PROVIDER_ISOLATION");
+        let launches = [
+            ("codex", "codex"),
+            ("claude", "claude-headless"),
+            ("opencode", "opencode"),
+        ]
+        .into_iter()
+        .map(|(adapter, provider)| {
+            let mut request =
+                LaunchProviderRequest::new("reload-session", adapter, provider, "default", "model");
+            request.provider_env_remove =
+                vec!["RELOAD_CONTROL_B".into(), "RELOAD_CONTROL_A".into()];
+            if adapter == "claude" {
+                request.provider_account_env.insert(
+                    "CLAUDE_CONFIG_DIR".into(),
+                    profile.path().display().to_string(),
+                );
+            }
+
+            let launch = crate::provider::ProviderRegistry::new()
+                .resolve(adapter)
+                .unwrap()
+                .connect(&request);
+            if let Ok(launch) = &launch {
+                if let Some(events) = launch.pty_env.get("CHARIOX_CLAUDE_NATIVE_EVENTS") {
+                    let root = std::path::Path::new(events).parent().unwrap();
+                    assert_eq!(root.parent(), Some(std::env::temp_dir().as_path()));
+                    assert!(root
+                        .file_name()
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .starts_with("chariox-claude-remote-native-"));
+                    std::fs::remove_dir_all(root)
+                        .expect("generated native launch files should clean up");
+                }
+            }
+            (request, launch)
+        })
+        .collect::<Vec<_>>();
+        if let Some(value) = previous {
+            std::env::set_var("CHARIOX_MANAGED_PROVIDER_ISOLATION", value);
+        }
+        for (request, launch) in launches {
+            let launch = launch.expect("official adapter launch plan should resolve");
+            for isolated in [false, true] {
+                let mut launch = launch.clone();
+                if isolated {
+                    // The Linux managed wrapper adds this same removal list.
+                    launch
+                        .pty_env_remove
+                        .extend(crate::provider::managed_provider_isolation_env_remove());
+                }
+                let run = crate::provider::RuntimeProviderRun::new("reload-run", &request, launch);
+                assert_eq!(
+                    super::ProviderLaunchFingerprint::from_run(&run),
+                    super::ProviderLaunchFingerprint::from_request(&request),
+                    "{} isolated={isolated}",
+                    request.adapter_key
+                );
+                let value = serde_json::to_value(&run).expect("run should serialize");
+                assert!(!value
+                    .as_object()
+                    .unwrap()
+                    .contains_key("requested_provider_env_remove"));
+                let restored: crate::provider::RuntimeProviderRun =
+                    serde_json::from_value(value).expect("run should restore");
+                assert_ne!(
+                    super::ProviderLaunchFingerprint::from_run(&restored),
+                    super::ProviderLaunchFingerprint::from_request(&request),
+                    "restored runs must reload without request provenance"
+                );
+                let mut changed = request.clone();
+                changed.provider_env_remove.push("NEW_CONTROL".into());
+                assert_ne!(
+                    super::ProviderLaunchFingerprint::from_run(&run),
+                    super::ProviderLaunchFingerprint::from_request(&changed)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn provider_reload_environment_removal_fingerprint_is_order_independent() {
+        let fingerprint = |names: &[&str]| {
+            let mut request =
+                LaunchProviderRequest::new("session", "codex", "codex", "default", "model");
+            request.provider_env_remove = names.iter().map(|name| name.to_string()).collect();
+            super::ProviderLaunchFingerprint::from_request(&request)
+        };
+        assert_eq!(fingerprint(&["A", "B", "A"]), fingerprint(&["B", "A"]));
+        assert_ne!(fingerprint(&["A", "B"]), fingerprint(&["A"]));
+    }
 
     #[test]
     fn provider_reload_uses_only_durable_resume_state() {

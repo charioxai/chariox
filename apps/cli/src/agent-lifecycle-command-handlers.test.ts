@@ -120,12 +120,6 @@ test("agent inspect summary renders placement, grants, manifest, and substitutes
       last_error: "worker offline",
     },
     substitutes: [{ provider: "opencode", model: "zen", variant: "fast" }],
-    active_substitute_index: 0,
-    last_substitution: {
-      substitute_index: 0,
-      reason: "Provider reported a substitutable resource limit: Insufficient balance",
-      activated_at_ms: 1_700_000_000_000,
-    },
   }), [slice({
     id: "slice-wrong",
     name: "wrong-by-worker",
@@ -176,8 +170,8 @@ test("agent inspect summary renders placement, grants, manifest, and substitutes
   assert.match(summary, /extension boundary: home validates every call; credentials never leave home/)
   assert.match(summary, /remote extension sync: failed, pending revoke, hash=abcdef123456, error=worker offline/)
   assert.match(summary, /remote extension next: keep the home revoke in place; run \/extension sync-status agent-remote; run \/machine kernels slice-machine if the revoke stays pending; use \/extension sync-retry agent-remote after the worker reconnects/)
-  assert.match(summary, /substitutes: \*0:opencode\/zen\/fast/)
-  assert.match(summary, /last substitution: Provider reported a substitutable resource limit: Insufficient balance/)
+  assert.match(summary, /substitutes: 0:opencode\/zen\/fast/)
+  assert.doesNotMatch(summary, /last substitution/)
 })
 
 test("agent inspect summary calls out missing slice provider auth", () => {
@@ -463,6 +457,73 @@ test("agent focus command does not launch a local provider run for remote-backed
 
   assert.equal(launched, false)
   assert.equal(providerRunCleared, true)
+})
+
+test("agent focus command moves the session focus to the agent named by alias or ref, also from no focus", async () => {
+  const codex = agent({ id: "agent-1", agent_ref: "codex-1", alias: "focusdrill" })
+  const claude = agent({ id: "agent-2", agent_ref: "claude-1", alias: "claude-apps", remote_execution: {
+    worker_kernel_id: "worker-kernel",
+    worker_machine_id: "worker-machine",
+    execution_lease_id: "lease-1",
+    leased_agent_id: "leased-agent-1",
+  } })
+  // No focus agent: every visible agent was deleted or none was focused yet.
+  let current = session({ focused_agent_id: null, agents: [codex, claude] })
+  const focused: string[] = []
+  const flashes: Array<{ message: string; tone: string }> = []
+  const deps = {
+    isAttached: () => true,
+    sessionState: () => current,
+    currentModelId: () => "opencode/gpt-5.4",
+    currentVariantId: () => "high",
+    providerRunState: () => null,
+    multiAgentResponseLayout: () => "individual" as const,
+    maxAgentsPerScreen: () => 4,
+    flashFooter: (message: string, tone: "info" | "error") => { flashes.push({ message, tone }) },
+    appendNotice: () => {},
+    formatError: (error: unknown) => String(error),
+    applySessionState: (next: RuntimeSession) => { current = next },
+    refreshAgentPanes: async () => {},
+    rebuildTranscript: () => {},
+    cycleAgentFocus: async () => ({ agent: null, session: current }),
+    launchAgentProviderRun: async () => providerRun(),
+    setProviderRunState: () => {},
+    refreshSessionState: async () => current,
+    destroyAgent: async () => current,
+    // The kernel's FocusAgent takes an agent id and moves the session focus.
+    focusAgent: async (agentId: string) => {
+      focused.push(agentId)
+      const target = current.agents.find((entry) => entry.id === agentId)
+      assert.ok(target, `kernel got unknown agent id ${agentId}`)
+      return { agent: target, session: { ...current, focused_agent_id: agentId } }
+    },
+    resolveSessionAgent: (reference?: string | null) => {
+      const matches = current.agents.filter((entry) =>
+        entry.id === reference || entry.agent_ref === reference || entry.alias === reference)
+      return matches.length === 1
+        ? { agent: matches[0]!, error: null }
+        : { agent: null, error: `agent '${reference}' not found` }
+    },
+    formatAgentLabel: (entry: AgentInstance | null | undefined) => entry?.agent_ref ?? "",
+    refreshSplitPaneFocusRepaint: () => {},
+  }
+
+  await handleAgentFocusCommand(deps, ["focus", "claude-apps"])
+  assert.equal(current.focused_agent_id, "agent-2")
+  await handleAgentFocusCommand(deps, ["focus", "codex-1"])
+  assert.equal(current.focused_agent_id, "agent-1")
+  await handleAgentFocusCommand(deps, ["focus", "agent-2"])
+  assert.equal(current.focused_agent_id, "agent-2")
+  assert.deepEqual(focused, ["agent-2", "agent-1", "agent-2"])
+
+  await handleAgentFocusCommand(deps, ["focus", "nobody"])
+  await handleAgentFocusCommand(deps, ["focus"])
+  assert.deepEqual(focused, ["agent-2", "agent-1", "agent-2"], "no kernel call without a resolved agent")
+  assert.equal(current.focused_agent_id, "agent-2")
+  assert.deepEqual(flashes.slice(-2), [
+    { message: "agent 'nobody' not found", tone: "error" },
+    { message: "usage: /agent focus <agent-ref>", tone: "error" },
+  ])
 })
 
 function agent(overrides: Partial<AgentInstance> = {}): AgentInstance {

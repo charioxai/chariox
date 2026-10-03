@@ -274,49 +274,6 @@ impl RuntimeSession {
         Ok(())
     }
 
-    pub fn create_workflow_event_binding(
-        &mut self,
-        binding: WorkflowEventBinding,
-    ) -> WorkflowEventBinding {
-        self.workflow_publication_state
-            .workflow_event_bindings
-            .push(binding.clone());
-        binding
-    }
-
-    pub fn workflow_event_binding(&self, binding_id: &str) -> Option<&WorkflowEventBinding> {
-        self.workflow_publication_state
-            .workflow_event_bindings
-            .iter()
-            .find(|binding| binding.id == binding_id)
-    }
-
-    pub fn workflow_event_binding_mut(
-        &mut self,
-        binding_id: &str,
-    ) -> Option<&mut WorkflowEventBinding> {
-        self.workflow_publication_state
-            .workflow_event_bindings
-            .iter_mut()
-            .find(|binding| binding.id == binding_id)
-    }
-
-    pub fn remove_workflow_event_binding(
-        &mut self,
-        binding_id: &str,
-    ) -> Option<WorkflowEventBinding> {
-        let index = self
-            .workflow_publication_state
-            .workflow_event_bindings
-            .iter()
-            .position(|binding| binding.id == binding_id)?;
-        Some(
-            self.workflow_publication_state
-                .workflow_event_bindings
-                .remove(index),
-        )
-    }
-
     pub fn record_workflow_event_delivery_receipt(
         &mut self,
         receipt: WorkflowEventDeliveryReceipt,
@@ -616,6 +573,10 @@ impl RuntimeSession {
     pub(crate) fn durable_runtime_snapshot(&self) -> Self {
         let pending_settlement = self.workflow_run_ids_pending_prompt_settlement();
         let mut snapshot = self.clone();
+        // MP-08/MP-10/MP-11: official login challenges are ephemeral human UI.
+        snapshot
+            .active_interactions
+            .retain(|interaction| !interaction.provider_login_is_human_only());
         snapshot.workflow_runs.retain(|workflow_run| {
             !workflow_run.status().is_terminal() || pending_settlement.contains(workflow_run.id())
         });

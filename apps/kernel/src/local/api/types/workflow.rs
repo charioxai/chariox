@@ -17,6 +17,20 @@ pub struct CreateWorkflowRequest {
     pub alias: Option<String>,
 }
 
+/// A visible one-node workflow for one of the caller's agents, created when
+/// that agent gets a trigger or a deployment. It records its origin; the
+/// client then completes the trigger or deploy setup on its entry endpoint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateAgentWorkflowRequest {
+    pub session_id: String,
+    pub agent_id: String,
+    pub reason: crate::session::WorkflowOriginReason,
+    pub surface: crate::session::WorkflowOriginSurface,
+    #[serde(default)]
+    pub alias: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ValidateWorkflowCodeRequest {
     pub session_id: String,

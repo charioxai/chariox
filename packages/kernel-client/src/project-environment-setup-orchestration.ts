@@ -10,7 +10,9 @@ export type ProjectEnvironmentSetupStartInput = {
   readonly projectId: string
   readonly sessionId: string
   readonly agentId: string
+  /** Empty asks the home kernel to resolve the selected agent's worker. */
   readonly targetWorkerId: string
+  /** Empty asks the home kernel to resolve the actual target worker platform. */
   readonly targetPlatform: string
   readonly definition?: ProjectEnvironmentDefinition | null
   readonly validationCommands?: readonly string[]
@@ -52,6 +54,14 @@ export async function ensureProjectEnvironmentSetupReady(
   const deadline = nowMs() + (options.timeoutMs ?? 15 * 60 * 1_000)
   const pollIntervalMs = options.pollIntervalMs ?? 1_500
   let status: ProjectEnvironmentSetupStatus | null = null
+  let targetWorkerId = input.targetWorkerId.trim() || null
+  let targetPlatform = input.targetPlatform.trim() || null
+
+  const assertBinding = (candidate: ProjectEnvironmentSetupStatus) => {
+    const resolved = resolveProjectEnvironmentSetupBinding(candidate, input, targetWorkerId, targetPlatform)
+    targetWorkerId = resolved.targetWorkerId
+    targetPlatform = resolved.targetPlatform
+  }
 
   assertActive()
   try {
@@ -67,7 +77,7 @@ export async function ensureProjectEnvironmentSetupReady(
   while (true) {
     assertActive()
     if (status) {
-      assertProjectEnvironmentSetupBinding(status, input)
+      assertBinding(status)
       options.onStatus?.(status)
       if (status.phase === "ready") {
         return status
@@ -99,18 +109,30 @@ export async function ensureProjectEnvironmentSetupReady(
   }
 }
 
-function assertProjectEnvironmentSetupBinding(
+function resolveProjectEnvironmentSetupBinding(
   status: ProjectEnvironmentSetupStatus,
   input: ProjectEnvironmentSetupStartInput,
-) {
+  targetWorkerId: string | null,
+  targetPlatform: string | null,
+): { targetWorkerId: string; targetPlatform: string } {
   if (status.operation_id !== input.operationId
     || status.project_id !== input.projectId
     || status.session_id !== input.sessionId
-    || status.agent_id !== input.agentId
-    || status.worker_id !== input.targetWorkerId
-    || status.platform !== input.targetPlatform) {
-    throw new Error("Project environment setup status changed the managed launch binding")
+    || status.agent_id !== input.agentId) {
+    throw new Error("Project environment setup status changed its launch binding")
   }
+  if (targetWorkerId && status.worker_id !== targetWorkerId) {
+    throw new Error("Project environment setup status changed its launch binding")
+  }
+  if (targetPlatform && status.platform !== targetPlatform) {
+    throw new Error("Project environment setup status changed its launch binding")
+  }
+  const resolvedWorkerId = targetWorkerId ?? status.worker_id.trim()
+  const resolvedPlatform = targetPlatform ?? status.platform.trim()
+  if (!resolvedWorkerId || !resolvedPlatform) {
+    throw new Error("Project environment setup did not resolve the selected worker and platform")
+  }
+  return { targetWorkerId: resolvedWorkerId, targetPlatform: resolvedPlatform }
 }
 
 function projectEnvironmentSetupFailureMessage(status: ProjectEnvironmentSetupStatus): string {
