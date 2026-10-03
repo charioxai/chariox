@@ -345,6 +345,9 @@ pub(super) fn codex_turn_id_from_start_response(response: &Value) -> Option<Stri
 mod cancellation_tests;
 
 #[cfg(test)]
+mod turn_attribution_tests;
+
+#[cfg(test)]
 mod prompt_tests {
     use super::{
         codex_turn_interrupt_is_waiting_for_task_start, codex_turn_is_terminal,

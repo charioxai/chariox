@@ -30,6 +30,18 @@ mod permission_regression_tests;
 use json_rpc::JsonRpcMessage;
 #[cfg(test)]
 use notifications::parse_notification;
+
+#[cfg(test)]
+pub(super) fn fixture_codex_notification(method: &str, params: Value) -> CodexNotification {
+    notifications::parse_notification(JsonRpcMessage {
+        id: None,
+        method: Some(method.to_string()),
+        params: Some(params),
+        result: None,
+        error: None,
+    })
+    .expect("recognized Codex fixture notification")
+}
 #[cfg(test)]
 use permission::{codex_permission_policy, workspace_live_sync_codex_permission_grant};
 

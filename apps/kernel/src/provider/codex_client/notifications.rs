@@ -8,6 +8,11 @@ use super::JsonRpcMessage;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodexNotification {
+    /// Provider-local correlation, never serialized in the Chariox protocol.
+    TurnScoped {
+        turn_id: String,
+        notification: Box<CodexNotification>,
+    },
     AgentMessageDelta {
         item_id: String,
         delta: String,
@@ -91,7 +96,7 @@ pub enum CodexNotification {
 pub(super) fn parse_notification(message: JsonRpcMessage) -> Option<CodexNotification> {
     let method = message.method?;
     let params = message.params.unwrap_or(Value::Null);
-    match method.as_str() {
+    let notification = match method.as_str() {
         "item/agentMessage/delta" => Some(CodexNotification::AgentMessageDelta {
             item_id: params
                 .get("itemId")
@@ -338,7 +343,30 @@ pub(super) fn parse_notification(message: JsonRpcMessage) -> Option<CodexNotific
             Some(CodexNotification::Error { message })
         }
         _ => None,
-    }
+    }?;
+    // Output notifications carry their owning turn separately from the item.
+    // Keep that identity across buffering, including after an interrupt ACK.
+    let turn_id = params
+        .get("turnId")
+        .or_else(|| params.get("turn_id"))
+        .or_else(|| params.get("msg").and_then(|msg| msg.get("turnId")))
+        .or_else(|| params.get("msg").and_then(|msg| msg.get("turn_id")))
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty());
+    Some(match (&notification, turn_id) {
+        (
+            CodexNotification::TurnStarted { .. }
+            | CodexNotification::TurnCompleted { .. }
+            | CodexNotification::TaskComplete { .. }
+            | CodexNotification::TokenUsageUpdated { .. },
+            _,
+        )
+        | (_, None) => notification,
+        (_, Some(turn_id)) => CodexNotification::TurnScoped {
+            turn_id: turn_id.to_string(),
+            notification: Box::new(notification),
+        },
+    })
 }
 
 /// Codex's message for a turn error, framed with its structured
