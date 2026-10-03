@@ -1,6 +1,7 @@
 //! One bounded controller observation per Room, shared by every client.
 use super::KernelRuntimeState;
 use crate::session::{EnvironmentComponent, EnvironmentComponentHealthState, EnvironmentLifecycle};
+use crate::transport::room_browser_controller::RoomBrowserControllerResult;
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
@@ -45,6 +46,38 @@ impl KernelRuntimeState {
         let state = self.clone();
         let room = session_id.to_string();
         tokio::spawn(async move {
+            if environment.lifecycle == EnvironmentLifecycle::Ready {
+                // Ready reads are observations, not controller starts. Acquire
+                // and exclusive Reconcile occupied the input route for two
+                // slice replies on every viewer poll. The shared health route
+                // retains physical verification and tab discovery without
+                // putting those replies ahead of pointer/keyboard execution.
+                if let Ok(RoomBrowserControllerResult::Reconciled {
+                    reconciliation: Some(reconciliation),
+                }) = state
+                    .room_browser_controller_health_probe(
+                        &room,
+                        environment.viewport.clone(),
+                        environment.browser_bar_visible,
+                    )
+                    .await
+                {
+                    // A late observation cannot project a superseded viewport
+                    // or resurrect a stopped/restarted Room. Mutations and
+                    // recovery retain their normal exclusive admission.
+                    if state.room_environment_snapshot(&room).is_ok_and(|current| {
+                        current.lifecycle == EnvironmentLifecycle::Ready
+                            && current.runtime_generation == environment.runtime_generation
+                            && current.viewport == environment.viewport
+                            && current.browser_bar_visible == environment.browser_bar_visible
+                    }) {
+                        let _ =
+                            state.observe_browser_controller_reconciliation(&room, reconciliation);
+                    }
+                }
+                *lease = Some(Instant::now());
+                return;
+            }
             if state
                 .ensure_browser_controller_process_started(&room)
                 .await

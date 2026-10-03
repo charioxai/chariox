@@ -410,4 +410,13 @@ for (const [scope, methods] of [
     } finally { options.signal?.removeEventListener("abort", observedAbort); }
   };
 }
+const reconcile = browser.reconcile.bind(browser);
+browser.reconcile = async (...args) => {
+  const root = dirname(pidFile);
+  if (existsSync(join(root, "hold-room-read-reconcile"))) {
+    writeFileSync(join(root, "room-read-reconcile-pending"), "pending");
+    while (existsSync(join(root, "hold-room-read-reconcile"))) await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  return reconcile(...args);
+};
 await new BrowserControllerStdioServer({ browser, resourceInventory: fixtureResourceInventory }).run();
