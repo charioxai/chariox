@@ -141,3 +141,66 @@ async fn rejects_mismatched_identity(wrong_key: bool) {
         "{error}"
     );
 }
+
+#[tokio::test]
+async fn temporary_peer_request_connection_is_capped_independently_of_card_deadline() {
+    for deadline in [Some(Duration::from_secs(315)), None] {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.relay_request_timeout_ms = 500;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        config.relay_url = Some(format!("ws://{}", listener.local_addr().unwrap()));
+        config.relay_token = Some("connect-deadline-fixture".into());
+        let peer_key = relay_crypto::public_key_from_private_key_base64(
+            &relay_crypto::generate_private_key_base64(),
+        )
+        .unwrap();
+        let (release, released) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let mut metadata = accept_async(listener.accept().await.unwrap().0)
+                .await
+                .unwrap();
+            let RelayEnvelope::ClientMetadataRequest { request_id, .. } =
+                receive(&mut metadata).await
+            else {
+                panic!("expected metadata discovery");
+            };
+            send(&mut metadata, RelayEnvelope::ClientMetadataResponse {
+                request_id, machines: None, kernels: None,
+                kernel: Some(serde_json::from_value(serde_json::json!({
+                    "kernel_id": "worker", "machine_id": "slice:fixture", "public_key": peer_key
+                })).unwrap()), error: None,
+            }).await;
+            assert!(matches!(metadata.next().await, Some(Ok(Message::Close(_)))));
+            let _ = metadata.close(None).await;
+            // TCP accepts, but the peer WebSocket handshake never finishes.
+            let _stalled_socket = listener.accept().await.unwrap().0;
+            let _ = released.await;
+        });
+        let error = timeout(
+            Duration::from_secs(3),
+            send_peer_request_via_temporary_connection_with_optional_timeout(
+                &config,
+                ClientTarget {
+                    daemon_id: Some("worker".into()),
+                    daemon_alias: None,
+                },
+                RelayPeerRequest::Ping {
+                    value: "connect deadline".into(),
+                },
+                deadline,
+            ),
+        )
+        .await
+        .expect("connect must not wait for a human deadline")
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("connect temporary relay peer socket"),
+            "{error}"
+        );
+        assert!(error.to_string().contains("500ms"), "{error}");
+        let _ = release.send(());
+        server.await.unwrap();
+    }
+}
