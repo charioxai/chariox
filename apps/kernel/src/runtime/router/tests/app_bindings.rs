@@ -446,7 +446,7 @@ fn close_views_except(router: &CommandRouter, session: &str, open: &[&str]) {
 }
 
 #[tokio::test]
-async fn a_foreground_app_binds_the_focus_agent_follows_focus_and_uninstall_unbinds() {
+async fn a_foreground_app_binds_the_focus_agent_follows_focus_and_explicit_revocation_unbinds() {
     let fixture = Fixture::new();
     // Ask mode: a person foregrounding an App is an explicit selection.
     let (app, router, session, first, _auth) =

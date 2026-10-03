@@ -77,8 +77,8 @@ impl KernelRuntimeState {
         }
     }
 
-    /// A reinstall starts unbound: a revocation its uninstall could not finish
-    /// is repeated before the owner is asked to approve it.
+    /// Clear retained missing bindings before asking approval for a reinstall,
+    /// so reactivating the App never silently restores the old grants.
     pub(crate) async fn unbind_if_uninstalled(&self, owner: &str, installation: &str) {
         let store = self.owned.durable_state_store.clone();
         let (read_owner, read_installation) = (owner.to_owned(), installation.to_owned());
@@ -93,8 +93,9 @@ impl KernelRuntimeState {
         }
     }
 
-    /// An uninstalled App is unbound from every agent, which refreshes their
-    /// tool catalogs; workflow copies follow the existing grant path.
+    /// Explicitly revoke an inactive App's grants and refresh catalogs and
+    /// workflow copies. Ordinary uninstall keeps missing bindings visible;
+    /// the reinstall approval gate uses this revocation before reactivation.
     pub(crate) async fn unbind_uninstalled_app(&self, owner: &str, installation: &str) {
         self.app_control()
             .views()
