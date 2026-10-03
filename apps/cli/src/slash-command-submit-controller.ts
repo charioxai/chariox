@@ -21,7 +21,7 @@ export type SlashCommandSubmitControllerDeps = {
   formatError?: (error: unknown) => string
   onExit: () => Promise<unknown> | unknown
   onWaiting: () => Promise<unknown> | unknown
-  onApprovals?: () => unknown
+  onApprovals: () => unknown
   onStop: () => Promise<unknown> | unknown
   handleAttachmentCommand: (raw: string) => Promise<unknown> | unknown
   handleSessionCommand: (command: SlashCommand<"session">) => Promise<boolean> | boolean
@@ -128,7 +128,7 @@ export function createSlashCommandSubmitController(
       const handledCommand = await executeSlashCommand(rawPrompt, {
         onExit: deps.onExit,
         onWaiting: deps.onWaiting,
-        onApprovals: () => deps.onApprovals?.(),
+        onApprovals: deps.onApprovals,
         onStop: deps.onStop,
         onAttachment: async (command) => {
           try {

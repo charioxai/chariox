@@ -60,7 +60,7 @@ export type ParsedSlashCommand =
 export type SlashCommandHandlers = {
   onExit: () => Promise<unknown> | unknown
   onWaiting: () => Promise<unknown> | unknown
-  onApprovals?: () => Promise<unknown> | unknown
+  onApprovals: () => Promise<unknown> | unknown
   onStop: () => Promise<unknown> | unknown
   onAttachment: (command: Extract<ParsedSlashCommand, { kind: "attachment" }>) => Promise<unknown> | unknown
   onSession: (command: Extract<ParsedSlashCommand, { kind: "session" }>) => Promise<unknown> | unknown
@@ -449,7 +449,7 @@ export async function executeSlashCommand(
       await handlers.onWaiting()
       break
     case "approvals":
-      await handlers.onApprovals?.()
+      await handlers.onApprovals()
       break
     case "stop":
       await handlers.onStop()

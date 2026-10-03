@@ -13,6 +13,8 @@ export function createCliKernelApprovalComposition(deps: {
   renderer: CliRenderer
   session(): RuntimeSession
   connected(): boolean
+  attached(): boolean
+  flashFooter(message: string, tone: "info"): void
   dimensions(): { width: number; height: number }
   themeRevision(): unknown
   currentFocus(): CliDialogFocusTarget | null
@@ -47,6 +49,11 @@ export function createCliKernelApprovalComposition(deps: {
   onCleanup(() => controller.dispose())
   return {
     ...controller,
+    openFromCommand() {
+      if (!deps.attached()) deps.flashFooter("start or join a session to view approvals", "info")
+      else if (controller.view().count) controller.show()
+      else deps.flashFooter("No pending approvals", "info")
+    },
     assignBanner(value: BoxRenderable) { surface.assignBanner(value); controller.sync() },
     assignBox(value: BoxRenderable) { surface.assign(value); controller.sync() },
   }

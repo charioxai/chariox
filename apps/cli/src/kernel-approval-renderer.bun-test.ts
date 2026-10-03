@@ -1,5 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
+import { createRoot } from "solid-js"
+import { createCliKernelApprovalComposition } from "./cli-kernel-approval-composition.js"
 import { BoxRenderable, TextRenderable, TextareaRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { createKernelApprovalRenderer } from "./kernel-approval-renderer.js"
@@ -318,4 +320,42 @@ test("OpenTUI Ctrl+G terminal bytes open approvals and preserve focused draft", 
     controller.dispose()
     h.renderer.destroy()
   }
+})
+
+test("shared approval command opener handles waiting room, empty session and pending approvals", async () => {
+  const h = await createTestRenderer({ width: 80, height: 24, useThread: false })
+  const prompt = new TextareaRenderable(h.renderer, { initialValue: "draft kept" })
+  h.renderer.root.add(prompt)
+  let attached = false
+  let interactions: RuntimeInteraction[] = []
+  const flashes: string[] = []
+  let dispose!: () => void
+  const approvals = createRoot(cleanup => {
+    dispose = cleanup
+    return createCliKernelApprovalComposition({
+      client: {} as never, renderer: h.renderer,
+      session: () => ({ id: "session", agents: [], active_interactions: interactions }) as unknown as RuntimeSession,
+      connected: () => true, attached: () => attached,
+      flashFooter: (message, tone) => flashes.push(`${tone}:${message}`),
+      dimensions: () => ({ width: 80, height: 24 }), themeRevision: () => 0,
+      currentFocus: () => prompt, promptFocus: () => prompt,
+      closeOtherDialog() {}, applySession() { assert.fail("UI opener sent a response") },
+    })
+  })
+  try {
+    prompt.focus()
+    approvals.openFromCommand()
+    assert.deepEqual(flashes, ["info:start or join a session to view approvals"])
+    assert.equal(prompt.focused, true)
+    attached = true
+    approvals.openFromCommand()
+    assert.deepEqual(flashes, ["info:start or join a session to view approvals", "info:No pending approvals"])
+    assert.equal(prompt.focused, true)
+    interactions = [view.interaction!]
+    approvals.openFromCommand()
+    assert.equal(approvals.isOpen(), true)
+    assert.equal(approvals.view().selected, null)
+    assert.equal(prompt.focused, false)
+    assert.equal(prompt.plainText, "draft kept")
+  } finally { dispose(); h.renderer.destroy() }
 })

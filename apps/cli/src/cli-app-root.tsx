@@ -667,6 +667,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   const applySessionState = sessionStateApplyController.apply
   const kernelApprovals = createCliKernelApprovalComposition({
     client, renderer, session: sessionState, dimensions, themeRevision,
+    attached: isAttached, flashFooter,
     connected: () => isAttached() && !daemonDisconnected(),
     currentFocus: currentFocusedRenderable,
     promptFocus: promptInputRefController.currentOrNull,
@@ -912,10 +913,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     closeWorkflowNodeInstructionsEditor: workflowActions.closeWorkflowNodeInstructionsEditor,
     focusedAgentInteraction, interactionChoiceStore, renderAgentInteractions, handleHotkeysToggleShortcut,
     handleKernelApprovalKey: kernelApprovals.handleKey,
-    openKernelApprovals: () => {
-      if (kernelApprovals.view().count) kernelApprovals.show()
-      else flashFooter("No pending approvals", "info")
-    },
+    openKernelApprovals: kernelApprovals.openFromCommand,
     kernelApprovalOwnsInput: kernelApprovals.ownsInput,
     dialogOverlayOpen, closeActiveDialogOverlay, activePrompt, handleCommandCenterKey,
     handleQueuedPromptKey: handleQueuedPromptStripKey,

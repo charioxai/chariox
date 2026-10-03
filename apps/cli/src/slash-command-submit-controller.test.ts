@@ -248,6 +248,7 @@ function createHarness(options: {
     formatError: (error) => error instanceof Error ? error.message : String(error),
     onExit: options.onExit ?? (() => calls.push("exit")),
     onWaiting: () => calls.push("waiting"),
+    onApprovals: () => calls.push("approvals"),
     onStop: () => calls.push("stop"),
     handleAttachmentCommand: options.handleAttachmentCommand ?? ((raw) => calls.push(`attachment:${raw}`)),
     handleSessionCommand: options.handleSessionCommand ?? ((command) => {
@@ -301,20 +302,18 @@ function createHarness(options: {
   }
 }
 
-test("/approvals clears command UI before opening and stays in the client for local and relay", async () => {
-  for (const transport of ["local", "relay"]) {
-    const h = createHarness({ attached: true })
-    let opened = 0
-    const controller = createSlashCommandSubmitController({
-      ...h.deps,
-      handleSharedShellCommand: async () => { assert.fail(`${transport}: approvals sent to shell`) },
-      onApprovals: () => {
-        assert.equal(h.clearPromptCount(), 1)
-        assert.equal(h.commandCenterClearCount(), 1)
-        opened += 1
-      },
-    })
-    assert.equal((await controller.submit("/approvals", { allowSlashCommandSubmission: true }))?.kind, "approvals")
-    assert.equal(opened, 1)
-  }
+test("/approvals clears command UI before opening and bypasses shared shell execution", async () => {
+  const h = createHarness({ attached: true })
+  let opened = 0
+  const controller = createSlashCommandSubmitController({
+    ...h.deps,
+    handleSharedShellCommand: async () => { assert.fail("approvals sent to shell") },
+    onApprovals: () => {
+      assert.equal(h.clearPromptCount(), 1)
+      assert.equal(h.commandCenterClearCount(), 1)
+      opened += 1
+    },
+  })
+  assert.equal((await controller.submit("/approvals", { allowSlashCommandSubmission: true }))?.kind, "approvals")
+  assert.equal(opened, 1)
 })
