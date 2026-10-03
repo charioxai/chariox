@@ -1,8 +1,8 @@
 # Chariox Apps Phase 1 progress ledger — X6 (2026-10-03)
 
-Phase 1 landed on **main**, OSS [#783](https://github.com/charioxai/chariox/pull/783) at `086d6dc16`, Cloud [#278](https://github.com/charioxai/chariox-cloud/pull/278) at `f6cfd0066`. The post-restart batch reaches OSS **`e9c6b0a10fb15c673d0b5b658923b7483ffce972`**. The Mac is live on frozen **candidate n `a27bd2a33` since 2026-10-03 21:43 CEST**, Cloud `f6cfd0066`, local protocol **410**, relay **69**. New branches/PRs use **main**; historical integration/candidate bases below are not current instructions.
+Phase 1 landed on **main**, OSS [#783](https://github.com/charioxai/chariox/pull/783) at `086d6dc16`, Cloud [#278](https://github.com/charioxai/chariox-cloud/pull/278) at `f6cfd0066`. The post-restart batch reached **e9c6b0a10**; the refreshed ledger base is OSS **`2d66b6a4cefc74d048f15081f5b0d8d83d2c53bc`**, adding #807/#745/#755/#709 through 2026-10-03 21:25:29Z. The Mac is live on frozen **candidate n `a27bd2a33` since 2026-10-03 21:43 CEST**, Cloud `f6cfd0066`, local protocol **410**, relay **69**. New branches/PRs use **main**; historical integration/candidate bases below are not current instructions.
 
-This replaces closed interim [#710](https://github.com/charioxai/chariox/pull/710). The [X6 verification ledger](CHARIOX_APPS_PHASE1_VERIFICATION.md) is the authoritative per-row status/candidate/evidence/fix-PR matrix and retains the [old-to-new ID mapping](CHARIOX_APPS_PHASE1_VERIFICATION.md#old-to-new-row-mapping). Sources: `/w/evidence/lead-ledger/{ledger-pending.md,OPEN-ROWS-PLAN-X5.md,RESTART.md}` and all 84 supplied task REPORT.md files, indexed in `/w/evidence/ledger-x6/report-index.json`. This docs pass executes no runtime acceptance drills; supplied Mac evidence is relayed by the lead.
+This replaces closed interim [#710](https://github.com/charioxai/chariox/pull/710). The [X6 verification ledger](CHARIOX_APPS_PHASE1_VERIFICATION.md) is the authoritative per-row status/candidate/evidence/fix-PR matrix and retains the [old-to-new ID mapping](CHARIOX_APPS_PHASE1_VERIFICATION.md#old-to-new-row-mapping). Sources: `/w/evidence/lead-ledger/{ledger-pending.md,OPEN-ROWS-PLAN-X5.md,RESTART.md}` and all 84 supplied task REPORT.md files, plus the main merge refresh in `/w/evidence/ledger-x6/main-refresh.json`, indexed in `/w/evidence/ledger-x6/report-index.json`. This docs pass executes no runtime acceptance drills; supplied Mac evidence is relayed by the lead.
 
 ## Current verification inventory
 
@@ -31,7 +31,7 @@ X5 at 17:00 had 40 Closed, 6 Scoped pass, 54 Open. Six more close: V-PKG-04 and 
 
 ## Owner decisions applied
 
-At **2026-10-03 21:55 CEST**, the owner approved **#709 as written**, macOS floor **13.5**, and Phase **1.1** gate wording. Deploy with Apps (V-UX-11/P1.20), real managed provisioning/ordering and **topology 7 protected managed-rootless Docker Room** move to Phase 1.1. G-Arch and K-05 close on **topology 1** criteria in Phase 1; remaining fallback/close/crash results are still needed. `/w/evidence/p709-and-512/p709/REPORT.md` records content complete but actual GitHub retarget to main blocked, with no clean exact-head sign-off. Lead/Mac must retarget, review clean, then the lead merges.
+At **2026-10-03 21:55 CEST**, the owner approved **#709 as written**, macOS floor **13.5**, and Phase **1.1** gate wording. Deploy with Apps (V-UX-11/P1.20), real managed provisioning/ordering and **topology 7 protected managed-rootless Docker Room** move to Phase 1.1. G-Arch and K-05 close on **topology 1** criteria in Phase 1; remaining fallback/close/crash results are still needed. `/w/evidence/p709-and-512/p709/REPORT.md` recorded the earlier retarget blocker. It is superseded by the verified main landing: **#709 merged at `2d66b6a4c`, 2026-10-03 21:25:29Z**. Retarget/merge is complete; V-UX-11 stays Phase 1.1. Evidence: `/w/evidence/ledger-x6/main-refresh.json`, `/w/evidence/ledger-x6/review-1.json`.
 
 The owner decided **newest 512 receipt identities**, LRU eviction **only older than retention**, evicted replay **“receipt expired”**, **never re-execute**. [#812](https://github.com/charioxai/chariox/pull/812) preserves the existing owner-plus-command identity unit and **24-hour** window, protects pending/fresh/unknown-age entries, and reports **3264 checks** at head `32ef0e3dac18f565ac835ed2537cd52fac3aabe7`; exact-head review pending. Its protocol **416** is in-flight, not live n/main 410. Evidence: `/w/evidence/p709-and-512/receipts-512/REPORT.md`; provenance `/w/evidence/p709-and-512/OWNER_DECISIONS.md`. No protocol shape/version changes are made by this ledger PR.
 
@@ -41,7 +41,7 @@ Earlier decisions remain scoped: B8 independent hostile-package evidence and ope
 
 ## Remaining work and owners
 
-This groups **all 48 Open rows**, plus the two pending scoped/follow-up integrations. Agent names are the assigned task owners from X5/lead launch records; a missing REPORT is not a pass.
+This groups **all 48 Open rows**, plus the pending receipt-retention integration. Agent names are the assigned task owners from X5/lead launch records; a missing REPORT is not a pass.
 
 | Rows / work | Next bounded result | Owner |
 |---|---|---|
@@ -49,7 +49,7 @@ This groups **all 48 Open rows**, plus the two pending scoped/follow-up integrat
 | V-RUN-06, V1-INT-14/25 | Finish actual slice Room recovery, input/takeover and trusted-panel observation; n partial 0/2, 2/5, 2/3 | Agent x5-room-views; pending #805/#811 exact-head integration/review; owner Mac reboot secondary |
 | V-RUN-09/10, V1-INT-19, V-SDK-01/05 | Capture migration/first-handler/hooks, three exhaustion cases, two-Room/cross-kernel restore/update/uninstall, retained event counts | Agent x5-room-data; owner provider-initiated revoke secondary |
 | K-05, V1-INT-01, G-Browser, G-Arch | Topology 1 fallback/close/crash and final obligation map; topology 7 deferred | Agent x5-chromium (no REPORT supplied); lead map; owner Google/token/signed-worker |
-| V-SDK-08 | Local/web lifecycle and registration recurrence; #807 lost-start fix review/landing; managed ordering deferred | Agent vsdk08-rest / vsdk08-timeouts |
+| V-SDK-08 | Local/web lifecycle and registration recurrence; #807 lost-start fix landed at 16b685fffc; managed ordering deferred | Agent vsdk08-rest / vsdk08-timeouts |
 | T-11, V1-INT-24, G-Client | Native permission on released client, Meta/remote zero-focus/bootstrap, Cloud #279 live companion cases | Lead/Mac; owner collaborator and terminal/panel VoiceOver secondary |
 | V-UX-08, G-Freeform | Lead's current deployment readiness/audience/focus rerun | Lead/Mac |
 | V1-INT-09/10, G-HumanVal | Sitting 2 remaining Approve/changed-parameters receipts and leased attribution; V-SDK-04 first leg done 21/21 | Owner passkey; lead/Mac records/runs |
@@ -60,19 +60,18 @@ This groups **all 48 Open rows**, plus the two pending scoped/follow-up integrat
 | V-UX-03, V1-INT-26 | Trusted-terminal/panel/announcer VoiceOver | Owner |
 | G-Evidence | Final main CI outcome and release/image/Mac pins; stage/revalidate next candidate after inputs land | Lead/Mac; agents only for reported regressions |
 | V-SDK-03 retention follow-up (already counted above) | #812 clean exact-head review/landing and final retained/expired replay rerun | Agent p709-and-512; lead integration |
-| Phase 1.1 #709 / V-UX-11 (excluded from Open count) | Actual main retarget, clean review, lead merge; owner approval already recorded | Lead/Mac metadata; agent p709-and-512 content complete |
 
 No new owner decision is needed for SDK-only APP_BUSY, #709 content, topology 7 deferral or the 512 policy; they are already decided. Outstanding owner work is execution/signing/identity access, plus the Google fixture-token rotation decision recorded in X5. Scoped-pass final reruns remain G-Evidence work.
 
 ## Merge and evidence boundary
 
-At 23:10 the lead squash-merged reviewed-clean #793/#794/#798/#801/#804/#809/#810/#792/#795/#796/#797/#803 to **e9c6b0a10**, plus Cloud #279; #760/#634 closed as superseded by #798. #804 recovery **20/20**, #809 controller/steer **50/50 each**. The Mac remains n, so those main fixes require the next staged candidate. Proposed o also waits for approved #709/512-policy/fixes-onto-main/KA results as they land; KA is a separate access milestone, not a false Apps gate pass.
+At 23:10 the lead squash-merged reviewed-clean #793/#794/#798/#801/#804/#809/#810/#792/#795/#796/#797/#803 to **e9c6b0a10**, plus Cloud #279; #760/#634 closed as superseded by #798. #804 recovery **20/20**, #809 controller/steer **50/50 each**. The Mac remains n, so those main fixes require the next staged candidate. The refreshed main additionally contains #807 at `16b685fffc`, #745 at `23aa6c95e5`, #755 at `ebb3af9581`, and #709 at `2d66b6a4c`; their earlier pending labels are superseded. Proposed o still awaits the 512-policy/KA results as they land; KA is a separate access milestone, not a false Apps gate pass.
 
 Main **1009ccc58** CI run **37138750704** was green. The supplied ledger only records **e9c6b0a10** run **37153471506** watcher armed; final outcome is not provided. **G-Evidence remains Open.** Superseded closure completed **352/352** (308 OSS, 44 Cloud). Sources: `/w/evidence/lead-ledger/ledger-pending.md`, `/w/evidence/m-ci-gates/REPORT.md`, `/w/evidence/ci-kernel-two/REPORT.md`, `/w/evidence/deflake-two/REPORT.md`, `/w/evidence/recovered-regression-tests/REPORT.md`. The next PR is based on main; the lead merges and owns CI/restart, not the builder documentation worker.
 
 ## Dated implementation history (not current verification status)
 
-The entries below preserve the original implementation record and protocol receipts. Statements such as “not merged”, Missing/Partial and old branch bases describe their dated baseline only. They do not override the X6 matrix, applied owner decisions or current main base. The obsolete 2026-09-07 baseline inventory and duplicate stale verification tables are replaced by the current matrix above; old row IDs remain mapped in the verification document.
+The entries below preserve the original implementation record and protocol receipts. [Protocol renumbering](PROTOCOL_PHASE1_RENUMBERING.md) maps local N → N + 9 for 368–406 and relay 58 → 69; older receipts retain their original numbers. See the [implementation plan](CHARIOX_APPS_IMPLEMENTATION_PLAN.html) for current P1.xx definitions and the old-to-new workstream note in the verification ledger. Statements such as “not merged”, Missing/Partial and old branch bases describe their dated baseline only. They do not override the X6 matrix, applied owner decisions or current main base. The obsolete 2026-09-07 baseline inventory and duplicate stale verification tables are replaced by the current matrix above; old row IDs remain mapped in the verification document.
 
 ## Implementation progress: 2026-09-07 foundations
 
