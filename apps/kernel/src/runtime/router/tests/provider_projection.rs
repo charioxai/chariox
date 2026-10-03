@@ -790,3 +790,28 @@ fn ended_projected_opencode_run_remains_readable_without_local_selection_sync() 
         crate::provider::ProviderRunState::Ended
     );
 }
+
+#[test]
+fn ended_local_opencode_run_keeps_local_selection_sync_read_path() {
+    let store = crate::runtime::projection::ProviderRunProjectionStore::default();
+    let mut run = RuntimeProviderRun::from_control_capability_inference(
+        "provider-run-local-ended",
+        "session".into(),
+        Some("local-agent".into()),
+        "opencode".into(),
+    );
+    run.mark_ended();
+    store.update(run.clone());
+    let response = crate::runtime::provider_run_control::projected_provider_run_response(
+        &store,
+        &GetProviderRunRequest {
+            provider_run_id: run.id().into(),
+        },
+        crate::session::DEFAULT_LOCAL_USER_ID,
+    )
+    .expect("local projection should retain ownership checks");
+    assert!(
+        response.is_none(),
+        "local OpenCode reads must still refresh selection through the provider registry"
+    );
+}
