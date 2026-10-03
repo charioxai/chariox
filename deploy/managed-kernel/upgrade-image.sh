@@ -27,6 +27,7 @@ managed_state=$managed_home/.chariox
 legacy_home=$state_root/home
 script_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 . "$script_root/managed-kernel-builder-pin-transaction.sh"
+. "$script_root/managed-app-storage.sh"
 managed_provider_topology=${CHARIOX_MANAGED_PROVIDER_TOPOLOGY-}
 case "$managed_provider_topology" in
   path1|shared_host) ;;
@@ -362,6 +363,62 @@ atomic_symlink() {
   node "$script_root/managed-kernel-upgrade-state.mjs" atomic-symlink "$1" "$2"
 }
 
+# Disable while current still resolves the unit; systemd cannot disable a
+# dangling unit after the pre-Apps release has replaced current.
+prepare_managed_app_release_switch() {
+  [ ! -f "$1/usr/libexec/chariox-app-storage" ] || return 0
+  app_unit_link=$install_root/etc/systemd/system/chariox-app-storage.service
+  if path_exists "$app_unit_link"; then
+    [ -L "$app_unit_link" ] && [ "$(readlink "$app_unit_link")" = "../../../usr/lib/chariox/current/etc/systemd/system/chariox-app-storage.service" ] || {
+      echo "managed App storage release link is obstructed" >&2; return 1;
+    }
+    # A dangling own link means a prior rollback already disabled the helper
+    # before switching current; recovery only needs to remove that link.
+    if [ -e "$app_unit_link" ]; then
+      systemctl disable --now chariox-app-storage.service || return 1
+    fi
+  fi
+}
+
+sync_managed_app_storage() {
+  app_package_link=$install_root/usr/local/bin/chariox-app-package
+  app_helper_link=$install_root/usr/libexec/chariox-app-storage
+  app_unit_link=$install_root/etc/systemd/system/chariox-app-storage.service
+  if [ -f "$current_link/usr/local/bin/chariox-app-package" ]; then
+    enroll_managed_app_storage "$install_root" "$managed_provider_topology" || return 1
+    install -d -o root -g root -m 0755 "$install_root/usr/libexec" "$install_root/usr/local/bin" "$install_root/etc/systemd/system" || return 1
+    publish_managed_app_link "../../../usr/lib/chariox/current/usr/local/bin/chariox-app-package" "$app_package_link" || return 1
+    publish_managed_app_link "../lib/chariox/current/usr/libexec/chariox-app-storage" "$app_helper_link" || return 1
+    publish_managed_app_link "../../../usr/lib/chariox/current/etc/systemd/system/chariox-app-storage.service" "$app_unit_link" || return 1
+  else
+    # Retain enrollment and App data for a later Apps upgrade, but remove only
+    # our own release links. Never replace/remove an unrelated host install.
+    for app_path in "$app_package_link" "$app_helper_link" "$app_unit_link"; do
+      if path_exists "$app_path"; then
+        case "$app_path" in
+          "$app_package_link") app_target="../../../usr/lib/chariox/current/usr/local/bin/chariox-app-package" ;;
+          "$app_helper_link") app_target="../lib/chariox/current/usr/libexec/chariox-app-storage" ;;
+          "$app_unit_link") app_target="../../../usr/lib/chariox/current/etc/systemd/system/chariox-app-storage.service" ;;
+        esac
+        [ -L "$app_path" ] && [ "$(readlink "$app_path")" = "$app_target" ] || {
+          echo "managed App storage release link is obstructed" >&2; return 1;
+        }
+      fi
+    done
+    rm -f -- "$app_package_link" "$app_helper_link" "$app_unit_link" || return 1
+    if [ -f "$install_root/etc/chariox/app-storage.json" ]; then
+      echo "Pre-Apps release: App storage is disabled; enrollment and App data are preserved for a later upgrade." >&2
+    fi
+  fi
+}
+
+start_managed_app_storage() {
+  [ -f "$current_link/usr/libexec/chariox-app-storage" ] || return 0
+  systemctl enable chariox-app-storage.service || return 1
+  systemctl restart chariox-app-storage.service || return 1
+  systemctl is-active --quiet chariox-app-storage.service || return 1
+}
+
 sync_path1_data_volume_unit_links() {
   [ "$managed_provider_topology" = path1 ] || return 0
   data_service=$install_root/etc/systemd/system/chariox-data-volume-admission.service
@@ -628,14 +685,17 @@ rollback_transaction() {
     no) remove_release_override || return 1 ;;
     *) echo "managed kernel upgrade transaction has an invalid release override marker" >&2; return 1 ;;
   esac
+  prepare_managed_app_release_switch "$chariox_root/$previous_target" || return 1
   atomic_symlink "$previous_target" "$current_link" || return 1
   sync_path1_data_volume_unit_links || return 1
+  sync_managed_app_storage || return 1
   atomic_symlink "$previous_slice_build_context" "$slice_build_context_link" || return 1
   verify_slice_build_context_facade "$previous_slice_build_context" || return 1
   validate_active_builder_pin "$transaction_root" previous "$previous_target" || return 1
   systemctl daemon-reload || return 1
   assert_path1_units_have_no_dropins || return 1
   start_path1_runtime_services || return 1
+  start_managed_app_storage || return 1
   health_not_before_ms=$(node -e 'process.stdout.write(String(Date.now()))') || return 1
   systemctl start "$service_name" || return 1
   active_previous_protocol=$(protocol_version "$current_link/usr/local/bin/chariox-kernel") || return 1
@@ -1049,10 +1109,16 @@ else
   remove_release_override || activation_failed=1
 fi
 if [ "${activation_failed:-0}" -eq 0 ]; then
-  atomic_symlink "releases/$release_name" "$current_link" || activation_failed=1
+  prepare_managed_app_release_switch "$published_release" || activation_failed=1
+  if [ "${activation_failed:-0}" -eq 0 ]; then
+    atomic_symlink "releases/$release_name" "$current_link" || activation_failed=1
+  fi
 fi
 if [ "${activation_failed:-0}" -eq 0 ]; then
   sync_path1_data_volume_unit_links || activation_failed=1
+fi
+if [ "${activation_failed:-0}" -eq 0 ]; then
+  sync_managed_app_storage || activation_failed=1
 fi
 if [ "${activation_failed:-0}" -eq 0 ]; then
   atomic_symlink "$signed_slice_build_context_target" "$slice_build_context_link" \
@@ -1073,6 +1139,7 @@ write_phase activated
 if ! systemctl daemon-reload \
   || ! assert_path1_units_have_no_dropins \
   || ! start_path1_runtime_services \
+  || ! start_managed_app_storage \
   || ! health_not_before_ms=$(node -e 'process.stdout.write(String(Date.now()))') \
   || ! systemctl start "$service_name" \
   || ! check_health "$target_protocol" "$expected_new_digest" "$health_not_before_ms"; then

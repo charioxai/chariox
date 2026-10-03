@@ -434,44 +434,8 @@ case "$docker_uid" in
 esac
 usermod --append --groups chariox-slice chariox
 
-# Root-installed authority is derived from the actual managed kernel OS user.
-# App requests cannot supply this UID/GID, cgroup root, quota, or filesystem path.
-app_storage_uid=$(id -u chariox)
-app_storage_gid=$(id -g chariox)
-for app_storage_id in "$app_storage_uid" "$app_storage_gid"; do
-  case "$app_storage_id" in
-    ''|*[!0-9]*|0) echo "invalid managed App storage owner" >&2; exit 1 ;;
-  esac
-done
-for app_storage_path in "$install_root/etc/chariox" "$install_root/var/lib/chariox-app-storage"; do
-  if [ -L "$app_storage_path" ] || { [ -e "$app_storage_path" ] && [ ! -d "$app_storage_path" ]; }; then
-    echo "managed App storage root is obstructed" >&2; exit 1
-  fi
-done
-install -d -o root -g root -m 0755 "$install_root/etc/chariox"
-install -d -o root -g root -m 0711 "$install_root/var/lib/chariox-app-storage"
-app_storage_config=$install_root/etc/chariox/app-storage.json
-if [ -L "$app_storage_config" ] || { [ -e "$app_storage_config" ] && [ ! -f "$app_storage_config" ]; }; then
-  echo "managed App storage enrollment is obstructed" >&2; exit 1
-fi
-app_storage_pending=$(mktemp "$install_root/etc/chariox/.app-storage.XXXXXXXX")
-printf '{"schema":"chariox.app-storage-enrollment.v1","owners":[{"uid":%s,"gid":%s,"cgroup_root":"/sys/fs/cgroup/system.slice/%s/apps","kernel_database_paths":["/home/chariox/.chariox/state/kernel.db"]}]}\n' "$app_storage_uid" "$app_storage_gid" "$selected_bootstrap_service" > "$app_storage_pending"
-chmod 0644 "$app_storage_pending"
-chown root:root "$app_storage_pending"
-if [ -e "$app_storage_config" ] && ! cmp -s "$app_storage_config" "$app_storage_pending"; then
-  rm -f -- "$app_storage_pending"
-  echo "managed App storage enrollment conflicts with the installed owner" >&2; exit 1
-fi
-node - "$app_storage_pending" "$app_storage_config" <<'NODE'
-const fs = require("node:fs")
-const path = require("node:path")
-const [from, to] = process.argv.slice(2)
-const file = fs.openSync(from, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
-try { fs.fsyncSync(file) } finally { fs.closeSync(file) }
-fs.renameSync(from, to)
-const directory = fs.openSync(path.dirname(to), fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
-try { fs.fsyncSync(directory) } finally { fs.closeSync(directory) }
-NODE
+. "$script_root/managed-app-storage.sh"
+enroll_managed_app_storage "$install_root" "$managed_provider_topology"
 
 install -d -o chariox -g chariox -m 0700 "$managed_home" "$managed_state"
 install -d -o chariox-docker -g chariox-docker -m 0700 \
