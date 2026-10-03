@@ -44,7 +44,6 @@ mod unix {
     use std::fs::File;
     use std::io::Read;
     use std::os::fd::AsRawFd;
-    use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::MetadataExt;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};

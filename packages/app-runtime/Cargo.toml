@@ -6,7 +6,8 @@ description = "Kernel-owned Chariox App worker transport and lifecycle services"
 license = "MIT"
 
 [features]
-# Fixed, unsandboxed native test fixture only. Release builds reject this feature.
+# Fixed, unsandboxed native test fixture only. Production binaries reject this
+# feature; release-mode library tests may use it.
 test-fixtures = []
 
 [dependencies]

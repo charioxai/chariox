@@ -1,5 +1,8 @@
 //! Privileged installer entry point. Trust key/digest come from the root
 //! operator or signed OS installer, never from a bundle-provided key file.
+#[cfg(all(not(test), not(debug_assertions)))]
+const _: () = chariox_app_runtime::assert_production_build();
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn main() {
     use chariox_app_runtime::runtime_enrollment::installer::RuntimeInstaller;

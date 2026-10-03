@@ -1,6 +1,9 @@
 use chariox_kernel::{DaemonApp, DaemonConfig};
 use std::time::Instant;
 
+#[cfg(all(not(test), not(debug_assertions)))]
+const _: () = chariox_app_runtime::assert_production_build();
+
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
