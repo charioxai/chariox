@@ -321,7 +321,7 @@ test("interrupted helper publication resumes activation even with identical inpu
     await script(join(h.pkg, "chariox-app-storage"), "#!/bin/sh\necho helper v2\n")
     const parser = join(h.bin, "apparmor_parser")
     const original = await readFile(parser, "utf8")
-    await script(parser, "#!/bin/sh\nexit 1\n")
+    await script(parser, '#!/bin/sh\n[ "$1" = "-Q" ] && exit 0\nexit 1\n')
     await writeFile(p(h, "sys/kernel/security/apparmor/profiles"), "")
     await h.reset("systemctl")
     const failed = h.install(["bob"])

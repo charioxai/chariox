@@ -204,7 +204,7 @@ test(`an 80-call backlog (${counts.join("/")}) across four views settles every p
   assert.equal(batch.calls.length, 64);
   assert.equal(batch.open_targets.length, 4);
   for (const call of batch.calls) {
-    await tabs.respond({ target_id: call.target_id, call_id: call.call_id, result: { usage: 1 } });
+    await tabs.respond({ target_id: call.target_id, document_id: call.document_id, call_id: call.call_id, result: { usage: 1 } });
   }
   let timer;
   try {
@@ -227,12 +227,12 @@ test(`an 80-call backlog (${counts.join("/")}) across four views settles every p
 });
 }
 
-test("a saturated App call queue still answers controller-owned panel requests", async () => {
+test("a saturated App call queue refuses kernel-owned panel requests with retryable busy", async () => {
   const { tabs, connection } = await opened();
   const app = tabs.apps.get("s1");
   for (let i = 0; i < 64; i++) await tabs.enqueueCall(app, JSON.stringify({ id: String(i), method: "usage" }), "s1");
   await tabs.enqueueCall(app, JSON.stringify({ id: "panel", method: "chariox.panel", params: { rect: null } }), "s1");
-  assert.equal(connection.sent.at(-1).params.expression, 'globalThis.__charioxAppResolve("panel", true, {"released":true})');
+  assert.match(connection.sent.at(-1).params.expression, /__charioxAppResolve\("panel", false, .*APP_BUSY/);
   assert.equal((await tabs.takeCalls()).calls.length, 64);
 });
 

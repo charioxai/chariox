@@ -272,6 +272,9 @@ export class AppTabs {
     let call;
     try { call = JSON.parse(payload); } catch { return; }
     if (typeof call?.id !== "string" || typeof call.method !== "string" || call.method.length > 128) return;
+    // Resolve the document before admission; the bounded queue check and push
+    // then run without an await, even when a page sends one concurrent burst.
+    const documentId = app.document ?? await this.document(sessionId, app);
     // Refusing admission must settle the page's promise. Silently dropping
     // overflow leaves Promise.all backlogs waiting forever, even after drain.
     if (this.calls.length >= MAX_PENDING_CALLS) {
@@ -283,7 +286,7 @@ export class AppTabs {
     app.pending.add(call.id);
     if (app.pending.size > MAX_ANSWERABLE_CALLS) app.pending.delete(app.pending.values().next().value);
     this.calls.push({ installation_id: app.installation, target_id: app.targetId,
-      document_id: app.document ?? await this.document(sessionId, app), call_id: call.id,
+      document_id: documentId, call_id: call.id,
       method: call.method, params: call.params ?? {} });
   }
 
