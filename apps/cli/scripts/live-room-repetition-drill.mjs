@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import {spawn,execFile} from 'node:child_process'
 import {randomUUID,createHash} from 'node:crypto'
 import {createWriteStream} from 'node:fs'
-import {readFile,writeFile,appendFile,mkdir,mkdtemp,readdir,rm,stat,chmod} from 'node:fs/promises'
+import {readFile,writeFile,appendFile,mkdir,mkdtemp,readdir,rm,stat,chmod,lstat,copyFile} from 'node:fs/promises'
 import http from 'node:http'
 import net from 'node:net'
 import path from 'node:path'
@@ -32,10 +32,17 @@ const root=await mkdtemp(`${lane}/runtime-`),owned=[],slices=[],savedImages=new 
 let local,session,slice,environment,relayChild,kernelChild,fixture,webServer,webContainer,monitor,stage='provenance',interrupted=false,ocrRun=null
 const activeTuis=new Map()
 // The Web viewer container runs Chromium sandboxed as the slice image's non-root
-// user (uid 1001) and gets only its own runtime and evidence directories. Their
-// parents (the lane and the evidence root) are owner-only, so modes alone give
+// user (uid 1001) and gets only its own runtime and evidence-staging directories.
+// Both live in the mkdtemp runtime root, which is owner-only, so modes alone give
 // uid 1001 access without host chown; the host still reads and removes its files.
-const WEB_UID=1001,webRoot=`${root}/web`,webEvidence=`${evidence}/web`
+// Staged evidence is copied to the evidence root only after the viewer is gone.
+const WEB_UID=1001,webRoot=`${root}/web`,webStaging=`${root}/web-evidence`,webEvidence=`${evidence}/web`
+async function publishWebEvidence(){
+ const staged=await readdir(webStaging).catch(()=>[])
+ if(!staged.length)return
+ await mkdir(webEvidence,{recursive:true,mode:0o700})
+ for(const name of staged){const source=path.join(webStaging,name);if((await lstat(source)).isFile())await copyFile(source,path.join(webEvidence,name))}
+}
 const writeWeb=async(name,value)=>{await writeFile(`${webRoot}/${name}`,JSON.stringify(value));await chmod(`${webRoot}/${name}`,0o644)}
 const write=(name,value)=>writeFile(`${evidence}/${name}.json`,JSON.stringify({mpItems,...value},null,2)+'\n',{mode:0o600})
 const cmd=async(program,args,timeout=120000)=>{
@@ -222,9 +229,9 @@ try{
    res.setHeader('content-type',file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':file.endsWith('.html')?'text/html':file.endsWith('.svg')?'image/svg+xml':'application/octet-stream');res.end(await readFile(file))
   }catch{res.statusCode=500;res.end('loop fixture failed')}})
   const webPort=await freePort();await new Promise(resolve=>webServer.listen(webPort,'127.0.0.1',resolve))
-  for(const directory of [webRoot,webEvidence]){await mkdir(directory,{recursive:true});await chmod(directory,0o777)}
+  for(const directory of [webRoot,webStaging]){await mkdir(directory,{recursive:true});await chmod(directory,0o777)}
   await writeWeb('web-config.json',{baseUrl:`http://127.0.0.1:${webPort}`,relayUrl:env.CHARIOX_RELAY_URL,daemonId,machineId,environmentId:environment.environment_id,target:`${session.id}:${session.agents[0].id}:${slice.id}`})
-  webContainer=`${runId}-web`;await docker(['run','-d','--name',webContainer,'--user',`${WEB_UID}:${WEB_UID}`,'--security-opt',`seccomp=${repo}/apps/kernel/slice-linux-docker/chromium-seccomp.json`,'--label',`io.chariox.drill-run=${runId}`,'--network','host','--memory','1536m','--memory-swap','1536m','--cpus',process.env.LOOPS_WEB_CPUS??'1','--pids-limit','256','--mount',`type=bind,src=${cloud},dst=/cloud,readonly`,'--mount',`type=bind,src=${webRoot},dst=/runtime`,'--mount',`type=bind,src=${webEvidence},dst=/evidence`,'--mount',`type=bind,src=${repo}/apps/cli/scripts/lib/room-repetition-web.mjs,dst=/web.mjs,readonly`,'--mount',`type=bind,src=${repo}/apps/cli/scripts/lib/room-repetition-gates.mjs,dst=/room-repetition-gates.mjs,readonly`,'--entrypoint','node',image,'/web.mjs'])
+  webContainer=`${runId}-web`;await docker(['run','-d','--name',webContainer,'--user',`${WEB_UID}:${WEB_UID}`,'--security-opt',`seccomp=${repo}/apps/kernel/slice-linux-docker/chromium-seccomp.json`,'--label',`io.chariox.drill-run=${runId}`,'--network','host','--memory','1536m','--memory-swap','1536m','--cpus',process.env.LOOPS_WEB_CPUS??'1','--pids-limit','256','--mount',`type=bind,src=${cloud},dst=/cloud,readonly`,'--mount',`type=bind,src=${webRoot},dst=/runtime`,'--mount',`type=bind,src=${webStaging},dst=/evidence`,'--mount',`type=bind,src=${repo}/apps/cli/scripts/lib/room-repetition-web.mjs,dst=/web.mjs,readonly`,'--mount',`type=bind,src=${repo}/apps/cli/scripts/lib/room-repetition-gates.mjs,dst=/room-repetition-gates.mjs,readonly`,'--entrypoint','node',image,'/web.mjs'])
   await wait(async()=>{const error=await readFile(`${webRoot}/web-error.json`,'utf8').catch(()=>null);if(error){const e=Error(JSON.parse(error).message);e.fatal=true;throw e}return JSON.parse(await readFile(`${webRoot}/web-ready.json`,'utf8').catch(()=>'null'))},'two Web viewers',120000)
   await write('concurrent',{room:await roomSnapshot(),worker:await observeWorker(),web:JSON.parse(await readFile(`${webRoot}/web-ready.json`,'utf8')),tuis:await Promise.all([...activeTuis.values()].map(t=>readAutomationSnapshot(t.automationSocket)))})
   // Generate an active browser/stream workload through a fixture-only CDP setup.
@@ -242,7 +249,7 @@ try{
  })
  if(slice){try{const log=await docker(['exec',cname(slice),'sh','-c',"cat /home/slice/.local/state/chariox/logs/*daemon*.ndjson /home/slice/.chariox/logs/*daemon*.ndjson /opt/chariox-slice/logs/*daemon*.ndjson 2>/dev/null; true"]);await writeFile(`${evidence}/worker-forwarder.log`,log.split('\n').filter(line=>line.includes('\"component\":\"display.')).join('\n')+'\n',{mode:0o600})}catch{}}
  await Promise.all([...activeTuis.keys()].map(stopTui))
- if(webContainer){await docker(['rm','-f',webContainer]);webContainer=null}
+ if(webContainer){await docker(['rm','-f',webContainer]);webContainer=null;await publishWebEvidence()}
  if(webServer){await new Promise(resolve=>webServer.close(resolve));webServer=null}
  await gate('save-restart',async()=>{
   let portsBefore=structuredClone(slice.local_docker_ports),idBefore=(await docker(['exec',cname(slice),'cat','/etc/machine-id'])).trim()
@@ -296,6 +303,7 @@ finally{
  clearInterval(monitor)
  for(const kind of [...activeTuis.keys()])await stopTui(kind).catch(e=>failures.push({stage:'cleanup-tui',error:e.message}))
  if(webContainer)await docker(['rm','-f',webContainer]).catch(e=>failures.push({stage:'cleanup-web',error:e.message}))
+ await publishWebEvidence().catch(e=>failures.push({stage:'cleanup-web-evidence',error:e.message}))
  if(webServer)await new Promise(resolve=>webServer.close(resolve))
  await fixture?.close().catch(()=>{})
  for(const s of slices){const exists=await docker(['inspect',cname(s)]).catch(()=>null);if(exists&&local)await deleteSlice(s).catch(e=>failures.push({stage:'cleanup-slice',error:e.message}))}
