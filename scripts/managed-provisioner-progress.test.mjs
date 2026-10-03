@@ -2,9 +2,9 @@ import assert from "node:assert/strict"
 import { spawn, spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import { once } from "node:events"
-import { access, chmod, mkdir, mkdtemp, readFile, readdir, readlink, rm, stat, writeFile } from "node:fs/promises"
+import { access, chmod, copyFile, mkdir, mkdtemp, readFile, readdir, readlink, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { basename, dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import test from "node:test"
 
@@ -151,6 +151,11 @@ if (text.includes("{{json .Config.Labels}}") || text.includes("{{json .Labels}}"
     await chmod(join(shimDirectory, "python3"), 0o755)
     await chmod(join(shimDirectory, "sha256sum"), 0o755)
   }
+  // This fixture masks /usr/local/bin for syscall injection. Keep the test
+  // interpreter available when Node itself is installed under that prefix.
+  if (fault === "archive-read" && dirname(process.execPath) === "/usr/local/bin") {
+    await copyFile(process.execPath, join(shimDirectory, basename(process.execPath)))
+  }
   const reaper = join(root, "reaper.py")
   await writeFile(reaper, `import os, subprocess, sys, time
 child = subprocess.Popen(sys.argv[1:])
@@ -176,6 +181,9 @@ exec /usr/bin/python3 "$8" "$9" "\${10}" --stdio
   child = spawn("/usr/bin/unshare", ["--mount", "--propagation", "private", "--pid", "--fork", "--kill-child=SIGKILL", "--mount-proc", entrypoint,
     fakeDocker, quota, run, fault, shimDirectory, policy, sliceDirectory, reaper, process.execPath, join(sliceDirectory, "managed-docker-broker.mjs")], {
     stdio: ["pipe", "pipe", "pipe"], env: { PATH: "/usr/bin:/bin", HOME: root,
+      // A synthetic daemon tests legacy process settlement, not managed image
+      // lineage. Never implicitly select the real managed-rootless endpoint.
+      DOCKER_HOST: "unix:///run/progress-fixture/docker.sock",
       CHARIOX_SLICE_DOCKER_SHARE_ROOT: share, CHARIOX_SLICE_DOCKER_BROKER_ARTIFACT_ROOT: artifactRoot,
       CHARIOX_SLICE_DOCKER_HANDLE_ROOT: join(root, "handles"), CHARIOX_SLICE_DOCKER_HANDLE_STATE: join(root, "handles.json"),
       CHARIOX_MANAGED_RELEASE_MANIFEST: manifest,

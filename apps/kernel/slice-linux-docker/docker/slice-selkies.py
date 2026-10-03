@@ -180,7 +180,9 @@ def start(directory, *, port=None, display=None):
         record = {**process_record(process), "port": port,
                   "display": display, "master_token": token}
         write_state(directory, record)
-        deadline = time.monotonic() + 15
+        # Cold disks and CPU-only guests can still be importing Selkies after
+        # 15 seconds. Keep readiness bounded without killing a healthy startup.
+        deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             if child.poll() is not None:
                 raise RuntimeError(f"Selkies exited with {child.returncode}; inspect {directory / 'streamer.log'}")
@@ -196,7 +198,7 @@ def start(directory, *, port=None, display=None):
                         raise RuntimeError("Selkies rejected its private control credential")
                 return public_status(record)
             time.sleep(0.1)
-        raise RuntimeError("Selkies did not become healthy within 15 seconds")
+        raise RuntimeError("Selkies did not become healthy within 60 seconds")
     except BaseException:
         if child is not None:
             if child.poll() is None:

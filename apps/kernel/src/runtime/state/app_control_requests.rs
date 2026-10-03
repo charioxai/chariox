@@ -3,7 +3,7 @@
 //! installation. Automation targets are resolved under workflow ownership.
 use super::{app_automation_owned_state::ConfigureAppAutomation, KernelRuntimeState};
 use crate::{
-    durable_state::app_worker_lifecycle::{WorkerPhase, WorkerStatus},
+    durable_state::app_worker_lifecycle::{StartGate, WorkerPhase, WorkerStatus},
     local::{
         AppAutomationStatus, AppAutomationSummary, AppRequestErrorCode, AppWorkerAction,
         AppWorkerPhase, AppWorkerSummary, LocalDaemonRequest, LocalDaemonResponse,
@@ -583,10 +583,22 @@ impl KernelRuntimeState {
         let dormant = self.app_control().is_app_dormant(&owner, &installation);
         let store = self.owned.durable_state_store.clone();
         let id = installation.clone();
-        let status = tokio::task::spawn_blocking(move || store.app_worker_status(&owner, &id))
-            .await
-            .map_err(|_| AppRequestErrorCode::StorageUnavailable)?
-            .map_err(|_| AppRequestErrorCode::StorageUnavailable)?;
+        let (status, dormant) = tokio::task::spawn_blocking(move || {
+            let status = store.app_worker_status(&owner, &id)?;
+            let dormant = if status.as_ref().is_some_and(|status| {
+                status.phase == WorkerPhase::Stopped && (dormant || status.dormant)
+            }) {
+                store.app_worker_start_gate(&owner, &id)? == StartGate::Allowed
+            } else {
+                false
+            };
+            Ok::<_, crate::durable_state::app_worker_lifecycle::LifecycleStoreError>((
+                status, dormant,
+            ))
+        })
+        .await
+        .map_err(|_| AppRequestErrorCode::StorageUnavailable)?
+        .map_err(|_| AppRequestErrorCode::StorageUnavailable)?;
         let worker = match status {
             None => AppWorkerSummary {
                 installation_id: installation,
@@ -705,6 +717,7 @@ mod tests {
             attempt: "attempt".into(),
             phase,
             desired_running: true,
+            dormant: false,
             failure: None,
             updated_ms: 1,
             failures,
@@ -721,6 +734,11 @@ mod tests {
             worker_phase(&status(WorkerPhase::Stopped, 0), false),
             AppWorkerPhase::Stopped
         );
+        let mut restored = status(WorkerPhase::Stopped, 0);
+        restored.dormant = true;
+        assert_eq!(worker_phase(&restored, true), AppWorkerPhase::Dormant);
+        // A retained durable flag alone cannot override refused authority.
+        assert_eq!(worker_phase(&restored, false), AppWorkerPhase::Stopped);
         assert_eq!(
             worker_phase(&status(WorkerPhase::Running, 0), true),
             AppWorkerPhase::Running

@@ -2238,13 +2238,20 @@ impl KernelRuntimeState {
         .await;
         (outcome, process_id)
     }
-
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        exit_gateway_with_kernel, is_package_digest_mismatch, launched_publication_runtime_message, launched_publication_runtime_status, publication_local_url, publication_runtime_error, publication_runtime_launch_context, publication_runtime_metadata_preserving_binding, publication_runtime_port, publication_runtime_recovery_binding, stopped_publication_runtime_metadata, validate_bound_publication_package_digest, validate_bound_release, validate_publication_runtime_bind_address, validated_deployment_binding, write_publication_caller_claims_config, BoundReleaseDigests, PublicationRuntimeLaunchContext, WorkflowPublicationRuntimeProcessStore, DEFAULT_PUBLICATION_RUNTIME_PORT,
+        exit_gateway_with_kernel, is_package_digest_mismatch, launched_publication_runtime_message,
+        launched_publication_runtime_status, publication_local_url, publication_runtime_error,
+        publication_runtime_launch_context, publication_runtime_metadata_preserving_binding,
+        publication_runtime_port, publication_runtime_recovery_binding,
+        stopped_publication_runtime_metadata, validate_bound_publication_package_digest,
+        validate_bound_release, validate_publication_runtime_bind_address,
+        validated_deployment_binding, write_publication_caller_claims_config, BoundReleaseDigests,
+        PublicationRuntimeLaunchContext, WorkflowPublicationRuntimeProcessStore,
+        DEFAULT_PUBLICATION_RUNTIME_PORT,
     };
     use crate::local::BindWorkflowPublicationDeploymentRequest;
     use std::fs;
@@ -2707,6 +2714,10 @@ mod tests {
         store
             .record_recovery_launch("publication-1", 1_100 + stable)
             .await;
-        assert!(store.recovery_due("publication-1", 2_100 + stable, "sha256:a").await);
+        assert!(
+            store
+                .recovery_due("publication-1", 2_100 + stable, "sha256:a")
+                .await
+        );
     }
 }

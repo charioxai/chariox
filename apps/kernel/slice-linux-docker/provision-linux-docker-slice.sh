@@ -1235,7 +1235,7 @@ start_slice_services() {
   fi
   if [[ "$SLICE_START_DESKTOP" == "1" ]]; then
     require_slice_free_space "desktop" /home/slice /tmp
-    run_required_phase desktop exec_slice_with_timeout 60 bash -lc "/opt/chariox-slice/slice-screen.sh start"
+    run_required_phase desktop exec_slice_with_timeout 120 bash -lc "/opt/chariox-slice/slice-screen.sh start"
   fi
   if [[ "$SLICE_START_RUNTIME" == "1" ]]; then
     require_slice_free_space "runtime" /home/slice /tmp
@@ -1916,7 +1916,7 @@ main() {
       require_docker
       ensure_container
       require_slice_free_space "desktop" /home/slice /tmp
-      run_required_phase desktop exec_slice_with_timeout 60 bash -lc "/opt/chariox-slice/slice-screen.sh start"
+      run_required_phase desktop exec_slice_with_timeout 120 bash -lc "/opt/chariox-slice/slice-screen.sh start"
       ;;
     validate-screen)
       require_docker

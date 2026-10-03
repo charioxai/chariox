@@ -19,6 +19,8 @@ static int fixture_lifecycle_run(const struct cx_launch_record* record, const ch
     char id[129]; const char* event=NULL;
     for (size_t i=0;i<sizeof(names)/sizeof(names[0]);++i)
       if (fixture_health_parse(response,names[i],id)==1) { event=names[i]; break; }
+    if (!event && strstr(response,"\"method\":\"schedule.wake\"") &&
+        fixture_request_id(response,id)==1) event="wake";
     if (!event) { close(file); return 143; }
     size_t size=strlen(response);
     if (write(file,response,size)!=(ssize_t)size || write(file,"\n",1)!=1 || fsync(file)) { close(file); return 144; }

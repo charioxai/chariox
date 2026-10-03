@@ -212,9 +212,8 @@ pub(super) fn initialize(connection: &mut Connection) -> Result<(), DaemonError>
 
 pub(super) fn execute(connection: &mut Connection, request: AppStateRequest) {
     let changes_wakes = match &request.operation {
-        AppStateOperation::Schedule { wakes, .. } | AppStateOperation::Transaction { wakes, .. } => {
-            !wakes.is_empty()
-        }
+        AppStateOperation::Schedule { wakes, .. }
+        | AppStateOperation::Transaction { wakes, .. } => !wakes.is_empty(),
         _ => false,
     };
     let result = apply(

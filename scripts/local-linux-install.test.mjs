@@ -310,7 +310,7 @@ test("local Linux root install refuses GID zero before changing shared enrollmen
 test("shipped AppArmor attachments compile with the real parser", { skip: !linux }, (t) => {
   const available = spawnSync("apparmor_parser", ["--version"], { encoding: "utf8" })
   if (available.error?.code === "ENOENT") return t.skip("apparmor_parser unavailable")
-  const result = spawnSync("apparmor_parser", ["-Q", join(repositoryRoot, "deploy/local-linux/chariox-app-bwrap.apparmor")], { encoding: "utf8" })
+  const result = spawnSync("apparmor_parser", ["-Q", "--skip-cache", join(repositoryRoot, "deploy/local-linux/chariox-app-bwrap.apparmor")], { encoding: "utf8" })
   assert.equal(result.status, 0, result.stderr || result.stdout)
 })
 

@@ -6,13 +6,23 @@ import { fileURLToPath } from "node:url"
 const guard = fileURLToPath(new URL("./slice-command-guard.py", import.meta.url))
 
 // MP-08/MP-10/MP-11: raw noninteractive Docker uses the provisioner's
-// 30-second control policy. Auth inspection needs only an exit status.
+// 30-second control policy, except bounded desktop startup. Auth inspection
+// needs only an exit status.
 export function dockerControlPolicy(args) {
   // Image snapshots and container-to-host copies are archive producers.
   // Like provisioner builds and home capture, they retain owned cancellation.
   if (args[0] === "commit" || args[0] === "cp") return {}
+  // The broker has already validated these two screen-command shapes. Allow
+  // readiness (60 seconds), probes and cleanup to finish before cancelling exec.
+  const screenStart = args[0] === "exec" && (
+    (args.length === 6 && args[1] === "-u" && args[2] === "slice"
+      && args[4] === "/opt/chariox-slice/slice-screen.sh" && args[5] === "start")
+    || (args.length === 12 && args[1] === "-e" && args[3] === "-e" && args[5] === "-e"
+      && args[7] === "-u" && args[8] === "slice"
+      && args[10] === "/opt/chariox-slice/slice-screen.sh" && args[11] === "start")
+  )
   return {
-    timeout: 30_000,
+    timeout: screenStart ? 120_000 : 30_000,
     statusOnly: args[0] === "exec" && args[1] === "-u" && args[2] === "slice"
       && (args[4] === "gh" || args[4] === "test"),
   }

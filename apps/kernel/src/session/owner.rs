@@ -349,12 +349,13 @@ impl SessionStateStore {
         expected_revision: u64,
         viewport: CanonicalViewport,
     ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
-        self.read().preview_update_room_environment_viewport_as_actor(
-            session_id,
-            actor,
-            expected_revision,
-            viewport,
-        )
+        self.read()
+            .preview_update_room_environment_viewport_as_actor(
+                session_id,
+                actor,
+                expected_revision,
+                viewport,
+            )
     }
 
     pub(crate) fn update_room_environment_viewport_as_actor(
@@ -417,7 +418,8 @@ impl SessionStateStore {
         apps: std::collections::BTreeMap<String, (String, crate::session::AppPanelLayout)>,
         app_panels: bool,
     ) -> Result<std::collections::BTreeMap<String, (u32, u32)>, EnvironmentError> {
-        self.write().set_room_environment_app_tabs(session_id, apps, app_panels)
+        self.write()
+            .set_room_environment_app_tabs(session_id, apps, app_panels)
     }
 
     pub(crate) fn room_environment_controller_tab_binding(

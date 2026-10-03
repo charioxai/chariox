@@ -565,7 +565,8 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
     await waitForHttp(`http://127.0.0.1:${allocation.debugPort}/json/version`, 20_000)
 
     const selkies = await execJson("/opt/chariox-selkies/bin/python", [path.join(sourceRoot, "slice-selkies.py"), "start"], {
-      cwd: sourceRoot, env: environment, timeout: 30_000,
+      // Leave room for the 60s readiness bound, probes and owned-child cleanup.
+      cwd: sourceRoot, env: environment, timeout: 90_000,
     })
     if (selkies.available !== true || !Number.isSafeInteger(selkies.pid)) throw new Error("Selkies did not report a healthy owned process")
     selkiesPid = selkies.pid
