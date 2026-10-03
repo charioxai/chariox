@@ -698,10 +698,14 @@ where
                     operation: "accept kernel websocket",
                     message: error.to_string(),
                 })?;
-                stream.set_nodelay(true).map_err(|error| DaemonError::LocalTransport {
-                    operation: "configure kernel websocket TCP_NODELAY",
-                    message: error.to_string(),
-                })?;
+                if let Err(error) = stream.set_nodelay(true) {
+                    crate::logging::warn_with_fields(
+                        "daemon.runtime_transport",
+                        "failed configuring kernel websocket TCP_NODELAY",
+                        serde_json::json!({ "error": error.to_string() }),
+                    );
+                    continue;
+                }
                 let runtime = Arc::clone(&runtime);
                 let router = Arc::clone(&router);
                 let inbound_request_admission = inbound_request_admission.clone();
