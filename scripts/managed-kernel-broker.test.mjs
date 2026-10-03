@@ -1177,6 +1177,82 @@ test("MP-08 MP-10 MP-11 all provisioner requests use common owned lifetime", asy
   assert.equal(cleaned, prepared, "prepared filesystem handles settle on each completed request")
 })
 
+test("Phase 1 local DEV broker runs unbounded slices without release F's managed quota coordination", async () => {
+  const source = await readFile(broker, "utf8")
+  const spawnSource = source.slice(source.indexOf("function spawnBounded("), source.indexOf("\nfunction provisionerQuotaRequest("))
+  const executeSource = source.slice(source.indexOf("async function execute(request)"), source.indexOf("\nfunction errorResponse("))
+  // A local DEV host has no quota allocator, coordination root or admission
+  // proofs: any use of them is a failure of this topology.
+  const quotaUse = []
+  const managedOnly = name => () => { quotaUse.push(name); throw new Error(`${name} exists only on managed hosts`) }
+  const markers = new Set()
+  const commands = []
+  const released = []
+  let authorityChecks = 0
+  const execute = runInNewContext(`${spawnSource}\n${executeSource}\nexecute`, {
+    ...archivePolicy, process, Buffer, Set,
+    PROVISIONER: process.execPath, DOCKER_HOST: "unix:///run/docker.sock", MAX_OUTPUT_BYTES: 1024,
+    LOCAL_AUTHORITY: { enrollment: { ownerUid: 1000 } },
+    verifiedProtectedAuthority: () => { authorityChecks++ },
+    localDevRuntimeEnvironment: () => ({}),
+    VERIFIED_BUILD_CONTEXT_DIGEST: "", protectedLayouts: { complete: () => {} },
+    validateRequest: () => {},
+    fail: message => { throw new Error(message) },
+    diskQuotaMarkerPresent: name => markers.has(name),
+    provisionerQuotaRequest: managedOnly("provisionerQuotaRequest"),
+    requestSliceDiskQuota: managedOnly("requestSliceDiskQuota"),
+    runWithSliceDiskQuotaAdmission: managedOnly("runWithSliceDiskQuotaAdmission"),
+    sliceDiskQuotaIdentityFromEnvironment: managedOnly("sliceDiskQuotaIdentityFromEnvironment"),
+    sliceDiskQuotaCoordinator: new Proxy({}, { get: (_target, name) => managedOnly(`sliceDiskQuotaCoordinator.${String(name)}`) }),
+    prepareProvisioner: async request => ({ environment: request.environment, descriptors: [], handles: new Set(), newHandles: new Set() }),
+    prepareDocker: args => ({ args: [...args], descriptors: [] }),
+    dockerControlPolicy: () => ({}),
+    dockerEnvironment: () => ({ PATH: "/usr/bin:/bin" }),
+    recordedContainerMounts: () => [{ destination: "/workspace", rw: true, source: "/synthetic/handle" }],
+    requireExactContainerMounts: () => true,
+    isDiskAdmissionHelper: () => false,
+    publishStagedOutput: () => {}, releasePersistentHandles: name => { released.push(name) },
+    cleanupPrepared: () => {}, removePersistentHandles: () => {},
+    brokerLifetime: new AbortController(), BROKER_OUTPUT_ROOT: "/synthetic/logs", join,
+    runBrokerCommand: async (command, args, options) => {
+      commands.push([command, ...args])
+      return spawnSync(process.execPath, ["-e", "process.stdout.write('ran')"], options)
+    },
+  })
+  const slice = "chariox-slice-local"
+  const requests = [
+    ...["provision", "restore-state", "recover", "destroy"].map(action => ({ kind: "provisioner", action, files: [], environment: { CHARIOX_SLICE_NAME: slice } })),
+    { kind: "docker", args: ["start", slice] },
+    { kind: "docker", args: ["unpause", slice] },
+  ]
+  for (const request of requests) {
+    const response = await execute(request)
+    const label = request.kind === "docker" ? request.args[0] : request.action
+    assert.equal(response.status, 0, `${label} runs without managed quota coordination`)
+    assert.equal(Buffer.from(response.stdoutBase64, "base64").toString(), "ran")
+  }
+  assert.deepEqual(commands.map(command => command.at(-1)), ["provision", "restore-state", "recover", "destroy", slice, slice])
+  assert.deepEqual(released, [slice], "destroy still releases the slice's stable handles")
+  assert.deepEqual(quotaUse, [])
+
+  // Without an allocator the local broker can neither reserve quotas nor admit
+  // a slice that carries a quota marker: both fail before any command runs.
+  await assert.rejects(execute({ kind: "provisioner", action: "provision", files: [], environment: {
+    CHARIOX_SLICE_NAME: slice, CHARIOX_SLICE_DISK_LAYER_MB: "1024", CHARIOX_SLICE_DISK_HOME_MB: "2048",
+  } }), /do not support managed disk quotas/)
+  markers.add("chariox-slice-marked")
+  for (const request of [
+    { kind: "docker", args: ["start", "chariox-slice-marked"] },
+    { kind: "docker", args: ["unpause", "chariox-slice-marked"] },
+    { kind: "provisioner", action: "recover", files: [], environment: { CHARIOX_SLICE_NAME: "chariox-slice-marked" } },
+  ]) {
+    await assert.rejects(execute(request), /cannot run without the managed quota allocator/)
+  }
+  assert.equal(commands.length, requests.length)
+  assert.deepEqual(quotaUse, [])
+  assert.equal(authorityChecks, requests.length + 4, "every local request re-verifies its enrolled authority")
+})
+
 
 test("broker control commands settle a signal-resistant process and allow the next control", async () => {
   const source = await readFile(broker, "utf8")

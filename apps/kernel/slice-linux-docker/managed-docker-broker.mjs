@@ -1715,11 +1715,28 @@ function provisionerQuotaRequest(environment) {
 
 async function execute(request) {
   validateRequest(request)
+  // Release F's disk-quota allocator, its coordination root and start-admission
+  // proofs exist only on managed hosts. The Phase 1 local DEV broker has none of
+  // them, so its slices stay unbounded and bypass that coordination; it refuses
+  // quota limits and never provisions or starts a quota-marked slice.
+  const quotaCoordinated = !LOCAL_AUTHORITY
   if (LOCAL_AUTHORITY) {
     verifiedProtectedAuthority()
     if (request.kind === "provisioner" && (request.environment.CHARIOX_SLICE_WORKSPACE
         || Number(request.environment.CHARIOX_SLICE_DEVELOPMENT_MOUNT_COUNT ?? "0") !== 0)) {
       fail("Local protected DEV slices do not support host workspace or development mounts")
+    }
+    if (request.kind === "provisioner" && (request.environment.CHARIOX_SLICE_DISK_LAYER_MB !== undefined
+        || request.environment.CHARIOX_SLICE_DISK_HOME_MB !== undefined)) {
+      fail("Local protected DEV slices do not support managed disk quotas")
+    }
+    const unadmittedSlice = request.kind === "docker" && ["start", "unpause"].includes(request.args[0])
+      ? request.args[1]
+      : request.kind === "provisioner" && ["provision", "restore-state", "recover"].includes(request.action)
+        ? request.environment.CHARIOX_SLICE_NAME
+        : undefined
+    if (unadmittedSlice && diskQuotaMarkerPresent(unadmittedSlice)) {
+      fail("a disk-quota slice cannot run without the managed quota allocator")
     }
   }
   if (request.kind === "docker" && request.args[0] === "exec"
@@ -1783,7 +1800,7 @@ async function execute(request) {
     }
   }
   let boundedLimits
-  if (request.kind === "provisioner" && ["provision", "restore-state", "recover"].includes(request.action)) {
+  if (quotaCoordinated && request.kind === "provisioner" && ["provision", "restore-state", "recover"].includes(request.action)) {
     const quota = provisionerQuotaRequest(request.environment)
     unboundedQuotaIdentity = quota.identity
     if (quota.limits) {
@@ -1815,7 +1832,7 @@ async function execute(request) {
       }
     }
   }
-  if (request.kind === "provisioner" && request.action === "destroy") {
+  if (quotaCoordinated && request.kind === "provisioner" && request.action === "destroy") {
     const quota = provisionerQuotaRequest(request.environment)
     releaseDiskQuota = diskQuotaMarkerPresent(quota.identity.containerName)
     try {
@@ -1859,8 +1876,8 @@ async function execute(request) {
       })
     }
     const containerName = request.kind === "docker" ? request.args[1] : undefined
-    const isDockerStartOrUnpause = request.kind === "docker" && ["start", "unpause"].includes(request.args[0])
-    const isQuotaProvision = request.kind === "provisioner" && ["provision", "restore-state", "recover"].includes(request.action)
+    const isDockerStartOrUnpause = request.kind === "docker" && ["start", "unpause"].includes(request.args[0]) && quotaCoordinated
+    const isQuotaProvision = request.kind === "provisioner" && ["provision", "restore-state", "recover"].includes(request.action) && quotaCoordinated
     const result = isDockerStartOrUnpause
       ? await sliceDiskQuotaCoordinator.withContainerLock(containerName, async (lock) => runWithSliceDiskQuotaAdmission({
         containerName,
@@ -1953,10 +1970,12 @@ async function execute(request) {
       publishStagedOutput(prepared.output)
     }
     if (request.kind === "provisioner" && request.action === "destroy" && result.status === 0) {
-      const identity = sliceDiskQuotaIdentityFromEnvironment(request.environment)
-      await sliceDiskQuotaCoordinator.withContainerLock(identity.containerName, (lock) => {
-        sliceDiskQuotaCoordinator.revokeUnboundedProof(lock, identity)
-      })
+      if (quotaCoordinated) {
+        const identity = sliceDiskQuotaIdentityFromEnvironment(request.environment)
+        await sliceDiskQuotaCoordinator.withContainerLock(identity.containerName, (lock) => {
+          sliceDiskQuotaCoordinator.revokeUnboundedProof(lock, identity)
+        })
+      }
       releasePersistentHandles(request.environment.CHARIOX_SLICE_NAME)
       if (releaseDiskQuota) {
         const quota = provisionerQuotaRequest(request.environment)
