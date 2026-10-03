@@ -206,8 +206,13 @@ run_chromium() {
     if chromium_has_restorable_session; then
       # App URLs cannot be restored until their verified assets and CDP Fetch
       # interception are reattached. This must finish before Chromium starts.
-      node "$ROOT/browser-app-restore.mjs" "$CHROME_PROFILE"
-      chrome_startup_target_args+=(--restore-last-session)
+      local app_restore_mode
+      app_restore_mode="$(node "$ROOT/browser-app-restore.mjs" "$CHROME_PROFILE")" || return "$?"
+      case "$app_restore_mode" in
+        restore) chrome_startup_target_args+=(--restore-last-session) ;;
+        fresh) ;;
+        *) log "invalid App restore result"; return 1 ;;
+      esac
     fi
   fi
   if [[ "$#" -gt 0 ]]; then

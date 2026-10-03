@@ -179,33 +179,27 @@ impl KernelRuntimeState {
         let mut failures = 0;
         while views.keep_pumping(&session_id) {
             tokio::time::sleep(POLL_INTERVAL).await;
-            let restoring = views.cold_start_views(&session_id);
-            if !restoring.is_empty() {
-                if self
-                    .owned
-                    .slice_store
-                    .environment_slice(&session_id)
-                    .is_some_and(|slice| slice.status == crate::slice::SliceStatus::Running)
-                    && self
-                        .room_environment_snapshot(&session_id)
-                        .is_ok_and(|room| {
-                            room.lifecycle == crate::session::EnvironmentLifecycle::Ready
-                        })
-                {
-                    for binding in restoring {
-                        match self.restore_cold_app_view(&session_id, &binding).await {
-                            Ok(()) | Err(AppRequestErrorCode::NotFound) => {
-                                views.finish_cold_start_view(&session_id, &binding)
-                            }
-                            Err(_) => {}
+            if !views.cold_start_views(&session_id).is_empty() {
+                let Some(slice) = self.owned.slice_store.environment_slice(&session_id) else {
+                    views.forget_session(&session_id);
+                    continue;
+                };
+                if slice.status != crate::slice::SliceStatus::Running {
+                    // An explicit stop retains intent while the worker is down.
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
+                if let Some(binding) = views.next_cold_start_attempt(&session_id) {
+                    match self.restore_cold_app_view(&session_id, &binding).await {
+                        Ok(())
+                        | Err(AppRequestErrorCode::NotFound | AppRequestErrorCode::LimitExceeded) => {
+                            views.finish_cold_start_view(&session_id, &binding)
                         }
+                        Err(_) => {}
                     }
                 }
-                // An explicit cold stop retains intent; failures while the
-                // worker is down must not consume the one-time resume or drop
-                // bindings. No old target's view calls run during restoration.
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                continue;
+                // Poll registered targets after every attempt, even if another
+                // restore failed. Their bindings already carry call authority.
             }
             let polled_up_to = views.registrations(&session_id);
             let Some(batch) = self
@@ -280,7 +274,13 @@ impl KernelRuntimeState {
             tokio::task::spawn_blocking(move || store.app_view_assets(&owner, &installation))
                 .await
                 .map_err(|_| AppRequestErrorCode::StorageUnavailable)?
-                .map_err(|_| AppRequestErrorCode::NotFound)?;
+                .map_err(|code| {
+                    if code == "app_view_too_large" {
+                        AppRequestErrorCode::LimitExceeded
+                    } else {
+                        AppRequestErrorCode::StorageUnavailable
+                    }
+                })?;
         let generation = view.generation;
         let (entry, assets) = view_assets(view);
         // The worker kernel restarted with the slice. Reacquire its normal

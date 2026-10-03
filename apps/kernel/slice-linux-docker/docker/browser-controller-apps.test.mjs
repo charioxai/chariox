@@ -51,6 +51,7 @@ test("cold restored placeholder is reused only after Fetch and bridge are instal
   assert.equal(connection.sent.some(message => message.method === "Target.closeTarget"), false);
   const opened = await tabs.open({origin_label:"todo-1", installation_id:"inst-1", assets:[asset("index.html", "hi")]});
   assert.equal(opened.target_id, "restored");
+  assert.ok(connection.sent.some(message => message.method === "Target.activateTarget" && message.params.targetId === "restored"));
   assert.equal(connection.sent.some(message => message.method === "Target.createTarget"), false);
   const order = connection.sent.map(message => message.method);
   for (const method of ["Fetch.enable", "Runtime.addBinding", "Page.addScriptToEvaluateOnNewDocument"]) {
@@ -66,6 +67,43 @@ async function opened() {
     assets: [asset("index.html", "<p>hi</p>"), asset("app.js", "1", "text/javascript")] });
   return { tabs, connection, result };
 }
+
+test("unclaimed restore placeholders expire, while a claimed tab survives the grace period", async () => {
+  const { browser, connection } = fakeBrowser();
+  connection.targets = ["claimed", "duplicate", "orphan"].map(targetId => ({targetId, type:"page", url:appPlaceholder(appOrigin("todo-1"))}));
+  const tabs = new AppTabs(browser, {restoreGraceMs:20});
+  await tabs.reconcile();
+  await tabs.open({origin_label:"todo-1", installation_id:"inst-1", assets:[asset("index.html", "hi")]});
+  await new Promise(resolve => setTimeout(resolve, 80));
+  assert.deepEqual(connection.sent.filter(message => message.method === "Target.closeTarget").map(message => message.params.targetId).sort(), ["duplicate", "orphan"]);
+  assert.equal([...tabs.apps.values()][0].targetId, "claimed");
+  assert.equal(tabs.orphanRestores.size, 0);
+});
+
+test("controller reconnect does not restart an orphan placeholder's grace period", async () => {
+  const { browser, connection } = fakeBrowser();
+  connection.targets = [{targetId:"orphan", type:"page", url:appPlaceholder(appOrigin("todo-1"))}];
+  const tabs = new AppTabs(browser, {restoreGraceMs:30});
+  await tabs.reconcile();
+  const deadline = tabs.orphanRestores.get("orphan").deadline;
+  browser.connection = fakeConnection(connection.targets);
+  await tabs.reconcile();
+  assert.equal(tabs.orphanRestores.get("orphan").deadline, deadline);
+  await new Promise(resolve => setTimeout(resolve, 80));
+  assert.equal(connection.sent.some(message => message.method === "Target.closeTarget"), false);
+  assert.equal(browser.connection.sent.some(message => message.method === "Target.closeTarget"), true);
+});
+
+test("a placeholder restored after the first sweep is still reclaimed", async () => {
+  const { browser, connection } = fakeBrowser();
+  const tabs = new AppTabs(browser, {restoreGraceMs:20});
+  await tabs.reconcile();
+  const targetInfo = {targetId:"late", type:"page", url:appPlaceholder(appOrigin("todo-1"))};
+  connection.targets.push(targetInfo);
+  await connection.emit({method:"Target.targetInfoChanged", params:{targetInfo}});
+  await new Promise(resolve => setTimeout(resolve, 80));
+  assert.equal(connection.sent.some(message => message.method === "Target.closeTarget" && message.params.targetId === "late"), true);
+});
 
 test("app origin labels are DNS labels", () => {
   assert.equal(appOrigin("todo-1"), "https://todo-1.app.chariox.internal");

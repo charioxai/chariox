@@ -8,8 +8,9 @@ import { fileURLToPath } from "node:url"
 
 const script = fileURLToPath(new URL("./docker/slice-screen.sh", import.meta.url))
 
-for (const session of [null, "Sessions/Session_1", "Last Session", "Current Session"]) {
-  test(`URL recovery ${session ? `restores ${session}` : "uses a fresh profile"} without treating the URL as flags`, async () => {
+for (const scenario of ["fresh", "Sessions/Session_1", "Last Session", "Current Session", "truncated", "encrypted", "malformed"]) {
+  const session = scenario === "fresh" ? null : ["truncated", "encrypted", "malformed"].includes(scenario) ? "Sessions/Session_1" : scenario;
+  test(`URL recovery ${scenario} launches Chromium without treating the URL as flags`, async () => {
     const root = await mkdtemp(join(tmpdir(), "chariox-chromium-launch-"))
     try {
       const bin = join(root, "bin")
@@ -17,7 +18,10 @@ for (const session of [null, "Sessions/Session_1", "Last Session", "Current Sess
       const argsFile = join(root, "args.json")
       await mkdir(bin)
       await mkdir(join(profile, "Default", "Sessions"), { recursive: true })
-      const saved = Buffer.from("534e535303000000", "hex")
+      const header = Buffer.from("534e535303000000", "hex")
+      const saved = scenario === "truncated" ? Buffer.concat([header, Buffer.from([20, 0, 6])])
+        : scenario === "encrypted" ? Buffer.from("534e535304000000", "hex")
+        : scenario === "malformed" ? Buffer.concat([header, Buffer.from([1, 0, 6])]) : header;
       if (session) await writeFile(join(profile, "Default", session), saved)
       await writeFile(join(root, "browser-app-restore.mjs"), await readFile(new URL("./docker/browser-app-restore.mjs", import.meta.url)))
       // Only OS/browser boundaries are substituted. Run the full production
@@ -48,12 +52,18 @@ require('node:fs').writeFileSync(process.env.CHARIOX_TEST_ARGS, JSON.stringify(p
       const separator = args.indexOf("--")
       assert.ok(separator > 0)
       assert.deepEqual(args.slice(separator), ["--", url])
-      assert.equal(args.includes("--restore-last-session"), Boolean(session))
+      const quarantined = ["encrypted", "malformed"].includes(scenario);
+      assert.equal(args.includes("--restore-last-session"), Boolean(session) && !quarantined)
       assert.ok(args.includes("--new-window"))
       assert.ok(args.includes(`--user-data-dir=${profile}`))
       assert.equal(args.slice(0, separator).includes("--no-sandbox"), false)
       assert.equal(args.some(arg => arg.startsWith("--unsafely-treat-insecure-origin-as-secure")), false)
-      if (session) assert.deepEqual(await readFile(join(profile, "Default", session)), saved)
+      if (quarantined) {
+        await assert.rejects(readFile(join(profile, "Default", session)), {code:"ENOENT"});
+        const { readdir } = await import("node:fs/promises");
+        const backup = (await readdir(join(profile, "Default"))).find(name => name.startsWith("chariox-unrestorable-"));
+        assert.deepEqual(await readFile(join(profile, "Default", backup, "Session_1")), saved);
+      } else if (session) assert.deepEqual(await readFile(join(profile, "Default", session)), header)
     } finally {
       try {
         const pid = Number(await readFile(join(root, "logs/chromium-supervisor.pid"), "utf8"));
