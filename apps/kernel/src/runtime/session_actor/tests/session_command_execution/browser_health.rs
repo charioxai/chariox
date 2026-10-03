@@ -175,10 +175,20 @@ async fn room_browser_health_timeout_and_route_errors_are_inconclusive() {
         "skip a Room while its timed-out underlying query still runs"
     );
     std::fs::remove_file(tool.root.join("browser-slow")).unwrap();
-    tokio::time::sleep(Duration::from_millis(2200)).await;
-    state
-        .refresh_room_browser_health(&room, before.runtime_generation)
-        .await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        state
+            .refresh_room_browser_health(&room, before.runtime_generation)
+            .await;
+        if reconciles() == count + 2 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "probe ownership must end after its underlying receipt"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     assert_eq!(
         reconciles(),
         count + 2,

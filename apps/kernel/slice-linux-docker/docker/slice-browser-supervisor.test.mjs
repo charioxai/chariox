@@ -47,7 +47,7 @@ while true; do sleep 0.1; done
   }
 });
 
-test("open-url during backoff replaces the old supervisor and delivers its URL", {timeout:15000}, async () => {
+test("open-url recovers backoff and stale supervisor PIDs without signalling another process", {timeout:15000}, async () => {
   const root=await mkdtemp(path.join(os.tmpdir(),"slice-browser-backoff-"));
   await mkdir(path.join(root,"bin"));
   await copyFile(new URL("./slice-screen.sh",import.meta.url),path.join(root,"slice-screen.sh"));
@@ -65,7 +65,7 @@ exec /usr/bin/pgrep "$@"
   const env={...process.env,PATH:`${root}/bin:${process.env.PATH}`,CHARIOX_SLICE_ROOT:root,CHARIOX_SLICE_CHROME_PROFILE:`${root}/profile`,HOME:root};
   const supervisor=spawn("bash",[path.join(root,"slice-screen.sh"),"supervise-browser"],{env,stdio:"ignore"});
   const exited=once(supervisor,"exit");
-  let replacementPid,child;
+  let replacementPid,child,unrelated,unrelatedExit;
   try{
     await waitFor(async()=>{try{child=Number((await readFile(path.join(root,"children"),"utf8")).trim());return child>0;}catch{return false;}});
     process.kill(child,"SIGTERM");
@@ -82,10 +82,24 @@ exec /usr/bin/pgrep "$@"
     replacementPid=Number(await readFile(path.join(root,"logs/chromium-supervisor.pid"),"utf8"));
     assert.notEqual(replacementPid,supervisor.pid);
     assert.ok((await readFile(path.join(root,"arguments"),"utf8")).includes("--new-window -- https://recovery.test/"));
+    process.kill(replacementPid,"SIGTERM");
+    await waitFor(async()=>{try{await readFile(path.join(root,"logs/chromium-supervisor.pid"));return false;}catch{return true;}});
+    replacementPid=undefined;
+    unrelated=spawn(process.execPath,["-e",`process.on('SIGTERM',()=>require('node:fs').writeFileSync(${JSON.stringify(path.join(root,"unrelated-signalled"))},'TERM'));console.log('ready');setInterval(()=>{},1000)`],{stdio:["ignore","pipe","ignore"]});
+    unrelatedExit=once(unrelated,"exit");
+    await once(unrelated.stdout,"data");
+    await writeFile(path.join(root,"logs/chromium-supervisor.pid"),String(unrelated.pid));
+    const restarted=spawnSync("bash",[path.join(root,"slice-screen.sh"),"open-url","https://recovery.test/restarted"],{env,encoding:"utf8",timeout:8000});
+    assert.equal(restarted.status,0,restarted.stderr);
+    process.kill(unrelated.pid,0);
+    await assert.rejects(readFile(path.join(root,"unrelated-signalled")),{code:"ENOENT"});
+    replacementPid=Number(await readFile(path.join(root,"logs/chromium-supervisor.pid"),"utf8"));
+    assert.notEqual(replacementPid,unrelated.pid);
   }finally{
     if(replacementPid){try{process.kill(replacementPid,"SIGTERM");}catch{}}
     if(supervisor.exitCode===null){supervisor.kill("SIGTERM");await exited;}
     await waitFor(async()=>{try{await readFile(path.join(root,"logs/chromium-supervisor.pid"));return false;}catch{return true;}});
+    if(unrelated){unrelated.kill("SIGKILL");await unrelatedExit;}
     await rm(root,{recursive:true,force:true});
   }
 });
@@ -100,13 +114,19 @@ for (const slow of [false,true]) test(`desktop stop completes teardown after ${s
   await writeFile(path.join(root,"bin/pkill"),`#!/bin/sh
 printf '%s\\n' "$*" >> "$CHARIOX_SLICE_ROOT/stopped-patterns"
 `,{mode:0o755});
-  await writeFile(path.join(root,"profile/SingletonLock"),"fixture");
-  const stubborn=spawn(process.execPath,["-e",`process.on('SIGTERM',()=>{${slow ? `setTimeout(()=>{require('node:fs').unlinkSync(${JSON.stringify(path.join(root,"logs/chromium-supervisor.pid"))});process.exit(0)},6000)` : ""}}); console.log('ready'); setInterval(()=>{},1000)`],{stdio:["ignore","pipe","ignore"]});
-  const exited=once(stubborn,"exit");
+  await writeFile(path.join(root,"bin/chromium"),'#!/usr/bin/env bash\nexec "$NODE_BINARY" "$CHARIOX_SLICE_ROOT/fake-browser.mjs" -- "$@"\n',{mode:0o755});
+  await writeFile(path.join(root,"fake-browser.mjs"),`import {writeFileSync} from 'node:fs';
+process.on('SIGTERM',()=>{if(process.env.BROWSER_SLOW==='1')setTimeout(()=>process.exit(0),6000)});
+writeFileSync(process.env.CHARIOX_SLICE_ROOT+'/browser-ready',String(process.pid));
+setInterval(()=>{},1000);
+`);
+  const env={...process.env,PATH:`${root}/bin:${process.env.PATH}`,CHARIOX_SLICE_ROOT:root,CHARIOX_SLICE_CHROME_PROFILE:`${root}/profile`,HOME:root,NODE_BINARY:process.execPath,BROWSER_SLOW:slow ? "1" : "0"};
+  const supervisor=spawn("bash",[path.join(root,"slice-screen.sh"),"supervise-browser"],{env,stdio:"ignore"});
+  const exited=once(supervisor,"exit");
+  let browserPid;
   try{
-    await once(stubborn.stdout,"data");
-    await writeFile(path.join(root,"logs/chromium-supervisor.pid"),String(stubborn.pid));
-    const env={...process.env,PATH:`${root}/bin:${process.env.PATH}`,CHARIOX_SLICE_ROOT:root,CHARIOX_SLICE_CHROME_PROFILE:`${root}/profile`,HOME:root};
+    await waitFor(async()=>{try{browserPid=Number(await readFile(path.join(root,"browser-ready"),"utf8"));return browserPid>0;}catch{return false;}});
+    await writeFile(path.join(root,"profile/SingletonLock"),"fixture");
     const result=spawnSync("bash",[path.join(root,"slice-screen.sh"),"stop"],{env,encoding:"utf8",timeout:12000});
     assert.equal(result.status,slow ? 0 : 1,result.stderr);
     assert.match(result.stderr,/supervisor did not stop/);
@@ -114,7 +134,10 @@ printf '%s\\n' "$*" >> "$CHARIOX_SLICE_ROOT/stopped-patterns"
     for(const name of ["chromium","websockify","x11vnc","openbox","tint2","Xvfb"])assert.ok(patterns.includes(name),`teardown must reach ${name}`);
     await assert.rejects(readFile(path.join(root,"profile/SingletonLock")),{code:"ENOENT"});
   }finally{
-    if(stubborn.exitCode===null)stubborn.kill("SIGKILL");await exited;
+    if(browserPid){try{process.kill(browserPid,"SIGKILL");}catch{}}
+    if(supervisor.exitCode===null)supervisor.kill("SIGTERM");
+    await Promise.race([exited,delay(2000)]);
+    if(supervisor.exitCode===null){supervisor.kill("SIGKILL");await exited;}
     await rm(root,{recursive:true,force:true});
   }
 });
