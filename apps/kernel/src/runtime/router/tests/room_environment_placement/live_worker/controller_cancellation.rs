@@ -102,20 +102,20 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str, status: &Value) {
 }
 
 pub(super) async fn check_running(fixture: &LiveWorker, token: &str, status: &Value) {
-    check_pending_cleanup(fixture, token, status, Duration::from_millis(100), false).await;
+    check_pending_cleanup(fixture, token, status, Some(Duration::from_millis(100))).await;
     // The fixture's worker driver has a three-second response timeout. Crossing
     // it must not turn uncertainty into permission to send human input.
-    check_pending_cleanup(fixture, token, status, Duration::from_millis(3300), false).await;
-    check_pending_cleanup(fixture, token, status, Duration::ZERO, true).await;
+    check_pending_cleanup(fixture, token, status, Some(Duration::from_millis(3300))).await;
+    check_pending_cleanup(fixture, token, status, None).await;
 }
 
 async fn check_pending_cleanup(
     fixture: &LiveWorker,
     token: &str,
     status: &Value,
-    delay: Duration,
-    expect_fence: bool,
+    delay: Option<Duration>,
 ) {
+    let expect_fence = delay.is_none();
     let cancellation_requests_before = fixture
         .worker
         .runtime_state
@@ -159,7 +159,9 @@ async fn check_pending_cleanup(
         )
         .await
         .unwrap();
-        if expect_fence {
+        if let Some(delay) = delay {
+            tokio::time::sleep(delay).await;
+        } else {
             // Observe completion rather than assuming the three-second driver
             // timeout, physical fence and controller recovery finished on time.
             timeout(Duration::from_secs(30), async {
@@ -169,8 +171,6 @@ async fn check_pending_cleanup(
             })
             .await
             .expect("physical fence, takeover and public call must complete within 30 seconds");
-        } else {
-            tokio::time::sleep(delay).await;
         }
         let pending = dispatch_json(
             &fixture.home,
