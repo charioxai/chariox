@@ -1780,11 +1780,11 @@ async fn app_wake_deadline_interrupts_idle_transport_without_client_traffic() {
         registration.execute_app_state(
             "alice",
             catalog,
-            AppStateOperation::Schedule(vec![WakeChange::Set(Wake {
+            AppStateOperation::Schedule { wakes: vec![WakeChange::Set(Wake {
                 id: "deadline".into(),
                 due_at_ms: due,
                 revision: "r1".into(),
-            })]),
+            })], wakes_count_as_use: false },
             AppOperationBudget::fixture(TokioInstant::now() + Duration::from_secs(5), || false),
         )
     })

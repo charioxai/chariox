@@ -106,6 +106,7 @@ mod tests {
                 due_at_ms: 0,
             },
             attempts: 0,
+            counts_as_use: false,
         }
     }
 
