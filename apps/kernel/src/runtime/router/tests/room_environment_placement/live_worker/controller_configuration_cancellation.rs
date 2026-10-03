@@ -51,6 +51,43 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str, agent: &str, tab: &
             .unwrap()
             .unwrap();
         if let Err(panic) = assertions {
+            if let Err(error) = &result {
+                // Report only stable error classification, never payloads or credentials.
+                let message = error.to_string();
+                let reasons = [
+                    "protocol",
+                    "unknown",
+                    "redact",
+                    "nonce",
+                    "receipt",
+                    "cancel",
+                    "permission",
+                    "ownership",
+                    "unavailable",
+                    "generation",
+                    "tab",
+                    "binding",
+                    "deadline",
+                    "timeout",
+                    "window",
+                    "download",
+                    "target",
+                    "method",
+                    "scope",
+                    "stale",
+                    "changed",
+                    "belongs",
+                ]
+                .into_iter()
+                .filter(|reason| message.contains(reason))
+                .collect::<Vec<_>>();
+                eprintln!(
+                    "configuration before injection: code={} classes={reasons:?}",
+                    error.code()
+                );
+            } else {
+                eprintln!("configuration settled without its injection marker");
+            }
             std::panic::resume_unwind(panic);
         }
         assert!(result
