@@ -494,6 +494,7 @@ impl CommandRouter {
                 .or_else(|| metaagent.worktree_id().map(str::to_string))
                 .unwrap_or_else(|| session.worktree_id().to_string());
             let create_request = LocalDaemonRequest::CreateSlice(CreateSliceRequest {
+                source_slice_ref: None,
                 name: metaagent_spawn_slice_name(spawn.alias.as_deref()),
                 backend: crate::slice::SliceBackendKind::LocalDocker,
                 os: "linux".to_string(),
@@ -532,6 +533,7 @@ impl CommandRouter {
             };
             let start_request = LocalDaemonRequest::StartSlice(SliceRefRequest {
                 slice_ref: slice.id.clone(),
+                interactive: false,
             });
             let start_response = match Box::pin(self.dispatch(
                 meta_kernel_command(provider_run, metaagent, &start_request),

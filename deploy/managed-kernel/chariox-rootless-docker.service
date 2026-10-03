@@ -1,7 +1,8 @@
 [Unit]
 Description=Chariox managed rootless Docker lifecycle
-After=network-online.target
-Wants=network-online.target
+After=network-online.target chariox-slice-disk-quota-allocator.service
+Wants=network-online.target chariox-slice-disk-quota-allocator.service
+RequiresMountsFor=/var/lib/chariox-docker/data
 
 [Service]
 Type=simple

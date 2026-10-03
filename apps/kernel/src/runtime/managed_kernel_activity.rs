@@ -46,6 +46,9 @@ struct ActivityCursor {
     accepted: Option<AcceptedActivity>,
     pending: Option<AcceptedActivity>,
     requires_confirmation: bool,
+    accepted_local_transition_sequence: Option<u64>,
+    pending_local_transition_sequence: Option<u64>,
+    confirmed_local_transition_sequence: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -128,13 +131,8 @@ impl ManagedKernelActivityReporter {
         let mut cursor = ActivityCursor::default();
         runtime.ensure_managed_activity_tracking(&self.binding.kernel_id)?;
         let mut persistence_retry_delay = MIN_RETRY_DELAY;
-        let Some((mut change_sequence, mut observation)) = self
-            .retry_activity_snapshot(
-                &runtime,
-                &mut shutdown,
-                &mut persistence_retry_delay,
-                None,
-            )
+        let Some((mut change_sequence, mut observation, mut local_transition_sequence)) = self
+            .retry_activity_snapshot(&runtime, &mut shutdown, &mut persistence_retry_delay, None)
             .await
         else {
             return Ok(());
@@ -147,10 +145,24 @@ impl ManagedKernelActivityReporter {
                 return Ok(());
             }
 
-            if let Some(report) = cursor.next_report(observation)? {
+            if let Some(report) =
+                cursor.next_report_with_transition(observation, local_transition_sequence)?
+            {
                 match self.report(report).await {
                     Ok(response) => {
                         let accepted = cursor.accept_response(response)?;
+                        if let Some(confirmed_transition_sequence) =
+                            cursor.take_confirmed_local_transition_sequence()
+                        {
+                            runtime.confirm_managed_activity_report(
+                                accepted.sequence,
+                                confirmed_transition_sequence,
+                                crate::runtime::state::ManagedActivityObservation {
+                                    running_agent_count: report.running_agent_count,
+                                    changed_at_ms: report.activity_changed_at_ms,
+                                },
+                            );
+                        }
                         crate::logging::info_with_fields(
                             "managed_kernel.activity",
                             "managed kernel activity accepted",
@@ -174,7 +186,7 @@ impl ManagedKernelActivityReporter {
                         else {
                             return Ok(());
                         };
-                        (change_sequence, observation) = snapshot;
+                        (change_sequence, observation, local_transition_sequence) = snapshot;
                         retry_delay = MIN_RETRY_DELAY;
                         if cursor.requires_confirmation {
                             crate::logging::warn_with_fields(
@@ -228,7 +240,7 @@ impl ManagedKernelActivityReporter {
                             else {
                                 return Ok(());
                             };
-                            (change_sequence, observation) = snapshot;
+                            (change_sequence, observation, local_transition_sequence) = snapshot;
                         } else {
                             confirmation_delay = MIN_RETRY_DELAY;
                         }
@@ -261,21 +273,18 @@ impl ManagedKernelActivityReporter {
                                 change_sequence,
                                 observation,
                             ) => {
-                                let snapshot = match transition {
-                                    Ok(snapshot) => Some(snapshot),
-                                    Err(error) => self
-                                        .retry_activity_snapshot(
-                                            &runtime,
-                                            &mut shutdown,
-                                            &mut persistence_retry_delay,
-                                            Some(error),
-                                        )
-                                        .await,
-                                };
-                                let Some(snapshot) = snapshot else {
+                                let Some(snapshot) = self
+                                    .retry_activity_snapshot(
+                                        &runtime,
+                                        &mut shutdown,
+                                        &mut persistence_retry_delay,
+                                        transition.err(),
+                                    )
+                                    .await
+                                else {
                                     return Ok(());
                                 };
-                                (change_sequence, observation) = snapshot;
+                                (change_sequence, observation, local_transition_sequence) = snapshot;
                                 retry_delay = MIN_RETRY_DELAY;
                                 confirmation_delay = MIN_RETRY_DELAY;
                             }
@@ -312,7 +321,7 @@ impl ManagedKernelActivityReporter {
                     let Some(snapshot) = snapshot else {
                         return Ok(());
                     };
-                    (change_sequence, observation) = snapshot;
+                    (change_sequence, observation, local_transition_sequence) = snapshot;
                     retry_delay = MIN_RETRY_DELAY;
                     confirmation_delay = MIN_RETRY_DELAY;
                 }
@@ -326,14 +335,14 @@ impl ManagedKernelActivityReporter {
         shutdown: &mut tokio::sync::watch::Receiver<bool>,
         retry_delay: &mut Duration,
         mut first_error: Option<DaemonError>,
-    ) -> Option<(u64, crate::runtime::state::ManagedActivityObservation)> {
+    ) -> Option<(u64, crate::runtime::state::ManagedActivityObservation, u64)> {
         loop {
             if *shutdown.borrow() {
                 return None;
             }
             let snapshot = match first_error.take() {
                 Some(error) => Err(error),
-                None => runtime.managed_activity_report_snapshot(),
+                None => runtime.managed_activity_report_snapshot_with_transition(),
             };
             match snapshot {
                 Ok(snapshot) => {
@@ -445,9 +454,35 @@ impl ManagedKernelActivityBinding {
 }
 
 impl ActivityCursor {
+    fn next_report_with_transition(
+        &mut self,
+        observation: crate::runtime::state::ManagedActivityObservation,
+        local_transition_sequence: u64,
+    ) -> Result<Option<AcceptedActivity>, DaemonError> {
+        let report =
+            self.next_report_for_transition(observation, Some(local_transition_sequence))?;
+        if report.is_some() && self.pending_local_transition_sequence.is_none() {
+            self.pending_local_transition_sequence = Some(local_transition_sequence);
+        }
+        Ok(report)
+    }
+
+    fn take_confirmed_local_transition_sequence(&mut self) -> Option<u64> {
+        self.confirmed_local_transition_sequence.take()
+    }
+
+    #[cfg(test)]
     fn next_report(
         &mut self,
         observation: crate::runtime::state::ManagedActivityObservation,
+    ) -> Result<Option<AcceptedActivity>, DaemonError> {
+        self.next_report_for_transition(observation, None)
+    }
+
+    fn next_report_for_transition(
+        &mut self,
+        observation: crate::runtime::state::ManagedActivityObservation,
+        local_transition_sequence: Option<u64>,
     ) -> Result<Option<AcceptedActivity>, DaemonError> {
         if let Some(pending) = self.pending {
             return Ok(Some(pending));
@@ -461,6 +496,9 @@ impl ActivityCursor {
             Some(accepted)
                 if accepted.running_agent_count == observation.running_agent_count
                     && accepted.activity_changed_at_ms == observation.changed_at_ms
+                    && local_transition_sequence.is_none_or(|sequence| {
+                        self.accepted_local_transition_sequence == Some(sequence)
+                    })
                     && !self.requires_confirmation =>
             {
                 return Ok(None);
@@ -480,6 +518,7 @@ impl ActivityCursor {
         &mut self,
         response: ReportActivityResponse,
     ) -> Result<AcceptedActivity, DaemonError> {
+        self.confirmed_local_transition_sequence = None;
         let pending = self.pending.ok_or_else(|| {
             activity_error("Cloud returned managed activity without a pending report")
         })?;
@@ -496,9 +535,18 @@ impl ActivityCursor {
             running_agent_count: response.running_agent_count,
             activity_changed_at_ms: pending.activity_changed_at_ms,
         };
+        if response.accepted_sequence == pending.sequence
+            && response.running_agent_count == pending.running_agent_count
+        {
+            self.confirmed_local_transition_sequence = self.pending_local_transition_sequence;
+            self.accepted_local_transition_sequence = self.pending_local_transition_sequence;
+        } else {
+            self.accepted_local_transition_sequence = None;
+        }
         self.requires_confirmation = response.accepted_sequence > pending.sequence;
         self.accepted = Some(accepted);
         self.pending = None;
+        self.pending_local_transition_sequence = None;
         Ok(accepted)
     }
 }
@@ -537,12 +585,7 @@ fn activity_signature(
     running_agent_count: u8,
     activity_changed_at: &str,
 ) -> Result<String, DaemonError> {
-    let value = signed_activity_value(
-        binding,
-        sequence,
-        running_agent_count,
-        activity_changed_at,
-    )?;
+    let value = signed_activity_value(binding, sequence, running_agent_count, activity_changed_at)?;
     // Sort explicitly so the signature does not depend on serde_json's map feature flags.
     let fields: std::collections::BTreeMap<_, _> = value
         .as_object()
@@ -562,9 +605,7 @@ fn canonical_activity_timestamp(timestamp_ms: u64) -> Result<String, DaemonError
         .map_err(|_| activity_error("managed activity timestamp overflows i64"))?;
     chrono::DateTime::<chrono::Utc>::from_timestamp_millis(timestamp_ms)
         .ok_or_else(|| activity_error("managed activity timestamp is invalid"))
-        .map(|timestamp| {
-            timestamp.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
-        })
+        .map(|timestamp| timestamp.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
 }
 
 fn jittered(delay: Duration) -> Duration {
@@ -617,8 +658,7 @@ mod tests {
     fn worker_activity_uses_allocation_without_managed_environment_identity() {
         let mut worker = binding();
         worker.worker = true;
-        let payload =
-            signed_activity_value(&worker, 7, 1, "1970-01-01T00:00:01.000Z").unwrap();
+        let payload = signed_activity_value(&worker, 7, 1, "1970-01-01T00:00:01.000Z").unwrap();
         assert_eq!(payload["allocationId"], "env-1");
         assert!(payload.get("environmentId").is_none());
         assert!(payload.get("machineCredential").is_none());
@@ -630,6 +670,49 @@ mod tests {
             activity_signature(&worker, 7, 1, "1970-01-01T00:00:01.000Z").unwrap(),
             activity_signature(&binding(), 7, 1, "1970-01-01T00:00:01.000Z").unwrap()
         );
+    }
+
+    #[test]
+    fn activity_confirmation_binds_only_the_exact_cloud_ack_to_local_transition() {
+        let mut cursor = ActivityCursor::default();
+        let current = observation(0, 1_000);
+        let report = cursor
+            .next_report_with_transition(current, 7)
+            .expect("initial report should be built")
+            .expect("initial report should exist");
+        cursor
+            .accept_response(ReportActivityResponse {
+                accepted_sequence: report.sequence,
+                running_agent_count: 1,
+            })
+            .expect("Cloud response should be accepted");
+        assert_eq!(cursor.take_confirmed_local_transition_sequence(), None);
+
+        let report = cursor
+            .next_report_with_transition(current, 7)
+            .expect("corrected report should be built")
+            .expect("mismatched accepted activity requires confirmation");
+        assert_eq!(report.sequence, 2);
+        cursor
+            .accept_response(ReportActivityResponse {
+                accepted_sequence: report.sequence,
+                running_agent_count: report.running_agent_count,
+            })
+            .expect("exact Cloud response should be accepted");
+        assert_eq!(cursor.take_confirmed_local_transition_sequence(), Some(7));
+
+        let report = cursor
+            .next_report_with_transition(current, 8)
+            .expect("new local transition should be reported")
+            .expect("same visible observation with a newer durable transition must report");
+        assert_eq!(report.sequence, 3);
+        cursor
+            .accept_response(ReportActivityResponse {
+                accepted_sequence: report.sequence + 1,
+                running_agent_count: report.running_agent_count,
+            })
+            .expect("Cloud may report a newer accepted sequence");
+        assert_eq!(cursor.take_confirmed_local_transition_sequence(), None);
     }
 
     #[tokio::test]
@@ -1020,8 +1103,7 @@ mod tests {
                 .expect("publish initial report");
 
             let (mut recovered_stream, _) = listener.accept().expect("accept recovered report");
-            let recovered_request =
-                http_request_body(&read_http_request(&mut recovered_stream));
+            let recovered_request = http_request_body(&read_http_request(&mut recovered_stream));
             write_http_response(
                 &mut recovered_stream,
                 &serde_json::json!({
@@ -1090,11 +1172,10 @@ mod tests {
             .execute_batch("DROP TRIGGER fail_managed_activity_append;")
             .expect("activity persistence failure trigger should be removed");
 
-        let recovered_request =
-            tokio::time::timeout(Duration::from_secs(3), recovered_request_rx)
-                .await
-                .expect("recovered report should arrive")
-                .expect("activity fixture should stay available");
+        let recovered_request = tokio::time::timeout(Duration::from_secs(3), recovered_request_rx)
+            .await
+            .expect("recovered report should arrive")
+            .expect("activity fixture should stay available");
         assert_eq!(recovered_request["runningAgentCount"], 1);
         let recovered_changed_at = chrono::DateTime::parse_from_rfc3339(
             recovered_request["activityChangedAt"]

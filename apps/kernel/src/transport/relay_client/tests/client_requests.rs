@@ -299,34 +299,20 @@ async fn authenticated_public_client_preserves_worker_relay_retryability_async()
             .id()
             .to_string()
     };
-    let leased_agent_id = app_home
+    let execution_lease_id = app_home
         .lock()
         .await
         .agents()
         .get_agent(&remote_agent_id)
-        .expect("remote agent should remain available")
+        .unwrap()
         .remote_execution()
-        .expect("remote binding should remain available")
-        .leased_agent_id
+        .unwrap()
+        .execution_lease_id
         .clone();
-
-    let destroyed = crate::transport::relay_client::send_peer_request_via_temporary_connection(
-        &config_home,
-        ClientTarget {
-            daemon_id: Some(config_worker.daemon_id.clone()),
-            daemon_alias: None,
-        },
-        RelayPeerRequest::DestroyLeasedAgent {
-            leased_agent_id: leased_agent_id.clone(),
-        },
-    )
-    .await
-    .expect("worker-side lease loss should be controllable through peer transport");
-    assert_eq!(
-        destroyed,
-        RelayPeerResponse::LeasedAgentDestroyed { leased_agent_id }
-    );
-
+    // Existing cleanup of an absent lease is idempotent. Use an owner mismatch to
+    // obtain a worker-authoritative business rejection without deleting its state.
+    crate::app::RemoteLeaseRuntime::new(&mut *app_worker.lock().await)
+        .set_execution_lease_home_kernel_for_test(&execution_lease_id, "different-home-kernel");
     let (mut client_socket, _) = connect_async(&relay_url)
         .await
         .expect("public client should connect to relay");
@@ -343,18 +329,12 @@ async fn authenticated_public_client_preserves_worker_relay_retryability_async()
     .await;
     let daemon_public_key = expect_client_connected(&mut client_socket).await;
 
-    let launch_request = || {
-        LocalDaemonRequest::LaunchProviderRun(LaunchProviderRunRequest {
+    // Launch now accepts asynchronous work. Use synchronous worker cleanup to
+    // exercise structured business/transport errors through the same client boundary.
+    let worker_request = || {
+        LocalDaemonRequest::DestroyAgent(crate::local::DestroyAgentRequest {
             session_id: session_id.clone(),
-            agent_id: Some(remote_agent_id.clone()),
-            adapter_key: crate::provider::adapter_key_for_provider(&provider).to_string(),
-            provider: provider.clone(),
-            account_profile: "default".to_string(),
-            model: "default".to_string(),
-            variant: Some("medium".to_string()),
-            structured_endpoint: None,
-            provider_session_id: None,
-            native_tui: true,
+            agent_id: remote_agent_id.clone(),
         })
     };
 
@@ -363,7 +343,7 @@ async fn authenticated_public_client_preserves_worker_relay_retryability_async()
         "worker-business-error-1",
         &config_home.daemon_id,
         &daemon_public_key,
-        launch_request(),
+        worker_request(),
     )
     .await;
     let worker_error =
@@ -373,7 +353,7 @@ async fn authenticated_public_client_preserves_worker_relay_retryability_async()
         "stable client transport code should remain unchanged: {worker_error:?}"
     );
     assert!(
-        worker_error.message.contains("leased_agent_not_found"),
+        worker_error.message.contains("unauthorized"),
         "worker-authoritative diagnostic should survive the client boundary: {worker_error:?}"
     );
     assert!(
@@ -410,7 +390,7 @@ async fn authenticated_public_client_preserves_worker_relay_retryability_async()
         "relay-disconnect-1",
         &config_home.daemon_id,
         &daemon_public_key,
-        launch_request(),
+        worker_request(),
     )
     .await;
     let transient_error =

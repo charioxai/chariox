@@ -8,6 +8,7 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         workflow_run_ref: &str,
     ) -> Result<(crate::session::WorkflowRun, WorkflowPromptDispatches), DaemonError> {
+        let admission = self.begin_managed_activity_admission()?;
         let activity_mutation = self.begin_managed_activity_mutation();
         let durable_state_store = self.durable_state_store.clone();
         let (workflow_run, resumable_node_ids) = durable_state_store
@@ -40,6 +41,7 @@ impl KernelRuntimeOwnedState {
                 Ok((workflow_run, resumable_node_ids))
             })?;
         activity_mutation.record();
+        drop(admission);
         // Prompt admission and provider dispatch must observe only a durably resumed run.
         self.session_snapshot(session_id)?;
         let resumable = workflow_run

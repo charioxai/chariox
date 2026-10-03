@@ -57,6 +57,33 @@ impl KernelRuntimeState {
             .ok_or_else(|| DaemonError::AgentNotFound {
                 agent_id: "provider run has no agent".to_string(),
             })?;
+        // MP-08/MP-10: liveness may already have replaced this run and
+        // promoted its backlog before an asynchronous dispatch reports failure.
+        let session = owned.session_store.get_session(session_id)?;
+        let Some(active_prompt) = owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+        else {
+            return Ok(false);
+        };
+        let bound_to_another_run = active_prompt
+            .durable_delivery_provider_run_id()
+            .is_some_and(|current| current != provider_run_id);
+        let ended_run_replaced = provider_run.state() == crate::provider::ProviderRunState::Ended
+            && owned
+                .provider_store
+                .get_run_for_agent(session_id, &agent_id)
+                .is_some_and(|current| current.id() != provider_run_id);
+        if bound_to_another_run || ended_run_replaced {
+            return Ok(false);
+        }
+        let guarded_prompt_id = active_prompt.id().to_string();
+        if self
+            .try_provider_auth_recovery(&provider_run, message, expected_prompt_id)
+            .await?
+        {
+            return Ok(true);
+        }
         let safe_message = crate::provider::sanitize_provider_diagnostic(message);
         let safe_message = if safe_message.is_empty() {
             "provider reported an error".to_string()
@@ -128,8 +155,6 @@ impl KernelRuntimeState {
             return Ok(true);
         }
 
-        self.clear_failed_provider_resume_state_from_message(&provider_run, message)?;
-
         let session = owned.session_store.get_session(session_id)?;
         let active_prompt = if let Some(active_prompt) = expected_active_prompt {
             active_prompt
@@ -140,8 +165,12 @@ impl KernelRuntimeState {
             else {
                 return Ok(false);
             };
+            if active_prompt.id() != guarded_prompt_id {
+                return Ok(false);
+            }
             active_prompt
         };
+        self.clear_failed_provider_resume_state_from_message(&provider_run, message)?;
         if active_prompt.is_external() {
             let _ = owned.clear_prompt_activity(provider_run_id);
             let _ = owned.sync_focused_provider_run_if_idle(session_id);
@@ -183,13 +212,17 @@ impl KernelRuntimeState {
         let completion = if let Some(completion) = expected_completion {
             Some(completion)
         } else {
-            owned.fail_local_prompt_without_advance_with_termination(
+            owned.fail_local_prompt_without_advance_with_termination_if_matches(
                 session_id,
                 &agent_id,
                 Some(provider_run_id),
+                Some(active_prompt.id()),
                 provider_termination,
             )?
         };
+        if completion.is_none() {
+            return Ok(false);
+        }
         // Settle the failed turn first, then choose its successor provider before
         // preparing any queued work. Otherwise admission retries the exhausted
         // account and can return before automatic substitution is reached.
@@ -238,6 +271,11 @@ impl KernelRuntimeState {
                     .set_agent_state(&agent_id, crate::agent::AgentState::Working)?;
                 let _ = owned.session_snapshot(session_id)?;
             }
+        }
+        if workflow_failed {
+            // Workflow failures bypass the non-workflow claim-release retry above. Sweep after
+            // queued-prompt/provider recovery so newly eligible work is not left pending.
+            self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
         }
         Ok(true)
     }

@@ -128,11 +128,43 @@ migrated or emptied. Recreate those slices explicitly after preserving any work;
 their parent Workspace is not removed by slice cleanup. Requests that omit the
 development selection retain their existing workspace behavior.
 
-Repository `AGENTS.md` and `CLAUDE.md` files remain normal repository content. A
-separate development environment-variable and secret layer is not implemented in
-this milestone. Values the user deliberately stores in the kernel Vault are part
-of the complete Vault snapshot when source kernel context is selected. Empty
-kernel context does not copy that Vault.
+Repository `AGENTS.md` and `CLAUDE.md` files remain normal repository content.
+
+### Project environment layer (locked 2026-10-01; MP-08/MP-10/MP-11)
+
+The owner-locked contract is recorded in
+`docs/BROWSER_COMPUTER_USE_END_TO_END_PLAN.md`, section "Locked decisions for
+2026-10-01: Project environment layer". That contract supersedes the former
+exclusion of development environment variables and secrets from M28. Any kernel
+holding the Project can be its source, including a managed kernel.
+
+An official-provider utility agent discovers referenced names, value locators,
+file/line evidence and toolchain/package/service hints, never secret values. The
+kernel stores a Project environment manifest with default-secret classification,
+found/missing/problem status and an evidence digest. A kernel-owned deterministic
+resolver reads only referenced values; secrets enter the Vault directly and
+transfer target-sealed. Non-secret values and allowed config files accompany
+development context independently of full kernel-context selection, materialize
+at the same relative paths with mode 0600, and feed Project provider, terminal
+and setup/validation launches on both slices and managed machines.
+
+A single kernel RuntimeInteraction names unresolved entries and their use sites
+in Web and TUI. Supplied values enter the Vault and are reused. Every export
+refreshes the source kernel's manifest: unchanged evidence reuses discovery
+without an agent run; changed evidence receives an incremental pass over only
+the differences and prompts only for new missing entries. Values are re-resolved
+from their locators at every export. Capture is limited to Project references;
+values never enter logs or model context. Transfers are auditable and machine
+deletion removes its values.
+
+There is no ongoing synchronization between kernels. Each imported Project and
+manifest evolves independently, and a later export from any kernel uses that
+kernel's own refreshed manifest. Implementation and acceptance remain open.
+Source tests do not close MP-08, MP-10 or MP-11. The acceptance drill must export
+a realistic Project to a fresh slice with only one deliberately missing user
+input, then change the target Project and export it to a second fresh slice,
+proving new-entry discovery and current-value transfer while the original
+source manifest stays unchanged.
 
 ## 6. Provider and SCM runtime
 
@@ -184,7 +216,9 @@ state before it reports zero.
 
 ## 10. Protocol and validation
 
-The local daemon protocol is version 280 for this implementation. Shape tests cover
+The original M28 implementation used local daemon protocol 280. MP-08 Project
+environment manifest metadata queries use protocol 370; the environment extension
+and its full export/provider/client acceptance remain in progress. Shape tests cover
 managed environment summaries and control, transfer preparation and status,
 explicit launch-target requests, multi-Workspace Projects, slice repository
 topology, and provider and SCM selection. Managed activity uses a separately

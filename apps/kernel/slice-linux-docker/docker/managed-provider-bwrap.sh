@@ -7,5 +7,9 @@ filter="/usr/local/libexec/chariox/managed-provider-seccomp.bpf"
   exit 1
 }
 
+# The provisioner admits provider sandboxes with no-new-privs. Use that same
+# unprivileged setup on rootful Docker too: its setuid path may lack permission
+# to write the sysctl required by --disable-userns. Provider caps and the
+# nested-namespace seccomp filter remain unchanged.
 exec 3<"$filter"
-exec /usr/bin/bwrap --seccomp 3 "$@"
+exec setpriv --no-new-privs /usr/bin/bwrap --seccomp 3 "$@"

@@ -289,10 +289,17 @@ impl DaemonConfig {
     }
 
     pub fn for_tests() -> Self {
+        // Test-state paths must not capture another fixture's temporary TMPDIR
+        // while its environment guard owns and will remove that directory.
+        #[cfg(test)]
+        let _environment = crate::env_lock::lock();
         static TEST_SOCKET_COUNTER: AtomicU64 = AtomicU64::new(0);
 
         let index = TEST_SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
         let mut config = Self::new("daemon-test", "machine-test", "tester");
+        // Test kernels share a host with the live kernel and may use its default MCP URL.
+        // Their global orphan sweep must never terminate the live kernel's providers.
+        config.provider_process_orphan_ttl_ms = u64::MAX;
         config.kernel_websocket_write_delay_ms = 0;
         config.local_socket_path = std::env::temp_dir().join("chariox-tests").join(format!(
             "daemon-test-{}-{}.sock",

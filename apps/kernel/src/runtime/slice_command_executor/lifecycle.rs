@@ -226,6 +226,7 @@ pub(super) async fn execute_save_slice_state_request(
                     relay_state,
                     SliceRefRequest {
                         slice_ref: slice.id.clone(),
+ interactive: false,
                     },
                     Some(relaunch_manifests),
                     SliceStartMode::RecoverExistingContainer,
@@ -273,6 +274,7 @@ pub(super) async fn execute_save_slice_state_request(
             relay_state,
             SliceRefRequest {
                 slice_ref: saved_slice.id.clone(),
+                interactive: false,
             },
             Some(relaunch_manifests),
             SliceStartMode::RestoreSavedState,
@@ -571,12 +573,41 @@ async fn execute_start_slice_request_with_relaunch_manifests(
     prepared_relaunch_manifests: Option<Vec<super::super::state::SliceAgentRelaunchManifest>>,
     start_mode: SliceStartMode,
     inherit_managed_git_credentials: bool,
-    _operation: crate::slice::SliceOperationGuard,
+    operation: crate::slice::SliceOperationGuard,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let initial_record = runtime_state.resolve_slice(&request.slice_ref)?;
     let initial_record = runtime_state
         .reconcile_slice_agent_attachments(&initial_record)
         .await?;
+    if initial_record.development_publication.is_none() {
+        if let Some(
+            crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProject {
+                project_id,
+                repositories,
+            },
+        ) = &initial_record.development
+        {
+            if initial_record.source_slice_ref.is_some() {
+                runtime_state
+                    .refresh_slice_source_environment(&initial_record, request.interactive)
+                    .await?;
+            } else {
+                let selections = repositories
+                    .iter()
+                    .map(crate::managed_context::outbound_service::resolve_repository_selection)
+                    .collect::<Result<Vec<_>, _>>()?;
+                // MP-08: Discovery/review happens before the shared M28 private overlay is copied.
+                let _prepared = runtime_state
+                    .refresh_project_environment_state(
+                        project_id,
+                        &selections,
+                        request.interactive,
+                        &initial_record.name,
+                    )
+                    .await?;
+            }
+        }
+    }
     let materialization_state = runtime_state.clone();
     let materialization_slice = initial_record.clone();
     let initial_record = tokio::task::spawn_blocking(move || {
@@ -750,7 +781,7 @@ async fn execute_start_slice_request_with_relaunch_manifests(
         )?;
         let worker = relay_presence_from_started_slice(&slice, &discovered, "slice.start")?;
         if let Err(source) = runtime_state
-            .rebind_and_relaunch_slice_agents(relaunch_manifests, worker)
+            .rebind_and_relaunch_slice_agents(relaunch_manifests, worker, &operation)
             .await
         {
             let error =
@@ -1109,10 +1140,32 @@ fn local_docker_slice_relay_for_config(
                 // The home kernel's Cloud profile contains machine credentials and
                 // session tokens. It must never be copied into a provider-visible slice.
                 cloud_relay_config_json: None,
+                worker_machine_id: config
+                    .cloud_relay
+                    .as_ref()
+                    .and_then(|profile| profile.machine_id.clone()),
             };
         }
     }
     crate::slice::local_docker_private_relay(slice)
+}
+
+fn validate_hosted_slice_identity(
+    config: &crate::config::DaemonConfig,
+    slice: &crate::slice::SliceRecord,
+    profile: &crate::config::PersistedCloudRelayProfile,
+) -> Result<(), DaemonError> {
+    if slice.owner_kernel_id != config.daemon_id
+        || slice.owner_machine_id != config.host_machine_id
+        || profile.machine_id.as_deref() != Some(slice.owner_machine_id.as_str())
+    {
+        return Err(DaemonError::LocalTransport {
+            operation: "slice.relay_identity",
+            message: "hosted slice owner does not match the authenticated home Kernel and Machine"
+                .into(),
+        });
+    }
+    crate::slice::require_hosted_slice_worker_ref(&slice.worker_kernel_ref, &slice.owner_machine_id)
 }
 
 async fn hosted_cloud_slice_relay_token(
@@ -1123,6 +1176,7 @@ async fn hosted_cloud_slice_relay_token(
     let Some(profile) = config.cloud_relay.clone() else {
         return Ok(fallback_relay_token);
     };
+    validate_hosted_slice_identity(config, slice, &profile)?;
     let issued = issue_cloud_slice_runtime_token(
         &profile,
         &slice.worker_kernel_ref,
@@ -1144,6 +1198,7 @@ async fn activate_hosted_slice_relay_token(
     let Some(profile) = config.cloud_relay.as_ref() else {
         return Ok(());
     };
+    validate_hosted_slice_identity(&config, slice, profile)?;
     let issued = issue_cloud_slice_runtime_token(
         profile,
         &slice.worker_kernel_ref,
@@ -1438,6 +1493,7 @@ mod tests {
 
     fn slice(agent_ids: Vec<String>) -> crate::slice::SliceRecord {
         crate::slice::SliceRecord {
+            source_slice_ref: None,
             id: "slice-1".to_string(),
             name: "dev".to_string(),
             owner_kernel_id: "kernel-1".to_string(),

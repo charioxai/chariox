@@ -217,8 +217,12 @@ try {
   // The wrapper can fail before Codex binds its endpoint. Keep its private
   // report instead of deleting the only explanation behind a readiness timeout.
   // Print only the path, never untrusted report contents or provider credentials.
+  // Move it out of the workspace: a leftover file there fails the next
+  // start's publication ACL check before this probe could clear it.
   if (await fs.lstat(resultPath).then((stat) => stat.isFile(), () => false)) {
-    process.stderr.write(`wrapper_result=${JSON.stringify(resultPath)}\n`)
+    const retained = path.join(process.env.CHARIOX_SLICE_LOG_DIR ?? "/opt/chariox-slice/logs", path.basename(resultPath))
+    const moved = await fs.copyFile(resultPath, retained).then(() => fs.rm(resultPath, { force: true })).then(() => true, () => false)
+    process.stderr.write(`wrapper_result=${JSON.stringify(moved ? retained : resultPath)}\n`)
   }
   throw error
 } finally {

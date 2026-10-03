@@ -29,9 +29,11 @@ mod opencode_runtime;
 mod process_info;
 mod prompt_signals;
 mod registry;
+pub(crate) mod renewal_failure;
 mod run_actor;
 mod runtime_run;
 mod service;
+pub(crate) mod startup_diagnostic;
 mod termination;
 mod types;
 mod workspace_live_sync_policy;
@@ -187,6 +189,14 @@ pub(crate) fn provider_run_uses_structured_prompt_io(run: &RuntimeProviderRun) -
         || (run.adapter_key() == "dev-stub" && run.provider() == "slow-structured")
 }
 
+pub(crate) fn provider_run_requires_authoritative_turn_completion(
+    run: &RuntimeProviderRun,
+) -> bool {
+    ProviderRegistry::new()
+        .resolve(run.adapter_key())
+        .is_some_and(|adapter| adapter.requires_authoritative_turn_completion())
+}
+
 pub(crate) fn provider_run_supports_selection_sync(run: &RuntimeProviderRun) -> bool {
     run.adapter_key() == "opencode"
 }
@@ -199,6 +209,13 @@ pub(crate) fn provider_run_waits_for_workflow_publication_completion(
     run: &RuntimeProviderRun,
 ) -> bool {
     matches!(run.adapter_key(), "codex" | "claude")
+}
+
+// A notification handler alone does not guarantee visibility in an active turn.
+// Codex logs changes; OpenCode refreshes asynchronously. Until live immediate
+// turn visibility is verified, both use the official reload/resume fallback.
+pub(crate) fn provider_runtime_catalog_requires_reload(provider: &str) -> bool {
+    provider != "dev-stub"
 }
 
 pub(crate) fn provider_run_reuses_run_for_mcp_continuation_reload(
@@ -268,11 +285,17 @@ pub(crate) fn provider_run_uses_runtime_structured_utility_prompt(
 pub(crate) enum ProviderUtilityExecutionPolicy {
     ExistingRun,
     ReadOnlyDiscovery,
+    /// MP-08: No source reads, commands, MCPs, host instructions or prior thread.
+    MetadataOnlyDiscovery,
 }
 
 impl ProviderUtilityExecutionPolicy {
+    pub(crate) fn is_metadata_only(self) -> bool {
+        matches!(self, Self::MetadataOnlyDiscovery)
+    }
+
     pub(crate) fn is_read_only_discovery(self) -> bool {
-        matches!(self, Self::ReadOnlyDiscovery)
+        matches!(self, Self::ReadOnlyDiscovery | Self::MetadataOnlyDiscovery)
     }
 }
 
@@ -405,6 +428,17 @@ mod tests {
         assert!(!provider_run_waits_for_workflow_publication_completion(
             &opencode
         ));
+    }
+
+    #[test]
+    fn runtime_catalog_refresh_uses_official_provider_policy() {
+        assert!(!super::provider_runtime_catalog_requires_reload("dev-stub"));
+        for provider in ["codex", "opencode", "claude", "claude-headless", "unknown"] {
+            assert!(
+                super::provider_runtime_catalog_requires_reload(provider),
+                "MP-08/MP-10 {provider} must use the documented resume fallback"
+            );
+        }
     }
 
     #[test]

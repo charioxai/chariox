@@ -77,11 +77,25 @@ impl<'a> KernelAgentService<'a> {
             if self.app.providers.get_run(&provider_run_id)?.state() == ProviderRunState::Starting {
                 return Ok(None);
             }
-            let (_session, next_candidate) = match self.activate_next_queued_prompt_for_mirror(
-                session_id,
-                &target_agent_id,
-                expected_next,
-            ) {
+            // Provider readiness may synchronously re-enter this queue path, so keep it
+            // outside the admission guard. Activation is the app-side admission commit:
+            // it is atomic with the shared durable fence, and any later reservation sees
+            // this prompt as activity. Release the guard before dispatch, whose output
+            // pump may perform provider control or settle older work.
+            let providers = self.app.providers.clone();
+            let Some(activation) = providers.with_managed_admission_if_open(|| {
+                // Keep activation's error as the inner result so the established
+                // re-entrant launch recovery below can recognize an already-active prompt.
+                Ok(self.activate_next_queued_prompt_for_mirror(
+                    session_id,
+                    &target_agent_id,
+                    expected_next,
+                ))
+            })?
+            else {
+                return Ok(None);
+            };
+            let (_session, next_candidate) = match activation {
                 Ok(activated) => activated,
                 Err(error) => {
                     // A replacement workflow provider can synchronously finish its launch
@@ -179,6 +193,28 @@ impl<'a> KernelAgentService<'a> {
         agent_id: &str,
         expected_prompt_id: &str,
     ) -> Result<PromptQueueItem, DaemonError> {
+        let active =
+            self.prepare_promoted_queued_prompt_start(session_id, agent_id, expected_prompt_id)?;
+        let source_attachment_id = self
+            .app
+            .promoted_prompt_source_attachment_id(session_id, active.source_attachment_id())?;
+        self.app.echo_promoted_queued_prompt_to_attachments(
+            session_id,
+            provider_run_id,
+            active.id(),
+            &source_attachment_id,
+            active.prompt(),
+            active.attachments(),
+        );
+        Ok(active)
+    }
+
+    pub(super) fn prepare_promoted_queued_prompt_start(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        expected_prompt_id: &str,
+    ) -> Result<PromptQueueItem, DaemonError> {
         let active = self
             .app
             .prompt_owner_mark_active_prompt_running(session_id, agent_id)?;
@@ -208,14 +244,6 @@ impl<'a> KernelAgentService<'a> {
             active.workflow_run_id(),
             active.workflow_node_run_id(),
         )?;
-        self.app.echo_promoted_queued_prompt_to_attachments(
-            session_id,
-            provider_run_id,
-            active.id(),
-            &source_attachment_id,
-            active.prompt(),
-            active.attachments(),
-        );
         self.app
             .agents
             .note_prompt_sent_at(agent_id, prompt_sent_at_ms)?;
@@ -260,16 +288,15 @@ impl<'a> KernelAgentService<'a> {
         agent_id: &str,
         expected_next: Option<&PromptQueueItem>,
     ) -> Result<Option<PromptQueueItem>, DaemonError> {
-        if let Some(expected_next) = expected_next {
-            return Ok(select_next_queued_prompt_candidate(
-                Some(expected_next),
+        let candidate = if let Some(expected_next) = expected_next {
+            select_next_queued_prompt_candidate(Some(expected_next), None)
+        } else {
+            select_next_queued_prompt_candidate(
                 None,
-            ));
-        }
-        Ok(select_next_queued_prompt_candidate(
-            None,
-            self.peek_next_queued_prompt(session_id, agent_id)?,
-        ))
+                self.peek_next_queued_prompt(session_id, agent_id)?,
+            )
+        };
+        Ok(candidate.filter(|prompt| !prompt.remote_steer_reserved()))
     }
 
     pub(super) fn activate_next_queued_prompt_for_mirror(
@@ -320,3 +347,7 @@ impl<'a> KernelAgentService<'a> {
         Ok((session, next))
     }
 }
+
+#[cfg(test)]
+#[path = "queue_quiescence_tests.rs"]
+mod quiescence_tests;

@@ -1,6 +1,7 @@
 import type { BootstrapState, RuntimeSession } from "./cli-types.js"
 import type { CharioxLogger } from "./logging.js"
 import { createCommandActionHandlers } from "./command-actions.js"
+import { createCliRelayIdentityStore } from "./cli-relay-identity-store.js"
 import { resolveConfiguredCloudRelayApiUrl } from "./cli-options.js"
 import { bootstrapCloudRelayProfile } from "./cloud-relay.js"
 import { buildHostedCloudViewUrl } from "./cloud-command-lifecycle.js"
@@ -450,7 +451,10 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     focusedAgentId,
     multiAgentResponseLayout,
     maxAgentsPerScreen,
-    isRelayConnection: () => Boolean(options.relayUrl),
+    isRelayConnection: () => client.isRelayTransport(),
+    createViewerPublicKey: async () => client.isRelayTransport()
+      ? client.getRelayClientIdentity()?.publicKeyBase64 ?? null
+      : null,
     flashFooter,
     appendNotice,
     sendRoomEnvironmentRequest: (request) => client.send(request),
@@ -556,13 +560,16 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       pairKernelCloudRelayMachine(client, machineId, alias),
     issueCloudKernelRelayToken: async () => connectKernelCloudRelay(client),
     issueCloudMachineRelayToken: async () => connectKernelCloudRelay(client),
-    issueCloudClientRelayToken: async (_profile, targetDaemonAlias, tokenOptions) =>
-      issueKernelCloudRelayClientToken(
+    issueCloudClientRelayToken: async (_profile, targetDaemonAlias, tokenOptions) => {
+      const relayIdentity = createCliRelayIdentityStore().getOrCreate()
+      return issueKernelCloudRelayClientToken(
         client,
         targetDaemonAlias,
         options.clientId ?? "chariox-cli",
         tokenOptions?.sessionId ?? null,
-      ),
+        relayIdentity.publicKeyThumbprint,
+      )
+    },
     createCloudSessionInvite: (sessionId, inviteOptions) =>
       createCloudSessionInvite(client, sessionId, inviteOptions),
     acceptCloudSessionInvite: (inviteToken) => acceptCloudSessionInvite(client, inviteToken),
@@ -624,7 +631,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       setSlicesState(await listSlices(client))
       return result
     },
-    getSliceDisplayEndpoint: async (sliceRef) => getSliceDisplayEndpoint(client, sliceRef),
+    getSliceDisplayEndpoint: async (sliceRef, room) => getSliceDisplayEndpoint(client, sliceRef, room),
     getSliceLogs: async (sliceRef, tailLines) => getSliceLogs(client, sliceRef, tailLines),
     listSliceAudit: async (sliceRef, limit) => listSliceAudit(client, sliceRef, limit),
     saveSliceState: async (sliceRef, mode, scope) => {

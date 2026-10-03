@@ -231,7 +231,8 @@ function roomEnvironmentSummary(prefix: string, environment: RoomEnvironmentSnap
     .map((actor) => actor.display_label)
     .join(", ") || "none"
   const inputOwner = desktopInputOwnerLabel(environment)
-  return `${prefix}: ${environment.lifecycle} · tab ${tab} · actors ${actors} · input ${inputOwner}`
+  const health = formatHealth(environment)
+  return `${prefix}: ${environment.lifecycle} · tab ${tab} · actors ${actors} · input ${inputOwner}${health === "ready" ? "" : ` · health ${health}`}`
 }
 
 function roomEnvironmentEventNotices(
@@ -336,10 +337,10 @@ function desktopInputOwnerLabel(environment: RoomEnvironmentSnapshot): string {
 }
 
 function formatHealth(environment: RoomEnvironmentSnapshot): string {
-  const unhealthy = environment.health.filter((health) => health.state !== "ready")
+  const unhealthy = environment.health.filter((health) => health.state !== "ready" || health.diagnostic_code)
   if (!unhealthy.length) return "ready"
   return unhealthy
-    .map((health) => `${health.component} ${health.state}${health.diagnostic_code ? ` (${health.diagnostic_code})` : ""}`)
+    .map((health) => `${health.component} ${health.state}${health.diagnostic_code === "controller_recovered" ? " (controller recovered; retry interrupted browser actions)" : health.component === "browser_controller" && health.state === "unavailable" ? " (retry when the controller is available)" : health.diagnostic_code ? ` (${health.diagnostic_code})` : ""}`)
     .join(", ")
 }
 

@@ -7,7 +7,7 @@ use tokio::sync::oneshot;
 pub(super) struct PendingMcpContinuation {
     pub(super) session_id: String,
     pub(super) agent_id: String,
-    pub(super) source_attachment_id: String,
+
     pub(super) mcp_name: String,
     pub(super) previous_prompt: String,
 }
@@ -37,6 +37,7 @@ pub(super) struct PendingProviderReload {
     pub(super) session_id: String,
     pub(super) agent_id: String,
     pub(super) reason: String,
+    pub(super) force_catalog_reload: bool,
 }
 
 #[derive(Debug, Clone, Default)]

@@ -1085,7 +1085,12 @@ async fn peer_request_identity(
     let peer = guard.peers.get(&peer_addr)?;
     let mut identity = peer.identity.clone()?;
     let registration = peer.daemon_registration.as_ref()?;
+    // Slice workers must retain their kernel subject for the owner-bound
+    // activation and refresh protocol. Their Machine is the shared parent
+    // machine, not the worker identity. Ordinary home kernels still project
+    // to Machine for execution leases.
     if identity.subject_kind == RelaySubjectKind::Kernel
+        && !identity.subject.starts_with("slice:")
         && identity.token_id.is_some()
         && identity.public_key_thumbprint.is_some()
         && registration_daemon_is_exact_kernel_or_temporary_peer(
@@ -1341,16 +1346,13 @@ pub(super) fn validate_daemon_registration_identity(
         return Ok(());
     }
     let subject_matches = match identity.subject_kind {
-        RelaySubjectKind::Kernel => {
-            identity.subject == registration.daemon_id
-                || registration.daemon_alias.as_deref() == Some(identity.subject.as_str())
-                || registration.kernel_alias.as_deref() == Some(identity.subject.as_str())
-                || registration
-                    .daemon_id
-                    .strip_prefix(identity.subject.as_str())
-                    .is_some_and(|suffix| suffix.starts_with(":peer-tmp:"))
-        }
-        RelaySubjectKind::Machine => identity.subject == registration.machine_id,
+        RelaySubjectKind::Kernel => registration_daemon_is_exact_kernel_or_temporary_peer(
+            &registration.daemon_id,
+            &identity.subject,
+        ),
+        // A machine identity does not name a canonical kernel registration.
+        // Hosted kernels and slice workers register with their KERNEL token.
+        RelaySubjectKind::Machine => false,
         RelaySubjectKind::Service => true,
         RelaySubjectKind::Client => false,
     };

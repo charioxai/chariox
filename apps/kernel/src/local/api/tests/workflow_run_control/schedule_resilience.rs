@@ -150,10 +150,13 @@ fn disabled_schedule_queue_recovers_without_duplicates_or_busy_polling() {
 }
 
 fn disabled_schedule_queue_recovers_without_duplicates_or_busy_polling_inner() {
+    let fixture_worktree_0 = crate::test_support::TestWorktree::new(
+        "disabled_schedule_queue_recovers_without_duplicates_or_busy_polling_inner",
+    );
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-schedule-queue", "worktree-schedule-queue"),
+            fixture_worktree_0.session_request(),
         ))
         .expect("session should be created")
     {

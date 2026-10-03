@@ -946,7 +946,14 @@ impl<'a> ProviderOutputPumpContext<'a> {
                 &completion.message_id,
                 completion.completed_at_ms,
             );
-            self.mark_prompt_completion_recorded(provider_run_id);
+            // An adapter can require authoritative turn completion because
+            // assistant-message completion may replay after reconnect. Do not
+            // let that duplicate record arm quiet-gap settlement.
+            if !crate::provider::provider_run_requires_authoritative_turn_completion(&provider_run)
+                || prompt_completed
+            {
+                self.mark_prompt_completion_recorded(provider_run_id);
+            }
         }
         let exited = self.reconcile_provider_run_exit(session_id, provider_run_id)?;
         if exited {

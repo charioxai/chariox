@@ -26,8 +26,10 @@ async fn claude_stop_failure_hook_advances_queued_workflow_on_substitute_once() 
 }
 
 async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
-    let (runtime, session_id, agent_id, profile_id) =
-        runtime_with_substitutes(&["opencode/deepseek-v4-pro"], true).await;
+    let (runtime, session_id, agent_id, profile_id, _worktree) =
+        runtime_with_substitutes("dev-stub", &["opencode/deepseek-v4-pro"], true).await;
+    // MP-08/MP-10: exercise queue settlement through the deterministic runtime
+    // adapter; native account selection is covered by the tests below.
     let starter_provider = if claude_hook {
         "claude-headless"
     } else {
@@ -304,10 +306,12 @@ async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
     );
     let active = active.expect("queued prompt must be promoted exactly once");
     assert_eq!(active.status(), crate::session::PromptStatus::Running);
+    // The deterministic PTY adapter acknowledges the write before returning;
+    // structured native adapters can still be dispatching at this seam.
     assert_eq!(
         active.durable_delivery_phase(),
-        Some(crate::session::DurablePromptDeliveryPhase::Dispatching),
-        "the replacement must be admitted through the normal dispatch phase"
+        Some(crate::session::DurablePromptDeliveryPhase::Delivered),
+        "the replacement PTY prompt must be acknowledged through normal delivery"
     );
     assert_ne!(
         active.id(),
@@ -341,7 +345,7 @@ async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
     );
     let replacement_run = &live_runs[0];
     assert_ne!(replacement_run.id(), run.id());
-    assert_eq!(replacement_run.adapter_key(), "opencode");
+    assert_eq!(replacement_run.adapter_key(), "dev-stub");
     assert_eq!(replacement_run.model(), "opencode/deepseek-v4-pro");
     assert_eq!(
         active.durable_delivery_provider_run_id(),
@@ -355,12 +359,24 @@ async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
         .filter(|record| {
             record.provider_run_id == run.id()
                 && record.kind == crate::terminal::TerminalOutputKind::ProviderError
-                && record.bytes == b"insufficient balance"
+                && record.bytes
+                    == if claude_hook {
+                        "Claude StopFailure [rate_limit]: You've hit your session limit resets 4am (Europe/Madrid)".as_bytes()
+                    } else {
+                        b"insufficient balance".as_slice()
+                    }
         })
         .count();
     assert_eq!(
-        provider_errors, 1,
-        "the failed prompt must expose one actionable provider error"
+        provider_errors,
+        1,
+        "the failed prompt must expose one actionable provider error: {:?}",
+        output_records
+            .iter()
+            .filter(|record| record.provider_run_id == run.id()
+                && record.kind == crate::terminal::TerminalOutputKind::ProviderError)
+            .map(|r| String::from_utf8_lossy(&r.bytes).into_owned())
+            .collect::<Vec<_>>()
     );
     let replacement_echoes = output_records
         .iter()
@@ -454,10 +470,29 @@ async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
 }
 
 async fn runtime_with_substitutes(
+    substitute_provider: &str,
     models: &[&str],
     reset_in_future: bool,
-) -> (KernelRuntimeState, String, String, String) {
+) -> (
+    KernelRuntimeState,
+    String,
+    String,
+    String,
+    crate::test_support::TestWorktree,
+) {
+    let worktree = crate::test_support::TestWorktree::new("automatic-substitute");
     let (app, runtime, session_id, agent_id) = agent_config_runtime().await;
+    runtime
+        .owned
+        .agent_store
+        .update_agent_config(
+            &agent_id,
+            None,
+            None,
+            None,
+            Some(Some(worktree.path().display().to_string())),
+        )
+        .expect("substitute fixture should retain a real workspace");
     let registry = app.lock().await.provider_account_profile_registry();
     let profile = registry
         .create_managed(
@@ -466,6 +501,27 @@ async fn runtime_with_substitutes(
             "Go and Zen",
         )
         .expect("isolated account");
+    // MP-08/MP-10: this fixture submits a turn, so its synthetic model must
+    // exist in the isolated native account catalog used by model preflight.
+    // The credential-free fixture declares zero cost so native catalog admission
+    // does not require paid-provider authentication.
+    let environment = registry
+        .resolve_environment(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "opencode",
+            &profile.profile_id,
+        )
+        .expect("isolated fixture account environment");
+    let config_directory = std::path::PathBuf::from(&environment["OPENCODE_CONFIG_DIR"]);
+    std::fs::create_dir_all(&config_directory).unwrap();
+    std::fs::write(
+        config_directory.join("opencode.json"),
+        serde_json::json!({"provider": {"opencode": {"models": {
+            "deepseek-v4-pro": {"name": "Substitution fixture", "cost": {"input": 0, "output": 0}}
+        }}}})
+        .to_string(),
+    )
+    .expect("declare synthetic catalog model without credentials");
     registry
         .update_observation(
             crate::session::DEFAULT_LOCAL_USER_ID,
@@ -518,7 +574,7 @@ async fn runtime_with_substitutes(
             .add_agent_substitute(
                 &agent_id,
                 crate::agent::AgentSubstituteProfile::new(
-                    "opencode",
+                    substitute_provider,
                     model,
                     Some("high".to_string()),
                 )
@@ -526,12 +582,13 @@ async fn runtime_with_substitutes(
             )
             .expect("configured substitute");
     }
-    (runtime, session_id, agent_id, profile.profile_id)
+    (runtime, session_id, agent_id, profile.profile_id, worktree)
 }
 
 #[tokio::test]
 async fn automatic_substitution_skips_exhausted_go_but_preserves_zen_on_same_account() {
-    let (runtime, session_id, agent_id, profile_id) = runtime_with_substitutes(
+    let (runtime, session_id, agent_id, profile_id, _worktree) = runtime_with_substitutes(
+        "opencode",
         &["opencode-go/deepseek-v4-pro", "opencode/deepseek-v4-pro"],
         true,
     )
@@ -565,7 +622,8 @@ async fn automatic_substitution_skips_exhausted_go_but_preserves_zen_on_same_acc
 
 #[tokio::test]
 async fn automatic_substitution_exhausted_chain_leaves_starter_unchanged() {
-    let (runtime, session_id, agent_id, _) = runtime_with_substitutes(
+    let (runtime, session_id, agent_id, _, _worktree) = runtime_with_substitutes(
+        "opencode",
         &[
             "opencode-go/deepseek-v4-pro",
             "opencode-go/deepseek-v4-flash",
@@ -588,7 +646,8 @@ async fn automatic_substitution_exhausted_chain_leaves_starter_unchanged() {
 
 #[tokio::test]
 async fn automatic_substitution_does_not_skip_a_passed_reset() {
-    let (runtime, session_id, agent_id, _) = runtime_with_substitutes(
+    let (runtime, session_id, agent_id, _, _worktree) = runtime_with_substitutes(
+        "opencode",
         &["opencode-go/deepseek-v4-pro", "opencode/deepseek-v4-pro"],
         false,
     )
@@ -610,7 +669,8 @@ async fn automatic_substitution_does_not_skip_a_passed_reset() {
 
 #[tokio::test]
 async fn automatic_substitution_skips_multiple_exhausted_entries_after_active_index() {
-    let (runtime, session_id, agent_id, _) = runtime_with_substitutes(
+    let (runtime, session_id, agent_id, _, _worktree) = runtime_with_substitutes(
+        "opencode",
         &[
             "opencode-go/deepseek-v4-pro",
             "opencode-go/deepseek-v4-flash",
@@ -641,7 +701,19 @@ async fn automatic_substitution_skips_multiple_exhausted_entries_after_active_in
 
 #[tokio::test]
 async fn automatic_substitution_skips_a_missing_account_and_reaches_the_next_candidate() {
+    let worktree = crate::test_support::TestWorktree::new("automatic-substitute");
     let (app, runtime, session_id, agent_id) = agent_config_runtime().await;
+    runtime
+        .owned
+        .agent_store
+        .update_agent_config(
+            &agent_id,
+            None,
+            None,
+            None,
+            Some(Some(worktree.path().display().to_string())),
+        )
+        .expect("substitute fixture should retain a real workspace");
     let registry = app.lock().await.provider_account_profile_registry();
     let removed = registry
         .create_managed(

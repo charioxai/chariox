@@ -47,7 +47,12 @@ impl Default for StartupTrustBridge {
 
 impl StartupTrustBridge {
     fn wait_for_interaction(&self) -> RuntimeInteraction {
+        self.wait_for_interaction_with_pump(|| {})
+    }
+
+    fn wait_for_interaction_with_pump(&self, mut pump: impl FnMut()) -> RuntimeInteraction {
         for _ in 0..500 {
+            pump();
             if let Some(interaction) = self
                 .interactions
                 .lock()
@@ -1749,15 +1754,16 @@ fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
         std::sync::Arc::new(bridge.clone());
     app.providers()
         .set_native_interaction_bridge(bridge_ref.clone());
-    crate::app::provider_output::ProviderOutputPump::new(&mut app)
-        .pump_provider_output(crate::app::provider_output::ProviderOutputPumpRequest {
-            session_id: session.id(),
-            provider_run_id: run.id(),
-            recipient_attachment_ids: vec![attachment.id().to_string()],
-            initial_liveness_already_checked: false,
-        })
-        .expect("trust prompt should be projected by the normal output pump");
-    let interaction = bridge.wait_for_interaction();
+    let interaction = bridge.wait_for_interaction_with_pump(|| {
+        crate::app::provider_output::ProviderOutputPump::new(&mut app)
+            .pump_provider_output(crate::app::provider_output::ProviderOutputPumpRequest {
+                session_id: session.id(),
+                provider_run_id: run.id(),
+                recipient_attachment_ids: vec![attachment.id().to_string()],
+                initial_liveness_already_checked: false,
+            })
+            .expect("trust prompt should be projected by the normal output pump");
+    });
     assert_eq!(interaction.default_on_timeout(), Some("deny"));
     bridge.resolve_default_no();
     let mut settled = false;

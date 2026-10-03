@@ -11,14 +11,10 @@ pub(super) async fn check_response_loss(
     // read-only status RPCs cannot consume the fault before upload executes.
     for forget_receipt in [false, true] {
         let before = physical_count(fixture);
-        if forget_receipt {
-            relay
-                .write()
-                .await
-                .test_lose_next_peer_response_payload_and_forget_action_receipts();
-        } else {
-            relay.write().await.test_lose_next_peer_response_payload();
-        }
+        relay
+            .write()
+            .await
+            .test_lose_next_browser_mutation_response(forget_receipt);
         let result = fixture
             .home
             .runtime_state

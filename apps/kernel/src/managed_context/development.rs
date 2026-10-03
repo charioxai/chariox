@@ -13,6 +13,7 @@ use crate::error::DaemonError;
 
 const DEVELOPMENT_CONTEXT_SCHEMA_VERSION: u32 = 2;
 const DIRECTORY_CONTEXT_SCHEMA_VERSION: u32 = 3;
+const ENVIRONMENT_CONTEXT_SCHEMA_VERSION: u32 = 4;
 const MAX_REPOSITORIES: usize = 32;
 const MAX_OVERLAY_FILES_PER_REPOSITORY: usize = 20_000;
 const MAX_OVERLAY_FILE_BYTES: u64 = 16 * 1024 * 1024;
@@ -90,6 +91,17 @@ pub struct DevelopmentContextManifest {
     pub schema_version: u32,
     pub project_id: String,
     pub repositories: Vec<DevelopmentRepositoryManifest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_environment: Option<DevelopmentProjectEnvironment>,
+}
+
+/// MP-08: Metadata and selected target-sealed values travel with the M28 development layer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DevelopmentProjectEnvironment {
+    pub sealed: crate::project_environment::SealedProjectEnvironment,
+    pub evidence: crate::project_environment::ProjectEnvironmentEvidence,
+    pub repository_workspaces: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -230,7 +242,7 @@ mod overlay;
 pub(crate) use export::publish_archive_no_clobber;
 
 use archive::write_archive;
-pub use export::export_development_context;
+pub use export::{export_development_context, export_development_context_with_environment};
 use git::{
     charge_overlay_materialization, create_git_bundle, ensure_worktree_root, git_blob_size,
     git_bytes, git_bytes_isolated, git_optional_text, git_output, git_output_isolated, git_text,
@@ -241,10 +253,12 @@ use git::{
 pub use import::import_development_context;
 pub(crate) use import::{
     cleanup_development_context_publication, cleanup_development_context_publication_staging,
-    import_development_context_with_publication, recover_development_context_publication,
+    import_development_context_with_environment, import_development_context_with_publication,
+    recover_development_context_publication_with_environment,
     recover_pruned_development_context_publication,
     recover_pruned_development_context_publication_for_cleanup,
-    recover_pruned_mutable_development_context_publication, MAX_PUBLICATION_RECEIPT_BYTES,
+    recover_pruned_mutable_development_context_publication, register_transfer_workspaces_parent,
+    MAX_PUBLICATION_RECEIPT_BYTES,
 };
 use import_archive::{extract_and_verify_archive, validate_git_oid};
 use import_materialize::{materialize_prepared_repository, prepare_repository};

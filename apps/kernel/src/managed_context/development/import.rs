@@ -2,6 +2,8 @@ use super::*;
 
 const PUBLICATION_RECEIPT_SCHEMA_VERSION: u32 = 2;
 const DIRECTORY_RECEIPT_SCHEMA_VERSION: u32 = 3;
+const ENVIRONMENT_RECEIPT_SCHEMA_VERSION: u32 = 4;
+const ENVIRONMENT_COMPLETION_FILE: &str = ".chariox-project-environment-complete.json";
 const PUBLICATION_RECEIPT_FILE: &str = ".chariox-managed-import-receipt.json";
 const MATERIALIZATION_TRANSACTION_FILE: &str = ".chariox-materialization-transaction.json";
 const MATERIALIZATION_OWNERSHIP_FILE_PREFIX: &str = ".chariox-materialization-ownership-";
@@ -56,6 +58,7 @@ pub fn import_development_context(
         MAX_CHECKOUT_BYTES_PER_PROJECT,
         MAX_MATERIALIZED_ENTRIES_PER_PROJECT,
         None,
+        None,
     )
     .map(|(result, _)| result)
 }
@@ -70,8 +73,25 @@ pub(crate) fn import_development_context_with_publication(
         MAX_CHECKOUT_BYTES_PER_PROJECT,
         MAX_MATERIALIZED_ENTRIES_PER_PROJECT,
         Some(publication_id),
+        None,
     )?;
     receipt.ok_or_else(|| context_error("development context publication receipt is missing"))
+}
+
+pub(crate) fn import_development_context_with_environment(
+    request: DevelopmentContextImportRequest,
+    publication_id: String,
+    authority: Option<&crate::project_environment::ProjectEnvironmentImportAuthority>,
+) -> Result<DevelopmentContextPublicationReceipt, DaemonError> {
+    validate_publication_id(&publication_id)?;
+    let (_, receipt) = import_development_context_with_options(
+        request,
+        MAX_CHECKOUT_BYTES_PER_PROJECT,
+        MAX_MATERIALIZED_ENTRIES_PER_PROJECT,
+        Some(publication_id),
+        authority,
+    )?;
+    receipt.ok_or_else(|| context_error("development publication receipt missing"))
 }
 
 pub(crate) fn recover_development_context_publication(
@@ -236,6 +256,7 @@ fn recover_pruned_development_context_publication_with_head_policy(
         if ![
             PUBLICATION_RECEIPT_SCHEMA_VERSION,
             DIRECTORY_RECEIPT_SCHEMA_VERSION,
+            ENVIRONMENT_RECEIPT_SCHEMA_VERSION,
         ]
         .contains(&receipt.schema_version)
             || receipt.source_repository_binding_sha256s.len() != expected_repositories.len()
@@ -405,6 +426,7 @@ pub(super) fn import_development_context_with_budgets(
         maximum_project_checkout_bytes,
         maximum_project_materialized_entries,
         None,
+        None,
     )
     .map(|(result, _)| result)
 }
@@ -414,6 +436,7 @@ fn import_development_context_with_options(
     maximum_project_checkout_bytes: u64,
     maximum_project_materialized_entries: u64,
     publication_id: Option<String>,
+    environment_authority: Option<&crate::project_environment::ProjectEnvironmentImportAuthority>,
 ) -> Result<
     (
         DevelopmentContextImportResult,
@@ -507,9 +530,10 @@ fn import_development_context_with_options(
     )?;
     if publication_id.is_some() {
         for repository in &manifest.repositories {
-            super::export::validate_managed_repository_basename(&repository.target_directory)?;
+            super::export::validate_repository_basename(&repository.target_directory)?;
             if materialization_root != control_destination_root {
                 let destination = materialization_root.join(&repository.target_directory);
+                preflight_managed_repository_path(&destination)?;
                 ensure_path_absent(&destination, "managed repository destination")?;
             }
         }
@@ -547,6 +571,66 @@ fn import_development_context_with_options(
             &project_root.join(&repository.target_directory),
         )?;
     }
+    let prepared_environment = match &manifest.project_environment {
+        Some(layer) => {
+            let authority = environment_authority.ok_or_else(|| {
+                context_error("Project environment import requires authenticated target authority")
+            })?;
+            if layer.sealed.manifest.project_id != request.expected_project_id
+                || layer.repository_workspaces.len() != manifest.repositories.len()
+            {
+                return Err(context_error(
+                    "Project environment repository binding mismatch",
+                ));
+            }
+            let mut roots = BTreeMap::new();
+            let mut mapping = BTreeMap::new();
+            for repository in &manifest.repositories {
+                let workspace = layer
+                    .repository_workspaces
+                    .get(&repository.repository_id)
+                    .ok_or_else(|| {
+                        context_error("Project environment repository mapping missing")
+                    })?;
+                if let Some(expected) = request.expected_source_repositories.as_ref() {
+                    if !expected.iter().any(|binding| {
+                        &binding.workspace_id == workspace
+                            && binding.role == repository.role
+                            && source_repository_binding_sha256(binding)
+                                == repository.source_binding_sha256
+                    }) {
+                        return Err(context_error(
+                            "Project environment source workspace is not authorized",
+                        ));
+                    }
+                }
+                if roots
+                    .insert(
+                        workspace.clone(),
+                        project_root.join(&repository.target_directory),
+                    )
+                    .is_some()
+                {
+                    return Err(context_error(
+                        "duplicate Project environment workspace mapping",
+                    ));
+                }
+                mapping.insert(
+                    workspace.clone(),
+                    materialization_root
+                        .join(&repository.target_directory)
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+            Some(
+                crate::project_environment::PreparedProjectEnvironmentImport::prepare(
+                    authority, layer, &roots, &mapping,
+                )?,
+            )
+        }
+        None => None,
+    };
     let primary_repository_id = imported
         .iter()
         .find(|repository| repository.role == DevelopmentRepositoryRole::Primary)
@@ -562,7 +646,9 @@ fn import_development_context_with_options(
         publication_id
             .as_ref()
             .map(|publication_id| DevelopmentContextPublicationReceipt {
-                schema_version: if result
+                schema_version: if prepared_environment.is_some() {
+                    ENVIRONMENT_RECEIPT_SCHEMA_VERSION
+                } else if result
                     .repositories
                     .iter()
                     .any(|repository| !repository.workspace_kind.is_git())
@@ -699,6 +785,30 @@ fn import_development_context_with_options(
     if let Err(error) = sync_directory(&canonical_parent) {
         return Err(import_failure_with_rollback(error, &staging_root));
     }
+    if let Some(environment) = prepared_environment {
+        if let Err(error) = environment.commit() {
+            return Err(import_failure_with_rollback(error, &staging_root));
+        }
+        let binding = environment.publication_binding(
+            publication_id
+                .as_deref()
+                .ok_or_else(|| context_error("environment publication ID missing"))?,
+            &request.expected_archive_sha256.to_ascii_lowercase(),
+        );
+        let completion = serde_json::to_vec(&binding)
+            .map_err(|_| context_error("environment completion encoding failed"))?;
+        if let Err(error) = write_private_file(
+            &control_destination_root.join(ENVIRONMENT_COMPLETION_FILE),
+            &completion,
+        ) {
+            environment.rollback()?;
+            return Err(import_failure_with_rollback(error, &staging_root));
+        }
+        if let Err(error) = sync_directory(&control_destination_root) {
+            environment.rollback()?;
+            return Err(import_failure_with_rollback(error, &staging_root));
+        }
+    }
     cleanup.commit();
     drop(cleanup);
 
@@ -722,8 +832,14 @@ pub(super) fn managed_materialization_root_for_control(
     validate_real_directory(&root, "managed repository root")?;
     let canonical = fs::canonicalize(&root)
         .map_err(|error| context_io_error("resolve managed repository root", error))?;
+    preflight_managed_repository_path(&canonical)?;
+    // Path 1 keeps control state in the protected CHARIOX_HOME below its
+    // repository root (/home/chariox/.chariox); repositories never land there.
+    let control_in_protected_home = kernel_chariox_home().is_some_and(|home| {
+        control_destination.starts_with(&home) && !canonical.starts_with(&home)
+    });
     if canonical == control_destination
-        || control_destination.starts_with(&canonical)
+        || control_destination.starts_with(&canonical) && !control_in_protected_home
         || canonical.starts_with(
             control_destination
                 .parent()
@@ -737,9 +853,33 @@ pub(super) fn managed_materialization_root_for_control(
     Ok(Some(canonical))
 }
 
-fn trusted_managed_control_parent() -> Result<Option<PathBuf>, DaemonError> {
+fn preflight_managed_repository_path(path: &Path) -> Result<(), DaemonError> {
+    crate::git_worktree_placement::preflight_managed_repository_root(path).map_err(|error| {
+        match error {
+            DaemonError::LocalTransport { message, .. } => context_error(message),
+            other => context_error(other.to_string()),
+        }
+    })
+}
+
+static TRANSFER_WORKSPACES_PARENT: std::sync::RwLock<Option<PathBuf>> =
+    std::sync::RwLock::new(None);
+
+/// The kernel registers where its managed-context transfers publish (the
+/// parent the transfer bridge derives from its durable state path).
+pub(crate) fn register_transfer_workspaces_parent(parent: PathBuf) {
+    *TRANSFER_WORKSPACES_PARENT
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(parent);
+}
+
+fn kernel_chariox_home() -> Option<PathBuf> {
+    std::env::var_os("CHARIOX_HOME").and_then(|home| fs::canonicalize(home).ok())
+}
+
+pub(super) fn trusted_managed_control_parent() -> Result<Option<PathBuf>, DaemonError> {
     let Some(raw) = std::env::var_os("CHARIOX_PUBLICATION_CONTROL_STATE_DIR") else {
-        return Ok(None);
+        return path1_control_parent();
     };
     if raw.is_empty() {
         return Err(context_error(
@@ -765,6 +905,32 @@ fn trusted_managed_control_parent() -> Result<Option<PathBuf>, DaemonError> {
         .map_err(|error| {
             context_io_error("resolve managed publication control workspace root", error)
         })
+}
+
+/// Path 1 has no publication control root: the kernel's registered transfer
+/// workspaces are the trusted control parent, so a copied repository lands in
+/// the managed repository root as on a shared host.
+fn path1_control_parent() -> Result<Option<PathBuf>, DaemonError> {
+    if !matches!(
+        crate::managed_bootstrap::managed_provider_topology(),
+        Ok(crate::managed_bootstrap::ManagedProviderTopology::Path1)
+    ) {
+        return Ok(None);
+    }
+    let Some(parent) = TRANSFER_WORKSPACES_PARENT
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+    else {
+        return Ok(None);
+    };
+    if !parent.exists() {
+        return Ok(None);
+    }
+    validate_real_directory(&parent, "managed context workspace root")?;
+    fs::canonicalize(&parent)
+        .map(Some)
+        .map_err(|error| context_io_error("resolve managed context workspace root", error))
 }
 
 fn validate_real_directory(path: &Path, label: &str) -> Result<(), DaemonError> {
@@ -1031,7 +1197,7 @@ fn publication_materialization_root(
         ));
     }
     if receipt.repositories.iter().all(|repository| {
-        super::export::validate_managed_repository_basename(&repository.target_directory).is_ok()
+        super::export::validate_repository_basename(&repository.target_directory).is_ok()
             && repository.destination_path == control_destination.join(&repository.target_directory)
     }) {
         return Ok(control_destination.to_path_buf());
@@ -1047,9 +1213,12 @@ fn publication_materialization_root(
         ));
     };
     if receipt.repositories.iter().all(|repository| {
-        super::export::validate_managed_repository_basename(&repository.target_directory).is_ok()
+        super::export::validate_repository_basename(&repository.target_directory).is_ok()
             && repository.destination_path == configured.join(&repository.target_directory)
     }) {
+        for repository in &receipt.repositories {
+            preflight_managed_repository_path(&repository.destination_path)?;
+        }
         return Ok(configured);
     }
     Err(context_error(
@@ -1274,7 +1443,7 @@ fn cleanup_materialization_transaction(staging_root: &Path) -> Result<(), Daemon
         .cloned()
         .zip(transaction.published_target_identities.iter().cloned())
         .map(|(target_directory, identity)| {
-            super::export::validate_managed_repository_basename(&target_directory)?;
+            super::export::validate_repository_basename(&target_directory)?;
             Ok(OwnedMaterialization {
                 target_directory,
                 identity,
@@ -1287,7 +1456,7 @@ fn cleanup_materialization_transaction(staging_root: &Path) -> Result<(), Daemon
     ) {
         (None, None) => None,
         (Some(target_directory), Some(identity)) => {
-            super::export::validate_managed_repository_basename(&target_directory)?;
+            super::export::validate_repository_basename(&target_directory)?;
             Some(OwnedMaterialization {
                 target_directory,
                 identity,
@@ -1492,10 +1661,14 @@ fn validate_publication_receipt(
     require_original_head: bool,
     require_repository_directories: bool,
 ) -> Result<(), DaemonError> {
+    if receipt.schema_version == ENVIRONMENT_RECEIPT_SCHEMA_VERSION {
+        read_environment_completion(receipt)?;
+    }
     let materialization_root = publication_materialization_root(receipt, canonical_destination)?;
     if ![
         PUBLICATION_RECEIPT_SCHEMA_VERSION,
         DIRECTORY_RECEIPT_SCHEMA_VERSION,
+        ENVIRONMENT_RECEIPT_SCHEMA_VERSION,
     ]
     .contains(&receipt.schema_version)
         || receipt.publication_id != publication_id
@@ -1532,10 +1705,14 @@ fn validate_publication_receipt(
     let mut primary_ids = Vec::new();
     for repository in &receipt.repositories {
         validate_publication_id(&repository.repository_id)?;
-        super::export::validate_managed_repository_basename(&repository.target_directory)?;
+        super::export::validate_repository_basename(&repository.target_directory)?;
         if repository.workspace_kind.is_git() {
             validate_git_oid(&repository.head_sha)?;
-        } else if receipt.schema_version != DIRECTORY_RECEIPT_SCHEMA_VERSION
+        } else if ![
+            DIRECTORY_RECEIPT_SCHEMA_VERSION,
+            ENVIRONMENT_RECEIPT_SCHEMA_VERSION,
+        ]
+        .contains(&receipt.schema_version)
             || !repository.head_sha.is_empty()
         {
             return Err(context_error(
@@ -1692,4 +1869,50 @@ impl Drop for ImportCleanup {
             }
         }
     }
+}
+
+// MP-08 / MP-10 / MP-11: Code publication alone is not a completed environment import.
+fn read_environment_completion(
+    receipt: &DevelopmentContextPublicationReceipt,
+) -> Result<crate::project_environment::ProjectEnvironmentPublicationBinding, DaemonError> {
+    let mut file = crate::project_environment::open_workspace_file(
+        &receipt.destination_root,
+        ENVIRONMENT_COMPLETION_FILE,
+    )?;
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file)
+        .take(4097)
+        .read_to_end(&mut bytes)
+        .map_err(|_| context_error("environment completion unavailable"))?;
+    if bytes.len() > 4096 {
+        return Err(context_error("environment completion exceeds bounds"));
+    }
+    let binding: crate::project_environment::ProjectEnvironmentPublicationBinding =
+        serde_json::from_slice(&bytes)
+            .map_err(|_| context_error("invalid environment completion"))?;
+    if binding.publication_id != receipt.publication_id
+        || binding.archive_sha256 != receipt.archive_sha256
+        || binding.project_id != receipt.project_id
+    {
+        return Err(context_error(
+            "environment completion does not match publication",
+        ));
+    }
+    Ok(binding)
+}
+
+pub(crate) fn recover_development_context_publication_with_environment(
+    request: &DevelopmentContextImportRequest,
+    publication_id: &str,
+    authority: Option<&crate::project_environment::ProjectEnvironmentImportAuthority>,
+) -> Result<Option<DevelopmentContextPublicationReceipt>, DaemonError> {
+    let receipt = recover_development_context_publication(request, publication_id)?;
+    if let Some(receipt) = &receipt {
+        if receipt.schema_version == ENVIRONMENT_RECEIPT_SCHEMA_VERSION {
+            let authority = authority
+                .ok_or_else(|| context_error("environment recovery requires target authority"))?;
+            read_environment_completion(receipt)?.verify_target(authority)?;
+        }
+    }
+    Ok(receipt)
 }

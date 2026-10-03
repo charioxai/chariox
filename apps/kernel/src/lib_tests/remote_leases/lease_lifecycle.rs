@@ -398,6 +398,14 @@ fn partial_provider_cleanup_retries_ended_runs_before_releasing_capacity() {
             .expect("sibling leased agent creates");
         assert_eq!(sibling.backing_session_id, leased_agent.backing_session_id);
 
+        // Cleanup walks the lease's ordered IDs. Fail its first member so the
+        // fixture proves that both members remain when provider cleanup rejects.
+        let (leased_agent, sibling) = if leased_agent.id < sibling.id {
+            (leased_agent, sibling)
+        } else {
+            (sibling, leased_agent)
+        };
+
         let run_id = format!("provider-cleanup-{failure_point:?}");
         let request = crate::provider::LaunchProviderRequest::new(
             &leased_agent.backing_session_id,

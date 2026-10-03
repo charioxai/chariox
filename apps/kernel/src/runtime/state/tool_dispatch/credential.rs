@@ -808,20 +808,12 @@ impl KernelRuntimeState {
                 service.validate_terminal_secret_input(&credential_id)?
             }
             crate::transport::relay_peer::RemoteCredentialSecretInjection::Computer => {
-                service.validate_computer_secret_input(&credential_id)?
+                return Err(DaemonError::LocalTransport {
+                    operation: "home_credential_secret_resolve",
+                    message: "Computer credentials require home-owned Room input; use paste_secret_to_computer".into(),
+                });
             }
         };
-        if matches!(
-            &injection,
-            crate::transport::relay_peer::RemoteCredentialSecretInjection::Computer
-        ) {
-            self.ensure_computer_secret_input_approved(
-                &context.home_session_id,
-                agent.id(),
-                &credential_id,
-            )
-            .await?;
-        }
         let _vault_unlock = self
             .ensure_vault_unlocked_for_agent(
                 &context.home_session_id,
@@ -837,7 +829,7 @@ impl KernelRuntimeState {
                 service.terminal_secret_input(&credential_id)?
             }
             crate::transport::relay_peer::RemoteCredentialSecretInjection::Computer => {
-                service.computer_secret_input(&credential_id)?
+                unreachable!("unbound Computer secret resolution was rejected before Vault access")
             }
         };
         Ok((credential_id, secret_input))

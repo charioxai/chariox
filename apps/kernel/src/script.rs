@@ -326,6 +326,7 @@ impl CharioxScriptRegistry {
             ),
         )
         .map_err(io_error("script.install"))?;
+        crate::transport::mcp_server::catalog_changed();
         Ok((self.metadata_from_stored(&destination, stored), destination))
     }
 
@@ -338,6 +339,7 @@ impl CharioxScriptRegistry {
             })?;
         let metadata = self.read_metadata(&dir)?;
         fs::remove_dir_all(&dir).map_err(io_error("script.uninstall"))?;
+        crate::transport::mcp_server::catalog_changed();
         Ok((metadata, dir))
     }
 

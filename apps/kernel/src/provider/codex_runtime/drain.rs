@@ -23,6 +23,11 @@ pub fn drain_codex_events(
     } else {
         client
     };
+    let client = if state.ephemeral {
+        client.with_metadata_only_discovery()
+    } else {
+        client
+    };
     let mut chunks = Vec::new();
     let mut completions = Vec::new();
     let mut notices = Vec::new();
@@ -95,7 +100,9 @@ pub fn drain_codex_events(
         completion_recovery_evidence,
         std::time::Instant::now(),
     );
-    if authoritative_backfill_due {
+    // MP-08 / MP-10 / MP-11: Ephemeral metadata threads have no durable turn list.
+    // Settle only their native item/completion notifications.
+    if authoritative_backfill_due && !state.ephemeral {
         backfill_completed_turn(
             &client,
             state,
@@ -186,6 +193,71 @@ mod tests {
 
     use super::super::state::CodexRuntimeState;
     use super::drain_codex_events;
+
+    #[test]
+    fn mp08_mp10_mp11_ephemeral_metadata_turn_settles_without_durable_backfill() {
+        use crate::provider::CodexNotification;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let (done_tx, done_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut socket = accept(stream).unwrap();
+            done_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            socket
+                .get_mut()
+                .set_read_timeout(Some(Duration::from_millis(20)))
+                .unwrap();
+            assert!(
+                socket.read().is_err(),
+                "ephemeral thread requested durable backfill"
+            );
+        });
+        let (socket, _) = connect(&endpoint).unwrap();
+        let request = LaunchProviderRequest::new("session", "codex", "codex", "default", "default");
+        let run = RuntimeProviderRun::new(
+            "ephemeral-run",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "fixture".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: vec![],
+                pty_env: BTreeMap::new(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: Some(endpoint.clone()),
+            },
+        );
+        let mut state = CodexRuntimeState::new(endpoint, "ephemeral-thread".into(), socket, 1);
+        state.ephemeral = true;
+        state.set_read_only_discovery_permissions(true);
+        state.active_turn_id = Some("turn".into());
+        state.buffered_notifications = vec![
+            CodexNotification::ItemCompleted {
+                item: json!({"id":"item", "type":"agentMessage", "text":"{\n  \"schema_version\": 1\n}"}),
+            },
+            CodexNotification::TurnCompleted {
+                turn_id: "turn".into(),
+                status: "completed".into(),
+                error_message: None,
+                items: vec![],
+            },
+        ];
+        let poll = drain_codex_events(&run, &mut state, None).unwrap();
+        assert!(poll.prompt_completed);
+        assert!(poll.terminal_failure.is_none());
+        assert_eq!(
+            poll.chunks
+                .iter()
+                .flat_map(|chunk| chunk.bytes.clone())
+                .collect::<Vec<_>>(),
+            b"{\n  \"schema_version\": 1\n}"
+        );
+        done_tx.send(()).unwrap();
+        server.join().unwrap();
+    }
 
     #[test]
     fn read_only_discovery_policy_survives_event_drain_reconstruction_after_turn_start() {

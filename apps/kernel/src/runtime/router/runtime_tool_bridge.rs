@@ -2,6 +2,15 @@ use super::CommandRouter;
 use crate::error::DaemonError;
 
 impl CommandRouter {
+    pub(crate) fn runtime_tool_catalog_auth_tokens(&self) -> Vec<String> {
+        self.runtime_state.runtime_tool_catalog_auth_tokens()
+    }
+
+    pub(crate) fn runtime_tool_catalog_changed_for_auth_token(&self, token: &str) {
+        self.runtime_state
+            .runtime_tool_catalog_changed_for_auth_token(token);
+    }
+
     pub(crate) fn runtime_mcp_bind_address(&self) -> (String, u16) {
         let config = self.config_projection.snapshot();
         (config.runtime_mcp_host, config.runtime_mcp_port)

@@ -24,7 +24,7 @@ export type RelayCloudCommandHandlerDeps = CloudCommandLifecycleDeps & {
     profile: RelayCloudProfile,
     targetDaemonAlias: string,
     options?: { sessionId?: string | null },
-  ) => Promise<{ relayUrl: string; relayToken: string; tokenExpiresAtMs: number; profile?: RelayCloudProfile }>
+  ) => Promise<{ relayUrl: string; relayToken: string; tokenExpiresAtMs: number; targetDaemonId?: string; profile?: RelayCloudProfile }>
   logoutCloudRelay?: (profile: RelayCloudProfile, options?: { revokeClient?: boolean; revokeMachine?: boolean }) => Promise<void>
 }
 
@@ -209,42 +209,45 @@ async function issueRelayCloudClientToken(deps: RelayCloudCommandHandlerDeps, cl
     deps.flashFooter("usage: /relay cloud client-token <target-daemon-alias> [session-id]", "error")
     return
   }
-  const ensuredProfile = profile.clientId
-    ? profile
-    : deps.pairCloudRelayClient
-      ? await deps.pairCloudRelayClient(profile, deps.clientId ?? "chariox-cli", undefined)
-      : profile
-  if (!profile.clientId && deps.saveCloudRelayProfile) {
-    await deps.saveCloudRelayProfile(ensuredProfile)
-  }
   const sessionId = cloudArgs[1] ?? deps.sessionState().id ?? null
-  const issued = await deps.issueCloudClientRelayToken(ensuredProfile, targetDaemonAlias, { sessionId })
+  const issued = await deps.issueCloudClientRelayToken(profile, targetDaemonAlias, { sessionId })
   if (issued.profile && deps.saveCloudRelayProfile) {
     await deps.saveCloudRelayProfile(issued.profile)
   }
+  const targetOption = issued.targetDaemonId
+    ? `--target-daemon-id ${issued.targetDaemonId}`
+    : `--target-daemon-alias ${targetDaemonAlias}`
   deps.appendNotice(
     [
       "cloud client token",
       `transport=${issued.relayUrl}`,
       `expires_at_ms=${issued.tokenExpiresAtMs}`,
       ...(sessionId ? [`session_id=${sessionId}`] : []),
-      `command=chariox --relay-url ${issued.relayUrl} --relay-token ${issued.relayToken} --target-daemon-alias ${targetDaemonAlias}`,
+      `command=chariox --relay-url ${issued.relayUrl} --relay-token ${issued.relayToken} ${targetOption}`,
     ].join("\n"),
   )
   deps.appendNotice(`cloud client token minted for ${targetDaemonAlias}`)
 }
 
 async function logoutRelayCloud(deps: RelayCloudCommandHandlerDeps, cloudArgs: string[]): Promise<void> {
+  const options = {
+    revokeClient: cloudArgs.includes("--revoke-client"),
+    revokeMachine: cloudArgs.includes("--revoke-machine"),
+  }
+  const requiresAcknowledgement = options.revokeClient || options.revokeMachine
   if (!deps.saveCloudRelayProfile) {
+    if (requiresAcknowledgement) throw new Error("cloud relay profile storage is unavailable in this build")
     deps.flashFooter("cloud relay profile storage is unavailable in this build", "error")
     return
   }
   const profile = deps.getCloudRelayProfile?.() ?? null
-  if (profile && deps.logoutCloudRelay) {
-    await deps.logoutCloudRelay(profile, {
-      revokeClient: cloudArgs.includes("--revoke-client"),
-      revokeMachine: cloudArgs.includes("--revoke-machine"),
-    }).catch((error) => {
+  if (requiresAcknowledgement) {
+    if (!profile || !deps.logoutCloudRelay) {
+      throw new Error("cloud remote revocation requires a linked profile and logout support")
+    }
+    await deps.logoutCloudRelay(profile, options)
+  } else if (profile && deps.logoutCloudRelay) {
+    await deps.logoutCloudRelay(profile, options).catch((error) => {
       deps.appendNotice(`cloud logout remote revocation failed: ${deps.formatError(error)}`)
     })
   }

@@ -1218,6 +1218,7 @@ mod tests {
         status: crate::slice::SliceStatus,
     ) -> crate::slice::SliceRecord {
         crate::slice::SliceRecord {
+            source_slice_ref: None,
             id: id.to_string(),
             name: id.to_string(),
             owner_kernel_id: "daemon".to_string(),
@@ -1258,6 +1259,8 @@ mod tests {
 
     fn disconnected_relay_status() -> RelayStatus {
         RelayStatus {
+            runtime_process_identity: None,
+            capabilities: Vec::new(),
             configured: false,
             connected: false,
             relay_url: None,
@@ -1980,6 +1983,8 @@ mod tests {
         let metaagent_events = MetaagentEventStore::default();
         let projection = WaitingRoomSessionSummaryProjectionStore::default();
         let relay_status = RelayStatus {
+            runtime_process_identity: None,
+            capabilities: Vec::new(),
             configured: false,
             connected: false,
             relay_url: None,
@@ -2106,6 +2111,8 @@ mod tests {
             false,
             None,
             RelayStatus {
+                runtime_process_identity: None,
+                capabilities: Vec::new(),
                 configured: false,
                 connected: false,
                 relay_url: None,

@@ -17,7 +17,13 @@ use crate::error::DaemonError;
 
 pub(crate) mod browser_import;
 mod owner;
+pub(crate) mod room_environment;
+pub(crate) mod worker_prompt_receipts;
+pub(crate) mod worker_steer_receipts;
 pub(crate) mod workflow_runtime;
+
+pub(crate) const QUIESCENCE_STATE_SNAPSHOT_KIND: &str =
+    "managed_kernel.auto_stop_quiescence.changed";
 
 #[derive(Debug, Clone)]
 pub struct DurableKernelStateStore {
@@ -118,11 +124,18 @@ struct DurableWriteRequest {
 
 #[derive(Debug)]
 enum DurableWriteOperation {
+    RoomEnvironment(room_environment::RoomEnvironmentWrite),
     BrowserImport(browser_import::ImportStateWrite),
     Event {
         event_id: String,
         kind: String,
         subject_id: Option<String>,
+        timestamp_ms: u64,
+        payload_json: String,
+    },
+    QuiescenceSnapshotEvent {
+        event_id: String,
+        subject_id: String,
         timestamp_ms: u64,
         payload_json: String,
     },
@@ -147,7 +160,7 @@ enum DurableWriteOperation {
         hot_entities: Vec<DurableWorkflowHotEntityWrite>,
         workflow_runs: Vec<DurableWorkflowRunWrite>,
         delivery_receipts: Vec<DurableDeliveryReceiptWrite>,
-        prompt_state_json: Option<String>,
+        prompt_state_json: Vec<String>,
     },
     WorkflowRuntimeSessionsTransition {
         event_id: String,
@@ -320,6 +333,36 @@ impl DurableKernelStateStore {
             event_id,
             kind,
             subject_id,
+            timestamp_ms,
+            payload,
+        })
+    }
+
+    pub(crate) fn append_quiescence_snapshot(
+        &self,
+        kernel_id: &str,
+        payload: serde_json::Value,
+    ) -> Result<DurableStateEvent, DaemonError> {
+        let timestamp_ms = unix_epoch_ms();
+        let event_id = format!("state_evt_{timestamp_ms}_{}", rand_suffix());
+        let payload_json =
+            serde_json::to_string(&payload).map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.encode_event",
+                message: error.to_string(),
+            })?;
+        let sequence = self
+            .writer
+            .execute(DurableWriteOperation::QuiescenceSnapshotEvent {
+                event_id: event_id.clone(),
+                subject_id: kernel_id.to_string(),
+                timestamp_ms,
+                payload_json,
+            })?;
+        Ok(DurableStateEvent {
+            sequence,
+            event_id,
+            kind: QUIESCENCE_STATE_SNAPSHOT_KIND.to_string(),
+            subject_id: Some(kernel_id.to_string()),
             timestamp_ms,
             payload,
         })
@@ -1318,6 +1361,9 @@ fn commit_durable_write_batch(
     let mut failure = None;
     for request in &batch {
         let result = match &request.operation {
+            DurableWriteOperation::RoomEnvironment(write) => {
+                room_environment::apply(&transaction, write)
+            }
             DurableWriteOperation::BrowserImport(write) => {
                 browser_import::apply(&transaction, write)
             }
@@ -1341,6 +1387,33 @@ fn commit_durable_write_batch(
                     ],
                 )
                 .map(|_| transaction.last_insert_rowid().max(0) as u64),
+            DurableWriteOperation::QuiescenceSnapshotEvent {
+                event_id,
+                subject_id,
+                timestamp_ms,
+                payload_json,
+            } => transaction
+                .execute(
+                    "INSERT INTO durable_state_events (
+                        event_id, kind, subject_id, timestamp_ms, payload_json
+                    ) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        event_id,
+                        QUIESCENCE_STATE_SNAPSHOT_KIND,
+                        subject_id,
+                        *timestamp_ms as i64,
+                        payload_json
+                    ],
+                )
+                .and_then(|_| {
+                    let sequence = transaction.last_insert_rowid().max(0) as u64;
+                    transaction.execute(
+                        "DELETE FROM durable_state_events
+                         WHERE kind = ?1 AND subject_id = ?2 AND sequence < ?3",
+                        params![QUIESCENCE_STATE_SNAPSHOT_KIND, subject_id, sequence as i64],
+                    )?;
+                    Ok(sequence)
+                }),
             DurableWriteOperation::Snapshot {
                 sequence,
                 timestamp_ms,
@@ -1384,7 +1457,7 @@ fn commit_durable_write_batch(
                     hot_entities,
                     workflow_runs,
                     delivery_receipts,
-                    prompt_state_json: prompt_state_json.as_deref(),
+                    prompt_state_json,
                 },
             ),
             DurableWriteOperation::WorkflowRuntimeSessionsTransition {
@@ -1582,6 +1655,13 @@ fn write_entity_checkpoint(
 }
 
 const DURABLE_STATE_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS durable_room_environments (
+    owner_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY (owner_id, session_id)
+);
+
 CREATE TABLE IF NOT EXISTS durable_browser_import (
     environment_id TEXT PRIMARY KEY,
     request_id TEXT NOT NULL,
@@ -1782,6 +1862,10 @@ fn rand_suffix() -> u64 {
     let mut rng = rand::thread_rng();
     rng.next_u64()
 }
+
+#[cfg(test)]
+#[path = "durable_state/quiescence_snapshot_retention_tests.rs"]
+mod quiescence_snapshot_retention_tests;
 
 #[cfg(test)]
 mod tests {

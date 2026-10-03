@@ -7,6 +7,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration};
 
+mod alias_execution;
 mod batch;
 mod cleanup;
 mod computer_input;
@@ -18,6 +19,7 @@ mod controller_configuration_cancellation;
 mod controller_configuration_queue;
 mod controller_configuration_recovery;
 mod controller_events;
+mod controller_history_queue;
 mod controller_integrations;
 mod controller_lifecycle_cancellation;
 mod controller_mutations;
@@ -30,6 +32,10 @@ mod controller_upload_recovery;
 mod controller_worker_mcp;
 mod display;
 mod lease_release;
+mod room_home_local_slice;
+mod room_remote_agent_home_slice;
+mod room_secret;
+mod room_slice_cross_placement;
 mod screenshot;
 mod session;
 
@@ -37,7 +43,27 @@ pub(super) async fn controller_placement_lifecycle() {
     controller::controller_scenario(false).await;
 }
 
+// MP-08/MP-10: this in-process worker requires the same Git CWD as a real kernel.
+// The enclosing placement fixture owns the process-wide environment guard.
+struct WorkerWorkingDirectory(std::path::PathBuf);
+
+impl WorkerWorkingDirectory {
+    fn enter(path: &std::path::Path) -> Self {
+        let previous = std::env::current_dir().expect("fixture current directory");
+        std::env::set_current_dir(path).expect("fixture worker Git directory");
+        Self(previous)
+    }
+}
+
+impl Drop for WorkerWorkingDirectory {
+    fn drop(&mut self) {
+        std::env::set_current_dir(&self.0).expect("restore external fixture directory");
+    }
+}
+
 struct LiveWorker {
+    // Restore CWD before dropping the retained worker Git fixture below.
+    _working_directory: WorkerWorkingDirectory,
     _home_persistence_environment: Option<HomePersistenceEnvironment>,
     home: Arc<CommandRouter>,
     worker: Arc<CommandRouter>,
@@ -78,6 +104,7 @@ impl LiveWorker {
             managed_slice_worker,
             "environment-worker".to_string(),
             true,
+            false,
         )
         .await
     }
@@ -95,6 +122,7 @@ impl LiveWorker {
             false,
             worker_kernel_id,
             true,
+            false,
         )
         .await
     }
@@ -104,19 +132,35 @@ impl LiveWorker {
         browser_controller: bool,
         home_vault_backend: Option<crate::config::CredentialVaultBackend>,
         managed_slice_worker: bool,
-        worker_kernel_id: String,
+        mut worker_kernel_id: String,
         isolate_home_persistence: bool,
+        canonical_slice: bool,
     ) -> Self {
         const HOME_TOKEN: &str = "environment-worker-fixture";
         // This isolated fixture's first slice is slice-1, owned by environment-home.
         const LOCAL_SLICE_TOKEN: &str = "slice-local-environment-home-slice-1";
         let mut home_state = TestState::new();
         let mut worker_state = TestState::new();
+        session::init_test_repository(
+            worker_state.worktree.path(),
+            "README.md",
+            "MP-08/MP-10 owned worker Git fixture\n",
+        );
+        let working_directory = WorkerWorkingDirectory::enter(worker_state.worktree.path());
         if let Some(backend) = home_vault_backend {
             home_state.config.user_config.credential_vault.backend = backend;
         }
+        let managed_record =
+            managed_slice_worker.then(|| managed_slice_fixture_record(&home_state.config));
+        if let Some(record) = &managed_record {
+            worker_kernel_id = record.worker_kernel_ref.clone();
+        }
         let slice_token = if managed_slice_worker {
-            managed_slice_runtime_token(&worker_state.config.relay_public_key)
+            managed_slice_runtime_token(
+                &worker_kernel_id,
+                &home_state.config.host_machine_id,
+                &worker_state.config.relay_public_key,
+            )
         } else {
             LOCAL_SLICE_TOKEN.to_string()
         };
@@ -139,7 +183,12 @@ impl LiveWorker {
             let relay = Arc::new(if managed_slice_worker {
                 RelayServer::with_auth_verifier(
                     relay_config,
-                    managed_slice_relay_auth(&slice_token, &worker_state.config.relay_public_key),
+                    managed_slice_relay_auth(
+                        &slice_token,
+                        &worker_kernel_id,
+                        &home_state.config.host_machine_id,
+                        &worker_state.config.relay_public_key,
+                    ),
                 )
             } else {
                 RelayServer::new(relay_config)
@@ -176,11 +225,15 @@ impl LiveWorker {
         home_state.config.daemon_id = "environment-home".to_string();
         worker_state.config.daemon_id = worker_kernel_id.clone();
         worker_state.config.daemon_alias = Some(if managed_slice_worker {
-            "slice:slice-1:worker:test".to_string()
+            "slice:desktop".to_string()
         } else {
             "desktop-worker".to_string()
         });
-        worker_state.config.host_machine_id = "slice:slice-1".to_string();
+        worker_state.config.host_machine_id = if managed_slice_worker {
+            home_state.config.host_machine_id.clone()
+        } else {
+            "slice:slice-1".to_string()
+        };
         let home_persistence_environment = isolate_home_persistence.then(|| {
             let ambient_home = home_state.root.join("ambient-home");
             std::fs::create_dir_all(&ambient_home)
@@ -189,6 +242,53 @@ impl LiveWorker {
         });
         let (home, rooms) = home_state.router();
         let home = Arc::new(home);
+        if let Some(record) = managed_record {
+            home.app.lock().await.slices().restore_records(vec![record]);
+        }
+        if canonical_slice {
+            create_desktop(&home, "desktop").await;
+            let slices = home.app.lock().await.slices().clone();
+            let slice = slices.resolve("desktop").unwrap();
+            worker_kernel_id = slice.worker_kernel_ref;
+            worker_state.config.daemon_id = worker_kernel_id.clone();
+            worker_state.config.daemon_alias = Some("slice:desktop".to_string());
+            worker_state.config.host_machine_id = slice.owner_machine_id;
+            slices
+                .set_relay_endpoint(
+                    "desktop",
+                    Some(crate::slice::SliceRelayEndpoint {
+                        url: format!("ws://{address}"),
+                        private: false,
+                    }),
+                    1,
+                )
+                .unwrap();
+            slices
+                .set_worker_presence(
+                    "desktop",
+                    Some(worker_kernel_id.clone()),
+                    Some(worker_state.config.host_machine_id.clone()),
+                    vec!["managed-dev-stub".to_string()],
+                    crate::session::unix_epoch_ms(),
+                )
+                .unwrap();
+            // This worker runs in the fixture process, so its published slice
+            // workspace is the real owned temp worktree rather than /workspace.
+            let workspace = worker_state.worktree.path().display().to_string();
+            assert!(worker_state.worktree.path().is_dir());
+            slices
+                .set_development_publication(
+                    "desktop",
+                    crate::slice::SliceDevelopmentPublication {
+                        publication_id: "canonical-alias-fixture".into(),
+                        destination_root: workspace.clone(),
+                        primary_repository_path: workspace.clone(),
+                        repository_paths: vec![workspace],
+                    },
+                    crate::session::unix_epoch_ms(),
+                )
+                .unwrap();
+        }
         if browser_controller {
             worker_state.config.room_environment_worker_binding =
                 Some(crate::config::RoomEnvironmentWorkerBinding {
@@ -213,6 +313,7 @@ impl LiveWorker {
         }
         let worker = Arc::new(worker);
         let mut fixture = Self {
+            _working_directory: working_directory,
             _home_persistence_environment: home_persistence_environment,
             home: Arc::clone(&home),
             worker: Arc::clone(&worker),
@@ -286,7 +387,7 @@ impl LiveWorker {
                         worker_registry
                             .read()
                             .await
-                            .daemon_in_realm("live-worker", "environment-worker")
+                            .daemon_in_realm("live-worker", &worker_kernel_id)
                             .is_some()
                     } else {
                         worker_registry
@@ -316,15 +417,22 @@ impl LiveWorker {
     }
 
     async fn create_slice(&self) {
-        dispatch_json(
-            &self.home,
-            json!({"CreateSlice": {
-                "name":"desktop", "base":"clean", "display_mode":"headed",
-                "worker_kernel_ref":"desktop-worker"
-            }}),
-        )
-        .await
-        .unwrap();
+        if self
+            ._worker_state
+            .config
+            .managed_slice_relay_owner_public_key
+            .is_none()
+        {
+            dispatch_json(
+                &self.home,
+                json!({"CreateSlice": {
+                    "name":"desktop", "base":"clean", "display_mode":"headed",
+                    "worker_kernel_ref":"desktop-worker"
+                }}),
+            )
+            .await
+            .unwrap();
+        }
         // Fixture discovery metadata: use this test's relay instead of Docker.
         self.home
             .app
@@ -347,8 +455,8 @@ impl LiveWorker {
             .slices()
             .set_worker_presence(
                 "desktop",
-                Some("environment-worker".to_string()),
-                Some("slice:slice-1".to_string()),
+                Some(self._worker_state.config.daemon_id.clone()),
+                Some(self._worker_state.config.host_machine_id.clone()),
                 vec!["managed-dev-stub".to_string()],
                 crate::session::unix_epoch_ms(),
             )
@@ -429,7 +537,38 @@ impl Drop for HomePersistenceEnvironment {
     }
 }
 
-fn managed_slice_relay_auth(slice_token: &str, worker_public_key: &str) -> RelayAuthVerifier {
+fn managed_slice_fixture_record(config: &DaemonConfig) -> crate::slice::SliceRecord {
+    crate::slice::SliceStore::default()
+        .create(
+            "environment-home",
+            &config.host_machine_id,
+            crate::slice::CreateSliceInput {
+                source_slice_ref: None,
+                name: "desktop".into(),
+                backend: crate::slice::SliceBackendKind::LocalDocker,
+                os: "linux".into(),
+                display_mode: crate::slice::SliceDisplayMode::Headed,
+                display_backend: Default::default(),
+                workspace_id: None,
+                worktree_id: None,
+                workspace_mount: None,
+                development: None,
+                worker_kernel_ref: None,
+                display_url: None,
+                provider_auth: Vec::new(),
+                from_saved_state: None,
+                now_ms: 1,
+            },
+        )
+        .expect("managed relay fixture creates a canonical slice record")
+}
+
+fn managed_slice_relay_auth(
+    slice_token: &str,
+    worker_kernel_id: &str,
+    machine_id: &str,
+    worker_public_key: &str,
+) -> RelayAuthVerifier {
     const HOME_TOKEN: &str = "environment-worker-fixture";
     let claims = [
         (
@@ -466,7 +605,7 @@ fn managed_slice_relay_auth(slice_token: &str, worker_public_key: &str) -> Relay
             slice_token,
             RelayTokenClaims {
                 issuer: "live-worker-test".to_string(),
-                subject: "slice:slice-1:worker:test".to_string(),
+                subject: worker_kernel_id.to_string(),
                 subject_kind: RelaySubjectKind::Kernel,
                 realm_id: "live-worker".to_string(),
                 allowed_actions: vec![
@@ -484,7 +623,7 @@ fn managed_slice_relay_auth(slice_token: &str, worker_public_key: &str) -> Relay
                 organization_id: None,
                 user_id: None,
                 device_id: None,
-                machine_id: None,
+                machine_id: Some(machine_id.to_string()),
                 client_id: None,
                 session_id: None,
                 public_key_thumbprint: Some(
@@ -504,9 +643,13 @@ fn managed_slice_relay_auth(slice_token: &str, worker_public_key: &str) -> Relay
     ))
 }
 
-fn managed_slice_runtime_token(worker_public_key: &str) -> String {
+fn managed_slice_runtime_token(
+    worker_kernel_id: &str,
+    machine_id: &str,
+    worker_public_key: &str,
+) -> String {
     let payload = serde_json::json!({
-        "sub": "slice:slice-1:worker:test",
+        "sub": worker_kernel_id,
         "subject_kind": "kernel",
         "allowed_actions": [
             "daemon.register",
@@ -516,7 +659,7 @@ fn managed_slice_runtime_token(worker_public_key: &str) -> String {
             "peer.event",
         ],
         "allowed_targets": ["environment-home"],
-        "machine_id": "environment-home-machine",
+        "machine_id": machine_id,
         "public_key_thumbprint": crate::runtime::terminal_pairings::public_key_thumbprint(worker_public_key),
         "exp": crate::session::unix_epoch_ms() / 1_000 + 86_400,
     });

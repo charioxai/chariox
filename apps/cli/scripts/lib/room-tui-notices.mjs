@@ -1,4 +1,4 @@
-export function roomActionNoticePattern(action) {
+export function roomActionNoticePattern(action, actorLabel = null) {
   if (!Number.isSafeInteger(action.sequence) || action.sequence < 1
     || !["browser", "computer"].includes(action.mode) || !/^[a-z_]+$/.test(action.kind)) {
     throw new Error("invalid Room action notice identity")
@@ -12,7 +12,8 @@ export function roomActionNoticePattern(action) {
   } else if (action.state !== undefined && action.state !== "completed") {
     throw new Error("Room notice requires a completed or failed action")
   }
-  return new RegExp(`^Room action #${action.sequence}: .+ · ${action.mode} ${action.kind}(?: · (?:desktop(?:, tab [^ ·]+)?|tab [^ ·]+))? · ${outcome}$`)
+  const actor = actorLabel === null ? ".+" : String(actorLabel).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  return new RegExp(`^Room action #${action.sequence}: ${actor} · ${action.mode} ${action.kind}(?: · (?:desktop(?:, tab [^ ·]+)?|tab [^ ·]+))? · ${outcome}$`)
 }
 
 export function automationNoticeTexts(snapshot) {

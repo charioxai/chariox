@@ -113,7 +113,7 @@ async fn leased_prompt_steer_delivers_once_and_resets_for_the_next_turn() {
     let (_, next_turn_replayed) = router
         .relay_steer_leased_prompt(
             &leased_agent.id,
-            "home-queued-prompt-1",
+            "home-queued-prompt-2",
             "home-prompt-2",
             "REMOTE_STEER_ONCE",
             "",
@@ -139,6 +139,7 @@ async fn leased_prompt_steer_delivers_once_and_resets_for_the_next_turn() {
 
 #[tokio::test]
 async fn leased_provider_tool_list_exposes_event_reply_for_fresh_and_reused_discovery() {
+    let worktree = crate::test_support::TestWorktree::new("ordinary-workflow-tools");
     use std::sync::atomic::{AtomicBool, Ordering};
 
     let mut config = DaemonConfig::for_tests();
@@ -253,10 +254,7 @@ async fn leased_provider_tool_list_exposes_event_reply_for_fresh_and_reused_disc
         let mut app_guard = app.try_lock().expect("app should be available");
         let (ordinary_session, ordinary_agent) =
             crate::app::KernelSessionService::new(&mut app_guard)
-                .create_session(CreateSessionRequest::new(
-                    "ordinary-workflow-tools",
-                    "ordinary-workflow-tools",
-                ))
+                .create_session(worktree.session_request())
                 .expect("ordinary session should create");
         let ordinary_run = launch_test_provider(
             &mut app_guard,

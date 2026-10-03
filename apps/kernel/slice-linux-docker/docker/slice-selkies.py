@@ -2,6 +2,7 @@
 """Private slice-owned Selkies lifecycle. No Room or input authority lives here."""
 
 import fcntl
+import http.client
 import json
 import os
 from pathlib import Path
@@ -95,7 +96,7 @@ def healthy(record):
     try:
         with urllib.request.urlopen(endpoint(record) + "/api/health", timeout=1) as response:
             return response.status == 200 and response.read(16) == b"OK"
-    except (urllib.error.URLError, TimeoutError, OSError):
+    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError):
         return False
 
 

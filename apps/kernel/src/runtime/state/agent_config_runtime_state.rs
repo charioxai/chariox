@@ -7,6 +7,13 @@ impl KernelRuntimeState {
         grant: crate::extension::ExtensionGrant,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let previous_grants = self
+            .owned
+            .agent_store
+            .get_agent(agent_ref)
+            .or_else(|_| self.owned.agent_store.get_agent_by_ref(agent_ref))?
+            .extension_grants()
+            .to_vec();
         match grant.kind {
             crate::extension::ExtensionKind::Mcp => {
                 self.grant_agent_mcp(agent_ref, grant.name, caller_user_id)
@@ -47,6 +54,9 @@ impl KernelRuntimeState {
                     agent.session_id(),
                     agent.id(),
                 )?;
+                if previous_grants.as_slice() != agent.extension_grants() {
+                    self.remember_runtime_catalog_continuation(&agent, "runtime tool catalog");
+                }
                 Ok(agent)
             }
             crate::extension::ExtensionKind::Connector => {
@@ -80,6 +90,9 @@ impl KernelRuntimeState {
                     agent.session_id(),
                     agent.id(),
                 )?;
+                if previous_grants.as_slice() != agent.extension_grants() {
+                    self.remember_runtime_catalog_continuation(&agent, "runtime tool catalog");
+                }
                 Ok(agent)
             }
         }
@@ -165,6 +178,13 @@ impl KernelRuntimeState {
         name: &str,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let previous_grants = self
+            .owned
+            .agent_store
+            .get_agent(agent_ref)
+            .or_else(|_| self.owned.agent_store.get_agent_by_ref(agent_ref))?
+            .extension_grants()
+            .to_vec();
         match kind {
             crate::extension::ExtensionKind::Mcp => {
                 self.revoke_agent_mcp(agent_ref, name, caller_user_id).await
@@ -203,6 +223,9 @@ impl KernelRuntimeState {
                     agent.session_id(),
                     agent.id(),
                 )?;
+                if previous_grants.as_slice() != agent.extension_grants() {
+                    self.remember_runtime_catalog_continuation(&agent, "runtime tool catalog");
+                }
                 Ok(agent)
             }
             crate::extension::ExtensionKind::Connector => {
@@ -235,6 +258,9 @@ impl KernelRuntimeState {
                     agent.session_id(),
                     agent.id(),
                 )?;
+                if previous_grants.as_slice() != agent.extension_grants() {
+                    self.remember_runtime_catalog_continuation(&agent, "runtime tool catalog");
+                }
                 Ok(agent)
             }
         }
@@ -367,7 +393,7 @@ impl KernelRuntimeState {
         Ok(agent)
     }
 
-    async fn sync_remote_extension_manifest_for_agent(
+    pub(super) async fn sync_remote_extension_manifest_for_agent(
         &self,
         agent: &crate::agent::AgentInstance,
         caller_user_id: Option<&str>,
@@ -387,9 +413,26 @@ impl KernelRuntimeState {
         caller_user_id: Option<&str>,
         pending_revoke_intent: Option<bool>,
     ) -> Result<(), DaemonError> {
-        let Some(remote_execution) = agent.remote_execution().cloned() else {
-            return Ok(());
+        let agent_id = agent.id().to_string();
+        let (_sync_lane, current_agent, remote_execution) = loop {
+            let current = self.owned.agent_store.get_agent(&agent_id)?;
+            let Some(remote_execution) = current.remote_execution().cloned() else {
+                return Ok(());
+            };
+            let leased_agent_id = remote_execution.leased_agent_id.clone();
+            let sync_lane = self.leased_agent_operations.lock(&leased_agent_id).await;
+            let current = self.owned.agent_store.get_agent(&agent_id)?;
+            let Some(current_remote_execution) = current.remote_execution().cloned() else {
+                drop(sync_lane);
+                return Ok(());
+            };
+            if current_remote_execution.leased_agent_id != leased_agent_id {
+                drop(sync_lane);
+                continue;
+            }
+            break (sync_lane, current, current_remote_execution);
         };
+        let agent = &current_agent;
         let manifest = self.remote_extension_manifest_for_agent(agent)?;
         let manifest_hash = manifest.manifest_hash();
         let tool_count = manifest.tools.len();
@@ -413,18 +456,31 @@ impl KernelRuntimeState {
         ) {
             config.apply_missing_remote_relay_override(relay_url, relay_token);
         }
-        let response = crate::transport::relay_client::send_peer_request_via_temporary_connection(
-            &config,
-            ClientTarget {
-                daemon_id: Some(remote_execution.worker_kernel_id.clone()),
-                daemon_alias: None,
-            },
-            RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
-                leased_agent_id: remote_execution.leased_agent_id,
-                remote_extension_manifest: manifest,
-            },
-        )
-        .await;
+        let target = ClientTarget {
+            daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+            daemon_alias: None,
+        };
+        let request = RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
+            leased_agent_id: remote_execution.leased_agent_id,
+            remote_extension_manifest: manifest,
+        };
+        let response = match self.connected_relay_state_for_config(&config).await {
+            Some(relay_state) => {
+                crate::transport::relay_client::send_peer_request_via_connected_relay(
+                    &config,
+                    &relay_state,
+                    target,
+                    request,
+                )
+                .await
+            }
+            None => {
+                crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                    &config, target, request,
+                )
+                .await
+            }
+        };
         let response = match response {
             Ok(response) => response,
             Err(error) => {

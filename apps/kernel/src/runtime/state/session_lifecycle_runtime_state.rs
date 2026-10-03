@@ -647,11 +647,22 @@ impl KernelRuntimeState {
         let local_agent =
             self.owned
                 .ensure_agent_ref_owner(agent_ref, caller_user_id, "move agent to remote")?;
-        let _slice_guards = self.guard_slice_execution(
+        let slice_admission = self.guard_slice_execution(
             Some(session_id),
             [(None, Some(machine_ref))],
             "agent.move_remote",
         )?;
+        let [target_slice_id] = slice_admission.slice_ids.as_slice() else {
+            return Err(DaemonError::InternalInvariant {
+                operation: "agent.move_remote",
+                message: "slice admission target count mismatch".to_string(),
+            });
+        };
+        let target_slice_id = target_slice_id.clone();
+        let worker_ref = match target_slice_id.as_deref() {
+            Some(slice_id) => self.resolve_slice_worker_kernel_ref(slice_id).await?,
+            None => machine_ref.to_string(),
+        };
         let terminated_run_ids = self
             .owned
             .terminate_idle_provider_runs_for_agent_before_remote_move(session_id, &local_agent)?;
@@ -665,14 +676,9 @@ impl KernelRuntimeState {
             self.owned
                 .remove_provider_process_tracking_for_run(&provider_run_id, process_key);
         }
-        let target_slice_id = self
-            .owned
-            .slice_store
-            .resolve_by_worker_kernel_ref(machine_ref)
-            .map(|slice| slice.id);
         let agent = self
             .with_app_side_effect(|app| {
-                app.move_agent_to_remote(session_id, agent_ref, machine_ref)
+                app.move_agent_to_remote(session_id, agent_ref, &worker_ref)
             })
             .await?;
         if let Some(slice_ref) = target_slice_id {
@@ -858,12 +864,8 @@ impl KernelRuntimeState {
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
         let owned = &self.owned;
         let durable_session = owned.session_end_snapshot(session_id)?;
-        self.append_session_durable_event(
-            "session.ended",
-            &durable_session,
-            "runtime_end_session",
-        )
-        .await?;
+        self.append_session_durable_event("session.ended", &durable_session, "runtime_end_session")
+            .await?;
         self.stop_managed_environment_for_session_lifecycle(session_id)
             .await;
         let (session, terminated_run_ids) = owned.end_session(session_id)?;
@@ -889,7 +891,7 @@ impl KernelRuntimeState {
         workspace_id: Option<&str>,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
         let session_id = self
-            .resolve_session_ref_id(session_ref, workspace_id)
+            .resolve_session_ref_id_for_delete(session_ref, workspace_id)
             .await?;
         let owned = &self.owned;
         let durable_session = owned.session_end_snapshot(&session_id)?;
@@ -1522,11 +1524,8 @@ mod tests {
             .get(&session_id)
             .expect("busy session should project")
             .status();
-        let connection = install_durable_event_failure(
-            &runtime,
-            "fail_session_end_order",
-            "session.ended",
-        );
+        let connection =
+            install_durable_event_failure(&runtime, "fail_session_end_order", "session.ended");
 
         let error = runtime
             .end_session(&session_id)
@@ -1622,11 +1621,8 @@ mod tests {
             .expect("busy session projection should publish");
         let runtime_sequence = runtime.managed_activity_change_sequence();
         let projection_sequence = runtime.owned.session_projection.change_sequence();
-        let connection = install_durable_event_failure(
-            &runtime,
-            "fail_session_delete_order",
-            "session.deleted",
-        );
+        let connection =
+            install_durable_event_failure(&runtime, "fail_session_delete_order", "session.deleted");
 
         let error = runtime
             .delete_session_ref(&session_id, None)
@@ -2029,6 +2025,7 @@ mod tests {
 
     fn slice(os: &str) -> crate::slice::SliceRecord {
         crate::slice::SliceRecord {
+            source_slice_ref: None,
             id: "slice-1".to_string(),
             name: "linux-slice".to_string(),
             owner_kernel_id: "kernel-home".to_string(),

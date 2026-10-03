@@ -238,9 +238,25 @@ impl KernelRuntimeState {
                         return Err(error);
                     }
                 };
-                let durable_session = sessions.get_session(session_id)?;
-                if let Err(error) = durable_state_store.persist_workflow_runtime_transition(
+                let mut durable_session = sessions.get_session(session_id)?;
+                let mut affected_agents = Vec::new();
+                for agent in owned.agent_store.get_session_agents(session_id) {
+                    let (active, mut queued) = owned
+                        .prompt_state_owner
+                        .state_parts(&session_before_interrupt, agent.id());
+                    let before = queued.len();
+                    queued.retain(|prompt| {
+                        prompt.workflow_run_id() != Some(workflow_run_id.as_str())
+                    });
+                    if queued.len() != before {
+                        affected_agents.push(agent.id().to_string());
+                        durable_session.mirror_agent_prompt_state(agent.id(), active, queued);
+                    }
+                }
+                affected_agents.sort();
+                if let Err(error) = durable_state_store.persist_workflow_prompt_states_transition(
                     &durable_session,
+                    &affected_agents,
                     if pause {
                         "workflow_run_paused"
                     } else {
@@ -252,6 +268,7 @@ impl KernelRuntimeState {
                     sessions.restore_session(session_before_interrupt);
                     return Err(error);
                 }
+                sessions.restore_session(durable_session);
                 let archived_runs = sessions.archive_terminal_workflow_runs(session_id)?;
                 Ok((workflow_run, archived_runs))
             })?;

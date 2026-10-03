@@ -171,19 +171,18 @@ impl ProviderOutputTrace {
 mod tests {
     use super::*;
     use crate::app::KernelSessionService;
-    use crate::session::CreateSessionRequest;
 
     #[test]
     fn prompt_state_trace_reads_prompt_owner_when_session_mirror_is_stale() {
+        let fixture_worktree_0 = crate::test_support::TestWorktree::new(
+            "prompt_state_trace_reads_prompt_owner_when_session_mirror_is_stale",
+        );
         let mut app = crate::test_support::bootstrap_authenticated_app(
             crate::config::DaemonConfig::for_tests(),
         )
         .expect("daemon bootstrap should succeed");
         let (session, agent) = KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new(
-                "workspace-trace-owner",
-                "worktree-trace-owner",
-            ))
+            .create_session(fixture_worktree_0.session_request())
             .expect("session should create");
         let run = app
             .launch_provider(

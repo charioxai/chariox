@@ -3,13 +3,13 @@ use chariox_kernel::local::{
     DeleteSessionRequest, ListProjectsRequest, ListSessionsRequest, LocalDaemonRequest,
 };
 use chariox_kernel::runtime_transport::run_kernel_websocket_server_on_listener;
-use chariox_kernel::session::CreateSessionRequest;
 use chariox_kernel::{DaemonApp, DaemonConfig};
 use tokio::sync::oneshot;
 
 #[test]
 fn kernel_websocket_keeps_projects_bound_to_visible_sessions() {
     crate::run_kernel_websocket_runtime_test(async {
+        let workspace = ExecutionWorkspace::new();
         let mut config = DaemonConfig::for_tests();
         let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
         config.kernel_websocket_port = kernel_websocket_port;
@@ -32,10 +32,7 @@ fn kernel_websocket_keeps_projects_bound_to_visible_sessions() {
         let created = send_request(
             &mut socket,
             "create-visible-session",
-            LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-                "workspace-project-lifecycle",
-                "worktree-project-lifecycle",
-            )),
+            LocalDaemonRequest::CreateSession(workspace.session_request()),
         )
         .await;
         let session = &response_variant(&created, "SessionCreated")["session"];
@@ -88,13 +85,7 @@ fn kernel_websocket_keeps_projects_bound_to_visible_sessions() {
         let hidden = send_request(
             &mut socket,
             "create-hidden-runtime",
-            LocalDaemonRequest::CreateSession(
-                CreateSessionRequest::new(
-                    "workspace-publication-runtime",
-                    "worktree-publication-runtime",
-                )
-                .with_hidden(true),
-            ),
+            LocalDaemonRequest::CreateSession(workspace.session_request().with_hidden(true)),
         )
         .await;
         assert_eq!(

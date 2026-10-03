@@ -108,10 +108,21 @@ impl<'a> KernelAgentService<'a> {
             refresh_projection: true,
         })?;
         let outcome = submitted.outcome;
-        self.finish_compat_prompt_dispatch(submitted.dispatch)?;
-        self.finish_compat_remote_prompt_dispatch(submitted.remote_dispatch)?;
+        self.finish_compat_prompt_submission_dispatches(
+            submitted.dispatch,
+            submitted.remote_dispatch,
+        )?;
         crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)?;
         Ok(outcome)
+    }
+
+    pub(super) fn finish_compat_prompt_submission_dispatches(
+        &mut self,
+        dispatch: Option<KernelPromptDispatch>,
+        remote_dispatch: Option<KernelRemotePromptDispatch>,
+    ) -> Result<(), DaemonError> {
+        self.finish_compat_prompt_dispatch(dispatch)?;
+        self.defer_compat_remote_prompt_dispatch(remote_dispatch)
     }
 
     pub(crate) fn record_native_prompt_started(
@@ -463,6 +474,74 @@ impl<'a> KernelAgentService<'a> {
                 prompt.id(),
                 submitted.admission.target_agent_id
             ),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::agent::RemoteAgentBinding;
+    use crate::app::{DaemonApp, KernelSessionService};
+    use crate::attachment::{AttachRequest, ClientCapabilityLevel};
+    use crate::config::DaemonConfig;
+    use crate::session::{CreateSessionRequest, PromptSubmissionOutcome};
+
+    #[test]
+    fn compatibility_remote_submit_defers_one_dispatch_for_post_lock_delivery() {
+        let mut app =
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should bootstrap");
+        let (session, agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let attachment = KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "compat-remote-submit",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should create");
+        app.agents
+            .bind_remote_execution(
+                agent.id(),
+                RemoteAgentBinding {
+                    worker_kernel_id: "worker-kernel-1".to_string(),
+                    worker_machine_id: "worker-machine-1".to_string(),
+                    execution_lease_id: "lease-1".to_string(),
+                    leased_agent_id: "leased-agent-1".to_string(),
+                    active_worker_provider_run_id: None,
+                    relay_url: None,
+                    relay_token: None,
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
+                },
+            )
+            .expect("agent should bind to remote execution");
+
+        let outcome = app
+            .submit_prompt(
+                session.id(),
+                attachment.id(),
+                Some(agent.id()),
+                "remote prompt",
+                Vec::new(),
+            )
+            .expect("compatibility submit should not perform relay I/O under the app lock");
+        assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
+
+        let deferred = app.take_deferred_workflow_remote_prompt_dispatches();
+        assert_eq!(
+            deferred.len(),
+            1,
+            "one prepared dispatch should be handed off"
+        );
+        assert_eq!(deferred[0].worker_kernel_id, "worker-kernel-1");
+        assert_eq!(deferred[0].leased_agent_id, "leased-agent-1");
+        assert_eq!(deferred[0].prompt, "remote prompt");
+        assert!(
+            app.take_deferred_workflow_remote_prompt_dispatches()
+                .is_empty(),
+            "the existing post-lock drain must consume the prepared dispatch once"
         );
     }
 }

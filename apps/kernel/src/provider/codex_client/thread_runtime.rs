@@ -88,6 +88,10 @@ impl CodexClient {
             self.log_thread_config_overrides("thread/start", &config_overrides);
             params["config"] = json!(config_overrides);
         }
+        if self.metadata_only_discovery {
+            params["ephemeral"] = json!(true);
+            params["persistExtendedHistory"] = json!(false);
+        }
         if let Some(cwd) = cwd {
             params["cwd"] = json!(cwd);
         }
@@ -218,6 +222,32 @@ impl CodexClient {
         )
     }
 
+    /// Deliver Chariox context without adding it to native user-message history.
+    pub(crate) fn thread_inject_hidden_context(
+        &self,
+        socket: &mut CodexSocket,
+        next_request_id: &mut u64,
+        thread_id: &str,
+        context: &str,
+        buffered_notifications: &mut Vec<CodexNotification>,
+    ) -> Result<(), DaemonError> {
+        let _: Value = self.send_request_buffering_notifications(
+            socket,
+            next_request_id,
+            "thread/inject_items",
+            json!({
+                "threadId": thread_id,
+                "items": [{
+                    "type": "message",
+                    "role": "developer",
+                    "content": [{"type": "input_text", "text": context}],
+                }],
+            }),
+            buffered_notifications,
+        )?;
+        Ok(())
+    }
+
     pub(super) fn turn_steer_params(
         thread_id: &str,
         expected_turn_id: &str,
@@ -317,6 +347,28 @@ impl CodexClient {
             // MCP entries in its argv before this discovery thread starts.
             overrides.retain(|key, _| key != "mcp_servers" && !key.starts_with("mcp_servers."));
             overrides.insert("mcp_servers".to_string(), json!({}));
+            if self.metadata_only_discovery {
+                // MP-08: Apply last so caller/adapter overrides cannot restore access.
+                for feature in [
+                    "shell_tool",
+                    "unified_exec",
+                    "view_image",
+                    "image_generation",
+                    "multi_agent",
+                    "multi_agent_v2",
+                    "plugins",
+                    "remote_plugin",
+                    "apps",
+                    "skill_search",
+                ] {
+                    overrides.insert(format!("features.{feature}"), json!(false));
+                }
+                overrides.insert("features.skip_host_skill_discovery".into(), json!(true));
+                overrides.insert("tools.view_image".into(), json!(false));
+                overrides.insert("web_search".into(), json!("disabled"));
+                overrides.insert("project_doc_max_bytes".into(), json!(0));
+                overrides.insert("shell_environment_policy.inherit".into(), json!("none"));
+            }
             return Ok(overrides);
         }
         let provider_mcp_servers = codex_provider_facing_mcp_proxy_configs(

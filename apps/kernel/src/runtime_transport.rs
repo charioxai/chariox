@@ -678,11 +678,25 @@ where
             crate::transport::mcp_server::run_mcp_http_server_on_listener(mcp_router, mcp_listener)
                 .await;
     });
+    let (quiescence_shutdown_tx, quiescence_shutdown_rx) = tokio::sync::watch::channel(false);
+    let release_update_task = router
+        .runtime_state()
+        .spawn_managed_release_update(quiescence_shutdown_rx.clone());
+    let quiescence_task = router
+        .runtime_state()
+        .spawn_managed_kernel_quiescence(quiescence_shutdown_rx);
     let _restart_recovery_task = router.runtime_state().spawn_durable_restart_recovery();
 
     loop {
         tokio::select! {
             _ = &mut shutdown => {
+                let _ = quiescence_shutdown_tx.send(true);
+                if let Some(task) = quiescence_task {
+                    task.abort();
+                }
+                if let Some(task) = release_update_task {
+                    task.abort();
+                }
                 drop(_restart_recovery_task);
                 pump_task.abort();
                 if let Some(task) = durable_snapshot_task.take() {
@@ -692,11 +706,9 @@ where
                 let _ = router.shutdown_cleanup().await;
                 return Ok(());
             },
-            accept_result = listener.accept() => {
-                let (stream, _) = accept_result.map_err(|error| DaemonError::LocalTransport {
-                    operation: "accept kernel websocket",
-                    message: error.to_string(),
-                })?;
+            (stream, _) = crate::transport::listener_admission::accept_with_backoff(
+                &listener, &transport_health, "kernel websocket",
+            ) => {
                 let runtime = Arc::clone(&runtime);
                 let router = Arc::clone(&router);
                 let inbound_request_admission = inbound_request_admission.clone();

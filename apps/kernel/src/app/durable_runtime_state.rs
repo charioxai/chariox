@@ -331,6 +331,7 @@ impl DaemonApp {
         self.restore_local_kernel_external_provider_attachments();
         self.reconcile_restored_slice_agent_attachments()?;
         self.reconcile_restored_runtime_state_after_restart()?;
+        self.sessions.write().restore_room_environments()?;
         crate::logging::info_with_fields(
             "durable_state.restore",
             "restored durable kernel state",
@@ -672,20 +673,19 @@ impl DaemonApp {
     }
 
     fn reconcile_restored_slice_agent_attachments(&self) -> Result<(), DaemonError> {
-        let slices = self
-            .slices
-            .list()
-            .into_iter()
-            .map(|slice| (slice.id.clone(), slice))
-            .collect::<BTreeMap<_, _>>();
+        let slices = self.slices.list();
         let attachments = self
             .agents
             .list_agents()
             .into_iter()
             .filter_map(|agent| {
                 let remote = agent.remote_execution()?;
-                let slice_id = remote.worker_machine_id.strip_prefix("slice:")?.trim();
-                let slice = slices.get(slice_id)?;
+                let slice = crate::slice::recorded_slice_for_worker(
+                    self.config(),
+                    &slices,
+                    &remote.worker_kernel_id,
+                    &remote.worker_machine_id,
+                )?;
                 let session_missing = !slice
                     .session_ids
                     .iter()
@@ -1905,6 +1905,7 @@ mod tests {
                 &app.config().daemon_id,
                 &app.config().host_machine_id,
                 crate::slice::CreateSliceInput {
+                    source_slice_ref: None,
                     name: "restored-slice".to_string(),
                     backend: crate::slice::SliceBackendKind::LocalDocker,
                     os: "linux".to_string(),
@@ -1914,7 +1915,7 @@ mod tests {
                     worktree_id: None,
                     workspace_mount: None,
                     development: None,
-                    worker_kernel_ref: None,
+                    worker_kernel_ref: Some("worker-kernel".to_string()),
                     display_url: None,
                     provider_auth: Vec::new(),
                     from_saved_state: None,
@@ -2024,6 +2025,7 @@ mod tests {
                     &config.daemon_id,
                     &config.host_machine_id,
                     crate::slice::CreateSliceInput {
+                        source_slice_ref: None,
                         name: "transactional-slice".to_string(),
                         backend: crate::slice::SliceBackendKind::LocalDocker,
                         os: "linux".to_string(),
@@ -2096,6 +2098,7 @@ mod tests {
                 &config.daemon_id,
                 &config.host_machine_id,
                 crate::slice::CreateSliceInput {
+                    source_slice_ref: None,
                     name: "pending-restore".to_string(),
                     backend: crate::slice::SliceBackendKind::LocalDocker,
                     os: "linux".to_string(),
@@ -2247,3 +2250,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "durable_runtime_state/hosted_worker_tests.rs"]
+mod hosted_worker_tests;

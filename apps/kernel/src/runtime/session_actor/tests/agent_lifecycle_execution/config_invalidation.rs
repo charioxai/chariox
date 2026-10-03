@@ -2,19 +2,22 @@ use super::*;
 
 #[tokio::test]
 async fn update_agent_config_invalidates_only_that_agents_idle_provider_run() {
+    let fixture_worktree_0 = crate::test_support::TestWorktree::new(
+        "update_agent_config_invalidates_only_that_agents_idle_provider_run",
+    );
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
     ));
     let (session_id, first_agent_id, second_agent_id, first_run_id, second_run_id, terminal_stream) = {
         let mut app_locked = app.lock().await;
         let (session, first_agent) = crate::app::KernelSessionService::new(&mut app_locked)
-            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .create_session(fixture_worktree_0.session_request())
             .expect("session should be created");
         let second_agent = crate::app::KernelSessionService::new(&mut app_locked)
             .spawn_agent(
                 CreateAgentRequest::new(session.id(), "dev-stub")
                     .with_alias("agent-b")
-                    .with_worktree("worktree"),
+                    .with_worktree(fixture_worktree_0.path().to_string_lossy()),
             )
             .expect("second agent should be created");
         let first_run =
@@ -94,6 +97,9 @@ async fn update_agent_config_invalidates_only_that_agents_idle_provider_run() {
 
 #[tokio::test]
 async fn update_agent_config_keeps_turn_scoped_provider_run_alive() {
+    let fixture_worktree_0 = crate::test_support::TestWorktree::new(
+        "update_agent_config_keeps_turn_scoped_provider_run_alive",
+    );
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
     ));
@@ -101,7 +107,8 @@ async fn update_agent_config_keeps_turn_scoped_provider_run_alive() {
         let mut app_locked = app.lock().await;
         let (session, agent) = crate::app::KernelSessionService::new(&mut app_locked)
             .create_session(
-                CreateSessionRequest::new("workspace", "worktree")
+                fixture_worktree_0
+                    .session_request()
                     .with_agent_defaults(SessionAgentDefaults::new("managed-dev-stub")),
             )
             .expect("session should be created");

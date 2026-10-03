@@ -100,6 +100,10 @@ impl<'a> ProviderPromptDispatcher<'a> {
         Self { app }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keeps the existing session, worker and lease binding fields explicit without a second protocol representation."
+    )]
     pub(crate) fn dispatch_prompt_to_provider(
         &mut self,
         session_id: &str,
@@ -314,6 +318,7 @@ pub(crate) struct KernelPromptDispatch {
     pub(crate) steering: bool,
 }
 
+#[derive(Clone)]
 pub(crate) struct KernelRemotePromptDispatch {
     pub(crate) session_id: String,
     pub(crate) agent_id: String,
@@ -332,6 +337,11 @@ pub(crate) struct KernelRemotePromptDispatch {
     pub(crate) external_provider_session_id: Option<String>,
     pub(crate) external_provider_turn_id: Option<String>,
     pub(crate) workflow_context: Option<RemoteWorkflowTurnContext>,
+}
+
+/// Queued prompt delivery behavior that must occur only after worker ACK.
+pub(crate) struct KernelRemotePromptDispatchIntent {
+    pub(crate) dispatch: KernelRemotePromptDispatch,
 }
 
 pub(crate) struct KernelPromptCancellation {
@@ -364,6 +374,16 @@ pub(crate) struct KernelPromptAbortDispatch {
 }
 
 impl DaemonApp {
+    /// Hand a compatibility-created remote prompt to the runtime's existing
+    /// post-app-lock dispatch drain. The runtime owns the single relay send.
+    pub(crate) fn defer_remote_prompt_dispatch_after_app_side_effect(
+        &mut self,
+        dispatch: KernelRemotePromptDispatch,
+    ) {
+        self.pending_workflow_remote_prompt_dispatches
+            .push(dispatch);
+    }
+
     #[doc(hidden)]
     pub fn submit_prompt(
         &mut self,
@@ -485,60 +505,6 @@ impl DaemonApp {
             }
         }
         Ok(())
-    }
-
-    pub(crate) fn finish_kernel_remote_prompt_dispatch(
-        &mut self,
-        dispatch: KernelRemotePromptDispatch,
-        result: Result<String, DaemonError>,
-    ) -> Result<(), DaemonError> {
-        match result {
-            Ok(remote_provider_run_id) => {
-                let _ = self
-                    .agents
-                    .set_remote_execution_active_worker_provider_run_id(
-                        &dispatch.agent_id,
-                        Some(remote_provider_run_id.clone()),
-                    )?;
-                self.echo_prompt_to_other_attachments(
-                    &dispatch.session_id,
-                    &remote_provider_run_id,
-                    &dispatch.prompt_id,
-                    &dispatch.source_attachment_id,
-                    &dispatch.prompt,
-                    &dispatch.attachments,
-                );
-                self.mark_active_prompt_delivery(
-                    &dispatch.session_id,
-                    &dispatch.agent_id,
-                    &dispatch.prompt_id,
-                    crate::session::DurablePromptDeliveryPhase::Delivered,
-                    Some(remote_provider_run_id),
-                    None,
-                )?;
-                Ok(())
-            }
-            Err(error) => {
-                let _ = self
-                    .agents
-                    .set_remote_execution_active_worker_provider_run_id(&dispatch.agent_id, None);
-                let _ = self.prompt_owner_cancel_active_prompt_only(
-                    &dispatch.session_id,
-                    &dispatch.agent_id,
-                );
-                let _ = crate::app::KernelSessionReadService::new(self)
-                    .session_snapshot(&dispatch.session_id);
-                self.record_notice_for_agent(
-                    &dispatch.session_id,
-                    None,
-                    Some(&dispatch.agent_id),
-                    self.attachments
-                        .list_session_attachment_ids(&dispatch.session_id),
-                    format!("Remote prompt dispatch failed after acknowledgement: {error}"),
-                );
-                Err(error)
-            }
-        }
     }
 
     #[doc(hidden)]
@@ -714,7 +680,11 @@ impl DaemonApp {
         )
     }
 
-    pub(crate) fn advance_next_queued_prompt_remote(
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keeps the existing session, worker and lease binding fields explicit without a second protocol representation."
+    )]
+    pub(crate) fn advance_next_queued_prompt_remote_with_workflow_dispatch(
         &mut self,
         session_id: &str,
         agent_id: &str,
@@ -722,16 +692,18 @@ impl DaemonApp {
         leased_agent_id: &str,
         relay_url: Option<&str>,
         relay_token: Option<&str>,
+        expected_next: Option<&crate::session::PromptQueueItem>,
     ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
-        crate::app::KernelAgentService::new(self).advance_next_queued_prompt_remote(
-            session_id,
-            agent_id,
-            worker_kernel_id,
-            leased_agent_id,
-            relay_url,
-            relay_token,
-            None,
-        )
+        crate::app::KernelAgentService::new(self)
+            .advance_next_queued_prompt_remote_with_workflow_dispatch(
+                session_id,
+                agent_id,
+                worker_kernel_id,
+                leased_agent_id,
+                relay_url,
+                relay_token,
+                expected_next,
+            )
     }
 
     pub(crate) fn serialize_remote_prompt_attachments(

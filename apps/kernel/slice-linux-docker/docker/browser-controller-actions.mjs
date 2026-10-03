@@ -26,6 +26,7 @@ export async function performBrowserAction({
   now = Date.now,
   sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
   assertContext = async () => {},
+  withInput = operation => operation(),
 }) {
   const backendNodeId = parseBackendNodeReference(nodeRef);
   const normalizedAction = normalizeAction(action);
@@ -61,14 +62,14 @@ export async function performBrowserAction({
       lastReason = actionability.state;
       if (geometry && sameGeometry(previousGeometry, geometry)) {
         assertNotCancelled(signal);
-        const actionResult = await executeAction(
+        const actionResult = await withInput(() => executeAction(
           connection,
           sessionId,
           objectId,
           geometry,
           normalizedAction,
           signal,
-        );
+        ));
         releaseInBackground = actionResult.dialogOpened;
         return {
           target_id: targetId,

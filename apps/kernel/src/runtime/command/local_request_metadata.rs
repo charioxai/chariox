@@ -119,6 +119,11 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::CreateSession(_) => {
             LocalRequestMetadata::new("session.create", Interactive)
         }
+        LocalDaemonRequest::AdjustProjectEnvironment(request) => {
+            LocalRequestMetadata::new("project.environment.adjust", Interactive)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
         LocalDaemonRequest::StartProjectEnvironmentSetup(request) => {
             LocalRequestMetadata::new("project.environment_setup.start", Normal)
                 .session(&request.session_id)
@@ -194,11 +199,32 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::ListManagedEnvironmentCatalog(_) => {
             LocalRequestMetadata::new("managed_environment.catalog", Normal)
         }
+        LocalDaemonRequest::GetDisposableWorker(_) => {
+            LocalRequestMetadata::new("disposable_worker.get", Normal)
+        }
+        LocalDaemonRequest::CreateDisposableWorker(_) => {
+            LocalRequestMetadata::new("disposable_worker.create", Interactive)
+        }
+        LocalDaemonRequest::ReleaseDisposableWorker(_) => {
+            LocalRequestMetadata::new("disposable_worker.release", Interactive)
+        }
+        LocalDaemonRequest::KeepDisposableWorkerRunning(_) => {
+            LocalRequestMetadata::new("disposable_worker.keep_running", Interactive)
+        }
+        LocalDaemonRequest::PrepareDisposableWorkerContextTransfer(_) => {
+            LocalRequestMetadata::new("disposable_worker.context_transfer.prepare", Interactive)
+        }
+        LocalDaemonRequest::KeepManagedEnvironmentRunning(_) => {
+            LocalRequestMetadata::new("managed_environment.keep_running", Interactive)
+        }
         LocalDaemonRequest::GetManagedEnvironment(_) => {
             LocalRequestMetadata::new("managed_environment.get", Normal)
         }
         LocalDaemonRequest::GetManagedEnvironmentReimagePreflight(_) => {
             LocalRequestMetadata::new("managed_environment.reimage.preflight", Normal)
+        }
+        LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(_) => {
+            LocalRequestMetadata::new("managed_environment.reimage.receipt", Normal)
         }
         LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(_) => {
             LocalRequestMetadata::new("managed_environment.context_transfer.prepare", Interactive)
@@ -214,6 +240,12 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         }
         LocalDaemonRequest::RequestManagedEnvironmentReimage(_) => {
             LocalRequestMetadata::new("managed_environment.reimage", Interactive)
+        }
+        LocalDaemonRequest::RequestManagedEnvironmentReleaseUpdate(_) => {
+            LocalRequestMetadata::new("managed_environment.release_update", Interactive)
+        }
+        LocalDaemonRequest::GetManagedEnvironmentReleaseUpdate(_) => {
+            LocalRequestMetadata::new("managed_environment.release_update.get", Interactive)
         }
         LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(_) => {
             LocalRequestMetadata::new("managed_environment.reimage.observe", Interactive)
@@ -504,6 +536,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
     match request {
         LocalDaemonRequest::CreateSession(_) => "session.create",
         LocalDaemonRequest::ListProjects(_) => "project.list",
+        LocalDaemonRequest::GetProjectEnvironmentManifest(_) => "project.environment_manifest.get",
+        LocalDaemonRequest::AdjustProjectEnvironment(_) => "project.environment.adjust",
         LocalDaemonRequest::RenameProject(_) => "project.rename",
         LocalDaemonRequest::UpdateProjectWorkspaces(_) => "project.workspaces.update",
         LocalDaemonRequest::ArchiveProject(_) => "project.archive",
@@ -675,6 +709,9 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::RestoreSliceBackup(_) => "slice.backup.restore",
         LocalDaemonRequest::ListRemoteMachines(_) => "remote_machine.list",
         LocalDaemonRequest::ListRemoteMachineKernels(_) => "remote_machine.kernel.list",
+        LocalDaemonRequest::QueryFreshRemoteMachineKernels(_) => {
+            "remote_machine.kernel.query_fresh"
+        }
         LocalDaemonRequest::GetWaitingRoomInventory(_) => "waiting_room.inventory.get",
         LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_) => "waiting_room.public_snapshot.get",
         LocalDaemonRequest::ListExternalProviderSessions(_) => "external_provider_session.list",
@@ -923,13 +960,22 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::GetKernelResourceTelemetry(_)
         | LocalDaemonRequest::ExportDebugBundle(_)
         | LocalDaemonRequest::ListManagedEnvironmentCatalog(_)
+        | LocalDaemonRequest::CreateDisposableWorker(_)
+        | LocalDaemonRequest::GetDisposableWorker(_)
+        | LocalDaemonRequest::ReleaseDisposableWorker(_)
+        | LocalDaemonRequest::KeepDisposableWorkerRunning(_)
+        | LocalDaemonRequest::PrepareDisposableWorkerContextTransfer(_)
+        | LocalDaemonRequest::KeepManagedEnvironmentRunning(_)
         | LocalDaemonRequest::GetManagedEnvironment(_)
         | LocalDaemonRequest::GetManagedEnvironmentReimagePreflight(_)
+        | LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(_)
         | LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(_)
         | LocalDaemonRequest::PrepareManagedEnvironmentGitCredentialEnrollment(_)
         | LocalDaemonRequest::CreateManagedEnvironment(_)
         | LocalDaemonRequest::RequestManagedEnvironmentLifecycle(_)
         | LocalDaemonRequest::RequestManagedEnvironmentReimage(_)
+        | LocalDaemonRequest::RequestManagedEnvironmentReleaseUpdate(_)
+        | LocalDaemonRequest::GetManagedEnvironmentReleaseUpdate(_)
         | LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(_)
         | LocalDaemonRequest::StartManagedContextTransfer(_)
         | LocalDaemonRequest::GetManagedContextTransferStatus(_)

@@ -1,5 +1,6 @@
 //! Cancel through the public kernel request while real worker validation runs.
 use super::*;
+use crate::local::{CancelProjectEnvironmentSetupRequest, RetryProjectEnvironmentSetupRequest};
 
 #[cfg(unix)]
 #[tokio::test]

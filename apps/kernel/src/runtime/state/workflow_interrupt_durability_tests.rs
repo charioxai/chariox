@@ -635,20 +635,20 @@ fn interrupt_fixture() -> InterruptFixture {
     else {
         panic!("second workflow prompt should queue");
     };
-    let target_unrelated_prompt_id = "interrupt-target-unrelated-queued".to_string();
     let target_unrelated_prompt = crate::session::PromptQueueItem::new(
-        target_unrelated_prompt_id.as_str(),
+        "interrupt-target-unrelated-queued",
         crate::scheduler::runtime::workflow_prompt_source_attachment_id("unrelated-target-run"),
         target_agent.id(),
         "unrelated queued prompt for target agent",
         crate::session::PromptStatus::Queued,
     );
-    let crate::session::PromptSubmissionOutcome::Queued { .. } = app
+    let crate::session::PromptSubmissionOutcome::Queued { prompt } = app
         .prompt_owner_submit_prepared_prompt(session.id(), target_unrelated_prompt, true)
         .expect("target agent's unrelated prompt should queue")
     else {
         panic!("target agent's unrelated prompt should remain queued");
     };
+    let target_unrelated_prompt_id = prompt.id().to_string();
     let second_target_active = crate::session::PromptQueueItem::new(
         "interrupt-second-target-active",
         crate::scheduler::runtime::workflow_prompt_source_attachment_id("unrelated-second-run"),
@@ -676,9 +676,8 @@ fn interrupt_fixture() -> InterruptFixture {
     else {
         panic!("second target's workflow prompt should remain queued");
     };
-    let second_target_unrelated_prompt_id = "interrupt-second-target-unrelated-queued".to_string();
     let second_target_unrelated_prompt = crate::session::PromptQueueItem::new(
-        second_target_unrelated_prompt_id.as_str(),
+        "interrupt-second-target-unrelated-queued",
         crate::scheduler::runtime::workflow_prompt_source_attachment_id(
             "unrelated-second-queued-run",
         ),
@@ -686,12 +685,13 @@ fn interrupt_fixture() -> InterruptFixture {
         "second target's unrelated queued prompt",
         crate::session::PromptStatus::Queued,
     );
-    let crate::session::PromptSubmissionOutcome::Queued { .. } = app
+    let crate::session::PromptSubmissionOutcome::Queued { prompt } = app
         .prompt_owner_submit_prepared_prompt(session.id(), second_target_unrelated_prompt, true)
         .expect("second target's unrelated prompt should queue")
     else {
         panic!("second target's unrelated prompt should remain queued");
     };
+    let second_target_unrelated_prompt_id = prompt.id().to_string();
     let unrelated_prompt = crate::session::PromptQueueItem::new(
         "interrupt-unrelated-active",
         crate::scheduler::runtime::workflow_prompt_source_attachment_id("unrelated-run"),
@@ -713,12 +713,13 @@ fn interrupt_fixture() -> InterruptFixture {
         "unrelated agent's queued prompt",
         crate::session::PromptStatus::Queued,
     );
-    let crate::session::PromptSubmissionOutcome::Queued { .. } = app
+    let crate::session::PromptSubmissionOutcome::Queued { prompt } = app
         .prompt_owner_submit_prepared_prompt(session.id(), unrelated_queued_prompt, true)
         .expect("unrelated agent's second prompt should queue")
     else {
         panic!("unrelated agent's second prompt should remain queued");
     };
+    let unrelated_queued_prompt_id = prompt.id().to_string();
 
     let launch_request = crate::provider::LaunchProviderRequest::new(
         session.id(),

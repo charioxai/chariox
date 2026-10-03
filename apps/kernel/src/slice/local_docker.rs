@@ -25,12 +25,17 @@ use super::ports::{busy_published_ports_for_slice, LocalDockerSlicePorts};
 
 mod broker;
 mod disk_admission;
+mod extension_build;
+mod home_archive_capture;
+mod home_archive_verify;
+mod image;
 mod memory_admission;
 mod provider_inputs;
 mod snapshot_pause;
 mod state;
 #[cfg(test)]
 mod tests;
+mod tuning;
 
 use broker::docker_command;
 use provider_inputs::home_provider_credential_sources;
@@ -62,6 +67,7 @@ pub struct LocalDockerSliceRelay {
     pub relay_token: String,
     pub owner_public_key: Option<String>,
     pub cloud_relay_config_json: Option<String>,
+    pub worker_machine_id: Option<String>,
 }
 
 impl LocalDockerSliceRelay {
@@ -95,6 +101,8 @@ pub struct LocalDockerSliceOptions {
     pub allow_provider_sandbox_compatibility: bool,
     pub memory_mb: Option<u32>,
     pub cpus: Option<String>,
+    pub disk_layer_mb: Option<u32>,
+    pub disk_home_mb: Option<u32>,
     pub screen_width: u32,
     pub screen_height: u32,
 }
@@ -131,14 +139,17 @@ impl LocalDockerSliceOptions {
                 .map(expand_user_path_for_slice),
             saved_home_archive: None,
             allow_unconfined_seccomp: linux.allow_unconfined_seccomp.unwrap_or(false),
-            allow_provider_sandbox_compatibility: managed_docker_broker_configured()
-                || linux.allow_provider_sandbox_compatibility.unwrap_or(false),
+            allow_provider_sandbox_compatibility: linux
+                .allow_provider_sandbox_compatibility
+                .unwrap_or(false),
             memory_mb: Some(
                 linux
                     .memory_mb
                     .unwrap_or(DEFAULT_LOCAL_DOCKER_SLICE_MEMORY_MB),
             ),
             cpus: linux.cpus.clone(),
+            disk_layer_mb: linux.disk_layer_mb,
+            disk_home_mb: linux.disk_home_mb,
             screen_width: linux.screen_width.unwrap_or(1280),
             screen_height: linux.screen_height.unwrap_or(800),
         }
@@ -184,6 +195,26 @@ pub fn run_local_docker_slice_action(
             ),
         });
     }
+    let disk_quota_limits = if matches!(
+        action,
+        LocalDockerSliceAction::Provision
+            | LocalDockerSliceAction::RestoreState
+            | LocalDockerSliceAction::Recover
+    ) {
+        let limits = super::disk_quota_policy::SliceDiskQuotaLimits::from_megabytes(
+            options.disk_layer_mb,
+            options.disk_home_mb,
+        )?;
+        if limits.is_some() && !broker::configured() {
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.disk.quota",
+                message: "bounded slices require the managed Docker broker and verified XFS project-quota backend; unconfigured local Docker remains available without disk caps".into(),
+            });
+        }
+        limits
+    } else {
+        None
+    };
     let _memory_admission = if matches!(
         action,
         LocalDockerSliceAction::Provision
@@ -334,15 +365,26 @@ pub fn run_local_docker_slice_action(
                 log_path.display()
             ),
         })?;
+    extension_build::prepare(
+        &mut command,
+        record,
+        action_name,
+        options,
+        &log_file,
+        &stderr_log,
+    )?;
+    let mut disk_quota_evidence = None;
     let status =
         if let Some(output) = broker::run_provisioner(&command, action_name, &broker_inputs) {
-            let output = output.map_err(|error| DaemonError::LocalTransport {
+            let response = output.map_err(|error| DaemonError::LocalTransport {
                 operation: "slice.local_docker",
                 message: format!(
                     "failed to use the managed slice Docker broker (log: {}): {error}",
                     log_path.display()
                 ),
             })?;
+            disk_quota_evidence = response.disk_quota_evidence;
+            let output = response.output;
             let mut stdout_log = log_file;
             let mut stderr_log = stderr_log;
             stdout_log
@@ -372,6 +414,12 @@ pub fn run_local_docker_slice_action(
                 })?
         };
     if status.success() {
+        if let Some(limits) = disk_quota_limits.as_ref() {
+            super::disk_quota_policy::require_verified_quotas(
+                Some(limits),
+                disk_quota_evidence.as_ref(),
+            )?;
+        }
         return Ok(());
     }
     Err(DaemonError::LocalTransport {
@@ -621,6 +669,7 @@ pub fn start_local_docker_slice_provider_login(
         );
     configure_local_docker_slice_command(&mut command, record, None, options, false)?;
     let output = broker::run_provisioner(&command, "start-provider-login", &[])
+        .map(|response| response.map(|response| response.output))
         .unwrap_or_else(|| command.output())
         .map_err(|error| DaemonError::LocalTransport {
             operation: "slice.auth.login",
@@ -1045,9 +1094,13 @@ fn configure_local_docker_slice_command(
     if !provision {
         return Ok(());
     }
+    tuning::project(command)?;
     command
         .env("CHARIOX_SLICE_HOSTNAME", local_docker_hostname(record))
-        .env("CHARIOX_SLICE_DOCKER_IMAGE", &options.docker_image)
+        .env(
+            "CHARIOX_SLICE_DOCKER_IMAGE",
+            image::selected_image(record, options),
+        )
         .env(
             "CHARIOX_SLICE_BUILD_IMAGE",
             options.build_image.as_env_value(),
@@ -1093,11 +1146,18 @@ fn configure_local_docker_slice_command(
             },
         )
         .env("CHARIOX_SLICE_PROVIDER_BIND_HOST", "127.0.0.1")
+        .env("CHARIOX_SLICE_DAEMON_ID", record.worker_kernel_ref.clone())
         .env(
             "CHARIOX_SLICE_DAEMON_ALIAS",
-            record.worker_kernel_ref.clone(),
+            format!("slice:{}", record.name),
         )
-        .env("CHARIOX_SLICE_MACHINE_ID", format!("slice:{}", record.id))
+        .env(
+            "CHARIOX_SLICE_MACHINE_ID",
+            relay
+                .as_ref()
+                .and_then(|value| value.worker_machine_id.clone())
+                .unwrap_or_else(|| format!("slice:{}", record.id)),
+        )
         .env("CHARIOX_SLICE_MACHINE_ALIAS", record.name.clone());
     if let Some(profile) =
         std::env::var_os("CHARIOX_SLICE_APPARMOR_PROFILE").filter(|value| !value.is_empty())
@@ -1139,6 +1199,11 @@ fn configure_local_docker_slice_command(
     command.env("CHARIOX_SLICE_DOCKER_MEMORY", format!("{memory_mb}m"));
     if let Some(cpus) = options.cpus.as_deref() {
         command.env("CHARIOX_SLICE_DOCKER_CPUS", cpus);
+    }
+    if let (Some(layer_mb), Some(home_mb)) = (options.disk_layer_mb, options.disk_home_mb) {
+        command
+            .env("CHARIOX_SLICE_DISK_LAYER_MB", layer_mb.to_string())
+            .env("CHARIOX_SLICE_DISK_HOME_MB", home_mb.to_string());
     }
     if let Some(extension_dockerfile) = options.extension_dockerfile.as_deref() {
         command.env("CHARIOX_SLICE_EXTENSION_DOCKERFILE", extension_dockerfile);
@@ -1312,6 +1377,7 @@ pub fn local_docker_private_relay(record: &SliceRecord) -> LocalDockerSliceRelay
         relay_token: local_docker_private_relay_token(record),
         owner_public_key: None,
         cloud_relay_config_json: None,
+        worker_machine_id: None,
     }
 }
 

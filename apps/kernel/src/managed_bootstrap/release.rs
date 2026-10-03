@@ -48,9 +48,18 @@ pub(super) struct VerifiedReleaseEvidence {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ReleaseManifest {
     schema_version: u32,
+    #[serde(default, deserialize_with = "deserialize_update_evidence_version")]
+    managed_update_evidence_version: Option<u32>,
     source_commit: Option<String>,
     source_tree: Option<String>,
     artifacts: Vec<ReleaseArtifact>,
+}
+
+fn deserialize_update_evidence_version<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    u32::deserialize(deserializer).map(Some)
 }
 
 #[derive(Debug, Deserialize)]
@@ -118,17 +127,25 @@ pub(super) fn verify_release(
     if manifest.artifacts.is_empty() || manifest.artifacts.len() > 32 {
         return Err(release_error("release manifest schema is unsupported"));
     }
+    match (
+        manifest.schema_version,
+        manifest.managed_update_evidence_version,
+    ) {
+        (1 | 2, None) | (3, Some(1)) => {}
+        _ => return Err(release_error("release manifest schema is unsupported")),
+    }
     match manifest.schema_version {
         1 if manifest.source_commit.is_none() && manifest.source_tree.is_none() => {}
-        2 if manifest
-            .source_commit
-            .as_deref()
-            .is_some_and(is_git_object_id)
-            && manifest
-                .source_tree
+        2 | 3
+            if manifest
+                .source_commit
                 .as_deref()
-                .is_some_and(is_git_object_id) => {}
-        1 | 2 => {
+                .is_some_and(is_git_object_id)
+                && manifest
+                    .source_tree
+                    .as_deref()
+                    .is_some_and(is_git_object_id) => {}
+        1..=3 => {
             return Err(release_error("release manifest source identity is invalid"));
         }
         _ => return Err(release_error("release manifest schema is unsupported")),

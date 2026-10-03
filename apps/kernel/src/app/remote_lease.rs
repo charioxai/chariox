@@ -12,6 +12,7 @@ use crate::session::CreateSessionRequest;
 mod git_observation;
 mod mcp_availability;
 mod native_provider;
+mod project_environment;
 mod projection;
 mod prompt_attachments;
 mod prompt_lifecycle;
@@ -57,7 +58,7 @@ fn leased_agent_cleanup_error(agent_id: &str, source: DaemonError) -> DaemonErro
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub(crate) struct LeaseCallerBinding {
     pub(crate) home_kernel_id: String,
     pub(crate) authenticated_machine_id: String,
@@ -235,8 +236,19 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .app
             .leased_agent_callers
             .get(leased_agent_id)
-            .or_else(|| self.app.completed_leased_agent_callers.get(leased_agent_id));
-        if owner == Some(caller) {
+            .or_else(|| self.app.completed_leased_agent_callers.get(leased_agent_id))
+            .cloned()
+            .or_else(|| {
+                self.app
+                    .worker_steer_receipts
+                    .caller_for_leased_agent(leased_agent_id)
+            })
+            .or_else(|| {
+                self.app
+                    .worker_prompt_receipts
+                    .caller_for_leased_agent(leased_agent_id)
+            });
+        if owner.as_ref() == Some(caller) {
             Ok(())
         } else {
             Err(DaemonError::LeaseCallerUnauthorized {
@@ -845,6 +857,21 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     .to_string(),
             });
         }
+        self.leased_project_target(
+            leased_agent_id,
+            home_session_id,
+            home_agent_id,
+            workspace_id,
+        )
+    }
+
+    pub(crate) fn leased_project_target(
+        &self,
+        leased_agent_id: &str,
+        home_session_id: &str,
+        home_agent_id: &str,
+        workspace_id: Option<&str>,
+    ) -> Result<LeasedProjectEnvironmentSetupTarget, DaemonError> {
         let leased_agent = self
             .app
             .leased_agents
@@ -1314,6 +1341,33 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .values()
             .filter(|binding| binding.home_prompt_id == home_prompt_id)
             .count()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_execution_lease_home_kernel_for_test(
+        &mut self,
+        lease_id: &str,
+        home_kernel_id: &str,
+    ) {
+        self.app
+            .execution_leases
+            .get_mut(lease_id)
+            .expect("fixture lease should exist")
+            .home_kernel_id = home_kernel_id.to_string();
+        self.app
+            .execution_lease_callers
+            .get_mut(lease_id)
+            .expect("fixture lease caller should exist")
+            .home_kernel_id = home_kernel_id.to_string();
+        for (id, agent) in &self.app.leased_agents {
+            if agent.lease_id == lease_id {
+                self.app
+                    .leased_agent_callers
+                    .get_mut(id)
+                    .expect("fixture leased caller should exist")
+                    .home_kernel_id = home_kernel_id.to_string();
+            }
+        }
     }
 
     #[cfg(test)]

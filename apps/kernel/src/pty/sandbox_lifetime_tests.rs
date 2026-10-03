@@ -58,7 +58,22 @@ fn sandboxed_pty_dies_with_owning_process() {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(String::from_utf8_lossy(&output).contains("ready"));
-        println!("SANDBOX_PID={}", manager.process_id(TEST).unwrap().unwrap());
+        // Keep inherited PTY descriptors open after the owner exits. Otherwise
+        // terminal hangup races --die-with-parent and obscures its exact signal.
+        let keeper = unsafe { libc::fork() };
+        assert!(keeper >= 0);
+        if keeper == 0 {
+            // Only async-signal-safe syscalls after fork in this threaded helper.
+            loop {
+                unsafe {
+                    libc::pause();
+                }
+            }
+        }
+        println!(
+            "SANDBOX_PID={} KEEPER_PID={keeper}",
+            manager.process_id(TEST).unwrap().unwrap()
+        );
         std::io::stdout().flush().unwrap();
         // The parent authorizes exit only after reading the ready child's PID.
         let mut release = String::new();
@@ -74,6 +89,15 @@ fn sandboxed_pty_dies_with_owning_process() {
         fn drop(&mut self) {
             unsafe {
                 libc::prctl(libc::PR_SET_CHILD_SUBREAPER, self.0);
+            }
+        }
+    }
+    struct PtyKeeper(i32);
+    impl Drop for PtyKeeper {
+        fn drop(&mut self) {
+            unsafe {
+                libc::kill(self.0, libc::SIGKILL);
+                libc::waitpid(self.0, std::ptr::null_mut(), 0);
             }
         }
     }
@@ -105,7 +129,11 @@ fn sandboxed_pty_dies_with_owning_process() {
             .map_while(Result::ok)
         {
             if let Some((_, pid)) = line.split_once("SANDBOX_PID=") {
-                let _ = sender.send(pid.parse::<i32>().unwrap());
+                let (sandbox, keeper) = pid.split_once(" KEEPER_PID=").unwrap();
+                let _ = sender.send((
+                    sandbox.parse::<i32>().unwrap(),
+                    keeper.parse::<i32>().unwrap(),
+                ));
                 break;
             }
         }
@@ -119,7 +147,8 @@ fn sandboxed_pty_dies_with_owning_process() {
     }
     let owner_status = owner.wait().unwrap();
     reader.join().unwrap();
-    let pid = pid.expect("sandbox should become ready before owner exit");
+    let (pid, keeper_pid) = pid.expect("sandbox should become ready before owner exit");
+    let _keeper = PtyKeeper(keeper_pid);
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut status = 0;
     let mut reaped = false;

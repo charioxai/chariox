@@ -144,111 +144,113 @@ impl KernelRuntimeState {
         let session_id = request.session_id.clone();
         let workflow_ref = request.workflow_ref.clone();
         let expected_workflow_revision = request.expected_workflow_revision;
-        let (preview, confirmed_rebuild) = self.with_app_side_effect(move |app| {
-            let workflow = app
-                .sessions()
-                .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
-            if workflow.revision() != request.expected_workflow_revision {
-                return Err(DaemonError::LocalTransport {
-                    operation: "workflow_code.rebuild",
-                    message: format!(
-                        "workflow revision conflict: expected {}, current {}",
-                        request.expected_workflow_revision,
-                        workflow.revision()
-                    ),
-                });
-            }
-            let binding = workflow
-                .code_source()
-                .ok_or_else(|| DaemonError::LocalTransport {
-                    operation: "workflow_code.rebuild",
-                    message: "workflow does not have a stored code source".to_string(),
-                })?;
-            let origin = binding.origin();
-            let missing_agent_ids = binding
-                .bindings()
-                .agent_ids
-                .values()
-                .filter(|agent_id| app.agents().get_agent(agent_id).is_err())
-                .cloned()
-                .collect::<std::collections::BTreeSet<_>>();
-            if !missing_agent_ids.is_empty() {
-                return Err(DaemonError::LocalTransport {
-                    operation: "workflow_code.rebuild",
-                    message: format!(
-                        "stored source refers to missing workflow agents: {}",
-                        missing_agent_ids.into_iter().collect::<Vec<_>>().join(", ")
-                    ),
-                });
-            }
-            let registry = workflow_code_registry_for_session(app, &request.session_id)?;
-            let artifact = registry.get(binding.artifact_name())?.ok_or_else(|| {
-                DaemonError::LocalTransport {
-                    operation: "workflow_code.rebuild",
-                    message: "stored workflow-code artifact is missing".to_string(),
+        let (preview, confirmed_rebuild) = self
+            .with_app_side_effect(move |app| {
+                let workflow = app
+                    .sessions()
+                    .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
+                if workflow.revision() != request.expected_workflow_revision {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "workflow_code.rebuild",
+                        message: format!(
+                            "workflow revision conflict: expected {}, current {}",
+                            request.expected_workflow_revision,
+                            workflow.revision()
+                        ),
+                    });
                 }
-            })?;
-            let source_sha256 = crate::workflow_code::sha256_hex(artifact.source.as_bytes());
-            if source_sha256 != binding.source_sha256()
-                || source_sha256 != artifact.metadata.source_sha256
-            {
-                return Err(DaemonError::LocalTransport {
-                    operation: "workflow_code.rebuild",
-                    message: "stored workflow source failed its integrity check".to_string(),
-                });
-            }
-            let limits = app.config().workflow_code_limits();
-            let schema_import_root =
-                workflow_code_schema_import_root_for_session(app, &request.session_id)?;
-            let compile =
-                crate::workflow_code::compile_workflow_code_source_with_schema_import_root(
-                    "node",
-                    &artifact.source,
-                    artifact.metadata.language,
-                    &limits,
-                    schema_import_root.as_deref(),
+                let binding =
+                    workflow
+                        .code_source()
+                        .ok_or_else(|| DaemonError::LocalTransport {
+                            operation: "workflow_code.rebuild",
+                            message: "workflow does not have a stored code source".to_string(),
+                        })?;
+                let origin = binding.origin();
+                let missing_agent_ids = binding
+                    .bindings()
+                    .agent_ids
+                    .values()
+                    .filter(|agent_id| app.agents().get_agent(agent_id).is_err())
+                    .cloned()
+                    .collect::<std::collections::BTreeSet<_>>();
+                if !missing_agent_ids.is_empty() {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "workflow_code.rebuild",
+                        message: format!(
+                            "stored source refers to missing workflow agents: {}",
+                            missing_agent_ids.into_iter().collect::<Vec<_>>().join(", ")
+                        ),
+                    });
+                }
+                let registry = workflow_code_registry_for_session(app, &request.session_id)?;
+                let artifact = registry.get(binding.artifact_name())?.ok_or_else(|| {
+                    DaemonError::LocalTransport {
+                        operation: "workflow_code.rebuild",
+                        message: "stored workflow-code artifact is missing".to_string(),
+                    }
+                })?;
+                let source_sha256 = crate::workflow_code::sha256_hex(artifact.source.as_bytes());
+                if source_sha256 != binding.source_sha256()
+                    || source_sha256 != artifact.metadata.source_sha256
+                {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "workflow_code.rebuild",
+                        message: "stored workflow source failed its integrity check".to_string(),
+                    });
+                }
+                let limits = app.config().workflow_code_limits();
+                let schema_import_root =
+                    workflow_code_schema_import_root_for_session(app, &request.session_id)?;
+                let compile =
+                    crate::workflow_code::compile_workflow_code_source_with_schema_import_root(
+                        "node",
+                        &artifact.source,
+                        artifact.metadata.language,
+                        &limits,
+                        schema_import_root.as_deref(),
+                    )?;
+                reject_invalid_workflow_code_artifact_validation(
+                    "workflow_code.rebuild",
+                    &compile.validation,
                 )?;
-            reject_invalid_workflow_code_artifact_validation(
-                "workflow_code.rebuild",
-                &compile.validation,
-            )?;
-            let changes = workflow_code_rebuild_structural_changes(
-                app,
-                &request.session_id,
-                &workflow,
-                binding.bindings(),
-            )?;
-            let preview = crate::workflow_code::WorkflowCodeRebuildPreview {
-                workflow_id: workflow.id().to_string(),
-                current_workflow_revision: workflow.revision(),
-                source_workflow_revision: binding.workflow_revision(),
-                source_sha256: binding.source_sha256().to_string(),
-                diverged: workflow.revision() != binding.workflow_revision(),
-                restored_schemas: compile.definition.schemas.len(),
-                restored_nodes: compile.definition.nodes.len(),
-                restored_edges: compile.definition.edges.len(),
-                restored_endpoints: compile.definition.endpoints.len(),
-                restored_queues: compile.definition.queues.len(),
-                restored_schedules: compile.definition.schedules.len(),
-                changes,
-            };
-            if !request.confirm {
-                return Ok((preview, None));
-            }
-            Ok((
-                preview,
-                Some((
-                    compile.definition,
-                    crate::session::WorkflowCodeSourceDescriptor {
-                        artifact_name: artifact.metadata.name,
-                        language: artifact.metadata.language,
-                        source_sha256: artifact.metadata.source_sha256,
-                        origin,
-                    },
-                )),
-            ))
-        })
-        .await?;
+                let changes = workflow_code_rebuild_structural_changes(
+                    app,
+                    &request.session_id,
+                    &workflow,
+                    binding.bindings(),
+                )?;
+                let preview = crate::workflow_code::WorkflowCodeRebuildPreview {
+                    workflow_id: workflow.id().to_string(),
+                    current_workflow_revision: workflow.revision(),
+                    source_workflow_revision: binding.workflow_revision(),
+                    source_sha256: binding.source_sha256().to_string(),
+                    diverged: workflow.revision() != binding.workflow_revision(),
+                    restored_schemas: compile.definition.schemas.len(),
+                    restored_nodes: compile.definition.nodes.len(),
+                    restored_edges: compile.definition.edges.len(),
+                    restored_endpoints: compile.definition.endpoints.len(),
+                    restored_queues: compile.definition.queues.len(),
+                    restored_schedules: compile.definition.schedules.len(),
+                    changes,
+                };
+                if !request.confirm {
+                    return Ok((preview, None));
+                }
+                Ok((
+                    preview,
+                    Some((
+                        compile.definition,
+                        crate::session::WorkflowCodeSourceDescriptor {
+                            artifact_name: artifact.metadata.name,
+                            language: artifact.metadata.language,
+                            source_sha256: artifact.metadata.source_sha256,
+                            origin,
+                        },
+                    )),
+                ))
+            })
+            .await?;
         let Some((definition, source)) = confirmed_rebuild else {
             return Ok(LocalDaemonResponse::WorkflowCodeRebuildPreview { preview });
         };
@@ -270,7 +272,8 @@ impl KernelRuntimeState {
                     let mut durable_session = session.clone();
                     durable_session
                         .set_agents(self.owned.agent_store.get_session_agents(&session_id));
-                    self.owned.project_session_runtime_view(&mut durable_session);
+                    self.owned
+                        .project_session_runtime_view(&mut durable_session);
                     // Use the authoritative workflow-runtime transition as the rebuild record.
                     // A separate audit append cannot be atomic with rollback of this mutation.
                     durable_state_store.persist_workflow_runtime_transition(

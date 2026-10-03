@@ -89,7 +89,7 @@ test("setup readiness rejects cancellation and stale launch identity", async () 
         throw new Error("unexpected get")
       },
     }, input, immediateOptions([])),
-    /changed the managed launch binding/,
+    /changed its launch binding/,
   )
 
   await assert.rejects(
@@ -106,6 +106,52 @@ test("setup readiness rejects cancellation and stale launch identity", async () 
       },
     }, input, immediateOptions([])),
     /cannot prepare Project/,
+  )
+})
+
+test("setup readiness pins the worker and platform resolved by the kernel", async () => {
+  const selectedByKernel = { ...input, targetWorkerId: "", targetPlatform: "" }
+  const pending = [
+    status({ phase: "preparing", worker_id: "worker-2", platform: "linux-arm64" }),
+    status({ phase: "ready", worker_id: "worker-2", platform: "linux-arm64" }),
+  ]
+  const ready = await ensureProjectEnvironmentSetupReady({
+    async start() {
+      return status({ phase: "requested", worker_id: "worker-2", platform: "linux-arm64" })
+    },
+    async get() {
+      return pending.shift() as ProjectEnvironmentSetupStatus
+    },
+  }, selectedByKernel, immediateOptions([]))
+
+  assert.equal(ready.worker_id, "worker-2")
+  assert.equal(ready.platform, "linux-arm64")
+})
+
+test("setup readiness rejects a changed or empty kernel-resolved target", async () => {
+  const selectedByKernel = { ...input, targetWorkerId: "", targetPlatform: "" }
+  await assert.rejects(
+    ensureProjectEnvironmentSetupReady({
+      async start() {
+        return status({ worker_id: "", platform: "" })
+      },
+      async get() {
+        throw new Error("unexpected get")
+      },
+    }, selectedByKernel, immediateOptions([])),
+    /did not resolve the selected worker and platform/,
+  )
+
+  await assert.rejects(
+    ensureProjectEnvironmentSetupReady({
+      async start() {
+        return status({ worker_id: "worker-2", platform: "linux-arm64" })
+      },
+      async get() {
+        return status({ phase: "ready", worker_id: "worker-3", platform: "linux-arm64" })
+      },
+    }, selectedByKernel, immediateOptions([])),
+    /changed its launch binding/,
   )
 })
 

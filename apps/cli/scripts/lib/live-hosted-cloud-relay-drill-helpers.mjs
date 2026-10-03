@@ -264,10 +264,20 @@ export async function cleanupHostedCloudIdentity({
   post = postJson,
   logger = log,
 }) {
-  assert(profile?.accountId, "hosted Cloud cleanup requires an account id", profile)
+  assert(profile?.accountId, "hosted Cloud cleanup requires an account id")
   const uniqueClientIds = [...new Set(clientIds.filter(Boolean))]
   const uniqueMachineIds = [...new Set(machineIds.filter(Boolean))]
   const presences = kernelPresences.filter((presence) => presence?.machineId && presence?.kernelId)
+  const revokeClient = Boolean(profile.clientId && uniqueClientIds.includes(profile.clientId))
+  const revokeMachine = Boolean(profile.machineId && uniqueMachineIds.includes(profile.machineId))
+  const endSession = Boolean(logout || revokeClient || revokeMachine)
+  if (endSession || presences.length || uniqueClientIds.length || uniqueMachineIds.length) {
+    assert(
+      typeof cloudSessionToken === "string" && cloudSessionToken.trim(),
+      "hosted Cloud cleanup requires an authenticated Cloud session",
+    )
+  }
+  const authorization = { authorization: `Bearer ${cloudSessionToken}` }
   const cleanupErrors = []
 
   for (const presence of presences) {
@@ -280,42 +290,55 @@ export async function cleanupHostedCloudIdentity({
       status: "OFFLINE",
     }).catch((error) => cleanupErrors.push(error))
   }
-  for (const clientId of uniqueClientIds) {
+  for (const clientId of uniqueClientIds.filter((id) => id !== profile.clientId)) {
     await post(`${baseUrl}/clients/revoke`, {
       accountId: profile.accountId,
       clientId,
       reason,
-    }).catch((error) => cleanupErrors.push(error))
+    }, authorization).catch((error) => cleanupErrors.push(error))
   }
-  for (const machineId of uniqueMachineIds) {
+  for (const machineId of uniqueMachineIds.filter((id) => id !== profile.machineId)) {
     await post(`${baseUrl}/machines/revoke`, {
       accountId: profile.accountId,
       machineId,
       reason,
-    }).catch((error) => cleanupErrors.push(error))
+    }, authorization).catch((error) => cleanupErrors.push(error))
   }
-  if (logout && cloudSessionToken) {
-    await post(`${baseUrl}/auth/logout`, { sessionToken: cloudSessionToken })
-      .catch((error) => cleanupErrors.push(error))
+  // Retain authority to retry earlier cleanup failures. Own revocation consumes
+  // this session even with logout:false, so combine both identities only at the end.
+  const logoutAttempted = endSession && cleanupErrors.length === 0
+  if (logoutAttempted) {
+    await post(`${baseUrl}/auth/logout`, {
+      sessionToken: cloudSessionToken,
+      accountId: profile.accountId,
+      ...(profile.clientId ? { clientId: profile.clientId } : {}),
+      ...(profile.machineId ? { machineId: profile.machineId } : {}),
+      revokeClient,
+      revokeMachine,
+    }).catch((error) => cleanupErrors.push(error))
   }
   logger("cloud-identity-cleanup", {
     accountSlug: profile.accountSlug,
     clients: uniqueClientIds,
     machines: uniqueMachineIds,
     kernels: presences.map((presence) => presence.kernelId),
-    logout: Boolean(logout && cloudSessionToken),
+    logout: logoutAttempted,
   })
   if (cleanupErrors.length > 0) {
     throw new AggregateError(cleanupErrors, "hosted Cloud identity cleanup failed")
   }
 }
 
-export async function createPairingToken({ accountId, userId, subjectKind }) {
+export async function createPairingToken({ accountId, userId, subjectKind, cloudSessionToken }) {
+  assert(
+    typeof cloudSessionToken === "string" && cloudSessionToken.trim(),
+    "hosted Cloud pairing requires an authenticated Cloud session",
+  )
   const response = await postJson(`${apiUrl}/pairing-tokens`, {
     accountId,
     createdByUserId: userId,
     subjectKind,
-  })
+  }, { authorization: `Bearer ${cloudSessionToken}` })
   assert(response?.token, "cloud pairing token should be returned", response)
   return response.token
 }
@@ -325,6 +348,7 @@ export async function pairCloudMachineDirect({ profile, machineId, alias }) {
     accountId: profile.accountId,
     userId: profile.userId,
     subjectKind: "machine",
+    cloudSessionToken: profile.cloudSessionToken,
   })
   const response = await postJson(`${apiUrl}/machines/pair`, {
     accountId: profile.accountId,

@@ -6,12 +6,18 @@ import { roomActionNoticePattern } from "./room-tui-notices.mjs"
 export function createRoomDrillTuiEvidence(localBaseline = [], remoteBaseline = []) {
   const baseline = { local: new Set(localBaseline), remote: new Set(remoteBaseline) }
   const seen = { local: new Map(), remote: new Map() }
+  const attachment = { local: null, remote: null }
   let samples = 0
   let bytes = 0
   return {
     observe(snapshot, at = new Date().toISOString()) {
       samples++
       for (const side of ["local", "remote"]) {
+        const currentAttachment = snapshot[`${side}AttachmentId`]
+        if (currentAttachment) {
+          if (attachment[side] && attachment[side] !== currentAttachment) baseline[side].clear()
+          attachment[side] = currentAttachment
+        }
         assert.ok(Array.isArray(snapshot[side]), `missing ${side} TUI evidence sample`)
         for (const entry of snapshot[side]) {
           if (baseline[side].has(entry.id) || typeof entry.text !== "string"

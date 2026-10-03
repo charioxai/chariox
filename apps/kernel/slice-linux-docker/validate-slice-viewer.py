@@ -13,14 +13,26 @@ import tempfile
 import time
 
 
+def prepare_runtime(source, root):
+    for name in ("slice-screen.sh", "slice-selkies.py", "selkies_viewers.py", "browser-cdp.mjs",
+                 "browser-lifecycle.py", "browser-upload-store.py", "tint2rc"):
+        shutil.copy2(source / name, root / name)
+
+
+def crash_chromium(browser_pid):
+    # The lifecycle supervisor's argv also contains Chromium and its profile.
+    # Kill the browser's separate process group, preserving its owner's receipt.
+    assert os.getpgid(browser_pid) == browser_pid, "browser must own its process group"
+    os.killpg(browser_pid, signal.SIGKILL)
+
+
 def main():
     if sys.argv[1:] not in ([], ["--json"]):
         raise ValueError("usage: validate-slice-viewer.py [--json]")
     source = Path(__file__).parent / "docker"
     with tempfile.TemporaryDirectory(prefix="chariox-viewer-drill-") as scratch:
         root = Path(scratch)
-        for name in ("slice-screen.sh", "slice-selkies.py", "selkies_viewers.py", "browser-cdp.mjs", "tint2rc"):
-            shutil.copy2(source / name, root / name)
+        prepare_runtime(source, root)
         runtime = root / "runtime"
         profile = root / "browser-profile"
         runtime.mkdir(mode=0o700)
@@ -156,11 +168,7 @@ with ViewerAccess():
             assert checkpoint_browser["title"] == marker
             checkpoint_streamer_pid = selkies_status()["pid"]
             browser_pid = chromium_pid()
-            killed = subprocess.run(
-                ["pkill", "-KILL", "-f", f"chromium.*{profile}"],
-                env=environment, capture_output=True, text=True,
-            )
-            assert killed.returncode == 0
+            crash_chromium(browser_pid)
             time.sleep(0.5)
             assert "missing=chromium" in screen("status", expected=1)
             assert selkies_status()["pid"] == checkpoint_streamer_pid

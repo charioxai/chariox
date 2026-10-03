@@ -405,6 +405,7 @@ fn managed_slice_owner_public_key_loads_from_runtime_environment() {
 #[test]
 fn load_from_env_imports_cli_cloud_profile_for_kernel_startup() {
     let _guard = crate::env_lock::lock();
+    std::env::remove_var("CHARIOX_HOME");
     let temp_home = std::env::temp_dir().join(format!(
         "chariox-config-cli-cloud-import-test-{}",
         generate_identity_suffix()
@@ -478,6 +479,7 @@ fn load_from_env_imports_cli_cloud_profile_for_kernel_startup() {
 #[test]
 fn persisted_daemon_cloud_profile_takes_precedence_over_cli_profile() {
     let _guard = crate::env_lock::lock();
+    std::env::remove_var("CHARIOX_HOME");
     let temp_home = std::env::temp_dir().join(format!(
         "chariox-config-daemon-cloud-precedence-test-{}",
         generate_identity_suffix()

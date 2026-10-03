@@ -22,3 +22,6 @@ pub use types::{
     ArtifactReservationSnapshot, ArtifactSnapshotId, ArtifactVersion, EditResult, TextRange,
     WorkspaceIdentity,
 };
+
+#[cfg(windows)]
+pub(crate) mod windows_pipe_process;

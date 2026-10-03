@@ -484,6 +484,7 @@ impl CommandRouter {
         let rollback_private_key = target_private_key.clone();
         let import_provider_account_target = provider_account_target.clone();
         let import_git_credential_target = git_credential_target.clone();
+        let environment_target = completion_config.clone();
         let imported = run_import_blocking(move || {
             apply_managed_context_package(ManagedContextPackageApplicationRequest {
                 transfer_id: ready.transfer_id,
@@ -499,6 +500,7 @@ impl CommandRouter {
                 },
                 development_destination_root: ready.destination_root,
                 target_private_key,
+                project_environment_target: Some(environment_target),
                 provider_account_target: Some(import_provider_account_target),
                 git_credential_target: import_git_credential_target,
             })
@@ -699,6 +701,42 @@ impl CommandRouter {
                 )));
             }
             return Err(commit_error);
+        }
+
+        // Imported profiles start `unknown`, which admits no new work. Refresh each
+        // as a user's Refresh would, independently, and announce it once settled;
+        // provider status probes are bounded, so every refresh settles.
+        if let crate::managed_context::package::ManagedContextImportedProviderAccounts::Selected {
+            accounts,
+        } = &receipt.provider_accounts
+        {
+            for account in accounts {
+                let registry = provider_account_target.registry.clone();
+                let owner_user_id = provider_account_target.owner_user_id.clone();
+                let (provider, profile_id) = (account.provider.clone(), account.profile_id.clone());
+                let runtime_state = self.runtime_state.clone();
+                tokio::spawn(async move {
+                    let refreshed = tokio::task::spawn_blocking(move || {
+                        crate::local::provider_requests::refresh_provider_account_profile_response(
+                            &registry,
+                            &owner_user_id,
+                            &provider,
+                            &profile_id,
+                        )
+                        .map_err(|error| (provider, profile_id, error))
+                    })
+                    .await;
+                    // A failed refresh may still have recorded an error state; announce
+                    // every settled refresh.
+                    if let Ok(Err((provider, profile_id, error))) = refreshed {
+                        tracing::warn!(%provider, %profile_id, %error, "refresh imported provider profile");
+                    }
+                    runtime_state
+                        .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
+                        .await;
+                    runtime_state.record_waiting_room_change();
+                });
+            }
         }
 
         let final_store = store;

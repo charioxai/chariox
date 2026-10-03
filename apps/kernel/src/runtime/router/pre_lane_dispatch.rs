@@ -11,9 +11,7 @@ use crate::runtime::event_catalog_control::{
     validate_event_connection_scopes, validate_registered_event_connection,
     workflow_event_binding_contract, WorkflowEventBindingContract,
 };
-use crate::runtime::managed_bootstrap_observation_control::{
-    execute_managed_bootstrap_observation_request,
-};
+use crate::runtime::managed_bootstrap_observation_control::execute_managed_bootstrap_observation_request;
 use crate::runtime::managed_context_outbound_control::execute_managed_context_outbound_request;
 use crate::runtime::managed_context_target_control::execute_managed_context_target_request;
 use crate::runtime::managed_environment_control::execute_managed_environment_control_request;
@@ -106,6 +104,16 @@ impl CommandRouter {
             .map(Some);
         }
         match request {
+            request @ (LocalDaemonRequest::CreateDisposableWorker(_)
+            | LocalDaemonRequest::GetDisposableWorker(_)
+            | LocalDaemonRequest::ReleaseDisposableWorker(_)
+            | LocalDaemonRequest::KeepDisposableWorkerRunning(_)
+            | LocalDaemonRequest::PrepareDisposableWorkerContextTransfer(_)
+            | LocalDaemonRequest::KeepManagedEnvironmentRunning(_)) => {
+                return crate::runtime::disposable_worker_control::execute_disposable_worker_control_request(
+                    self.config_projection.snapshot(), self.provider_account_profiles.clone(),
+                    caller_user_id, request.clone()).await.map(Some);
+            }
             LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(request) => {
                 return execute_managed_bootstrap_observation_request(
                     self.config_projection.snapshot(),
@@ -119,11 +127,14 @@ impl CommandRouter {
             request @ (LocalDaemonRequest::ListManagedEnvironmentCatalog(_)
             | LocalDaemonRequest::GetManagedEnvironment(_)
             | LocalDaemonRequest::GetManagedEnvironmentReimagePreflight(_)
+            | LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(_)
             | LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(_)
             | LocalDaemonRequest::PrepareManagedEnvironmentGitCredentialEnrollment(_)
             | LocalDaemonRequest::CreateManagedEnvironment(_)
             | LocalDaemonRequest::RequestManagedEnvironmentLifecycle(_)
-            | LocalDaemonRequest::RequestManagedEnvironmentReimage(_)) => {
+            | LocalDaemonRequest::RequestManagedEnvironmentReimage(_)
+            | LocalDaemonRequest::RequestManagedEnvironmentReleaseUpdate(_)
+            | LocalDaemonRequest::GetManagedEnvironmentReleaseUpdate(_)) => {
                 return execute_managed_environment_control_request(
                     self.config_projection.snapshot(),
                     self.provider_account_profiles.clone(),
@@ -141,6 +152,7 @@ impl CommandRouter {
                     Arc::clone(&self.relay_state),
                     self.managed_context_outbound.clone(),
                     self.provider_account_profiles.clone(),
+                    self.runtime_state.clone(),
                     caller_user_id,
                     request.clone(),
                 )
@@ -190,7 +202,8 @@ impl CommandRouter {
                 .map(Some);
             }
             request @ (LocalDaemonRequest::ListRemoteMachines(_)
-            | LocalDaemonRequest::ListRemoteMachineKernels(_)) => {
+            | LocalDaemonRequest::ListRemoteMachineKernels(_)
+            | LocalDaemonRequest::QueryFreshRemoteMachineKernels(_)) => {
                 return execute_remote_relay_inventory_request(
                     Arc::clone(&self.relay_state),
                     self.config_projection.clone(),
@@ -229,6 +242,20 @@ impl CommandRouter {
                 )
                 .await
                 .map(Some);
+            }
+            LocalDaemonRequest::AdjustProjectEnvironment(request) => {
+                return self
+                    .runtime_state
+                    .start_project_environment_adjustment(request.clone(), caller_user_id)
+                    .await
+                    .map(Some);
+            }
+            LocalDaemonRequest::GetProjectEnvironmentManifest(request) => {
+                return self
+                    .runtime_state
+                    .get_project_environment_manifest(request.clone(), caller_user_id)
+                    .await
+                    .map(Some);
             }
             request @ (LocalDaemonRequest::StartProjectEnvironmentSetup(_)
             | LocalDaemonRequest::GetProjectEnvironmentSetupStatus(_)

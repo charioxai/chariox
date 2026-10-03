@@ -225,10 +225,7 @@ mod tests {
         );
         let command = KernelCommand::from_local_request("observe-1", None, None, &request);
 
-        assert_eq!(
-            command.command_type,
-            "managed_environment.reimage.observe"
-        );
+        assert_eq!(command.command_type, "managed_environment.reimage.observe");
         assert_eq!(command.priority, KernelCommandPriority::Interactive);
         assert_eq!(
             command.payload,

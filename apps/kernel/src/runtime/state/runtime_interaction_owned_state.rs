@@ -19,6 +19,7 @@ impl KernelRuntimeOwnedState {
         interaction: crate::session::RuntimeInteraction,
         responder: tokio::sync::oneshot::Sender<super::PendingInteractionResolution>,
     ) -> Result<(), DaemonError> {
+        let _admission = self.begin_managed_activity_admission()?;
         crate::logging::debug_with_fields(
             "runtime.interaction",
             "register runtime interaction requested",
@@ -81,6 +82,23 @@ impl KernelRuntimeOwnedState {
                 "pending_interaction_count_after": self.pending_interactions.write().len(),
             }),
         );
+        Ok(())
+    }
+
+    pub(super) fn update_provider_login_interaction(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        login: crate::session::RuntimeProviderLogin,
+    ) -> Result<(), DaemonError> {
+        let mut session = self.session_store.get_session(session_id)?;
+        let Some(interaction) = session.remove_active_interaction(interaction_id) else {
+            return Ok(());
+        };
+        session.add_active_interaction(interaction.with_provider_login(login));
+        self.restore_session_and_publish_projection(session)?;
+        self.terminal_stream
+            .notify_terminal_projection_change(session_id);
         Ok(())
     }
 

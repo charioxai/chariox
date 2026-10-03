@@ -80,17 +80,18 @@ impl KernelRuntimeState {
                 .is_none()
                 .then(|| slice.worker_kernel_ref.clone()),
         };
-        let response = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
-            &config,
-            target,
-            RelayPeerRequest::OpenRoomDisplay {
-                session_id: session_id.clone(),
-                slice_id: slice.id.clone(),
-                viewer_public_key,
-            },
-            Duration::from_secs(15),
-        )
-        .await?;
+        let response = self
+            .send_room_slice_peer_request(
+                &config,
+                target,
+                RelayPeerRequest::OpenRoomDisplay {
+                    session_id: session_id.clone(),
+                    slice_id: slice.id.clone(),
+                    viewer_public_key,
+                },
+                Duration::from_secs(15),
+            )
+            .await?;
         match response {
             RelayPeerResponse::RoomDisplayOpened {
                 session_id: returned_session,

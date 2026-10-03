@@ -1182,19 +1182,22 @@ async fn focus_and_cycle_use_owned_runtime_state_without_app_lock() {
 
 #[tokio::test]
 async fn owned_multi_agent_reattach_resumes_focused_run_before_focus_cycle() {
+    let fixture_worktree_0 = crate::test_support::TestWorktree::new(
+        "owned_multi_agent_reattach_resumes_focused_run_before_focus_cycle",
+    );
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
     ));
     let (session_id, attachment_id, default_agent_id, extra_agent_id, default_run_id, extra_run_id) = {
         let mut app_locked = app.lock().await;
         let (session, default_agent) = crate::app::KernelSessionService::new(&mut app_locked)
-            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .create_session(fixture_worktree_0.session_request())
             .expect("session should be created");
         let extra_agent = crate::app::KernelSessionService::new(&mut app_locked)
             .spawn_agent(
                 CreateAgentRequest::new(session.id(), "dev-stub")
                     .with_alias("cycle-me")
-                    .with_worktree("worktree"),
+                    .with_worktree(fixture_worktree_0.path().to_string_lossy()),
             )
             .expect("extra agent should be created");
         let attachment = crate::app::KernelSessionService::new(&mut app_locked)

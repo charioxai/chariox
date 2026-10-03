@@ -1744,6 +1744,13 @@ fn leased_projection_does_not_reflect_home_origin_prompt_back_to_home() {
         b"hello from worker",
     );
 
+    app.complete_active_prompt(
+        &leased_agent.backing_session_id,
+        &leased_agent.backing_agent_id,
+        Some(&provider_run_id),
+    )
+    .expect("authoritative provider completion should settle the leased prompt");
+
     let (_target_kernel_id, event) = RemoteLeaseRuntime::new(&mut app)
         .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
         .expect("projection drain should succeed")
@@ -1767,7 +1774,7 @@ fn leased_projection_does_not_reflect_home_origin_prompt_back_to_home() {
     assert_eq!(
         completions.len(),
         1,
-        "current provider output should settle non-workflow leased prompts"
+        "authoritative provider completion must be projected once"
     );
 }
 
@@ -2038,11 +2045,32 @@ fn leased_projection_pump_settles_quiet_non_workflow_prompt() {
         state.last_output_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
     }
 
-    let (_target_kernel_id, event) = RemoteLeaseRuntime::new(&mut app)
-        .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, true)
-        .expect("projection drain should succeed")
-        .expect("quiet prompt completion should be projected");
-    let RelayPeerEvent::LeasedRuntimeProjection { completions, .. } = event;
+    // The real stub may still have output in flight. Pump through that output
+    // and the normal quiet window before asserting the single settled turn.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let mut completions = Vec::new();
+    loop {
+        if let Some((
+            _,
+            RelayPeerEvent::LeasedRuntimeProjection {
+                completions: projected,
+                ..
+            },
+        )) = RemoteLeaseRuntime::new(&mut app)
+            .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, true)
+            .expect("projection drain should succeed")
+        {
+            completions.extend(projected);
+        }
+        if !completions.is_empty() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "MP-08/MP-10 quiet prompt completion should be projected"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     assert_eq!(completions.len(), 1);
     assert!(app
         .prompt_owner_active_prompt_for_agent_snapshot(

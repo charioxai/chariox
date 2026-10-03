@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict"
 import { execFileSync, spawn, spawnSync } from "node:child_process"
-import { mkdir, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { createHash } from "node:crypto"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
-import { fileURLToPath } from "node:url"
+import { performance } from "node:perf_hooks"
+import { fileURLToPath, pathToFileURL } from "node:url"
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..")
 const args = process.argv.slice(2)
@@ -13,36 +15,44 @@ const durationSeconds = argNumber("--duration-seconds", 1_800)
 const bytesPerSecond = argNumber("--bytes-per-second", 1_048_576)
 const maxRssMb = argNumber("--max-rss-mb", 1_024)
 const maxCpuPercent = argNumber("--max-cpu-percent", 150)
-const output = path.resolve(argValue("--output") ?? path.join(repoRoot, ".artifacts", "stream-soak", `run-${process.pid}.json`))
+const output = path.resolve(argValue("--output") ?? path.join(os.homedir(), ".codex", "evidence", "terminal-stream-soak", `run-${process.pid}.json`))
 const buildProfile = buildProfileArg()
 const cargoTargetDir = cargoTargetPath()
+const kernelBinary = absolutePathArg("--kernel-binary", path.join(cargoTargetDir, buildProfile, "chariox-kernel"))
+const clientRoot = absolutePathArg("--client-root", path.join(repoRoot, "packages", "kernel-client", "dist"))
 const dryRun = args.includes("--dry-run")
-const chunkBytes = 65_536
+// Keep each record within the kernel's live provider-output bound.
+const chunkBytes = 16_384
 const chunksPerTick = Math.ceil(bytesPerSecond / chunkBytes)
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const unwrap = (response, key) => response?.[key] ?? response
 
 if (args.includes("--help")) {
-  console.log("Usage: live-terminal-stream-soak.mjs [--duration-seconds 1800] [--bytes-per-second 1048576] [--max-rss-mb 1024] [--max-cpu-percent 150] [--build-profile release|debug] [--output PATH] [--dry-run]")
+  console.log("Usage: live-terminal-stream-soak.mjs [--duration-seconds 1800] [--bytes-per-second 1048576] [--max-rss-mb 1024] [--max-cpu-percent 150] [--build-profile release|debug] [--kernel-binary PATH] [--client-root PATH] [--output PATH] [--dry-run]")
   process.exit(0)
 }
 if (dryRun) {
-  console.log(JSON.stringify({ durationSeconds, bytesPerSecond, totalBytes: durationSeconds * bytesPerSecond, maxRssMb, maxCpuPercent, buildProfile, cargoTargetDir, output, release: buildProfile === "release" }, null, 2))
+  console.log(JSON.stringify({ durationSeconds, bytesPerSecond, totalBytes: durationSeconds * bytesPerSecond, maxRssMb, maxCpuPercent, buildProfile, cargoTargetDir, kernelBinary, clientRoot, output, release: buildProfile === "release" }, null, 2))
   process.exit(0)
 }
 
-const { LocalIpcClient } = await import("../../../packages/kernel-client/dist/ipc.js")
-const requests = await import("../../../packages/kernel-client/dist/ipc-requests.js")
+const { LocalIpcClient } = await import(pathToFileURL(path.join(clientRoot, "ipc.js")))
+const requests = await import(pathToFileURL(path.join(clientRoot, "ipc-requests.js")))
+const kernelSha256 = createHash("sha256").update(await readFile(kernelBinary)).digest("hex")
 
 const port = await availablePort()
-const root = path.join(os.tmpdir(), `chariox-stream-soak-${process.pid}-${Date.now()}`)
-const kernel = spawn(path.join(cargoTargetDir, buildProfile, "chariox-kernel"), [], {
+const scratchParent = path.join(os.homedir(), ".chariox", "dev", "terminal-stream-soak")
+await mkdir(scratchParent, { recursive: true, mode: 0o700 })
+const root = await mkdtemp(path.join(scratchParent, "run-"))
+const kernel = spawn(kernelBinary, [], {
   cwd: repoRoot,
   detached: true,
   stdio: "ignore",
   env: {
     ...process.env,
     HOME: root,
+    CHARIOX_HOME: path.join(root, "state"),
+    CHARIOX_LOG_DIR: path.join(root, "logs"),
     XDG_CONFIG_HOME: path.join(root, "config"),
     XDG_STATE_HOME: path.join(root, "state"),
     XDG_CACHE_HOME: path.join(root, "cache"),
@@ -57,6 +67,10 @@ const kernel = spawn(path.join(cargoTargetDir, buildProfile, "chariox-kernel"), 
 })
 let client
 let report
+let interrupted = false
+const interrupt = () => { interrupted = true }
+process.on("SIGINT", interrupt)
+process.on("SIGTERM", interrupt)
 
 try {
   await waitForKernel(port)
@@ -68,10 +82,16 @@ try {
   const attachmentId = attached.attachment.id
   let observedEvents = 0
   let observedRecords = 0
+  let observedBytes = 0
   client.onKernelEvent((event) => {
     if (event?.event !== "terminal_output") return
     observedEvents += 1
     observedRecords += event.records?.length ?? 0
+    for (const record of event.records ?? []) {
+      if (record.kind === "prompt_echo" && record.merge_key?.startsWith("soak-")) {
+        observedBytes += record.bytes?.length ?? 0
+      }
+    }
   })
   await client.subscribeToKernelEvents(sessionId, attachmentId)
   const launched = unwrap(await client.send(requests.launchProviderRunsRequest([{
@@ -87,13 +107,14 @@ try {
   const providerRunId = launched.provider_runs[0].provider_run.id
 
   const payload = "x".repeat(chunkBytes)
-  const startedAt = Date.now()
+  const startedAt = performance.now()
   const latencies = []
   const cpuSamples = []
   let sentBytes = 0
   for (let second = 0; second < durationSeconds; second += 1) {
+    if (interrupted) throw new Error("stream soak interrupted")
     const tickDeadline = startedAt + (second + 1) * 1_000
-    const tickStartedAt = Date.now()
+    const tickStartedAt = performance.now()
     const remaining = Math.min(bytesPerSecond, durationSeconds * bytesPerSecond - sentBytes)
     const outputs = []
     let tickBytes = 0
@@ -109,13 +130,15 @@ try {
     }
     const response = unwrap(await client.send(requests.appendNativeProviderOutputBatchRequest(sessionId, attachmentId, outputs)), "TerminalOutput")
     assert.equal(response.records.length, outputs.length)
+    assert.equal(response.records.reduce((total, record) => total + (record.bytes?.length ?? 0), 0), tickBytes,
+      "kernel response truncated terminal output")
     sentBytes += tickBytes
-    latencies.push(Date.now() - tickStartedAt)
+    latencies.push(performance.now() - tickStartedAt)
     if (second % 10 === 0) cpuSamples.push(processMetric(kernel.pid))
-    const waitMs = tickDeadline - Date.now()
+    const waitMs = tickDeadline - performance.now()
     if (waitMs > 0) await sleep(waitMs)
   }
-  const streamElapsedMs = Date.now() - startedAt
+  const streamElapsedMs = performance.now() - startedAt
   await sleep(1_000)
   const sorted = [...latencies].sort((left, right) => left - right)
   const finalMetric = processMetric(kernel.pid)
@@ -126,22 +149,30 @@ try {
     0.95,
   )
   report = {
-    ok: peakRssMb <= maxRssMb && cpuP95Percent <= maxCpuPercent,
+    ok: peakRssMb <= maxRssMb && cpuP95Percent <= maxCpuPercent && observedBytes === sentBytes,
     buildProfile,
     cargoTargetDir,
+    kernelBinary,
+    kernelSha256,
+    clientRoot,
     durationSeconds,
     bytesPerSecond,
     sentBytes,
     elapsedMs: streamElapsedMs,
     effectiveBytesPerSecond: Math.round((sentBytes * 1_000) / streamElapsedMs),
+    observedBytesPerSecond: Math.round((observedBytes * 1_000) / streamElapsedMs),
     appendLatencyMs: {
       p50: percentile(sorted, 0.5),
       p95: percentile(sorted, 0.95),
       p99: percentile(sorted, 0.99),
       max: sorted.at(-1) ?? 0,
     },
+    appendLatencySamplesMs: latencies,
     observedEvents,
     observedRecords,
+    observedBytes,
+    deliveryComplete: observedBytes === sentBytes,
+    deliveryFailure: observedBytes === sentBytes ? null : "terminal subscription did not deliver every accepted byte",
     cpuSamples,
     finalMetric,
     resourceBudget: {
@@ -154,7 +185,7 @@ try {
   }
   if (!report.ok) process.exitCode = 1
 } catch (error) {
-  report = { ok: false, error: String(error?.stack ?? error), durationSeconds, bytesPerSecond, buildProfile, cargoTargetDir, port }
+  report = { ok: false, error: String(error?.stack ?? error), durationSeconds, bytesPerSecond, buildProfile, cargoTargetDir, kernelBinary, kernelSha256, clientRoot, port }
   process.exitCode = 1
 } finally {
   await client?.close?.().catch(() => undefined)
@@ -162,6 +193,8 @@ try {
   await mkdir(path.dirname(output), { recursive: true })
   await writeFile(output, `${JSON.stringify({ ...report, cleanup }, null, 2)}\n`)
   await rm(root, { recursive: true, force: true })
+  process.off("SIGINT", interrupt)
+  process.off("SIGTERM", interrupt)
   if (cleanup.remaining.length) process.exitCode = 1
 }
 console.log(JSON.stringify({ ...report, output }, null, 2))
@@ -178,6 +211,11 @@ function argNumber(flag, fallback) {
 function buildProfileArg() {
   const value = argValue("--build-profile") ?? "release"
   if (value !== "debug" && value !== "release") throw new Error("--build-profile must be debug or release")
+  return value
+}
+function absolutePathArg(flag, fallback) {
+  const value = argValue(flag) ?? fallback
+  if (!path.isAbsolute(value)) throw new Error(`${flag} must be absolute`)
   return value
 }
 function cargoTargetPath() {

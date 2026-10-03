@@ -1,3 +1,4 @@
+import type { ProjectEnvironmentReview } from "./project-environment-review.js"
 import type { ExtensionGrant } from "./kernel-types-extensions.js"
 import type { ExternalProviderImportMetadata, RuntimeSession } from "./kernel-types-session.js"
 import type { PromptAttachmentPart, RuntimeProviderRun } from "./kernel-types-provider.js"
@@ -119,6 +120,8 @@ export type AgentForkPayload = {
 }
 
 export type RuntimeInteraction = {
+  provider_login?: import("./provider-login-projection.js").RuntimeProviderLogin | null
+  project_environment_review?: ProjectEnvironmentReview | null
   id: string
   agent_id: string
   kind: "choice" | "permission"
@@ -214,6 +217,12 @@ export type SessionConfigState = {
 
 export type CharioxUserConfig = {
   version: number
+  slices?: {
+    linux?: {
+      disk_layer_mb?: number
+      disk_home_mb?: number
+    }
+  }
   providers?: {
     default?: string
     model?: string

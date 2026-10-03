@@ -298,7 +298,6 @@ async fn output_seen_ack_survives_kernel_restart() {
             .expect("unread output state should be snapshotted");
 
         let app = Arc::new(Mutex::new(app));
-        let app_dropped = Arc::downgrade(&app);
         let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
         drop(app);
         let ack_request =
@@ -318,17 +317,26 @@ async fn output_seen_ack_survives_kernel_restart() {
             .expect("acknowledged session should remain projected");
         assert!(!acknowledged.agent_activity[&agent_id].unread_idle_output);
         drop(router);
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while app_dropped.upgrade().is_some() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("session lane should release the first daemon");
         (session_id, agent_id)
     };
 
-    let restored = DaemonApp::bootstrap(config).expect("second daemon should boot");
+    // Actor shutdown releases cloned durable owners asynchronously. Observing
+    // a dropped Arc is insufficient: its file destructor may still hold flock.
+    let release_deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    let restored = loop {
+        match DaemonApp::bootstrap(config.clone()) {
+            Ok(app) => break app,
+            Err(crate::error::DaemonError::LocalTransport {
+                operation: "durable_state.acquire_owner",
+                message,
+            }) if message == "durable state is already owned by another kernel"
+                && tokio::time::Instant::now() < release_deadline =>
+            {
+                tokio::task::yield_now().await;
+            }
+            Err(error) => panic!("second daemon should boot after owner release: {error}"),
+        }
+    };
     let session = restored
         .sessions()
         .get_session(&session_id)

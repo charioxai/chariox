@@ -20,6 +20,9 @@ const PROTECTED_DIRECTORY_ENV_NAMES: &[&str] = &[
     "CHARIOX_MANAGED_SLICE_SERVICE_ROOT",
     "CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT",
 ];
+// LocalDockerSliceOptions stores control state here; `development` holds caller workspaces.
+const SLICE_ROOT_CONTROL_DIRECTORY_NAMES: &[&str] =
+    &["runtime", "states", "backups", "defaults", "logs"];
 const MANAGED_ISOLATION_PROTECTED_DIRECTORY_ENV_NAMES: &[&str] = &["CHARIOX_MANAGED_PROVIDER_HOME"];
 const PROTECTED_FILE_ENV_NAMES: &[&str] = &[
     "CHARIOX_MANAGED_VAULT_PATH",
@@ -166,6 +169,30 @@ struct WorkingDirectoryProtection {
     files: Vec<PathBuf>,
 }
 
+/// A copied repository is caller workspace, never a kernel-owned exception to
+/// the ordinary working-directory protections. The caller supplies a resolved
+/// root so aliases through symlinked ancestors are checked at their target.
+pub(crate) fn preflight_managed_repository_root(canonical_root: &Path) -> Result<(), DaemonError> {
+    let operation = "preflight_managed_repository_root";
+    let protection = ordinary_working_directory_protection(operation)?;
+    if crate::managed_bootstrap::canonical_managed_repository_root_is_protected(canonical_root)
+        || protection
+            .directories
+            .iter()
+            .any(|root| canonical_path_is_within(canonical_root, root))
+        || protection.files.iter().any(|file| file == canonical_root)
+    {
+        return Err(working_directory_error(
+            operation,
+            format!(
+                "managed repository path `{}` is protected Chariox service state",
+                canonical_root.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn ordinary_working_directory_protection(
     operation: &'static str,
 ) -> Result<WorkingDirectoryProtection, DaemonError> {
@@ -176,7 +203,9 @@ fn ordinary_working_directory_protection(
             protection.directories.push(home);
         } else {
             for name in CHARIOX_STATE_DIRECTORY_NAMES {
-                protection.directories.push(home.join(name));
+                protection
+                    .directories
+                    .push(canonical_or_lexical_path(&home.join(name), operation)?);
             }
         }
     } else if let Some(raw_home) = std::env::var_os("HOME") {
@@ -191,6 +220,16 @@ fn ordinary_working_directory_protection(
             protection
                 .directories
                 .push(configured_protected_path(&raw, name, operation)?);
+        }
+    }
+    if let Some(raw_slice_root) = std::env::var_os("CHARIOX_SLICE_ROOT") {
+        let slice_root =
+            configured_protected_path(&raw_slice_root, "CHARIOX_SLICE_ROOT", operation)?;
+        for name in SLICE_ROOT_CONTROL_DIRECTORY_NAMES {
+            protection.directories.push(canonical_or_lexical_path(
+                &slice_root.join(name),
+                operation,
+            )?);
         }
     }
     if crate::provider::managed_provider_isolation_required() {
@@ -628,11 +667,12 @@ fn default_worktree_directory_base(repo_name: &str, branch_or_ref: &str) -> Stri
 #[cfg(test)]
 mod tests {
     use super::{
-        default_worktree_directory_base, is_git_worktree, preflight_working_directory,
-        prepare_workflow_runtime_worktree_or_reuse_directory, remove_workflow_runtime_worktree,
+        default_worktree_directory_base, is_git_worktree, preflight_managed_repository_root,
+        preflight_working_directory, prepare_workflow_runtime_worktree_or_reuse_directory,
+        remove_workflow_runtime_worktree,
     };
     use crate::agent::GitWorktreePlacement;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn plain_temp_directory(label: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
@@ -786,6 +826,53 @@ mod tests {
         restore_env("CHARIOX_MANAGED_PROVIDER_ISOLATION", previous_isolation);
         restore_env("CHARIOX_MANAGED_PROVIDER_TOPOLOGY", previous_topology);
         std::fs::remove_dir_all(root).expect("preflight fixture should be removable");
+    }
+
+    #[test]
+    fn managed_root_preflight_reapplies_fixed_bootstrap_roots_after_canonicalization() {
+        let _env = crate::env_lock::lock();
+        for protected in [
+            "/",
+            "/var/lib/chariox",
+            "/var/lib/chariox/workspaces",
+            "/usr/lib/chariox/releases",
+            "/home/chariox/.chariox/workspaces",
+        ] {
+            assert!(
+                preflight_managed_repository_root(Path::new(protected)).is_err(),
+                "canonical managed root {protected} must remain protected"
+            );
+        }
+        for allowed in ["/home/chariox", "/tmp", "/var/lib", "/usr/lib"] {
+            preflight_managed_repository_root(Path::new(allowed))
+                .unwrap_or_else(|error| panic!("canonical managed root {allowed}: {error}"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nonstandard_chariox_home_protects_symlinked_state_directory_target() {
+        use std::os::unix::fs::symlink;
+
+        let _env = crate::env_lock::lock();
+        let root = plain_temp_directory("nonstandard-home-state-alias");
+        let service_home = root.join("service-home");
+        let state_target = root.join("protected-state");
+        let selected = state_target.join("repository");
+        std::fs::create_dir_all(&service_home).expect("create service home");
+        std::fs::create_dir_all(&selected).expect("create protected repository");
+        symlink(&state_target, service_home.join("state")).expect("alias state directory");
+        let previous = std::env::var_os("CHARIOX_HOME");
+        std::env::set_var("CHARIOX_HOME", &service_home);
+
+        let error = preflight_working_directory(&selected, "state-alias.cwd", false, &[])
+            .expect_err("symlinked service state must remain protected");
+        assert!(error
+            .to_string()
+            .contains("protected Chariox service state"));
+
+        restore_env("CHARIOX_HOME", previous);
+        std::fs::remove_dir_all(root).expect("remove state alias fixture");
     }
 
     #[test]
@@ -947,7 +1034,11 @@ mod tests {
         .expect("missing children below symlinked directories should be plan-able");
         assert_eq!(
             planned.canonical_path,
-            target.join("created-after-enrollment").join("deeper")
+            target
+                .canonicalize()
+                .unwrap()
+                .join("created-after-enrollment")
+                .join("deeper")
         );
         std::fs::remove_file(alias).expect("directory alias should be removable");
         std::fs::remove_dir_all(root).expect("symlink fixture should be removable");
@@ -1048,6 +1139,130 @@ mod tests {
         restore_env("CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT", prior_publication);
         restore_env("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT", prior_receipt);
         std::fs::remove_dir_all(root).expect("control-state fixture should be removable");
+    }
+
+    #[test]
+    fn configured_slice_root_protects_control_paths_but_allows_workspaces() {
+        let _env = crate::env_lock::lock();
+        let _environment = IsolatedWorkingDirectoryEnvironment::new();
+        let root = plain_temp_directory("slice-root-control-state");
+        let slice_root = root.join("slices").join("development");
+        let project = slice_root
+            .join("development")
+            .join("slice-123")
+            .join("development")
+            .join("repository");
+        let sibling = slice_root.join("user-workspace");
+        std::fs::create_dir_all(&project).expect("slice project workspace should exist");
+        std::fs::create_dir_all(&sibling).expect("slice root sibling workspace should exist");
+        for name in super::SLICE_ROOT_CONTROL_DIRECTORY_NAMES {
+            std::fs::create_dir_all(slice_root.join(name).join("existing"))
+                .expect("slice control directory should exist");
+        }
+        std::env::set_var("CHARIOX_SLICE_ROOT", &slice_root);
+
+        preflight_working_directory(&slice_root, "slice.root.cwd", false, &[])
+            .expect("configured slice root itself should remain a usable directory");
+        preflight_managed_repository_root(&slice_root.canonicalize().unwrap())
+            .expect("configured slice root itself should remain admissible");
+
+        for name in super::SLICE_ROOT_CONTROL_DIRECTORY_NAMES {
+            let control = slice_root.join(name);
+            preflight_working_directory(&control, "slice.control.cwd", false, &[])
+                .expect_err("slice control root must be protected");
+            preflight_working_directory(
+                &control.join("existing"),
+                "slice.control.descendant.cwd",
+                false,
+                &[],
+            )
+            .expect_err("slice control descendant must be protected");
+        }
+
+        let managed_runtime = slice_root.join("runtime").canonicalize().unwrap();
+        preflight_managed_repository_root(&managed_runtime)
+            .expect_err("managed repository preflight must share slice control protection");
+        let missing_control = slice_root.join("states").join("future").join("deeper");
+        preflight_working_directory(&missing_control, "slice.control.create", true, &[])
+            .expect_err("missing future descendants below slice control state must be protected");
+
+        preflight_working_directory(&project, "slice.project.cwd", false, &[])
+            .expect("slice development project workspace should remain a valid cwd");
+        preflight_managed_repository_root(&project.canonicalize().unwrap())
+            .expect("slice development project should remain a valid managed repository");
+        preflight_working_directory(&sibling, "slice.sibling.cwd", false, &[])
+            .expect("unrelated slice-root siblings should remain usable");
+        preflight_managed_repository_root(&sibling.canonicalize().unwrap())
+            .expect("unrelated slice-root siblings should remain admissible");
+
+        #[cfg(unix)]
+        {
+            let alias = root.join("backup-control-alias");
+            std::os::unix::fs::symlink(slice_root.join("backups"), &alias)
+                .expect("control directory alias should be created");
+            preflight_working_directory(&alias, "slice.control.alias.cwd", false, &[])
+                .expect_err("symlink aliases to slice control state must be protected");
+        }
+
+        std::fs::remove_dir_all(root).expect("slice-root fixture should be removable");
+    }
+
+    #[test]
+    fn invalid_configured_slice_root_fails_both_common_preflights() {
+        let _env = crate::env_lock::lock();
+        let _environment = IsolatedWorkingDirectoryEnvironment::new();
+        let root = plain_temp_directory("invalid-slice-root");
+        let canonical_root = root.canonicalize().unwrap();
+
+        for invalid in ["", "relative/slices", "/", "/tmp/../slice-root"] {
+            std::env::set_var("CHARIOX_SLICE_ROOT", invalid);
+            let cwd_error = preflight_working_directory(&root, "slice.invalid.cwd", false, &[])
+                .expect_err("invalid configured slice root must fail cwd preflight");
+            assert!(cwd_error.to_string().contains("CHARIOX_SLICE_ROOT"));
+            let managed_error = preflight_managed_repository_root(&canonical_root)
+                .expect_err("invalid configured slice root must fail managed-root preflight");
+            assert!(managed_error.to_string().contains("CHARIOX_SLICE_ROOT"));
+        }
+
+        std::fs::remove_dir_all(root).expect("invalid-root fixture should be removable");
+    }
+
+    struct IsolatedWorkingDirectoryEnvironment {
+        saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    impl IsolatedWorkingDirectoryEnvironment {
+        fn new() -> Self {
+            let mut names = vec![
+                "HOME",
+                "CHARIOX_HOME",
+                "CHARIOX_SLICE_ROOT",
+                "CHARIOX_MANAGED_PROVIDER_ISOLATION",
+            ];
+            names.extend_from_slice(super::PROTECTED_DIRECTORY_ENV_NAMES);
+            names.extend_from_slice(super::MANAGED_ISOLATION_PROTECTED_DIRECTORY_ENV_NAMES);
+            names.extend_from_slice(super::PROTECTED_FILE_ENV_NAMES);
+            names.sort_unstable();
+            names.dedup();
+
+            let saved = names
+                .into_iter()
+                .map(|name| {
+                    let value = std::env::var_os(name);
+                    std::env::remove_var(name);
+                    (name, value)
+                })
+                .collect();
+            Self { saved }
+        }
+    }
+
+    impl Drop for IsolatedWorkingDirectoryEnvironment {
+        fn drop(&mut self) {
+            for (name, value) in self.saved.drain(..) {
+                restore_env(name, value);
+            }
+        }
     }
 
     fn restore_env(name: &str, value: Option<std::ffi::OsString>) {

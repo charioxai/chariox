@@ -1,5 +1,6 @@
 import path from "node:path"
 import { mkdir, readdir, rm } from "node:fs/promises"
+import { imageSourceMatches } from "./browser-computer-soak.mjs"
 
 export const DEFAULT_IDLE_SOAK_DURATION_SECONDS = 24 * 60 * 60
 export const IDLE_SOAK_SMOKE_DURATION_SECONDS = 15
@@ -146,7 +147,7 @@ export function validateIdleSoakProvenance(value, source = value?.source) {
     || image.identity !== `${image.identity.slice(0, image.identity.lastIndexOf("@"))}@${image.digest}`
     || !new Set(["docker", "podman"]).has(image?.engine)
     || !/^sha256:[0-9a-f]{64}$/i.test(image?.engineImageId ?? "")
-    || !/^[0-9a-f]{40}$/i.test(image?.sourceRevision ?? "") || image.sourceRevision !== source.commit
+    || !imageSourceMatches(image?.sourceRevision, source)
     || image.signature?.verified !== true || image.signature?.verifier !== "cosign"
     || !/^[0-9a-f]{64}$/i.test(image.signature?.keySha256 ?? "")
     || !/^[0-9a-f]{64}$/i.test(image.signature?.bundleSha256 ?? "")
@@ -157,7 +158,7 @@ export function validateIdleSoakProvenance(value, source = value?.source) {
   const runtime = value.runtimeImage
   if (!/^[0-9a-f]{64}$/i.test(runtime?.containerId ?? "")
     || runtime.imageId !== image.engineImageId || runtime.identity !== image.identity
-    || runtime.sourceRevision !== source.commit || runtime.running !== true) {
+    || runtime.sourceRevision !== image.sourceRevision || runtime.running !== true) {
     throw new Error("idle soak provenance lacks an exact running runtime-container/image binding")
   }
   const network = value.networkNamespace
@@ -269,6 +270,7 @@ export function validateIdleSoakDetachContract(contract, { source, childPid }) {
 
 function sameSource(actual, expected) {
   return actual?.commit === expected?.commit && actual?.tree === expected?.tree
+    && actual?.runtimeSourceRevision === expected?.runtimeSourceRevision
     && actual?.dirty === false && expected?.dirty === false
 }
 
@@ -276,6 +278,7 @@ function validSource(source) {
   return /^[0-9a-f]{40}$/i.test(source?.commit ?? "")
     && /^[0-9a-f]{40}$/i.test(source?.tree ?? "")
     && (source?.branch == null || typeof source.branch === "string")
+    && (source?.runtimeSourceRevision == null || /^[0-9a-f]{64}$/.test(source.runtimeSourceRevision))
     && source?.dirty === false
 }
 

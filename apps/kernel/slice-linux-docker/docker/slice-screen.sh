@@ -76,6 +76,12 @@ process_running() {
   pgrep -af "$1" | grep -v defunct >/dev/null
 }
 
+chromium_running() {
+  # The lifetime supervisor carries Chromium's argv after the browser exits.
+  # Match the browser executable, never that retiring Python owner.
+  process_running "^(/[^[:space:]]*/)?chromium[[:space:]].*--user-data-dir=$CHROME_PROFILE"
+}
+
 stop_process_pattern() {
   local pattern="$1"
   local attempt
@@ -125,16 +131,6 @@ clear_chromium_profile_locks() {
   fi
 }
 
-chromium_has_restorable_session() {
-  local default_profile="$CHROME_PROFILE/Default"
-  if [[ -d "$default_profile/Sessions" ]] \
-    && find "$default_profile/Sessions" -maxdepth 1 -type f -name 'Session_*' -size +0c -print -quit \
-      | grep -q .; then
-    return 0
-  fi
-  [[ -s "$default_profile/Last Session" || -s "$default_profile/Current Session" ]]
-}
-
 screen_missing_components() {
   local missing=()
   if ! xdpyinfo -display "$DISPLAY_ID" >/dev/null 2>&1; then
@@ -158,7 +154,7 @@ screen_missing_components() {
       missing+=("novnc")
     fi
   fi
-  if ! process_running "chromium.*$CHROME_PROFILE"; then
+  if ! chromium_running; then
     missing+=("chromium")
   fi
   if [[ "${#missing[@]}" -eq 0 ]]; then
@@ -175,7 +171,7 @@ tool_blocking_missing_components() {
   if ! process_running "Xvfb $DISPLAY_ID"; then
     missing+=("xvfb")
   fi
-  if ! process_running "chromium.*$CHROME_PROFILE"; then
+  if ! chromium_running; then
     missing+=("chromium")
   fi
   if [[ "${#missing[@]}" -eq 0 ]]; then
@@ -201,9 +197,16 @@ require_screen_available() {
 
 launch_chromium() {
   local -a chrome_startup_target_args=()
-  if ! process_running "chromium.*$CHROME_PROFILE"; then
+  local -a chrome_launcher=(nohup chromium)
+  if ! chromium_running; then
+    chrome_launcher=(python3 "$ROOT/browser-lifecycle.py" start "$CHROME_PROFILE" "$LOGS/chromium-gui.log" chromium)
+    # Wait for the previous owned child tree to retire before replacing it.
+    python3 "$ROOT/browser-lifecycle.py" stop "$CHROME_PROFILE" >>"$LOGS/chromium-gui.log" 2>&1
     clear_chromium_profile_locks
-    if chromium_has_restorable_session; then
+    # Browser.close can retire every tab-session file while session cookies
+    # remain in the profile. Restore cookie policy for every owned cold launch
+    # of an existing profile, independently of those tab files.
+    if [[ -d "$CHROME_PROFILE/Default" ]]; then
       chrome_startup_target_args+=(--restore-last-session)
     fi
   fi
@@ -213,7 +216,7 @@ launch_chromium() {
     chrome_startup_target_args=(-- "$CHROME_URL")
   fi
 
-  nohup chromium \
+  chrome_launcher+=( \
     --user-data-dir="$CHROME_PROFILE" \
     --password-store=basic \
     --no-first-run \
@@ -223,12 +226,17 @@ launch_chromium() {
     --disable-gpu \
     --remote-debugging-address=127.0.0.1 \
     --remote-debugging-port=9222 \
-    "${chrome_startup_target_args[@]}" >>"$LOGS/chromium-gui.log" 2>&1 &
+    "${chrome_startup_target_args[@]}" )
+  if [[ "${chrome_launcher[0]}" == "python3" ]]; then
+    "${chrome_launcher[@]}" >>"$LOGS/chromium-gui.log" 2>&1
+  else
+    "${chrome_launcher[@]}" >>"$LOGS/chromium-gui.log" 2>&1 &
+  fi
 }
 
 start_desktop() {
-  if process_running "chromium.*$CHROME_PROFILE" || process_running "Xvfb $DISPLAY_ID" || process_running "x11vnc.*$DISPLAY_ID" || novnc_running; then
-    stop_desktop || true
+  if chromium_running || process_running "Xvfb $DISPLAY_ID" || process_running "x11vnc.*$DISPLAY_ID" || novnc_running; then
+    stop_desktop
   fi
   # Stop an owned previous Selkies process even when switching to noVNC.
   if [[ -x /opt/chariox-selkies/bin/python ]]; then
@@ -240,8 +248,6 @@ start_desktop() {
   stop_process_pattern "x11vnc.*$VNC_PORT"
   stop_process_pattern '(^|/)openbox([[:space:]]|$)'
   stop_process_pattern '(^|/)tint2([[:space:]]|$)'
-  stop_process_pattern "chromium.*$CHROME_PROFILE"
-  stop_process_pattern "/usr/lib/chromium/chromium"
   stop_process_pattern "Xvfb $DISPLAY_ID"
   rm -f "/tmp/.X${DISPLAY_ID#:}-lock" "/tmp/.X11-unix/X${DISPLAY_ID#:}"
 
@@ -263,7 +269,7 @@ start_desktop() {
     nohup websockify --web=/usr/share/novnc/ "0.0.0.0:$NOVNC_PORT" "127.0.0.1:$VNC_PORT" >"$LOGS/novnc.log" 2>&1 &
   fi
 
-  launch_chromium
+  launch_chromium || return $?
 
   sleep 2
   require_process "Xvfb $DISPLAY_ID" "Xvfb" "$LOGS/xvfb.log"
@@ -275,7 +281,7 @@ start_desktop() {
     require_process "x11vnc.*$DISPLAY_ID" "x11vnc" "$LOGS/x11vnc.log"
     require_process "websockify.*$NOVNC_PORT" "noVNC websockify" "$LOGS/novnc.log"
   fi
-  require_process "chromium.*$CHROME_PROFILE" "Chromium" "$LOGS/chromium-gui.log"
+  require_process "^(/[^[:space:]]*/)?chromium[[:space:]].*--user-data-dir=$CHROME_PROFILE" "Chromium" "$LOGS/chromium-gui.log"
   status
 }
 
@@ -310,29 +316,11 @@ status() {
 }
 
 stop_desktop() {
+  python3 "$ROOT/browser-lifecycle.py" stop "$CHROME_PROFILE" >/dev/null || return $?
   local streamer_exit=0
   if [[ -x /opt/chariox-selkies/bin/python ]]; then
     slice_selkies stop >/dev/null || streamer_exit=$?
   fi
-  if process_running "chromium.*$CHROME_PROFILE"; then
-    node "$ROOT/browser-cdp.mjs" close-browser >/dev/null 2>&1 || true
-  fi
-  local attempt
-  for attempt in $(seq 1 80); do
-    if ! process_running "chromium.*$CHROME_PROFILE"; then
-      break
-    fi
-    sleep 0.1
-  done
-  pkill -TERM -f "chromium.*$CHROME_PROFILE" >/dev/null 2>&1 || true
-  for attempt in $(seq 1 30); do
-    if ! process_running "chromium.*$CHROME_PROFILE"; then
-      break
-    fi
-    sleep 0.1
-  done
-  stop_process_pattern "chromium.*$CHROME_PROFILE"
-  stop_process_pattern "/usr/lib/chromium/chromium"
   stop_process_pattern "websockify.*127\\.0\\.0\\.1:$VNC_PORT"
   stop_process_pattern "websockify.*$NOVNC_PORT"
   stop_process_pattern "x11vnc.*$DISPLAY_ID"
@@ -583,9 +571,18 @@ secret_paste_submit_stdin() {
   node "$ROOT/browser-cdp.mjs" secret-paste-submit-stdin
 }
 
+computer_secret_target() {
+  require_screen_available
+  /opt/chariox-selkies/bin/python "${BASH_SOURCE[0]%/*}/slice-keyboard.py" secret-target
+}
+
 computer_secret_paste_stdin() {
   require_screen_available
-  run_xdotool_utf8 type --clearmodifiers --delay 5 --file -
+  if [[ $# != 1 ]]; then
+    log "computer credential input requires an approved display target"
+    return 2
+  fi
+  /opt/chariox-selkies/bin/python "${BASH_SOURCE[0]%/*}/slice-keyboard.py" secret "$1"
 }
 
 browser_status() {
@@ -707,14 +704,14 @@ open_url() {
     status
     return 1
   fi
-  if process_running "chromium.*$CHROME_PROFILE" && run_browser_cdp navigate "$1" >/dev/null 2>&1; then
+  if chromium_running && run_browser_cdp navigate "$1" >/dev/null 2>&1; then
     sleep 1
     focus_chromium
     return 0
   fi
   launch_chromium "$1"
   sleep 2
-  require_process "chromium.*$CHROME_PROFILE" "Chromium" "$LOGS/chromium-gui.log"
+  require_process "^(/[^[:space:]]*/)?chromium[[:space:]].*--user-data-dir=$CHROME_PROFILE" "Chromium" "$LOGS/chromium-gui.log"
   focus_chromium
 }
 
@@ -758,7 +755,8 @@ case "${1:-status}" in
   paste-stdin|paste_stdin) paste_stdin ;;
   secret-paste-stdin|secret_paste_stdin) shift; secret_paste_stdin "$@" ;;
   secret-paste-submit-stdin|secret_paste_submit_stdin) shift; secret_paste_submit_stdin "$@" ;;
-  computer-secret-paste-stdin|computer_secret_paste_stdin) computer_secret_paste_stdin ;;
+  computer-secret-target) computer_secret_target ;;
+  computer-secret-paste-stdin|computer_secret_paste_stdin) shift; computer_secret_paste_stdin "$@" ;;
   browser-status|browser_status) browser_status ;;
   browser-find|browser_find) shift; browser_find "$@" ;;
   browser-fill|browser_fill) shift; browser_fill "$@" ;;

@@ -1,59 +1,155 @@
 use super::*;
+use futures_util::FutureExt;
 
 #[test]
-fn room_selkies_display_is_admitted_through_the_bound_worker() {
-    run_test(admits_through_bound_worker);
+fn worker_browser_and_user_display_share_the_bound_room_environment() {
+    run_test(check_worker_browser_and_user_display_share_the_bound_room_environment);
 }
 
-async fn admits_through_bound_worker() {
+async fn check_worker_browser_and_user_display_share_the_bound_room_environment() {
     let mut fixture = LiveWorker::start_configured(false, true).await;
-    let (room, attachment_id, viewer_public) = prepare_room_display(&fixture).await;
+    let check = std::panic::AssertUnwindSafe(async {
+        let (room, attachment_id, viewer_public) = prepare_room_display(&fixture).await;
+        let started = dispatch_json(
+            &fixture.home,
+            json!({"StartRoomEnvironment": {
+                "session_id": &room,
+                "viewport": {
+                    "css_width": 1280,
+                    "css_height": 800,
+                    "device_scale_factor": 1,
+                    "desktop_pixel_width": 1280,
+                    "desktop_pixel_height": 800
+                }
+            }}),
+        )
+        .await
+        .expect("start the Room Environment before sharing it with agents and Web View");
+        let started_environment = &started["RoomEnvironmentUpdated"]["environment"];
+        assert_eq!(started_environment["session_id"], room);
+        assert_eq!(started_environment["lifecycle"], "ready");
+        let environment_id = started_environment["environment_id"]
+            .as_str()
+            .expect("Room Environment identity")
+            .to_string();
+        let initial_tab_id = started_environment["focused_tab_id"]
+            .as_str()
+            .expect("initial focused Room Tab")
+            .to_string();
+        let initial_tab_url = started_environment["tabs"]
+            .as_array()
+            .and_then(|tabs| tabs.iter().find(|tab| tab["tab_id"] == initial_tab_id))
+            .and_then(|tab| tab["url"].as_str())
+            .expect("initial Room Tab URL")
+            .to_string();
 
-    let opened = dispatch_json(
-        &fixture.home,
-        json!({"GetSliceDisplayEndpoint": {
-            "slice_ref": "desktop",
-            "session_id": &room,
-            "attachment_id": attachment_id,
-            "viewer_public_key": viewer_public.clone()
-        }}),
-    )
-    .await
-    .expect("open the Room display through its bound worker");
-    let endpoint = &opened["SliceDisplayEndpoint"]["endpoint"];
-    assert_eq!(endpoint["slice_id"], "slice-1");
-    assert_eq!(endpoint["kind"], "selkies");
-    assert_eq!(endpoint["access"], "tunnel");
-    assert_eq!(endpoint["stream_protocol"], "chariox-display-v1");
-    assert_eq!(
-        endpoint["peer_public_key"],
-        fixture._worker_state.config.relay_public_key
-    );
-    let stream_id = endpoint["stream_id"].as_str().expect("stream ID");
-    assert_eq!(
-        endpoint["url"],
-        format!("ws://{}/display/{stream_id}/stream", fixture.address)
-    );
-    assert!(endpoint["capabilities"]
-        .as_array()
-        .is_some_and(|capabilities| capabilities.contains(&json!("encrypted"))
-            && capabilities.contains(&json!("single_use"))));
-    let reopened = dispatch_json(
-        &fixture.home,
-        json!({"GetSliceDisplayEndpoint": {
-            "slice_ref": "desktop",
-            "session_id": &room,
-            "attachment_id": attachment_id,
-            "viewer_public_key": viewer_public
-        }}),
-    )
-    .await
-    .expect("reconnect should receive a fresh one-use display grant");
-    assert_ne!(
-        reopened["SliceDisplayEndpoint"]["endpoint"]["stream_id"],
-        endpoint["stream_id"]
-    );
+        // This is the existing public worker-agent Browser tool flow: it
+        // launches a slice-placed agent and forwards authenticated Browser
+        // runtime calls to the home Room's controller.
+        let placement = fixture.placement();
+        super::controller_worker_mcp::check(&fixture, placement).await;
+
+        let environment = fixture
+            .home
+            .runtime_state
+            .room_environment_snapshot(&room)
+            .expect("read the shared home Room Environment after worker Browser calls");
+        assert_eq!(environment.session_id, room);
+        assert_eq!(environment.environment_id, environment_id);
+        assert_eq!(
+            environment.focused_tab_id.as_deref(),
+            Some(initial_tab_id.as_str())
+        );
+        let tab = environment
+            .tabs
+            .iter()
+            .find(|tab| tab.tab_id == initial_tab_id)
+            .expect("worker Browser call must retain the Room's stable Tab");
+        assert_eq!(tab.url, initial_tab_url);
+
+        let binding = dispatch_json(
+            &fixture.home,
+            json!({"GetRoomEnvironmentSlice":{"session_id":&room}}),
+        )
+        .await
+        .expect("read the Room's authoritative Environment slice binding");
+        assert_eq!(
+            binding["RoomEnvironmentSlice"]["binding"]["session_id"],
+            room
+        );
+        assert_eq!(
+            binding["RoomEnvironmentSlice"]["binding"]["slice_id"],
+            "slice-1"
+        );
+
+        let opened = dispatch_json(
+            &fixture.home,
+            json!({"GetSliceDisplayEndpoint": {
+                "slice_ref": "desktop",
+                "session_id": &room,
+                "attachment_id": attachment_id,
+                "viewer_public_key": viewer_public.clone()
+            }}),
+        )
+        .await
+        .expect("open the user-facing Room display through its bound worker");
+        let endpoint = &opened["SliceDisplayEndpoint"]["endpoint"];
+        assert_eq!(
+            endpoint["slice_id"],
+            binding["RoomEnvironmentSlice"]["binding"]["slice_id"],
+            "Web View must resolve the slice bound to the same Room Environment used by worker Browser"
+        );
+        assert_eq!(endpoint["kind"], "selkies");
+        assert_eq!(endpoint["access"], "tunnel");
+        assert_eq!(endpoint["stream_protocol"], "chariox-display-v1");
+        assert_eq!(
+            endpoint["peer_public_key"],
+            fixture._worker_state.config.relay_public_key
+        );
+        let stream_id = endpoint["stream_id"].as_str().expect("stream ID");
+        assert_eq!(
+            endpoint["url"],
+            format!("ws://{}/display/{stream_id}/stream", fixture.address)
+        );
+        assert!(endpoint["capabilities"]
+            .as_array()
+            .is_some_and(|capabilities| capabilities.contains(&json!("encrypted"))
+                && capabilities.contains(&json!("single_use"))));
+        let reopened = dispatch_json(
+            &fixture.home,
+            json!({"GetSliceDisplayEndpoint": {
+                "slice_ref": "desktop",
+                "session_id": &room,
+                "attachment_id": attachment_id,
+                "viewer_public_key": viewer_public
+            }}),
+        )
+        .await
+        .expect("reconnect should receive a fresh one-use display grant");
+        assert_ne!(
+            reopened["SliceDisplayEndpoint"]["endpoint"]["stream_id"],
+            endpoint["stream_id"]
+        );
+    })
+    .catch_unwind()
+    .await;
+    let controller_cleanup = fixture
+        .worker
+        .runtime_state
+        .shutdown_browser_controller_process()
+        .await;
+    let provider_cleanup = fixture
+        .worker
+        .app
+        .lock()
+        .await
+        .teardown_provider_processes(Some("managed-dev-stub"), true);
     fixture.stop().await;
+    controller_cleanup.expect("stop the Room controller after Browser and Web View calls");
+    provider_cleanup.expect("stop worker provider processes after Browser and Web View calls");
+    if let Err(panic) = check {
+        std::panic::resume_unwind(panic);
+    }
 }
 
 #[test]

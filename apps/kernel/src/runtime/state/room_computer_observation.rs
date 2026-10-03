@@ -51,17 +51,18 @@ impl KernelRuntimeState {
                 .then(|| slice.worker_kernel_ref.clone()),
         };
         let screen_status = matches!(&call, RemoteRoomComputerObservationCall::ScreenStatus);
-        let response = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
-            &config,
-            target,
-            RelayPeerRequest::ObserveRoomComputer {
-                session_id: session_id.to_string(),
-                slice_id: slice.id.clone(),
-                call,
-            },
-            Duration::from_secs(15),
-        )
-        .await?;
+        let response = self
+            .send_room_slice_peer_request(
+                &config,
+                target,
+                RelayPeerRequest::ObserveRoomComputer {
+                    session_id: session_id.to_string(),
+                    slice_id: slice.id.clone(),
+                    call,
+                },
+                Duration::from_secs(15),
+            )
+            .await?;
         let RelayPeerResponse::RoomComputerObserved {
             session_id: returned_session_id,
             slice_id: returned_slice_id,
@@ -101,6 +102,11 @@ impl KernelRuntimeState {
             session_id,
             slice_id,
         )?;
+        let capture_guard = self
+            .owned
+            .computer_input_executions
+            .capture_guard()
+            .map_err(computer_observation_error)?;
         let artifact_path = match &call {
             RemoteRoomComputerObservationCall::Ocr {
                 artifact_id: Some(artifact_id),
@@ -116,7 +122,8 @@ impl KernelRuntimeState {
             )?),
             _ => None,
         };
-        super::tool_dispatch::execute_room_computer_observation(call, artifact_path).await
+        super::tool_dispatch::execute_room_computer_observation(call, artifact_path, capture_guard)
+            .await
     }
 }
 

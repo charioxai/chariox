@@ -7,8 +7,8 @@ impl SliceStore {
         session_id: Option<&str>,
         operation: &'static str,
     ) -> Result<SliceOperationGuard, DaemonError> {
-        let guard = self.try_begin_operation(slice_ref, operation)?;
-        // Re-read under the operation marker: binding cannot change until admission ends.
+        let guard = self.begin_operation(slice_ref, operation, true)?;
+        // Re-read under the use marker: binding cannot change until admission ends.
         let state = self
             .inner
             .lock()
@@ -91,7 +91,9 @@ impl SliceStore {
         if slice.environment_session_id.as_deref() == Some(session_id) {
             return Ok(slice.clone());
         }
-        if state.active_operations.contains_key(&slice.id) {
+        if state.active_operations.contains_key(&slice.id)
+            || state.environment_uses.contains_key(&slice.id)
+        {
             return Err(binding_error(
                 "slice operation in progress; retry after it completes",
             ));
@@ -141,13 +143,56 @@ fn binding_error(message: &str) -> DaemonError {
 }
 
 fn worker_refs(slice: &SliceRecord) -> impl Iterator<Item = &str> {
-    // These are worker routing identities, not the Docker host identity.
-    // Local Docker assigns worker machine_id = "slice:<slice.id>"; co-located
-    // containers share owner_machine_id instead. A duplicate worker machine ID
-    // is ambiguous because agent placement also accepts it as a target.
+    // Hosted workers share their authenticated parent Machine. Only kernel
+    // identities distinguish those workers; retain synthetic legacy Machine
+    // references for private/self-hosted placement compatibility.
     std::iter::once(slice.worker_kernel_ref.as_str())
         .chain(slice.worker_kernel_id.as_deref())
-        .chain(slice.worker_machine_id.as_deref())
+        .chain(
+            slice
+                .worker_machine_id
+                .as_deref()
+                .filter(|machine| *machine != slice.owner_machine_id),
+        )
         .map(str::trim)
         .filter(|value| !value.is_empty())
+}
+
+impl SliceOperationGuard {
+    /// A lifecycle operation already owns the slice exclusively. Its typed
+    /// guard may admit only that slice and its Room during agent relaunch.
+    pub(crate) fn require_environment_use(
+        &self,
+        store: &SliceStore,
+        slice_id: &str,
+        session_id: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        if !Arc::ptr_eq(&self.store.inner, &store.inner)
+            || self.slice_id != slice_id
+            || self.operation.is_none()
+        {
+            return Err(access_error(
+                "slice recovery requires its own active operation guard",
+            ));
+        }
+        let state = store
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.active_operations.get(slice_id) != self.operation.as_ref() {
+            return Err(access_error(
+                "slice recovery operation guard is no longer active",
+            ));
+        }
+        let slice = state
+            .records
+            .get(slice_id)
+            .ok_or_else(|| access_error("unknown slice"))?;
+        if has_shared_worker(slice, &state) {
+            return Err(access_error(
+                "slice worker reference is shared by another slice",
+            ));
+        }
+        require_environment_session(slice, session_id)
+    }
 }
