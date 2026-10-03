@@ -825,24 +825,29 @@ impl KernelRuntimeState {
             .collect::<Vec<_>>();
         self.owned
             .ensure_agent_owner(agent.id(), caller_user_id, "destroy agent")?;
-        if agent.remote_execution().is_some() {
+        // Relay projection ingestion also owns the app lock. Keep the worker
+        // acknowledgement and home deletion in one critical section so an
+        // already-admitted snapshot cannot revive the run after it is ended.
+        // Local deletion retains its app-lock-independent owned-state path.
+        let destroyed = if agent.remote_execution().is_some() {
             self.with_app_side_effect(|app| {
                 self.authorize_current_external_command()?;
                 crate::app::KernelSessionService::new(app)
                     .destroy_agent_worker_execution_authorized(&agent, &|| {
                         self.authorize_current_external_command()
                     })
+                    .map_err(|error| DaemonError::AgentWorkerCleanup {
+                        agent_id: agent_id.to_string(),
+                        source: Box::new(error),
+                    })?;
+                // Worker cleanup has committed. Finish home deletion under the
+                // same app lock so a queued projection cannot revive the run.
+                self.owned.destroy_agent(agent_id, caller_user_id)
             })
-            .await
-            .map_err(|error| DaemonError::AgentWorkerCleanup {
-                agent_id: agent_id.to_string(),
-                source: Box::new(error),
-            })?;
-        }
-        // The app and runtime share the agent store. Delete once, after worker
-        // cleanup, through the owner that also clears prompt and run state.
-        // Worker cleanup has committed. Finish deleting the corresponding home state.
-        let destroyed = self.owned.destroy_agent(agent_id, caller_user_id)?;
+            .await?
+        } else {
+            self.owned.destroy_agent(agent_id, caller_user_id)?
+        };
         for slice_ref in slice_refs {
             let slice = self.owned.slice_store.detach_agent(
                 &slice_ref,

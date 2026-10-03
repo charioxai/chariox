@@ -718,10 +718,12 @@ impl AppViews {
     }
 }
 
-/// Another Room command holds the slice's exclusive operation slot; the
-/// refusal text comes from the slice environment store.
+/// Another Room command holds the slice's exclusive operation slot, or its
+/// admission queue timed out before dispatch. Neither ran the view operation,
+/// so retry without consuming the cold-restore failure budget.
 pub(crate) fn slice_busy(error: &str) -> bool {
     error.contains("already has an active")
+        || error.contains(crate::slice::ENVIRONMENT_USE_ADMISSION_EXPIRED)
 }
 
 /// Projects the Room again after a view's first call. Another Room command
@@ -1209,6 +1211,39 @@ mod reconnect_tests {
         };
         assert!(!reproject(failed, Duration::from_secs(5), pause).await);
         assert_eq!(failures.get(), 1);
+    }
+
+    #[tokio::test]
+    async fn queued_reprojection_timeout_preserves_the_retry_until_dispatch() {
+        use std::time::Duration;
+        let attempts = std::cell::Cell::new(0);
+        let reconcile = || {
+            attempts.set(attempts.get() + 1);
+            let attempt = attempts.get();
+            async move {
+                if attempt == 1 {
+                    Err(format!(
+                        "local transport `browser_controller.route` failed: {}",
+                        crate::slice::ENVIRONMENT_USE_ADMISSION_EXPIRED
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
+        };
+        assert!(reproject(reconcile, Duration::from_secs(5), Duration::from_millis(1)).await);
+        assert_eq!(attempts.get(), 2);
+    }
+
+    #[test]
+    fn controller_failures_are_not_admission_contention() {
+        for error in [
+            "controller exited",
+            "browser_controller_scope_denied",
+            "command deadline expired after dispatch",
+        ] {
+            assert!(!slice_busy(error));
+        }
     }
 
     #[test]

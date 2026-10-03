@@ -63,6 +63,10 @@ pub(crate) enum LifecycleError {
     DiskSpace(chariox_app_runtime::worker_process::HostDiskSpace),
     #[error("app_lifecycle_registration")]
     Registration,
+    /// Readiness exceeded its bounded wait. The owner is reaped; a fresh
+    /// explicit start can retry the committed generation on the same kernel.
+    #[error("app_lifecycle_registration_deadline")]
+    RegistrationDeadline,
     #[error("app_lifecycle_health")]
     Health,
     #[error("app_install_commit_unknown")]
