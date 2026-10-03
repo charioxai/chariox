@@ -494,7 +494,10 @@ fn partial_provider_cleanup_retries_ended_runs_before_releasing_capacity() {
             (1..=2).contains(&remaining),
             "remaining leased agents: {remaining}"
         );
-        assert_eq!(app.relay_registration().leased_agent_count, remaining as u32);
+        assert_eq!(
+            app.relay_registration().leased_agent_count,
+            remaining as u32
+        );
 
         RemoteLeaseRuntime::new(&mut app)
             .destroy_leased_agent_for_caller(&leased_agent.id, &caller)

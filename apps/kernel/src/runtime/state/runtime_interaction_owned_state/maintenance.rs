@@ -121,4 +121,3 @@ impl KernelRuntimeOwnedState {
 fn waits_in_memory(interaction: &crate::session::RuntimeInteraction) -> bool {
     interaction.kernel_operation_id().is_some() || interaction.id().starts_with("vault-unlock-")
 }
-

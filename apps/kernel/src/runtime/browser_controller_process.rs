@@ -184,7 +184,10 @@ pub(crate) trait BrowserControllerProcessBackend {
     ) -> Result<BrowserControllerPermissionResult, String> {
         Err("browser controller backend does not support permissions".to_string())
     }
-    fn app_view(&mut self, _request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest) -> Result<serde_json::Value, String> {
+    fn app_view(
+        &mut self,
+        _request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
+    ) -> Result<serde_json::Value, String> {
         Err("browser controller backend does not support App views".to_string())
     }
     fn poll_browser_events(
@@ -808,7 +811,10 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         Ok(result)
     }
 
-    fn app_view(&mut self, request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest) -> Result<serde_json::Value, String> {
+    fn app_view(
+        &mut self,
+        request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
+    ) -> Result<serde_json::Value, String> {
         let method = request.method();
         let timeout = self.timeout;
         self.request_serializable(method, &request.params(), timeout)?
@@ -1765,7 +1771,10 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
             .set_browser_permission(target_id, document_id, permission, setting)
     }
 
-    fn app_view(&mut self, request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest) -> Result<serde_json::Value, String> {
+    fn app_view(
+        &mut self,
+        request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
+    ) -> Result<serde_json::Value, String> {
         self.ensure_started_without_transparent_restart()?;
         self.backend.app_view(request)
     }

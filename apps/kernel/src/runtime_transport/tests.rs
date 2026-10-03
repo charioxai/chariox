@@ -727,8 +727,12 @@ exit 0
     .expect("same-process retry should reply");
     let same_process_refusal = slice_capture_refusal(&same_process);
     assert_eq!(docker_commit_count(&docker_log), 0);
-    assert!(std::fs::read_to_string(&docker_log).unwrap_or_default().is_empty(),
-        "unsupported capture must not invoke Docker before or after replay");
+    assert!(
+        std::fs::read_to_string(&docker_log)
+            .unwrap_or_default()
+            .is_empty(),
+        "unsupported capture must not invoke Docker before or after replay"
+    );
 
     drop(runtime);
     let restarted_runtime = Arc::new(
@@ -751,8 +755,12 @@ exit 0
     let restart_refusal = slice_capture_refusal(&after_restart);
     assert_eq!(restart_refusal, same_process_refusal);
     assert_eq!(docker_commit_count(&docker_log), 0);
-    assert!(std::fs::read_to_string(&docker_log).unwrap_or_default().is_empty(),
-        "unsupported capture must not invoke Docker before or after replay");
+    assert!(
+        std::fs::read_to_string(&docker_log)
+            .unwrap_or_default()
+            .is_empty(),
+        "unsupported capture must not invoke Docker before or after replay"
+    );
 
     let conflicting = dispatch_transport_test_request(
         Arc::clone(&restarted_runtime),
@@ -776,8 +784,12 @@ exit 0
         "duplicate_command_conflict"
     );
     assert_eq!(docker_commit_count(&docker_log), 0);
-    assert!(std::fs::read_to_string(&docker_log).unwrap_or_default().is_empty(),
-        "unsupported capture must not invoke Docker before or after replay");
+    assert!(
+        std::fs::read_to_string(&docker_log)
+            .unwrap_or_default()
+            .is_empty(),
+        "unsupported capture must not invoke Docker before or after replay"
+    );
 
     drop(restarted_runtime);
     drop(router);
@@ -807,13 +819,17 @@ async fn slice_pending_backup_restore_interruption_rolls_back_on_restart() {
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::process::ExitStatusExt;
 
-    const TEST_NAME: &str = "runtime_transport::tests::slice_pending_backup_restore_interruption_rolls_back_on_restart";
+    const TEST_NAME: &str =
+        "runtime_transport::tests::slice_pending_backup_restore_interruption_rolls_back_on_restart";
     const CHILD_ROOT_ENV: &str = "CHARIOX_RESTORE_INTERRUPTION_CHILD_ROOT";
     if let Some(root) = std::env::var_os(CHILD_ROOT_ENV) {
         let root = PathBuf::from(root);
         let config = restore_interruption_config(&root);
         let result = DaemonApp::bootstrap(config);
-        panic!("pending-restore child survived its injected recovery SIGKILL: {}", result.is_ok());
+        panic!(
+            "pending-restore child survived its injected recovery SIGKILL: {}",
+            result.is_ok()
+        );
     }
 
     let _environment = crate::env_lock::lock();
@@ -971,12 +987,21 @@ exit 0
         image_id: Some(format!("sha256:{}", "2".repeat(64))),
         ..target_backup.clone()
     };
-    std::fs::write(&rollback_manifest, serde_json::to_vec_pretty(&rollback_backup)
-        .expect("rollback manifest should encode")).expect("rollback manifest should write");
-    runtime.begin_slice_backup_restore(crate::slice::SliceBackupRestoreTransactionRecord {
-        id: "restore-interruption-fixture".to_string(), source_slice_id: slice.id.clone(),
-        target_backup, rollback_backup, previous_saved_state: None, started_at_ms: 3,
-    }).expect("preexisting restore intent should persist");
+    std::fs::write(
+        &rollback_manifest,
+        serde_json::to_vec_pretty(&rollback_backup).expect("rollback manifest should encode"),
+    )
+    .expect("rollback manifest should write");
+    runtime
+        .begin_slice_backup_restore(crate::slice::SliceBackupRestoreTransactionRecord {
+            id: "restore-interruption-fixture".to_string(),
+            source_slice_id: slice.id.clone(),
+            target_backup,
+            rollback_backup,
+            previous_saved_state: None,
+            started_at_ms: 3,
+        })
+        .expect("preexisting restore intent should persist");
     drop(runtime);
     drop(router);
     drop(app);
@@ -1177,10 +1202,12 @@ exit 0
         "only interrupted recovery and resumed recovery should restore: {provisioner_calls}",
     );
     let docker_calls = std::fs::read_to_string(&docker_log).expect("Docker calls should read");
-    assert!(!docker_calls
-        .lines()
-        .any(|line| { line == format!("image rm -f {}", transaction.rollback_backup.image_ref) }),
-        "published rollback image must not be garbage collected");
+    assert!(
+        !docker_calls.lines().any(|line| {
+            line == format!("image rm -f {}", transaction.rollback_backup.image_ref)
+        }),
+        "published rollback image must not be garbage collected"
+    );
 
     let recovered_state_ref = recovered_state.id.clone();
     drop(durable);
@@ -1732,10 +1759,16 @@ async fn dispatch_transport_test_request(
 
 #[cfg(unix)]
 fn slice_capture_refusal(frame: &KernelOutgoingFrame) -> serde_json::Value {
-    let KernelOutgoingFrame::Response { response, error, .. } = frame else {
+    let KernelOutgoingFrame::Response {
+        response, error, ..
+    } = frame
+    else {
         panic!("slice refusal should return a response")
     };
-    assert!(response.is_none(), "unsupported capture must not publish saved state");
+    assert!(
+        response.is_none(),
+        "unsupported capture must not publish saved state"
+    );
     let error = error.as_ref().expect("unsupported capture must refuse");
     let value = serde_json::to_value(error).expect("refusal should encode");
     assert!(value.to_string().contains("storage layout"));
@@ -1973,11 +2006,14 @@ async fn app_wake_deadline_interrupts_idle_transport_without_client_traffic() {
         registration.execute_app_state(
             "alice",
             catalog,
-            AppStateOperation::Schedule { wakes: vec![WakeChange::Set(Wake {
-                id: "deadline".into(),
-                due_at_ms: due,
-                revision: "r1".into(),
-            })], wakes_count_as_use: false },
+            AppStateOperation::Schedule {
+                wakes: vec![WakeChange::Set(Wake {
+                    id: "deadline".into(),
+                    due_at_ms: due,
+                    revision: "r1".into(),
+                })],
+                wakes_count_as_use: false,
+            },
             AppOperationBudget::fixture(TokioInstant::now() + Duration::from_secs(5), || false),
         )
     })

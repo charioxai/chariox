@@ -678,9 +678,8 @@ async fn ended_session_can_be_deleted_by_exact_id_without_becoming_resolvable() 
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
     // Session paths must be real absolute directories (Apps Phase 1 validation).
     let worktree = crate::test_support::TestWorktree::new("ended-delete");
-    let create_request = LocalDaemonRequest::CreateSession(
-        worktree.session_request().with_alias("ended-delete"),
-    );
+    let create_request =
+        LocalDaemonRequest::CreateSession(worktree.session_request().with_alias("ended-delete"));
     let create_command =
         KernelCommand::from_local_request("cmd-ended-delete-create", None, None, &create_request);
     let session_id = match router

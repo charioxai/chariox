@@ -4,9 +4,10 @@ use chariox_app_runtime::{
         ReleaseMetadata,
     },
     managed_state::{
-        complete_wake, defer_wake, due_wakes, next_wake_at_ms, postpone_wake, ManagedStateStore, StateChanges,
-        StateCheck, StateError, StateScope, StateWrite, Wake, WakeChange, WakeFailureOutcome,
-        MAX_CHANGES, MAX_KEYS, MAX_REVISION, MAX_STATE_BYTES, MAX_VALUE_BYTES, MAX_WAKES,
+        complete_wake, defer_wake, due_wakes, next_wake_at_ms, postpone_wake, ManagedStateStore,
+        StateChanges, StateCheck, StateError, StateScope, StateWrite, Wake, WakeChange,
+        WakeFailureOutcome, MAX_CHANGES, MAX_KEYS, MAX_REVISION, MAX_STATE_BYTES, MAX_VALUE_BYTES,
+        MAX_WAKES,
     },
 };
 use rusqlite::{Connection, TransactionBehavior};
@@ -713,7 +714,10 @@ fn a_short_clock_correction_recovers_retries_in_due_order_after_reopen() {
     }
     assert_eq!(next_wake_at_ms(&db, ahead).unwrap(), Some(ahead + 10_000));
     // Sub-second jitter preserves retry backoff.
-    assert_eq!(next_wake_at_ms(&db, ahead - 1).unwrap(), Some(ahead + 10_000));
+    assert_eq!(
+        next_wake_at_ms(&db, ahead - 1).unwrap(),
+        Some(ahead + 10_000)
+    );
     // An unchanged clock must still honor real retry backoff.
     assert!(due_wakes(&db, ahead, 8).unwrap().is_empty());
     drop(db);
@@ -734,7 +738,10 @@ fn a_short_clock_correction_recovers_retries_in_due_order_after_reopen() {
         complete_wake(&db, wake).unwrap();
     }
     assert!(due_wakes(&db, corrected, 8).unwrap().is_empty());
-    assert_eq!(next_wake_at_ms(&db, corrected).unwrap(), Some(now + 3_600_000));
+    assert_eq!(
+        next_wake_at_ms(&db, corrected).unwrap(),
+        Some(now + 3_600_000)
+    );
     assert_eq!(
         due_wakes(&db, now + 3_600_000, 8).unwrap()[0].wake.id,
         "later"
@@ -801,7 +808,12 @@ fn wake_deadline_tracks_committed_replacements_cancellation_and_postponement() {
     let mut db = fixture.open();
     install(&mut db, "todo");
     assert_eq!(next_wake_at_ms(&db, 0).unwrap(), None);
-    apply_wakes(&mut db, "todo", &[wake("a", 100, "r1"), wake("b", 200, "r1")]).unwrap();
+    apply_wakes(
+        &mut db,
+        "todo",
+        &[wake("a", 100, "r1"), wake("b", 200, "r1")],
+    )
+    .unwrap();
     assert_eq!(next_wake_at_ms(&db, 0).unwrap(), Some(100));
     let due = due_wakes(&db, 100, 8).unwrap();
     postpone_wake(&db, &due[0], 400).unwrap();

@@ -22,7 +22,9 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
     if std::env::args_os().nth(1).as_deref()
         == Some(std::ffi::OsStr::new("--prepare-protected-slice-identity"))
     {
-        let port = std::env::args().nth(2).and_then(|value| value.parse::<u16>().ok())
+        let port = std::env::args()
+            .nth(2)
+            .and_then(|value| value.parse::<u16>().ok())
             .ok_or_else(|| chariox_kernel::DaemonError::LocalTransport {
                 operation: "prepare protected slice identity",
                 message: "a valid local kernel port is required".to_string(),

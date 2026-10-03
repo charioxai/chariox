@@ -362,7 +362,10 @@ fn routes_are_scoped_per_owner_and_installation_and_removal_keeps_accepted_work(
         .unwrap()
         .is_none());
     // Pending delivery and settled replay receipts both survive route removal.
-    assert_eq!(app_inbox::state(&db, settled).unwrap(), InboxState::Delivered);
+    assert_eq!(
+        app_inbox::state(&db, settled).unwrap(),
+        InboxState::Delivered
+    );
     let due = app_inbox::due(&db, 10, 10).unwrap();
     assert_eq!(due.len(), 2);
     let kept = due

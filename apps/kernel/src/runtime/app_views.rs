@@ -1110,7 +1110,11 @@ mod reconnect_tests {
             generation: 1,
             panel: PanelRequest::default(),
         };
-        let bound = |target: &str| views.binding_state("room", target).map(|(binding, _)| binding);
+        let bound = |target: &str| {
+            views
+                .binding_state("room", target)
+                .map(|(binding, _)| binding)
+        };
         views.register("room", "bad-old", binding("bad"));
         views.register("room", "good-old", binding("good"));
         views.suspend_for_cold_start("room");
