@@ -149,12 +149,14 @@ test("hidden kernel approval dock releases 1,000 App consent cards", async () =>
   const dock = new BoxRenderable(harness.renderer, {})
   parent.add(dock)
   harness.renderer.root.add(parent)
-  const surface = createKernelApprovalRenderer(harness.renderer, { show() {}, choose() {} })
+  const surface = createKernelApprovalRenderer(harness.renderer, {
+    show() {}, choose() {}, cycleRemember() {}, submitPasskey() {},
+  })
   surface.assign(dock)
   try {
     for (let index = 0; index < 1_000; index += 1) {
       const view = { open: true, count: 1, index: 0, selected: null, pending: false,
-        connected: true, error: null, interaction: {
+        connected: true, error: null, passkey: null, interaction: {
           id: `install-${index}`, kernel_operation_id: `operation-${index}`, kind: "permission" as const,
           level: "warning" as const, requested_at_ms: index,
           message: "Approve fixture install or uninstall?", choices: [{ id: "allow", label: "Allow", reply: "allow" }],
