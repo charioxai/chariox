@@ -107,9 +107,9 @@ export function fallbackProviderCatalog(options: {
         name: "Claude headless",
         remote_machine_aliases: [],
         models: {
-          "claude-sonnet-4-6": {
-            id: "claude-sonnet-4-6",
-            name: "Claude Sonnet 4.6",
+          "claude-sonnet-5": {
+            id: "claude-sonnet-5",
+            name: "Claude Sonnet 5",
             status: "active",
             variants: {
               low: {},
@@ -126,9 +126,9 @@ export function fallbackProviderCatalog(options: {
         name: "Claude -p",
         remote_machine_aliases: [],
         models: {
-          "claude-sonnet-4-6": {
-            id: "claude-sonnet-4-6",
-            name: "Claude Sonnet 4.6",
+          "claude-sonnet-5": {
+            id: "claude-sonnet-5",
+            name: "Claude Sonnet 5",
             status: "active",
             variants: {
               low: {},
@@ -144,8 +144,8 @@ export function fallbackProviderCatalog(options: {
     default: {
       codex: "gpt-5.4",
       opencode: "gpt-5.4",
-      "claude-headless": "claude-sonnet-4-6",
-      "claude-p": "claude-sonnet-4-6",
+      "claude-headless": "claude-sonnet-5",
+      "claude-p": "claude-sonnet-5",
     },
     connected: ["codex", "opencode", "claude-headless", "claude-p"],
     ...(options.source ? { source: options.source } : {}),
