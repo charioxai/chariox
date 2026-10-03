@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
+import { PassThrough } from "node:stream";
 
 import { APP_CSP, AppTabs, appOrigin } from "./browser-controller-apps.mjs";
+import { BrowserControllerStdioServer } from "./browser-controller.mjs";
 
 function fakeConnection(targets = []) {
   const sent = [];
@@ -231,7 +233,99 @@ test("polls keep every App window fullscreen", async () => {
   const { tabs, connection } = await opened();
   connection.windowState = "normal";
   await tabs.takeCalls();
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(connection.windowState, "fullscreen");
+});
+
+test("a stalled window check does not hold calls or replies in the controller queue", async (t) => {
+  const { tabs, connection } = await opened();
+  // Finish the connection sweep before stalling only the window inspection.
+  await tabs.reconcile();
+  const release = Promise.withResolvers();
+  const send = connection.send.bind(connection);
+  let checks = 0;
+  connection.send = async (method, params, sessionId) => {
+    if (method === "Browser.getWindowBounds") {
+      checks += 1;
+      await release.promise;
+    }
+    return send(method, params, sessionId);
+  };
+  t.after(() => release.resolve());
+  await connection.emit({ method: "Runtime.bindingCalled", sessionId: "s1",
+    params: { name: "__charioxAppCall", payload: JSON.stringify({ id: "neighbour", method: "usage" }) } });
+  let batch;
+  const drain = tabs.takeCalls().then((result) => { batch = result; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(checks, 1, "the window check really is stalled");
+  assert.equal(batch?.calls[0]?.call_id, "neighbour", "dispatch must not wait for window housekeeping");
+  await tabs.respond({ target_id: "t1", call_id: "neighbour", result: { at: 1 } });
+  assert.equal(connection.sent.at(-1).method, "Runtime.evaluate", "the reply leaves before the window check completes");
+  // Faster bridge polling must not multiply outstanding CDP checks.
+  for (let n = 0; n < 10; n++) await tabs.takeCalls();
+  assert.equal(checks, 1);
+  release.resolve();
+  await drain;
+});
+
+test("stdio drains and answers a neighbour while fullscreen inspection is stalled", async (t) => {
+  const { tabs, connection } = await opened();
+  await tabs.reconcile();
+  const release = Promise.withResolvers();
+  const send = connection.send.bind(connection);
+  connection.send = async (method, params, sessionId) => {
+    if (method === "Browser.getWindowBounds") await release.promise;
+    return send(method, params, sessionId);
+  };
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const responses = [];
+  let buffer = "";
+  output.on("data", (chunk) => {
+    buffer += chunk.toString();
+    let end;
+    while ((end = buffer.indexOf("\n")) !== -1) {
+      responses.push(JSON.parse(buffer.slice(0, end)));
+      buffer = buffer.slice(end + 1);
+    }
+  });
+  // Use the real request handler and serial stdio queue, with only CDP faked.
+  const browser = { ensureConnection: async () => connection, appTabs: tabs };
+  const running = new BrowserControllerStdioServer({ input, output, browser }).run();
+  t.after(async () => {
+    release.resolve();
+    input.end();
+    await running;
+    output.end();
+  });
+  await connection.emit({ method: "Runtime.bindingCalled", sessionId: "s1",
+    params: { name: "__charioxAppCall", payload: JSON.stringify({ id: "neighbour", method: "usage" }) } });
+  input.write(`${JSON.stringify({ id: 1, method: "browser.app.calls" })}\n`);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(responses[0]?.result?.calls[0]?.call_id, "neighbour");
+  input.write(`${JSON.stringify({ id: 2, method: "browser.app.respond",
+    params: { target_id: "t1", call_id: "neighbour", result: { at: 1 } } })}\n`);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(responses[1], { id: 2, ok: true, result: { delivered: true } });
+});
+
+test("faster bridge drains keep the fullscreen check cadence bounded", async (t) => {
+  let now = 1000;
+  t.mock.method(performance, "now", () => now);
+  const { tabs, connection } = await opened();
+  await tabs.takeCalls();
+  await new Promise((resolve) => setImmediate(resolve));
+  connection.sent.length = 0;
+  for (let n = 1; n < 10; n++) {
+    now += 25;
+    await tabs.takeCalls();
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.equal(connection.sent.length, 0, "rapid drains must not repeat window inspection");
+  now += 25;
+  await tabs.takeCalls();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(connection.sent.map((message) => message.method), ["Browser.getWindowForTarget", "Browser.getWindowBounds"]);
 });
 
 test("the bridge asks the kernel for a panel placement; it never exposes the panel", async () => {

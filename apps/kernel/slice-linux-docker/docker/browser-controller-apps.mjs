@@ -9,6 +9,7 @@ export const APP_ORIGIN_SUFFIX = ".app.chariox.internal";
 const MAX_ASSETS = 256;
 const MAX_ASSET_BYTES = 8 * 1024 * 1024;
 const MAX_PENDING_CALLS = 64;
+const FULLSCREEN_CHECK_INTERVAL_MS = 250;
 const MAX_CALL_BYTES = 256 * 1024;
 const BINDING = "__charioxAppCall";
 export const APP_CSP = [
@@ -99,6 +100,8 @@ export class AppTabs {
     this.calls = [];
     this.connection = null;
     this.unsubscribe = null;
+    this.fullscreenMaintenance = null;
+    this.nextFullscreenCheck = 0;
   }
 
   async open(params) {
@@ -179,6 +182,7 @@ export class AppTabs {
     this.apps.clear();
     this.calls = [];
     this.swept = false;
+    this.nextFullscreenCheck = 0;
     this.connection = connection;
     this.unsubscribe = connection.subscribe((message) => {
       void this.handle(connection, message).catch(() => {});
@@ -256,6 +260,29 @@ export class AppTabs {
     return false;
   }
 
+  // Window inspection is housekeeping, not part of dispatch. Awaiting it in
+  // takeCalls holds both the stdio queue and the kernel controller lock: even
+  // a reply for another App then waits behind every window's CDP round trips.
+  // Keep one bounded pass, at the old cadence, while bridge polls can drain.
+  maintainFullscreen() {
+    const now = performance.now();
+    if (this.fullscreenMaintenance || now < this.nextFullscreenCheck) return;
+    this.nextFullscreenCheck = now + FULLSCREEN_CHECK_INTERVAL_MS;
+    const connection = this.connection;
+    const apps = [...this.apps.entries()];
+    const pass = async () => {
+      for (const [sessionId, app] of apps) {
+        if (this.connection !== connection) return;
+        if (this.apps.get(sessionId) !== app) continue;
+        await this.fullscreen(connection, app.targetId).catch(() => false);
+      }
+    };
+    const maintenance = pass().finally(() => {
+      this.fullscreenMaintenance = null;
+    });
+    this.fullscreenMaintenance = maintenance;
+  }
+
   // A lost CDP connection ends Fetch interception and the bridge for every
   // App Tab. Forget those Tabs and close any App-origin Tab this controller
   // does not own (including ones left by an earlier controller process).
@@ -282,9 +309,7 @@ export class AppTabs {
     this.calls = [];
     // Keep App windows fullscreen (someone may press Esc), so the panel beside
     // each page covers exactly the desktop the page leaves free.
-    for (const app of this.apps.values()) {
-      await this.fullscreen(this.connection, app.targetId).catch(() => false);
-    }
+    this.maintainFullscreen();
     // Open App targets let the kernel drop views that closed or crashed.
     return {
       calls,

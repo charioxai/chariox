@@ -24,7 +24,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::time::Duration;
 
-const POLL_INTERVAL: Duration = Duration::from_millis(250);
+const POLL_INTERVAL: Duration = Duration::from_millis(25);
+const POLL_FAILURE_RETRY: Duration = Duration::from_millis(250);
 const COMMAND_RETRY: Duration = Duration::from_millis(100);
 /// An Open waits for a running Room command (bounded by the controller's
 /// 15 s command timeout); an answer is retried a few times.
@@ -223,8 +224,12 @@ impl KernelRuntimeState {
     async fn pump_app_view_calls(self, session_id: String) {
         let views = self.app_control().views().clone();
         let mut failures = 0;
+        let mut polls = tokio::time::interval(POLL_INTERVAL);
+        polls.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         while views.keep_pumping(&session_id) {
-            tokio::time::sleep(POLL_INTERVAL).await;
+            // First poll is immediate; RPC time does not add another full
+            // interval, and a delayed poll never causes a catch-up burst.
+            polls.tick().await;
             let polled_up_to = views.registrations(&session_id);
             let Some(batch) = self
                 .app_view_command::<BrowserAppViewCalls>(&session_id, BrowserAppViewRequest::Calls)
@@ -234,6 +239,9 @@ impl KernelRuntimeState {
                 if failures >= MAX_POLL_FAILURES {
                     views.forget_session(&session_id);
                 }
+                // Preserve the old failure window rather than unbinding a
+                // temporarily unavailable controller ten times faster.
+                tokio::time::sleep(POLL_FAILURE_RETRY).await;
                 continue;
             };
             failures = 0;
