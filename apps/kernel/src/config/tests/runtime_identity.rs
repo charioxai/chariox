@@ -94,7 +94,7 @@ fn runtime_identity_is_stable_per_host_port() {
 }
 
 #[test]
-fn protected_environment_load_and_restart_preserve_retained_ids_and_identity_documents() {
+fn protected_room_restart_preserves_retained_identity_and_validates_slice_binding() {
     let _guard = crate::env_lock::lock();
     let directory = env::temp_dir().join(format!(
         "chariox-protected-identity-config-{}",
@@ -111,11 +111,16 @@ fn protected_environment_load_and_restart_preserve_retained_ids_and_identity_doc
         }
     }
     let names = ["HOME", "CHARIOX_HOME", "CHARIOX_SLICE_PRIVATE_ROOT", "CHARIOX_KERNEL_HOST", "CHARIOX_KERNEL_PORT",
-        "CHARIOX_DAEMON_ID", "CHARIOX_MACHINE_ID", "CHARIOX_DAEMON_ALIAS", "CHARIOX_MACHINE_ALIAS"];
+        "CHARIOX_DAEMON_ID", "CHARIOX_MACHINE_ID", "CHARIOX_DAEMON_ALIAS", "CHARIOX_MACHINE_ALIAS",
+        "CHARIOX_SLICE_ID", "CHARIOX_ROOM_ENVIRONMENT_HOME_KERNEL_ID",
+        "CHARIOX_ROOM_ENVIRONMENT_HOME_PUBLIC_KEY", "CHARIOX_ROOM_ENVIRONMENT_SESSION_ID",
+        "CHARIOX_ROOM_ENVIRONMENT_SLICE_ID"];
     let _restore = Restore(
         names.into_iter().map(|name| (name, env::var_os(name))).collect(),
         directory.clone(),
     );
+    let public = relay_crypto::public_key_from_private_key_base64(&relay_crypto::generate_private_key_base64()).unwrap();
+    let foreign_public = relay_crypto::public_key_from_private_key_base64(&relay_crypto::generate_private_key_base64()).unwrap();
     unsafe {
         env::set_var("HOME", &directory);
         env::set_var("CHARIOX_HOME", &directory);
@@ -123,7 +128,12 @@ fn protected_environment_load_and_restart_preserve_retained_ids_and_identity_doc
         env::set_var("CHARIOX_KERNEL_HOST", "127.0.0.1");
         env::set_var("CHARIOX_KERNEL_PORT", "43119");
         env::set_var("CHARIOX_DAEMON_ID", "foreign-kernel");
-        env::set_var("CHARIOX_MACHINE_ID", "foreign-machine");
+        env::set_var("CHARIOX_MACHINE_ID", "slice:synthetic-slice");
+        env::set_var("CHARIOX_SLICE_ID", "synthetic-slice");
+        env::set_var("CHARIOX_ROOM_ENVIRONMENT_HOME_KERNEL_ID", "synthetic-home");
+        env::set_var("CHARIOX_ROOM_ENVIRONMENT_HOME_PUBLIC_KEY", public.clone());
+        env::set_var("CHARIOX_ROOM_ENVIRONMENT_SESSION_ID", "synthetic-room");
+        env::set_var("CHARIOX_ROOM_ENVIRONMENT_SLICE_ID", "synthetic-slice");
         env::set_var("CHARIOX_DAEMON_ALIAS", "display-only-kernel");
         env::set_var("CHARIOX_MACHINE_ALIAS", "display-only-machine");
     }
@@ -149,6 +159,25 @@ fn protected_environment_load_and_restart_preserve_retained_ids_and_identity_doc
     assert_eq!(first.host_machine_id, "retained-machine");
     assert_eq!(restarted.host_machine_id, "retained-machine");
     assert!(fs::read(&registry).unwrap() == sentinel);
+    for config in [&first, &restarted] {
+        let binding = config.room_environment_worker_binding.as_ref().unwrap();
+        binding.validate(&config.host_machine_id).expect("retained Room worker identity must boot");
+        let key = public.clone();
+        assert!(binding.permits("synthetic-home", &key, "synthetic-room", "synthetic-slice"));
+        assert!(!binding.permits("foreign-home", &key, "synthetic-room", "synthetic-slice"));
+        assert!(!binding.permits("synthetic-home", &foreign_public.clone(), "synthetic-room", "synthetic-slice"));
+        assert!(!binding.permits("synthetic-home", &key, "foreign-room", "synthetic-slice"));
+        assert!(!binding.permits("synthetic-home", &key, "synthetic-room", "foreign-slice"));
+    }
+    let binding = restarted.room_environment_worker_binding.as_ref().unwrap();
+    for slice in [None, Some("foreign-slice"), Some(" synthetic-slice ")] {
+        unsafe { restore_env_var("CHARIOX_SLICE_ID", slice.map(Into::into)); }
+        assert!(binding.validate(&restarted.host_machine_id).is_err());
+    }
+    unsafe { env::remove_var("CHARIOX_SLICE_PRIVATE_ROOT"); }
+    assert!(binding.validate(&restarted.host_machine_id).is_err());
+    assert!(binding.validate("slice:synthetic-slice").is_ok());
+    assert!(binding.validate("slice:foreign-slice").is_err());
 }
 
 #[test]
