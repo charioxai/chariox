@@ -69,18 +69,20 @@ test("browser profile drill runs the image-selected display server with its help
     readFile(new URL("./slice-browser-profile.drill.mjs", import.meta.url), "utf8"),
     readdir(new URL("./docker/", import.meta.url)),
   ]);
-  // The drill repoints CHARIOX_SLICE_ROOT at a copy, so every file the desktop
-  // helper loads from its root must be in that copy (Xorg aborts without its config).
+  // The drill repoints CHARIOX_SLICE_ROOT at a copy, so every helper the desktop
+  // script names must be in that copy (Xorg aborts without its config). Names
+  // count whether they are `$ROOT/<file>` paths or joined in inline Python.
   const filter = drill.match(/const runtimeFile = \/(.+)\/;/);
   assert.ok(filter, "the drill declares one runtime copy filter");
   const runtimeFile = new RegExp(filter[1]);
-  const loaded = new Set([...screen.matchAll(/\$ROOT\/([A-Za-z0-9_.-]+)/g)]
-    .map(([, name]) => name).filter((name) => name !== "logs"));
-  assert.ok(loaded.has("xorg-dummy.conf"));
-  for (const name of loaded) {
-    assert.ok(helpers.includes(name), `${name} ships from docker/`);
-    assert.match(name, runtimeFile, `drill runtime copy omits ${name}`);
+  for (const [, name] of screen.matchAll(/\$ROOT\/([A-Za-z0-9_.-]+)/g)) {
+    if (name !== "logs") assert.ok(helpers.includes(name), `${name} ships from docker/`);
   }
+  const named = helpers.filter((name) => name !== "slice-screen.sh" && screen.includes(name));
+  for (const name of ["xorg-dummy.conf", "canonical-display.py", "browser-cdp.mjs", "tint2rc"]) {
+    assert.ok(named.includes(name), `slice-screen.sh names ${name}`);
+  }
+  for (const name of named) assert.match(name, runtimeFile, `drill runtime copy omits ${name}`);
   // Recovery must keep the same display process, whichever server the image selects.
   assert.doesNotMatch(drill, /"pgrep", \["-x", "Xvfb"\]/);
   assert.match(drill, /const displayServer = env\.CHARIOX_SLICE_DISPLAY_SERVER \|\| "Xvfb";/);
