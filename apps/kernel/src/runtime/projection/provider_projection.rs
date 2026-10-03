@@ -156,10 +156,33 @@ impl ProviderRunProjectionStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(current) = runs.get(run.id()) {
-            if run.state() == ProviderRunState::Starting
-                && current.state() != ProviderRunState::Starting
+            if current.state() == ProviderRunState::Ended
+                || (run.state() == ProviderRunState::Starting
+                    && current.state() != ProviderRunState::Starting)
             {
                 return current.clone();
+            }
+        }
+        // The remote projection admission check has already selected this run.
+        // A replacement retires the previous projection for this lease/agent;
+        // worker snapshots only describe the newly selected run.
+        if run.state() != ProviderRunState::Ended {
+            if let (Some((lease_id, _)), Some(agent_id)) = (
+                run.id()
+                    .strip_prefix("leased:")
+                    .and_then(|id| id.split_once(':')),
+                run.agent_instance_id(),
+            ) {
+                let prefix = format!("leased:{lease_id}:");
+                for current in runs.values_mut() {
+                    if current.id() != run.id()
+                        && current.id().starts_with(&prefix)
+                        && current.session_id() == run.session_id()
+                        && current.agent_instance_id() == Some(agent_id)
+                    {
+                        current.mark_ended();
+                    }
+                }
             }
         }
         runs.insert(run.id().to_string(), run.clone());
