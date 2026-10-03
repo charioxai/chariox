@@ -117,21 +117,38 @@ async fn slice_state_reads_reacquire_lost_controller_lease() {
             .stop_browser_controller_process(room)
             .await
             .unwrap();
+        let generation = fixture
+            .home
+            .runtime_state
+            .room_environment_snapshot(room)
+            .unwrap()
+            .runtime_generation;
         fixture
             .home
             .runtime_state
-            .schedule_room_environment_health_refresh(room);
+            .refresh_room_browser_health(room, generation)
+            .await;
+        let lost = fixture
+            .home
+            .runtime_state
+            .room_environment_snapshot(room)
+            .unwrap();
+        assert_eq!(
+            lost.lifecycle,
+            crate::session::EnvironmentLifecycle::Degraded
+        );
+        // The synthetic CDP connection marks Chromium closed on disconnect.
+        // Production CDP close only drops its websocket, leaving Chromium live.
+        let browser_state_path = fixture._worker_state.root.join("chromium-state.json");
+        let mut browser_state: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&browser_state_path).unwrap()).unwrap();
+        browser_state["open"] = json!(true);
+        std::fs::write(
+            &browser_state_path,
+            serde_json::to_vec(&browser_state).unwrap(),
+        )
+        .unwrap();
         timeout(Duration::from_secs(5), async {
-            while fixture
-                .home
-                .runtime_state
-                .room_environment_snapshot(room)
-                .unwrap()
-                .lifecycle
-                != crate::session::EnvironmentLifecycle::Degraded
-            {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
             loop {
                 fixture
                     .home
@@ -151,7 +168,16 @@ async fn slice_state_reads_reacquire_lost_controller_lease() {
             }
         })
         .await
-        .expect("Slice Ready reads must recover a lost controller lease");
+        .unwrap_or_else(|error| {
+            panic!(
+                "Slice reads must recover a lost lease: {error}; {:?}",
+                fixture
+                    .home
+                    .runtime_state
+                    .room_environment_snapshot(room)
+                    .unwrap()
+            )
+        });
         let recovered = fixture
             .home
             .runtime_state
