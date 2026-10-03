@@ -155,7 +155,7 @@ impl KernelRuntimeState {
         } else {
             None
         };
-        let observation_guard = if secret_guard.is_none() {
+        let observation_guard = if secret_guard.is_none() && !is_cancellation_command(&command) {
             Some(protection.barrier(session_id)?.read_owned().await)
         } else {
             None
@@ -185,12 +185,16 @@ impl KernelRuntimeState {
                     "browser_controller_scope_denied: provisioned slice controller requires the home Room relay path",
                 ));
             }
-            self.owned
-                .browser_controller_processes
-                .protect_observation_values(
-                    protection.controller_values(session_id).unwrap_or_default(),
-                )
-                .map_err(|error| controller_route_error(&error))?;
+            // Cancellation signals the active execution without taking its supervisor
+            // lock or waiting behind a secret insertion's observation barrier.
+            if !is_cancellation_command(&command) {
+                self.owned
+                    .browser_controller_processes
+                    .protect_observation_values(
+                        protection.controller_values(session_id).unwrap_or_default(),
+                    )
+                    .map_err(|error| controller_route_error(&error))?;
+            }
             execute_local(
                 self.owned.browser_controller_processes.clone(),
                 self.owned.computer_input_executions.clone(),
@@ -342,7 +346,7 @@ impl KernelRuntimeState {
         } else {
             None
         };
-        let _observation_guard = if secret_guard.is_none() {
+        let _observation_guard = if secret_guard.is_none() && !is_cancellation_command(&command) {
             Some(protection.barrier(session_id)?.read_owned().await)
         } else {
             None
@@ -359,12 +363,14 @@ impl KernelRuntimeState {
                 "browser_controller_unavailable: slice has no configured controller",
             ));
         }
-        self.owned
-            .browser_controller_processes
-            .protect_observation_values(
-                protection.controller_values(session_id).unwrap_or_default(),
-            )
-            .map_err(|error| controller_route_error(&error))?;
+        if !is_cancellation_command(&command) {
+            self.owned
+                .browser_controller_processes
+                .protect_observation_values(
+                    protection.controller_values(session_id).unwrap_or_default(),
+                )
+                .map_err(|error| controller_route_error(&error))?;
+        }
         let response = execute_local(
             self.owned.browser_controller_processes.clone(),
             self.owned.computer_input_executions.clone(),
@@ -375,6 +381,13 @@ impl KernelRuntimeState {
         .map_err(|error| protection.scrub_error(session_id, error))?;
         protection.scrub_response(session_id, response)
     }
+}
+
+fn is_cancellation_command(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::CancelAction { .. } | Command::CancelCookieImport { .. }
+    )
 }
 
 fn receipt_recovery_command(command: &Command) -> Option<Command> {

@@ -31,7 +31,7 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str, agent: &str, tab: &
                 .await
         });
         let assertions = std::panic::AssertUnwindSafe(async {
-            wait_file(&pending).await;
+            wait_file(&pending, "configuration reaches injection point").await;
             dispatch_json(
                 &fixture.home,
                 json!({"RequestRoomEnvironmentInputTakeover":{
@@ -40,66 +40,17 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str, agent: &str, tab: &
             )
             .await
             .unwrap();
-            wait_file(&observed).await;
+            wait_file(&observed, "configuration receives cancellation").await;
             assert_eq!(physical_count(fixture, counter), before);
         })
         .catch_unwind()
         .await;
-        if assertions.is_err() {
-            eprintln!(
-                "configuration hold diagnostic: finished={} marker={} physical_delta={}",
-                operation.is_finished(),
-                pending.exists(),
-                physical_count(fixture, counter) - before
-            );
-        }
         std::fs::remove_file(&hold).unwrap();
         let result = timeout(Duration::from_secs(5), operation)
             .await
             .unwrap()
             .unwrap();
         if let Err(panic) = assertions {
-            if let Err(error) = &result {
-                // Report only stable error classification, never payloads or credentials.
-                let message = error.to_string();
-                let reasons = [
-                    "protocol",
-                    "unknown",
-                    "redact",
-                    "nonce",
-                    "receipt",
-                    "cancel",
-                    "permission",
-                    "ownership",
-                    "unavailable",
-                    "generation",
-                    "tab",
-                    "binding",
-                    "deadline",
-                    "timeout",
-                    "window",
-                    "download",
-                    "target",
-                    "method",
-                    "scope",
-                    "stale",
-                    "changed",
-                    "belongs",
-                ]
-                .into_iter()
-                .filter(|reason| message.contains(reason))
-                .collect::<Vec<_>>();
-                let operation = match error {
-                    crate::error::DaemonError::LocalTransport { operation, .. }
-                    | crate::error::DaemonError::RelayTransport { operation, .. } => *operation,
-                    _ => "other",
-                };
-                eprintln!(
-                    "configuration before injection: operation={operation} classes={reasons:?}"
-                );
-            } else {
-                eprintln!("configuration settled without its injection marker");
-            }
             std::panic::resume_unwind(panic);
         }
         assert!(result
@@ -234,12 +185,12 @@ fn physical_count(fixture: &LiveWorker, counter: &str) -> u64 {
     state[counter].as_u64().unwrap_or(0)
 }
 
-async fn wait_file(path: &std::path::Path) {
+async fn wait_file(path: &std::path::Path, stage: &str) {
     timeout(Duration::from_secs(2), async {
         while !path.exists() {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })
     .await
-    .expect("controller reaches configuration fault-injection point");
+    .expect(stage);
 }
