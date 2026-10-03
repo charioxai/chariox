@@ -37,6 +37,7 @@ mod local_presence;
 
 pub(crate) mod command_cache;
 mod outgoing;
+mod socket_options;
 mod subscriptions;
 
 pub(crate) use command_cache::COMMAND_RESULT_CACHE_LIMIT;
@@ -698,14 +699,9 @@ where
                     operation: "accept kernel websocket",
                     message: error.to_string(),
                 })?;
-                if let Err(error) = stream.set_nodelay(true) {
-                    crate::logging::warn_with_fields(
-                        "daemon.runtime_transport",
-                        "failed configuring kernel websocket TCP_NODELAY",
-                        serde_json::json!({ "error": error.to_string() }),
-                    );
+                let Some(stream) = socket_options::configure(stream) else {
                     continue;
-                }
+                };
                 let runtime = Arc::clone(&runtime);
                 let router = Arc::clone(&router);
                 let inbound_request_admission = inbound_request_admission.clone();
