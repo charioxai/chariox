@@ -17,6 +17,7 @@ import {
   pairCloudRelayMachineRequest,
   pollCloudRelayLoginRequest,
   relayStatusRequest,
+  relayClientKeyBindingMinimumProtocolVersion,
   resolveKernelClientConnectionRequest,
   startCloudRelayLoginRequest,
 } from "./ipc-requests.js"
@@ -224,7 +225,7 @@ export async function issueKernelCloudRelayClientToken(
         capability: "CLI key-bound relay tokens",
         requestVariant: "IssueCloudRelayClientToken",
         unknownField: "public_key_thumbprint",
-        minimumProtocolVersion: 349,
+        minimumProtocolVersion: relayClientKeyBindingMinimumProtocolVersion,
       },
     )
     : await client.send<Record<string, unknown>>(request)
@@ -264,7 +265,7 @@ export async function joinKernelTerminalPairingLink(
       capability: "key-bound terminal pairing",
       requestVariant: "JoinTerminalPairingLink",
       unknownField: "public_key_thumbprint",
-      minimumProtocolVersion: 349,
+      minimumProtocolVersion: relayClientKeyBindingMinimumProtocolVersion,
     },
   )
   const joined = expectVariant<TerminalPairingLinkJoined>(response, "TerminalPairingLinkJoined")

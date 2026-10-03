@@ -14,6 +14,7 @@ export type LocalKernelPresence = {
   readonly host: string
   readonly port: number
   readonly heartbeatAtMs: number
+  readonly protocolVersion?: number
 }
 
 export function loadLocalKernelPresences(
@@ -47,6 +48,7 @@ function readPresence(path: string, nowMs: number): LocalKernelPresence[] {
       readonly host?: string
       readonly port?: number
       readonly heartbeat_at_ms?: number
+      readonly local_daemon_protocol_version?: number
     }
     if (
       record.schema_version !== presenceSchemaVersion
@@ -69,6 +71,8 @@ function readPresence(path: string, nowMs: number): LocalKernelPresence[] {
       host: record.host.trim(),
       port: record.port as number,
       heartbeatAtMs: record.heartbeat_at_ms,
+      ...(Number.isInteger(record.local_daemon_protocol_version) && (record.local_daemon_protocol_version ?? 0) > 0
+        ? { protocolVersion: record.local_daemon_protocol_version } : {}),
     }]
   } catch {
     return []

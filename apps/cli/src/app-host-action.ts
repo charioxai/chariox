@@ -1,8 +1,9 @@
-import { acceptAppHostActionRequest } from "@chariox/kernel-client/ipc-requests"
+import { acceptAppHostActionRequest, appHostActionMinimumProtocolVersion } from "@chariox/kernel-client/ipc-requests"
 import { copyTextToClipboard } from "./clipboard.js"
 import { appHostOperationId, kernelApprovals } from "./kernel-approval-controller.js"
 import type { RuntimeSession } from "./cli-types.js"
 import { openExternalUrl } from "./external-url.js"
+import { withProtocolMinimum } from "./protocol-minimum-diagnostic.js"
 
 export type AppHostTerminal = {
   copy(text: string): Promise<void>
@@ -34,7 +35,13 @@ export async function acceptAppHostOffer(
   notice: (message: string) => void,
   host?: AppHostTerminal,
 ): Promise<void> {
-  const response = await send(acceptAppHostActionRequest(sessionId, operationId))
+  const response = await withProtocolMinimum(() => send(acceptAppHostActionRequest(sessionId, operationId)), {
+    capability: "App host actions", requestVariant: "AcceptAppHostAction",
+    minimumProtocolVersion: appHostActionMinimumProtocolVersion,
+  })
+  if ((response.AppRequestFailed as { code?: unknown } | undefined)?.code === "not_found") {
+    throw new Error("That App host offer is missing, expired, or belongs to another session")
+  }
   const accepted = response.AppHostActionAccepted as { operation_id?: unknown; action?: { kind?: unknown; text?: unknown; url?: unknown } } | undefined
   if (accepted?.operation_id !== operationId) throw new Error("That App host request is unavailable, already answered, or expired")
   const action = accepted.action

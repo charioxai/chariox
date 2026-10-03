@@ -19,6 +19,7 @@ test("local kernel presence exposes only fresh lease endpoints", (context) => {
     host: "127.0.0.1",
     port: 43_121,
     heartbeat_at_ms: 100_000,
+    local_daemon_protocol_version: 388,
   }))
   writeFileSync(join(directory, "stale.json"), JSON.stringify({
     schema_version: 1,
@@ -33,6 +34,7 @@ test("local kernel presence exposes only fresh lease endpoints", (context) => {
 
   assert.equal(presences.length, 1)
   assert.equal(presences[0]?.kernelId, "kernel-a")
+  assert.equal(presences[0]?.protocolVersion, 388)
   assert.equal(localKernelEndpoint(presences[0]!), "ws://127.0.0.1:43121/kernel")
 })
 
