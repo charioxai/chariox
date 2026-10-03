@@ -38,6 +38,7 @@ test("buildCommandCenterItems shows root slash commands", () => {
   assert.equal(items.some((item) => item.kind === "group" && item.label === "/config"), true)
   assert.equal(items.some((item) => item.kind === "group" && item.label === "/meta" && item.value === "/meta "), true)
   assert.equal(items.some((item) => item.kind === "command" && item.label === "/exit"), true)
+  assert.equal(items.some((item) => item.kind === "command" && item.value === "/approvals"), true)
   assert.equal(items.find((item) => item.kind === "group" && item.label === "/extension")?.description, "Inspect worker-local, home-proxy, and skill snapshot extension state (7)")
 })
 

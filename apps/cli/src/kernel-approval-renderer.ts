@@ -1,5 +1,6 @@
-import { BoxRenderable, ScrollBoxRenderable, TextRenderable, MouseButton, type CliRenderer } from "@opentui/core"
+import { BoxRenderable, ScrollBoxRenderable, TextRenderable, MouseButton, TextAttributes, type CliRenderer } from "@opentui/core"
 import type { KernelApprovalView } from "./kernel-approval-controller.js"
+import { approvalShortcutLabel } from "./approval-shortcuts.js"
 import { theme } from "./theme.js"
 
 export function createKernelApprovalRenderer(renderer: CliRenderer, actions: {
@@ -8,17 +9,51 @@ export function createKernelApprovalRenderer(renderer: CliRenderer, actions: {
   cycleRemember(): void
   submitPasskey(): void
 }) {
+  let banner: BoxRenderable | undefined
   let box: BoxRenderable | undefined
   let body: ScrollBoxRenderable | undefined
   let lastFrame = ""
   return {
+    assignBanner(value: BoxRenderable) { banner = value; lastFrame = "" },
     assign(value: BoxRenderable) { box = value; lastFrame = "" },
     scroll(direction: -1 | 1) { body?.scrollBy(direction * 4) },
     render(view: KernelApprovalView, dimensions: { width: number; height: number }) {
-      if (!box) return
+      if (!box && !banner) return
       const frame = JSON.stringify([view, dimensions, theme.text, theme.primary, theme.backgroundPanel, theme.backgroundElement])
       if (lastFrame === frame) return
       lastFrame = frame
+      if (banner) {
+        for (const child of [...banner.getChildren()]) {
+          banner.remove(String(child.id))
+          child.destroyRecursively()
+        }
+        banner.visible = view.count > 0
+        banner.backgroundColor = theme.backgroundElement
+        banner.paddingLeft = 1
+        banner.paddingRight = 1
+        banner.onMouseUp = (event) => {
+          event.stopPropagation()
+          if (event.button === MouseButton.LEFT) actions.show()
+        }
+        if (view.count) {
+          const fullTitle = (view.interaction?.title || "Kernel approval").replace(/[\x00-\x1f\x7f]/g, " ")
+          const title = Array.from(fullTitle).length > 120 ? `${Array.from(fullTitle).slice(0, 120).join("")}…` : fullTitle
+          banner.add(new TextRenderable(renderer, {
+            content: `Action needed · ${view.count} approval${view.count === 1 ? "" : "s"} waiting: ${title}`,
+            wrapMode: "word", flexShrink: 0, fg: theme.warning, attributes: TextAttributes.BOLD,
+          }))
+          if (view.criticalCount) banner.add(new TextRenderable(renderer, {
+            content: `Critical — passkey needed${view.criticalCount > 1 ? ` (${view.criticalCount} approvals)` : ""}. Open to review and approve with your passkey.`,
+            wrapMode: "word", fg: theme.error, attributes: TextAttributes.BOLD, flexShrink: 0,
+          }))
+          banner.add(new TextRenderable(renderer, {
+            content: `Open: ${approvalShortcutLabel()} or /approvals`,
+            wrapMode: "word", fg: theme.primary, flexShrink: 0,
+          }))
+        }
+        banner.requestRender()
+      }
+      if (!box) return
       body = undefined
       for (const child of [...box.getChildren()]) {
         box.remove(String(child.id))
@@ -40,7 +75,7 @@ export function createKernelApprovalRenderer(renderer: CliRenderer, actions: {
         position: "absolute", right: 0, top: 0, height: 1,
         backgroundColor: theme.backgroundElement, paddingLeft: 1, paddingRight: 1,
       })
-      text(indicator, `Chariox · ${view.count} approval${view.count === 1 ? "" : "s"} · F8`, true)
+      text(indicator, `Chariox · ${view.count} approval${view.count === 1 ? "" : "s"} · ${approvalShortcutLabel()}`, true)
       indicator.onMouseUp = (event) => {
         event.stopPropagation()
         if (event.button === MouseButton.LEFT) actions.show()
@@ -62,6 +97,9 @@ export function createKernelApprovalRenderer(renderer: CliRenderer, actions: {
       panel.add(body)
       text(body, view.interaction.title || "Kernel approval")
       text(body, view.interaction.message)
+      if (view.interaction.choices.some(choice => choice.requires_passkey)) {
+        text(body, "Critical — passkey needed. Select an approval choice to enter your passkey.", true)
+      }
       view.interaction.choices.forEach((choice, index) => {
         const row = new BoxRenderable(renderer, {
           flexShrink: 0, backgroundColor: view.selected === index ? theme.backgroundElement : theme.backgroundPanel,

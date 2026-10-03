@@ -33,6 +33,7 @@ type AnyFn = (...args: any[]) => any
 
 export type CliInputRoutingCompositionDeps = {
   handleKernelApprovalKey?: (event: import("./kernel-approval-controller.js").KernelApprovalKey) => boolean
+  openKernelApprovals: () => void
   kernelApprovalOwnsInput?: () => boolean
   client: any
   options: any
@@ -241,6 +242,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     onExit: deps.requestExit,
     onWaiting: deps.requestWaitingRoom,
     onStop: () => requestPromptStop(),
+    onApprovals: deps.openKernelApprovals,
     handleAttachmentCommand: deps.handleAttachmentCommand,
     handleSessionCommand: deps.handleSessionCommand,
     handleProviderCommand: deps.handleProviderCommand,
