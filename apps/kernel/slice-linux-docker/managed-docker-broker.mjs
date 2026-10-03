@@ -1363,11 +1363,12 @@ function prepareProvisioner(request) {
     environment.CHARIOX_SLICE_LOCAL_DEV_SOCKET_IDENTITY = process.env.CHARIOX_SLICE_LOCAL_DEV_SOCKET_IDENTITY
     environment.CHARIOX_SLICE_OWNED_WORKSPACE = "1"
     environment.CHARIOX_SLICE_BUILD_IMAGE = "never"
+    // Saved images also refresh their worker runtime from the enrolled base.
+    environment.CHARIOX_SLICE_BASE_IMAGE = LOCAL_AUTHORITY.enrollment.workerImageId
     if (["provision", "restore-state"].includes(request.action) && !environment.CHARIOX_SLICE_SAVED_HOME_ARCHIVE) {
       const requested = environment.CHARIOX_SLICE_DOCKER_IMAGE
       if (requested && !["chariox-slice-linux:0.1.0", LOCAL_AUTHORITY.enrollment.workerImageId].includes(requested)) fail("Local DEV worker image must match its installed enrollment")
       environment.CHARIOX_SLICE_DOCKER_IMAGE = LOCAL_AUTHORITY.enrollment.workerImageId
-      environment.CHARIOX_SLICE_BASE_IMAGE = LOCAL_AUTHORITY.enrollment.workerImageId
     }
   } else if (!environment.CHARIOX_SLICE_WORKSPACE) {
     // Without a development publication the provisioner would bind the signed

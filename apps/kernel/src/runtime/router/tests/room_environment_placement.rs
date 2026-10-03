@@ -8,6 +8,7 @@ mod execution;
 mod live_worker;
 
 fn run_test<F: std::future::Future<Output = ()> + 'static>(test: fn() -> F) {
+    crate::test_support::isolated_env_test!();
     std::thread::Builder::new()
         .stack_size(64 * 1024 * 1024)
         .spawn(move || {
