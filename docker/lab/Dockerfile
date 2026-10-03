@@ -4,6 +4,7 @@ FROM node:22-bookworm-slim AS cli-builder
 WORKDIR /opt/chariox
 RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+COPY patches patches
 COPY apps/cli/package.json apps/cli/package.json
 COPY packages packages
 RUN pnpm install --frozen-lockfile

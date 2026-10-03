@@ -18,6 +18,7 @@ FROM js-toolchain AS js-builder
 ENV PATH=/opt/chariox-toolchain/node_modules/.bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 WORKDIR /opt/chariox
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+COPY patches patches
 COPY packages packages
 COPY apps/server/package.json apps/server/package.json
 RUN pnpm install --frozen-lockfile
