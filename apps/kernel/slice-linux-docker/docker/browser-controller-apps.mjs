@@ -7,6 +7,7 @@
 // reloads, navigates or closes, the kernel cancels that document's calls and
 // an answer for it is never delivered to the next one.
 import { BrowserControllerError } from "./browser-controller-cdp.mjs";
+import { placeholderOrigin } from "./browser-app-restore.mjs";
 
 // Each installation is a separate registrable domain. A shared parent such as
 // app.chariox.internal lets one App set Domain cookies readable by another.
@@ -156,7 +157,11 @@ export class AppTabs {
     // Each App view gets its own fullscreen window, so page and desktop
     // coordinates agree. Its page lays out left of the trusted conversation
     // panel, which the terminal draws over the rest of the desktop.
-    const { targetId } = await connection.send("Target.createTarget", { url: "about:blank", newWindow: true });
+    // A restored placeholder has no App script or authority. Only an Open
+    // with kernel-verified assets can adopt it, matching the exact origin.
+    const { targetInfos = [] } = await connection.send("Target.getTargets", {});
+    const restored = targetInfos.find(target => target.type === "page" && placeholderOrigin(target.url) === origin);
+    const { targetId } = restored ?? await connection.send("Target.createTarget", { url: "about:blank", newWindow: true });
     const sessionId = await this.browser.ensureTargetSession(connection, targetId);
     this.apps.set(sessionId, { ...app, targetId, document: null, pending: new Set() });
     try {

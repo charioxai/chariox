@@ -75,6 +75,9 @@ struct SessionViews {
     /// App Tabs the controller last reported open, bound or not.
     open_tabs: usize,
     pumping: bool,
+    /// Open views retained across an explicit slice stop, without old target
+    /// authority. Re-open through verified assets once the slice is ready.
+    restoring: Vec<AppViewBinding>,
     /// Tabs whose reconnection failed (a Room controller without reload, a
     /// transient Room failure, or a view the host does not own), with when:
     /// answered unbound until the cooldown passes.
@@ -166,6 +169,42 @@ pub(crate) struct AppViews(
 const RELOAD_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl AppViews {
+    pub(crate) fn suspend_for_cold_start(&self, session: &str) {
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(views) = sessions.get_mut(session) {
+            for (_, (binding, _)) in views.tabs.drain() {
+                if !views.restoring.iter().any(|old| {
+                    old.owner == binding.owner && old.installation == binding.installation
+                }) {
+                    views.restoring.push(binding);
+                }
+            }
+            views.open_tabs = 0;
+            views.called.clear();
+        }
+    }
+
+    pub(crate) fn cold_start_views(&self, session: &str) -> Vec<AppViewBinding> {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(session)
+            .map_or_else(Vec::new, |views| views.restoring.clone())
+    }
+
+    pub(crate) fn finish_cold_start_view(&self, session: &str, binding: &AppViewBinding) {
+        if let Some(views) = self
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_mut(session)
+        {
+            views.restoring.retain(|old| {
+                old.owner != binding.owner || old.installation != binding.installation
+            });
+        }
+    }
+
     /// Records the Tab; returns true when the caller must start the session's
     /// call pump.
     pub(crate) fn register(&self, session: &str, target: &str, binding: AppViewBinding) -> bool {
@@ -365,7 +404,11 @@ impl AppViews {
     pub(crate) fn keep_pumping(&self, session: &str) -> bool {
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         match sessions.get(session) {
-            Some(views) if !views.tabs.is_empty() || views.open_tabs > 0 => true,
+            Some(views)
+                if !views.tabs.is_empty() || views.open_tabs > 0 || !views.restoring.is_empty() =>
+            {
+                true
+            }
             _ => {
                 let revoked = sessions
                     .remove(session)
@@ -390,6 +433,9 @@ impl AppViews {
     pub(crate) fn forget_installation(&self, owner: &str, installation: &str) {
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         for views in sessions.values_mut() {
+            views
+                .restoring
+                .retain(|binding| binding.owner != owner || binding.installation != installation);
             views.tabs.retain(|_, (binding, _)| {
                 binding.owner != owner || binding.installation != installation
             });
@@ -1024,6 +1070,38 @@ mod call_cancellation_tests {
 #[cfg(test)]
 mod reconnect_tests {
     use super::*;
+
+    #[test]
+    fn a_cold_slice_stop_keeps_only_open_view_intent_until_reauthorized() {
+        let views = AppViews::default();
+        let binding = AppViewBinding {
+            owner: "owner".into(),
+            installation: "app".into(),
+            generation: 1,
+            panel: PanelRequest::default(),
+        };
+        views.register("room", "closed", binding.clone());
+        views.retain_open("room", &[], views.registrations("room"));
+        views.suspend_for_cold_start("room");
+        assert!(views.cold_start_views("room").is_empty());
+        views.register("room", "old", binding.clone());
+        views.suspend_for_cold_start("room");
+        assert_eq!(views.cold_start_views("room"), vec![binding.clone()]);
+        assert!(views.binding_state("room", "old").is_none());
+        views.set_open_tabs("room", 0);
+        assert!(views.keep_pumping("room"));
+        views.register("room", "restored", binding.clone());
+        views.finish_cold_start_view("room", &binding);
+        assert!(views.cold_start_views("room").is_empty());
+        assert_eq!(
+            views.binding_state("room", "restored"),
+            Some((binding.clone(), false))
+        );
+        views.suspend_for_cold_start("room");
+        views.forget_installation("owner", "app");
+        assert!(views.cold_start_views("room").is_empty());
+        assert!(!views.keep_pumping("room"));
+    }
 
     #[tokio::test]
     async fn reprojection_retries_only_a_busy_slice_and_only_within_its_window() {

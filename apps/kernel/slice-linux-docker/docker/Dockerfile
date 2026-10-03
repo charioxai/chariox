@@ -210,6 +210,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controlle
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-compatibility.mjs /opt/chariox-slice/browser-controller-compatibility.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-apps.mjs /opt/chariox-slice/browser-controller-apps.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-bar.mjs /opt/chariox-slice/browser-controller-bar.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-app-restore.mjs /opt/chariox-slice/browser-app-restore.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-events.mjs /opt/chariox-slice/browser-controller-events.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-files.mjs /opt/chariox-slice/browser-controller-files.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-upload-staging.mjs /opt/chariox-slice/browser-controller-upload-staging.mjs

@@ -28,7 +28,9 @@ const browserCloseModules = [
   "browser-controller-snapshot.mjs",
   "browser-controller-upload-staging.mjs",
 ];
-const productionFiles = ["docker/slice-screen.sh", "docker/browser-cdp.mjs", "docker/browser-lifecycle.py",
+// slice-screen.sh puts saved App navigations behind placeholders before an
+// owned launch restores the profile's session.
+const productionFiles = ["docker/slice-screen.sh", "docker/browser-app-restore.mjs", "docker/browser-cdp.mjs", "docker/browser-lifecycle.py",
   "docker/browser-upload-store.py", ...browserCloseModules.map(name => `docker/${name}`), "docker/tint2rc", "chromium-seccomp.json"];
 const launcherFiles = productionFiles.filter(name => name.startsWith("docker/")).map(name => name.slice("docker/".length));
 const digest = bytes => createHash("sha256").update(bytes).digest("hex");
