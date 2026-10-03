@@ -295,7 +295,17 @@ async fn run_case(case: Case) {
     );
     // The fixture writes its state before acknowledging turn/start. Waiting for
     // durable delivery avoids reading its JSON while write_text truncates it.
-    wait_for_prompt_delivery(&runtime, session.id(), agent.id(), queued.id()).await;
+    // Queue activation assigns a new mirror id; acknowledge that active item.
+    let state = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .unwrap();
+    let active = state.active_prompt_for_agent(agent.id()).unwrap();
+    assert_eq!(active.created_at_ms(), queued.created_at_ms());
+    assert_eq!(active.source_attachment_id(), queued.source_attachment_id());
+    assert_eq!(active.prompt(), queued.prompt());
+    wait_for_prompt_delivery(&runtime, session.id(), agent.id(), active.id()).await;
     app.lock()
         .await
         .end_agent_provider_run(session.id(), agent.id())
