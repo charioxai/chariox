@@ -480,7 +480,8 @@ async fn consent_round_trip(cleanup_failure: Option<bool>) {
     let mut current = selection.clone();
     current["document_revision"] =
         json!(state.room_environment_snapshot(session.id()).unwrap().tabs[0].document_revision);
-    let local = KernelCaller::for_source(&KernelCommandSource::LocalIpc);
+    let mut local = KernelCaller::for_source(&KernelCommandSource::LocalIpc);
+    local.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
     let request = json!({"PrepareBrowserImport": {"selection": current}});
     let response = dispatch_source(&router, &local, request, KernelCommandSource::LocalIpc)
         .await
