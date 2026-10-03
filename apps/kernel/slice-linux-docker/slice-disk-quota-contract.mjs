@@ -37,7 +37,10 @@ export function validateSliceDiskQuotaIdentity(identity) {
   if (
     typeof identity.containerName !== "string" ||
     !CONTAINER_NAME.test(identity.containerName) ||
-    identity.homeVolumeName !== `${identity.containerName}-home`
+    (identity.homeVolumeName !== `${identity.containerName}-home`
+      && !(typeof identity.homeVolumeName === "string"
+        && identity.homeVolumeName.startsWith(`${identity.containerName}-home-g`)
+        && /^[a-f0-9]{32}$/.test(identity.homeVolumeName.slice(`${identity.containerName}-home-g`.length))))
   ) {
     fail("quota container and home-volume identity are invalid")
   }

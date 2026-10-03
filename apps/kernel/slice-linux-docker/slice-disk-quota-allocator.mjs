@@ -288,7 +288,24 @@ export function createSliceDiskQuotaAllocator({ backend, stateStore }) {
     }
 
     const record = requireReservation(state, request.identity)
-    if (request.operation === "apply_home") return { result: applyHome(record) }
+    if (request.operation === "apply_home") {
+      if (record.identity.containerName !== request.identity.containerName) fail("quota reservation identity changed")
+      if (record.identity.homeVolumeName !== request.identity.homeVolumeName) {
+        const container = backend.inspectContainer(record.identity)
+        if (container && !["created", "exited", "dead"].includes(container.state)) {
+          fail("stop the slice before changing its disk quota home generation")
+        }
+        // Reuse the project: retained previous homes remain counted against the
+        // same hard cap. Bind only after the new volume's labels/tree verify.
+        const next = {...record, identity: {...request.identity}}
+        const result = applyHome(next)
+        record.identity = next.identity
+        persist(state)
+        return { result }
+      }
+      return { result: applyHome(record) }
+    }
+    if (JSON.stringify(record.identity) !== JSON.stringify(request.identity)) fail("quota reservation identity changed")
     if (request.operation === "apply_layer") return { result: applyLayer(record) }
     if (request.operation === "verify") return { evidence: verifyRecord(record) }
     fail("quota operation is not implemented")

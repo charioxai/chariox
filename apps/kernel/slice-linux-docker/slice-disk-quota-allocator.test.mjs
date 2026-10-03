@@ -277,3 +277,24 @@ test("release retains a reservation until both Docker objects and quota usage ar
   assert.equal(Object.keys(removed.getState().reservations).length, 0)
   assert.equal(removed.calls.filter(([kind]) => kind === "clear").length, 2)
 })
+
+test("protected restore applies quota to the new home and keeps retained homes in the same project", () => {
+  const seen = []
+  const f = fixture({backend: {inspectHome: got => {
+    seen.push(got.homeVolumeName)
+    return {driver: "local", persistent: true, labels: identityLabels(got), path: `/data/volumes/${got.homeVolumeName}/_data`}
+  }}})
+  const first = reserve(f.allocator)
+  const restored = {...identity, homeVolumeName: `${identity.containerName}-home-g${"a".repeat(32)}`}
+  f.allocator.handle({protocolVersion: 1, operation: "apply_home", identity: restored})
+  assert.equal(seen.at(-1), restored.homeVolumeName)
+  const record = f.getState().reservations[sliceDiskQuotaIdentityKey(identity)]
+  assert.deepEqual(record.projectIds, first.projectIds)
+  assert.equal(record.identity.homeVolumeName, restored.homeVolumeName)
+  f.allocator.handle({protocolVersion: 1, operation: "verify", identity: restored})
+  assert.equal(seen.at(-1), restored.homeVolumeName)
+  assert.throws(() => f.allocator.handle({protocolVersion: 1, operation: "verify", identity}), /identity changed/)
+  f.backend.inspectContainer = () => ({state: "running"})
+  assert.throws(() => f.allocator.handle({protocolVersion: 1, operation: "apply_home", identity}), /stop the slice/)
+  assert.equal(record.identity.homeVolumeName, restored.homeVolumeName)
+})

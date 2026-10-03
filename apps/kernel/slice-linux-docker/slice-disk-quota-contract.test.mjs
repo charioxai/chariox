@@ -117,3 +117,16 @@ test("durable state validates 70,000 reservations without a spread-argument limi
 
   assert.equal(validateSliceDiskQuotaState(state), state)
 })
+
+test("quota accepts only the owning container's legacy or protected generation home", () => {
+  for (const homeVolumeName of [identity.homeVolumeName, `${identity.containerName}-home-g${"a".repeat(32)}`]) {
+    assert.equal(validateSliceDiskQuotaRequest({protocolVersion: 1, operation: "apply_home",
+      identity: {...identity, homeVolumeName}}).identity.homeVolumeName, homeVolumeName)
+  }
+  for (const homeVolumeName of [`chariox-slice-foreign-home-g${"a".repeat(32)}`,
+    `${identity.containerName}-home-gshort`, `${identity.containerName}-home-g${"A".repeat(32)}`,
+    `${identity.containerName}-home-g${"a".repeat(32)}/../other`]) {
+    assert.throws(() => validateSliceDiskQuotaRequest({protocolVersion: 1, operation: "apply_home",
+      identity: {...identity, homeVolumeName}}), /identity/)
+  }
+})

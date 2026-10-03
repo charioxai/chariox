@@ -1799,6 +1799,11 @@ async function execute(request) {
       fail("managed slice start has no broker-owned stable mount record")
     }
   }
+  if (request.kind === "provisioner" && ["provision", "restore-state", "recover", "destroy"].includes(request.action)) {
+    // Quota requests must use the broker's retained home, not a kernel default
+    // that predates a protected restore generation.
+    request.environment.CHARIOX_SLICE_HOME_VOLUME = protectedLayouts.homeVolume(request.environment.CHARIOX_SLICE_NAME)
+  }
   let boundedLimits
   if (quotaCoordinated && request.kind === "provisioner" && ["provision", "restore-state", "recover"].includes(request.action)) {
     const quota = provisionerQuotaRequest(request.environment)
@@ -2002,7 +2007,7 @@ async function execute(request) {
       stderrBase64: (result.stderr ?? Buffer.from(result.error?.message ?? "")).toString("base64"),
     }
     if (result.status === 0 && boundedLimits) {
-      const quota = provisionerQuotaRequest(request.environment)
+      const quota = provisionerQuotaRequest(prepared.environment)
       const verified = await requestSliceDiskQuota({
         protocolVersion: 1,
         operation: "verify",
