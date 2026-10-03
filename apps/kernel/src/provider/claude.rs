@@ -727,7 +727,7 @@ mod tests {
         assert!(models.contains_key("haiku"));
         assert!(models.contains_key("sonnet"));
         assert!(models.contains_key("opus"));
-        assert!(models.contains_key("claude-sonnet-4-6"));
+        assert!(models.contains_key("claude-sonnet-5"));
         assert_eq!(
             models
                 .get("claude-sonnet-4-8")
