@@ -90,6 +90,12 @@ jobs:
         # MP-01/MP-03: inner-slice/shared-host launch assembly validates bwrap.
         run: sudo apt-get update && sudo apt-get install -y bubblewrap
 
+      - name: Allow unprivileged user namespaces for Bubblewrap
+        # Ubuntu 24.04 runners set kernel.apparmor_restrict_unprivileged_userns=1, which blocks
+        # bwrap's UID map; product hosts load chariox-slice-provider.apparmor instead
+        # (docs/MANAGED_REMOTE_KERNEL_IMAGE.md).
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - name: Format check
         run: cargo fmt --all --check
 
