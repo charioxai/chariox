@@ -32,9 +32,10 @@ async fn fixture() -> (
     let script = std::fs::read_to_string(&tool.path).unwrap().replace(
         "printf 'reconcile\\n'",
         &format!(
-            "if [ -f '{}' ]; then printf '{{\"id\":%s,\"ok\":false,\"error\":{{\"code\":\"controller_busy\",\"message\":\"foreground command pending\"}}}}\\n' \"$id\"; continue; fi\nif [ -f '{}' ]; then sleep 6; fi\nprintf 'reconcile\\n'",
+            "if [ -f '{}' ]; then printf '{{\"id\":%s,\"ok\":false,\"error\":{{\"code\":\"controller_busy\",\"message\":\"foreground command pending\"}}}}\\n' \"$id\"; continue; fi\nif [ -f '{}' ]; then sleep 6; fi\nif [ -f '{}' ]; then sleep 2; fi\nprintf 'reconcile\\n'",
             tool.root.join("browser-busy").display(),
             tool.root.join("browser-slow").display(),
+            tool.root.join("browser-delayed").display(),
         ),
     );
     std::fs::write(&tool.path, script).unwrap();
@@ -291,7 +292,7 @@ async fn ready_state_read_uses_health_only_and_preserves_foreground_tabs() {
     // The fixture's reconciliation always reports target-a. A foreground tab
     // projection after dispatch must survive the asynchronous read receipt.
     let before = std::fs::read_to_string(&tool.log).unwrap();
-    std::fs::write(tool.root.join("browser-slow"), "").unwrap();
+    std::fs::write(tool.root.join("browser-delayed"), "").unwrap();
     state.schedule_room_environment_health_refresh(&room);
     tokio::time::sleep(Duration::from_millis(200)).await;
     state
