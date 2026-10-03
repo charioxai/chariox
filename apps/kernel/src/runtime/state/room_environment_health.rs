@@ -83,18 +83,9 @@ impl KernelRuntimeState {
                         environment.lifecycle,
                         EnvironmentLifecycle::Starting | EnvironmentLifecycle::Degraded
                     ) {
-                        if let Ok(recovered) = state
+                        let _ = state
                             .finish_room_environment_controller_start(&room, "environment.health")
-                            .await
-                        {
-                            // Local Rooms also finish under the health owner's
-                            // atomic generation and lifecycle fence.
-                            state.observe_room_browser_health(
-                                &room,
-                                recovered.runtime_generation,
-                                None,
-                            );
-                        }
+                            .await;
                     }
                 }
             } else if state

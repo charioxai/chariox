@@ -84,3 +84,86 @@ async fn ready_state_reads_do_not_delay_pointer_input() {
         std::panic::resume_unwind(panic);
     }
 }
+
+#[test]
+fn ready_slice_state_reads_reacquire_lost_controller_lease() {
+    run_test(async {
+        let mut fixture = LiveWorker::start_configured(true, true).await;
+        let assertions = std::panic::AssertUnwindSafe(async {
+            fixture.create_slice().await;
+            let room = &fixture.rooms[0];
+            dispatch_json(&fixture.home, bind(room, "desktop"))
+                .await
+                .unwrap();
+            dispatch_json(
+                &fixture.home,
+                json!({"StartRoomEnvironment": {
+                    "session_id":room,"viewport":{
+                        "css_width":1280,"css_height":800,"device_scale_factor":1,
+                        "desktop_pixel_width":1280,"desktop_pixel_height":800
+                    }
+                }}),
+            )
+            .await
+            .unwrap();
+            // Use the production slice lifecycle: release on the worker,
+            // observe positive loss, then reacquire through the read path.
+            fixture
+                .home
+                .runtime_state
+                .stop_browser_controller_process(room)
+                .await
+                .unwrap();
+            fixture
+                .home
+                .runtime_state
+                .schedule_room_environment_health_refresh(room);
+            timeout(Duration::from_secs(5), async {
+                while fixture
+                    .home
+                    .runtime_state
+                    .room_environment_snapshot(room)
+                    .unwrap()
+                    .lifecycle
+                    != crate::session::EnvironmentLifecycle::Degraded
+                {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                loop {
+                    fixture
+                        .home
+                        .runtime_state
+                        .schedule_room_environment_health_refresh(room);
+                    if fixture
+                        .home
+                        .runtime_state
+                        .room_environment_snapshot(room)
+                        .unwrap()
+                        .lifecycle
+                        == crate::session::EnvironmentLifecycle::Ready
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("Slice Ready reads must recover a lost controller lease");
+            let recovered = fixture
+                .home
+                .runtime_state
+                .room_environment_snapshot(room)
+                .unwrap();
+            assert!(recovered
+                .health
+                .iter()
+                .all(|h| h.state == crate::session::EnvironmentComponentHealthState::Ready));
+        })
+        .catch_unwind()
+        .await;
+        fixture.stop().await;
+        if let Err(panic) = assertions {
+            std::panic::resume_unwind(panic);
+        }
+    });
+}

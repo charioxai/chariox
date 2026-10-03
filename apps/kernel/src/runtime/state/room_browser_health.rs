@@ -169,15 +169,7 @@ impl KernelRuntimeState {
         else {
             return;
         };
-        if browser.state == state
-            && browser.diagnostic_code.as_deref() == diagnostic
-            && !(diagnostic.is_none()
-                && snapshot.lifecycle == EnvironmentLifecycle::Degraded
-                && snapshot
-                    .health
-                    .iter()
-                    .all(|health| health.state == EnvironmentComponentHealthState::Ready))
-        {
+        if browser.state == state && browser.diagnostic_code.as_deref() == diagnostic {
             return;
         }
         let Ok(updated) = sessions.update_room_environment_component_health(

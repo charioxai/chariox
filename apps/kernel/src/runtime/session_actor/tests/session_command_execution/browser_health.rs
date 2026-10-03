@@ -365,37 +365,3 @@ async fn ready_state_read_recovers_pending_import() {
         Lifecycle::Ready
     );
 }
-
-#[tokio::test]
-async fn ready_state_read_reacquires_lost_controller_lease() {
-    let (state, room, _tool, _) = fixture().await;
-    state.stop_browser_controller_process(&room).await.unwrap();
-    state.schedule_room_environment_health_refresh(&room);
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while state.room_environment_snapshot(&room).unwrap().lifecycle != Lifecycle::Degraded {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        loop {
-            state.schedule_room_environment_health_refresh(&room);
-            if state.room_environment_snapshot(&room).unwrap().lifecycle == Lifecycle::Ready {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .unwrap();
-    state
-        .refresh_room_browser_health(
-            &room,
-            state
-                .room_environment_snapshot(&room)
-                .unwrap()
-                .runtime_generation,
-        )
-        .await;
-    assert_eq!(
-        state.room_environment_snapshot(&room).unwrap().lifecycle,
-        Lifecycle::Ready
-    );
-}
