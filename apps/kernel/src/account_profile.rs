@@ -7156,6 +7156,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn linking_native_codex_symlink_reports_existing_profile() {
+        crate::test_support::isolated_env_test!();
         let _lock = crate::env_lock::lock();
         let previous = std::env::var_os("CODEX_HOME");
         let (root, registry) = fixture();

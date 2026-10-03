@@ -982,6 +982,7 @@ mod tests {
 
     #[test]
     fn workflow_context_flush_is_keyed_to_the_dispatched_node_not_provider_start_time() {
+        crate::test_support::isolated_env_test!();
         let worktree = crate::test_support::TestWorktree::new("workflow-runtime-flush-node");
         let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");

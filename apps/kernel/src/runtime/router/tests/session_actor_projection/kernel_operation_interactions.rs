@@ -316,6 +316,7 @@ async fn another_owners_abandoned_decision_still_blocks_the_subject() {
 
 #[tokio::test]
 async fn an_owner_at_the_limit_can_replace_an_abandoned_decision() {
+    crate::test_support::isolated_env_test!();
     let (router, session) = setup();
     let mut waiting = Vec::new();
     for index in 0..7 {

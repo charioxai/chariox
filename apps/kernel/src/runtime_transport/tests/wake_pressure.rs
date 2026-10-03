@@ -65,6 +65,8 @@ async fn call(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires isolated native App storage/delegated cgroup and a quiet host"]
 async fn native_wake_pressure_four_starts_four_calls() {
+    let functional_only = std::env::var_os("CHARIOX_WAKE_FUNCTIONAL_ONLY").is_some();
+    let startup_budget = Duration::from_secs(if functional_only { 90 } else { 30 });
     let fixtures = PathBuf::from(std::env::var("CHARIOX_WAKE_FIXTURES").unwrap());
     let root = PathBuf::from(std::env::var("CHARIOX_WAKE_DRILL_ROOT").unwrap());
     let output = PathBuf::from(std::env::var("CHARIOX_WAKE_DRILL_OUTPUT").unwrap());
@@ -210,7 +212,7 @@ async fn native_wake_pressure_four_starts_four_calls() {
         let handle = tokio::runtime::Handle::current();
         starts.push(tokio::task::spawn_blocking(move || {
             let requested = crate::session::unix_epoch_ms();
-            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            let deadline = std::time::Instant::now() + startup_budget;
             let mut busy = 0;
             loop {
                 match lifecycle.start_active_blocking("alice", &id, handle.clone()) {
@@ -228,7 +230,7 @@ async fn native_wake_pressure_four_starts_four_calls() {
     for start in starts {
         start_results.push(start.await.unwrap());
     }
-    timeout(Duration::from_secs(30), async {
+    timeout(startup_budget, async {
         while ids
             .iter()
             .any(|id| control.active_app_lease("alice", id).is_none())
@@ -339,7 +341,9 @@ async fn native_wake_pressure_four_starts_four_calls() {
     let p95 = lateness
         .get((lateness.len() * 95).div_ceil(100).saturating_sub(1))
         .copied();
-    std::fs::write(output, serde_json::to_vec_pretty(&json!({"starts":start_results,"liveCap":4,"pressureMiB":420,"overlapMs":earliest_end-latest_begin,"calls":call_results,"n":lateness.len(),"p95Ms":p95,"maxMs":lateness.last(),"samples":samples})).unwrap()).unwrap();
+    std::fs::write(output, serde_json::to_vec_pretty(&json!({"timingEligible":!functional_only,"starts":start_results,"liveCap":4,"pressureMiB":420,"overlapMs":earliest_end-latest_begin,"calls":call_results,"n":lateness.len(),"p95Ms":p95,"maxMs":lateness.last(),"samples":samples})).unwrap()).unwrap();
     assert_eq!(lateness.len(), 60, "every wake must be delivered");
-    assert!(p95.unwrap() <= 1000, "unchanged K-06 lateness budget");
+    if !functional_only {
+        assert!(p95.unwrap() <= 1000, "unchanged K-06 lateness budget");
+    }
 }

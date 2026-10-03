@@ -155,6 +155,7 @@ mod tests {
 
     #[test]
     fn locked_vault_requires_a_workflow_passphrase_and_relocks_after_storing() {
+        crate::test_support::isolated_env_test!();
         let home = isolated_home("locked");
         let config = encrypted_config(&home.root);
         let vault_path = expand_vault_path(&config.user_config.credential_vault.path);
@@ -205,6 +206,7 @@ mod tests {
 
     #[test]
     fn a_new_setup_token_replaces_the_profile_credential() {
+        crate::test_support::isolated_env_test!();
         let home = isolated_home("replace");
         std::env::set_var("CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT", "1");
         let mut config = DaemonConfig::for_tests();

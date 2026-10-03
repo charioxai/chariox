@@ -527,6 +527,7 @@ mod tests {
 
     #[test]
     fn provider_reload_fingerprint_matches_adapter_and_isolation_launch_inputs() {
+        crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let profile = crate::test_support::TestWorktree::new("reload-fingerprint-claude-profile");
         let previous = std::env::var_os("CHARIOX_MANAGED_PROVIDER_ISOLATION");
