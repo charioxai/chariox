@@ -6,7 +6,7 @@ import { BoxRenderable, TextRenderable, TextareaRenderable } from "@opentui/core
 import { createTestRenderer } from "@opentui/core/testing"
 import { createKernelApprovalRenderer } from "./kernel-approval-renderer.js"
 import { createKernelApprovalController, type KernelApprovalView } from "./kernel-approval-controller.js"
-import type { RuntimeSession } from "./cli-types.js"
+import type { RuntimeInteraction, RuntimeSession } from "./cli-types.js"
 import { routeRawPastes } from "./raw-paste-routing.js"
 
 const view: KernelApprovalView = {
