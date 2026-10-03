@@ -1,5 +1,5 @@
 diff --git a/index-0wbvecnk.js b/index-0wbvecnk.js
-index 0c926100cef4bfc551c0656416278cbc5a1213b3..f31439bd9c1cd2f7e62a29e96e352768f58e6104 100644
+index 0c926100cef4bfc551c0656416278cbc5a1213b3..3fbeeee1178d8d0a3473d0bbb8dda736d5a2711b 100644
 --- a/index-0wbvecnk.js
 +++ b/index-0wbvecnk.js
 @@ -13684,6 +13684,10 @@
@@ -39,7 +39,7 @@ index 0c926100cef4bfc551c0656416278cbc5a1213b3..f31439bd9c1cd2f7e62a29e96e352768
      this._length = 0;
      this._byteSize = 0;
      this._lineInfo = undefined;
-@@ -14842,6 +14842,7 @@ class Renderable extends BaseRenderable {
+@@ -14842,6 +14854,7 @@
          obj.parent = null;
          this._ctx.unregisterLifecyclePass(obj);
          this.renderableMapById.delete(id);
@@ -47,7 +47,7 @@ index 0c926100cef4bfc551c0656416278cbc5a1213b3..f31439bd9c1cd2f7e62a29e96e352768
          const index = this._childrenInLayoutOrder.findIndex((obj2) => obj2.id === id);
          if (index !== -1) {
            this._childrenInLayoutOrder.splice(index, 1);
-@@ -14963,6 +14964,9 @@ class Renderable extends BaseRenderable {
+@@ -14963,6 +14976,9 @@
      }
      this._childrenInLayoutOrder = [];
      this.renderableMapById.clear();
