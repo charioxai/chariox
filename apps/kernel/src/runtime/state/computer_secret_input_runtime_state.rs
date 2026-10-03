@@ -71,7 +71,7 @@ impl KernelRuntimeState {
             crate::session::RuntimeInteractionLevel::Critical,
             Some("Computer credential input".to_string()),
             format!(
-                "Allow `{credential_id}` to be typed into native window {}, focused control {} at {:?}? Confirm that this focused field masks secret input; approving an unmasked field can expose the credential. Chariox aborts if the observable focus or window changes uses no clipboard, and withholds agent screen observations until you clear sensitive content and approve Room observation clearance.",
+                "Allow `{credential_id}` to be typed into native window {}, focused control {} at {:?}? Confirm that this focused field masks secret input; approving an unmasked field can expose the credential. Chariox aborts if the observable focus or window changes uses no clipboard, and masks the inserted region before agent screen observations.",
                 target.active_window, target.focus_window, target.geometry
             ),
             vec![

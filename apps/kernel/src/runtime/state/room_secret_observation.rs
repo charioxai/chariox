@@ -9,6 +9,8 @@ use serde::{de::DeserializeOwned, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
+mod storage;
+
 use super::KernelRuntimeState;
 use crate::error::DaemonError;
 use crate::transport::room_browser_controller::{
@@ -18,6 +20,7 @@ use crate::transport::room_browser_controller::{
 #[derive(Clone)]
 pub(super) struct RoomSecretObservations {
     root: PathBuf,
+    identity: Option<Arc<Zeroizing<String>>>,
     worker_room: Option<String>,
     recovered: Arc<BTreeSet<String>>,
     rooms: Arc<Mutex<BTreeMap<String, Protection>>>,
@@ -29,16 +32,16 @@ pub(super) struct RoomSecretObservations {
 struct Protection {
     values: Vec<Zeroizing<String>>,
     unknown: bool,
-    pixels_withheld: bool,
+    targets: Vec<serde_json::Value>,
     revision: u64,
     recovered_artifacts: bool,
-    controller_generation: Option<u64>,
 }
 
 impl RoomSecretObservations {
     pub(super) fn new(root: PathBuf, recovered: BTreeSet<String>) -> Self {
         Self {
             root,
+            identity: None,
             worker_room: None,
             recovered: Arc::new(recovered),
             rooms: Default::default(),
@@ -87,10 +90,15 @@ impl RoomSecretObservations {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
             Err(_) => return Err(protection_error()),
         };
+        if marked {
+            if let Some(restored) = self.restore_registry(room)? {
+                return Ok(restored);
+            }
+        }
         let unknown = marked || self.recovered.contains(room);
         Ok(Protection {
             unknown,
-            pixels_withheld: unknown,
+
             recovered_artifacts: unknown,
             ..Default::default()
         })
@@ -104,7 +112,7 @@ impl RoomSecretObservations {
         }
         let protection = rooms.get_mut(room).ok_or_else(protection_error)?;
         // Set the memory fence even if persisting the marker fails. Input must then abort.
-        protection.pixels_withheld = true;
+
         protection.revision = protection.revision.saturating_add(1);
         let known = protection
             .values
@@ -117,11 +125,11 @@ impl RoomSecretObservations {
         if !known {
             protection.values.push(Zeroizing::new(value.to_string()));
         }
-        self.persist_marker(room)?;
+        self.persist_marker(room, protection)?;
         Ok(())
     }
 
-    fn persist_marker(&self, room: &str) -> Result<(), DaemonError> {
+    fn persist_marker(&self, room: &str, protection: &Protection) -> Result<(), DaemonError> {
         use std::io::Write;
         use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
         std::fs::DirBuilder::new()
@@ -137,7 +145,7 @@ impl RoomSecretObservations {
             .open(&marker)
         {
             Ok(mut file) => {
-                file.write_all(b"observation clearance required\n")
+                file.write_all(b"protected observations\n")
                     .map_err(|_| protection_error())?;
                 file.sync_all().map_err(|_| protection_error())?;
                 std::fs::File::open(&self.root)
@@ -160,52 +168,99 @@ impl RoomSecretObservations {
             }
             Err(_) => return Err(protection_error()),
         }
-        Ok(())
+        self.persist_registry(room, protection)
     }
 
-    pub(super) fn quarantine(&self, room: &str) -> Result<(), DaemonError> {
-        let room = self.room_key(room);
-        self.blocked(room, false)?;
-        let mut rooms = self.rooms.lock().map_err(|_| protection_error())?;
-        let protection = rooms.get_mut(room).ok_or_else(protection_error)?;
-        protection.unknown = true;
-        protection.pixels_withheld = true;
-        protection.recovered_artifacts = true;
-        self.persist_marker(room)
-    }
-
-    pub(super) fn blocked(&self, room: &str, pixels: bool) -> Result<bool, DaemonError> {
+    pub(super) fn blocked(&self, room: &str, _pixels: bool) -> Result<bool, DaemonError> {
         let room = self.room_key(room);
         let mut rooms = self.rooms.lock().map_err(|_| protection_error())?;
         if !rooms.contains_key(room) {
             rooms.insert(room.into(), self.initial(room)?);
         }
         let protection = &rooms[room];
-        Ok(protection.unknown || (pixels && protection.pixels_withheld))
+        Ok(protection.unknown)
     }
 
     pub(super) fn require(&self, room: &str, pixels: bool) -> Result<(), DaemonError> {
-        if self.blocked(room, pixels)? {
+        if self.blocked(room, pixels)? && !pixels {
             return Err(protection_error());
         }
         Ok(())
     }
 
-    // Caller holds the exclusive barrier after the home-owned human interaction.
-    pub(super) fn clear(&self, room: &str) -> Result<(), DaemonError> {
-        let room = self.room_key(room);
-        let mut rooms = self.rooms.lock().map_err(|_| protection_error())?;
-        if !rooms.contains_key(room) {
-            rooms.insert(room.into(), self.initial(room)?);
+    pub(super) fn with_identity(mut self, key: &str) -> Self {
+        self.identity = Some(Arc::new(Zeroizing::new(key.to_string())));
+        self
+    }
+
+    // Called under the exclusive input barrier, before any physical insertion.
+    pub(super) fn register_command(
+        &self,
+        room: &str,
+        command: &Command,
+    ) -> Result<(), DaemonError> {
+        if let Some(secret) = command_secret(command) {
+            self.register(room, secret)?;
+            let target = match command {
+                Command::Action {
+                    target_id,
+                    document_id,
+                    node_ref,
+                    ..
+                }
+                | Command::RecoverAction {
+                    target_id,
+                    document_id,
+                    node_ref,
+                    ..
+                } => {
+                    serde_json::json!({"kind":"browser", "target_id":target_id, "document_id":document_id, "node_ref":node_ref})
+                }
+                Command::ComputerInput {
+                    action:
+                        crate::transport::room_browser_controller::RoomComputerInputAction::SecretText {
+                            expected_target,
+                            ..
+                        },
+                    ..
+                } => serde_json::json!({"kind":"native", "target":expected_target}),
+                _ => return Err(protection_error()),
+            };
+            let room = self.room_key(room);
+            let mut rooms = self.rooms.lock().map_err(|_| protection_error())?;
+            let protection = rooms.get_mut(room).ok_or_else(protection_error)?;
+            if !protection.targets.contains(&target) {
+                if protection.targets.len() >= 256 {
+                    return Err(protection_error());
+                }
+                protection.targets.push(target);
+            }
+            self.persist_registry(room, protection)?;
         }
-        let protection = rooms.get_mut(room).ok_or_else(protection_error)?;
-        self.persist_marker(room)?;
-        protection.unknown = false;
-        protection.pixels_withheld = false;
-        protection.revision = protection.revision.saturating_add(1);
-        // Keep marker and known values: restart/restore needs another clearance,
-        // and navigation/clearance cannot allow delayed text echoes to escape.
         Ok(())
+    }
+
+    pub(super) fn capture_policy(&self, room: &str) -> Result<Zeroizing<String>, DaemonError> {
+        let room = self.room_key(room);
+        self.blocked(room, false)?;
+        let rooms = self.rooms.lock().map_err(|_| protection_error())?;
+        let protection = &rooms[room];
+        serde_json::to_string(&serde_json::json!({
+            "unknown": protection.unknown || (!protection.values.is_empty() && protection.targets.is_empty()),
+            "targets": protection.targets,
+            "values": protection.values.iter().map(|value| value.as_str()).collect::<Vec<_>>(),
+        })).map(Zeroizing::new).map_err(|_| protection_error())
+    }
+
+    pub(super) fn controller_values(
+        &self,
+        room: &str,
+    ) -> Result<Vec<Zeroizing<String>>, DaemonError> {
+        let room = self.room_key(room);
+        self.require(room, false)?;
+        Ok(self.rooms.lock().map_err(|_| protection_error())?[room]
+            .values
+            .clone())
     }
 
     pub(super) fn revision(&self, room: &str) -> Result<u64, DaemonError> {
@@ -254,7 +309,7 @@ impl RoomSecretObservations {
         self.require(room, false)?;
         let rooms = self.rooms.lock().map_err(|_| protection_error())?;
         let protection = &rooms[room];
-        // Recheck under the value lock: quarantine may follow the first require.
+        // Recheck under the value lock: another insertion may follow the first require.
         if protection.unknown {
             return Err(protection_error());
         }
@@ -309,7 +364,7 @@ impl RoomSecretObservations {
     pub(super) fn protect_unframed_bytes(&self, room: &str, bytes: &[u8]) -> Vec<u8> {
         if self.protects_bytes(room) {
             // Matching individual chunks cannot catch a secret split across chunks.
-            // Retain the fence for the session lifetime, including after clearance.
+            // Retain the fence for the session lifetime, without a human clearance.
             b"[sensitive Room terminal stream withheld]".to_vec()
         } else {
             bytes.to_vec()
@@ -322,34 +377,6 @@ impl RoomSecretObservations {
         mut response: Response,
     ) -> Result<Response, DaemonError> {
         let room = self.room_key(room);
-        // A replacement controller has lost its pre-compaction value registry.
-        // Do not accept bounded page strings until the human clears that view.
-        self.blocked(room, false)?;
-        {
-            let mut rooms = self.rooms.lock().map_err(|_| protection_error())?;
-            let protection = rooms.get_mut(room).ok_or_else(protection_error)?;
-            match &response {
-                Response::RecoveryRequired { .. } if !protection.values.is_empty() => {
-                    protection.unknown = true;
-                    protection.pixels_withheld = true;
-                }
-                Response::Reconciled {
-                    reconciliation: Some(reconciliation),
-                } => {
-                    let generation = reconciliation.process.runtime_generation;
-                    if protection
-                        .controller_generation
-                        .is_some_and(|old| old != generation)
-                        && !protection.values.is_empty()
-                    {
-                        protection.unknown = true;
-                        protection.pixels_withheld = true;
-                    }
-                    protection.controller_generation = Some(generation);
-                }
-                _ => {}
-            }
-        }
         match &mut response {
             Response::ComputerInputApplied { .. }
             | Response::ComputerSecretTarget { .. }
@@ -362,7 +389,7 @@ impl RoomSecretObservations {
             | Response::CookieImportRolledBack => Ok(response),
             Response::Reconciled { reconciliation } if self.blocked(room, false)? => {
                 // Recovery still needs physical identities; page-controlled metadata
-                // must not enter the durable Room registry without clearance.
+                // must not enter the durable Room registry without a known registry.
                 if let Some(reconciliation) = reconciliation {
                     for tab in &mut reconciliation.browser.tabs {
                         tab.url.clear();
@@ -487,8 +514,10 @@ fn secret_variants(secret: &str) -> Vec<Zeroizing<String>> {
 }
 
 pub(super) fn protection_error() -> DaemonError {
-    DaemonError::LocalTransport { operation: "room.secret_observation",
-        message: "Agent observation withheld: Vault input may remain in this view or recovered artifacts. Clear the sensitive content and approve the Room observation clearance interaction.".into() }
+    DaemonError::LocalTransport {
+        operation: "room.secret_observation",
+        message: "observation redacted, retrying".into(),
+    }
 }
 
 pub(super) fn command_secret(command: &Command) -> Option<&str> {
@@ -554,54 +583,14 @@ impl KernelRuntimeState {
         candidates
     }
 
-    pub(super) async fn ensure_room_observation_clearance(
+    // MP-08/MP-10/MP-11: compatibility preflight has no interaction or wait.
+    pub(super) async fn ensure_room_observation_ready(
         &self,
         room: &str,
-        agent: &str,
+        _agent: &str,
         pixels: bool,
     ) -> Result<(), DaemonError> {
-        if !self.owned.room_secret_observations.blocked(room, pixels)? {
-            return Ok(());
-        }
-        let _barrier = self
-            .owned
-            .room_secret_observations
-            .barrier(room)?
-            .write_owned()
-            .await;
-        if !self.owned.room_secret_observations.blocked(room, pixels)? {
-            return Ok(());
-        }
-        let interaction = crate::session::RuntimeInteraction::new(
-            format!("room-observation-clearance-{}", crate::session::unix_epoch_ms()), agent,
-            crate::session::RuntimeInteractionKind::Permission, crate::session::RuntimeInteractionLevel::Critical,
-            Some("Clear sensitive Room observations".into()),
-            "Vault input may be visible in this Room, including copied page text, images and restored content. Remove all sensitive content from every tab and desktop window before resuming agent observations. Existing image artifacts remain withheld. Approve only after checking the view.",
-            vec![crate::session::RuntimeInteractionChoice::new("clear", "Content cleared; resume observations", "clear", Some(crate::session::RuntimeInteractionChoiceStyle::Primary)),
-                crate::session::RuntimeInteractionChoice::new("deny", "Keep observations withheld", "deny", Some(crate::session::RuntimeInteractionChoiceStyle::Danger))],
-            None, Some(30), Some("deny".into()));
-        let id = interaction.id().to_string();
-        let resolution = self.create_runtime_interaction(room, interaction).await?;
-        let resolution =
-            match tokio::time::timeout(std::time::Duration::from_secs(30), resolution).await {
-                Ok(Ok(resolution)) => resolution,
-                _ => {
-                    self.timeout_runtime_interaction(room, &id).await?;
-                    return Err(protection_error());
-                }
-            };
-        if resolution.choice_id.as_deref() != Some("clear") {
-            return Err(protection_error());
-        }
-        if let Some(slice) = self.owned.slice_store.environment_slice(room) {
-            let response = self
-                .route_room_browser_controller_command(room, slice, Command::ClearSecretObservation)
-                .await?;
-            if !matches!(response, Response::SecretObservationCleared) {
-                return Err(protection_error());
-            }
-        }
-        self.owned.room_secret_observations.clear(room)
+        self.owned.room_secret_observations.require(room, pixels)
     }
 }
 
@@ -656,14 +645,14 @@ mod tests {
         assert!(store.barrier("room").unwrap().try_read_owned().is_err());
         drop(input);
         let _after_input = store.barrier("room").unwrap().read_owned().await;
-        assert!(store.require("room", true).is_err());
+        assert!(store.require("room", true).is_ok());
     }
 
     #[tokio::test]
-    async fn only_human_room_interaction_can_clear_and_known_values_remain_scrubbed() {
+    async fn observations_never_create_human_clearance_even_for_false_positives() {
         use super::super::browser_controller_action_execution_runtime_state::computer_input_reconcile_test_support::TestRoom;
         let root = TestRoot::new();
-        let mut room = TestRoom::new("vault-observation-clearance");
+        let mut room = TestRoom::new("vault-autonomous-observation");
         room.runtime.owned.room_secret_observations =
             RoomSecretObservations::new(root.path().to_path_buf(), BTreeSet::new());
         room.runtime
@@ -671,49 +660,31 @@ mod tests {
             .room_secret_observations
             .register(&room.session_id, "synthetic-only")
             .unwrap();
-        for choice in ["deny", "clear"] {
-            let runtime = room.runtime.clone();
-            let session_id = room.session_id.clone();
-            let agent_id = room.agent_id.clone();
-            let task = tokio::spawn(async move {
-                runtime
-                    .ensure_room_observation_clearance(&session_id, &agent_id, true)
-                    .await
-            });
-            let id = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-                loop {
-                    let session = room
-                        .runtime
-                        .owned
-                        .session_store
-                        .get_session(&room.session_id)
-                        .unwrap();
-                    if let Some(interaction) = session
-                        .active_interactions()
-                        .iter()
-                        .find(|i| i.id().starts_with("room-observation-clearance-"))
-                    {
-                        assert!(!format!("{interaction:?}").contains("synthetic-only"));
-                        break interaction.id().to_string();
-                    }
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await
-            .unwrap();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
             room.runtime
-                .resolve_runtime_interaction(&room.session_id, &id, choice, None)
-                .await
-                .unwrap();
-            let result = task.await.unwrap();
-            assert_eq!(result.is_ok(), choice == "clear");
-        }
+                .ensure_room_observation_ready(&room.session_id, &room.agent_id, true),
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "MP-08/MP-10/MP-11: observation must never wait for a human"
+        );
         assert!(room
             .runtime
             .owned
-            .room_secret_observations
-            .require(&room.session_id, true)
-            .is_ok());
+            .session_store
+            .get_session(&room.session_id)
+            .unwrap()
+            .active_interactions()
+            .is_empty());
+        assert_eq!(
+            room.runtime
+                .owned
+                .room_secret_observations
+                .scrub_text_or_withhold(&room.session_id, "benign field: synthetic-onl"),
+            "benign field: synthetic-onl"
+        );
         assert_eq!(
             room.runtime
                 .owned
@@ -721,43 +692,60 @@ mod tests {
                 .scrub_text_or_withhold(&room.session_id, "synthetic-only"),
             "[redacted]"
         );
-        room.runtime.owned.append_history_entries(&room.session_id, vec![
-            crate::history::SessionHistoryEntry::provider_output(&room.session_id, "test-run",
-                Some(&room.agent_id), crate::terminal::TerminalOutputKind::ProviderTool,
-                None, serde_json::json!({"id": "tool", "status": "completed", "output": "synthetic-only"}).to_string()),
-            crate::history::SessionHistoryEntry::provider_output(&room.session_id, "test-run",
-                Some(&room.agent_id), crate::terminal::TerminalOutputKind::ProviderOutput,
-                None, "synthetic"),
-            crate::history::SessionHistoryEntry::provider_output(&room.session_id, "test-run",
-                Some(&room.agent_id), crate::terminal::TerminalOutputKind::ProviderOutput,
-                None, "-only"),
-        ]);
-        let events = room
-            .runtime
-            .owned
-            .operational_history_store
-            .load_session_events(&room.session_id, Some(&room.agent_id))
-            .unwrap();
-        let tools = events
-            .iter()
-            .filter(|event| event.kind == crate::history::HistoryEventKind::ProviderTool)
-            .collect::<Vec<_>>();
-        assert_eq!(tools.len(), 1);
-        assert!(tools[0].content.as_ref().unwrap().contains("[redacted]"));
-        let outputs = events
-            .iter()
-            .filter(|event| event.kind == crate::history::HistoryEventKind::ProviderOutput)
-            .collect::<Vec<_>>();
-        assert!(!outputs.is_empty());
-        assert!(outputs
-            .iter()
-            .all(|event| event.content.as_deref()
-                == Some("[sensitive Room terminal stream withheld]")));
-        assert!(events.iter().all(|event| !event
-            .content
-            .as_deref()
-            .unwrap_or_default()
-            .contains("synthetic-only")));
+    }
+
+    #[test]
+    fn sealed_registry_recovers_scrubbing_and_masks_without_human_clearance() {
+        let root = TestRoot::new();
+        let path = root.path().join("observations");
+        let key = crate::transport::relay_crypto::generate_private_key_base64();
+        let store = RoomSecretObservations::new(path.clone(), BTreeSet::new()).with_identity(&key);
+        let command = Command::Action {
+            execution_id: "input".into(),
+            target_id: "target".into(),
+            document_id: "document".into(),
+            node_ref: "backend:42".into(),
+            action: crate::runtime::browser_controller_action::BrowserLocatorAction::Fill {
+                text: "synthetic-only".into(),
+                append: false,
+                submit: false,
+                expected_document_url: Some("https://fixture.test".into()),
+            },
+            timeout_ms: 1000,
+        };
+        store.register_command("room", &command).unwrap();
+        let bytes = std::fs::read(store.registry_path("room")).unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains("synthetic-only"));
+        let recovered =
+            RoomSecretObservations::new(path, BTreeSet::from(["room".into()])).with_identity(&key);
+        assert_eq!(
+            recovered.scrub_text_or_withhold("room", "synthetic-only and benign"),
+            "[redacted] and benign"
+        );
+        let policy: serde_json::Value =
+            serde_json::from_str(&recovered.capture_policy("room").unwrap()).unwrap();
+        assert_eq!(policy["unknown"], false);
+        assert_eq!(policy["targets"][0]["node_ref"], "backend:42");
+        assert!(recovered
+            .scrub_cached_result("room", "old observation".to_string())
+            .is_err());
+        assert!(recovered.require("room", true).is_ok());
+    }
+
+    #[test]
+    fn registry_cannot_be_replayed_in_another_room_or_runtime_identity() {
+        let root = TestRoot::new();
+        let key = crate::transport::relay_crypto::generate_private_key_base64();
+        let store = RoomSecretObservations::new(root.path().to_path_buf(), BTreeSet::new())
+            .with_identity(&key);
+        store.register("room", "synthetic-only").unwrap();
+        std::fs::copy(store.marker("room"), store.marker("other")).unwrap();
+        std::fs::copy(store.registry_path("room"), store.registry_path("other")).unwrap();
+        assert!(store.require("other", false).is_err());
+        let other_key = crate::transport::relay_crypto::generate_private_key_base64();
+        let other = RoomSecretObservations::new(root.path().to_path_buf(), BTreeSet::new())
+            .with_identity(&other_key);
+        assert!(other.require("room", false).is_err());
     }
 
     #[test]
@@ -770,12 +758,12 @@ mod tests {
             store.scrub_text_or_withhold("worker-run-session", "synthetic-only"),
             "[redacted]"
         );
-        assert!(store.require("worker-run-session", true).is_err());
+        assert!(store.require("worker-run-session", true).is_ok());
         assert!(Arc::ptr_eq(
             &store.barrier("home-room").unwrap(),
             &store.barrier("worker-run-session").unwrap()
         ));
-        store.clear("home-room").unwrap();
+
         assert!(store.require("worker-run-session", true).is_ok());
         assert_eq!(
             store
@@ -787,19 +775,19 @@ mod tests {
             RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new())
                 .with_worker_room(Some("home-room".into()));
         assert!(restarted.require("worker-run-session", false).is_err());
-        restarted.clear("home-room").unwrap();
+
         assert!(restarted
             .scrub_cached_result("worker-run-session", "old data".to_string())
             .is_err());
     }
 
     #[test]
-    fn split_terminal_chunks_are_withheld_even_after_live_view_clearance() {
+    fn split_terminal_chunks_are_withheld_without_human_clearance() {
         let root = TestRoot::new();
         let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
         assert_eq!(store.protect_unframed_bytes("room", b"normal"), b"normal");
         store.register("room", "synthetic-only").unwrap();
-        store.clear("room").unwrap();
+
         for bytes in [b"synthetic".as_slice(), b"-only".as_slice()] {
             let protected = store.protect_unframed_bytes("room", bytes);
             assert_eq!(protected, b"[sensitive Room terminal stream withheld]");
@@ -834,8 +822,8 @@ mod tests {
             .iter()
             .all(|s| s == "[redacted]"));
         assert_eq!(store.scrub("other-room", input.clone()).unwrap(), input);
-        assert!(store.require("room", true).is_err());
-        store.clear("room").unwrap();
+        assert!(store.require("room", true).is_ok());
+
         assert!(store.require("room", true).is_ok());
         assert!(!store
             .scrub("room", input)
@@ -843,34 +831,34 @@ mod tests {
             .to_string()
             .contains(secret));
         store.register("room", "another-input").unwrap();
-        assert!(store.require("room", true).is_err());
+        assert!(store.require("room", true).is_ok());
     }
 
     #[test]
-    fn restart_and_restore_withhold_text_pixels_and_preexisting_rooms() {
+    fn legacy_unknown_rooms_drop_observations_without_human_clearance() {
         let root = TestRoot::new();
         let path = root.path().join("observations");
         let store = RoomSecretObservations::new(path.clone(), BTreeSet::new());
         store.register("room", "synthetic-only").unwrap();
-        store.clear("room").unwrap();
+
         let restarted = RoomSecretObservations::new(path, BTreeSet::from(["old-G-room".into()]));
         for room in ["room", "old-G-room"] {
             assert!(restarted.require(room, false).is_err());
-            assert!(restarted.require(room, true).is_err());
-            restarted.clear(room).unwrap();
+            assert!(restarted.require(room, true).is_ok());
+
             assert!(restarted.require(room, true).is_ok());
         }
         assert!(restarted.require("fresh", true).is_ok());
     }
 
     #[test]
-    fn clearance_never_reauthorizes_unknown_recovered_history() {
+    fn fresh_capture_never_reauthorizes_unknown_recovered_history() {
         let root = TestRoot::new();
         let store = RoomSecretObservations::new(
             root.path().join("observations"),
             BTreeSet::from(["old-room".into()]),
         );
-        store.clear("old-room").unwrap();
+
         let entry = crate::history::SessionHistoryEntry::provider_output(
             "old-room",
             "run",

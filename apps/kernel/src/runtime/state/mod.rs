@@ -710,6 +710,7 @@ impl KernelRuntimeState {
                 .map(|session| session.id().to_string())
                 .collect(),
         )
+        .with_identity(&config.relay_private_key)
         .with_worker_room(
             config
                 .room_environment_worker_binding

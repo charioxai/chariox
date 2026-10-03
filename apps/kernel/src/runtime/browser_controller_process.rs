@@ -230,6 +230,7 @@ pub(crate) struct BrowserControllerProcessStdioBackend {
     process: Option<BrowserControllerChild>,
     next_request_id: u64,
     action_cancellation: Option<Arc<cancellation::CancellationSignal>>,
+    protected_values: Vec<zeroize::Zeroizing<String>>,
 }
 
 impl BrowserControllerProcessStdioBackend {
@@ -241,6 +242,7 @@ impl BrowserControllerProcessStdioBackend {
             process: None,
             next_request_id: 1,
             action_cancellation: None,
+            protected_values: Vec::new(),
         }
     }
 
@@ -389,6 +391,11 @@ impl BrowserControllerProcessStdioBackend {
                 id: request_id,
                 method,
                 params,
+                protected_values: self
+                    .protected_values
+                    .iter()
+                    .map(|value| value.as_str())
+                    .collect(),
             },
         )
         .map_err(|error| format!("failed to encode browser controller request: {error}"))?;
@@ -576,6 +583,7 @@ struct BrowserControllerRpcRequest<'a, P> {
     id: u64,
     method: &'a str,
     params: &'a P,
+    protected_values: Vec<&'a str>,
 }
 
 /// How a controller error names its code in the error text, which reaches
@@ -1360,6 +1368,28 @@ pub(crate) struct BrowserControllerProcessStore {
 }
 
 impl BrowserControllerProcessStore {
+    pub(crate) fn protect_observation_values(
+        &self,
+        values: Vec<zeroize::Zeroizing<String>>,
+    ) -> Result<(), String> {
+        if let Some(ownership) = &self.ownership {
+            let mut ownership = ownership
+                .lock()
+                .map_err(|_| "controller supervisor lock poisoned")?;
+            for value in values {
+                if !ownership
+                    .supervisor
+                    .backend
+                    .protected_values
+                    .contains(&value)
+                {
+                    ownership.supervisor.backend.protected_values.push(value);
+                }
+            }
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn new(command: impl Into<PathBuf>, args: Vec<String>, timeout: Duration) -> Self {
         Self {

@@ -44,8 +44,6 @@ impl KernelRuntimeState {
             operation: "runtime_tool_paste_secret_to_computer",
             message: format!("invalid tool arguments: {error}"),
         })?;
-        self.ensure_room_observation_clearance(session_id, agent_id, false)
-            .await?;
         let user_config = self.owned.config_projection.snapshot().user_config;
         let credentials = crate::credential::load_user_credentials()?;
         let service = crate::secret::RuntimeSecretService::with_vault_config(

@@ -642,7 +642,7 @@ async fn run_slice_screen_command(
 
 pub(in crate::runtime::state) async fn execute_room_computer_observation(
     call: crate::transport::relay_peer::RemoteRoomComputerObservationCall,
-    artifact_path: Option<std::path::PathBuf>,
+    capture_policy: zeroize::Zeroizing<String>,
     capture_guard: tokio::sync::OwnedRwLockReadGuard<()>,
 ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
     let args = match &call {
@@ -650,26 +650,33 @@ pub(in crate::runtime::state) async fn execute_room_computer_observation(
             vec!["status".to_string()]
         }
         crate::transport::relay_peer::RemoteRoomComputerObservationCall::Ocr { .. } => {
-            let mut args = vec!["ocr".to_string()];
-            if let Some(path) = artifact_path.as_ref() {
-                args.push(room_computer_artifact_path(path)?);
-            }
-            args
+            vec!["protected-ocr".to_string()]
         }
         crate::transport::relay_peer::RemoteRoomComputerObservationCall::FindText {
             query, ..
         } => {
-            let mut args = vec![
-                "find-text".to_string(),
+            vec![
+                "protected-find-text".to_string(),
                 validated_slice_find_text_query(query)?,
-            ];
-            if let Some(path) = artifact_path.as_ref() {
-                args.push(room_computer_artifact_path(path)?);
-            }
-            args
+            ]
         }
     };
-    let output = run_slice_screen_command_with_capture(args, capture_guard).await?;
+    let output = run_slice_screen_command_inner_with_output_policy(
+        args,
+        Some(capture_policy),
+        None,
+        None,
+        false,
+        Some(capture_guard),
+    )
+    .await?;
+    if output.status_code == Some(75) {
+        return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+            ok: false,
+            payload: serde_json::json!({"status":"observation_redacted", "message":"observation redacted, retrying", "attempts":3}),
+        });
+    }
+
     let is_find_text = matches!(
         &call,
         crate::transport::relay_peer::RemoteRoomComputerObservationCall::FindText { .. }
@@ -698,17 +705,9 @@ pub(in crate::runtime::state) async fn execute_room_computer_observation(
     })
 }
 
-fn room_computer_artifact_path(path: &std::path::Path) -> Result<String, DaemonError> {
-    path.to_str()
-        .map(str::to_string)
-        .ok_or_else(|| DaemonError::LocalTransport {
-            operation: "environment.computer.observe",
-            message: "Room screenshot artifact path is not valid UTF-8".to_string(),
-        })
-}
-
 pub(in crate::runtime::state) async fn capture_room_environment_screenshot(
     destination: &std::path::Path,
+    capture_policy: zeroize::Zeroizing<String>,
     capture_guard: tokio::sync::OwnedRwLockReadGuard<()>,
 ) -> Result<(), DaemonError> {
     let destination = destination
@@ -717,11 +716,21 @@ pub(in crate::runtime::state) async fn capture_room_environment_screenshot(
             operation: "environment.screenshot.capture",
             message: "screenshot destination is not valid UTF-8".to_string(),
         })?;
-    let output = run_slice_screen_command_with_capture(
-        vec!["screenshot".to_string(), destination.to_string()],
-        capture_guard,
+    let output = run_slice_screen_command_inner_with_output_policy(
+        vec!["protected-screenshot".to_string(), destination.to_string()],
+        Some(capture_policy),
+        None,
+        None,
+        false,
+        Some(capture_guard),
     )
     .await?;
+    if output.status_code == Some(75) {
+        return Err(DaemonError::LocalTransport {
+            operation: "environment.screenshot.capture",
+            message: "observation redacted, retrying".into(),
+        });
+    }
     if !output.success {
         return Err(DaemonError::LocalTransport {
             operation: "environment.screenshot.capture",

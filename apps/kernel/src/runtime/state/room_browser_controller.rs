@@ -21,15 +21,6 @@ impl KernelRuntimeState {
         request: RelayPeerRequest,
         timeout: std::time::Duration,
     ) -> Result<RelayPeerResponse, DaemonError> {
-        let protected_room = match &request {
-            RelayPeerRequest::RoomBrowserController { session_id, .. }
-            | RelayPeerRequest::ObserveRoomComputer { session_id, .. }
-            | RelayPeerRequest::CaptureRoomScreenshot { session_id, .. }
-            | RelayPeerRequest::ReadRoomScreenshotChunk { session_id, .. } => {
-                Some(session_id.clone())
-            }
-            _ => None,
-        };
         let result = match self.connected_relay_state_for_config(config).await {
             Some(relay_state) => {
                 crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
@@ -48,11 +39,6 @@ impl KernelRuntimeState {
                 .await
             }
         };
-        if let (Some(room), Err(error)) = (protected_room, &result) {
-            if error.to_string().contains("Agent observation withheld:") {
-                self.owned.room_secret_observations.quarantine(&room)?;
-            }
-        }
         result
     }
 
@@ -131,7 +117,7 @@ impl KernelRuntimeState {
         background_probe: bool,
         admission_deadline: Option<tokio::time::Instant>,
     ) -> Result<Response, DaemonError> {
-        // Cleanup must remain available while the Room is quarantined, including
+        // Cleanup must remain available while observations are redacted, including
         // when the durable store cannot establish that execution is safe.
         if !recovery_authority
             && !matches!(
@@ -174,9 +160,7 @@ impl KernelRuntimeState {
         } else {
             None
         };
-        if let Some(secret) = super::room_secret_observation::command_secret(&command) {
-            protection.register(session_id, secret)?;
-        }
+        protection.register_command(session_id, &command)?;
         let response = if let Some(slice) = self.owned.slice_store.environment_slice(session_id) {
             // Keep the relay client's large future off callers' async stacks. Local
             // controller operations stay allocation-free; only the remote boundary
@@ -201,6 +185,12 @@ impl KernelRuntimeState {
                     "browser_controller_scope_denied: provisioned slice controller requires the home Room relay path",
                 ));
             }
+            self.owned
+                .browser_controller_processes
+                .protect_observation_values(
+                    protection.controller_values(session_id).unwrap_or_default(),
+                )
+                .map_err(|error| controller_route_error(&error))?;
             execute_local(
                 self.owned.browser_controller_processes.clone(),
                 self.owned.computer_input_executions.clone(),
@@ -345,8 +335,7 @@ impl KernelRuntimeState {
         let protection = &self.owned.room_secret_observations;
         if matches!(&command, Command::ClearSecretObservation) {
             let _guard = protection.barrier(session_id)?.write_owned().await;
-            protection.clear(session_id)?;
-            return Ok(Response::SecretObservationCleared);
+            return Err(controller_route_error("observation redacted, retrying"));
         }
         let secret_guard = if super::room_secret_observation::command_secret(&command).is_some() {
             Some(protection.barrier(session_id)?.write_owned().await)
@@ -358,9 +347,7 @@ impl KernelRuntimeState {
         } else {
             None
         };
-        if let Some(secret) = super::room_secret_observation::command_secret(&command) {
-            protection.register(session_id, secret)?;
-        }
+        protection.register_command(session_id, &command)?;
         if !matches!(
             &command,
             Command::ComputerInput { .. }
@@ -372,6 +359,12 @@ impl KernelRuntimeState {
                 "browser_controller_unavailable: slice has no configured controller",
             ));
         }
+        self.owned
+            .browser_controller_processes
+            .protect_observation_values(
+                protection.controller_values(session_id).unwrap_or_default(),
+            )
+            .map_err(|error| controller_route_error(&error))?;
         let response = execute_local(
             self.owned.browser_controller_processes.clone(),
             self.owned.computer_input_executions.clone(),
@@ -527,7 +520,7 @@ async fn execute_local(
             }
             let execution = computer_input_executions
                 .begin(session_id, &action_id)
-                .map_err(controller_route_error)?;
+                .map_err(|error| controller_route_error(&error))?;
             if matches!(
                 &action,
                 crate::transport::room_browser_controller::RoomComputerInputAction::SecretText { .. }
@@ -629,14 +622,12 @@ async fn execute_local(
             return Ok(Response::ComputerInputApplied { action_id });
         }
         Command::ClearSecretObservation => {
-            return Err(controller_route_error(
-                "observation clearance requires home interaction authority",
-            ))
+            return Err(controller_route_error("observation redacted, retrying"))
         }
         Command::ComputerSecretTarget => {
             let capture_guard = computer_input_executions
                 .capture_guard()
-                .map_err(controller_route_error)?;
+                .map_err(|error| controller_route_error(&error))?;
             let target =
                 super::tool_dispatch::capture_computer_secret_target(capture_guard).await?;
             return Ok(Response::ComputerSecretTarget { target });
@@ -886,7 +877,7 @@ async fn execute_local(
             unreachable!("Computer input executes before the blocking controller path")
         }
         Command::ClearSecretObservation => {
-            unreachable!("clearance executes before controller path")
+            unreachable!("retired clearance command executes before controller path")
         }
         Command::ComputerClipboardRead { .. } => {
             unreachable!("Computer clipboard reads execute before the blocking controller path")

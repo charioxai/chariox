@@ -76,6 +76,11 @@ impl BrowserControllerProcessStdioBackend {
             &mut *stdin,
             &BrowserControllerRpcRequest {
                 id: request_id,
+                protected_values: self
+                    .protected_values
+                    .iter()
+                    .map(|value| value.as_str())
+                    .collect(),
                 method,
                 params,
             },

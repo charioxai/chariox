@@ -938,6 +938,10 @@ case "${1:-status}" in
     ;;
   stop) stop_desktop ;;
   status) status ;;
+  protected-screenshot|protected-ocr|protected-find-text)
+    mode="${1#protected-}"; shift
+    require_screen_available
+    /opt/chariox-selkies/bin/python "$ROOT/slice-observation-mask.py" "$mode" "$@" ;;
   screenshot) shift; screenshot "$@" ;;
   click) shift; click "$@" ;;
   double-click|double_click) shift; double_click "$@" ;;

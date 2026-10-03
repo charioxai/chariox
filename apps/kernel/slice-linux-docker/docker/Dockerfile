@@ -238,6 +238,8 @@ COPY apps/kernel/slice-linux-docker/docker/browser-controller-display.mjs /opt/c
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/tint2rc /opt/chariox-slice/tint2rc
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-keyboard.py /opt/chariox-slice/slice-keyboard.py
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-text-finder.py /opt/chariox-slice/slice-text-finder.py
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-observation-mask.py /opt/chariox-slice/slice-observation-mask.py
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-observation-regions.mjs /opt/chariox-slice/browser-observation-regions.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/start-providers.sh /opt/chariox-slice/start-providers.sh
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/start-runtime.sh /opt/chariox-slice/start-runtime.sh
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/validate-screen.sh /opt/chariox-slice/validate-screen.sh

@@ -63,6 +63,11 @@ impl StdioOwnership {
             &mut *stdin,
             &BrowserControllerRpcRequest {
                 id: request_id,
+                protected_values: backend
+                    .protected_values
+                    .iter()
+                    .map(|value| value.as_str())
+                    .collect(),
                 method: "browser.action",
                 params: &serde_json::json!({
                     "target_id":target_id,"document_id":document_id,"node_ref":node_ref,

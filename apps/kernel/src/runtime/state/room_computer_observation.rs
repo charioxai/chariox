@@ -22,7 +22,7 @@ impl KernelRuntimeState {
             });
         }
         let pixels = !matches!(&call, RemoteRoomComputerObservationCall::ScreenStatus);
-        self.ensure_room_observation_clearance(session_id, agent_id, pixels)
+        self.ensure_room_observation_ready(session_id, agent_id, pixels)
             .await?;
         self.owned
             .room_secret_observations
@@ -107,7 +107,7 @@ impl KernelRuntimeState {
         slice_id: &str,
         call: RemoteRoomComputerObservationCall,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let config = self.authorize_bound_room_computer_read(
+        self.authorize_bound_room_computer_read(
             authenticated_kernel_id,
             authenticated_public_key,
             session_id,
@@ -128,26 +128,12 @@ impl KernelRuntimeState {
             .computer_input_executions
             .capture_guard()
             .map_err(computer_observation_error)?;
-        let artifact_path = match &call {
-            RemoteRoomComputerObservationCall::Ocr {
-                artifact_id: Some(artifact_id),
-            }
-            | RemoteRoomComputerObservationCall::FindText {
-                artifact_id: Some(artifact_id),
-                ..
-            } => Some(super::room_screenshot::room_screenshot_artifact_path(
-                &config,
-                session_id,
-                slice_id,
-                artifact_id,
-                self.owned.room_secret_observations.epoch,
-                self.owned.room_secret_observations.revision(session_id)?,
-            )?),
-            _ => None,
-        };
+        // Old/pre-redaction artifacts are never OCR sources. Re-capture fresh.
         let result = super::tool_dispatch::execute_room_computer_observation(
             call,
-            artifact_path,
+            self.owned
+                .room_secret_observations
+                .capture_policy(session_id)?,
             capture_guard,
         )
         .await?;

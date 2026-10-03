@@ -54,7 +54,7 @@ impl KernelRuntimeState {
                 agent_id: agent_id.to_string(),
             });
         }
-        self.ensure_room_observation_clearance(session_id, agent_id, true)
+        self.ensure_room_observation_ready(session_id, agent_id, true)
             .await?;
         self.owned
             .room_secret_observations
@@ -275,9 +275,14 @@ impl KernelRuntimeState {
             ".room-screenshot-{}-{created_at_ms}-{sequence}.png",
             std::process::id()
         ));
-        if let Err(error) =
-            super::tool_dispatch::capture_room_environment_screenshot(&staging_path, capture_guard)
-                .await
+        if let Err(error) = super::tool_dispatch::capture_room_environment_screenshot(
+            &staging_path,
+            self.owned
+                .room_secret_observations
+                .capture_policy(session_id)?,
+            capture_guard,
+        )
+        .await
         {
             let _ = std::fs::remove_file(&staging_path);
             return Err(error);
