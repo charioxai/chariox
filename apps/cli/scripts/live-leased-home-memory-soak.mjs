@@ -112,6 +112,8 @@ function startKernel(name, port, base, relayToken, acceptLeases) {
     env: {
       ...childBaseEnv,
       HOME: home,
+      // Keep macOS Keychain lookups scoped to this disposable fixture.
+      CLAUDE_CONFIG_DIR: path.join(home, ".claude"),
       CHARIOX_HOME: path.join(home, "home"),
       CHARIOX_LOG_DIR: path.join(home, "logs"),
       CHARIOX_DAEMON_ID: `soak-${name}-${process.pid}`,
