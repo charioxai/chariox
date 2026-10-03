@@ -6,9 +6,8 @@ use std::time::{Duration, Instant};
 
 use super::{
     cancellation, kill_child, pending_responses, BrowserControllerProcessOwnership,
-    BrowserControllerProcessState, BrowserControllerProcessStdioBackend,
-    BrowserControllerProcessStore, BrowserControllerRpcError, BrowserControllerRpcRequest,
-    BrowserControllerRpcResponse, CONTROLLER_RESTARTED_BEFORE_OPERATION,
+    BrowserControllerProcessStdioBackend, BrowserControllerProcessStore, BrowserControllerRpcError,
+    BrowserControllerRpcRequest, BrowserControllerRpcResponse,
 };
 
 pub(super) struct PendingBrowserMutation {
