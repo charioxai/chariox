@@ -105,9 +105,27 @@ export async function prepareAppRestores(profile) {
   }
 }
 
+// Chromium deliberately ignores --restore-last-session after an unclean exit.
+// This launcher has exclusive ownership of the stopped profile and explicitly
+// selects recovery. Clear only its crash marker after the App navigation fence
+// succeeds, so Chromium can restore the sanitized session instead of New Tab.
+async function allowOwnedSessionRestore(profile) {
+  const file = path.join(profile, "Default", "Preferences");
+  let preferences;
+  try { preferences = JSON.parse(await readFile(file, "utf8")); }
+  catch (error) { if (error.code === "ENOENT") return; throw error; }
+  if (preferences.profile?.exit_type !== "Crashed") return;
+  preferences.profile.exit_type = "Normal";
+  preferences.profile.exited_cleanly = true;
+  const temporary = `${file}.chariox-restore-${process.pid}`;
+  await writeFile(temporary, JSON.stringify(preferences), { mode: 0o600, flag: "wx" });
+  await rename(temporary, file);
+}
+
 export async function prepareChromiumLaunch(profile) {
   try {
     await prepareAppRestores(profile);
+    await allowOwnedSessionRestore(profile);
     return "restore";
   } catch (error) {
     if (!(error instanceof RestoreFormatError)) throw error;

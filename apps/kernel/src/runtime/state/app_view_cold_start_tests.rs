@@ -84,6 +84,7 @@ async fn running_slice_start_does_not_spend_restore_or_poll_failure_budgets() {
         .unwrap();
     let views = runtime.app_control().views().clone();
     let binding = AppViewBinding {
+        logical_tab: None,
         owner: "local".into(),
         installation: "todo".into(),
         generation: 1,
@@ -122,4 +123,22 @@ async fn running_slice_start_does_not_spend_restore_or_poll_failure_budgets() {
     .await
     .unwrap();
     assert!(views.cold_start_views(&session).is_empty());
+}
+
+#[test]
+fn positive_browser_loss_preserves_restore_attempts_but_real_errors_are_final() {
+    for diagnostic in [
+        "browser_debugger_unavailable",
+        "browser_cdp_disconnected",
+        "browser controller is not leased by Room room",
+    ] {
+        assert!(matches!(
+            cold_restore_error(open_error(diagnostic)),
+            ColdAppRestoreError::Busy
+        ));
+    }
+    assert!(matches!(
+        cold_restore_error(open_error("invalid asset")),
+        ColdAppRestoreError::Failed(_)
+    ));
 }

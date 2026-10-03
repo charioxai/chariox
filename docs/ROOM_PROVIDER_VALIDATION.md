@@ -185,6 +185,15 @@ provider/Web/TUI recovery drill must also pass before accepting that coverage.
 
 ### Controller reference recovery
 
+The owned Chromium launcher restores its sanitized saved session after an
+unclean exit as well as a graceful close. Saved App URLs remain scriptless
+placeholders until the kernel reopens their verified current assets. Browser or
+controller loss retains open App intent and its logical Room Tab, with a new
+document revision; closed Tabs are not recovery intent. Component health and the
+Room aggregate settle under the same state owner: a running Room stays degraded
+while a component is unavailable or controller reconciliation is pending, and
+becomes ready as soon as both conditions clear.
+
 Run the real-Chrome controller request tests before the live provider drill:
 
 ```sh

@@ -132,6 +132,7 @@ impl KernelRuntimeState {
             session_id,
             &opened.target_id,
             AppViewBinding {
+                logical_tab: None,
                 owner: owner.clone(),
                 installation: installation.to_owned(),
                 generation,
@@ -161,6 +162,7 @@ impl KernelRuntimeState {
         let _ = self
             .reconcile_browser_controller_environment(session_id)
             .await;
+        self.remember_app_logical_tabs(session_id, &views);
         let bound_agent_id = self.foreground_app(session_id, &opened.target_id).await;
         Ok(LocalDaemonResponse::AppViewOpened {
             installation_id: installation.to_owned(),
@@ -255,6 +257,13 @@ impl KernelRuntimeState {
                 Ok(batch) => batch,
                 // Both end fast polling; only a genuine failure spends the budget.
                 Err(error) if crate::runtime::app_views::slice_busy(&error.to_string()) => {
+                    polls.failed();
+                    continue;
+                }
+                Err(error) if browser_recovery_downtime(&error.to_string()) => {
+                    // Positive browser/controller loss ends old document
+                    // authority but retains the user's open-view intent.
+                    views.suspend_for_cold_start(&session_id);
                     polls.failed();
                     continue;
                 }
@@ -411,8 +420,35 @@ impl KernelRuntimeState {
             views.forget_installation(&binding.owner, &binding.installation);
             return Err(AppRequestErrorCode::NotFound.into());
         }
+        if let Some(tab) = &binding.logical_tab {
+            self.owned
+                .session_store
+                .write()
+                .restore_room_environment_app_tab(session, tab, &opened.target_id)
+                .map_err(|_| ColdAppRestoreError::Failed(AppRequestErrorCode::Conflict))?;
+        }
         let _ = self.reconcile_browser_controller_environment(session).await;
         Ok(())
+    }
+
+    fn remember_app_logical_tabs(
+        &self,
+        session_id: &str,
+        views: &crate::runtime::app_views::AppViews,
+    ) {
+        // Remember the home Tab only after projection, before any recovery
+        // detaches the physical target. Polls may refresh document revisions.
+        if let Ok(environment) = self.room_environment_snapshot(session_id) {
+            for target in views.layouts(session_id).keys() {
+                if let Ok(Some(tab_id)) =
+                    self.room_environment_tab_id_for_controller_target(session_id, target)
+                {
+                    if let Some(tab) = environment.tabs.iter().find(|tab| tab.tab_id == tab_id) {
+                        views.remember_logical_tab(session_id, target, tab.clone());
+                    }
+                }
+            }
+        }
     }
 
     /// Marks the Room's App view Tabs. The Room draws each one's panel beside
@@ -431,6 +467,7 @@ impl KernelRuntimeState {
         else {
             return;
         };
+        self.remember_app_logical_tabs(session_id, views);
         if !app_panels {
             return;
         }
@@ -654,6 +691,7 @@ impl KernelRuntimeState {
             session_id,
             target_id,
             AppViewBinding {
+                logical_tab: None,
                 owner: owner.to_owned(),
                 installation: installation.to_owned(),
                 generation: view.generation,
@@ -935,6 +973,7 @@ mod tests {
     #[test]
     fn view_calls_run_as_the_views_owner_in_its_room() {
         let binding = AppViewBinding {
+            logical_tab: None,
             owner: "alice".into(),
             installation: "todo".into(),
             generation: 1,
@@ -1058,8 +1097,20 @@ impl From<AppRequestErrorCode> for ColdAppRestoreError {
     }
 }
 
+fn browser_recovery_downtime(message: &str) -> bool {
+    [
+        "browser_debugger_unavailable",
+        "browser_cdp_disconnected",
+        "browser controller is not leased by Room ",
+    ]
+    .iter()
+    .any(|code| message.contains(code))
+}
+
 fn cold_restore_error(error: DaemonError) -> ColdAppRestoreError {
-    if crate::runtime::app_views::slice_busy(&error.to_string()) {
+    if crate::runtime::app_views::slice_busy(&error.to_string())
+        || browser_recovery_downtime(&error.to_string())
+    {
         ColdAppRestoreError::Busy
     } else {
         ColdAppRestoreError::Failed(AppRequestErrorCode::Conflict)

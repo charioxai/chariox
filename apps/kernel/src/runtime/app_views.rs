@@ -15,6 +15,9 @@ pub(crate) struct AppViewBinding {
     pub(crate) generation: u64,
     /// The panel its manifest asks for; the page may ask for another.
     pub(crate) panel: PanelRequest,
+    /// Kernel Tab identity retained across browser/controller loss. This is
+    /// recovery intent, never authority received from a browser placeholder.
+    pub(crate) logical_tab: Option<crate::session::EnvironmentTab>,
 }
 
 /// The App's own agent panel choice: `placement` None shows no panel.
@@ -109,7 +112,13 @@ struct SessionViews {
 impl SessionViews {
     /// A (re)opened or reconnected Tab counts as new, and a failed
     /// reconnection's cooldown no longer applies to it.
-    fn bind(&mut self, target: &str, binding: AppViewBinding) {
+    fn bind(&mut self, target: &str, mut binding: AppViewBinding) {
+        if binding.logical_tab.is_none() {
+            binding.logical_tab = self
+                .tabs
+                .get(target)
+                .and_then(|(old, _)| old.logical_tab.clone());
+        }
         self.registrations += 1;
         self.called.remove(target);
         self.panel_requests.remove(target);
@@ -179,8 +188,25 @@ impl AppViews {
                     views.restoring.push((binding, 0));
                 }
             }
+            // Dropping the senders cancels calls held by the old documents.
+            views.in_flight.clear();
             views.open_tabs = 0;
             views.called.clear();
+        }
+    }
+
+    pub(crate) fn remember_logical_tab(
+        &self,
+        session: &str,
+        target: &str,
+        tab: crate::session::EnvironmentTab,
+    ) {
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((binding, _)) = sessions
+            .get_mut(session)
+            .and_then(|views| views.tabs.get_mut(target))
+        {
+            binding.logical_tab = Some(tab);
         }
     }
 
@@ -258,10 +284,12 @@ impl AppViews {
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let views = sessions.entry(session.to_owned()).or_default();
         if views.reconnecting.contains(target)
-            || views
-                .tabs
-                .get(target)
-                .is_some_and(|(current, _)| *current == binding)
+            || views.tabs.get(target).is_some_and(|(current, _)| {
+                current.owner == binding.owner
+                    && current.installation == binding.installation
+                    && current.generation == binding.generation
+                    && current.panel == binding.panel
+            })
         {
             return false;
         }
@@ -839,6 +867,7 @@ mod tests {
 
     fn binding(installation: &str) -> AppViewBinding {
         AppViewBinding {
+            logical_tab: None,
             generation: 1,
             owner: "user".into(),
             installation: installation.into(),
@@ -951,6 +980,7 @@ mod call_cancellation_tests {
             "s",
             "t1",
             AppViewBinding {
+                logical_tab: None,
                 owner: "user".into(),
                 installation: "a".into(),
                 generation: 1,
@@ -1061,6 +1091,7 @@ mod call_cancellation_tests {
             "s",
             "t1",
             AppViewBinding {
+                logical_tab: None,
                 owner: "user".into(),
                 installation: "a".into(),
                 generation: 1,
@@ -1107,6 +1138,7 @@ mod reconnect_tests {
     fn failed_restores_are_bounded_and_other_registered_views_keep_call_authority() {
         let views = AppViews::default();
         let binding = |installation: &str| AppViewBinding {
+            logical_tab: None,
             owner: "owner".into(),
             installation: installation.into(),
             generation: 1,
@@ -1154,6 +1186,7 @@ mod reconnect_tests {
     fn a_cold_slice_stop_keeps_only_open_view_intent_until_reauthorized() {
         let views = AppViews::default();
         let binding = AppViewBinding {
+            logical_tab: None,
             owner: "owner".into(),
             installation: "app".into(),
             generation: 1,
@@ -1270,6 +1303,7 @@ mod reconnect_tests {
         views.set_open_tabs("s", 0);
         assert!(!views.keep_pumping("s"));
         let binding = AppViewBinding {
+            logical_tab: None,
             owner: "user".into(),
             installation: "a".into(),
             generation: 2,
@@ -1294,6 +1328,7 @@ mod reconnect_tests {
 
     fn binding_at(generation: u64) -> AppViewBinding {
         AppViewBinding {
+            logical_tab: None,
             owner: "user".into(),
             installation: "a".into(),
             generation,
@@ -1391,5 +1426,36 @@ mod reconnect_tests {
         // counts its first call.
         views.retain_open("s", &[], views.registrations("s"));
         assert!(views.first_call("s", "t1"));
+    }
+    #[test]
+    fn browser_loss_retains_the_logical_app_tab_and_cancels_old_document_calls() {
+        let views = AppViews::default();
+        let saved = crate::session::EnvironmentTab {
+            tab_id: "tab-7".into(),
+            url: "https://app.todo.invalid/".into(),
+            title: "Todo".into(),
+            document_revision: 4,
+            focused: true,
+            app: None,
+        };
+        views.register("room", "old", binding_at(1));
+        views.remember_logical_tab("room", "old", saved.clone());
+        let call = views.track_call("room", "old", Some("old-document".into()));
+        views.suspend_for_cold_start("room");
+        assert!(call.is_cancelled());
+        assert!(views.binding_state("room", "old").is_none());
+        let intent = views.next_cold_start_attempt("room").unwrap();
+        assert_eq!(intent.logical_tab, Some(saved.clone()));
+        views.register("room", "new", intent.clone());
+        views.finish_cold_start_view("room", &intent);
+        // An ordinary generation reconnect does not overwrite saved identity.
+        assert!(!views.claim_reconnect("room", "new", binding_at(1)));
+        assert_eq!(
+            views.binding_state("room", "new").unwrap().0.logical_tab,
+            Some(saved)
+        );
+        views.retain_open("room", &[], views.registrations("room"));
+        views.suspend_for_cold_start("room");
+        assert!(views.cold_start_views("room").is_empty());
     }
 }

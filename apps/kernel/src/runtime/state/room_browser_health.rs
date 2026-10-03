@@ -187,28 +187,12 @@ impl KernelRuntimeState {
         } else {
             EnvironmentComponent::Browser
         };
-        let Some(current) = snapshot.health.iter().find(|h| h.component == component) else {
-            return;
-        };
-        if current.state == state && current.diagnostic_code.as_deref() == diagnostic {
-            return;
+        if diagnostic.is_some() {
+            self.app_control()
+                .views()
+                .suspend_for_cold_start(session_id);
         }
-        let Ok(updated) = sessions
-            .update_room_environment_component_health(session_id, component, state, diagnostic)
-        else {
-            return;
-        };
-        if diagnostic.is_some() && snapshot.lifecycle == EnvironmentLifecycle::Ready {
-            let _ =
-                sessions.transition_room_environment(session_id, EnvironmentLifecycle::Degraded);
-        } else if diagnostic.is_none()
-            && snapshot.lifecycle == EnvironmentLifecycle::Degraded
-            && updated
-                .health
-                .iter()
-                .all(|h| h.state == EnvironmentComponentHealthState::Ready)
-        {
-            let _ = sessions.transition_room_environment(session_id, EnvironmentLifecycle::Ready);
-        }
+        let _ = sessions
+            .update_room_environment_component_health(session_id, component, state, diagnostic);
     }
 }

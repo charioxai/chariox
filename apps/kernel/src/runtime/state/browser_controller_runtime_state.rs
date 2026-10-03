@@ -1260,6 +1260,9 @@ impl KernelRuntimeState {
             }
         };
         if began_recovery {
+            self.app_control()
+                .views()
+                .suspend_for_cold_start(session_id);
             self.begin_room_environment_browser_controller_recovery(session_id)
                 .map_err(|error| environment_runtime_error("browser_controller.recover", error))?;
             self.update_room_environment_component_health(
