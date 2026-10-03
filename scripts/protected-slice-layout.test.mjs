@@ -613,3 +613,143 @@ test("managed layout directories keep their exact modes under the broker service
   }
 })
 
+
+
+test("release F-created slice saves and backs up after upgrade with explicit legacy inventory; protected layouts still refuse", async () => {
+  const {captureProtectedHome} = await import("../apps/kernel/slice-linux-docker/protected-home-capture.mjs")
+  const {capturePrivateHomeArchive} = await import("../apps/kernel/slice-linux-docker/managed-home-archive-stream.mjs")
+  const {spawnSync} = await import("node:child_process")
+  const parent = mkdtempSync(join(process.env.HOME, ".chariox-release-f-legacy-"))
+  try {
+    const root = join(parent, "durable"), home = join(parent, "synthetic-home")
+    mkdirSync(home, {mode: 0o700})
+    writeFileSync(join(home, "release-f-user-file"), "synthetic release F retained home", {mode: 0o600})
+    const container = "chariox-slice-release-f"
+    const image = {Id: digest, Config: {Labels: {"io.chariox.relay-peer-protocol-version": "68"}}}
+    let info = {Id: "release-f-created-container", Image: digest, State: {Running: false},
+      Mounts: [{Type: "volume", Name: `${container}-home`, Source: "/synthetic/volume", Destination: "/home/slice", RW: true}],
+      Config: {Env: ["HOME=/home/slice"]}}
+    const docker = args => {
+      if (args[0] === "ps") return {status: 0, stdout: `${container}\n`}
+      return {status: 0, stdout: JSON.stringify([args[0] === "image" ? image : info])}
+    }
+    // This is the upgraded controller adopting the pre-Apps Docker inspection.
+    const controller = createManagedLayoutController({root, sourceDigest: digest, docker, dataOwner: process.getuid()})
+    const layout = controller.captureLayout(container)
+    assert.equal(layout.layoutKind, "legacy-release-f")
+    assert.equal(readProtectedLayoutReceipt(join(root, "legacy-layouts"), container).containerId, info.Id)
+    controller.requireQuiescedHome(container)
+    const helper = `${container}-home-archive-1`
+    const helperDocker = () => ({status: 0, stdout: JSON.stringify([{
+      Config: {Labels: {"io.chariox.snapshot-helper": helper}}, HostConfig: {NetworkMode: "none"},
+      Mounts: [{Type: "volume", Name: layout.homeVolume, Destination: "/home-src", RW: false}]}])})
+    const fs = await import("node:fs"), paths = await import("node:path")
+    const {runInNewContext} = await import("node:vm")
+    const brokerSource = fs.readFileSync(new URL("../apps/kernel/slice-linux-docker/managed-docker-broker.mjs", import.meta.url), "utf8")
+    const captureSource = brokerSource.slice(brokerSource.indexOf("function validateArtifactIdentity("),
+      brokerSource.indexOf("function managedHomeArchiveCoordinates("))
+      .replaceAll("dirname(fileURLToPath(import.meta.url))", '"/synthetic/runtime"')
+    const capture = runInNewContext(`${captureSource}\ncaptureHomeArchive`, {
+      ...fs, ...paths, process, Buffer, protectedLayouts: controller, BROKER_ARTIFACT_ROOT: join(parent, "artifacts"),
+      exactKeys: (value, keys) => assert.equal(Object.keys(value).sort().join(), [...keys].sort().join()),
+      fail: message => {throw new Error(message)}, dockerEnvironment: () => ({PATH: "/usr/bin:/bin"}),
+      spawnBounded: async (_command, args, options) => {
+        assert.equal(args.at(-1), "legacy-release-f", "the broker selects release F capture only after admission")
+        assert.equal(options.timeout, undefined, "legacy capture retains its progress policy")
+        const result = await captureProtectedHome({helper: args[1], volume: args[2], path: args[3],
+          docker: helperDocker, environment: options.env, legacy: true,
+          legacyCapture: streamOptions => capturePrivateHomeArchive({...streamOptions, command: "/usr/bin/tar",
+            args: ["--zstd", "-C", home, "-cf", "-", "."], minimumFreeBytes: 0})})
+        return {status: 0, stdout: Buffer.from(JSON.stringify(result))}
+      },
+    })
+    for (const scope of ["state", "backup"]) {
+      const result = await capture({container: helper, scope, id: `${container}-${scope}`})
+      assert.ok(result.sizeBytes > 0)
+      assert.match(result.sha256, /^[a-f0-9]{64}$/)
+      assert.equal(spawnSync("/usr/bin/tar", ["--zstd", "-xOf", result.path, "./release-f-user-file"], {encoding: "utf8"}).stdout,
+        "synthetic release F retained home")
+    }
+    await assert.rejects(capture({container: helper, scope: "backup", id: `${container}-backup`}), /already exists/)
+    info = {...info, Id: "replaced-container", Mounts: [{...info.Mounts[0], Source: "/different/home"}]}
+    assert.throws(() => controller.captureLayout(container), "a retained legacy decision cannot admit a different home")
+    info.Mounts[0].Source = "/synthetic/volume"
+    info = {...info, Mounts: [...info.Mounts, {Destination: PRIVATE_ROOT}]}
+    assert.throws(() => controller.captureLayout(container), "an unverified protected layout cannot become legacy")
+    info = {...info, Mounts: info.Mounts.slice(0, 1)}
+    image.Config.Labels["io.chariox.relay-peer-protocol-version"] = "69"
+    assert.throws(() => controller.captureLayout(container), "new slices remain protected-only")
+  } finally { rmSync(parent, {recursive: true, force: true}) }
+})
+
+
+test("legacy upgrade survives worker recreation, repeated provision, save and restore without granting protected fallback", () => {
+  const parent = mkdtempSync(join(process.env.HOME, ".chariox-legacy-recreate-"))
+  try {
+    const root = join(parent, "durable"), container = "chariox-slice-upgraded-legacy"
+    const source = `sha256:${"d".repeat(64)}`
+    const old = {Id: digest, Config: {User: "slice", Labels: {"io.chariox.relay-peer-protocol-version": "68"}}, RootFS: {Layers: [digest]}}
+    const current = {Id: `sha256:${"b".repeat(64)}`, Config: {User: "slice", Labels: {"io.chariox.relay-peer-protocol-version": "69"}}, RootFS: {Layers: [digest]}}
+    const images = new Map([[old.Id, old], [current.Id, current]])
+    let info = {Id: "release-f-container", Image: old.Id, Config: {Env: ["HOME=/home/slice"]},
+      Mounts: [{Type: "volume", Name: `${container}-home`, Source: "/synthetic/home", Destination: "/home/slice", RW: true}]}
+    const docker = args => args[0] === "ps" ? {status: 0, stdout: `${container}\n`}
+      : {status: 0, stdout: JSON.stringify([args[0] === "image" ? images.get(args[2]) : info])}
+    const controller = createManagedLayoutController({root, sourceDigest: source, docker, dataOwner: process.getuid()})
+    const env = {CHARIOX_SLICE_NAME: container, CHARIOX_SLICE_ID: "slice-upgraded-legacy"}
+    assert.equal(controller.prepare("provision", env), null)
+    // Start without a managed proof. Exercise the real provisioner build
+    // function and proof CLI, with Docker scoped to synthetic fixture results.
+    assert.throws(() => requireManagedImageProof(controller.imageRoot, source, current.Id))
+    const buildRoot = join(parent, "build"), bin = join(parent, "bin")
+    const moduleDir = join(buildRoot, "apps/kernel/slice-linux-docker")
+    mkdirSync(moduleDir, {recursive: true}); mkdirSync(bin)
+    const proofPath = new URL("../apps/kernel/slice-linux-docker/protected-image-proof.mjs", import.meta.url).pathname
+    symlinkSync(proofPath, join(moduleDir, "protected-image-proof.mjs"))
+    const built = join(parent, "built")
+    writeFileSync(join(bin, "docker"), `#!${process.execPath}
+const fs = require("node:fs"); const args = process.argv.slice(2)
+if (!fs.existsSync(${JSON.stringify(built)})) process.exit(1)
+if (args[0] === "image") process.stdout.write(${JSON.stringify(JSON.stringify([current]))})
+else if (args[0] === "run") process.stdout.write("${"f".repeat(64)}  /opt/chariox-slice/bin/chariox-kernel\\n")
+else if (args[0] !== "rm") process.exit(1)
+`, {mode: 0o700})
+    const provisioner = readFileSync(new URL("../apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh", import.meta.url), "utf8")
+    const build = provisioner.match(/^build_standard_runtime_image\(\) \{\n[\s\S]*?^\}/m)?.[0]
+    assert.ok(build)
+    for (const prebuilt of [false, true]) {
+      // Each branch must independently mint its own proof.
+      rmSync(join(controller.imageRoot, `${current.Id.slice(7)}.json`), {force: true})
+      assert.throws(() => requireManagedImageProof(controller.imageRoot, source, current.Id))
+      if (prebuilt) { mkdirSync(join(moduleDir, "prebuilt")); writeFileSync(join(moduleDir, "prebuilt/.managed-release"), "synthetic") }
+      const result = spawnSync("bash", ["-c", `set -eu
+log() { :; }
+docker_target_arch() { echo amd64; }
+docker_build() { touch "$BUILT_MARKER"; }
+${build}
+build_standard_runtime_image synthetic-standard-image
+`], {encoding: "utf8", env: {...process.env, PATH: `${bin}:${process.env.PATH}`, REPO_ROOT: buildRoot,
+        BUILT_MARKER: built, SLICE_RUNTIME_BUILD_PROFILE: "release", SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL: "3",
+        SLICE_RELAY_PEER_PROTOCOL_VERSION: "69", SLICE_RUNTIME_SOURCE_REVISION: source,
+        CHARIOX_SLICE_PRIVATE_HOST_ROOT: "", CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: source,
+        CHARIOX_SLICE_PROTECTED_IMAGE_PROOF_ROOT: controller.imageRoot}})
+      assert.equal(result.status, 0, result.stderr)
+      assert.equal(requireManagedImageProof(controller.imageRoot, source, current.Id), current.Id)
+    }
+    info = {...info, Id: "recreated-container", Image: current.Id}
+    controller.complete(env)
+    assert.equal(controller.prepare("provision", env), null)
+    assert.equal(controller.captureLayout(container).layoutKind, "legacy-release-f")
+    const saved = {Id: `sha256:${"c".repeat(64)}`, Parent: current.Id, Config: {...current.Config, Env: info.Config.Env}, RootFS: {Layers: [digest, `sha256:${"e".repeat(64)}`]}}
+    images.set(saved.Id, saved)
+    controller.recordLegacyImage(container, current, info, saved)
+    assert.equal(controller.prepare("restore-state", {...env, CHARIOX_SLICE_SAVED_HOME_ARCHIVE: "/synthetic/owned-archive", CHARIOX_SLICE_DOCKER_IMAGE: saved.Id}), null)
+    info = {...info, Id: "restored-container", Image: saved.Id}
+    controller.complete(env)
+    assert.equal(controller.captureLayout(container).imageId, saved.Id)
+    assert.equal(controller.prepare("provision", env), null)
+    info.Mounts.push({Destination: PRIVATE_ROOT})
+    assert.throws(() => controller.captureLayout(container))
+    assert.throws(() => controller.prepare("provision", env))
+  } finally { rmSync(parent, {recursive: true, force: true}) }
+})

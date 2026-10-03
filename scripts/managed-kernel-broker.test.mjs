@@ -696,7 +696,7 @@ test("managed slice broker rejects symlink escapes from the shared root", async 
   assert.match(result.stderr, /resolves outside|symbolic link/)
 })
 
-test("managed slice broker projects the signed context digest to its provisioner", async (context) => {
+test("managed slice broker projects the signed context digest and gates build proofs on layout trust", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-broker-digest-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const share = join(root, "share")
@@ -711,7 +711,10 @@ test("managed slice broker projects the signed context digest to its provisioner
     }],
   }))
   const provisioner = join(root, "provisioner.sh")
-  await writeFile(provisioner, "#!/bin/sh\nprintf '%s' \"$CHARIOX_SLICE_BUILD_CONTEXT_DIGEST\"\n")
+  await writeFile(provisioner, `#!${process.execPath}
+process.stdout.write(JSON.stringify({digest: process.env.CHARIOX_SLICE_BUILD_CONTEXT_DIGEST,
+ proofRoot: process.env.CHARIOX_SLICE_PROTECTED_IMAGE_PROOF_ROOT}))
+`)
   await chmod(provisioner, 0o755)
   const request = {
     kind: "provisioner",
@@ -727,22 +730,29 @@ test("managed slice broker projects the signed context digest to its provisioner
     },
     files: [],
   }
-  const result = spawnSync(process.execPath, [broker, "--stdio"], {
-    input: `${JSON.stringify(request)}\n`,
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      CHARIOX_SLICE_DOCKER_SHARE_ROOT: share,
-      CHARIOX_MANAGED_RELEASE_MANIFEST: manifest,
-      CHARIOX_SLICE_DOCKER_PROVISIONER: provisioner,
-      CHARIOX_SLICE_DOCKER_HANDLE_ROOT: join(root, "handles"),
-      CHARIOX_SLICE_DOCKER_HANDLE_STATE: join(root, "handles.json"),
-    },
-  })
-  assert.equal(result.status, 0, result.stderr)
-  const response = JSON.parse(result.stdout)
-  assert.equal(response.status, 0, Buffer.from(response.stderrBase64, "base64").toString())
-  assert.equal(Buffer.from(response.stdoutBase64, "base64").toString(), digest)
+  for (const dockerHost of ["unix:///run/chariox-docker/docker.sock", "unix:///synthetic/untrusted.sock"]) {
+    const result = spawnSync(process.execPath, [broker, "--stdio"], {
+      input: `${JSON.stringify(request)}\n`,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        DOCKER_HOST: dockerHost,
+        CHARIOX_SLICE_DOCKER_SHARE_ROOT: share,
+        CHARIOX_MANAGED_RELEASE_MANIFEST: manifest,
+        CHARIOX_SLICE_DOCKER_PROVISIONER: provisioner,
+        CHARIOX_SLICE_DOCKER_HANDLE_ROOT: join(root, "handles"),
+        CHARIOX_SLICE_DOCKER_HANDLE_STATE: join(root, "handles.json"),
+      },
+    })
+    assert.equal(result.status, 0, result.stderr)
+    const response = JSON.parse(result.stdout)
+    assert.equal(response.status, 0, Buffer.from(response.stderrBase64, "base64").toString())
+    const environment = JSON.parse(Buffer.from(response.stdoutBase64, "base64").toString())
+    assert.equal(environment.digest, digest)
+    const trusted = process.platform === "linux" && process.getuid() === 0 && dockerHost === "unix:///run/chariox-docker/docker.sock"
+    assert.equal(environment.proofRoot !== undefined, trusted)
+  }
+
 })
 
 test("managed slice broker materializes bounded credential bytes privately", async (context) => {

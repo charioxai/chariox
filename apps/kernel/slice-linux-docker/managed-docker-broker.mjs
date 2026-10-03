@@ -5,6 +5,7 @@ import { recordCapturedImageProof } from "./protected-image-proof.mjs"
 import { requireSafeHomeVolume as requireSafeManagedHomeVolume } from "./protected-home-preflight.mjs"
 import { requireSafeLocalHomeVolume } from "./protected-local-home-scan.mjs"
 import { createManagedLayoutController } from "./protected-managed-layout.mjs"
+import { LEGACY_CAPTURE_NOTICE } from "./legacy-release-f-layout.mjs"
 import { localDevRuntimeEnvironment } from "./protected-local-docker-authority.mjs"
 import { verifiedProtectedAuthority } from "./protected-authority.mjs"
 import { recordManagedImageProof } from "./protected-image-proof.mjs"
@@ -766,10 +767,11 @@ function artifactDirectory(scope, id) {
 }
 
 async function captureHomeArchive(request) {
-  // Only a verified protected layout whose home is quiesced is captured.
+  // Capture only a verified protected or explicitly retained release F legacy
+  // layout, with its exact home quiesced.
   const owner = request.container.match(/^(chariox-slice-[A-Za-z0-9_.:-]+)-home-archive-[0-9]+$/)?.[1]
   if (!owner) fail("slice home capture helper ownership is invalid")
-  const layout = protectedLayouts.preflight(owner)
+  const layout = protectedLayouts.captureLayout(owner)
   protectedLayouts.requireQuiescedHome(owner)
   const scopeRoot = artifactScopeRoot(request.scope)
   mkdirSync(scopeRoot, { recursive: true, mode: 0o700 })
@@ -786,8 +788,10 @@ async function captureHomeArchive(request) {
     // broker state; the capture module bounds size, free space and duration.
     // Lease loss settles its process group like any other broker producer.
     const captured = await spawnBounded(process.execPath,
-      [join(dirname(fileURLToPath(import.meta.url)), "protected-home-capture.mjs"), request.container, layout.homeVolume, staged],
-      {env: dockerEnvironment(), maxBuffer: 64 * 1024, timeout: 11 * 60_000})
+      [join(dirname(fileURLToPath(import.meta.url)), "protected-home-capture.mjs"), request.container, layout.homeVolume, staged,
+        ...(layout.layoutKind === "legacy-release-f" ? ["legacy-release-f"] : [])],
+      {env: dockerEnvironment(), maxBuffer: 64 * 1024,
+        ...(layout.layoutKind === "legacy-release-f" ? {} : {timeout: 11 * 60_000})})
     if (captured.status !== 0) fail("slice home capture was refused; existing saved state is preserved")
     const result = JSON.parse(captured.stdout.toString("utf8"))
     exactKeys(result, ["sizeBytes", "sha256"], "protected home capture result")
@@ -1750,10 +1754,12 @@ async function execute(request) {
   }
   let commitSource
   let commitParent
+  let legacyCommit = false
   if (request.kind === "docker" && request.args[0] === "commit") {
-    const layout = protectedLayouts.preflight(request.args[1])
+    const layout = protectedLayouts.captureLayout(request.args[1])
+    legacyCommit = layout.layoutKind === "legacy-release-f"
     protectedLayouts.requireQuiescedHome(request.args[1])
-    requireSafeHomeVolume({volume: layout.homeVolume,
+    if (!legacyCommit) requireSafeHomeVolume({volume: layout.homeVolume,
       docker: args => spawnSync("/usr/bin/docker", args, {env: dockerEnvironment(), timeout: 30_000, maxBuffer: 8 * 1024 * 1024})})
     commitSource = inspectDockerObject("container", request.args[1])
     commitParent = inspectDockerObject("image", commitSource.Image)
@@ -1763,7 +1769,10 @@ async function execute(request) {
     return {status: 0, stdoutBase64: Buffer.from(JSON.stringify({protectedLayout})).toString("base64"), stderrBase64: ""}
   }
   if (request.kind === "capture_preflight") {
-    const layout = protectedLayouts.preflight(request.container)
+    const layout = protectedLayouts.captureLayout(request.container)
+    if (layout.layoutKind === "legacy-release-f") {
+      return {status: 0, stdoutBase64: "", stderrBase64: Buffer.from(LEGACY_CAPTURE_NOTICE).toString("base64")}
+    }
     requireSafeHomeVolume({volume: layout.homeVolume, quiesced: false,
       docker: args => spawnSync("/usr/bin/docker", args, {env: dockerEnvironment(), timeout: 30_000, maxBuffer: 8 * 1024 * 1024})})
     return {status: 0, stdoutBase64: "", stderrBase64: ""}
@@ -1875,7 +1884,8 @@ async function execute(request) {
             CHARIOX_SLICE_BUILD_IMAGE: "never",
             ...localDevRuntimeEnvironment(LOCAL_AUTHORITY.enrollment)} : {}),
           ...(VERIFIED_BUILD_CONTEXT_DIGEST
-            ? { CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: VERIFIED_BUILD_CONTEXT_DIGEST, CHARIOX_SLICE_PROTECTED_IMAGE_PROOF_ROOT: protectedLayouts.imageRoot }
+            ? { CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: VERIFIED_BUILD_CONTEXT_DIGEST,
+              ...(protectedLayouts.trusted ? {CHARIOX_SLICE_PROTECTED_IMAGE_PROOF_ROOT: protectedLayouts.imageRoot} : {}) }
             : {}),
         }
       return spawnBounded(command, args, {
@@ -1971,7 +1981,8 @@ async function execute(request) {
       : await runPrepared()
     if (commitSource && result.status === 0) {
       const captured = inspectDockerObject("image", request.args[2])
-      recordCapturedImageProof(protectedLayouts.imageRoot, VERIFIED_BUILD_CONTEXT_DIGEST,
+      if (legacyCommit) protectedLayouts.recordLegacyImage(request.args[1], commitParent, commitSource, captured)
+      else recordCapturedImageProof(protectedLayouts.imageRoot, VERIFIED_BUILD_CONTEXT_DIGEST,
         commitParent, commitSource, captured)
     }
     if (request.kind === "docker" && prepared.output && result.status === 0) {

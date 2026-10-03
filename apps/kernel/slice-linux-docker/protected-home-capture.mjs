@@ -1,3 +1,4 @@
+import { capturePrivateHomeArchive } from "./managed-home-archive-stream.mjs"
 import { constants, openSync, closeSync, unlinkSync } from "node:fs"
 import { validateCompressedArchive } from "./protected-home-restore.mjs"
 import { spawnSync } from "node:child_process"
@@ -27,7 +28,7 @@ export function verifyCaptureHelperVolume(helper, volume) {
   verifyHomeVolumeName(volume, owner)
 }
 
-export async function captureProtectedHome({helper, volume, path, docker, environment, maxBytes, reserveBytes}) {
+export async function captureProtectedHome({helper, volume, path, docker, environment, maxBytes, reserveBytes, legacy = false, legacyCapture = capturePrivateHomeArchive}) {
   verifyCaptureHelperVolume(helper, volume)
   verifyPrivateHostDirectory(dirname(path), process.getuid())
   const inspected = docker(["container", "inspect", helper])
@@ -39,21 +40,27 @@ export async function captureProtectedHome({helper, volume, path, docker, enviro
       || info.HostConfig?.NetworkMode !== "none" || info.Mounts?.length !== 1
       || info.Mounts[0].Type !== "volume" || info.Mounts[0].Name !== volume
       || info.Mounts[0].Destination !== "/home-src" || info.Mounts[0].RW !== false) refuse()
+  if (!legacy) {
   const inventory = docker(["exec", "-u", "root", helper, "find", "-P", "/home-src", "-mindepth", "1", "-printf", "%P\\0%y\\0%l\\0"])
   if (inventory.status !== 0) refuse()
   verifyHomeEntryMetadata(inventory.stdout)
+  }
   const stopOwnedHelper = () => docker(["rm", "-f", helper])
   const terminate = () => stopOwnedHelper()
   process.once("SIGTERM", terminate)
   process.once("SIGINT", terminate)
   let completed = false
   try {
-    const captured = await streamArchiveToProtectedSink({command: "/usr/bin/docker",
+    const captured = legacy ? await legacyCapture({command: "/usr/bin/docker",
+      args: ["exec", "-u", "root", helper, "tar", "--zstd", "-C", "/home-src", "-cf", "-", "."],
+      env: environment, destination: path}) : await streamArchiveToProtectedSink({command: "/usr/bin/docker",
       args: ["exec", "-u", "root", helper, "tar", "--zstd", "--one-file-system", "-cf", "-", "-C", "/home-src", "."],
       environment, path, maxBytes, reserveBytes})
     completed = true
-    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW)
-    try { await validateCompressedArchive(fd, helper, environment) } finally { closeSync(fd) }
+    if (!legacy) {
+      const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+      try { await validateCompressedArchive(fd, helper, environment) } finally { closeSync(fd) }
+    }
     return captured
   } catch (error) {
     // Killing the CLI alone cannot prove the daemon's tar exec has stopped.
@@ -70,8 +77,9 @@ export async function captureProtectedHome({helper, volume, path, docker, enviro
 if (process.argv[1]?.endsWith("/protected-home-capture.mjs")) {
   try {
     const environment = {HOME: "/var/lib/chariox-docker/home", PATH: "/usr/bin:/bin", DOCKER_HOST: process.env.DOCKER_HOST}
-    const [helper, volume, path] = process.argv.slice(2)
-    const result = await captureProtectedHome({helper, volume, path, environment,
+    const [helper, volume, path, mode] = process.argv.slice(2)
+    if (mode !== undefined && mode !== "legacy-release-f") refuse()
+    const result = await captureProtectedHome({helper, volume, path, environment, legacy: mode === "legacy-release-f",
       maxBytes: 32 * 1024 ** 3, reserveBytes: 2 * 1024 ** 3,
       docker: args => spawnSync("/usr/bin/docker", args, {env: environment, timeout: 30_000, maxBuffer: 8 * 1024 ** 2})})
     console.log(JSON.stringify(result))

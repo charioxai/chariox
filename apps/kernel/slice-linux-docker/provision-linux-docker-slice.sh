@@ -780,7 +780,7 @@ build_standard_runtime_image() {
       -f "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/Dockerfile" \
       -t "$image" \
       "$REPO_ROOT"
-    if [[ -n "${CHARIOX_SLICE_PRIVATE_HOST_ROOT:-}" ]]; then
+    if [[ "${CHARIOX_SLICE_BUILD_CONTEXT_DIGEST:-}" =~ ^sha256:[a-f0-9]{64}$ && -n "${CHARIOX_SLICE_PROTECTED_IMAGE_PROOF_ROOT:-}" ]]; then
       node "$REPO_ROOT/apps/kernel/slice-linux-docker/protected-image-proof.mjs" --record-standard-build "$image"
     fi
     return
@@ -794,7 +794,7 @@ build_standard_runtime_image() {
     -f "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/Dockerfile" \
     -t "$image" \
     "$REPO_ROOT"
-  if [[ -n "${CHARIOX_SLICE_PRIVATE_HOST_ROOT:-}" ]]; then
+  if [[ "${CHARIOX_SLICE_BUILD_CONTEXT_DIGEST:-}" =~ ^sha256:[a-f0-9]{64}$ && -n "${CHARIOX_SLICE_PROTECTED_IMAGE_PROOF_ROOT:-}" ]]; then
     node "$REPO_ROOT/apps/kernel/slice-linux-docker/protected-image-proof.mjs" --record-standard-build "$image"
   fi
 }
