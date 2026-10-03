@@ -32,10 +32,19 @@ async fn fixture() -> (
     let script = std::fs::read_to_string(&tool.path).unwrap().replace(
         "printf 'reconcile\\n'",
         &format!(
-            "if [ -f '{}' ]; then printf '{{\"id\":%s,\"ok\":false,\"error\":{{\"code\":\"controller_busy\",\"message\":\"foreground command pending\"}}}}\\n' \"$id\"; continue; fi\nif [ -f '{}' ]; then sleep 6; fi\nprintf 'reconcile\\n'",
+            "if [ -f '{}' ]; then printf '{{\"id\":%s,\"ok\":false,\"error\":{{\"code\":\"controller_busy\",\"message\":\"foreground command pending\"}}}}\\n' \"$id\"; continue; fi\nif [ -f '{}' ]; then sleep 6; fi\nif [ -f '{}' ]; then sleep 2; fi\nprintf 'reconcile\\n'",
             tool.root.join("browser-busy").display(),
             tool.root.join("browser-slow").display(),
+            tool.root.join("browser-delayed").display(),
         ),
+    );
+    std::fs::write(&tool.path, script).unwrap();
+    let script = std::fs::read_to_string(&tool.path).unwrap().replace(
+        "    *'\"method\":\"shutdown\"'*)",
+        r#"    *'"method":"browser.cookies.recover"'*)
+      printf '{"id":%s,"ok":true,"result":{"status":"verified"}}\n' "$id"
+      ;;
+    *'"method":"shutdown"'*)"#,
     );
     std::fs::write(&tool.path, script).unwrap();
     let mut state = owned_runtime_state(&app).await;
@@ -275,4 +284,137 @@ async fn room_browser_health_probe_shares_controller_routes_and_yields_to_slice_
         "health must yield to actual slice lifecycle authority"
     );
     drop(lifecycle);
+}
+
+#[tokio::test]
+async fn ready_state_read_uses_health_only_and_preserves_foreground_tabs() {
+    let (state, room, tool, _) = fixture().await;
+    // The fixture's reconciliation always reports target-a. A foreground tab
+    // projection after dispatch must survive the asynchronous read receipt.
+    let before = std::fs::read_to_string(&tool.log).unwrap();
+    std::fs::write(tool.root.join("browser-delayed"), "").unwrap();
+    state.schedule_room_environment_health_refresh(&room);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    state
+        .reconcile_room_environment_controller_tabs(&room, Vec::new(), None)
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(9), async {
+        while std::fs::read_to_string(&tool.log).unwrap() == before {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    })
+    .await
+    .unwrap();
+    assert!(state
+        .room_environment_snapshot(&room)
+        .unwrap()
+        .tabs
+        .is_empty());
+}
+
+#[tokio::test]
+async fn ready_state_read_ignores_busy_but_degrades_positive_browser_loss() {
+    let (state, room, tool, _) = fixture().await;
+    std::fs::write(tool.root.join("browser-busy"), "").unwrap();
+    state.schedule_room_environment_health_refresh(&room);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        state.room_environment_snapshot(&room).unwrap().lifecycle,
+        Lifecycle::Ready
+    );
+    std::fs::remove_file(tool.root.join("browser-busy")).unwrap();
+    std::fs::write(tool.root.join("browser-exited"), "").unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            state.schedule_room_environment_health_refresh(&room);
+            if state.room_environment_snapshot(&room).unwrap().lifecycle == Lifecycle::Degraded {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn ready_state_read_recovers_pending_import() {
+    let (state, room, _tool, _) = fixture().await;
+    let guard = state
+        .begin_exclusive_browser_import(&room, "11111111111111111111111111111111", "local")
+        .await
+        .unwrap();
+    drop(guard);
+    assert!(state
+        .ensure_browser_import_execution_allowed(&room)
+        .is_err());
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            state.schedule_room_environment_health_refresh(&room);
+            if state.ensure_browser_import_execution_allowed(&room).is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        state.room_environment_snapshot(&room).unwrap().lifecycle,
+        Lifecycle::Ready
+    );
+}
+
+#[tokio::test]
+async fn browser_health_receipts_classify_routes_and_keep_transient_failures_inconclusive() {
+    use crate::error::DaemonError;
+    let relay = |code: &str, message: &str| DaemonError::RelayTransport {
+        operation: "read relay peer response",
+        code: code.into(),
+        message: message.into(),
+        retryable: true,
+    };
+    let local = |message: &str| DaemonError::LocalTransport {
+        operation: "browser_controller.route",
+        message: message.into(),
+    };
+    for (error, lost) in [
+        (relay("target_not_connected", "worker offline"), true),
+        (relay("target_disconnected", "worker disconnected"), true),
+        (relay("target_not_allowed", "target denied"), true),
+        (
+            relay(
+                "transport_error",
+                "browser_controller_scope_denied: wrong Room",
+            ),
+            true,
+        ),
+        (local("browser_controller_scope_denied: wrong Room"), true),
+        (relay("transport_error", "temporary transport error"), false),
+        (local("controller_busy: foreground command pending"), false),
+        (local("request timed out"), false),
+    ] {
+        let (state, room, _tool, _) = fixture().await;
+        let before = state.room_environment_snapshot(&room).unwrap();
+        // This is the same receipt consumer called by refresh after real relay
+        // delivery. Typed errors cannot be produced by the local stdio tool.
+        state.observe_room_browser_health_receipt(&room, before.runtime_generation, Err(error));
+        let after = state.room_environment_snapshot(&room).unwrap();
+        if lost {
+            assert_eq!(after.lifecycle, Lifecycle::Degraded);
+            let controller = after
+                .health
+                .iter()
+                .find(|h| h.component == Component::BrowserController)
+                .unwrap();
+            assert_eq!(controller.state, Health::Unavailable);
+            assert_eq!(
+                controller.diagnostic_code.as_deref(),
+                Some("browser_controller_unreachable")
+            );
+        } else {
+            assert_eq!(after, before, "transient receipts must remain inconclusive");
+        }
+    }
 }
