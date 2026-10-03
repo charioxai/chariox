@@ -247,7 +247,7 @@ async fn room_browser_health_probe_shares_controller_routes_and_yields_to_slice_
             &slice.id,
             &command,
             false,
-            Some(tokio::time::Instant::now()),
+            Some(tokio::time::Instant::now() + std::time::Duration::from_secs(5)),
         )
         .await
         .unwrap();

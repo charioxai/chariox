@@ -1914,7 +1914,7 @@ exit 0
         .iter()
         .position(|call| call.starts_with("volume create ") && call.ends_with(" saved-slice-home"))
         .expect("replacement home volume should be created with saved-home labels");
-    let create_container = position("create --name saved-slice ");
+    let create_container = position("create --init --name saved-slice ");
     let start_container = calls
         .iter()
         .position(|call| *call == "start saved-slice")
