@@ -62,7 +62,8 @@ fn lock(state: &Mutex<State>) -> std::sync::MutexGuard<'_, State> {
 impl AppWakePump {
     pub(crate) fn try_begin(&self, now_ms: u64) -> Option<WakePass> {
         let mut state = lock(&self.0);
-        if state.busy || (now_ms >= state.last_ms && now_ms - state.last_ms < MIN_INTERVAL_MS) {
+        let clock_corrected = state.last_ms.saturating_sub(now_ms) >= MIN_INTERVAL_MS;
+        if state.busy || (!clock_corrected && now_ms.saturating_sub(state.last_ms) < MIN_INTERVAL_MS) {
             return None;
         }
         state.busy = true;
@@ -87,7 +88,8 @@ impl AppWakePump {
     /// Whether this pass should also prune stale dormant catalogs (once a minute).
     pub(crate) fn prune_due(&self, now_ms: u64) -> bool {
         let mut state = lock(&self.0);
-        if now_ms >= state.last_prune_ms && now_ms - state.last_prune_ms < PRUNE_INTERVAL_MS {
+        let clock_corrected = state.last_prune_ms.saturating_sub(now_ms) >= MIN_INTERVAL_MS;
+        if !clock_corrected && now_ms.saturating_sub(state.last_prune_ms) < PRUNE_INTERVAL_MS {
             return false;
         }
         state.last_prune_ms = now_ms;
@@ -183,6 +185,7 @@ mod tests {
         let held = pump.try_begin(10_000).unwrap();
         assert!(pump.try_begin(100).is_none());
         drop(held);
+        assert!(pump.try_begin(9_999).is_none());
         drop(
             pump.try_begin(100)
                 .expect("backward correction resets the throttle"),
@@ -190,6 +193,7 @@ mod tests {
         assert!(pump.try_begin(500).is_none());
         assert!(pump.try_begin(1_100).is_some());
         assert!(pump.prune_due(100_000));
+        assert!(!pump.prune_due(99_999));
         assert!(pump.prune_due(100));
         assert!(!pump.prune_due(101));
     }

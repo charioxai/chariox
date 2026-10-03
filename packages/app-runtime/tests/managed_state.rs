@@ -770,4 +770,20 @@ fn empty_and_future_only_wake_polls_do_not_write_durable_state() {
     let before = version();
     assert!(due_wakes(&db, 2_000, 8).unwrap().is_empty());
     assert_eq!(version(), before);
+    let due = due_wakes(&db, 10_000, 8).unwrap();
+    postpone_wake(&db, &due[0], 70_000).unwrap();
+    let before = version();
+    // A stopped App can leave a postponed wake for a minute. Polling it
+    // before the retry must not sync clock state or collapse its backoff.
+    assert!(due_wakes(&db, 11_000, 8).unwrap().is_empty());
+    assert!(due_wakes(&db, 12_000, 8).unwrap().is_empty());
+    assert!(due_wakes(&db, 9_999, 8).unwrap().is_empty());
+    assert_eq!(version(), before);
+    // A real correction resets the future retry to its original due time.
+    assert!(due_wakes(&db, 8_000, 8).unwrap().is_empty());
+    assert_ne!(version(), before);
+    let before = version();
+    assert!(due_wakes(&db, 9_000, 8).unwrap().is_empty());
+    assert_eq!(version(), before);
+    assert_eq!(due_wakes(&db, 10_000, 8).unwrap().len(), 1);
 }
