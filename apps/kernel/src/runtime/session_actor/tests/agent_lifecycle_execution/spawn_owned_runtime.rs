@@ -2,13 +2,16 @@ use super::*;
 
 #[tokio::test]
 async fn local_spawn_agent_uses_owned_runtime_state_without_app_lock() {
+    let worktree = crate::test_support::TestWorktree::new(
+        "local_spawn_agent_uses_owned_runtime_state_without_app_lock",
+    );
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
     ));
     let (session_id, terminal_stream, durable_state_store) = {
         let mut app_locked = app.lock().await;
         let (session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
-            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .create_session(worktree.session_request())
             .expect("session should be created");
         (
             session.id().to_string(),
@@ -36,7 +39,7 @@ async fn local_spawn_agent_uses_owned_runtime_state_without_app_lock() {
         effort: None,
         execution_mode: None,
         permission_level: None,
-        worktree_id: Some("worktree".to_string()),
+        worktree_id: Some(worktree.path().display().to_string()),
         kernel_ref: None,
         slice_ref: None,
         worktree_placement: None,
@@ -95,13 +98,16 @@ async fn local_spawn_agent_uses_owned_runtime_state_without_app_lock() {
 
 #[tokio::test]
 async fn local_spawn_agents_batch_uses_owned_runtime_state_without_app_lock() {
+    let worktree = crate::test_support::TestWorktree::new(
+        "local_spawn_agents_batch_uses_owned_runtime_state_without_app_lock",
+    );
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
     ));
     let (session_id, terminal_stream, durable_state_store) = {
         let mut app_locked = app.lock().await;
         let (session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
-            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .create_session(worktree.session_request())
             .expect("session should be created");
         (
             session.id().to_string(),
@@ -131,7 +137,7 @@ async fn local_spawn_agents_batch_uses_owned_runtime_state_without_app_lock() {
                 effort: None,
                 execution_mode: None,
                 permission_level: None,
-                worktree_id: Some("worktree".to_string()),
+                worktree_id: Some(worktree.path().display().to_string()),
                 kernel_ref: None,
                 slice_ref: None,
                 worktree_placement: None,
@@ -145,7 +151,7 @@ async fn local_spawn_agents_batch_uses_owned_runtime_state_without_app_lock() {
                 effort: None,
                 execution_mode: None,
                 permission_level: None,
-                worktree_id: Some("worktree".to_string()),
+                worktree_id: Some(worktree.path().display().to_string()),
                 kernel_ref: None,
                 slice_ref: None,
                 worktree_placement: None,
@@ -212,6 +218,9 @@ async fn local_spawn_agents_batch_uses_owned_runtime_state_without_app_lock() {
 
 #[tokio::test]
 async fn local_spawn_agents_batch_normalizes_local_kernel_ref_to_bulk_owned_path() {
+    let worktree = crate::test_support::TestWorktree::new(
+        "local_spawn_agents_batch_normalizes_local_kernel_ref_to_bulk_owned_path",
+    );
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
     ));
@@ -219,7 +228,7 @@ async fn local_spawn_agents_batch_normalizes_local_kernel_ref_to_bulk_owned_path
         let mut app_locked = app.lock().await;
         let daemon_id = app_locked.config().daemon_id.clone();
         let (session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
-            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .create_session(worktree.session_request())
             .expect("session should be created");
         (
             session.id().to_string(),
@@ -248,7 +257,7 @@ async fn local_spawn_agents_batch_normalizes_local_kernel_ref_to_bulk_owned_path
                 effort: None,
                 execution_mode: None,
                 permission_level: None,
-                worktree_id: Some("worktree".to_string()),
+                worktree_id: Some(worktree.path().display().to_string()),
                 kernel_ref: Some(daemon_id.clone()),
                 slice_ref: None,
                 worktree_placement: None,
@@ -262,7 +271,7 @@ async fn local_spawn_agents_batch_normalizes_local_kernel_ref_to_bulk_owned_path
                 effort: None,
                 execution_mode: None,
                 permission_level: None,
-                worktree_id: Some("worktree".to_string()),
+                worktree_id: Some(worktree.path().display().to_string()),
                 kernel_ref: Some(daemon_id),
                 slice_ref: None,
                 worktree_placement: None,
@@ -304,13 +313,16 @@ async fn local_spawn_agents_batch_normalizes_local_kernel_ref_to_bulk_owned_path
 
 #[tokio::test]
 async fn local_spawn_agents_batch_emits_one_compact_metaagent_lifecycle_event() {
+    let worktree = crate::test_support::TestWorktree::new(
+        "local_spawn_agents_batch_emits_one_compact_metaagent_lifecycle_event",
+    );
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
     ));
     let (session_id, metaagent_id, terminal_stream, metaagent_events) = {
         let mut app_locked = app.lock().await;
         let (session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
-            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .create_session(worktree.session_request())
             .expect("session should be created");
         let metaagent = crate::app::KernelSessionService::new(&mut app_locked)
             .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
@@ -346,7 +358,7 @@ async fn local_spawn_agents_batch_emits_one_compact_metaagent_lifecycle_event() 
                 effort: None,
                 execution_mode: None,
                 permission_level: None,
-                worktree_id: Some("worktree".to_string()),
+                worktree_id: Some(worktree.path().display().to_string()),
                 kernel_ref: None,
                 slice_ref: None,
                 worktree_placement: None,
@@ -396,6 +408,9 @@ async fn local_spawn_agents_batch_emits_one_compact_metaagent_lifecycle_event() 
 
 #[tokio::test]
 async fn local_spawn_agents_batch_restores_from_compact_durable_event() {
+    let worktree = crate::test_support::TestWorktree::new(
+        "local_spawn_agents_batch_restores_from_compact_durable_event",
+    );
     let config = DaemonConfig::for_tests();
     let (session_id, first_agent_id, second_agent_id) = {
         let app = Arc::new(Mutex::new(
@@ -405,7 +420,7 @@ async fn local_spawn_agents_batch_restores_from_compact_durable_event() {
         let (session_id, terminal_stream) = {
             let mut app_locked = app.lock().await;
             let (session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
-                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .create_session(worktree.session_request())
                 .expect("session should be created");
             (session.id().to_string(), app_locked.terminal_stream_store())
         };
@@ -428,7 +443,7 @@ async fn local_spawn_agents_batch_restores_from_compact_durable_event() {
                     effort: None,
                     execution_mode: None,
                     permission_level: None,
-                    worktree_id: Some("worktree".to_string()),
+                    worktree_id: Some(worktree.path().display().to_string()),
                     kernel_ref: None,
                     slice_ref: None,
                     worktree_placement: None,
@@ -442,7 +457,7 @@ async fn local_spawn_agents_batch_restores_from_compact_durable_event() {
                     effort: None,
                     execution_mode: None,
                     permission_level: None,
-                    worktree_id: Some("worktree".to_string()),
+                    worktree_id: Some(worktree.path().display().to_string()),
                     kernel_ref: None,
                     slice_ref: None,
                     worktree_placement: None,

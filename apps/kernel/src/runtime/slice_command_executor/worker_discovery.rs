@@ -219,6 +219,7 @@ mod tests {
             relay_token: "worker-bootstrap-token".to_string(),
             owner_public_key: Some("owner-public".to_string()),
             cloud_relay_config_json: None,
+            worker_machine_id: None,
         };
 
         let discovery = provision_and_prepare_worker_discovery(
@@ -294,6 +295,7 @@ mod tests {
             relay_token: "worker-bootstrap-token".to_string(),
             owner_public_key: Some("owner-public".to_string()),
             cloud_relay_config_json: None,
+            worker_machine_id: None,
         };
         let provision_state = Arc::clone(&provisioned);
 

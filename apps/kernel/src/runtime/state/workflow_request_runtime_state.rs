@@ -1,3 +1,4 @@
+use super::workflow_publication_owned_state::ExportAppPlan;
 use super::*;
 
 impl KernelRuntimeState {
@@ -24,6 +25,11 @@ impl KernelRuntimeState {
             LocalDaemonRequest::CreateWorkflow(request) => {
                 let result =
                     owned.workflow_create_workflow(request, caller_metaagent_id.as_deref());
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::CreateAgentWorkflow(request) => {
+                let result = owned.workflow_create_from_agent(request, &caller_user_id);
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
@@ -238,49 +244,57 @@ impl KernelRuntimeState {
                 (owned.workflow_get_publication(request), None)
             }
             LocalDaemonRequest::ExportWorkflowPublicationPackage(request) => {
-                (owned.workflow_export_publication_package(request), None)
+                // Protocol 377: each owner export packages the owner's current
+                // App plan, recorded as that release's plan once it succeeds,
+                // with the release's inputs digest (378).
+                #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+                let apps = match self
+                    .workflow_publication_apps_for_export(
+                        &request.session_id,
+                        &request.publication_ref,
+                        &caller_user_id,
+                    )
+                    .await
+                {
+                    Ok(apps) => apps,
+                    Err(error) => return (Err(error), None),
+                };
+                #[cfg(not(any(
+                    target_os = "macos",
+                    all(target_os = "linux", target_env = "gnu")
+                )))]
+                let apps = None;
+                let session_id = request.session_id.clone();
+                let result = owned.workflow_export_publication_package(
+                    request,
+                    apps.as_ref().map_or(
+                        super::workflow_publication_owned_state::ExportAppPlan::Latest,
+                        super::workflow_publication_owned_state::ExportAppPlan::Plan,
+                    ),
+                );
+                let recorded = match &result {
+                    Ok(LocalDaemonResponse::WorkflowPublicationPackageExported {
+                        publication,
+                        package_digest,
+                        package_files,
+                        ..
+                    }) => match owned.record_workflow_publication_release(
+                        &session_id,
+                        publication.id(),
+                        package_digest,
+                        package_files,
+                        apps,
+                    ) {
+                        Ok(session) => Some(session),
+                        Err(error) => return (Err(error), None),
+                    },
+                    _ => None,
+                };
+                (result, recorded)
             }
             LocalDaemonRequest::DisableWorkflowPublication(request) => {
                 let result = owned.workflow_disable_publication(request, &caller_user_id);
                 let session = result.as_ref().ok().and_then(workflow_response_session);
-                (result, session)
-            }
-            LocalDaemonRequest::CreateWorkflowEventBinding(request) => {
-                let result = owned.workflow_create_event_binding(request, &caller_user_id);
-                let session = result.as_ref().ok().and_then(workflow_response_session);
-                (result, session)
-            }
-            LocalDaemonRequest::ListWorkflowEventBindings(request) => {
-                (owned.workflow_list_event_bindings(request), None)
-            }
-            LocalDaemonRequest::SetWorkflowEventBindingStatus(request) => {
-                let result = owned.workflow_set_event_binding_status(request, &caller_user_id);
-                let session = result.as_ref().ok().and_then(workflow_response_session);
-                (result, session)
-            }
-            LocalDaemonRequest::TransferWorkflowEventBinding(request) => {
-                let result = owned.workflow_transfer_event_binding(request, &caller_user_id);
-                let session = result.as_ref().ok().and_then(workflow_response_session);
-                (result, session)
-            }
-            LocalDaemonRequest::TestWorkflowEventBinding(request) => {
-                let session_id = request.session_id.clone();
-                let result = owned
-                    .workflow_test_event_delivery_envelope(request, &caller_user_id)
-                    .and_then(|delivery| {
-                        self.accept_workflow_event_delivery(delivery)
-                            .map(|accepted| LocalDaemonResponse::WorkflowEventBindingTested {
-                                delivery_id: accepted.delivery_id,
-                                queued_prompt_id: accepted.queued_prompt_id,
-                                duplicate: accepted.duplicate,
-                                session: accepted.session,
-                            })
-                    });
-                let session = result
-                    .as_ref()
-                    .ok()
-                    .and_then(workflow_response_session)
-                    .or_else(|| owned.session_snapshot(&session_id).ok());
                 (result, session)
             }
             LocalDaemonRequest::MaterializeWorkflowPublication(request) => {
@@ -511,6 +525,7 @@ pub(super) fn workflow_response_session(
 ) -> Option<crate::session::RuntimeSession> {
     match response {
         LocalDaemonResponse::WorkflowCreated { session, .. }
+        | LocalDaemonResponse::AgentWorkflowCreated { session, .. }
         | LocalDaemonResponse::WorkflowCodeSourceBound { session, .. }
         | LocalDaemonResponse::WorkflowCodeSourceRebuilt { session, .. }
         | LocalDaemonResponse::WorkflowCodeSourceUpdated { session, .. }
@@ -521,9 +536,6 @@ pub(super) fn workflow_response_session(
         | LocalDaemonResponse::WorkflowDesignOpAccepted { session, .. }
         | LocalDaemonResponse::WorkflowAliased { session, .. }
         | LocalDaemonResponse::WorkflowPublicationCreated { session, .. }
-        | LocalDaemonResponse::WorkflowEventBindingCreated { session, .. }
-        | LocalDaemonResponse::WorkflowEventBindingUpdated { session, .. }
-        | LocalDaemonResponse::WorkflowEventBindingTested { session, .. }
         | LocalDaemonResponse::WorkflowPublicationDisabled { session, .. }
         | LocalDaemonResponse::WorkflowPublicationMaterialized { session, .. }
         | LocalDaemonResponse::WorkflowEndpointCreated { session, .. }
@@ -560,7 +572,6 @@ pub(super) fn workflow_response_session(
         | LocalDaemonResponse::QueuedWorkflowPromptRemoved { session, .. }
         | LocalDaemonResponse::WorkflowPromptQueueCleared { session, .. }
         | LocalDaemonResponse::WorkflowTurnAcknowledged { session, .. } => Some(session.clone()),
-        LocalDaemonResponse::WorkflowEventBindingTransferred { .. } => None,
         _ => None,
     }
 }

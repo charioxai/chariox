@@ -181,13 +181,13 @@ mod tests {
 
     #[tokio::test]
     async fn delayed_policy_relaunch_aborts_when_agent_has_newer_run() {
+        let worktree = crate::test_support::TestWorktree::new(
+            "delayed_policy_relaunch_aborts_when_agent_has_newer_run",
+        );
         let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(crate::session::CreateSessionRequest::new(
-                "workspace-1",
-                "worktree-1",
-            ))
+            .create_session(worktree.session_request())
             .expect("session should be created");
         let first = app
             .launch_provider(

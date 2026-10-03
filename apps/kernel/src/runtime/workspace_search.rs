@@ -13,7 +13,6 @@ pub(crate) fn search_workspace_directories(
 ) -> Result<Vec<String>, DaemonError> {
     let mut results = Vec::new();
     let mut seen = HashSet::new();
-    let roots = workspace_search_roots();
     let trimmed_query = query.trim();
     let normalized_query = trimmed_query.to_lowercase();
 
@@ -35,6 +34,7 @@ pub(crate) fn search_workspace_directories(
     }
 
     if normalized_query.is_empty() {
+        let roots = workspace_search_roots()?;
         for root in &roots {
             if crate::git_worktree_placement::preflight_working_directory(
                 root,
@@ -82,6 +82,7 @@ pub(crate) fn search_workspace_directories(
         return Ok(results);
     }
 
+    let roots = workspace_search_roots()?;
     for root in roots {
         append_matching_directory_children(
             &mut results,
@@ -139,7 +140,7 @@ pub(crate) fn create_workspace_directory(path: &str) -> Result<String, DaemonErr
     Ok(directory.display().to_string())
 }
 
-fn workspace_search_roots() -> Vec<PathBuf> {
+fn workspace_search_roots() -> Result<Vec<PathBuf>, DaemonError> {
     let mut roots = Vec::new();
     let mut seen = HashSet::new();
     for candidate in [
@@ -154,7 +155,24 @@ fn workspace_search_roots() -> Vec<PathBuf> {
             roots.push(path);
         }
     }
-    roots
+
+    // An explicit kernel repository-root setting is the primary search root.
+    // Ordinary launches without it retain the cwd/HOME order.
+    if std::env::var_os(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV).is_some() {
+        let configured = crate::managed_bootstrap::managed_repository_root_from_env()?;
+        let resolved = crate::git_worktree_placement::preflight_working_directory(
+            &configured,
+            "search workspace directories",
+            false,
+            &[],
+        )?;
+        crate::git_worktree_placement::preflight_managed_repository_root(&resolved.canonical_path)?;
+        if seen.insert(resolved.canonical_path.clone()) {
+            roots.insert(0, resolved.canonical_path);
+        }
+    }
+
+    Ok(roots)
 }
 
 fn push_unique_path(results: &mut Vec<String>, seen: &mut HashSet<String>, value: String) {
@@ -503,6 +521,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn exact_path_discovery_accepts_home_tmp_nested_and_post_enrollment_repo() {
+        crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
         let root = unique_test_dir("workspace-search-path1-exact-paths");
         let home = root.join("user-home");
@@ -511,6 +530,8 @@ mod tests {
 
         let previous_home = std::env::var_os("HOME");
         let previous_chariox_home = std::env::var_os("CHARIOX_HOME");
+        let previous_managed_root =
+            std::env::var_os(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV);
         let previous_isolation = std::env::var_os("CHARIOX_MANAGED_PROVIDER_ISOLATION");
         let previous_topology = std::env::var_os("CHARIOX_MANAGED_PROVIDER_TOPOLOGY");
         let protected_names = [
@@ -533,6 +554,7 @@ mod tests {
             .collect::<Vec<_>>();
         std::env::set_var("HOME", &home);
         std::env::set_var("CHARIOX_HOME", &chariox_home);
+        std::env::remove_var(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV);
         std::env::remove_var("CHARIOX_MANAGED_PROVIDER_ISOLATION");
         std::env::remove_var("CHARIOX_MANAGED_PROVIDER_TOPOLOGY");
         for name in protected_names {
@@ -606,6 +628,10 @@ mod tests {
 
         restore_env("HOME", previous_home);
         restore_env("CHARIOX_HOME", previous_chariox_home);
+        restore_env(
+            crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV,
+            previous_managed_root,
+        );
         restore_env("CHARIOX_MANAGED_PROVIDER_ISOLATION", previous_isolation);
         restore_env("CHARIOX_MANAGED_PROVIDER_TOPOLOGY", previous_topology);
         for (name, value) in previous_protected {
@@ -615,7 +641,126 @@ mod tests {
     }
 
     #[test]
+    fn configured_managed_root_is_discovered_outside_home_and_current_directory() {
+        let _env = crate::env_lock::lock();
+        let root = unique_test_dir("workspace-search-configured-managed-root");
+        let home = root.join("user-home");
+        let kernel_home = root.join("kernel-state").join(".chariox");
+        let managed_root = root.join("managed-repositories");
+        let project = managed_root.join("configured-project");
+        create_test_dir(home.clone());
+        create_test_dir(kernel_home.clone());
+        create_test_dir(project.clone());
+
+        let previous_home = std::env::var_os("HOME");
+        let previous_chariox_home = std::env::var_os("CHARIOX_HOME");
+        let previous_managed_root =
+            std::env::var_os(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV);
+        let protected_names = [
+            "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+            "CHARIOX_MANAGED_SLICE_SERVICE_ROOT",
+            "CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT",
+            "CHARIOX_MANAGED_PROVIDER_HOME",
+            "CHARIOX_MANAGED_VAULT_PATH",
+            "CHARIOX_SLICE_DOCKER_BROKER_SOCKET",
+            "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE",
+            "CHARIOX_MANAGED_BOOTSTRAP_PATH",
+            "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT",
+            "CHARIOX_DISPOSABLE_WORKER_BOOTSTRAP_PATH",
+            "CHARIOX_DISPOSABLE_WORKER_RECEIPT",
+            "CHARIOX_DAEMON_SOCKET",
+        ];
+        let previous_protected = protected_names
+            .iter()
+            .map(|name| (*name, std::env::var_os(name)))
+            .collect::<Vec<_>>();
+        for name in protected_names {
+            std::env::remove_var(name);
+        }
+        std::env::set_var("HOME", &home);
+        std::env::set_var("CHARIOX_HOME", &kernel_home);
+        std::env::set_var(
+            crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV,
+            &managed_root,
+        );
+
+        let empty = search_workspace_directories("", usize::MAX, None);
+        let named = search_workspace_directories("configured-project", 256, None);
+        let configured_roots = super::workspace_search_roots();
+        let canonical_managed_root = managed_root
+            .canonicalize()
+            .expect("configured managed root should canonicalize");
+        let canonical_project = canonical_managed_root.join("configured-project");
+        std::env::remove_var(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV);
+        let ordinary_roots = super::workspace_search_roots();
+
+        restore_env("HOME", previous_home);
+        restore_env("CHARIOX_HOME", previous_chariox_home);
+        restore_env(
+            crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV,
+            previous_managed_root,
+        );
+        for (name, value) in previous_protected {
+            restore_env(name, value);
+        }
+        remove_test_dir(&root);
+
+        let managed_root_text = canonical_managed_root.display().to_string();
+        let project_text = canonical_project.display().to_string();
+        let empty = empty.expect("empty workspace discovery should include configured root");
+        let named = named.expect("name discovery should include configured-root children");
+        let configured_roots = configured_roots.expect("configured roots should resolve");
+        assert_eq!(
+            configured_roots.first(),
+            Some(&canonical_managed_root),
+            "the explicit root should be first so bounded empty discovery reaches it"
+        );
+        assert!(empty.contains(&managed_root_text), "{empty:?}");
+        assert!(empty.contains(&project_text), "{empty:?}");
+        assert!(named.contains(&project_text), "{named:?}");
+        assert_eq!(
+            ordinary_roots.expect("ordinary workspace roots should resolve"),
+            vec![
+                std::env::current_dir().expect("current directory should resolve"),
+                home
+            ],
+            "an unset managed root must preserve the ordinary cwd/HOME roots"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn invalid_configured_managed_root_fails_workspace_discovery() {
+        let _env = crate::env_lock::lock();
+        let previous = std::env::var_os(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV);
+        std::env::set_var(
+            crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV,
+            "relative/managed-root",
+        );
+
+        let absolute = std::env::temp_dir().display().to_string();
+        let absolute_result = search_workspace_directories(&absolute, 32, None);
+        let result = search_workspace_directories("known", 32, None);
+
+        restore_env(
+            crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV,
+            previous,
+        );
+        assert!(
+            absolute_result
+                .expect("absolute path discovery should not depend on search roots")
+                .contains(&absolute),
+            "absolute path discovery should remain independent of configured roots"
+        );
+        assert!(
+            result.is_err(),
+            "invalid trusted-root configuration must fail rather than silently fall back"
+        );
+    }
+
+    #[test]
     fn empty_query_filters_protected_workspace_children() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let root = unique_test_dir("workspace-search-protected-children");
         let home = root.join("home");
@@ -626,14 +771,21 @@ mod tests {
 
         let previous_home = std::env::var_os("HOME");
         let previous_chariox_home = std::env::var_os("CHARIOX_HOME");
+        let previous_managed_root =
+            std::env::var_os(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV);
         std::env::set_var("HOME", &home);
         std::env::remove_var("CHARIOX_HOME");
+        std::env::remove_var(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV);
 
         let results = search_workspace_directories("", 100, None)
             .expect("empty workspace search should succeed");
 
         restore_env("HOME", previous_home);
         restore_env("CHARIOX_HOME", previous_chariox_home);
+        restore_env(
+            crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV,
+            previous_managed_root,
+        );
         remove_test_dir(&root);
 
         assert!(
@@ -652,6 +804,7 @@ mod tests {
 
     #[test]
     fn directory_completion_prioritizes_hidden_dirs_when_query_starts_hidden() {
+        crate::test_support::isolated_env_test!();
         let root = unique_test_dir("workspace-directory-completion-hidden");
         create_test_dir(root.join(".chariox"));
         create_test_dir(root.join(".chariox-cache"));

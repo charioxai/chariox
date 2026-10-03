@@ -11,6 +11,8 @@ const REQUIRED_OPTIONS = [
   "kernel",
   "supervisor",
   "relay",
+  "app-package",
+  "app-storage",
   "builder-attestation",
   "builder-attestation-signature",
   "trusted-builder-public-key",
@@ -24,18 +26,26 @@ const SLICE_BUILD_CONTEXT_PATH = "/usr/lib/chariox/slice-build-context"
 const SLICE_BUILD_CONTEXT_SOURCES = [
   "Cargo.toml",
   "Cargo.lock",
+  "deploy/local-linux/provision-docker-admission-locks.py",
+  "deploy/managed-kernel/chariox-docker-admission-locks.service",
   "adapters/rust",
   "apps/aegs-dummy",
   "apps/browser-session-import",
   "apps/kernel",
   "apps/relay",
+  // Signed upgrade tooling: an installed release updates itself with its own scripts.
+  "deploy/managed-kernel",
   "examples/workflow-code",
   "packages/aegs-sdk",
+  "packages/app-package",
+  "packages/app-runtime",
+  "packages/app-sdk",
   "packages/event-protocol",
 ]
+const SLICE_RUNTIME_SOURCE_ROOTS = "apps/kernel/slice-linux-docker/runtime-source-roots.txt"
 
 function usage() {
-  return "usage: package-managed-kernel-release --kernel <path> --supervisor <path> --relay <path> --builder-attestation <path> --builder-attestation-signature <path> --trusted-builder-public-key <path> --signing-key <path> --source-repository <git-worktree> --source-commit <40-hex-commit> --output <directory>"
+  return "usage: package-managed-kernel-release --kernel <path> --supervisor <path> --relay <path> --app-package <path> --app-storage <path> --builder-attestation <path> --builder-attestation-signature <path> --trusted-builder-public-key <path> --signing-key <path> --source-repository <git-worktree> --source-commit <40-hex-commit> --output <directory>"
 }
 
 function parseOptions(argv) {
@@ -156,9 +166,16 @@ function resolveSourceIdentity(repositoryRoot, sourceCommit) {
 
 async function installSliceBuildContext(repositoryRoot, destination, sourceCommit) {
   await mkdir(destination, { recursive: true, mode: 0o755 })
+  // The provisioner fingerprints these roots, so the context must carry every one of them.
+  const runtimeSourceRoots = gitBlob(repositoryRoot, sourceCommit, SLICE_RUNTIME_SOURCE_ROOTS,
+    "slice runtime source roots cannot be read from source commit").toString("utf8").split("\n").filter(Boolean)
+  if (runtimeSourceRoots.some((root) => !/^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/.test(root) || root.split("/").includes(".."))) {
+    throw new Error("slice runtime source roots contain an unsupported path")
+  }
+  const sources = [...new Set([...SLICE_BUILD_CONTEXT_SOURCES, SLICE_RUNTIME_SOURCE_ROOTS, ...runtimeSourceRoots])]
   const listing = spawnSync(
     "git",
-    ["ls-tree", "-r", "-z", "--full-tree", sourceCommit, "--", ...SLICE_BUILD_CONTEXT_SOURCES],
+    ["ls-tree", "-r", "-z", "--full-tree", sourceCommit, "--", ...sources],
     { cwd: repositoryRoot, maxBuffer: 128 * 1024 * 1024, env: gitEnvironment() },
   )
   if (listing.status !== 0) {
@@ -226,6 +243,8 @@ async function normalizeTree(root, timestamp) {
       const executable =
         path.endsWith("/usr/local/bin/chariox-kernel") ||
         path.endsWith("/usr/local/bin/chariox-managed-bootstrap") ||
+        path.endsWith("/usr/local/bin/chariox-app-package") ||
+        path.endsWith("/usr/libexec/chariox-app-storage") ||
         path.endsWith("/slice-linux-docker/prebuilt/chariox-kernel") ||
         path.endsWith("/slice-linux-docker/prebuilt/chariox-relay") ||
         path.endsWith("/enter-rootless-docker-namespace.sh") ||
@@ -296,7 +315,7 @@ async function verifyBuilderAttestation(options, sourceIdentity, artifactDigests
     attestation.sourceTree !== sourceIdentity.tree ||
     attestation.target !== BUILD_TARGET ||
     !Array.isArray(attestation.artifacts) ||
-    attestation.artifacts.length !== 3
+    attestation.artifacts.length !== 5
   ) {
     throw new Error("builder attestation identity or target does not match the release")
   }
@@ -304,6 +323,8 @@ async function verifyBuilderAttestation(options, sourceIdentity, artifactDigests
     ["chariox-kernel", artifactDigests.kernel],
     ["chariox-managed-bootstrap", artifactDigests.supervisor],
     ["chariox-relay", artifactDigests.relay],
+    ["chariox-app-package", artifactDigests.appPackage],
+    ["chariox-app-storage", artifactDigests.appStorage],
   ]
   for (const [index, artifact] of attestation.artifacts.entries()) {
     validateObjectKeys(artifact, ["name", "sha256"], "builder attestation artifact")
@@ -337,6 +358,8 @@ async function packageRelease(options) {
   await requireRegularFile(options.kernel, "kernel binary")
   await requireRegularFile(options.supervisor, "bootstrap supervisor")
   await requireRegularFile(options.relay, "relay binary")
+  await requireRegularFile(options["app-package"], "App package developer binary")
+  await requireRegularFile(options["app-storage"], "App storage privileged helper")
   await requireRegularFile(options["builder-attestation"], "builder attestation", 64 * 1024)
   await requireRegularFile(options["builder-attestation-signature"], "builder attestation signature", 1024)
   await requireRegularFile(options["trusted-builder-public-key"], "trusted builder public key", 1024)
@@ -354,6 +377,9 @@ async function packageRelease(options) {
   const rootfs = join(options.output, "rootfs")
   const kernelDestination = join(rootfs, "usr/local/bin/chariox-kernel")
   const supervisorDestination = join(rootfs, "usr/local/bin/chariox-managed-bootstrap")
+  const appPackageDestination = join(rootfs, "usr/local/bin/chariox-app-package")
+  const appStorageDestination = join(rootfs, "usr/libexec/chariox-app-storage")
+  const appStorageServiceDestination = join(rootfs, "etc/systemd/system/chariox-app-storage.service")
   const releaseDirectory = join(rootfs, "usr/lib/chariox")
   const sliceBuildContext = join(rootfs, SLICE_BUILD_CONTEXT_PATH.slice(1))
   const slicePrebuiltRoot = join(
@@ -378,10 +404,24 @@ async function packageRelease(options) {
     rootfs,
     "etc/systemd/system/chariox-rootless-docker.service",
   )
+  const dataVolumeAdmissionServiceDestination = join(
+    rootfs,
+    "etc/systemd/system/chariox-data-volume-admission.service",
+  )
+  const rootlessDataVolumeDropInDestination = join(
+    rootfs,
+    "etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf",
+  )
+  const quotaAllocatorDataVolumeDropInDestination = join(
+    rootfs,
+    "etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf",
+  )
   const sliceBrokerServiceDestination = join(
     rootfs,
     "etc/systemd/system/chariox-slice-broker.service",
   )
+  const appStorageServiceBytes = gitBlob(repositoryRoot, sourceIdentity.commit,
+    "deploy/managed-kernel/chariox-app-storage.service", "App storage service cannot be read from source commit")
   const serviceBytes = gitBlob(
     repositoryRoot,
     sourceIdentity.commit,
@@ -406,6 +446,24 @@ async function packageRelease(options) {
     "deploy/managed-kernel/chariox-rootless-docker.service",
     "rootless Docker service cannot be read from source commit",
   )
+  const dataVolumeAdmissionServiceBytes = gitBlob(
+    repositoryRoot,
+    sourceIdentity.commit,
+    "apps/kernel/slice-linux-docker/chariox-data-volume-admission.service",
+    "data-volume admission service cannot be read from source commit",
+  )
+  const rootlessDataVolumeDropInBytes = gitBlob(
+    repositoryRoot,
+    sourceIdentity.commit,
+    "apps/kernel/slice-linux-docker/chariox-rootless-docker.path1-data-volume.conf",
+    "Path-1 rootless Docker data-volume drop-in cannot be read from source commit",
+  )
+  const quotaAllocatorDataVolumeDropInBytes = gitBlob(
+    repositoryRoot,
+    sourceIdentity.commit,
+    "apps/kernel/slice-linux-docker/chariox-slice-disk-quota-allocator.path1-data-volume.conf",
+    "Path-1 quota allocator data-volume drop-in cannot be read from source commit",
+  )
   const sliceBrokerServiceBytes = gitBlob(
     repositoryRoot,
     sourceIdentity.commit,
@@ -413,10 +471,14 @@ async function packageRelease(options) {
     "slice Docker broker service cannot be read from source commit",
   )
   if (
+    appStorageServiceBytes.length > 64 * 1024 ||
     serviceBytes.length > 64 * 1024 ||
     path1ServiceBytes.length > 64 * 1024 ||
     workerServiceBytes.length > 64 * 1024 ||
     rootlessDockerServiceBytes.length > 64 * 1024 ||
+    dataVolumeAdmissionServiceBytes.length > 64 * 1024 ||
+    rootlessDataVolumeDropInBytes.length > 64 * 1024 ||
+    quotaAllocatorDataVolumeDropInBytes.length > 64 * 1024 ||
     sliceBrokerServiceBytes.length > 64 * 1024
   ) {
     throw new Error("managed service unit is too large")
@@ -424,10 +486,16 @@ async function packageRelease(options) {
 
   await installFile(options.kernel, kernelDestination, 0o755)
   await installFile(options.supervisor, supervisorDestination, 0o755)
+  await installFile(options["app-package"], appPackageDestination, 0o755)
+  await installFile(options["app-storage"], appStorageDestination, 0o755)
+  await installBytes(appStorageServiceBytes, appStorageServiceDestination, 0o644)
   await installBytes(serviceBytes, serviceDestination, 0o644)
   await installBytes(path1ServiceBytes, path1ServiceDestination, 0o644)
   await installBytes(workerServiceBytes, workerServiceDestination, 0o644)
   await installBytes(rootlessDockerServiceBytes, rootlessDockerServiceDestination, 0o644)
+  await installBytes(dataVolumeAdmissionServiceBytes, dataVolumeAdmissionServiceDestination, 0o644)
+  await installBytes(rootlessDataVolumeDropInBytes, rootlessDataVolumeDropInDestination, 0o644)
+  await installBytes(quotaAllocatorDataVolumeDropInBytes, quotaAllocatorDataVolumeDropInDestination, 0o644)
   await installBytes(sliceBrokerServiceBytes, sliceBrokerServiceDestination, 0o644)
   await installSliceBuildContext(repositoryRoot, sliceBuildContext, sourceIdentity.commit)
   await replaceFile(options.kernel, sliceKernelDestination, 0o755)
@@ -452,6 +520,19 @@ async function packageRelease(options) {
   if (sourceSupervisorDigest !== packagedSupervisorDigest) {
     throw new Error("bootstrap supervisor changed while the release was packaged")
   }
+  const sourceAppPackageDigest = await sha256File(options["app-package"])
+  const packagedAppPackageDigest = await sha256File(appPackageDestination)
+  if (sourceAppPackageDigest !== packagedAppPackageDigest) {
+    throw new Error("App package developer binary changed while the release was packaged")
+  }
+  const packagedAppStorageDigest = await sha256File(appStorageDestination)
+  if (await sha256File(options["app-storage"]) !== packagedAppStorageDigest) {
+    throw new Error("App storage helper changed while the release was packaged")
+  }
+  const packagedAppStorageServiceDigest = await sha256File(appStorageServiceDestination)
+  if (`sha256:${createHash("sha256").update(appStorageServiceBytes).digest("hex")}` !== packagedAppStorageServiceDigest) {
+    throw new Error("App storage service changed while the release was packaged")
+  }
   const sourceRelayDigest = await sha256File(options.relay)
   const packagedSliceRelayDigest = await sha256File(sliceRelayDestination)
   if (sourceRelayDigest !== packagedSliceRelayDigest) {
@@ -473,6 +554,18 @@ async function packageRelease(options) {
   if (`sha256:${createHash("sha256").update(rootlessDockerServiceBytes).digest("hex")}` !== packagedRootlessDockerServiceDigest) {
     throw new Error("rootless Docker service changed while the release was packaged")
   }
+  const packagedDataVolumeAdmissionServiceDigest = await sha256File(dataVolumeAdmissionServiceDestination)
+  if (`sha256:${createHash("sha256").update(dataVolumeAdmissionServiceBytes).digest("hex")}` !== packagedDataVolumeAdmissionServiceDigest) {
+    throw new Error("data-volume admission service changed while the release was packaged")
+  }
+  const packagedRootlessDataVolumeDropInDigest = await sha256File(rootlessDataVolumeDropInDestination)
+  if (`sha256:${createHash("sha256").update(rootlessDataVolumeDropInBytes).digest("hex")}` !== packagedRootlessDataVolumeDropInDigest) {
+    throw new Error("Path-1 rootless Docker data-volume drop-in changed while the release was packaged")
+  }
+  const packagedQuotaAllocatorDataVolumeDropInDigest = await sha256File(quotaAllocatorDataVolumeDropInDestination)
+  if (`sha256:${createHash("sha256").update(quotaAllocatorDataVolumeDropInBytes).digest("hex")}` !== packagedQuotaAllocatorDataVolumeDropInDigest) {
+    throw new Error("Path-1 quota allocator data-volume drop-in changed while the release was packaged")
+  }
   const packagedSliceBrokerServiceDigest = await sha256File(sliceBrokerServiceDestination)
   if (`sha256:${createHash("sha256").update(sliceBrokerServiceBytes).digest("hex")}` !== packagedSliceBrokerServiceDigest) {
     throw new Error("slice Docker broker service changed while the release was packaged")
@@ -482,6 +575,8 @@ async function packageRelease(options) {
     kernel: packagedKernelDigest,
     supervisor: packagedSupervisorDigest,
     relay: packagedSliceRelayDigest,
+    appPackage: packagedAppPackageDigest,
+    appStorage: packagedAppStorageDigest,
   })
   const signingKeyMetadata = await requireRegularFile(
     options["signing-key"],
@@ -513,7 +608,8 @@ async function packageRelease(options) {
 
   const manifestBytes = Buffer.from(
     JSON.stringify({
-      schemaVersion: 2,
+      schemaVersion: 3,
+      managedUpdateEvidenceVersion: 1,
       sourceCommit: sourceIdentity.commit,
       sourceTree: sourceIdentity.tree,
       artifacts: [
@@ -526,6 +622,21 @@ async function packageRelease(options) {
           name: "chariox-managed-bootstrap",
           path: "/usr/local/bin/chariox-managed-bootstrap",
           sha256: packagedSupervisorDigest,
+        },
+        {
+          name: "chariox-app-package",
+          path: "/usr/local/bin/chariox-app-package",
+          sha256: packagedAppPackageDigest,
+        },
+        {
+          name: "chariox-app-storage",
+          path: "/usr/libexec/chariox-app-storage",
+          sha256: packagedAppStorageDigest,
+        },
+        {
+          name: "chariox-app-storage.service",
+          path: "/etc/systemd/system/chariox-app-storage.service",
+          sha256: packagedAppStorageServiceDigest,
         },
         {
           name: "chariox-managed-bootstrap.service",
@@ -546,6 +657,21 @@ async function packageRelease(options) {
           name: "chariox-rootless-docker.service",
           path: "/etc/systemd/system/chariox-rootless-docker.service",
           sha256: packagedRootlessDockerServiceDigest,
+        },
+        {
+          name: "chariox-data-volume-admission.service",
+          path: "/etc/systemd/system/chariox-data-volume-admission.service",
+          sha256: packagedDataVolumeAdmissionServiceDigest,
+        },
+        {
+          name: "chariox-rootless-docker.path1-data-volume.conf",
+          path: "/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf",
+          sha256: packagedRootlessDataVolumeDropInDigest,
+        },
+        {
+          name: "chariox-slice-disk-quota-allocator.path1-data-volume.conf",
+          path: "/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf",
+          sha256: packagedQuotaAllocatorDataVolumeDropInDigest,
         },
         {
           name: "chariox-slice-broker.service",

@@ -718,6 +718,27 @@ async fn promptless_codex_poll_failure_before_prompt_start_reschedules_and_deliv
         "an admitted replacement poll should be tracked as in flight"
     );
 
+    // The fixture has no native Codex runtime. Its admitted actor poll returns
+    // None; settle that owned job before substituting the synthetic completion,
+    // so two completions cannot race for the same in-flight prompt binding.
+    let finished = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let jobs = runtime
+                .owned
+                .provider_store
+                .drain_finished_structured_output_poll_jobs();
+            if !jobs.is_empty() {
+                break jobs;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the fixture's unbound Codex poll should finish");
+    assert_eq!(finished.len(), 1);
+    assert_eq!(finished[0].provider_run_id, run.id());
+    assert!(matches!(finished[0].result, Ok(None)));
+
     let replacement_output = b"output after a post-failure prompt start".to_vec();
     app.lock()
         .await

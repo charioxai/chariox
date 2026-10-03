@@ -30,6 +30,12 @@
         "value": "/workflow new "
       },
       {
+        "id": "workflow-from-agent",
+        "label": "from-agent",
+        "description": "Give an agent a trigger or deployment workflow",
+        "value": "/workflow from-agent "
+      },
+      {
         "id": "workflow-delete",
         "label": "delete",
         "description": "Delete a workflow by id or alias",

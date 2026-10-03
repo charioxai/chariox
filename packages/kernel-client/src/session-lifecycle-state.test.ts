@@ -152,7 +152,7 @@ test("isCompleteSessionSnapshot requires full hydrated runtime fields", () => {
   assert.equal(isCompleteSessionSnapshot(incompleteSession), false)
 })
 
-test("resolveLaunchTargetAgent respects valid focus and rejects stale focus", () => {
+test("resolveLaunchTargetAgent respects valid focus and rejects stale or no focus", () => {
   const session = makeSession({
     focused_agent_id: "agent-b",
     agents: [
@@ -163,7 +163,7 @@ test("resolveLaunchTargetAgent respects valid focus and rejects stale focus", ()
 
   assert.equal(resolveLaunchTargetAgent(session)?.id, "agent-b")
   assert.equal(resolveLaunchTargetAgent({ ...session, focused_agent_id: "missing-agent" }), null)
-  assert.equal(resolveLaunchTargetAgent({ ...session, focused_agent_id: null })?.id, "agent-a")
+  assert.equal(resolveLaunchTargetAgent({ ...session, focused_agent_id: null }), null)
 })
 
 test("resolveStoredAgentLaunch uses focused agent profile for existing sessions", () => {

@@ -34,6 +34,7 @@ export async function runRoomEnvironmentCompanion(input) {
     ? createRoomDrillTuiEvidence(input.localNoticeIds, input.remoteNoticeIds) : null
   let nextSampleAt = 0
   const sampleTuis = async (force = false) => {
+    await input.pollFault?.()
     if (!tuiEvidence || (!force && Date.now() < nextSampleAt)) return
     tuiEvidence.observe(await input.readTuiNotices())
     nextSampleAt = Date.now() + 2000

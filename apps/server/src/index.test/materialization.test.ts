@@ -99,6 +99,7 @@ test("gateway materializes exported publication packages through the kernel", as
       publication_id: "pub-1",
       source_session_id: "session-1",
       workflow_id: "workflow-1",
+      // Pre-365 packages may still name a direct event-bindings document; it is ignored.
       event_bindings_path: "event-bindings.local.json",
       deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
       hooks: [{
@@ -173,7 +174,6 @@ test("gateway materializes exported publication packages through the kernel", as
         requested_scope: "repository:charioxai/drill",
         endpoint_id: "endpoint-1",
         queue_ref: "default",
-        reply_mode: "disabled",
         action_ids: [],
         source_environment_id: "source-environment",
         source_revision: 1,
@@ -214,9 +214,6 @@ test("gateway materializes exported publication packages through the kernel", as
           if ("ListScripts" in request) return { ScriptsListed: { scripts: [{ name: "deploy" }] } }
           if ("ListConnectors" in request) return { ConnectorsListed: { connectors: [{ name: "github" }] } }
           if ("ListCredentials" in request) return { CredentialsListed: { credentials: [{ id: "github-token" }] } }
-          if ("CreateWorkflowEventBinding" in request) {
-            return { WorkflowEventBindingCreated: { binding: { id: "runtime-binding-1" } } }
-          }
           if ("ActivateWorkflowPublicationRuntime" in request) {
             return { WorkflowPublicationRuntimeActivated: { publication_id: "pub-1", runtime_keys: ["deployment-a:replica-0"] } }
           }
@@ -241,7 +238,6 @@ test("gateway materializes exported publication packages through the kernel", as
       "ListConnectors",
       "ListCredentials",
       "MaterializeWorkflowPublication",
-      "CreateWorkflowEventBinding",
       "AttachToSession",
       "ActivateWorkflowPublicationRuntime",
     ])
@@ -383,6 +379,7 @@ test("gateway materializes Agent App replica sessions from package config", asyn
 
 test("gateway remaps portable package workspace paths before local materialization", async () => {
   const root = await mkdtemp(join(tmpdir(), "chariox-server-portable-workspace-materialize-"))
+  const sourceWorkspace = join(root, "source-workspace")
   const runtimeWorkspace = `${root}.runtime-${process.pid}`
   const requests: Record<string, unknown>[] = []
   try {
@@ -406,8 +403,8 @@ test("gateway remaps portable package workspace paths before local materializati
       schema_version: 1,
       source_session: {
         id: "session-1",
-        workspace_id: "/workspace",
-        worktree_id: "/workspace",
+        workspace_id: sourceWorkspace,
+        worktree_id: sourceWorkspace,
       },
       workflow: {
         id: "workflow-1",
@@ -425,8 +422,8 @@ test("gateway remaps portable package workspace paths before local materializati
         alias: null,
         provider: "claude",
         model: "claude-sonnet-4-6",
-        workspace_id: "/workspace",
-        worktree_id: "/workspace",
+        workspace_id: sourceWorkspace,
+        worktree_id: sourceWorkspace,
         state: "Idle",
         is_processing: false,
         grid_row: 0,
@@ -442,6 +439,9 @@ test("gateway remaps portable package workspace paths before local materializati
     await loadPublicationPackageConfig(root, {
       kernelEndpoint: "ws://kernel",
       materialize: true,
+      // MP-08/MP-10: select the fixture workspace explicitly; a container may
+      // already have the production /workspace default.
+      runtimeWorkspace,
       validateProviderBindings: false,
       validateRequirements: false,
       client: {

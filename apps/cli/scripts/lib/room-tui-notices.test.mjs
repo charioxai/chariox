@@ -83,3 +83,10 @@ test("Room TUI notices fall back to the transcript when pane snapshots contain n
     { id: "agent-1:1", text: "visible-only notice" },
   ])
 })
+
+test("actor-scoped Room notices preserve target details and escape labels", () => {
+  const pattern = roomActionNoticePattern({ sequence: 7, mode: "browser", kind: "fill", state: "completed" }, "real-provider.test")
+  assert.match("Room action #7: real-provider.test · browser fill · tab tab-1 · completed", pattern)
+  assert.doesNotMatch("Room action #7: real-providerXtest · browser fill · tab tab-1 · completed", pattern)
+  assert.doesNotMatch("Room action #8: real-provider.test · browser fill · tab tab-1 · completed", pattern)
+})

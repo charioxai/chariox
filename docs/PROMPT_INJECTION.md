@@ -40,15 +40,13 @@ installation metadata never enter prompts.
 
 Runtime tools are projected from the authenticated provider-run capability
 snapshot and checked again at dispatch. Ordinary provider runs do not receive
-workflow tools. Workflow runs receive the workflow contract tools. The
-`reply_to_event` action is added only when the current event binding enables a
-`thread` or `channel` reply mode; bindings with replies disabled do not add its
-description to `tools/list`. Because providers cache tool discovery, a
-capability change rotates an idle provider run. A busy run keeps its existing
-snapshot until its admitted prompt completes, preserving FIFO semantics; the
-next idle boundary applies the new snapshot. The same flag travels in
-`RemoteWorkflowTurnContext` to leased workers, and the relay-peer protocol is
-versioned when this shape changes.
+workflow tools. Workflow runs, including leased workflow workers, receive the
+workflow contract tools. Because providers cache tool discovery, an ordinary
+idle provider run is rotated before a workflow prompt is dispatched to it. A
+busy run keeps its existing snapshot until its admitted prompt completes,
+preserving FIFO semantics. Workflows have no event-scoped provider tools
+(protocol 365 removed `event_context` and `event_action`); an App acts on an
+event generator through its granted connection instead.
 
 Meta-agent tools remain conditionally projected by the existing meta-agent
 policy. Every runtime tool validates the capability again at dispatch, so

@@ -6,24 +6,17 @@ import type {
   EventGeneratorCatalogPage,
   EventGeneratorEventPage,
   EventGeneratorResourcePage,
-  RuntimeSession,
-  WorkflowEventBinding,
 } from "./kernel-types.js"
 import {
   browseEventGeneratorCategoryRequest,
   browseEventGeneratorEventsRequest,
-  createWorkflowEventBindingRequest,
   eventCatalogLandingRequest,
   getEventDeliveryStatusRequest,
   getEventGeneratorDetailRequest,
-  listWorkflowEventBindingsRequest,
   installEventConnectionRequest,
   listEventConnectionResourcesRequest,
   listEventConnectionsRequest,
   searchEventGeneratorCatalogRequest,
-  setWorkflowEventBindingStatusRequest,
-  testWorkflowEventBindingRequest,
-  transferWorkflowEventBindingRequest,
 } from "./ipc-event-publication-requests.js"
 import type { ShellCommandResult, ShellContext } from "./shell-core.js"
 
@@ -169,85 +162,13 @@ export async function executeWorkflowEventPublicationCommand(
       "page",
     )
     const lines = page.resources.map((resource) =>
-      `${resource.connection_scope}  ${resource.name}  ${resource.kind}`,
+      `${resource.connection_scope}  ${resource.name}  ${resource.kind}${resource.filter ? `  filter ${JSON.stringify(resource.filter)}` : ""}`,
     )
     if (page.next_cursor) lines.push(`next cursor: ${page.next_cursor}`)
     return {
       ok: true,
       message: lines.length > 0 ? lines.join("\n") : "no matching provider resources found",
       data: page,
-    }
-  }
-
-  if (action === "list" || action === "ls") {
-    const bindings = expectVariant<{ bindings: WorkflowEventBinding[] }>(
-      await client.send(listWorkflowEventBindingsRequest(sessionId, rest[0])),
-      "WorkflowEventBindingsListed",
-    ).bindings
-    return { ok: true, message: formatBindings(bindings), data: { bindings } }
-  }
-
-  if (action === "bind" || action === "attach" || action === "subscribe") {
-    const parsed = parseBindingOptions(rest)
-    if (!parsed.ok) return parsed
-    const payload = expectVariant<{ binding: WorkflowEventBinding; session: RuntimeSession }>(
-      await client.send(createWorkflowEventBindingRequest(sessionId, parsed.publicationRef, parsed.input)),
-      "WorkflowEventBindingCreated",
-    )
-    return {
-      ok: true,
-      message: `subscribed ${payload.binding.id} to ${payload.binding.generator_id}:${payload.binding.event_type}`,
-      data: payload,
-    }
-  }
-
-  if (action === "pause" || action === "resume" || action === "delete" || action === "remove") {
-    const bindingId = rest[0]
-    if (!bindingId) return failure(`usage: workflow trigger event ${action} <binding-id>`)
-    const status = action === "pause" ? "paused" : action === "resume" ? "active" : "tombstoned"
-    const payload = expectVariant<{ binding: WorkflowEventBinding; session: RuntimeSession }>(
-      await client.send(setWorkflowEventBindingStatusRequest(sessionId, bindingId, status)),
-      "WorkflowEventBindingUpdated",
-    )
-    return { ok: true, message: `${status} workflow event binding ${bindingId}`, data: payload }
-  }
-
-  if (action === "transfer") {
-    const [bindingId, targetSessionId, targetPublicationRef] = rest
-    if (!bindingId || !targetSessionId || !targetPublicationRef) {
-      return failure("usage: workflow trigger event transfer <binding-id> <target-session> <target-publication>")
-    }
-    const payload = expectVariant<{ binding: WorkflowEventBinding; session: RuntimeSession }>(
-      await client.send(transferWorkflowEventBindingRequest(
-        sessionId,
-        bindingId,
-        targetSessionId,
-        targetPublicationRef,
-      )),
-      "WorkflowEventBindingTransferred",
-    )
-    return {
-      ok: true,
-      message: `transferred workflow event binding ${bindingId} to ${targetPublicationRef}`,
-      data: payload,
-    }
-  }
-
-  if (action === "test") {
-    const [bindingId, ...promptParts] = rest
-    if (!bindingId) return failure("usage: workflow trigger event test <binding-id> [prompt]")
-    const payload = expectVariant<Record<string, unknown>>(
-      await client.send(testWorkflowEventBindingRequest(
-        sessionId,
-        bindingId,
-        promptParts.join(" ") || undefined,
-      )),
-      "WorkflowEventBindingTested",
-    )
-    return {
-      ok: true,
-      message: `queued a test event for workflow event binding ${bindingId}`,
-      data: payload,
     }
   }
 
@@ -260,7 +181,7 @@ export async function executeWorkflowEventPublicationCommand(
     return { ok: true, message: formatDeliveryStatus(status), data: status }
   }
 
-  return failure("usage: workflow trigger event catalog|category|show|events|connections|install|resources|list|attach|pause|resume|delete|transfer|test|status")
+  return failure("usage: workflow trigger event catalog|category|show|events|connections|install|resources|status")
 }
 
 function parseCatalogOptions(args: string[]):
@@ -295,96 +216,6 @@ function parseCatalogOptions(args: string[]):
   }
 }
 
-function parseBindingOptions(args: string[]):
-  | {
-      ok: true
-      publicationRef: string
-      input: {
-        generatorId: string
-        generatorVersion: string
-        manifestDigest: string
-        connectionId: string
-        connectionScope: string
-        eventType: string
-        eventTypeVersion: number
-        filter?: unknown
-        environmentId?: string
-        queueRef?: string
-        replyMode?: "disabled" | "thread" | "channel"
-        actionIds?: readonly string[]
-      }
-    }
-  | { ok: false; message: string } {
-  const [publicationRef, generatorId, eventType, ...options] = args
-  if (!publicationRef || !generatorId || !eventType) return failure(bindingUsage())
-  const values = new Map<string, string>()
-  for (let index = 0; index < options.length; index += 2) {
-    const key = options[index]
-    const value = options[index + 1]
-    if (!key?.startsWith("--") || value === undefined) return failure(bindingUsage())
-    values.set(key, value)
-  }
-  const generatorVersion = values.get("--generator-version")
-  const manifestDigest = values.get("--manifest-digest")
-  const connectionId = values.get("--connection")
-  const connectionScope = values.get("--scope")
-  if (!generatorVersion || !manifestDigest || !connectionId || !connectionScope) {
-    return failure(bindingUsage())
-  }
-  const eventTypeVersion = Number.parseInt(values.get("--event-version") ?? "1", 10)
-  if (!Number.isInteger(eventTypeVersion) || eventTypeVersion < 1) {
-    return failure("--event-version must be a positive integer")
-  }
-  let filter: unknown
-  const filterJson = values.get("--filter-json")
-  if (filterJson) {
-    try {
-      filter = JSON.parse(filterJson)
-    } catch (error) {
-      return failure(`--filter-json is invalid JSON: ${error instanceof Error ? error.message : String(error)}`)
-    }
-  }
-  const environmentId = values.get("--environment")
-  const queueRef = values.get("--queue")
-  const replyModeValue = values.get("--reply-mode")
-  if (replyModeValue !== undefined && !["disabled", "thread", "channel"].includes(replyModeValue)) {
-    return failure("--reply-mode must be one of: disabled, thread, channel")
-  }
-  const replyMode = replyModeValue as "disabled" | "thread" | "channel" | undefined
-  const actionIds = values.get("--actions")
-    ?.split(",")
-    .map((value) => value.trim())
-    .filter(Boolean)
-  if (values.has("--actions") && (!actionIds || actionIds.length === 0)) {
-    return failure("--actions must contain at least one comma-separated action ID")
-  }
-  if (actionIds?.includes("notification.reply") && replyMode !== "thread" && replyMode !== "channel") {
-    return failure("notification.reply requires --reply-mode thread or channel")
-  }
-  return {
-    ok: true,
-    publicationRef,
-    input: {
-      generatorId,
-      generatorVersion,
-      manifestDigest,
-      connectionId,
-      connectionScope,
-      eventType,
-      eventTypeVersion,
-      ...(filter === undefined ? {} : { filter }),
-      ...(environmentId ? { environmentId } : {}),
-      ...(queueRef ? { queueRef } : {}),
-      ...(replyMode ? { replyMode } : {}),
-      ...(actionIds ? { actionIds } : {}),
-    },
-  }
-}
-
-function bindingUsage(): string {
-  return "usage: workflow trigger event attach <publication> <generator> <event-type> --generator-version <version> --manifest-digest <digest> --connection <id> --scope <scope> [--event-version <n>] [--filter-json <json>] [--environment <id>] [--queue <ref>] [--reply-mode <disabled|thread|channel>] [--actions <id,id,...>]"
-}
-
 function formatCatalogPage(page: EventGeneratorCatalogPage): string {
   const lines = page.services.map((service) =>
     `${service.generator_id}@${service.version}  ${service.name}  ${service.availability}  ${service.verification}  ${service.summary}`,
@@ -394,20 +225,13 @@ function formatCatalogPage(page: EventGeneratorCatalogPage): string {
   return lines.length > 0 ? lines.join("\n") : "no event generators found"
 }
 
-function formatBindings(bindings: WorkflowEventBinding[]): string {
-  if (bindings.length === 0) return "no workflow event bindings configured"
-  return bindings.map((binding) =>
-    `${binding.id}  ${binding.status}  ${binding.generator_id}:${binding.event_type}@${binding.event_type_version}  publication=${binding.publication_id} queue=${binding.queue_ref ?? "default"} environment=${binding.environment_id}`,
-  ).join("\n")
-}
-
 function formatDeliveryStatus(status: EventDeliveryStatus): string {
   const connection = !status.configured
     ? "not configured"
     : status.connected
       ? "connected"
       : "disconnected"
-  return `event delivery ${connection}; active routes=${status.active_route_count}${status.last_error ? `; error=${status.last_error}` : ""}`
+  return `event delivery ${connection}; active App routes=${status.active_route_count}${status.last_error ? `; error=${status.last_error}` : ""}`
 }
 
 function failure(message: string): { ok: false; message: string } {

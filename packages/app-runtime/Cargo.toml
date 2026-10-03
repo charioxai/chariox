@@ -1,0 +1,26 @@
+[package]
+name = "chariox-app-runtime"
+version = "0.1.0"
+edition = "2021"
+description = "Kernel-owned Chariox App worker transport and lifecycle services"
+license = "MIT"
+
+[features]
+# Fixed, unsandboxed native test fixture only. Release builds reject this feature.
+test-fixtures = []
+
+[dependencies]
+chariox-app-package = { path = "../app-package" }
+ed25519-dalek = "2.1.1"
+jsonschema = { version = "0.18.0", default-features = false }
+libc = "0.2.172"
+rusqlite = { version = "0.39.0", features = ["bundled"] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+serde_json_canonicalizer = "0.3.2"
+sha2 = "0.10.8"
+thiserror = "2.0.12"
+tokio = { version = "1.44.2", features = ["io-util", "time", "sync", "macros", "net", "rt"] }
+
+[dev-dependencies]
+tokio = { version = "1.44.2", features = ["macros", "rt", "rt-multi-thread", "test-util"] }

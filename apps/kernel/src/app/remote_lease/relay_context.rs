@@ -33,6 +33,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             RemoteNativeInteractionContext {
                 home_session_id: lease.home_session_id,
                 home_agent_id: lease.home_agent_id,
+                home_prompt_id: leased_agent.active_home_prompt_id,
                 leased_agent_id: leased_agent.id,
                 worker_provider_run_id: worker_provider_run_id.to_string(),
             },

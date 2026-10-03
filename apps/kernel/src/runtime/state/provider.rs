@@ -259,7 +259,11 @@ impl KernelRuntimeOwnedState {
             }),
         );
         let _ = self.provider_store.record_run_activity(run.id());
-        if let Some(agent_id) = run.agent_instance_id() {
+        // A substitute run reruns one turn; it never becomes the agent's profile.
+        if let Some(agent_id) = run
+            .agent_instance_id()
+            .filter(|_| run.turn_substitute().is_none())
+        {
             self.agent_store.set_agent_runtime_profile_durably(
                 &self.durable_state_store,
                 agent_id,

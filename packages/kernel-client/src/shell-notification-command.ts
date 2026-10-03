@@ -6,7 +6,7 @@ import type {
   EventGeneratorCatalogDetail,
   EventGeneratorCatalogPage,
   EventGeneratorResourcePage,
-  WorkflowEventBindingDependency,
+  EventConnectionDependency,
 } from "./kernel-types.js"
 import {
   browseEventGeneratorCategoryRequest,
@@ -170,7 +170,7 @@ async function executeConnectionAction(
       ok: result.accepted,
       message: result.accepted
         ? `test event accepted as ${result.occurrence_id}`
-        : (result.message ?? "test event did not match an active workflow trigger"),
+        : (result.message ?? "test event did not match an active App inbox route"),
       data: result,
     }
   }
@@ -192,14 +192,14 @@ async function executeConnectionAction(
       return {
         ok: true,
         message: [
-          `Removing ${connectionId} will deactivate these workflow event bindings:`,
+          `${connectionId} can be removed once no App uses it:`,
           formatDependencies(dependencyPayload.dependencies),
           `Repeat with /notifications connection remove ${connectionId} --confirm to continue.`,
         ].join("\n"),
         data: dependencyPayload,
       }
     }
-    const payload = expectVariant<{ connection: EventConnection; deactivated_bindings: WorkflowEventBindingDependency[] }>(
+    const payload = expectVariant<{ connection: EventConnection }>(
       await client.send(removeEventConnectionRequest(connectionId, true)), "EventConnectionRemoved",
     )
     return { ok: true, message: `removed ${connectionId}`, data: payload }
@@ -208,7 +208,7 @@ async function executeConnectionAction(
 }
 
 async function dependencies(client: ShellKernelClient, connectionId: string) {
-  return expectVariant<{ connection_id: string; dependencies: WorkflowEventBindingDependency[] }>(
+  return expectVariant<{ connection_id: string; dependencies: EventConnectionDependency[] }>(
     await client.send(listEventConnectionDependenciesRequest(connectionId)),
     "EventConnectionDependencies",
   )
@@ -278,10 +278,11 @@ function formatAuthorization(authorization: EventConnectionAuthorization): strin
   ].filter(Boolean).join("\n")
 }
 
-function formatDependencies(items: WorkflowEventBindingDependency[]): string {
+function formatDependencies(items: EventConnectionDependency[]): string {
   return items.length === 0
-    ? "no workflow event bindings depend on this connection"
-    : items.map((item) => `${item.status}  session=${item.session_id} trigger-owner=${item.publication_id} binding=${item.binding_id}`).join("\n")
+    ? "no App uses this connection"
+    : items.map((item) => `${item.active ? "active" : "inactive"}  app=${item.installation_id} `
+      + (item.route_id ? `inbox-route=${item.route_id}` : "connection-grant")).join("\n")
 }
 
 function expectField<T>(response: Record<string, unknown>, variant: string, field: string): T {

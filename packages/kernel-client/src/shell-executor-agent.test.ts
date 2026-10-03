@@ -938,3 +938,38 @@ test("executeShellCommand renders provider tools through shared tool display for
   assert.match(result.message ?? "", /TOOL_DISPLAY_FIXTURE_SEED/)
   assert.doesNotMatch(result.message ?? "", /\[provider_tool\]/)
 })
+
+test("executeShellCommand focuses an agent named by alias or ref through the kernel's session focus", async () => {
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+    agentId: "agent-1",
+  })
+  const target = makeAgent({ id: "agent-7", agent_ref: "claude-1", alias: "claude-apps" })
+  const fake = fakeClient((request) => {
+    if ("ListAgents" in request) {
+      return { AgentsListed: { agents: [makeAgent(), target] } }
+    }
+    if ("FocusAgent" in request) {
+      return { AgentFocused: { agent: target } }
+    }
+    return {}
+  })
+
+  for (const reference of ["claude-apps", "claude-1", "agent-7"]) {
+    const result = await executeShellCommand(parseShellCommand(`agent focus ${reference}`), context, { client: fake.client })
+    assert.equal(result.ok, true, reference)
+    assert.match(result.message ?? "", /current agent = claude-1 \(claude-apps\)/)
+    assert.deepEqual(result.contextUpdates, { agentId: "agent-7" })
+  }
+  assert.deepEqual(
+    fake.requests.filter((request) => "FocusAgent" in request),
+    Array(3).fill({ FocusAgent: { session_id: "session-1", agent_id: "agent-7" } }),
+  )
+
+  const unknown = await executeShellCommand(parseShellCommand("agent focus nobody"), context, { client: fake.client })
+  assert.equal(unknown.ok, false)
+  assert.match(unknown.message ?? "", /unknown agent nobody/)
+  assert.equal(fake.requests.filter((request) => "FocusAgent" in request).length, 3)
+})

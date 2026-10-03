@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use serde::Deserialize;
 
 use super::CommandRouter;
+use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::runtime::cloud_api_client::{
     issue_cloud_slice_recovery_token, issue_cloud_slice_runtime_token,
@@ -46,20 +47,12 @@ impl CommandRouter {
         let slice_id = std::env::var("CHARIOX_SLICE_ID").ok()?;
         let owner_kernel_id = std::env::var("CHARIOX_SLICE_OWNER_KERNEL_ID").ok()?;
         let owner_machine_id = std::env::var("CHARIOX_SLICE_OWNER_MACHINE_ID").ok()?;
-        let relay_subject = self.config_projection.snapshot().daemon_alias?;
-        if slice_id.trim().is_empty()
-            || owner_kernel_id.trim().is_empty()
-            || owner_machine_id.trim().is_empty()
-            || !relay_subject.starts_with("slice:")
-        {
-            return None;
-        }
-        Some(ManagedSliceRelayIdentity {
+        managed_slice_relay_identity_for_config(
+            &self.config_projection.snapshot(),
             slice_id,
-            relay_subject,
             owner_kernel_id,
             owner_machine_id,
-        })
+        )
     }
 
     pub(crate) fn managed_slice_relay_token_refresh_due(&self) -> bool {
@@ -218,6 +211,26 @@ impl CommandRouter {
                 "slice relay token request does not match the recorded worker",
             ));
         }
+        let profile = config
+            .cloud_relay
+            .filter(cloud_relay_profile_has_runtime_credentials)
+            .ok_or_else(|| slice_token_error("slice owner has no Cloud relay profile"))?;
+        if profile.machine_id.as_deref() != Some(slice.owner_machine_id.as_str())
+            || config.host_machine_id != slice.owner_machine_id
+        {
+            return Err(slice_token_error(
+                "slice owner Machine does not match its authenticated Cloud profile",
+            ));
+        }
+        crate::slice::require_hosted_slice_worker_ref(
+            &slice.worker_kernel_ref,
+            &slice.owner_machine_id,
+        )?;
+        if slice.worker_kernel_ref != worker_kernel_id {
+            return Err(slice_token_error(
+                "slice worker kernel id does not match its canonical reference",
+            ));
+        }
         if !crate::config::DaemonConfig::claim_relay_peer_public_key(
             worker_kernel_id,
             worker_public_key,
@@ -232,13 +245,12 @@ impl CommandRouter {
             ));
         }
         if slice.worker_kernel_id.is_none() {
-            self.runtime_state
-                .claim_slice_starting_worker_identity(slice_id, worker_kernel_id)?;
+            self.runtime_state.claim_slice_starting_worker_identity(
+                slice_id,
+                worker_kernel_id,
+                &slice.owner_machine_id,
+            )?;
         }
-        let profile = config
-            .cloud_relay
-            .filter(cloud_relay_profile_has_runtime_credentials)
-            .ok_or_else(|| slice_token_error("slice owner has no Cloud relay profile"))?;
         let issued = issue_cloud_slice_runtime_token(
             &profile,
             &slice.worker_kernel_ref,
@@ -265,6 +277,28 @@ impl CommandRouter {
             recovery_expires_at_ms,
         ))
     }
+}
+
+fn managed_slice_relay_identity_for_config(
+    config: &DaemonConfig,
+    slice_id: String,
+    owner_kernel_id: String,
+    owner_machine_id: String,
+) -> Option<ManagedSliceRelayIdentity> {
+    if slice_id.trim().is_empty()
+        || owner_kernel_id.trim().is_empty()
+        || owner_machine_id.trim().is_empty()
+        || config.host_machine_id != owner_machine_id
+        || !crate::slice::machine_scoped_slice_worker_ref(&config.daemon_id, &owner_machine_id)
+    {
+        return None;
+    }
+    Some(ManagedSliceRelayIdentity {
+        slice_id,
+        relay_subject: config.daemon_id.clone(),
+        owner_kernel_id,
+        owner_machine_id,
+    })
 }
 
 fn managed_slice_recovery_connection_token_for_config(
@@ -410,6 +444,46 @@ mod tests {
         let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(serde_json::to_vec(&payload).expect("payload should encode"));
         format!("header.{encoded}.signature")
+    }
+
+    #[test]
+    fn slice_worker_identity_uses_canonical_id_and_signed_machine_for_refresh() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/slice-worker-identity.json"
+        )))
+        .unwrap();
+        let canonical = fixture["cases"][0]["workerKernelRef"].as_str().unwrap();
+        let mut config = DaemonConfig::for_tests();
+        config.daemon_id = canonical.into();
+        config.daemon_alias = Some("slice:drill".into());
+        config.host_machine_id = "machine-a".into();
+        let identity = managed_slice_relay_identity_for_config(
+            &config,
+            "slice-1".into(),
+            "kernel-a".into(),
+            "machine-a".into(),
+        )
+        .unwrap();
+        assert_eq!(identity.relay_subject, canonical);
+        config.daemon_id = "slice:drill".into();
+        config.daemon_alias = Some(canonical.into());
+        assert!(managed_slice_relay_identity_for_config(
+            &config,
+            "slice-1".into(),
+            "kernel-a".into(),
+            "machine-a".into()
+        )
+        .is_none());
+        config.daemon_id = canonical.into();
+        config.host_machine_id = "slice:slice-1".into();
+        assert!(managed_slice_relay_identity_for_config(
+            &config,
+            "slice-1".into(),
+            "kernel-a".into(),
+            "machine-a".into()
+        )
+        .is_none());
     }
 
     fn identity() -> ManagedSliceRelayIdentity {

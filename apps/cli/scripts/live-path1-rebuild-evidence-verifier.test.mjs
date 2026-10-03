@@ -252,6 +252,18 @@ test("a rebuilt Path-1 managed home accepts its bootstrap service alongside root
   assert.equal(verifyPath1RebuildEvidence(evidence).status, "pass")
 })
 
+test("distinct rebuilt services cannot reuse one systemd invocation identity", () => {
+  const evidence = validEvidence()
+  evidence.after.identity.serviceInstances.push({
+    unit: "chariox-rootless-docker.service",
+    invocationId: evidence.after.identity.serviceInstances[0].invocationId,
+  })
+  assert.throws(
+    () => verifyPath1RebuildEvidence(evidence),
+    (error) => error instanceof RebuildEvidenceError && error.code === "identity_duplicate",
+  )
+})
+
 test("a missing required receipt fails closed", () => {
   const evidence = validEvidence()
   evidence.rebuild = undefined

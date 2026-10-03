@@ -3,6 +3,13 @@ use super::*;
 pub fn export_development_context(
     request: DevelopmentContextExportRequest,
 ) -> Result<DevelopmentContextExportResult, DaemonError> {
+    export_development_context_with_environment(request, None)
+}
+
+pub fn export_development_context_with_environment(
+    request: DevelopmentContextExportRequest,
+    mut environment: Option<DevelopmentProjectEnvironment>,
+) -> Result<DevelopmentContextExportResult, DaemonError> {
     validate_export_request(&request)?;
     let archive_parent = request.archive_path.parent().ok_or_else(|| {
         context_error("development context archive path must have a parent directory")
@@ -100,8 +107,34 @@ pub fn export_development_context(
         repositories.push(exported);
     }
 
+    if let Some(layer) = &mut environment {
+        layer.sealed.manifest.validate().map_err(context_error)?;
+        if layer.sealed.manifest.project_id != request.project_id
+            || layer.evidence.digest() != layer.sealed.manifest.evidence_digest
+        {
+            return Err(context_error(
+                "Project environment does not match development export",
+            ));
+        }
+        layer.repository_workspaces = source_repositories
+            .iter()
+            .map(|r| (r.repository_id.clone(), r.source_workspace_id.clone()))
+            .collect();
+        if layer.sealed.manifest.entries.iter().any(|e| {
+            !layer
+                .repository_workspaces
+                .values()
+                .any(|workspace| workspace == &e.workspace_id)
+        }) {
+            return Err(context_error(
+                "Project environment workspace is not selected",
+            ));
+        }
+    }
     let manifest = DevelopmentContextManifest {
-        schema_version: if repositories
+        schema_version: if environment.is_some() {
+            ENVIRONMENT_CONTEXT_SCHEMA_VERSION
+        } else if repositories
             .iter()
             .any(|repository| !repository.workspace_kind.is_git())
         {
@@ -111,6 +144,7 @@ pub fn export_development_context(
         },
         project_id: request.project_id,
         repositories,
+        project_environment: environment,
     };
     write_archive(
         &temporary_archive_path,
@@ -494,7 +528,7 @@ pub(super) fn unique_managed_target_directory(
     source_basename: &str,
     occupied: &mut BTreeSet<String>,
 ) -> Result<String, DaemonError> {
-    validate_managed_repository_basename(source_basename)?;
+    validate_repository_basename(source_basename)?;
     if !occupied.insert(source_basename.to_ascii_lowercase()) {
         return Err(context_error(format!(
             "source repository basename `{source_basename}` collides with another selected managed repository"
@@ -526,33 +560,6 @@ pub(super) fn validate_repository_basename(value: &str) -> Result<(), DaemonErro
     {
         return Err(context_error(
             "source repository basename is unsafe or invalid",
-        ));
-    }
-    Ok(())
-}
-
-pub(super) fn validate_managed_repository_basename(value: &str) -> Result<(), DaemonError> {
-    validate_repository_basename(value)?;
-    let lower = value.to_ascii_lowercase();
-    const RESERVED: &[&str] = &[
-        ".chariox",
-        ".provider-account",
-        "managed-context-workspaces",
-        "managed-context",
-        "managed-runtime-auth",
-        "provider-home",
-        "kernels",
-        "state",
-        "sessions",
-        "daemon",
-        "machine",
-        "managed",
-    ];
-    if RESERVED.iter().any(|reserved| *reserved == lower)
-        || lower.starts_with(".chariox-empty-context-")
-    {
-        return Err(context_error(
-            "source repository basename is reserved by managed runtime state",
         ));
     }
     Ok(())

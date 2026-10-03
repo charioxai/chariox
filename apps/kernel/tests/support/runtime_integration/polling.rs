@@ -85,7 +85,19 @@ pub fn wait_for_local_provider_run_ready(
 
         if let LocalDaemonResponse::SessionState { session, .. } = response {
             if session.active_provider_run_id() == Some(provider_run_id) {
-                return;
+                let response = client
+                    .send(LocalDaemonRequest::GetProviderRun(
+                        chariox_kernel::local::GetProviderRunRequest {
+                            provider_run_id: provider_run_id.to_string(),
+                        },
+                    ))
+                    .expect("provider state polling should succeed");
+                if let LocalDaemonResponse::ProviderRun { provider_run } = response {
+                    assert_eq!(provider_run.id(), provider_run_id);
+                    if provider_run.state() == chariox_kernel::provider::ProviderRunState::Running {
+                        return;
+                    }
+                }
             }
         }
 

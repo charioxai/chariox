@@ -1,0 +1,17 @@
+# Chariox App runtime: Ubuntu 23.10 and later refuse unprivileged user
+# namespaces to unconfined programs. This lets only trusted native entries and bubblewrap in an
+# installed, signed App runtime generation create them, so it can build each App
+# worker's sandbox. Those directories are root-owned and read-only; nothing else
+# is confined or granted. Installed by install-root.sh.
+abi <abi/4.0>,
+include <tunables/global>
+
+profile chariox-app-bwrap "/{usr/lib/chariox/app-runtimes/[0-9a-f]*/chariox-bwrap,var/lib/chariox-app-storage/u-[0-9]*/i-[0-9a-f]*/runtime/chariox-bwrap}" flags=(unconfined) {
+  userns,
+}
+
+# The helper exposes only its installer-verified, read-only signed graph here.
+# The u-/i- ancestors and mountpoints are root-owned, never App-writable.
+profile chariox-app-domain-entry "/{usr/lib/chariox/app-runtimes/[0-9a-f]*/chariox-app-domain-entry,var/lib/chariox-app-storage/u-[0-9]*/i-[0-9a-f]*/runtime/chariox-app-domain-entry}" flags=(unconfined) {
+  userns,
+}

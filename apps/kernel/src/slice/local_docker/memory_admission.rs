@@ -1,6 +1,6 @@
 use std::fmt;
 #[cfg(unix)]
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 #[cfg(unix)]
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
@@ -17,7 +17,7 @@ use crate::slice::SliceRecord;
 
 const DOCKER_ENGINE_RESERVE_MB: u64 = 512;
 const MIB: u64 = 1024 * 1024;
-#[cfg(unix)]
+#[cfg(all(unix, test))]
 const UNIX_ENGINE_ADMISSION_LOCK_PATH: &str = "/tmp/chariox-docker-memory-admission.lock";
 const WINDOWS_ENGINE_ADMISSION_LOCK_NAME: &str = r"Global\CharioxDockerMemoryAdmission";
 static PROCESS_ADMISSION_LOCK: Mutex<()> = Mutex::new(());
@@ -252,33 +252,17 @@ fn engine_admission_lock_path() -> PathBuf {
     // It also prevents equivalent endpoint spellings from bypassing admission.
     // Do not use std::env::temp_dir(): kernels with different TMPDIR values
     // must still contend on the same Docker-engine admission lock.
-    PathBuf::from(UNIX_ENGINE_ADMISSION_LOCK_PATH)
+    super::admission_lock::path("memory")
 }
 
 #[cfg(unix)]
 fn open_engine_admission_lock(path: &Path) -> Result<File, DaemonError> {
-    let mut options = OpenOptions::new();
-    options.read(true).write(true).create(true).truncate(false);
-    use std::os::unix::fs::OpenOptionsExt;
-    options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    let file = options.open(path).map_err(|error| {
+    super::admission_lock::open(path).map_err(|error| {
         memory_measurement_error(&format!(
             "failed to open Docker engine admission lock {}: {error}",
             path.display()
         ))
-    })?;
-    let metadata = file.metadata().map_err(|error| {
-        memory_measurement_error(&format!(
-            "failed to inspect Docker engine admission lock {}: {error}",
-            path.display()
-        ))
-    })?;
-    if !metadata.is_file() {
-        return Err(memory_measurement_error(
-            "Docker engine admission lock is not a regular file",
-        ));
-    }
-    Ok(file)
+    })
 }
 
 #[cfg(windows)]
@@ -404,14 +388,14 @@ mod tests {
             "chariox-memory-admission-test-{:032x}.lock",
             rand::random::<u128>()
         ));
-        let first = open_engine_admission_lock(&path).expect("first lock file should open");
+        let first = std::fs::File::create(&path).expect("probe file should be created");
         FileExt::lock_exclusive(&first).expect("first engine lock should acquire");
-        let second = open_engine_admission_lock(&path).expect("second lock file should open");
+        let second = std::fs::File::open(&path).expect("read-only probe file should open");
         let contended = FileExt::try_lock_exclusive(&second).is_err();
         drop(first);
         let recovered = FileExt::try_lock_exclusive(&second).is_ok();
         drop(second);
-        let _ = std::fs::remove_file(path);
+        std::fs::remove_file(path).expect("owned probe should be removed");
         contended && recovered
     }
 
@@ -463,7 +447,7 @@ mod tests {
     #[test]
     fn engine_lock_path_is_independent_of_process_temporary_directory() {
         assert_eq!(
-            engine_admission_lock_path(),
+            super::super::admission_lock::host_path("memory"),
             PathBuf::from(UNIX_ENGINE_ADMISSION_LOCK_PATH)
         );
     }

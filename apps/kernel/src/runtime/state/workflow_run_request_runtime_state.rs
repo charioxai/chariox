@@ -226,6 +226,19 @@ impl KernelRuntimeState {
             .with_workflow_runtime_transition_lock(|| {
                 let mut sessions = owned.session_store.write();
                 let session_before_interrupt = sessions.get_session(session_id)?;
+                // Prompt records of every agent holding this run's queued prompts commit in
+                // the interrupt's SQLite transaction; the live prompt owner is untouched
+                // until that write succeeds, so a rejected write needs no owner restore.
+                let affected_prompt_agent_ids = session_before_interrupt
+                    .prompt_states()
+                    .iter()
+                    .filter(|(_, state)| {
+                        state.queued_prompts().iter().any(|prompt| {
+                            prompt.workflow_run_id() == Some(workflow_run_id.as_str())
+                        })
+                    })
+                    .map(|(agent_id, _)| agent_id.clone())
+                    .collect::<Vec<_>>();
                 let workflow_run = if pause {
                     sessions.pause_workflow_run(session_id, workflow_run_ref)
                 } else {
@@ -239,8 +252,9 @@ impl KernelRuntimeState {
                     }
                 };
                 let durable_session = sessions.get_session(session_id)?;
-                if let Err(error) = durable_state_store.persist_workflow_runtime_transition(
+                if let Err(error) = durable_state_store.persist_workflow_prompt_transitions(
                     &durable_session,
+                    &affected_prompt_agent_ids,
                     if pause {
                         "workflow_run_paused"
                     } else {
@@ -255,6 +269,10 @@ impl KernelRuntimeState {
                 let archived_runs = sessions.archive_terminal_workflow_runs(session_id)?;
                 Ok((workflow_run, archived_runs))
             })?;
+        let committed_session = owned.session_store.get_session(session_id)?;
+        let _ = owned
+            .prompt_state_owner
+            .remove_queued_prompts_by_workflow_run(&committed_session, &workflow_run_id);
         if !archived_runs.is_empty() {
             let recipient_attachment_ids = owned
                 .attachment_store
@@ -268,10 +286,6 @@ impl KernelRuntimeState {
             }
         }
         activity_mutation.record();
-        let committed_session = owned.session_store.get_session(session_id)?;
-        let _ = owned
-            .prompt_state_owner
-            .remove_queued_prompts_by_workflow_run(&committed_session, &workflow_run_id);
         let workflow_claim_owner_prefix = format!("{workflow_run_id}:");
         let _ = owned.prompt_workspace_claims.remove_matching(|claim| {
             claim.session_id == session_id
@@ -281,17 +295,6 @@ impl KernelRuntimeState {
                     .is_some_and(|owner| owner.starts_with(&workflow_claim_owner_prefix))
                 && claim.operation == "workflow_node_dispatch"
         });
-        let session = owned.session_store.get_session(session_id)?;
-        for agent in owned.agent_store.get_session_agents(session_id) {
-            let (active_prompt, queued_prompts) =
-                owned.prompt_state_owner.state_parts(&session, agent.id());
-            let _ = owned.mirror_prompt_owner_agent_state(
-                session_id,
-                agent.id(),
-                active_prompt,
-                queued_prompts,
-            );
-        }
         let mut workflow_dispatches = owned.workflow_maybe_start_next_queued_prompt(session_id);
         workflow_dispatches.extend(owned.workflow_retry_blocked_claims());
         self.spawn_workflow_prompt_dispatches(workflow_dispatches);
@@ -381,7 +384,7 @@ impl KernelRuntimeState {
             .to_string();
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(25);
         loop {
-            self.owned.reap_structured_prompt_jobs();
+            self.reap_structured_prompt_jobs_and_dispatch();
             let session = self.owned.session_store.get_session(session_id)?;
             let cancelling = self
                 .owned

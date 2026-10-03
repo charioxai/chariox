@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
 import { ROW_DEFINITIONS, SHUTDOWN_EXPECTATIONS } from "./managed-ordinary-parity-matrix.mjs"
+import { startManagedOrdinaryProviderTurnBinding } from "./lib/managed-ordinary-provider-turn-binding.mjs"
 
 const execFileAsync = promisify(execFile)
 const PROBE_RELATIVE_PATH = "apps/cli/scripts/managed-ordinary-parity-probe.mjs"
@@ -310,15 +311,26 @@ async function observeProviderIdentity(identity, values) {
   })
 }
 
-async function observeCaptureBoundary(identity) {
-  const evidence = requireObservedEvidence(parseJsonEnv("CHARIOX_PARITY_CAPTURE_EVIDENCE_JSON"), "capture boundary")
-  const boundary = evidence.boundary ?? process.env.CHARIOX_PARITY_BOUNDARY
-  if (!new Set(["official-provider-turn", "remote-command"]).has(boundary)
-    || evidence.inside_provider_turn !== true
-    || evidence.independent !== true) {
-    throw new ProbeError("capture boundary is not an independent approved product boundary")
+async function observeCaptureBoundary(identity, values) {
+  if (!OFFICIAL_PROVIDERS.has(values.provider)) {
+    throw new ProbeError("capture boundary requires an official provider selection")
   }
-  return identityResult(identity, { boundary, inside_provider_turn: true, independent: true })
+  let binding
+  try {
+    binding = await startManagedOrdinaryProviderTurnBinding({
+      expectedProvider: values.provider,
+      expectedBoundary: "official-provider-turn",
+    })
+    const captureProvenance = await binding.finish()
+    return identityResult(identity, {
+      boundary: "official-provider-turn",
+      inside_provider_turn: true,
+      independent: true,
+      capture_provenance: captureProvenance,
+    })
+  } catch (error) {
+    throw new ProbeError("kernel-owned provider turn could not be verified", { cause: error })
+  }
 }
 
 async function observeDirectoryCheck(identity, values, checkId) {
@@ -643,11 +655,22 @@ async function observeAttachments(identity) {
 }
 
 async function observeProjectSetup(identity) {
-  const evidence = requireObservedEvidence(parseJsonEnv("CHARIOX_PARITY_PROJECT_SETUP_EVIDENCE_JSON"), "project setup evidence")
-  if (evidence.project_setup_ok !== true || typeof evidence.project_identity !== "string" || evidence.project_identity.length === 0) {
-    throw new ProbeError("project setup evidence is incomplete")
-  }
-  return identityResult(identity, { project_setup_ok: true, project_identity_fingerprint: fingerprint(evidence.project_identity) })
+  const evidence = parseJsonEnv("CHARIOX_PARITY_PROJECT_SETUP_EVIDENCE_JSON")
+  const {
+    assertProjectSetupProof,
+    observeManagedOrdinaryProjectSetup,
+  } = await import("./lib/managed-ordinary-project-setup-observer.mjs")
+  const observation = await observeManagedOrdinaryProjectSetup(evidence, {
+    environment: process.env,
+  })
+  // The environment supplies only the operation selector. The acceptance
+  // result comes from the observer's production kernel API transport and its
+  // complete Ready, identity, definition, and validation checks.
+  assertProjectSetupProof(observation)
+  return identityResult(identity, {
+    project_setup_ok: true,
+    project_setup_proof: observation,
+  })
 }
 
 const REPOSITORY_ROOT_REQUIREMENTS = Object.freeze({
@@ -697,10 +720,6 @@ async function observeControlFileProtection(identity) {
   } catch (error) {
     if (error?.code !== "EACCES" && error?.code !== "EPERM") throw error
     controlDenied = true
-  }
-  if (!controlDenied) {
-    const productEvidence = requireObservedEvidence(parseJsonEnv("CHARIOX_PARITY_CONTROL_PROTECTION_EVIDENCE_JSON"), "control file protection")
-    controlDenied = productEvidence.control_file_denied === true
   }
   const parentWorkspace = dirname(resolve(controlFile))
   const siblingPath = await realpath(sibling)
@@ -865,7 +884,7 @@ async function observe(values) {
   const { parity_row: rowId, parity_check: checkId } = values
   if (rowId === "MP-10" && checkId === "fresh_worker") return observeFreshWorker(identity)
   if (rowId === "MP-08" && checkId === "official_provider_identity") return observeProviderIdentity(identity, values)
-  if (rowId === "MP-10" && checkId === "capture_boundary") return observeCaptureBoundary(identity)
+  if (rowId === "MP-10" && checkId === "capture_boundary") return observeCaptureBoundary(identity, values)
   if (rowId === "MP-02") return observeDirectoryCheck(identity, values, checkId)
   if (rowId === "MP-03" && checkId === "control_file_protection") return observeControlFileProtection(identity)
   if (rowId === "MP-03" && checkId === "filesystem_permissions") return observeFilesystemPermissions(identity, values)

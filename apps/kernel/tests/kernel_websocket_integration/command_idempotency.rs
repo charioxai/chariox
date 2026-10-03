@@ -1,13 +1,13 @@
 use crate::support::kernel_websocket::*;
 use chariox_kernel::local::{GetDaemonHealthRequest, ListSessionsRequest, LocalDaemonRequest};
 use chariox_kernel::runtime_transport::run_kernel_websocket_server_on_listener;
-use chariox_kernel::session::CreateSessionRequest;
 use chariox_kernel::{DaemonApp, DaemonConfig};
 use serde_json::json;
 use tokio::sync::oneshot;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_reuses_completed_result_for_duplicate_command_id() {
+    let workspace = ExecutionWorkspace::directory("kernel-idempotent");
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
@@ -34,10 +34,7 @@ async fn kernel_websocket_reuses_completed_result_for_duplicate_command_id() {
             "type": "request",
             "request_id": "create-session-first",
             "command_id": "duplicate-create-session",
-            "request": LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-                "workspace-kernel-idempotent",
-                "worktree-kernel-idempotent",
-            )),
+            "request": LocalDaemonRequest::CreateSession(workspace.session_request()),
         }),
     )
     .await;
@@ -49,10 +46,7 @@ async fn kernel_websocket_reuses_completed_result_for_duplicate_command_id() {
             "type": "request",
             "request_id": "create-session-retry",
             "command_id": "duplicate-create-session",
-            "request": LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-                "workspace-kernel-idempotent",
-                "worktree-kernel-idempotent",
-            )),
+            "request": LocalDaemonRequest::CreateSession(workspace.session_request()),
         }),
     )
     .await;
@@ -74,6 +68,7 @@ async fn kernel_websocket_reuses_completed_result_for_duplicate_command_id() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_reuses_completed_command_after_server_restart() {
+    let workspace = ExecutionWorkspace::directory("kernel-restart-idempotent");
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
@@ -100,10 +95,7 @@ async fn kernel_websocket_reuses_completed_command_after_server_restart() {
             "type": "request",
             "request_id": "create-session-before-restart",
             "command_id": "restart-stable-create-session",
-            "request": LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-                "workspace-kernel-restart-idempotent",
-                "worktree-kernel-restart-idempotent",
-            )),
+            "request": LocalDaemonRequest::CreateSession(workspace.session_request()),
         }),
     )
     .await;
@@ -139,10 +131,7 @@ async fn kernel_websocket_reuses_completed_command_after_server_restart() {
             "type": "request",
             "request_id": "create-session-after-restart",
             "command_id": "restart-stable-create-session",
-            "request": LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-                "workspace-kernel-restart-idempotent",
-                "worktree-kernel-restart-idempotent",
-            )),
+            "request": LocalDaemonRequest::CreateSession(workspace.session_request()),
         }),
     )
     .await;
@@ -163,9 +152,7 @@ async fn kernel_websocket_reuses_completed_command_after_server_restart() {
         .as_array()
         .expect("sessions should be listed")
         .iter()
-        .filter(|session| {
-            session["workspace_id"].as_str() == Some("workspace-kernel-restart-idempotent")
-        })
+        .filter(|session| session["workspace_id"].as_str() == Some(workspace.path()))
         .count();
     assert_eq!(
         matching_sessions, 1,
@@ -181,6 +168,7 @@ async fn kernel_websocket_reuses_completed_command_after_server_restart() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_fans_out_inflight_duplicate_command_id() {
+    let workspace = ExecutionWorkspace::directory("kernel-inflight-idempotent");
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
@@ -208,10 +196,7 @@ async fn kernel_websocket_fans_out_inflight_duplicate_command_id() {
                 "type": "request",
                 "request_id": request_id,
                 "command_id": "inflight-duplicate-create-session",
-                "request": LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-                    "workspace-kernel-inflight-idempotent",
-                    "worktree-kernel-inflight-idempotent",
-                )),
+                "request": LocalDaemonRequest::CreateSession(workspace.session_request()),
             }),
         )
         .await;
@@ -246,9 +231,7 @@ async fn kernel_websocket_fans_out_inflight_duplicate_command_id() {
         .as_array()
         .expect("sessions should be listed")
         .iter()
-        .filter(|session| {
-            session["workspace_id"].as_str() == Some("workspace-kernel-inflight-idempotent")
-        })
+        .filter(|session| session["workspace_id"].as_str() == Some(workspace.path()))
         .count();
     assert_eq!(
         matching_sessions, 1,
@@ -264,6 +247,8 @@ async fn kernel_websocket_fans_out_inflight_duplicate_command_id() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_rejects_duplicate_command_id_for_different_request() {
+    let workspace_a = ExecutionWorkspace::directory("kernel-conflict-a");
+    let workspace_b = ExecutionWorkspace::directory("kernel-conflict-b");
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
@@ -290,10 +275,7 @@ async fn kernel_websocket_rejects_duplicate_command_id_for_different_request() {
             "type": "request",
             "request_id": "create-session-first",
             "command_id": "conflicting-create-session",
-            "request": LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-                "workspace-kernel-conflict-a",
-                "worktree-kernel-conflict-a",
-            )),
+            "request": LocalDaemonRequest::CreateSession(workspace_a.session_request()),
         }),
     )
     .await;
@@ -305,10 +287,7 @@ async fn kernel_websocket_rejects_duplicate_command_id_for_different_request() {
             "type": "request",
             "request_id": "create-session-conflict",
             "command_id": "conflicting-create-session",
-            "request": LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-                "workspace-kernel-conflict-b",
-                "worktree-kernel-conflict-b",
-            )),
+            "request": LocalDaemonRequest::CreateSession(workspace_b.session_request()),
         }),
     )
     .await;

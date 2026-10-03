@@ -519,7 +519,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: PASTE_SECRET_TO_COMPUTER_TOOL.to_string(),
-            description: "After explicit user approval, type a computer credential into the already-focused desktop control without exposing the value to the model or clipboard. Use only when the user can verify that the focused control masks secret input.".to_string(),
+            description: "After explicit user approval, type a computer credential into the already-focused desktop control without exposing the value to the model or clipboard. Approval binds the exact focused window and control; input aborts if focus changes. Prefer a masked control. An explicitly approved unmasked control can expose the credential on screen or to the application. Agent capture is withheld during insertion; do not capture an unmasked value afterward.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["credential_id"],

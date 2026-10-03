@@ -55,6 +55,10 @@ impl SessionStore {
         self.sessions.remove(session_id)
     }
 
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &RuntimeSession> {
+        self.sessions.values()
+    }
+
     pub fn list(&self) -> Vec<RuntimeSession> {
         self.sessions.values().cloned().collect()
     }

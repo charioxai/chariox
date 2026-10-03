@@ -216,6 +216,27 @@ impl PromptTemplateRegistry {
         Self { root }
     }
 
+    fn user_rules(&self) -> Result<Option<String>, DaemonError> {
+        let root = std::env::var_os("CHARIOX_CAPABILITY_ISOLATION_ROOT")
+            .filter(|value| !value.is_empty())
+            .map(|root| PathBuf::from(root).join("user"))
+            .or_else(|| self.root.parent().map(Path::to_path_buf));
+        let Some(root) = root else {
+            return Ok(None);
+        };
+        let path = root.join("user-rules.md");
+        match fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Ok(metadata)
+                if metadata.is_file()
+                    && !metadata.file_type().is_symlink()
+                    && metadata.len() <= 64 * 1024 => {}
+            _ => return Err(prompt_settings_error("invalid user rules", "user-rules.md")),
+        }
+        let body = crate::project_environment::read_user_rules_file(&root)?;
+        Ok(Some(body))
+    }
+
     pub(crate) fn list_settings(&self) -> Result<Vec<PromptSettingRecord>, DaemonError> {
         self.materialize_bundled_defaults()?;
         bundled_templates()
@@ -836,6 +857,16 @@ impl PromptAssemblyService {
         let mut manifest = PromptManifest::current();
 
         self.push_template("runtime/base", &mut hidden_fragments, &mut manifest)?;
+        if let Some(rules) = self.registry.user_rules()? {
+            hidden_fragments.push(format!(
+                "<chariox-user-rules>\n{rules}\n</chariox-user-rules>"
+            ));
+        }
+        if let Some(missing) = run.pty_env().get("CHARIOX_PROJECT_MISSING_INPUTS") {
+            if let Ok(names) = serde_json::from_str::<Vec<String>>(missing) {
+                hidden_fragments.push(format!("Project setup continues with these inputs missing or left behind: {}. Ask for a value only when the current task needs it; never guess or print secret values.", names.join(", ")));
+            }
+        }
         if current_kernel_is_slice() {
             self.push_template("runtime/slice", &mut hidden_fragments, &mut manifest)?;
         }
@@ -986,12 +1017,7 @@ pub(crate) fn bundled_prompt_template(template_id: &str) -> Option<&'static str>
 }
 
 fn current_kernel_is_slice() -> bool {
-    std::env::var("CHARIOX_MACHINE_ID")
-        .ok()
-        .is_some_and(|machine_id| machine_id.starts_with("slice:"))
-        || std::env::var("CHARIOX_SLICE_MACHINE_ID")
-            .ok()
-            .is_some_and(|machine_id| machine_id.starts_with("slice:"))
+    crate::slice::current_slice_worker_id().is_some()
 }
 
 fn bundled_templates() -> Vec<BundledPromptTemplate> {
@@ -1302,6 +1328,16 @@ mod tests {
         assert!(base.contains("Treat every interaction as an equal-level, self-contained message"));
         assert!(base
             .contains("Include a follow-up destination only when the sender explicitly requests"));
+        let agent_message =
+            fs::read_to_string(root.join("runtime").join("agent-message-context.md"))
+                .expect("agent message context should read");
+        assert!(
+            agent_message.contains("do not reply to an acknowledgement or status-only completion")
+        );
+        assert!(
+            agent_message.contains("new bounded actionable request or a materially useful result")
+        );
+        assert!(agent_message.contains("Useful answers, clarifying questions, and corrections"));
         let workflow_turn = fs::read_to_string(root.join("workflow").join("turn.md"))
             .expect("workflow turn prompt should read");
         assert!(workflow_turn.contains("workflow_handoffs"));
@@ -1397,12 +1433,14 @@ mod tests {
         let path = root.join("runtime").join("slice.md");
         fs::write(
             &path,
-            concat!(
-                "You are running inside a Chariox slice. Slice-only runtime MCP tools are available for the slice screen, browser, keyboard, mouse, and OCR. Use these tools only for the slice environment attached to this agent.\n\n",
-                "Use `slice_screen_status` to inspect the display and viewer URL, `slice_screenshot` to capture the screen, `slice_ocr` to extract screen text, `slice_find_text` to locate visible text coordinates, `slice_mouse` for mouse actions, `slice_keyboard` for keyboard actions, `slice_clipboard_write` to write clipboard text without reading it back, and `slice_open_url` to open a URL in the slice browser.\n\n",
-                "Use `paste_secret_to_slice` only after focusing the intended browser field. Pass the credential id and set `submit` only when the focused form should be submitted with Return. This pastes the secret through the slice screen without exposing the secret value in your answer or terminal output.\n\n",
-                "Prefer `slice_find_text` before clicking text in the browser or GUI because it returns every visible occurrence in reading order using native screen coordinates. Use `slice_ocr` when visual text matters but the page or app is not accessible through files, terminal output, or browser automation.",
-            ),
+            // Exact published legacy template at 670c972296 (MP-08 migration fixture).
+            r#"You are running inside an Arroba slice. Slice-only runtime MCP tools are available for the slice screen, browser, keyboard, mouse, and OCR. Use these tools only for the slice environment attached to this agent.
+
+Use `slice_screen_status` to inspect the display and viewer URL, `slice_screenshot` to capture the screen, `slice_ocr` to extract screen text, `slice_find_text` to locate visible text coordinates, `slice_mouse` for mouse actions, `slice_keyboard` for keyboard actions, and `slice_open_url` to open a URL in the slice browser.
+
+Use `paste_secret_to_slice` only after focusing the intended browser field. Pass the credential id and set `submit` only when the focused form should be submitted with Return. This pastes the secret through the slice screen without exposing the secret value in your answer or terminal output.
+
+Prefer `slice_find_text` before clicking text in the browser or GUI because it returns screen coordinates directly. Use `slice_ocr` when visual text matters but the page or app is not accessible through files, terminal output, or browser automation."#,
         )
         .expect("legacy slice default should write");
 
@@ -1427,6 +1465,38 @@ mod tests {
         assert!(error
             .to_string()
             .contains("required prompt template `runtime/base` missing"));
+    }
+
+    #[test]
+    fn mp08_mp10_user_rules_use_existing_hidden_prompt_path() {
+        let _guard = env_lock::lock();
+        let old = std::env::var_os("CHARIOX_CAPABILITY_ISOLATION_ROOT");
+        std::env::remove_var("CHARIOX_CAPABILITY_ISOLATION_ROOT");
+        let root = temp_prompt_root("mp08-user-rules");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("user-rules.md"), "Prefer clear Project names.").unwrap();
+        let registry = PromptTemplateRegistry::new(root.join("prompts"));
+        registry.materialize_bundled_defaults().unwrap();
+        let envelope = PromptAssemblyService::new(registry)
+            .assemble_provider_turn(
+                &test_run(false),
+                "Visible request",
+                None,
+                Vec::new(),
+                PromptAssemblyMode::NormalProviderTurn,
+            )
+            .unwrap();
+        assert!(envelope
+            .hidden_system_context
+            .contains("<chariox-user-rules>"));
+        assert!(envelope
+            .hidden_system_context
+            .contains("Prefer clear Project names."));
+        assert_eq!(envelope.visible_user_prompt, "Visible request");
+        fs::remove_dir_all(root).unwrap();
+        if let Some(old) = old {
+            std::env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", old);
+        }
     }
 
     #[test]
@@ -1726,6 +1796,7 @@ mod tests {
 
     #[test]
     fn slice_kernels_include_slice_template() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_lock::lock();
         std::env::set_var("CHARIOX_MACHINE_ID", "slice:test");
         std::env::remove_var("CHARIOX_SLICE_MACHINE_ID");
@@ -2070,6 +2141,7 @@ mod tests {
 
     #[test]
     fn scheduled_prompt_context_uses_the_markdown_catalog() {
+        crate::test_support::isolated_env_test!();
         let _guard = env_lock::lock();
         let home = temp_prompt_root("configured-scheduled-prompt");
         let root = home.join("prompts");
@@ -2157,3 +2229,7 @@ mod tests {
         assert!(setting.protected);
     }
 }
+
+#[cfg(test)]
+#[path = "prompt_assembly/hosted_worker_tests.rs"]
+mod hosted_worker_tests;

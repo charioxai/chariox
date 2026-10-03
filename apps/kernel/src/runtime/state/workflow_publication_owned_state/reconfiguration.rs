@@ -124,20 +124,11 @@ impl KernelRuntimeOwnedState {
                 let changes_context = agent.provider() != source.provider()
                     || agent.model() != source.model()
                     || agent.effort() != source.effort()
-                    || agent.account_profile() != source.account_profile()
-                    || agent.active_substitute_index().is_some();
-                if agent.active_substitute_index().is_some() {
-                    agent.deactivate_substitute();
-                }
+                    || agent.account_profile() != source.account_profile();
                 agent.set_provider(source.provider());
                 agent.set_model(source.model().map(str::to_string));
                 agent.set_effort(source.effort().map(str::to_string));
                 agent.set_account_profile(source.account_profile().map(str::to_string));
-                agent.set_primary_profile(
-                    source.provider(),
-                    source.model().map(str::to_string),
-                    source.effort().map(str::to_string),
-                );
                 if changes_context {
                     agent.set_provider_resume_state(Default::default());
                 }

@@ -150,7 +150,7 @@ fn local_request_api_rejects_workflow_run_when_agent_lacks_required_control_capa
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-control", "worktree-control"),
+            harness.fixture_session_request("workspace-control"),
         ))
         .expect("session create should succeed")
     {

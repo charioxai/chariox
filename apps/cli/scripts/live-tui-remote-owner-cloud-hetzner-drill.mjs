@@ -229,10 +229,10 @@ function normalizeProfile(profile) {
   }
 }
 
-async function postJson(url, body) {
+async function postJson(url, body, headers = {}) {
   const response = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...headers },
     body: JSON.stringify(body),
   })
   if (!response.ok) {
@@ -242,11 +242,14 @@ async function postJson(url, body) {
 }
 
 async function pairMachine(profile, machineId, alias) {
+  if (typeof profile.cloud_session_token !== "string" || !profile.cloud_session_token.trim()) {
+    throw new Error("remote owner pairing requires an authenticated Cloud session")
+  }
   const pairing = await postJson(`${profile.api_url}/pairing-tokens`, {
     accountId: profile.account_id,
     createdByUserId: profile.user_id,
     subjectKind: "machine",
-  })
+  }, { authorization: `Bearer ${profile.cloud_session_token}` })
   if (!pairing?.token) throw new Error(`cloud did not issue a machine pairing token: ${JSON.stringify(pairing)}`)
   const paired = await postJson(`${profile.api_url}/machines/pair`, {
     accountId: profile.account_id,

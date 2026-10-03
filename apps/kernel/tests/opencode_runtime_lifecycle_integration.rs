@@ -5,10 +5,11 @@ use std::time::{Duration, Instant};
 
 use chariox_kernel::attachment::{AttachRequest, ClientCapabilityLevel};
 use chariox_kernel::provider::{LaunchProviderRequest, ProviderRunState};
-use chariox_kernel::session::{CreateSessionRequest, PromptStatus, SessionStatus};
+use chariox_kernel::session::{PromptStatus, SessionStatus};
 use chariox_kernel::{DaemonApp, DaemonConfig};
 
 mod support;
+use support::kernel_websocket::ExecutionWorkspace;
 use support::runtime_integration::{
     collect_provider_output_for_agent_until, collect_provider_output_until,
     collect_provider_records_until, create_opencode_fixture_script, opencode_env_guard,
@@ -19,6 +20,7 @@ use support::runtime_integration::{
 #[test]
 fn end_session_aborts_active_opencode_session_before_cleanup() {
     let _guard = opencode_env_guard();
+    let workspace = ExecutionWorkspace::new();
     let fixture_path = create_opencode_fixture_script();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
     let previous_bin = env::var_os("CHARIOX_OPENCODE_BIN");
@@ -30,7 +32,7 @@ fn end_session_aborts_active_opencode_session_before_cleanup() {
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let session = app
         .sessions_mut()
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(workspace.session_request())
         .expect("session should be created");
 
     let _attachment = app
@@ -90,15 +92,17 @@ fn end_session_aborts_active_opencode_session_before_cleanup() {
 #[test]
 fn clearing_runtime_during_slow_opencode_submit_does_not_restore_state() {
     let _guard = opencode_env_guard();
+    let workspace = ExecutionWorkspace::new();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
     mock_server.set_prompt_async_response_delay(Duration::from_millis(500));
     let endpoint = format!("http://127.0.0.1:{}", mock_server.port());
 
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = app
-        .sessions_mut()
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+    // Phase 1: the session is created with its default agent, which holds focus;
+    // attaching a client creates no agent.
+    let (session, _default_agent) = app
+        .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
         .attach(AttachRequest::new(
@@ -148,6 +152,7 @@ fn clearing_runtime_during_slow_opencode_submit_does_not_restore_state() {
 #[test]
 fn clearing_runtime_during_slow_opencode_abort_does_not_restore_state() {
     let _guard = opencode_env_guard();
+    let workspace = ExecutionWorkspace::new();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(1_000));
     mock_server.set_prompt_async_response_delay(Duration::from_millis(100));
     mock_server.set_abort_response_delay(Duration::from_millis(500));
@@ -155,9 +160,10 @@ fn clearing_runtime_during_slow_opencode_abort_does_not_restore_state() {
 
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = app
-        .sessions_mut()
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+    // Phase 1: the session is created with its default agent, which holds focus;
+    // attaching a client creates no agent.
+    let (session, _default_agent) = app
+        .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
         .attach(AttachRequest::new(
@@ -206,15 +212,17 @@ fn clearing_runtime_during_slow_opencode_abort_does_not_restore_state() {
 #[test]
 fn clearing_runtime_during_slow_opencode_output_poll_does_not_restore_state() {
     let _guard = opencode_env_guard();
+    let workspace = ExecutionWorkspace::new();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
     mock_server.set_prompt_async_response_delay(Duration::from_millis(100));
     let endpoint = format!("http://127.0.0.1:{}", mock_server.port());
 
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = app
-        .sessions_mut()
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+    // Phase 1: the session is created with its default agent, which holds focus;
+    // attaching a client creates no agent.
+    let (session, _default_agent) = app
+        .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
         .attach(AttachRequest::new(
@@ -277,6 +285,7 @@ fn clearing_runtime_during_slow_opencode_output_poll_does_not_restore_state() {
 #[test]
 fn session_error_completes_the_active_prompt_and_advances_the_queue() {
     let _guard = opencode_env_guard();
+    let workspace = ExecutionWorkspace::new();
     let fixture_path = create_opencode_fixture_script();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
     mock_server.fail_next_prompt("fixture prompt failure");
@@ -287,9 +296,10 @@ fn session_error_completes_the_active_prompt_and_advances_the_queue() {
 
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = app
-        .sessions_mut()
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+    // Phase 1: the session is created with its default agent, which holds focus;
+    // attaching a client creates no agent.
+    let (session, _default_agent) = app
+        .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
         .attach(AttachRequest::new(
@@ -384,6 +394,7 @@ fn session_error_completes_the_active_prompt_and_advances_the_queue() {
 #[test]
 fn cancelling_active_opencode_prompt_waits_for_provider_confirmation_before_advancing_queue() {
     let _guard = opencode_env_guard();
+    let workspace = ExecutionWorkspace::new();
     let fixture_path = create_opencode_fixture_script();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
     let previous_bin = env::var_os("CHARIOX_OPENCODE_BIN");
@@ -393,9 +404,10 @@ fn cancelling_active_opencode_prompt_waits_for_provider_confirmation_before_adva
 
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = app
-        .sessions_mut()
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+    // Phase 1: the session is created with its default agent, which holds focus;
+    // attaching a client creates no agent.
+    let (session, _default_agent) = app
+        .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
         .attach(AttachRequest::new(
@@ -478,6 +490,7 @@ fn cancelling_active_opencode_prompt_waits_for_provider_confirmation_before_adva
 #[test]
 fn cancelling_active_opencode_prompt_without_queue_clears_the_active_prompt() {
     let _guard = opencode_env_guard();
+    let workspace = ExecutionWorkspace::new();
     let fixture_path = create_opencode_fixture_script();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
     let previous_bin = env::var_os("CHARIOX_OPENCODE_BIN");
@@ -487,9 +500,10 @@ fn cancelling_active_opencode_prompt_without_queue_clears_the_active_prompt() {
 
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = app
-        .sessions_mut()
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+    // Phase 1: the session is created with its default agent, which holds focus;
+    // attaching a client creates no agent.
+    let (session, _default_agent) = app
+        .create_session(workspace.session_request())
         .expect("session should be created");
     let attachment = app
         .attach(AttachRequest::new(

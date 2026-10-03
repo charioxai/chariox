@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+# Dedicated runner only. Uses the production helper, its fixed enrollment, and
+# the managed service's real namespace/delegation settings with a sleep main.
+set -euo pipefail
+trap 'printf "storage_fixture_failed_at_line=%s\n" "$LINENO" >&2' ERR
+[[ $# == 4 && "$(id -u)" == 0 && -d /run/systemd/system ]]
+storage_repo="$(realpath -e "$1")" storage_scratch="$(realpath -e "$2")"
+storage_tests="$(realpath -e "$3")" storage_helper="$(realpath -e "$4")"
+storage_env=(GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted GITHUB_REPOSITORY=charioxai/chariox)
+if [[ "${CHARIOX_STORAGE_PRIVATE_VM:-}" == 1 ]]; then
+  [[ -z "${GITHUB_ACTIONS+x}" && "$(hostname)" == chariox-private-storage-drill && "$(systemd-detect-virt --vm)" == qemu ]]
+  [[ "$storage_scratch" == /tmp/chariox-storage.* ]]
+  [[ -f "${CHARIOX_STORAGE_DRILL_KEY:-}" && ! -L "$CHARIOX_STORAGE_DRILL_KEY" && "$(stat -c %a "$CHARIOX_STORAGE_DRILL_KEY")" == 600 ]]
+  storage_env=(CHARIOX_STORAGE_PRIVATE_VM=1 CHARIOX_STORAGE_DRILL_KEY=/run/chariox-storage-drill.key)
+else
+  # The hosted caller checks CI identity before sudo, which resets its env.
+  [[ "$storage_scratch" == /home/runner/work/_temp/chariox-storage.* || "$storage_scratch" == /home/runner/work/_temp/*/chariox-storage.* ]]
+fi
+[[ "$storage_tests" == "$storage_scratch/build/"* && "$storage_helper" == "$storage_scratch/build/"* ]]
+for storage_path in /etc/chariox /home/chariox /var/lib/chariox-app-storage /usr/libexec/chariox-app-storage /etc/systemd/system/chariox-managed-bootstrap.service; do
+  [[ ! -e "$storage_path" && ! -L "$storage_path" ]]
+done
+[[ "$(stat -f -c %T /sys/fs/cgroup)" == cgroup2fs ]]
+getent passwd chariox >/dev/null && exit 1
+getent group chariox >/dev/null || groupadd --system chariox
+getent group chariox-slice >/dev/null || groupadd --system chariox-slice
+useradd --system --gid chariox --home-dir /var/lib/chariox/home --shell /usr/sbin/nologin chariox
+storage_uid="$(id -u chariox)" storage_gid="$(id -g chariox)"
+if [[ "${CHARIOX_STORAGE_PRIVATE_VM:-}" == 1 ]]; then
+  install -o chariox -g chariox -m 600 "$CHARIOX_STORAGE_DRILL_KEY" /run/chariox-storage-drill.key
+fi
+install -d -o root -g root -m 755 /etc/chariox /usr/libexec /etc/systemd/system/chariox-managed-bootstrap.service.d /etc/systemd/system/chariox-app-storage.service.d
+install -d -o root -g root -m 711 /var/lib/chariox-app-storage
+install -d -o chariox -g chariox -m 700 /var/lib/chariox /var/lib/chariox/home /home/chariox
+install -d -o root -g chariox-slice -m 710 /var/lib/chariox-slice-share
+install -o root -g root -m 555 "$storage_helper" /usr/libexec/chariox-app-storage
+install -o root -g root -m 555 "$storage_tests" /usr/libexec/chariox-app-storage-tests
+install -m 644 "$storage_repo/deploy/managed-kernel/chariox-app-storage.service" /etc/systemd/system/chariox-app-storage.service
+install -m 644 "$storage_repo/deploy/managed-kernel/chariox-managed-bootstrap.service" /etc/systemd/system/chariox-managed-bootstrap.service
+printf '{"schema":"chariox.app-storage-enrollment.v1","owners":[{"uid":%s,"gid":%s,"cgroup_root":"/sys/fs/cgroup/system.slice/chariox-managed-bootstrap.service/apps","kernel_database_paths":["/var/lib/chariox/home/state/kernel.db"]}]}\n' "$storage_uid" "$storage_gid" > /etc/chariox/app-storage.json
+chmod 644 /etc/chariox/app-storage.json
+cat > /etc/systemd/system/chariox-managed-bootstrap.service.d/fixture.conf <<'UNIT'
+[Unit]
+ConditionPathExists=
+[Service]
+# The observer needs completed namespace setup. Type=simple reports fork, which
+# can race the checks below before systemd executes this harmless fixture main.
+Type=exec
+ExecStart=
+ExecStart=/usr/bin/sleep infinity
+ExecStartPre=
+ExecStartPost=
+ExecStartPost=+/usr/libexec/chariox-app-storage --prepare-managed-domain
+MemoryMax=1G
+MemorySwapMax=0
+TasksMax=64
+CPUQuota=100%
+UNIT
+cat > /etc/systemd/system/chariox-app-storage.service.d/fixture.conf <<'UNIT'
+[Service]
+Restart=no
+UNIT
+cleanup() {
+  trap - ERR
+  set +e
+  systemctl stop chariox-storage-actual.service chariox-storage-crash.service chariox-managed-bootstrap.service chariox-app-storage.service
+  journalctl --no-pager -u chariox-app-storage.service -u chariox-managed-bootstrap.service -n 120
+  # No force/lazy unmount or foreign-loop cleanup. Preserve journal/identity
+  # evidence on failure; this runner is discarded after bounded artifact capture.
+  find /var/lib/chariox-app-storage -maxdepth 3 -name journal.json -type f -size -17k -exec cp --parents '{}' "$storage_scratch/evidence/" \;
+  findmnt --json -R /var/lib/chariox-app-storage > "$storage_scratch/evidence/final-mounts.json" 2>/dev/null || printf '{"filesystems":[]}\n' > "$storage_scratch/evidence/final-mounts.json"
+  losetup --json --list --output NAME,BACK-FILE,SIZELIMIT,AUTOCLEAR > "$storage_scratch/evidence/final-loops.json"
+  chown -R "$(stat -c %u "$storage_scratch"):$(stat -c %g "$storage_scratch")" "$storage_scratch/evidence"
+}
+trap cleanup EXIT
+/usr/bin/env -i "${storage_env[@]}" \
+  CHARIOX_STORAGE_HOSTED=fixed-production-helper \
+  /usr/libexec/chariox-app-storage-tests \
+  runtime_enrollment::installer::tests::hosted_install_signed_graph_for_storage_views \
+  --exact --ignored --nocapture --test-threads=1
+systemctl daemon-reload
+systemctl start chariox-app-storage.service chariox-managed-bootstrap.service
+storage_kernel="$(systemctl show -p MainPID --value chariox-managed-bootstrap.service)"
+[[ "$storage_kernel" =~ ^[1-9][0-9]+$ ]]
+storage_server="$(systemctl show -p MainPID --value chariox-app-storage.service)"
+[[ "$storage_server" =~ ^[1-9][0-9]+$ ]]
+storage_host_ns="$(readlink /proc/1/ns/mnt)"
+storage_kernel_ns="$(readlink /proc/$storage_kernel/ns/mnt)"
+storage_server_ns="$(readlink /proc/$storage_server/ns/mnt)"
+printf 'Namespace observation: host=%s kernel_pid=%s kernel=%s helper_pid=%s helper=%s\n' \
+  "$storage_host_ns" "$storage_kernel" "$storage_kernel_ns" "$storage_server" "$storage_server_ns"
+[[ "$storage_kernel_ns" != "$storage_host_ns" ]]
+[[ "$storage_server_ns" == "$storage_host_ns" ]]
+run_test() {
+  local storage_unit="$1" storage_filter="$2"
+  systemd-run --unit="$storage_unit" --wait --collect --pipe \
+    --property=MemoryMax=1G --property=MemorySwapMax=0 --property=CPUQuota=100% \
+    --property=TasksMax=64 --property=RuntimeMaxSec=180 --property=KillMode=control-group \
+    /usr/bin/nsenter --target "$storage_kernel" --mount /usr/bin/setpriv \
+    --reuid="$storage_uid" --regid="$storage_gid" --clear-groups /usr/bin/env -i \
+    "${storage_env[@]}" \
+    CHARIOX_STORAGE_HOSTED=fixed-production-helper \
+    CHARIOX_STORAGE_CRASH_MARKER=/var/lib/chariox/home/storage-crash-ready \
+    /usr/libexec/chariox-app-storage-tests "$storage_filter" --ignored --nocapture --test-threads=1
+}
+run_test chariox-storage-actual hosted_private_capacity_persistence_tmp_reset_and_noexec
+run_test chariox-storage-actual hosted_failed_update_restores_the_committed_data_snapshot
+# A snapshot copies the whole data image; the helper must stay far below MemoryMax.
+check_helper_peak() {
+  local peak
+  peak=$(systemctl show -p MemoryPeak --value chariox-app-storage.service)
+  printf 'Helper memory peak after %s: %s\n' "$1" "$peak"
+  [[ "$peak" =~ ^[0-9]+$ && "$peak" -lt $((128 * 1024 * 1024)) ]]
+}
+check_helper_peak "the snapshot test"
+run_test chariox-storage-actual hosted_deleting_an_installation_removes_its_storage
+# The committed start dropped the snapshot; no copy outlives the update.
+if find /var/lib/chariox-app-storage -name data-snapshot.ext4 | grep . ; then exit 1; fi
+run_test chariox-storage-actual hosted_readonly_code_views_match_verified_roots_in_kernel_namespace
+run_test chariox-storage-actual hosted_failed_retained_data_reinstall_restores_the_retained_release
+run_test chariox-storage-actual hosted_fresh_first_install_prepares_without_a_committed_generation
+run_test chariox-storage-actual hosted_prepared_worker_uses_only_enrolled_sources_and_reclaims_unstarted_domain
+run_test chariox-storage-crash hosted_crash_fixture_holds_lease_until_owner_is_killed > "$storage_scratch/evidence/crash-holder.log" 2>&1 &
+storage_waiter=$!
+for storage_attempt in $(seq 1 300); do
+  [[ ! -f /var/lib/chariox/home/storage-crash-ready ]] || break
+  kill -0 "$storage_waiter" 2>/dev/null || { wait "$storage_waiter"; exit 1; }
+  sleep 0.1
+done
+[[ -f /var/lib/chariox/home/storage-crash-ready ]]
+systemctl kill --kill-whom=all --signal=SIGKILL chariox-app-storage.service
+systemctl stop chariox-storage-crash.service
+wait "$storage_waiter" || true
+systemctl reset-failed chariox-app-storage.service || true
+systemctl start chariox-app-storage.service
+run_test chariox-storage-actual hosted_recovery_preserves_data_after_abrupt_helper_exit
+# The same abrupt exit while a staged update holds its data: the committed
+# generation must start again on its own data.
+rm -f /var/lib/chariox/home/storage-crash-ready
+run_test chariox-storage-crash hosted_crash_fixture_holds_a_staged_update_until_the_helper_is_killed > "$storage_scratch/evidence/update-crash-holder.log" 2>&1 &
+storage_waiter=$!
+for storage_attempt in $(seq 1 300); do
+  [[ ! -f /var/lib/chariox/home/storage-crash-ready ]] || break
+  kill -0 "$storage_waiter" 2>/dev/null || { wait "$storage_waiter"; exit 1; }
+  sleep 0.1
+done
+[[ -f /var/lib/chariox/home/storage-crash-ready ]]
+# The staged update took its own snapshot in this (restarted) helper.
+check_helper_peak "the staged update's snapshot"
+systemctl kill --kill-whom=all --signal=SIGKILL chariox-app-storage.service
+systemctl stop chariox-storage-crash.service
+wait "$storage_waiter" || true
+systemctl reset-failed chariox-app-storage.service || true
+systemctl start chariox-app-storage.service
+run_test chariox-storage-actual hosted_an_update_interrupted_by_a_helper_crash_rolls_back_to_committed_data
+systemctl stop chariox-managed-bootstrap.service chariox-app-storage.service
+if findmnt --noheadings --raw --output TARGET | grep -F '/var/lib/chariox-app-storage/' ; then exit 1; fi
+if losetup --list --noheadings --output BACK-FILE | grep -F '/var/lib/chariox-app-storage/' ; then exit 1; fi
+printf 'Production helper quota, host-to-kernel mount propagation, noexec, persistence, abrupt exit recovery (also mid-update) and exact reclamation passed.\n'

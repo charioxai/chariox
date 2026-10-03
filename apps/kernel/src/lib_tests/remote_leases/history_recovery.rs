@@ -81,7 +81,7 @@ fn leased_projection_emits_source_proof_output_once() {
 }
 
 #[test]
-fn leased_projection_history_completion_is_not_blocked_by_notice() {
+fn leased_projection_history_output_with_notice_does_not_complete_active_prompt() {
     let mut config = DaemonConfig::for_tests();
     config.accept_remote_leases = true;
     let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
@@ -147,7 +147,7 @@ fn leased_projection_history_completion_is_not_blocked_by_notice() {
     let (_target_kernel_id, event) = RemoteLeaseRuntime::new(&mut app)
         .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
         .expect("projection drain should succeed")
-        .expect("history-backed completion should be projected with notice");
+        .expect("history-backed output should be projected with notice");
     let RelayPeerEvent::LeasedRuntimeProjection {
         notices,
         output_chunks,
@@ -156,10 +156,14 @@ fn leased_projection_history_completion_is_not_blocked_by_notice() {
     } = event;
     assert_eq!(notices, vec!["remote notice".to_string()]);
     assert_eq!(output_chunks.len(), 1);
-    assert_eq!(completions.len(), 1);
-    assert!(completions[0]
-        .message_id
-        .contains(&format!("leased-{provider_run_id}-completion")));
+    assert!(completions.is_empty(), "output is not a turn completion");
+    assert!(app
+        .prompt_owner_active_prompt_for_agent(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        )
+        .expect("active prompt snapshot")
+        .is_some());
 
     let duplicate = RemoteLeaseRuntime::new(&mut app)
         .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
@@ -168,6 +172,27 @@ fn leased_projection_history_completion_is_not_blocked_by_notice() {
         duplicate.is_none(),
         "history recovery must not replay output already projected from the live terminal stream"
     );
+    app.complete_active_prompt(
+        &leased_agent.backing_session_id,
+        &leased_agent.backing_agent_id,
+        Some(&provider_run_id),
+    )
+    .expect("kernel lifecycle completes the prompt");
+    let (_, event) = RemoteLeaseRuntime::new(&mut app)
+        .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
+        .expect("completed projection drain")
+        .expect("actual completion projects without new output");
+    let RelayPeerEvent::LeasedRuntimeProjection {
+        output_chunks,
+        completions,
+        ..
+    } = event;
+    assert!(output_chunks.is_empty());
+    assert_eq!(completions.len(), 1);
+    assert!(RemoteLeaseRuntime::new(&mut app)
+        .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
+        .expect("completion dedupe drain")
+        .is_none());
 }
 
 #[test]
@@ -221,7 +246,7 @@ fn leased_projection_recovers_output_from_history_when_terminal_records_are_miss
     let (_target_kernel_id, event) = RemoteLeaseRuntime::new(&mut app)
         .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
         .expect("projection drain should succeed")
-        .expect("history-backed output and completion should be projected");
+        .expect("history-backed output should be projected");
     let RelayPeerEvent::LeasedRuntimeProjection {
         output_chunks,
         completions,
@@ -232,7 +257,17 @@ fn leased_projection_recovers_output_from_history_when_terminal_records_are_miss
         output_chunks[0].bytes,
         b"remote output from history".to_vec()
     );
-    assert_eq!(completions.len(), 1);
+    assert!(
+        completions.is_empty(),
+        "history recovery cannot settle a turn"
+    );
+    assert!(app
+        .prompt_owner_active_prompt_for_agent(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        )
+        .expect("active prompt snapshot")
+        .is_some());
 
     let duplicate = RemoteLeaseRuntime::new(&mut app)
         .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
@@ -288,6 +323,12 @@ fn leased_projection_completion_dedupe_is_prompt_scoped_when_provider_run_is_reu
         ),
     );
 
+    app.complete_active_prompt(
+        &leased_agent.backing_session_id,
+        &leased_agent.backing_agent_id,
+        Some(&provider_run_id),
+    )
+    .expect("first turn completes through kernel lifecycle");
     let first_projection = RemoteLeaseRuntime::new(&mut app)
         .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
         .expect("first projection drain should succeed")
@@ -327,6 +368,12 @@ fn leased_projection_completion_dedupe_is_prompt_scoped_when_provider_run_is_reu
         ),
     );
 
+    app.complete_active_prompt(
+        &leased_agent.backing_session_id,
+        &leased_agent.backing_agent_id,
+        Some(&provider_run_id),
+    )
+    .expect("second turn completes through kernel lifecycle");
     let second_projection = RemoteLeaseRuntime::new(&mut app)
         .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
         .expect("second projection drain should succeed")

@@ -40,13 +40,40 @@ pub(super) fn export_overlay(
         )));
     }
     let ignore_patterns = read_context_ignore_patterns(worktree)?;
+    let includes: Vec<_> = ignore_patterns
+        .iter()
+        .filter_map(|rule| rule.strip_prefix('!'))
+        .collect();
+    if !includes.is_empty() {
+        let mut args = vec![
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "-z",
+            "--",
+        ];
+        args.extend(includes);
+        stream_git_nul_records(worktree, &args, MAX_OVERLAY_FILES_PER_REPOSITORY, |path| {
+            if !context_force_excluded_path(&path)
+                && !crate::workspace_live_sync_ignore::user_rules_exclude_path(
+                    &path,
+                    &ignore_patterns,
+                )
+                && paths.insert(path.clone())
+            {
+                manifest_budget.consume(path.len().saturating_add(256))?;
+            }
+            Ok(())
+        })?;
+    }
     let mut stored_objects = BTreeSet::new();
     let mut overlay_size_bytes = 0_u64;
     let mut entries = Vec::new();
     for path in paths {
         validate_relative_path(&path)?;
         if context_force_excluded_path(&path)
-            || user_ignore_pattern_matches_any(&ignore_patterns, &path)
+            || crate::workspace_live_sync_ignore::user_rules_exclude_path(&path, &ignore_patterns)
         {
             continue;
         }
@@ -300,7 +327,7 @@ pub(super) fn context_force_excluded_path(path: &str) -> bool {
     if path.split('/').any(is_portable_git_admin_component) {
         return true;
     }
-    if path.split('/').any(|part| part.starts_with(".env")) {
+    if crate::workspace_live_sync_ignore::workspace_live_sync_force_excluded_path(path) {
         return true;
     }
     path.split('/').any(|part| {
@@ -357,6 +384,12 @@ fn is_portable_git_admin_component(component: &str) -> bool {
 }
 
 fn read_context_ignore_patterns(worktree: &Path) -> Result<Vec<String>, DaemonError> {
+    // Keep strict validation of the optional expert file at the import/export boundary.
+    read_expert_context_ignore_patterns(worktree)?;
+    Ok(crate::workspace_live_sync_ignore::workspace_live_sync_user_ignore_patterns(worktree))
+}
+
+fn read_expert_context_ignore_patterns(worktree: &Path) -> Result<Vec<String>, DaemonError> {
     let path = worktree.join(".charioxignore");
     let metadata = match fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
@@ -427,7 +460,7 @@ pub(super) fn file_state_manifest_bytes(state: &DevelopmentFileState) -> usize {
 
 fn normalize_ignore_pattern(line: &str) -> Option<String> {
     let trimmed = line.trim();
-    if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('!') {
+    if trimmed.is_empty() || trimmed.starts_with('#') {
         return None;
     }
     let directory = trimmed.ends_with('/');

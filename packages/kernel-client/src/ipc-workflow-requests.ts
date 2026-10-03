@@ -14,6 +14,25 @@ import type {
 } from "./kernel-types.js"
 export * from "./ipc-workflow-runtime-requests.js"
 
+/** A visible one-node workflow for one of the caller's agents (protocol 352). */
+export function createAgentWorkflowRequest(
+  sessionId: string,
+  agentId: string,
+  reason: "trigger" | "deploy",
+  surface: "web" | "tui" | "cli",
+  alias?: string | null,
+) {
+  return {
+    CreateAgentWorkflow: {
+      session_id: sessionId,
+      agent_id: agentId,
+      reason,
+      surface,
+      alias: alias ?? null,
+    },
+  }
+}
+
 export function createWorkflowRequest(sessionId: string, alias?: string | null) {
   return {
     CreateWorkflow: {

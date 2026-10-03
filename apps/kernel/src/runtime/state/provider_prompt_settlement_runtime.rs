@@ -113,6 +113,9 @@ impl KernelRuntimeState {
                 started_next_prompt: false,
             });
         }
+        if prompt_completed {
+            owned.mark_prompt_completion_recorded(provider_run_id);
+        }
         if !force && active_prompt.delivery_pending() {
             owned.schedule_provider_output_check_after(
                 provider_run_id,
@@ -136,17 +139,23 @@ impl KernelRuntimeState {
             });
         }
 
-        if prompt_completed {
-            owned.mark_prompt_completion_recorded(provider_run_id);
-        }
         let completion_recorded = owned.prompt_completion_recorded(provider_run_id);
         let settlement_pending = owned.prompt_completion_settlement_pending(provider_run_id);
+        let requires_authoritative_turn_completion =
+            crate::provider::provider_run_requires_authoritative_turn_completion(&provider_run);
         let completion_retry_observed_at_ms = owned
             .active_turns
             .get(provider_run_id)
             .filter(|turn| turn.prompt_id == active_prompt.id())
             .and_then(|turn| turn.completion_retry_observed_at_ms);
-        let codex_provider = provider_run.adapter_key() == "codex";
+        // An adapter that requires authoritative turn completion does not
+        // record assistant-message completions in `completion_recorded`. This
+        // flag retains the authoritative turn signal from `prompt_completed`; the
+        // retry timestamp preserves the same signal after a durable-write
+        // failure. Record it before the in-flight tool guard so a deferred
+        // completion can finish when the tool handler returns.
+        let authoritative_completion_observed = requires_authoritative_turn_completion
+            && (completion_recorded || completion_retry_observed_at_ms.is_some());
         // A provider can report turn completion while an MCP HTTP request from
         // that turn is still executing. Keep the prompt (and its origin) live
         // until the handler returns; its guard schedules the next output check.
@@ -176,10 +185,9 @@ impl KernelRuntimeState {
             });
         }
         if !force
-            && codex_provider
+            && requires_authoritative_turn_completion
             && !prompt_completed
-            && !completion_recorded
-            && completion_retry_observed_at_ms.is_none()
+            && !authoritative_completion_observed
         {
             owned.schedule_provider_output_check_after(
                 provider_run_id,
@@ -187,7 +195,7 @@ impl KernelRuntimeState {
             );
             crate::logging::debug_with_fields(
                 "daemon.provider",
-                "codex prompt settlement waits for authoritative turn completion",
+                "provider prompt settlement waits for authoritative turn completion",
                 serde_json::json!({
                     "session_id": session_id,
                     "provider_run_id": provider_run_id,
@@ -203,7 +211,10 @@ impl KernelRuntimeState {
                 started_next_prompt: false,
             });
         }
-        if !force && !codex_provider && (prompt_completed || settlement_pending) {
+        if !force
+            && !requires_authoritative_turn_completion
+            && (prompt_completed || settlement_pending)
+        {
             let quiet_after_response = owned.prompt_output_quiet_after_response(
                 provider_run_id,
                 STRUCTURED_PROMPT_SETTLE_QUIET_FOR,
@@ -349,7 +360,10 @@ impl KernelRuntimeState {
             });
         }
 
-        if !force && !codex_provider && (prompt_completed || settlement_pending) {
+        if !force
+            && !requires_authoritative_turn_completion
+            && (prompt_completed || settlement_pending)
+        {
             if let (Some(workflow_run_id), Some(workflow_node_run_id)) = (
                 active_prompt.workflow_run_id(),
                 active_prompt.workflow_node_run_id(),
@@ -394,15 +408,6 @@ impl KernelRuntimeState {
         // Do not promote a workflow prompt onto it: complete the current turn
         // first, then the app-level queue path will replace the provider with a
         // workflow-scoped run before dispatching the queued prompt.
-        let next_queued_workflow_event_capabilities = next_queued_prompt_candidate
-            .as_ref()
-            .filter(|prompt| {
-                crate::scheduler::runtime::is_workflow_prompt_attachment(
-                    prompt.source_attachment_id(),
-                )
-            })
-            .map(|prompt| owned.workflow_event_capabilities_for_prompt(session_id, prompt))
-            .transpose()?;
         let next_queued_workflow_requires_fresh_context = next_queued_prompt_candidate
             .as_ref()
             .filter(|prompt| {
@@ -420,14 +425,7 @@ impl KernelRuntimeState {
                 crate::scheduler::runtime::is_workflow_prompt_attachment(
                     prompt.source_attachment_id(),
                 ) && (next_queued_workflow_requires_fresh_context
-                    || !provider_run.workflow_tools_enabled()
-                    || next_queued_workflow_event_capabilities.is_some_and(
-                        |(reply, context, actions)| {
-                            provider_run.workflow_event_reply_enabled() != reply
-                                || provider_run.workflow_event_context_enabled() != context
-                                || provider_run.workflow_event_actions_enabled() != actions
-                        },
-                    ))
+                    || !provider_run.workflow_tools_enabled())
             });
         let next_queued_prompt = (!defer_queued_prompt)
             .then_some(next_queued_prompt_candidate)
@@ -546,13 +544,15 @@ impl KernelRuntimeState {
             (completion, Some(workflow_dispatches))
         } else {
             let completion = if let Some(next_queued_prompt) = next_queued_prompt.as_ref() {
-                owned.complete_local_prompt_with_queued_advance_if_matches(
+                // Keep the Vault-aware promotion future off the settlement caller's stack.
+                Box::pin(self.complete_local_prompt_with_queued_advance_if_matches(
                     session_id,
                     &agent_id,
                     Some(provider_run_id),
                     next_queued_prompt,
                     Some(active_prompt.id()),
-                )
+                ))
+                .await
             } else {
                 owned.complete_local_prompt_without_advance_if_matches(
                     session_id,
@@ -613,6 +613,15 @@ impl KernelRuntimeState {
                 "released_claim": completion.released_claim,
             }),
         );
+        if let Some(started_next) = completion.completion.started_next.as_ref() {
+            if crate::scheduler::runtime::is_workflow_prompt_attachment(
+                started_next.source_attachment_id(),
+            ) {
+                // The promoted prompt may follow an ordinary user turn. Start its
+                // workflow node before dispatch regardless of the completed prompt's origin.
+                owned.workflow_mark_prompt_started(session_id, started_next)?;
+            }
+        }
         if completion.completion.completed.workflow_run_id().is_some() {
             let mut dispatches = workflow_dispatches
                 .expect("workflow prompt completion should prepare workflow dispatches");
@@ -622,16 +631,6 @@ impl KernelRuntimeState {
                 .persist_workflow_runtime_session(session_id, "workflow_provider_prompt_settled")?;
             if completion.released_claim {
                 dispatches.extend(owned.workflow_retry_blocked_claims());
-            }
-            if let Some(started_next) = completion.completion.started_next.as_ref() {
-                if crate::scheduler::runtime::is_workflow_prompt_attachment(
-                    started_next.source_attachment_id(),
-                ) {
-                    // Mark the envelope as dispatched before the provider can observe
-                    // the promoted prompt. This keeps workflow acknowledgement aligned
-                    // with the normal completion-promotion path.
-                    owned.workflow_mark_prompt_started(session_id, started_next)?;
-                }
             }
             let reuses_provider_run = dispatches
                 .local
@@ -677,6 +676,13 @@ impl KernelRuntimeState {
             &agent_id,
             &completion.completion,
         )?;
+        if provider_run.turn_substitute().is_some()
+            && completion.completion.completed.workflow_run_id().is_none()
+        {
+            // The configured profile never saw this turn; its next turn gets it.
+            owned.prepare_turn_substitute_return_handoff(&provider_run);
+        }
+        let started_next_on_run = completion.completion.started_next.is_some();
         if let Some(dispatch) = completion.dispatch {
             if let Err(error) = self
                 .enqueue_prompt_dispatch_after_liveness(&dispatch, owned)
@@ -690,66 +696,16 @@ impl KernelRuntimeState {
                 .write()
                 .clear_workflow_run_settling(session_id, workflow_run_id)?;
         }
-        if defer_queued_prompt {
-            let session_id_for_queue = session_id.to_string();
-            let agent_id_for_queue = agent_id.clone();
-            match self
-                .with_app_side_effect(move |app| {
-                    app.advance_next_queued_prompt(&session_id_for_queue, &agent_id_for_queue)
-                })
-                .await
-            {
-                Ok(Some(_)) => {}
-                Ok(None) => {}
-                Err(error) => {
-                    self.owned.record_notice(
-                        session_id,
-                        Some(provider_run_id),
-                        self.owned
-                            .attachment_store
-                            .list_session_attachment_ids(session_id),
-                        format!(
-                            "Queued workflow prompt remained pending while preparing its provider context: {error}"
-                        ),
-                    );
-                }
-            }
+        if provider_run.turn_substitute().is_some() && !started_next_on_run {
+            // The substitute served only this turn; the next starts on the agent's profile.
+            self.retire_owned_provider_run_after_terminal_failure(session_id, provider_run_id)
+                .await;
         }
-        if completion.completion.started_next.is_none() && !provider_run_was_running {
-            let session_id_for_queue = session_id.to_string();
-            let agent_id_for_queue = agent_id.clone();
-            let agent_id_for_log = agent_id_for_queue.clone();
-            match self
-                .with_app_side_effect(move |app| {
-                    app.advance_next_queued_prompt(&session_id_for_queue, &agent_id_for_queue)
-                })
-                .await
-            {
-                Ok(Some(_started_next)) => {
-                    crate::logging::info_with_fields(
-                        "daemon.provider",
-                        "advanced queued prompt after terminal provider recovery",
-                        serde_json::json!({
-                            "session_id": session_id,
-                            "agent_id": agent_id_for_log,
-                            "ended_provider_run_id": provider_run_id,
-                        }),
-                    );
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    self.owned.record_notice(
-                        session_id,
-                        Some(provider_run_id),
-                        self.owned
-                            .attachment_store
-                            .list_session_attachment_ids(session_id),
-                        format!(
-                            "Queued prompt remained pending after terminal provider recovery: {error}"
-                        ),
-                    );
-                }
-            }
+        if defer_queued_prompt
+            || (completion.completion.started_next.is_none() && !provider_run_was_running)
+        {
+            Box::pin(self.advance_project_queued_prompt_after_settlement(session_id, &agent_id))
+                .await;
         }
         self.spawn_workflow_prompt_dispatches(
             owned.workflow_maybe_start_next_queued_prompt(session_id),

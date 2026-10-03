@@ -38,7 +38,7 @@ pub(crate) struct ActionRecoveryEffect {
     pub(crate) started_action_ids: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct EnvironmentActionLedger {
     actions: BTreeMap<String, EnvironmentAction>,
     history_records: BTreeMap<u64, EnvironmentAction>,
@@ -46,8 +46,11 @@ pub(crate) struct EnvironmentActionLedger {
     requests: BTreeMap<String, EnvironmentActionRequest>,
     idempotency_actions: BTreeMap<String, String>,
     order: Vec<String>,
+    #[serde(with = "super::durability::target_map")]
     reservations: BTreeMap<InputTarget, String>,
+    #[serde(with = "super::durability::target_map")]
     input_owners: BTreeMap<InputTarget, String>,
+    #[serde(with = "super::durability::target_map")]
     pending_takeovers: BTreeMap<InputTarget, String>,
     cancellation_reasons: BTreeMap<String, EnvironmentActionCancellationReason>,
     next_sequence: u64,
@@ -347,12 +350,12 @@ impl EnvironmentActionLedger {
             });
         }
         let cancellation_reason = self.cancellation_reasons.remove(action_id);
-        let action = self
-            .actions
-            .get_mut(action_id)
-            .ok_or_else(|| EnvironmentError::UnknownAction {
-                action_id: action_id.to_string(),
-            })?;
+        let action =
+            self.actions
+                .get_mut(action_id)
+                .ok_or_else(|| EnvironmentError::UnknownAction {
+                    action_id: action_id.to_string(),
+                })?;
         action.state = state;
         let finished_at_ms = next_action_timestamp(action);
         action.finished_at_ms = Some(finished_at_ms);
@@ -553,6 +556,26 @@ impl EnvironmentActionLedger {
                 target: target.clone(),
             }),
         }
+    }
+
+    pub(crate) fn invalidate_after_kernel_restart(
+        &mut self,
+        actors: &BTreeMap<String, EnvironmentActor>,
+    ) -> Vec<String> {
+        let human_owners = self
+            .input_owners
+            .iter()
+            .filter(|(_, actor_id)| {
+                actors
+                    .get(*actor_id)
+                    .is_some_and(|actor| actor.kind == EnvironmentActorKind::Human)
+            })
+            .map(|(target, actor)| (target.clone(), actor.clone()))
+            .collect();
+        let failed = self.invalidate_runtime();
+        // Retain deliberate human takeover while revoking lost agent execution ownership.
+        self.input_owners = human_owners;
+        failed
     }
 
     pub(crate) fn invalidate_runtime(&mut self) -> Vec<String> {

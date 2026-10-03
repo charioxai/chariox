@@ -35,10 +35,11 @@ test("unattached agents render as selectable waiting-room rows with load older a
     "external-session:codex:abc",
     "external-provider-session-more",
   ])
+  assert.equal(rows[0]?.title, "Saved provider conversation")
   assert.equal(rows[1]?.title, "Review payment flow")
   assert.equal(rows[1]?.selectable, true)
   assert.equal(rows[1]?.focused, true)
-  assert.equal(rows[2]?.title, "Load older unattached agents")
+  assert.equal(rows[2]?.title, "Load older saved conversations")
   assert.equal(rows[2]?.selectable, true)
 })
 
@@ -48,15 +49,15 @@ test("unattached agents show a loading row while inventory is pending", () => {
     {},
     {
       inventoryLoading: true,
-      loadingText: "loading unattached agents",
+      loadingText: "loading saved provider conversations",
       titleWidth: 28,
     },
   )
 
   assert.deepEqual(rows, [{
     id: "external-provider-sessions-loading",
-    title: "Unattached agents",
-    value: "loading unattached agents",
+    title: "Saved provider conversations",
+    value: "loading saved provider conversations",
     titleWidth: 28,
     indent: 1,
     focused: false,

@@ -4,6 +4,9 @@
 
 Draft protocol aligned with `docs/spec-v1.md`.
 
+Apps Phase 1 protocol numbers were renumbered above release F on 2026-10-03 (local
+N → N + 9 for 368–406, relay 58 → 69); see [PROTOCOL_PHASE1_RENUMBERING.md](PROTOCOL_PHASE1_RENUMBERING.md).
+
 ## 1. Scope
 
 This document defines message classes and protocol contracts between:
@@ -156,7 +159,8 @@ OpenCode-specific structured adapter contract:
 
 - prompt submit maps to the provider session prompt operation
 - `/<provider> ...` command invoke maps to the provider session command operation
-- turn abort maps to the provider session abort operation
+- turn abort maps to the provider session abort operation and retains the provider session
+- after abort, unscoped session errors settle a follow-up immediately only with matching current-prompt assistant evidence; if the accepted current user has no assistant and remains observably idle for five seconds, the kernel closes the stalled turn with an uncorrelated-error diagnostic
 - provider lifecycle and output state are consumed from the provider event stream rather than inferred from PTY EOF or PTY idleness
 - later providers such as Claude Code and Codex should fit behind the same daemon/client contract after the OpenCode-first cycle is closed
 
@@ -172,12 +176,18 @@ Provider hidden-context injection contract:
 
 Provider adapter hidden-context channels:
 
-- Codex adapters MUST send hidden context through `thread/start.developerInstructions` or `thread/resume.developerInstructions` when a Codex thread is created or resumed. Codex does not accept this context through `turn/start`; for kernel-managed Codex runs, the kernel MUST hot-reload the Codex thread before a turn when the assembled hidden context fingerprint changes.
+- Codex adapters MUST send hidden context through `thread/start.developerInstructions` or `thread/resume.developerInstructions` when a Codex thread is created or resumed. Codex does not accept this context through `turn/start`; for kernel-managed Codex runs, the kernel MUST wait for the managed thread to become idle, unsubscribe, and resume the same Codex thread before a turn when the assembled hidden context fingerprint changes, preserving its conversation.
 - OpenCode adapters MUST send turn-scoped hidden context through the provider session prompt request `system` field, currently `POST /session/{id}/prompt_async` body `system`.
 - Claude Code adapters MUST send turn-scoped hidden context through the `UserPromptSubmit` hook response `hookSpecificOutput.additionalContext`.
 - If a provider channel is unavailable, the adapter may run without hidden context for that turn or restart the provider process with an initialization-scoped system prompt only when the caller explicitly accepts that behavior; it must not silently fall back to visible prompt injection.
 - Live provider drills validate direct provider hidden-context channels in current supported harnesses. Prompt assembly changes that touch these channels must keep or update `pnpm --filter @chariox/cli run provider-context-injection:drill`.
 - End-to-end prompt assembly changes must also keep `pnpm --filter @chariox/cli run prompt-assembly:drill` passing. That drill edits a temporary `~/.chariox/prompts/runtime/base.md`, runs real Chariox provider turns for Codex/OpenCode/Claude, verifies the model sees the hidden registry token through the provider-native hidden channel on successive turns, and verifies Chariox user-prompt history does not contain the hidden token.
+
+Failed requests (protocol 393):
+
+- A turn that fails before completing (provider error, rate or usage limit, crash, or a dispatch the provider did not accept) is not retried: its request is dropped. A user cancel keeps its own semantics and adds nothing.
+- The failed turn gets a provider-error transcript entry, `Request not carried out: <reason>. It was dropped; send it again to retry.`, on every surface; provider rate, usage and billing limits read `usage limit reached`.
+- The request stays on the agent as `AgentInstance.failed_requests` (`{prompt_id, excerpt, reason}`, omitted when empty, durable across kernel restarts). The next turn delivered to the agent's provider, which may resume a session still holding the request (Claude `--resume`, a Codex thread, an OpenCode session), carries a one-time `hidden_system_context` note: `Your previous request ("<excerpt>") failed (<reason>) and was not carried out. Do not act on it unless the user asks again; answer only the current request.` The field clears once the provider accepted that turn.
 
 Prompt template storage:
 
@@ -206,6 +216,24 @@ Required properties:
 Existing providers like OpenCode may continue to be adapted through their native protocols.
 
 ## 3.3.2 Native TUI Agents
+
+MP-08 / MP-10 / MP-11 (owner decision 2026-10-02): credential copying remains
+unchanged across leased workers, managed-context imports and slices, including
+profile-scoped Claude Keychain export and the Vault setup-token remote path.
+Receiving kernels publish one non-blocking notice per renewable account and
+Machine about possible refresh-token invalidation. API keys and Claude setup
+tokens do not receive it. There is no credential sync or shared refresh authority.
+A failed native renewal raises one kernel-owned `Log in to <Provider> on this
+machine` RuntimeInteraction. Accepting invokes the existing official login on
+the execution kernel; login success reloads the official harness and resumes the admitted Chariox turn.
+Protocol v376 adds optional ephemeral `RuntimeInteraction.provider_login`
+(receiving Kernel ID, official `ProviderLoginStart`, bounded terminal output).
+Challenges and masked native responses are human-only, excluded from model
+context, history and logs. Relay peer v68 updates/dismisses that projection
+through the existing lease-authorized native-interaction bridge. Standalone
+kernels use the same local path; no external auth coordinator is required.
+Existing clients retain their minimum versions; rendering this optional login
+projection requires v376. Older peer kernels reject the changed bridge version.
 
 Native TUI agents let a user run a familiar provider CLI UI while the Chariox kernel remains the session authority.
 
@@ -281,7 +309,7 @@ Provider-native credential enrollment callback bridge (local daemon protocol 241
 Native TUI hidden context:
 
 - granted skill prompt context and other Chariox-only prompt injections MUST be delivered on the provider-facing path without becoming visible provider-TUI text
-- Codex native TUI hidden context MUST use the same Codex turn-scoped `developer_instructions` channel as ordinary Codex provider runs
+- Codex native TUI hidden context MUST use Codex `thread/inject_items` developer messages before `turn/start` or `turn/steer`, preserving the attached thread and keeping `input` limited to visible user text and attachments. Resumed threads use the same bridge; newly created ordinary threads retain `thread/start.developerInstructions`. Injection failures MUST fail the prompt rather than fall back to visible user input.
 - OpenCode native TUI hidden context MUST use the same OpenCode prompt request `system` field as ordinary OpenCode provider runs
 - Claude Code native TUI MUST use the `UserPromptSubmit` hook `additionalContext` path for hidden context; the hook emits a scoped context request id, and the Chariox CLI bridge or worker kernel writes the matching context response before the hook returns
 - Claude hook context responses are scoped to the session, agent, and provider run; they must not expose broad kernel authority or accept arbitrary provider-origin file paths
@@ -400,8 +428,8 @@ Version 25 also removes the separate `ForwardWorkflowProviderFailure` request an
 its acknowledgement. Workers settle failed leased turns locally without waiting
 for a home RPC. The existing runtime projection carries the terminal diagnostic
 and correlated, replayable completion. The home settles only the matching active
-turn, reserves agent admission, releases the failed workflow's workspace claim,
-and confirms the selected substitute on the worker before advancing queued work.
+turn and releases the failed workflow's workspace claim; queued work is preserved.
+Since protocol 397 a leased turn is not rerun on a substitute.
 Rejected profile acknowledgements preserve the queue. Delayed managed projections
 cannot re-establish a cleared worker-run binding after a profile change.
 
@@ -435,6 +463,7 @@ Current pushed event contract:
 
 - all pushed events use the `KernelOutgoingFrame::Event` envelope with monotonic `event_id` plus an `event` payload tagged by its `event` string
 - `terminal_output` carries terminal records and should be used for terminal append/update rendering without forcing `session.state.get`
+- Local daemon protocol v370 keeps recipient-scoped bounded output drains scheduled while records remain, even after the producer stops. Local and relay subscriptions preserve byte order and heartbeat scheduling; an empty drain does not schedule more work. Event shapes, relay peer protocol, and client minimum versions are unchanged (MP-08 / MP-10).
 - `runtime_notices` carries runtime notices for the subscribed attachment/session
 - `assistant_message_completed` carries `session_id`, `provider_run_id`, optional `agent_id`, `message_id`, and `completed_at_ms`
 - `session_snapshot` is the full subscribed-session projection and remains the fallback after attach, replay gaps, explicit recovery, and structural changes
@@ -442,6 +471,18 @@ Current pushed event contract:
 - `provider_run_changed` carries `session_id` and the current provider run, or `null` when no provider run is active
 - `session_metadata_changed` carries `session_id` and a `metadata` patch with alias, last-used timestamps, hidden state, focused agent, and workspace live-sync mode
 - `runtime_interactions_changed` carries `session_id` and the current active runtime interactions for permission/choice prompts
+  - protocol 293 gives each interaction exactly one subject: existing `agent_id`
+    or `kernel_operation_id`. Kernel decisions work in sessions with zero agents;
+    they neither focus an agent nor create another prompt area.
+  - both subjects use the existing `RespondToInteraction` request and terminal
+    projection. Only the authenticated terminal user who owns a kernel operation
+    may answer its decision. Provider, agent-tool and remote-kernel paths cannot
+    approve it; the subject is assigned by the kernel, not accepted from an App.
+  - kernel decisions have explicit choices, no custom reply and no automatic
+    choice. Timeout, abandoned operation and shutdown cancel the pending decision.
+    The same monotonic deadline applies when resolving after a queued session lock.
+    Decisions are single-use and bounded to eight per owner and 32 per kernel.
+    Terminal presentation remains outside App content and App-controlled input.
 - `waiting_room_inventory_changed` carries only `inventory_version` and requires clients to refetch the full waiting-room snapshot when fields outside the row patch change, including provider accounts, Git credentials, external provider sessions, relay inventory, remote kernels, and terminals
 - `waiting_room_rows_changed` carries `inventory_version`, `schema_version`, `generated_at_ms`, optional `launch_target`, changed session rows, and `removed_session_ids`; clients should apply it as a row patch instead of refetching the full waiting-room snapshot
 - `provider_catalog_changed` carries `generated_at_ms` and the current provider catalog
@@ -542,6 +583,7 @@ Current session-management semantics:
 - `session.create` accepts an optional alias
 - deleting the currently attached session invalidates the attachment and the client should transition to an unattached "no session" state instead of forcing process exit
 - `session.delete` is a real delete operation: after runtime teardown the session is removed from the daemon registry and can no longer be listed, resolved, or reattached
+- teardown removes the session's kernel agents. Provider-owned conversations remain saved in the provider profile and return to the external provider session inventory for import into a new session; waiting rooms should label these as saved provider conversations, not unattached live agents
 - if a session reference is ambiguous, the daemon rejects it with a structured ambiguity error
 
 Current agent-management semantics:
@@ -557,6 +599,7 @@ Local cancellation policy:
 
 - any currently attached client in a session may request cancellation of that session's active prompt
 - cancellation is session-scoped rather than attachment-owned because the active provider turn is shared session state
+- user cancellation settles the active turn while retaining the agent's provider conversation and resume identity for the next prompt
 
 This local API MUST remain daemon-owned, local-first, and compatible with later workflow-mode runtime surfaces.
 
@@ -583,10 +626,13 @@ Current slice-management surface:
 - Protocol v293 and relay peer protocol v30 add kernel-owned Room viewer admission. A Selkies `slice.display_endpoint.get` request must carry `session_id`, `attachment_id`, and `viewer_public_key`; their optional wire representation preserves the legacy one-argument noVNC request. The home kernel accepts a local client or a remote client whose authenticated relay-key thumbprint matches `viewer_public_key`. It rejects service, metaagent, and kernel callers, and verifies attachment membership, attachment owner, persisted Room-to-slice placement, running slice state, and the Selkies backend before contacting the bound worker. The worker independently verifies the authenticated home kernel key plus exact Room and slice provisioner binding before registering a display target. A successful response adds `stream_protocol`, `stream_id`, and `peer_public_key` to the endpoint.
 - Protocol v294 and relay peer protocol v31 add the first human Computer Action, `pointer_click`. The local request derives the human Actor from the authenticated caller, requires that Actor's explicit desktop takeover, validates the current runtime generation and canonical viewport revision, checks coordinates and click count, and admits the mutation through the Room Action ledger. The Action snapshot and history retain typed redacted arguments containing the pointer coordinates, button, click count, and viewport revision. That same argument record and the authenticated Actor define the opaque idempotency key's operation identity. An exact retry returns the original Action state after viewport change or input release and never repeats physical input; a different Actor or payload conflicts. The home sends an accepted Action to the Room's bound worker over the existing authenticated controller route. The worker revalidates the authority envelope and coordinate bounds, then executes the pointer command against the headed desktop without forcing browser focus. Physical Computer input has no transport replay command. If delivery succeeds but its response is lost, the Action fails without automatically clicking again.
 - Each admitted target is an expiring 60-second, key-bound, single-use opening grant. Claiming it creates a separate short active-view lease that only the worker kernel renews while the admitted WebSocket remains attached. Viewer close, relay loss, stream failure, or kernel shutdown drops that lease and reaps the private adapter; reconnect obtains a fresh endpoint and stream identity. Remote display URLs require `wss://`; only an explicitly loopback relay may use `ws://` for local drills. Each encrypted direction has at most 16 queued fragments. Ingress saturation closes the channel instead of silently dropping a sequence number; downstream input waits at most two seconds under backpressure, and cleanup is bounded. The relay may route the outer tunnel and encrypted packet envelopes but cannot decode video or viewer controls. The display channel accepts only read-only video controls; keyboard, pointer, clipboard, settings, resize, and Environment authority remain on normal kernel operations. Released Web decoding and TUI viewer-launch UX remain separate client work and are not implied by this transport checkpoint.
-- Ordinary local Docker slices keep Docker's default container security profiles unless the home user explicitly opts into a narrower exception. `slices.linux.allow_unconfined_seccomp = true` disables only Docker's seccomp profile. `slices.linux.allow_provider_sandbox_compatibility = true` separately disables seccomp, unmasks Docker's system paths, and selects the host-installed AppArmor profile named by `CHARIOX_SLICE_APPARMOR_PROFILE`. Clients must describe the complete grant before enabling it. Hosts that restrict unprivileged user namespaces must load the shipped `chariox-slice-provider.apparmor` policy and select `chariox-slice-provider`; Docker's built-in `unconfined` profile does not override that Ubuntu restriction. Before starting the worker runtime, provider compatibility mode runs a real Bubblewrap namespace probe and fails if the selected Docker security boundary cannot create it. Broker-backed managed hosts may force compatibility mode inside their dedicated rootless Docker daemon for those Docker slices. This slice-only inner boundary does not apply to a provider launched directly by a Path-1 disposable worker VM, which uses the ordinary kernel provider path with no Bubblewrap requirement. The managed broker joins only the rootless daemon's user and mount namespaces, pins each validated publication directory by device and inode, and publishes it as a stable broker-owned bind mount. Docker never receives the original publication path or a `/proc` magic link. Durable handle records let the broker reuse mounts after its own restart and recreate them after a daemon restart; slice destruction removes the records and mountpoints.
+- Ordinary local Docker slices keep Docker's default container security profiles unless the home user explicitly opts into a narrower exception. `slices.linux.allow_unconfined_seccomp = true` disables only Docker's seccomp profile. `slices.linux.allow_provider_sandbox_compatibility = true` separately disables seccomp, unmasks Docker's system paths, and selects the host-installed AppArmor profile named by `CHARIOX_SLICE_APPARMOR_PROFILE`. Clients must describe the complete grant before enabling it. Hosts that restrict unprivileged user namespaces must load the shipped `chariox-slice-provider.apparmor` policy and select `chariox-slice-provider`; Docker's built-in `unconfined` profile does not override that Ubuntu restriction. Before starting the worker runtime, provider compatibility mode runs a real Bubblewrap namespace probe and fails if the selected Docker security boundary cannot create it. Broker-backed managed hosts may force compatibility mode inside their dedicated rootless Docker daemon for those Docker slices. Explicit local DEV enrollment enables compatibility in its rootful, unmapped Docker engine only when its root-owned enrollment records `providerSandboxCompatibility: true` after installer acknowledgement. Older enrollments without that field retain default security profiles. The complete grant adds SYS_ADMIN, NET_ADMIN and SYS_PTRACE, disables seccomp, unmasks system paths and uses the selected AppArmor profile (default unconfined); container uid 0 maps to host uid 0, including the setuid Bubblewrap helper. Ordinary local slices still require the user configuration opt-in. This slice-only inner boundary does not apply to a provider launched directly by a Path-1 disposable worker VM, which uses the ordinary kernel provider path with no Bubblewrap requirement. The managed broker joins only the rootless daemon's user and mount namespaces, pins each validated publication directory by device and inode, and publishes it as a stable broker-owned bind mount. Docker never receives the original publication path or a `/proc` magic link. Durable handle records let the broker reuse mounts after its own restart and recreate them after a daemon restart; slice destruction removes the records and mountpoints.
 - Slice lifecycle status is `stopped`, `starting`, `stopping`, `running`, or `unhealthy`. Start must only report `running` after the worker kernel has been discovered; otherwise the slice remains `unhealthy` and diagnostics are available through `slice.logs.get`.
 - Slice records also carry display-only operation diagnostics: `last_operation`, `last_operation_status`, `last_error`, and `last_operation_at_ms`. The kernel updates these on lifecycle operations and restart reconciliation; clients may render them in status/doctor views, but must continue to treat `status` as the lifecycle state and audit/log records as the detailed diagnostic source.
 - Daemon health `slice_lifecycle.issues` identifies each unhealthy slice or failed slice operation by slice id/name, status, last operation/status/error, sessions, agents, and worktree so clients can point users directly to the affected slice before they open logs/audit or restart/delete it. `slice_lifecycle.provider_auth_issues` separately identifies attached-agent slices with no provider account summaries or with `unknown`/`not_configured` provider auth, including provider, alias/identity, sessions, agents, and worktree. Clients should surface this from kernel health and point users to `/slice doctor`, `/slice audit`, and slice auth login/import before they send more provider prompts.
+- Local daemon protocol v371 adds optional `runtime_process_identity` to `RelayStatus` for MP-10. Linux kernels report their own PID, Linux boot ID and process start ticks from native metadata, without argv, environment or account data. Legacy and non-Linux kernels omit it. The collector uses the normal kernel public API or authenticated TLS relay route, independently checks the live process executable against the signed release and requires that kernel to be a provider-child ancestor. Relay peer protocol remains v64.
+- Local daemon protocol v370 projects nullable `runtimeStartedAt` from the Cloud managed-environment summary through the kernel to clients. Shutdown observation requires v370 so the three-hour minimum is measured from the authoritative runtime start; older/pre-bootstrap summaries may omit it and decode as null. Ordinary runtime behavior and other client minimums are unchanged.
+- Local daemon protocol v369 and relay peer protocol v64 coordinate canonical signed daemon admission. A signed `Kernel` token registers only its canonical kernel subject, including production-shaped temporary peer IDs derived from that subject; display aliases do not authorize another daemon ID. Signed `Machine` tokens do not register daemons. Trusted `Service` admission and legacy self-host tokens retain their existing behavior. New slice kernels use their unique `slice:<id>` worker reference as both canonical daemon ID and display alias, so their existing bootstrap, key-bound runtime and recovery tokens identify the actual registered worker. The owner-only `allowed_targets` transport scope remains separate from the worker registration identity. Existing client minimum protocol versions remain unchanged.
 - Local Docker slices use the kernel-configured relay when it has a token and a non-loopback `ws://` or `wss://` URL, so hosted Cloud and self-hosted relay deployments expose the slice worker on the same relay fabric as other remote workers. A hosted slice initially receives a short bootstrap token limited to registration and heartbeat. After discovering its relay key, the home kernel obtains a key-bound token that targets only that owner kernel and installs it through the encrypted peer lane with a fresh activation nonce. The worker queues the encrypted install acknowledgement before closing its bootstrap relay socket. After reconnecting, the worker must return that nonce in a worker-originated confirmation whose relay caller identity is bound to the installed key. The owner matches the slice, worker id, relay subject, full relay key, and nonce, then requires same-key live presence plus an encrypted ping before reporting the slice as running. The slice receives no Cloud session or machine credential. Loopback or incomplete relay configuration falls back to a private per-slice relay owned by the home kernel; clients should render the projected `relay_endpoint.private` flag rather than guessing from the URL.
 - Kernel restart reconciliation must not leave runtime-only states active. Local Docker reconciliation inspects the host container: missing/stopped previously running slices become `stopped`, still-running or unverifiable runtime state becomes `unhealthy`, and interrupted `starting`/`stopping` transitions become `unhealthy`.
 - `slice.logs.get` returns structured log entries for local Docker slice provisioner actions and recent container logs. Clients should render these as diagnostics only and must not treat log text as control data.
@@ -598,7 +644,7 @@ Current slice-management surface:
 - Relay peer protocol v22 adds managed-slice relay credential activation and renewal. Relay tokens remain redacted from debug output and travel only inside encrypted peer payloads. The slice validates the token subject, owner target, machine, action set, expiry, and worker-key thumbprint before installing it. A token change forces a new relay socket; the relay independently closes active scoped connections at expiry. Before the refresh window closes, the slice requests a replacement from its recorded owner over the same encrypted owner-targeted lane.
 - Relay peer protocol v23 adds an offline-recovery credential beside the short-lived active credential. The recovery token is bound to the same slice relay key and exactly one owner target, permits only `daemon.register`, `daemon.heartbeat`, and `peer.request`, and is capped at 30 days. It cannot route packets or receive peer events. The slice persists it atomically with the relay owner and key, uses it only when the active credential is missing or expired, then asks that owner for a replacement active/recovery pair over the encrypted peer lane. Each successful refresh rotates the recovery credential. A restart after an outage spanning active-token expiry must retain this same-key recovery path; a key or owner mismatch fails closed.
 - Relay peer protocol v24 adds the nonce-bound `ConfirmManagedSliceRelayToken` request and `ManagedSliceRelayTokenActivated` response. The bootstrap credential cannot send a valid confirmation because it lacks the worker-key-bound kernel identity required by the owner. Owner expectations and worker retries are short-lived and bounded; a matching confirmation remains idempotently acknowledgeable for a short window so response loss does not strand the worker. A v24 owner rejects a worker that returns the older install response or cannot perform the confirmation handshake, so mixed-version activation fails closed and requires the owner and slice worker to run the same release.
-- Slice saved state is a kernel-owned product concept, not a Docker-management UX. `slice.state.save` overwrites the active state for the slice, `slice.state.status` returns the active saved-state metadata, `slice.state.reset` removes the active state so future starts use the base slice image, `slice.backup.create` creates an immutable named backup, and `slice.backup.restore` transactionally restores a stopped, agent-free slice. Protocol v301 adds backup archive digests and Docker image identities: restore rejects legacy, corrupt, mismatched, cross-slice, or ambiguous backups before mutation, captures an internal rollback generation, and durably journals that recovery intent before it recreates the container or home volume. The restored state and journal resolution are published in one durable event; only then may the kernel reclaim the previous active generation and rollback backup. If replacement, active-state capture, or durable publication fails, the kernel restores the rollback generation and republishes it as active. After a process or host interruption, durable replay finds any unresolved journal and performs the same rollback before normal runtime reconciliation; failed rollback remains journaled and retains its artifacts so startup fails closed instead of accepting an uncertain machine state. While that journal remains unresolved, the kernel quarantines the slice and rejects start, stop, delete, state, backup, authentication, and Environment operations; it also refuses to journal a second restore for the slice. Durable commit or rollback resolution clears the quarantine. A successful restore leaves the slice stopped. Saved state is composite: a Docker image tag and a `/home/slice` archive under the Chariox slice state root. Before save or backup mutates either generation, every local kernel sharing the Docker engine contends on one host-wide disk-admission lock. Chariox first quiesces the source; live capture stops the desktop and pauses the remaining container processes. While the source remains quiesced and the admission lock remains held, Chariox measures the real home volume, target writable layer, Docker capacity, and state-root capacity, budgets archive overhead, retains 2 GiB on both filesystems, and completes commit and archive publication. Missing or unsafe measurements fail closed, the read-only measurement helper is removed, and a paused live source is resumed even when admission rejects the snapshot. Slice records expose only metadata (`saved_state_ref`, `saved_state_status`, `saved_state_updated_at_ms`); clients must not inspect archive contents or expose them to provider transcripts.
+- Slice saved state is a kernel-owned product concept, not a Docker-management UX. `slice.state.save` overwrites the active state for the slice, `slice.state.status` returns the active saved-state metadata, `slice.state.reset` removes the active state so future starts use the base slice image, `slice.backup.create` creates an immutable named backup, and `slice.backup.restore` transactionally restores a stopped, agent-free slice. Protocol v301 adds backup archive digests and Docker image identities: restore rejects legacy, corrupt, mismatched, cross-slice, or ambiguous backups before mutation, captures an internal rollback generation, and durably journals that recovery intent before it recreates the container or home volume. The restored state and journal resolution are published in one durable event; only then may the kernel reclaim the previous active generation and rollback backup. If replacement, active-state capture, or durable publication fails, the kernel restores the rollback generation and republishes it as active. After a process or host interruption, durable replay finds any unresolved journal and performs the same rollback before normal runtime reconciliation; failed rollback remains journaled and retains its artifacts so startup fails closed instead of accepting an uncertain machine state. While that journal remains unresolved, the kernel quarantines the slice and rejects start, stop, delete, state, backup, authentication, and Environment operations; it also refuses to journal a second restore for the slice. Durable commit or rollback resolution clears the quarantine. On managed slices, that same resolution event records the broker acknowledgement still owed for the published home generation; the kernel retries it at startup and before the slice's next restore, refuses a new restore while it is owed, retains any rollback archive it names until acknowledged, and never rolls the committed resolution back. A successful restore leaves the slice stopped. Saved state is composite: a Docker image tag and a `/home/slice` archive under the Chariox slice state root. Before save or backup mutates either generation, every local kernel sharing the Docker engine contends on one host-wide disk-admission lock. Chariox first quiesces the source; live capture stops the desktop and pauses the remaining container processes. While the source remains quiesced and the admission lock remains held, Chariox measures the real home volume, target writable layer, Docker capacity, and state-root capacity, budgets archive overhead, retains 2 GiB on both filesystems, and completes commit and archive publication. Missing or unsafe measurements fail closed, the read-only measurement helper is removed, and a paused live source is resumed even when admission rejects the snapshot. Slice records expose only metadata (`saved_state_ref`, `saved_state_status`, `saved_state_updated_at_ms`); clients must not inspect archive contents or expose them to provider transcripts.
 
 The saved-state archive budget includes apparent home bytes, compression slack,
 and a conservative per-entry tar-metadata bound. When Docker and state storage
@@ -789,6 +835,10 @@ This section defines the logical contract for the Room-owned browser and graphic
 
 Protocol v295 adds stable Actor presentation colors, pointer presence in the Environment snapshot, the `PointersChanged` event, and membership-scoped `UpdateRoomEnvironmentPointer`. The request carries the runtime generation, viewport revision, and either desktop-pixel coordinates or null to clear the pointer. It never accepts an Actor identity. The session lane derives the human Actor from the authenticated caller. Clearing an absent pointer is idempotent and does not register Actor presence. Pointer presence creates no Action, reservation, takeover, or input ownership. The kernel clears stale pointers when an Actor disconnects, the viewport changes, the runtime is invalidated, or the Environment stops or fails. Consecutive pointer changes supersede one another in the bounded replay log while still advancing the event cursor. Motion therefore does not evict unrelated Room events, and clients that observed the prior cursor still receive a later change.
 
+Protocol v379 adds the Room browser bar. Ordinary Tabs' windows (every window without an App view) cover the desktop fullscreen by default, like App views, so the stream shows the same page the canonical viewport lays out for agents. Membership-scoped `SetRoomBrowserBar` (`{session_id, visible}`) shows the bar instead: those windows are maximized with Chromium's tab strip and address bar, and the bottom of a page taller than the remaining area is clipped for viewers (agents still see the canonical viewport). The session lane derives the human Actor; the change is refused while another Actor holds desktop input, like a viewport change. The snapshot carries `browser_bar_visible` (omitted while false), and a change emits `TabsChanged` (no new event kind, so existing clients' replay keeps working and refreshes the snapshot); the kernel passes the flag with every controller `browser.reconcile` (the worker `Reconcile` command's `browser_bar_visible`, omitted while false), so a restarted controller or a new window takes the current state. A worker controller older than the flag leaves windows as they are.
+
+Protocol v380 lets Apps place their agent panel. A manifest's `ui.agentPanel` (`{placement: right|bottom|none, size?}`, 120–1200 CSS px, `minKernelProtocol` ≥ 380) is the App's default; its page may ask for another through the bridge (`window.chariox.panel.set({placement, size?})` / `get()`, a `chariox.panel` view call the kernel answers with `{placement, minimized}`, never the App). Membership-scoped `SetAppViewPanel` (`{session_id, installation_id, placement?, minimized?, reset?}` → `AppViewPanelSet {installation_id, placement, minimized}`) records the user's choice for that App's views in the session; it wins over the App's, and `reset: true` first drops it, handing the panel back to the App. `EnvironmentAppPanel` carries `placement` (`right`/`bottom`) and `minimized` (a bar at the bottom); an App Tab with no panel has `app` without `panel`. The kernel sends each App page its CSS size beside the panel (`browser.app.open` `page`, `browser.app.layout {target_id, page}`); every change emits `TabsChanged`.
+
 Protocol v296 and relay peer protocol v32 add bounded Room Environment screenshot transfer for TUI clients. `CaptureRoomEnvironmentScreenshot` carries only the Room and attachment. The home kernel accepts local or remote clients, validates Room membership and attachment ownership, resolves the running bound slice, and asks that worker to capture the shared desktop. The worker independently validates the authenticated home kernel key and exact Room/slice provisioner binding. It stores the PNG as an operational-only artifact and returns only its opaque ID, SHA-256, size, media type, and safe display name. Worker paths never cross the relay and screenshot artifacts do not enter the archive outbox. `ReadRoomEnvironmentScreenshotChunk` repeats the caller, attachment, Room, slice, and artifact-scope checks for every offset and limits each response to 131072 bytes. Clients must enforce a total-size limit, require ordered nonempty chunks, verify the final SHA-256 and EOF position, and publish the file atomically on the client host.
 
 Protocol v298 and relay peer protocol v34 bind a browser secret fill to the exact document URL inspected before vault resolution. The worker controller rechecks that URL inside the same document-scoped operation that focuses and fills the opaque element reference; a same-document URL change and a target that cannot receive focus fail with distinct stable errors before secret insertion, and the secret is never sent through global keyboard input. Clients that do not invoke browser secret insertion need no new behavior, but home and worker kernels must use the same relay peer version.
@@ -796,6 +846,11 @@ Protocol v298 and relay peer protocol v34 bind a browser secret fill to the exac
 Protocol v299 and relay peer protocol v35 add the owning `document_index` to every browser DOM snapshot node. The home kernel uses this internal association to authorize a vault credential against the exact top-level or iframe document that owns the target element, while explicit `expected_url` and `expected_host` guards continue to describe the visible top-level page. Missing or invalid document metadata fails before vault resolution. The frame URL is passed back only as the action's document-bound insertion guard and is not added to MCP browser field projections. Secret paste accepts only an editable HTML password input. The kernel rejects an unmasked or non-editable field before vault resolution, and the controller rechecks the field inside the document-bound insertion operation both before and after focus handlers run.
 
 Protocol v300 and relay peer protocol v36 add approval-gated Computer credential input. A Computer credential must declare both `allowed_uses = ["computer"]` and `injection = { kind = "computer" }`. The home kernel validates that policy and obtains an explicit user confirmation before resolving the secret. A leased worker forwards only the credential handle and its authenticated active-run context to home through the existing credential-tool request; it must not resolve the Computer secret or admit an Action against its private provider session. Home admits the redacted Action against the authoritative Room and sends the one-operation secret through the existing encrypted Room controller command. The physical worker types the value from process stdin into the already-focused desktop control; it does not focus Chromium or use the clipboard. The tool result may expose the credential handle, actor, target, action ID, and outcome. Action history records the actor, target, lifecycle, and outcome without the credential handle or secret. Debug and helper output are also secret-free. Because X11 cannot universally prove that an arbitrary native control masks its contents, the confirmation explicitly requires the user to verify masking; Browser input continues to enforce the password-field invariant automatically. This correction reuses the existing v300/v36 serialized shapes and therefore requires no version bump.
+
+MP-08 / MP-11: local protocol v374 and relay peer v67 bind Computer credential approval to the native display target. The home queries `computer_secret_target` through the ordinary Room controller command and projects the window identity, native focused-control identity and geometry in one RuntimeInteraction. `SecretText.expected_target` is required; unbound input fails closed. Home rechecks after approval/unlock and rejects a changed Room generation. The worker checks the target before typing and between single-keystroke batches; an X server grab prevents another display client changing native focus between the check and delivery. A changed observable focus, window or geometry aborts with an actionable error. Already delivered keystrokes cannot be rolled back. Computer mode observes X11 native focus/geometry, not DOM field identity or masking within a shared native surface. User-confirmed masking remains the guarantee boundary; the prompt says that approving an unmasked field can expose the credential. Browser mode retains automatic expected-host and masked-field validation.
+
+MP-08 / MP-11: the worker excludes agent screenshot, OCR, text-from-frame and generic screenshot capability capture while Computer insertion executes. Capture already in progress settles before typing begins. Capture and insertion permits stay with the blocking helper through completion or cancellation, including dropped async callers. Human display transport remains available. The legacy raw Computer-secret resolution request is rejected in favor of home-owned Room insertion. These changes apply to ordinary and managed placement through the same kernel paths; client feature minimums are unchanged.
+
 
 Protocol v302 and relay peer protocol v37 complete the shared human Computer mouse and keyboard input surface. `SubmitRoomEnvironmentAction` adds `pointer_move`, `pointer_drag`, `pointer_scroll`, `keyboard_text`, and `keyboard_key` beside the v294 `pointer_click`. Every action uses the same authenticated human Actor, explicit desktop takeover, current runtime generation, canonical viewport revision, opaque idempotency key, Room Action ledger, and bound-worker controller route. Pointer coordinates are canonical desktop pixels and must remain inside the current desktop bounds. Drag identifies both endpoints and the left, middle, or right button. Scroll uses signed discrete wheel steps: negative horizontal means left, positive horizontal means right, negative vertical means up, and positive vertical means down. At least one axis must be nonzero and each axis is bounded to 120 steps per Action. Keyboard text is nonempty UTF-8 bounded to 64 KiB. Keyboard key input is a nonempty ASCII xdotool key or chord name, bounded to 128 bytes, with a repeat count from 1 through 32. Human Computer input targets whichever desktop application already owns focus; it never activates Chromium implicitly. Text and chord payloads travel to the worker helper over stdin and are redacted from Debug output. The durable Action record keeps only text byte/character counts or a key repeat count, never keyboard contents. The in-memory idempotency ledger compares a domain-separated HMAC of keyboard contents, keyed by the home kernel identity, so a reused key with different same-length input conflicts without exposing a guessable content digest. As with v294 clicks, physical input is at-most-once and has no replay command after an ambiguous delivery failure.
 
@@ -1350,6 +1405,10 @@ The canonical viewport carries:
 
 Clients submit viewport requests with the revision they observed. The kernel accepts one transition or rejects it as stale, unauthorized, unsupported, or unsafe. When the desktop already has an input owner, only that Actor may change the canonical viewport. An accepted response is complete only when browser layout, desktop resolution, streamer dimensions, screenshot coordinates, and input coordinates agree on the new revision.
 
+The managed Linux headed image uses Xorg dummy modes for physical resize. Its pinned H264 path supports even desktop-pixel dimensions from 64 through 4096 on each axis; unsupported physical sizes are refused before the canonical revision changes. CSS dimensions remain independent (for example, CSS width 393 can use an even physical width). The kernel verifies physical and capture/framebuffer geometry before committing the candidate revision; a failed apply restores the previous display without restarting Chrome. A failed rollback marks the Browser and Room degraded.
+
+This behavior requires the updated host kernel, compatible worker kernel, and managed Linux image together. Existing saved images using Xvfb retain their current physical size and allow CSS-only reconciliation through support overlays; physical-size changes are refused. They require the updated image for physical resizing. Generic local/Mac CDP and headless controllers do not require Linux display tooling. The explicit noVNC rollback backend verifies an existing RFB connection receives DesktopSize after resize; it does not rely only on a new viewer's initial geometry.
+
 Viewer-only scaling is local presentation state and does not change the canonical viewport.
 
 Pointer presence uses desktop-pixel coordinates from the canonical viewport. Each pointer carries one kernel-derived Actor ID and the viewport revision that makes its coordinates meaningful. Each Actor has one stable closed-enum presentation color derived from the Actor ID. Clients map that semantic color to their palette. They do not send CSS colors or choose another Actor's identity.
@@ -1522,7 +1581,8 @@ Workflow endpoint direction:
 Workflow trigger and deployment direction:
 
 - HTTP, schedule, and event-notification triggers created on the current kernel
-  remain attached to the editable source workflow and its source session
+  (an event-notification trigger is an `event_based` publication that App
+  automations target; protocol 365) remain attached to the editable source workflow and its source session
 - accepting a trigger invocation MUST enqueue it through the workflow endpoint's
   normal queue path; it MUST NOT create a hidden session, cloned agents, or a
   separate queue namespace
@@ -1542,8 +1602,9 @@ Workflow trigger and deployment direction:
   configured queue namespace
 - exporting or deploying a workflow is the boundary that captures an immutable
   package. A publication package contains `publication.json`,
-  `workflow.snapshot.json`, `requirements.json`, optional generated app assets,
-  and packaged scripts
+  `workflow.snapshot.json`, `requirements.json`, `apps.json` for a workflow
+  that uses Apps (protocol 366), optional generated app assets, and packaged
+  scripts
 - a packaged/self-hosted or Chariox-hosted deployment materializes its own
   kernel-owned session in the destination kernel. That deployed session is
   independent from the source session because it is a separate execution
@@ -1582,7 +1643,7 @@ Workflow trigger and deployment direction:
   and the complete distinct `runtime_keys` set. A kernel using retained publication
   control storage starts with autonomous work held. Restoring state or attaching
   a client does not activate it. The gateway validates this boot's
-  provider/credential/extension bindings, prepares every replica, installs event bindings and
+  provider/credential/extension bindings, prepares every replica and
   attaches, then requests activation. The kernel requires every enabled retained
   runtime to match a successful materialization by its owner in this process.
   `WorkflowPublicationRuntimeActivated` acknowledges that exact set. Invalid or
@@ -1657,10 +1718,837 @@ Workflow trigger and deployment direction:
   the bound home agent, leased agent, and worker provider run. Calls carrying a
   settled home prompt ID cannot message another agent. The local
   client shape is unchanged, so web and native minimum versions do not change.
+- protocol 344 adds the Claude `setup_token` value for `StartProviderLogin.method`.
+  The kernel runs the official `claude setup-token` command as a managed
+  terminal login whose `ProviderLoginStart.login_kind` is
+  `terminal_setup_token`. Its 40x1000 PTY output is rendered by a terminal
+  emulator. For this login kind, `terminal_output_base64` carries only the
+  rendered screen text plus kernel notes, never raw PTY bytes. Every `sk-ant-`
+  run is replaced with a marker. The kernel captures the token from the
+  rendered screen only when three conditions hold: it is a complete
+  `sk-ant-oat01-` token, more output follows it or the CLI has exited, and it
+  is the only distinct token on screen. It then verifies the token with a
+  no-model `claude -p /usage` call and stores it through the same vault path
+  as `provider setup-token`. Draining, input, cancel, and completion for one
+  login are serialized, and completion takes effect only from `running`. If
+  the encrypted Chariox Vault is locked, the workflow stays `running` and its
+  `interaction` becomes a secret vault-passphrase prompt. A new vault's
+  passphrase must be entered twice. The next `SendProviderLoginInput` is
+  consumed as that passphrase, not written to the exited provider CLI. A wrong
+  passphrase keeps the prompt open. The normal 10-minute workflow timeout and
+  cancellation drop the rendered screen and the captured token. A Claude
+  profile that is signed out natively but has a stored setup token keeps the
+  observation recorded at verification. The message shapes are unchanged. A
+  client that offers the method requires kernel 344. Older kernels reject it
+  through the normal enrollment-method validation.
 - relay peer protocol 57 requires a worker capable of supplying the originating
   turn for `chariox.send_agent_message`. A new home kernel rejects a v56 worker
   at peer binding before provider dispatch rather than failing on a missing
   tool field mid-turn. The local daemon shape and client minimums do not change.
+- relay peer protocol 69 (with local protocol 365) drops the workflow event
+  capability flags: `RemoteWorkflowTurnContext.event_context_enabled` /
+  `event_actions_enabled` and the leased provider run's
+  `workflow_event_actions_enabled`. A v69 peer reads the extra fields of an
+  older peer (v68 or below) and ignores them; an older peer cannot decode a
+  v69 provider run, so home and worker must both run v69.
+- protocol 288 adds `ListAppInstallations`, `GetAppInstallation` and
+  `GetAppInstallationJournal` on the same local/relay terminal path. The kernel
+  derives ownership from the authenticated caller; requests cannot name an owner
+  or host path. Local IPC uses the existing linked-user identity bridge, with the
+  local identity used for an unlinked kernel. Unverified relay callers cannot
+  inherit that local identity. Lists use an exclusive `after` installation ID
+  and a `limit` of 1–100 (default 50); journals retain at most 64 completed updates
+  plus the pending update. Generations are opaque decimal strings in client
+  projections. Approval handles, authority references and host paths remain
+  private. `AppRequestFailed` returns stable bounded error codes. These inspection
+  requests do not stage, approve, activate or execute an App; installed metadata
+  does not assert worker health or sandbox verification.
+- protocol 289 adds `BeginAppPackageUpload`, `PutAppPackageUploadChunk`,
+  `GetAppPackageUpload` and `AbortAppPackageUpload`. Every terminal uses the same
+  authenticated kernel path and opaque owner-bound upload handle; clients cannot
+  provide an owner, host path or expiry. Begin binds a client retry ID to an exact
+  size and SHA-256. Chunks are at most 512 KiB decoded and acknowledge only durable
+  offsets. Repeated begin/status/chunk requests consult the upload ledger rather
+  than the transport result cache. Abort retains its receipt until the original
+  30-minute expiry and cannot resurrect through a delayed begin retry. Package
+  bytes are omitted from command/audit payloads and Debug output. The
+  `AppPackageUploadStatus` response exposes bounded progress and phase, with
+  stable `AppRequestFailed` codes. Uploaded bytes are untrusted; this transport
+  does not enroll a publisher, approve capabilities, activate or run App code.
+- protocol 290 adds `app` to the existing agent extension grant/revoke and
+  serialized binding contracts. Its name is an installation ID; environment,
+  credential and max-safety overrides are invalid. A binding selects App tools
+  and does not cache permission or assert that a worker is running. Explicit
+  user grants and permitted agent self-grants use the same binding mutation;
+  agent requests use the existing Ask/YOLO policy and RuntimeInteraction path.
+  SDK 0.2 event declarations include a signed positive `schemaVersion` and
+  require a kernel protocol floor of 290. Occurrences include `occurredAtMs`
+  and, for scheduled bindings, `scheduleRevision`, preserved on retries. The
+  worker frame remains v1; the SDK payload and binding snapshots are versioned
+  together. These contracts do not yet assert App workflow delivery readiness.
+- protocol 294 pairs SDK 0.6 with the worker's bounded HTTP stream contract:
+  `http.open`, `http.write`, `http.headers`, `http.read` and `http.cancel`.
+  The worker frame remains v1. Stream IDs are opaque and scoped to one worker;
+  each operation rechecks the installation's current signed network authority
+  on the kernel writer. DNS resolution, peer-address checks and TLS happen in
+  the kernel. This slice supports anonymous HTTPS to declared origins/methods;
+  credentials and critical-operation receipts are not yet connected, so routes
+  requiring them return explicit errors. Neither redirects nor retries occur
+  implicitly. Buffered SDK requests compose the stream operations under one
+  original deadline and size bound. Cancellation and failed response publication
+  dispose of the exact stream; a lost body chunk cannot be silently retried.
+- protocol 297 adds `BeginAppPublisherEnrollment`, `GetAppPublisherEnrollment`
+  and `CancelAppPublisherEnrollment` with `AppPublisherEnrollmentStatus`.
+  Begin carries a public Ed25519 key, publisher/key identities, an exact decimal
+  expected revision and the session for human review. The transport derives the
+  owner; it cannot supply a trust decision or approval authority. Only the
+  kernel's private RuntimeInteraction challenge can enroll the key. Status
+  reports a historical approved revision, which later revocation may supersede.
+  Stable request IDs use the owner's durable ledger across local/relay/browser
+  requests; responses bypass the older caller-independent transport cache.
+- protocol 296 pairs SDK 0.7 with worker-global `fetch` and `chariox.http.fetch`.
+  Native Web value objects and body streams use the existing five kernel HTTP
+  operations; each redirect opens a newly authorized destination under the
+  original lifetime. The shared Fetch fixture pins response behavior and limits.
+  Raw HTTP and event wire fixtures retain their unchanged protocol-294 floor.
+- protocol 295 adds `BeginAppInstall`, `GetAppInstallOperation` and
+  `CancelAppInstallOperation` on the existing authenticated terminal path.
+  Begin durably binds a retry ID, session, opaque upload and package digest
+  before slow verification, returning operation status promptly. Retained kernel
+  work verifies the package against already enrolled trust and presents its
+  signed metadata/capabilities through the existing human interaction. The App
+  and terminal request cannot supply an owner, key enrollment, approval or host
+  path. Restart issues a fresh pending decision; it does not restore consent
+  from an unanswered interaction. Status preserves historical operation identity,
+  and cancellation fences preparation/activation on the same durable writer.
+  Generations remain opaque strings. (Information-set declarations were later
+  removed from the package contract.)
+- protocol 344 merges the Chariox Apps line (protocols 288-297 above, developed
+  on the Apps branch in parallel with main's 298-343) onto main. It adds no shape
+  beyond those two lines; clients depending on App requests require 344.
+- protocol 345 adds owner-scoped App worker control and automations on the
+  same local/relay terminal path. `GetAppWorker` and `ControlAppWorker`
+  (`start`/`stop`/`restart`) return `AppWorker` with a phase of `not_started`,
+  `starting`, `running`, `dormant` (idle-stopped; the next tool call, wake or
+  event starts it), `stopped` or `failed`, plus `enabled` (false after a user
+  stop, which on-demand use never overrides). `restart` is a user stop followed
+  by an explicit start; if that start fails the App stays stopped (`enabled`
+  false) until the next explicit `start`. `ListAppAutomations`,
+  `ConfigureAppAutomation` (expected revision zero creates) and
+  `DisableAppAutomation` return `AppAutomations`/`AppAutomation`; one automation
+  routes one App event to one workflow endpoint and queue, resolved under
+  workflow ownership. The kernel derives the owner; requests name only the
+  installation and cannot supply an owner, generation or host path. Automation
+  requests use the active release's verified catalog and need no running worker.
+- protocol 346 adds `OpenAppView {session_id, installation_id}`, which returns
+  `AppViewOpened {installation_id, target_id, origin}`. The view is a managed
+  Tab in the session's Room browser, so people and agents share one DOM and
+  profile. The kernel re-verifies the active release and serves only its signed
+  `ui/` files on a per-owner, per-installation `https://app.<label>.invalid`
+  origin through browser request interception. Each installation has a distinct
+  registrable domain beneath the reserved `.invalid` suffix: parent-domain
+  cookies and `document.domain` cannot cross installation boundaries. Upgrading
+  from the former shared parent origin closes legacy App Tabs; browser-local
+  storage from those origins is not migrated (kernel-owned App data is retained).
+  All other requests from the Tab
+  are blocked, a strict CSP applies, and popups are closed. The room-controller
+  relay command `app_view` (`open`, `calls`, `respond`) carries this between
+  the home and worker kernels. `window.chariox.call(tool, input)` runs the App's
+  own tool as the human owner through the same catalog validation and durable
+  path as agent tool calls; the kernel binds each call to the Tab's
+  installation, never to page-supplied identity. A view call runs as the view
+  owner whoever drives the Tab (a person or an agent in the shared Room): the
+  view is the owner's surface and there is no separate view privilege
+  (V-SDK-04); critical effects still require kernel human validation, which a
+  view click cannot supply. The App document's CSP includes
+  `sandbox allow-scripts allow-same-origin allow-forms` (no popups, top
+  navigation, downloads or modals), responses send `X-DNS-Prefetch-Control:
+  off`, and WebRTC constructors are removed before App code runs (an in-page
+  defense per document; a browser-level WebRTC policy is future work). Every new
+  controller CDP connection (whatever command caused it) drops the previous
+  connection's App Tabs and closes App-origin Tabs it does not own, before that
+  command lists any Tab (a slice restart's restored App windows are closed
+  before the Room start's reconcile, and one still closing drops out of it
+  instead of failing it). Each poll
+  reports the controller's open App targets; the kernel drops bindings for
+  closed Tabs registered before that poll and stops polling when none remain.
+  Each call also names the Tab's document (its top-level CDP loader) and each
+  poll reports every open Tab's current document: a call whose Tab closed,
+  reloaded or navigated is cancelled (the worker gets `cancel` and the call's
+  slot is freed), and the controller answers a call only in the document that
+  made it. These fields are optional; an older controller's calls end only with
+  their Tab. UI files are limited to 2 MiB per view.
+- protocol 347 adds `UninstallApp {installation_id, expected_generation}`,
+  returning `AppInstallation` with no active release. A stale
+  `expected_generation` returns `conflict` before any side effect. Otherwise the
+  kernel records a user stop, withdraws the dormant catalog, then deactivates the
+  installation at that generation, fencing all prior generations; an update
+  committed in between returns `conflict` and leaves the App user-stopped. Open
+  App views stay on screen but are unbound, so their calls fail. App data, user
+  workflows and agents are retained; wakes and events of the inactive
+  installation are refused by the normal start gate. The installation keeps
+  the release its data belongs to; its automations are disabled and its inbox
+  routes and connection grants removed. `BeginAppUpdate` on such an
+  installation, at its current generation, is a reinstall into the kept data:
+  the same publisher only, no data-schema downgrade, and always a new approval
+  ("Reinstall App"), even for unchanged capabilities. Nothing removed at
+  uninstall comes back; the owner adds automations, routes and grants again.
+- protocol 348 adds `GetAppLogs {installation_id, after_sequence?, limit?}`,
+  returning `AppLogs {installation_id, entries}` oldest first (at most 200 per
+  page). Entries come from the SDK's `log.write` (level `debug|info|warn|error`,
+  message up to 4 KiB of UTF-8, object fields up to 8 KiB), stored per owner and
+  installation with the last 1000 kept and 50 writes per second per worker.
+  They are App-authored data: never written to the kernel log, and clients
+  display control characters escaped.
+- protocol 349 adds `BeginAppUpdate {session_id, request_id, installation_id,
+  expected_generation, upload_handle, expected_package_digest}`, a local
+  replacement of the caller's installation with a newly uploaded release of the
+  same App and publisher. It returns `AppInstallOperationStatus` and then uses
+  the install operation requests. A release that declares exactly the active
+  release's capabilities is approved by kernel policy; any capability change
+  asks the owner ("Update App"), and declining keeps the old release.
+  A stale generation or another unfinished install/update of the installation
+  is refused. The current implementation supports structured-state schema
+  migrations: after approval it fences admission and snapshots the installation's
+  structured state, drains the old worker (not a user stop), and runs the staged
+  worker's migration steps before its health check. Commit requires the target
+  schema and a successful health check. A failure before commit restores the
+  structured-state snapshot and leaves the old generation active; interrupted
+  migration retries rewind to that snapshot before running the steps again.
+  The old generation restarts on use. App data is kept. The new
+  generation must run to pass its health check, so an App the user had
+  stopped is running after a committed update. Views opened
+  on the old generation answer `APP_VIEW_STALE` until reopened. A tool call
+  that meets the update fails with `APP_UPDATING`: one in flight when the old
+  worker is drained (the App may have acted), or one that finds no worker
+  while the approved update is under way. A call whose worker was stopped at
+  its memory limit fails with `APP_MEMORY_LIMIT`.
+- protocol 350: opening an App view foregrounds the App in its session and
+  binds it to the session's focus agent with the same `ExtensionGrant::App` an
+  explicit grant or an agent's self-grant creates (a direct user action, so no
+  separate approval, under YOLO or Ask). `AppViewOpened` gains
+  `bound_agent_id` (null with no focus agent or when the opener does not own
+  the App). A later focus change binds the new focus agent too; bindings are
+  additive grants. Uninstall revokes the App's grants from every agent, which
+  refreshes their runtime tool catalogs.
+- protocol 351: App view Tabs carry `app` in the Room snapshot
+  (`{installation_id, panel?}`; absent on every other Tab). An App view opens
+  in its own fullscreen browser window. Every App view has the private
+  conversation panel: `app.panel` is a strip at the right of the desktop
+  (380 CSS px, at most a third of the canonical width, full height) in desktop
+  pixels, plus the session's focus `agent_id`. The App page lays out in the
+  rest (the controller narrows its viewport) and has no panel API; the trusted
+  terminal draws the focus agent's conversation in the strip, outside the
+  App's page. A focus change updates every App Tab's `agent_id` at once, and a
+  viewport change moves the panel; each change emits `TabsChanged`. While the
+  slice's Room browser controller does not lay App pages out beside the strip
+  (a controller that predates the automatic panel, or a viewport too narrow
+  for it), App Tabs keep `installation_id` and have no `panel`. (Before this,
+  the page reserved the area with `window.chariox.panel.reserve`.)
+- protocol 352: `CreateAgentWorkflow {session_id, agent_id, reason:
+  trigger|deploy, surface: web|tui|cli, alias?}` creates a visible workflow
+  for one of the caller's own agents when it gets a trigger or deployment:
+  one node for that agent and one entry endpoint (`AgentWorkflowCreated
+  {workflow, endpoint, session}`); the client then completes the trigger or
+  deployment setup on that endpoint. `WorkflowDefinition.origin
+  {source_agent_id, reason, surface, created_at_ms}` records why it exists;
+  the alias (default `<agent>-<reason>`) is ordinary and editable. Binding Apps
+  or Extensions to an agent never creates a workflow. Metaagents cannot use it.
+- protocol 353: the installation inbox. `CreateAppInboxRoute {installation_id,
+  route_id, event_name, source_event_type, source_event_version}` routes one
+  external event type to an App's signed `incoming` (or `both`) event;
+  `RemoveAppInboxRoute {installation_id, route_id}` and `ListAppInboxRoutes
+  {installation_id}` answer `AppInboxRoutes {installation_id, routes}`, each
+  with `pending`, `delivered`, `failed` and `expired` occurrence counts. A
+  route grants the App nothing else. Removing a route stops new acceptance;
+  already accepted occurrences retain their original event and installation
+  for delivery, and their receipts retain the normal dedupe window even if
+  the route name is reused. The dedupe scope is `(owner_id, installation_id,
+  route_id, occurrence_id)`, regardless of changes to the generator,
+  connection or source event type/version. Within the retention window,
+  reusing that scope with the same payload is a duplicate; a different
+  payload is a conflict, refused and acknowledged by generator delivery.
+  Use a new `route_id` for a different source whose occurrence ids may overlap.
+  `ListAppInboxRoutes` lists only existing routes, so removal hides the retained
+  occurrences' counts. Reusing the name includes that name's retained pending,
+  delivered, failed and expired counts, even if its source changed. Uninstall
+  still clears the installation inbox. An occurrence is validated against the
+  active release's signed schema and recorded (deduplicated by route and
+  source occurrence) before the source is acknowledged; the kernel then sends
+  `events.deliver {name, occurrence_id, payload}` at least once, starting a
+  stopped worker on demand. A handler error retries with backoff and fails
+  (poison) after 8 attempts; an update or start waits without spending one;
+  unsettled occurrences expire after 7 days; payloads are dropped when
+  settled. The dedupe window is 14 days from acceptance: a replay within it is
+  answered as a duplicate, and settled occurrences older than it are pruned
+  (by the kernel's delivery pass, also for an idle or uninstalled App), so the
+  `delivered`, `failed` and `expired` counts cover about the last 14 days.
+  `TestAppInboxRoute {installation_id, route_id, occurrence_id,
+  payload}` accepts one occurrence as a source would (`AppInboxOccurrenceAccepted
+  {installation_id, route_id, occurrence_id, duplicate}`). Event
+  generator subscriptions for routes follow with the packaged Slack App.
+- protocol 354: user-selected external file grants. An App whose signed
+  manifest declares `capabilities.externalFiles: ["user_selected"]` calls
+  `host.pick_file`, which returns a pending reference. The kernel shows the
+  App's owner a trusted kernel-operation prompt (id `app_file_pick_<operation>`,
+  subject `file_pick:<operation>`) in their most recent session. Its only
+  choice is Decline. The owner answers from a terminal with `GrantAppFile
+  {session_id, operation_id, files: [{name, contents_base64}]}` (at most 8
+  files, 512 KiB together so an answer fits one relayed request; final name
+  components only,
+  matching the App's accepted suffixes), which answers `AppFileGranted {operation_id, files}` and
+  closes the prompt. Only the owner can answer; App code, views and agents
+  cannot. Grants are private copies that the App imports once with
+  `files.import`. They expire after 30 minutes, or when the App updates.
+- protocol 355: `SaveAppFileExport {session_id, operation_id}` takes a copy of
+  a file an App offered with `files.export`. The offer is shown to the owner
+  as a kernel prompt with subject `file_export:<operation>` and a Decline
+  choice. The reply is `AppFileExport {operation_id, name, contents_base64}`,
+  released to the owner only. The prompt closes after the first save, but the
+  owner may take the offer again until it ends, so a failed or cancelled local
+  save can be retried: a client keeps `operation_id` and tells the owner how
+  (both terminals show `/app file save OPERATION`). An offer ends when it
+  expires or when the App that made it is updated or uninstalled. The name is
+  a final name component with no control or invisible format characters. The
+  terminal chooses where to save it (a browser download, or
+  `/app file save OPERATION "PATH"`, which never overwrites a file).
+- protocol 356: App view reconnection. A call from an open App view built for
+  an older generation, or from a view the kernel lost track of (for example
+  after a kernel restart; only the session host's own active installation),
+  is answered `APP_VIEW_RELOADING`. The kernel then binds the Tab to the
+  current generation and sends the room controller's `app_view` command
+  `{op: "reload", target_id, entry, assets}`. That command serves the Tab the
+  current generation's signed view assets and reloads it in place (same Tab,
+  window and panel). An App can keep drafts across the reload in its own web
+  storage. After a restart, the kernel polls every Room bound to a slice once,
+  so leftover views reconnect instead of hanging.
+- protocol 357: Tab accessibility outline. `GetRoomEnvironmentTabAccessibility
+  {session_id, tab_id}` returns `RoomEnvironmentTabAccessibility
+  {session_id, tab_id, document_revision, nodes, truncated}` for any Room
+  member. `nodes` is the Tab's accessibility tree in document order
+  (`element_ref`, `parent_ref`, `role`, `name`, and when set `value`,
+  `description`, `disabled`, `focused`, and `states`: what a reader announces
+  about the control, among `checked`, `not checked`, `mixed`, `pressed`,
+  `not pressed`, `expanded`, `collapsed`, `selected`, `required`, `invalid`),
+  bounded to 2000 (`truncated` is also set when the controller cut its
+  snapshot at its own 5000-node bound, which cuts the deepest nodes first).
+  The Room browser controller's snapshot nodes gain the same `states`, and
+  the snapshot gains `accessibility_truncated` for that cut (both absent from
+  older controllers, whose full 5000-node snapshot counts as cut). It holds
+  what a reader announces: ignored nodes, inline text boxes, unnamed layout
+  wrappers and text its parent's name already says (an aria-labelled button's
+  text) are left out, and their children hang from the nearest kept ancestor.
+  Nodes are in document order (depth first over the Tab's accessibility
+  tree), so each follows its parent and hoisted text keeps its place.
+  Terminals present it so App views and other pages can be read with a screen
+  reader or keyboard; it grants no input.
+- One App Tab (no shape change, with this release's kernel and controller):
+  a Room holds one Tab per installation. `OpenAppView` again (from another
+  terminal, or after a kernel restart) returns the same `target_id`, shows
+  that Tab and navigates it again with the current assets. A view's first
+  call after it loads re-projects the Room, so the Tab shows the App's title
+  and URL. Bridge call ids are unique per document, so an answer meant for
+  the previous document never resolves a call in the new one.
+- protocol 358: App inbox routes fed by event generator connections.
+  `CreateAppInboxRoute` takes an optional `connection {generator_id,
+  connection_id, connection_scope, filter?}`: the owner's connection at an
+  event generator (AEGS). The kernel checks the connection with that
+  generator before it stores the route, then subscribes to
+  `source_event_type` at the generator and
+  claims the route at the event delivery service (AEDS) under an opaque
+  `app-route-...` binding id that names no owner or App. A delivery for it is
+  validated against the App's signed incoming schema and recorded in the
+  inbox before AEDS is acknowledged; one that can never land (the route was
+  removed, a different event type, a payload the schema refuses, or other
+  content under an accepted occurrence id) is logged and acknowledged. The App
+  receives `{source: {generator_id, connection_id, event_type,
+  event_type_version}, occurred_at, text, metadata, artifacts, reply_context}`
+  as the event payload, deduplicated by the source occurrence id.
+  `AppInboxRouteSummary` shows the `connection`. The route grants the App no
+  use of the connection beyond receiving these occurrences.
+- protocol 359: App connection grants. `GrantAppConnection {installation_id,
+  generator_id, connection_id}`, `RevokeAppConnection {installation_id,
+  connection_id}` and `ListAppConnections {installation_id}` answer
+  `AppConnections {installation_id, connections: [{generator_id,
+  connection_id, granted_at_ms, actions}]}`. Only the owner can grant; the
+  kernel checks the connection with its generator, and the App's signed
+  manifest must declare that generator under `capabilities.connections
+  [{generator, actions}]` (shown in the install approval). The App then calls
+  `connections.list` and `connections.action` (see the App SDK wire contract):
+  the kernel runs a declared action through the generator's reviewed action
+  endpoint as the owner's pseudonymous event owner, with an idempotency key
+  scoped to the installation. The App never holds the provider credential;
+  anything else is refused (`CONNECTION_NOT_GRANTED`, `CAPABILITY_REQUIRED`).
+  An action whose request may have reached the generator without a definite
+  answer (no reply, or a 5xx from the generator or a gateway in front of it)
+  fails with `APP_CONNECTION_OUTCOME_UNCERTAIN`. The kernel never replays it,
+  and it is retryable only when the App supplied its own `idempotencyKey`.
+- protocol 360 (retired in 365): an event binding moves to an App. `MoveEventBindingToApp
+  {session_id, binding_id, installation_id, route_id, event_name,
+  automation?: {automation_id, event_name}}` turns a workflow event binding in
+  the kernel's event environment into an App inbox route on the same
+  connection, scope, filter and event type (checked with the generator as
+  `CreateAppInboxRoute` is). Under the event interest lock the binding is
+  paused first, so the event service never routes its events twice; then the
+  optional App automation sends the App's outgoing event to the binding's
+  publication and queue, the route is created, and a binding with actions
+  becomes a connection grant when the App's manifest declares that generator.
+  Any refusal undoes the earlier steps, reactivates the binding and answers
+  `AppRequestFailed`; success answers `EventBindingMovedToApp {binding_id,
+  installation_id, route, connection?, automation?}`. The paused binding is
+  kept for the owner to remove once the App serves its events.
+- protocol 361: App sets. `GetAppSet {}` answers `AppSet {schema:
+  "chariox.app-set.v1", installations: [{installation_id, app_id, release,
+  capabilities, automations, inbox_routes, connections}]}`: the caller's
+  active installations with the release, the signed capabilities they approved
+  and their configuration, read through the same owner-scoped requests. It is
+  the versioned description a kernel copy installs from (Phase 2); App data is
+  never part of it. It fails closed: an installation that cannot be read
+  completely, or whose release changes while the set is read, fails the whole
+  request with its App error code, so a copy never pairs a release with
+  another release's capabilities. Configuration (automations, inbox routes,
+  connections) is read as it stands at that moment; an owner edit made during
+  the read may or may not be included.
+- protocol 362: resource filters. An event generator resource may carry
+  `filter`, the event filter that narrows an App inbox route to it when other
+  resources share its `connection_scope` (Slack channels share their
+  workspace's scope and carry `{"event.channel": id}`). Clients merge it into
+  the route's filter; no client special-cases a generator.
+- protocol 363: App data deletion. `UninstallApp` gains `delete_data` (omitted
+  when false): the kernel also deletes the App's structured state, wakes,
+  logs and file handoffs and the release it kept, so the installation can no
+  longer be reinstalled into. Where a platform gives Apps private storage, the
+  supervisor deletes it first (the macOS worker's storage: #496 and its kernel
+  wiring; Linux: the storage helper, #497). `UninstallApp` on an already uninstalled
+  installation, at its current generation, deletes its kept data the same way,
+  which also finishes a deletion interrupted after the uninstall. App
+  installation summaries gain `data_kept`: uninstalled, with data an update
+  can reinstall into. Linux App storage is root-owned: the storage helper's
+  `delete` request (a new helper operation) removes it; an installation still
+  leased is busy.
+- protocol 364: the workflow event reply surface is removed; replies go
+  through an App's granted connection (protocol 359). `CreateWorkflowEventBinding`,
+  workflow event bindings and publication `event-bindings` templates drop
+  `reply_mode`; `RemoteWorkflowTurnContext` drops `event_reply_enabled`; the
+  `reply_to_event` runtime tool is gone. Workflows cannot post
+  `notification.reply`: creating a binding that enables it is refused, and
+  `event_action` refuses it for bindings persisted before 364. Older peers,
+  persisted bindings and publication `event-bindings` documents that still
+  carry the removed fields are read with them ignored.
+- protocol 365: direct workflow event bindings are retired. Events reach
+  workflows only through Apps: an App inbox route (protocol 358) receives the
+  generator's events, and an App automation sends the App's outgoing event to
+  an `event_based` publication. `CreateWorkflowEventBinding`,
+  `ListWorkflowEventBindings`, `SetWorkflowEventBindingStatus`,
+  `TransferWorkflowEventBinding`, `TestWorkflowEventBinding` and
+  `MoveEventBindingToApp` are removed with their responses, as are the
+  `event_context` and `event_action` runtime tools (they served direct-binding
+  runs only) and `RemoteWorkflowTurnContext.event_context_enabled` /
+  `event_actions_enabled`. `ListEventConnectionDependencies` answers
+  `EventConnectionDependency {installation_id, route_id?, active}`: the App
+  inbox routes (`route_id`) and App connection grants (no `route_id`) that use
+  the connection; `EventConnection.attached_trigger_count` counts the active
+  ones, and `RemoveEventConnection` (with `confirm`) is refused while any
+  remains. `EventConnectionRemoved` loses `deactivated_bindings`.
+  `EventDeliveryStatus.active_route_count` counts active App routes. The kernel
+  claims only App routes at the event service and resumes only its default
+  environment; a delivery for any other binding id is logged and acknowledged,
+  never retried. Exported publication packages no longer carry
+  `event_bindings_path` or `event-bindings.example.json`; a server reading an
+  older package ignores both. Sessions and durable workflow state written by an
+  older kernel load with their bindings ignored; peers that still send the
+  removed turn-context fields are read with them ignored (relay peer
+  protocol 69).
+- protocol 366: a workflow publication carries its App plan. The first
+  successful `ExportWorkflowPublicationPackage` by the publication's owner (the
+  deployment preparation) pins `WorkflowPublicationDefinition.apps`
+  (`chariox.publication-apps.v1`): each App granted to an agent of the
+  publication snapshot or feeding the publication through an active App
+  automation, with its source installation, app id, release version, publisher
+  id, key id and key fingerprint, package digest, data schema version and
+  approved capabilities digest, its grants by agent (`agent_id`, `node_ids`),
+  the automations targeting this publication, its active inbox routes (route,
+  event, source event type/version, generator connection) and its connection
+  grants. It names generator connections but carries no App data and no
+  secret. A pinned plan never changes, so later exports — including the
+  deployment bind's digest check — do not follow App updates. The package of
+  an App-bound workflow adds `apps.json` (the plan) and the deployment contract
+  `capabilities.apps` (its `apps`); an App granted to an agent but not
+  installed fails the preparation, and an App-bound publication (an App granted
+  or an App automation feeding it) without a plan (never prepared by its
+  owner) fails the export; a failed export pins nothing. `requirements.json`
+  follows the publication snapshot's agents instead of the source agents'
+  current grants, and App grants are no longer refused there.
+- protocol 367: `PrepareDeploymentApps {session_id, request_id,
+  publication_ref, deployment_id, release_id, package_digest}` asks the
+  publication's owner once, in one kernel-operation interaction of the
+  publication's session, to deploy the workflow together with the Apps of its
+  pinned App plan: it lists each App release (app, version, publisher, key
+  fingerprint, signed capabilities) and each generator connection the copy
+  will use. Each pinned release is re-read from the local release store and
+  re-verified against the owner's current publisher trust first; a changed
+  signer or capabilities digest fails with `Conflict`. It answers
+  `DeploymentAppsConsent {consent: {request_id, interaction_id, deployment_id,
+  release_id, package_digest, status, expires_at_ms}}` with `status`
+  `awaiting_approval`, `approved`, `declined` or `expired` (the owner has five
+  minutes to answer, and an approval approves installs for five minutes after
+  it, then reports `expired`); the same `request_id` replays the record and
+  reports the answer, other facts under it are a `Conflict`, and a new
+  `request_id` asks again.
+  The answer is recorded durably by the kernel; no request can supply an
+  approval. A deployment copy's install (from the local release store, tagged
+  with its deployment) is approved by the `kernel_deployment_consent:<interaction>`
+  policy only for a release in an approved consent — same app, publisher, key
+  fingerprint, package and capabilities digests — whose capabilities digest
+  the owner approved interactively before (`kernel_operation_human`); anything
+  else asks the owner as for any install. Copy installations are absent from
+  `ListAppInstallations` (its page query excludes them) and carry
+  `AppSetInstallation.deployment_id` in the App set. `PreviewDeploymentApps {session_id, publication_ref}` is read-only
+  and needs no export: it answers `DeploymentAppsPreview {publication_id,
+  pinned, plan}` with the pinned plan (`pinned: true`) or else the plan the
+  owner's current App set gives, each App with its signed `capabilities`
+  (the pinned releases' are re-read from the release store and re-verified);
+  `plan` is `null` when the workflow uses no App. Only the publication's owner
+  may preview.
+- protocol 394: owner-side revoke of App file grants. `RevokeAppFileGrants
+  {installation_id, operation_id?}` ends the caller's open file requests
+  (`host.pick_file`, protocol 354) of that installation, or only the one named.
+  An unanswered request's prompt closes; granted files the App has not
+  imported are dropped, including one an import holds at that moment (an
+  import that is already publishing still lands). The App reads the request as
+  `expired`, and `files.import` of its grants fails `NOT_FOUND`; files it
+  already imported stay in its private data. It answers `AppFileGrantsRevoked
+  {installation_id, requests, files}`: the requests it ended and the unimported
+  files it dropped. An `operation_id` that is not this installation's is
+  `NotFound`; one that already ended ends nothing. Terminals: `/app file
+  revoke INSTALLATION [OPERATION]`.
+- protocol 397: agent substitutes are per-turn only. When a provider fails a
+  turn — an error result, a structured error code (Codex `codexErrorInfo`,
+  Claude `StopFailure`, OpenCode session errors), the provider process exiting
+  mid-turn, or a provider timeout the kernel detects — the kernel reruns that
+  same turn, as the same active prompt, on the agent's next configured
+  substitute in order, and on the one after it if that also fails. A user
+  cancel is not a provider failure, and a turn that completes is never rerun
+  whatever its text says. Each rerun records a notice naming the cause, for
+  example `This turn runs on claude-opus-5-5 because gpt-6.1-sol failed: model
+  at capacity (server_overloaded).`; when no substitute is left the turn fails
+  with its provider error. The substitute's provider run serves only that turn:
+  the next turn starts on the agent's configured profile, and the agent's
+  profile never changes. `AgentSubstituteAction` loses `Activate` and
+  `Primary`; `AgentInstance` loses `primary_provider`, `primary_model`,
+  `primary_effort`, `primary_account_profile`, `active_substitute_index` and
+  `last_substitution`. An agent persisted on a substitute by an older kernel
+  loads on its primary profile. Remote (leased) agents are not rerun on a
+  substitute.
+- protocol 407 adds `quarantined` to `AppWorker.phase` on the same local/relay
+  path. A failed worker exhausting the supervisor restart limit (four consecutive
+  failures) reports `quarantined`; failures one through three remain `failed`
+  during restart backoff. The original `failure` diagnostic is retained, and
+  `enabled` still means the user has not stopped the worker. Recovery requires
+  the existing `ControlAppWorker` action `start`, which clears the failure count.
+  Clients display "quarantined · explicit start required" and offer this action.
+  The focused quarantine relay test covers the status boundary, durable
+  explicit-start admission reset, and an unaffected neighbouring App; it does
+  not dispatch the client-facing start request. Clients requiring this distinction
+  depend on protocol 407; other web/native minimums need not change.
+- App-bound local deployments (P1.20, no request or response shape change): a
+  bound `local_runtime` deployment of a publication with a pinned App plan
+  runs as a pinned independent copy on the owner's kernel, not in the source
+  session. Starting it (`BindWorkflowPublicationDeployment`, recovery, a
+  runtime restart) first verifies the package digest, then requires the
+  owner's approved `PrepareDeploymentApps` consent for exactly that deployment,
+  release and package digest (otherwise the bind fails), and then, idempotently:
+  materializes a hidden session with runtime key
+  `deployment:<deployment_id>:<release_id>` that keeps the publication's kind
+  (an `event_based` trigger stays event-based); installs each pinned release as
+  the deployment's own copy through the consent policy above (one install
+  request per deployment, release and App; a copy of another release of the
+  same data schema version is updated in place, a different schema version
+  fails closed; an install that needs the owner's answer, fails or does not
+  finish in two minutes fails the bind with the reason); moves the copy
+  agents' App grants from the source installations to the copies;
+  configures the plan's automations on the copies targeting the copy's
+  publication, endpoint and queue; grants the copies the plan's generator
+  connections (same owner and kernel: no new sign-in, no generator change);
+  and recreates the plan's inbox routes on the same connections with the
+  filters of the owner's routes. Handover: while a copy's route is active the
+  owner's own route on the same event interest is paused (it accepts no
+  occurrence, and its subscription claim is sent `active: false`); it resumes
+  when no copy route claims that interest. Copies, routes, automations and
+  grants the release no longer names are removed; the hidden sessions of the
+  deployment's other releases are deleted, so binding a previous release
+  (rollback) re-applies that release's plan; this is fail-closed, so a rollback
+  that cannot apply leaves no copy running for either release. When applying
+  the copy fails, the copy's routes are removed so the owner's routes resume.
+  Every install request retries from the latest one it made: a spent request
+  (failed, cancelled, or whose copy a `Stop` removed) moves on to the next, so
+  a deployment can be stopped and started any number of times. Each App's
+  install is awaited in turn inside the bind, so a bind of many new Apps can
+  outlast a client's timeout; recovery completes it. `chariox serve source` then runs
+  against the copy session; the source publication keeps the binding and
+  records `deployment.app_copy_session_id`, and the copy's publication carries
+  the same binding so its endpoint registration uses the deployment's stable
+  tunnel. Recovery skips copy publications and re-applies the copy from the
+  source. `ControlWorkflowPublicationRuntime` `Stop` of such a deployment
+  uninstalls its copies with their data (and so their routes, automations and
+  connection grants), resumes the owner's routes and deletes the copy
+  sessions. The kernel also removes, on its runtime reconcile, the copies whose
+  source publication was deleted (with its session), disabled, marked stopped
+  or bound to another deployment; the owner's routes resume. Events an
+  automation accepted but could not deliver are recorded in the App's log.
+  App data is never copied from the owner's installations.
+- protocol 377: App plans are per release, not pinned per publication. Every
+  successful `ExportWorkflowPublicationPackage` by the owner (a new deployment
+  release) reads the owner's current App set and packages that plan; the
+  kernel records it by the export's package digest in
+  `WorkflowPublicationDefinition.release_app_plans` (`{package_digest, plan}`,
+  newest last, the last 16 kept) and `apps` is the latest plan. A granted App
+  that is no longer installed fails the export. The deployment bind, recovery
+  and a rollback (binding an earlier release) re-export with that release's
+  recorded plan, so the package digest still verifies and each release runs
+  with the App versions it was exported with; an App-bound release whose plan
+  is not recorded fails the bind (a publication prepared before 377 keeps its
+  single plan for all releases). A copy is updated in place to the release's
+  App release; a newer data schema migrates the copy's data as any App update
+  does, and a release with an older schema than the copy fails closed.
+  `PrepareDeploymentApps` consents to the plan of exactly the requested
+  package digest (unknown: `InvalidRequest`); when the owner already approved
+  this deployment with exactly the same App releases (app, publisher, key
+  fingerprint, package and capabilities digests) the consent is recorded
+  approved without a prompt, and its install window starts then.
+  `PreviewDeploymentApps` answers the plan the next release would package (the
+  owner's current App set; `pinned` now means a release was prepared) and,
+  with the new optional `package_digest`, that release's recorded plan as
+  `release_plan`, each App with its stored release's capabilities.
+  The deployment contract's `compatibility.minimum_local_daemon_protocol_version`
+  is now the package format's protocol (367), not the exporting kernel's: the
+  bind and recovery re-export a bound release and compare digests, so a kernel
+  protocol bump must not change existing packages. It is raised only when a
+  package needs a newer kernel to run. A release exported before 377 keeps the
+  publication's single pre-377 plan after later releases record their own; a
+  377 release whose plan was pruned (more than 16 releases ago) has none, so
+  its bind fails with "no App plan recorded" and `PrepareDeploymentApps` and
+  `PreviewDeploymentApps` refuse it. A publication that had Apps and uses none
+  now (its last grant or feeding automation removed) packages and records an
+  explicit empty plan (`apps: []`) for its next release, never the previous
+  release's; a release whose plan names no App binds and runs from the source,
+  with no copy and no Apps consent: `PrepareDeploymentApps` answers it `approved` at once, without a prompt or a stored consent. A release exported before the publication used any App (no plan recorded while later releases record theirs) is treated the same way.
+- protocol 378: every successful owner `ExportWorkflowPublicationPackage`
+  also records the release's inputs digest in
+  `WorkflowPublicationDefinition.release_inputs` (`{package_digest,
+  inputs_digest}`, newest last, the last 64 and the bound release's kept):
+  the package digest of its files without the kernel's templates (`.env.example`,
+  `run.sh`, `README.md`, `public/index.html`, `public/app.js`,
+  `public/styles.css`), with `deployment-contract.json` counted without the
+  fields a kernel upgrade changes (`package_id`, `artifact.content_digest`,
+  `compatibility.minimum_kernel_version` and the template entries of
+  `presentation.assets`). A kernel change to how the rest of the contract is
+  derived (routes, credential slots, capabilities) still fails the bind of an
+  existing release, which must then be rebound. The deployment bind and
+  recovery verify a release with a recorded inputs digest by re-exporting it and
+  comparing inputs digests, so a kernel upgrade that changes those templates
+  (for example the contract's `minimum_kernel_version`) keeps its deployments
+  bound; any change to the workflow's own files still fails the bind. A release
+  without a record (exported before 378, or pruned) is verified by its whole
+  package digest, as before.
+- protocol 381: `AppInstallOperationStatus` phase `queued`. An install or
+  update the owner (or kernel policy) approved stays `queued` until the kernel
+  claims its start, usually while it waits for a free App worker slot (at most
+  four Apps run at once); it is `starting` from the claim until it commits.
+  Earlier kernels reported this wait as `awaiting_approval`, then as
+  `starting`. Clients treat `queued` like any unfinished phase.
+- protocol 392: critical approvals need the Chariox passkey (the encrypted
+  vault's passphrase). A `RuntimeInteractionChoice` may carry
+  `requires_passkey: true` (absent means false); only kernel-operation
+  decisions set it (today the approve choice of an App's critical-action
+  validation), and an agent's interaction that sets it is refused.
+  `RespondToInteraction` gains optional `passkey` (a string, redacted in
+  command projections, never logged or stored) and `passkey_remember_minutes`
+  (1 to 15). Answering such a choice needs a passkey the kernel verifies
+  against a pinned commitment to the vault key (the KDF parameters and a hash
+  of the derived key, kept durably and taken from the vault the boot
+  configuration names when the kernel first unlocks it or first sees a
+  passkey that opens it; a later vault path or file change never moves it,
+  only a passphrase change does, see below; the vault's unlock state is
+  unchanged), or an open remember window: a verified passkey with `passkey_remember_minutes` accepts
+  the owner's critical approvals without it for that long, in kernel memory
+  only, independent of the vault's own unlock window. Otherwise the answer is
+  refused with `PASSKEY_REQUIRED`; a wrong passkey with `PASSKEY_REJECTED`;
+  after five consecutive wrong passkeys the owner's attempts are refused with
+  `PASSKEY_RATE_LIMITED` for 30 seconds, doubling per further failure up to
+  15 minutes. Without the encrypted Chariox vault the approval fails closed
+  (`PASSKEY_UNAVAILABLE`). Denying needs no passkey, and a passkey sent for any
+  other choice is ignored. Each check appends a durable
+  `critical_approval.passkey` event (outcome only). `/credential vault
+  manage` offers Change passphrase (`ManageCredentialVault` answers with
+  action `passphrase_changed`; no request or response shape changes): three
+  secret prompts take the current passphrase and the new one twice. For the
+  boot vault this rotates the passkey: the current passphrase must verify
+  against the pin, under the same limit; the pin moves with the re-keyed
+  vault file through a durable `critical_approval.passkey_verifier_move`
+  record that a restart settles from the file, so the two never disagree;
+  every remember window ends; and a `critical_approval.passkey_rotation`
+  event records the outcome only. Clients prompt for the
+  passkey with hidden input only for a `requires_passkey` choice; to a remote
+  kernel it travels inside the end-to-end encrypted relay request.
+- protocol 344 and relay peer protocol 58 add `room_browser_available` to the
+  home-authored remote extension manifest. The field defaults to false and is
+  omitted when false. It advertises the Room's shared browser independently of
+  the leased agent's execution placement. It does not grant authority: home
+  validates current Room membership, worker/run binding, and Environment
+  binding on every forwarded browser call. Client minimums remain unchanged.
+  Successful Environment binding and deletion enqueue manifest refreshes for
+  agents already leased in the Room, without waiting for another prompt.
+  Refreshes share the leased-agent operation lane with grant updates and
+  retries, and recompute the manifest after acquiring that lane. The binding
+  operation does not wait for relay I/O. Until delivery succeeds, tools may
+  remain hidden after binding or advertised after deletion; forwarded calls
+  still validate the current binding at home. Stop and input release do not
+  remove the Environment binding. Live validation must cover updates to an
+  already-running agent, not only an Environment bound before agent launch.
+- protocol 345 adds owner-authenticated, read-only
+  `GetManagedEnvironmentReimageReceipt` and `ManagedEnvironmentReimageReceipt`.
+  The home kernel reads Cloud's existing receipt route using its authenticated
+  Cloud session and rejects a response for a different environment. This request
+  does not admit a rebuild, authorize context transfer, or introduce another
+  runtime authority. Clients using this request require protocol 345; existing
+  web/native minimum versions remain unchanged. The request/response snapshot
+  and managed-control drill cover owner/session admission, URL escaping,
+  environment binding, and incomplete versus finalized receipt projection.
+  `apps/cli/scripts/path1-cloud-reimage-capture.mjs` uses this shared request
+  against the reviewed local home kernel. It checks the selected operation,
+  generation and release binding and retains only allowlisted receipt fields
+  in a new external mode-0600 file. It is not the full fresh-equivalent rebuild
+  gate and does not independently verify Cloud's receipt digest.
+- relay peer protocol 60 adds durable queued-steer receipts and the
+  `ReconcileLeasedPromptSteerReceipt` operation. It carries the exact queued
+  home prompt, target active home prompt, worker provider run, and execution
+  lease. The existing `GetLeasedPromptReceipt` remains read-only. A receipt names the exact queued
+  home prompt, target active home prompt, worker provider run, and execution
+  lease, and reports `steer_dispatching`, `steer_accepted`, or
+  `steer_rejected`. The worker persists `dispatching` before provider enqueue,
+  changes it to accepted only after local dispatch accepts the input, and
+  records rejection only when non-admission is known. After a lost steer reply,
+  the home keeps the exact queue item durably held and queries only the current
+  matching worker binding. It removes that item after an exact accepted receipt
+  or releases it after an exact rejected receipt. Under the worker run lane,
+  reconciliation records a durable rejected tombstone when no receipt exists;
+  a delayed original steer then encounters that tombstone and cannot enqueue.
+  Dispatching, stale, or conflicting receipts never replay or promote the uncertain item. The
+  focused fake-relay regression covers lost-reply acceptance, restart hold,
+  receipt reconciliation, and at-most-once worker input. The local daemon
+  request and response shapes are unchanged, so client minimum versions do not
+  change; home and worker kernels must both support relay peer protocol 60.
+  Lease operations also bind the authenticated home daemon and sender key to
+  the worker's execution lease. Leases created before that binding was stored
+  cannot pass the new authorization check after an upgrade; the home must
+  rebind them with a current peer protocol instead of reusing the old lease.
+- relay peer protocol 61 adds `ResolveLeasedProjectEnvironmentSetupTarget` and
+  `LeasedProjectEnvironmentSetupTargetResolved`. Before starting Project setup,
+  the home kernel derives the selected worker from the agent binding and asks
+  that authenticated lease worker for its actual platform. An explicitly
+  supplied worker or platform remains an assertion and must match the resolved
+  values; empty fields request resolution. The worker verifies the leased
+  agent and home session/agent binding before replying. The local-daemon shape
+  and client minimum versions do not change; remote Project setup requires
+  both home and worker kernels to support relay peer protocol 61.
+- relay peer protocol 62 gives original leased prompts a durable worker admission
+  receipt using the existing `GetLeasedPromptReceipt` response. A receipt with
+  no `target_home_prompt_id` and an exact `execution_lease_id` reports
+  `steer_dispatching` before the worker starts provider admission, then
+  `active` or `completed` after admission, or `steer_rejected` only when
+  non-admission is known. A lost reply must be reconciled against the current
+  leased agent and execution lease; an absent or dispatching receipt is not
+  proof that resubmission is safe. Worker restart retains the receipt, so a
+  delayed duplicate cannot launch a second provider prompt. The wire shape
+  is unchanged, but the receipt's original-prompt semantics require both home
+  and worker kernels to support relay peer protocol 62. Local-daemon client
+  minimum versions do not change.
+- relay peer protocol 63 adds
+  `AcknowledgeLeasedProjectEnvironmentSetupDefinition` and
+  `LeasedProjectEnvironmentSetupDefinitionAcknowledged`. When a leased worker
+  generates a utility-origin Project definition whose persistence belongs to
+  the home kernel, it keeps the setup attempt in `Preparing` and returns the
+  definition in the existing setup status. The home persists the definition
+  before acknowledging it. The request binds the leased-agent ID, operation ID,
+  attempt, project ID, home session and agent IDs, and the definition digest;
+  the response must echo the operation, attempt, project, and digest. The home
+  checks the owner-scoped setup target and active binding. The worker accepts
+  the acknowledgment only for its active attempt and lease, matching home
+  session/agent and project, and a digest equal to both the staged definition's
+  recomputed digest and its status digest. An identical acknowledgment is
+  idempotent; a mismatch or conflicting repeat is rejected. Worker validation
+  starts only after the matching acknowledgment; if it does not arrive within
+  the existing 30-second wait, setup fails before validation. Both home and
+  worker kernels must support relay peer protocol 63 or newer; a missing or
+  older worker version is incompatible and requires rebinding. Local-daemon
+  request/response shapes and client minimum versions do not change.
+- protocol 350 adds optional `disk_layer_mb` and `disk_home_mb` to the Linux
+  slice settings in the existing user-config response and coordinates the
+  signed managed auto-stop quiescence HTTP contract. Quiescence adds no
+  LocalDaemon request/response variant. Kernel-to-Cloud REST v1 uses
+  `/v1/managed-kernels/auto-stop/quiescence/poll`,
+  `/v1/managed-kernels/auto-stop/quiescence/ack`, and
+  `/v1/managed-kernels/auto-stop/quiescence/release-ack`. Cloud must deploy and
+  verify all three routes and their validators before protocol-350 kernels roll
+  out. The legacy timer/direct auto-stop path must be disabled before either
+  side is enabled; the producer and receiver must not be deployed independently.
+  Missing routes, timeouts, malformed or unsupported v1 responses, and missing,
+  invalid, or stale acknowledgements leave the stop pending and retain the
+  admission fence. There is no legacy auto-stop fallback. The quiescence
+  contract does not change web, native, or CLI minimums because clients do not
+  consume it. The optional disk-cap fields do not change minimums for clients
+  that do not use them; a client that reads or writes those fields must gate
+  that capability at protocol 350.
+- protocol 351 adds `CreateDisposableWorker`, `GetDisposableWorker`,
+  `ReleaseDisposableWorker`, `KeepDisposableWorkerRunning`,
+  `PrepareDisposableWorkerContextTransfer`, and `KeepManagedEnvironmentRunning`.
+  Disposable selections bind `allocationId`, `homeKernelId`, and
+  `homeRelayRealmId`. The authenticated home kernel derives Cloud account and
+  session authority; clients must not supply credentials or account authority.
+  Before mutating an existing allocation, the home reads it and verifies its
+  allocation, home, and realm binding. Context-transfer tickets also bind the
+  returned worker machine and kernel. Create preserves `clientRequestId` for
+  Cloud idempotency; transport failure must not trigger an automatic mutation
+  retry or a fallback to a different home or Cloud authority.
+  Protocol numbers 344–365 were independently allocated on the Apps branch;
+  a numeric minimum alone does not prove these controls exist. Protocol 366
+  adds `RelayStatus.capabilities`, defaulting to an empty list when absent.
+  Clients consuming these controls require protocol 367 and must query the
+  selected home through its authenticated kernel connection before mutation.
+  Require `disposable_worker_control_v1` for disposable controls and
+  `managed_environment_keep_running_v1` for managed keep-running. Verify the
+  response's daemon and machine binding; reject missing capabilities even on
+  a numerically newer kernel. Relay discovery advertises the same markers but
+  is not sufficient proof of the connected kernel's support. These are kernel
+  implementation capabilities, identical on ordinary and managed kernels,
+  not permission grants or an alternative to operation authorization.
+  Other client minimums remain unchanged. Deploy the matching Cloud allocation,
+  context-transfer, and keep-running routes before enabling these controls on
+  a signed capability-bearing home, then connect the updated client. A 366
+  release does not incorporate the divergent Apps branch or automatically
+  authorize upgrades from its releases; signed compatibility must name proven
+  predecessor contracts. The focused source checks
+  are `ipc-disposable-worker-requests.test.ts`,
+  `local/api/tests/protocol_shapes/disposable_worker.rs`, and
+  `runtime/disposable_worker_control/tests.rs`. Live acceptance must create
+  through the selected home, observe the returned allocation and worker
+  identities, reject foreign-home selection, exercise keep-running and context
+  transfer, and release with authoritative provider-resource deletion evidence.
+  Source tests alone do not prove that live drill passed.
+- protocol 367 adds guarded Unix control sessions. Legacy Unix IPC remains one
+  length-prefixed request, one response, then EOF. For disposable-worker controls
+  and managed-environment keep-running, the client sends
+  `{"GuardedControlSession":{"version":1}}` on one socket. The kernel dispatches
+  ordinary `RelayStatus` and replies with
+  `{"session":{"version":1},"response":{"RelayStatus":{"status":{...}}},"error":null}`
+  without closing. After validating capabilities and kernel identity, the client
+  sends exactly one guarded control request on that same connection. The kernel
+  uses the ordinary local caller/router and closes after its response. Frames
+  retain the 1 MiB limit and 30-second I/O deadlines; the TypeScript client also
+  bounds the whole exchange by its request timeout. Unsupported negotiation, EOF,
+  timeout, or capability mismatch fails closed, with no fallback connection or
+  automatic mutation replay. Numeric versions never replace capability checks.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic
@@ -1851,3 +2739,114 @@ Queue and turn direction:
 ## 5.0 Capability, Session, Workflow, Security, and Versioning Details
 
 Detailed capability API baseline, Workspace Live Sync coordination, provider control operations, session/attachment semantics, workflow contracts, security semantics, compatibility rules, versioning strategy, and cross-platform terminal conformance now live in [PROTOCOL_CAPABILITY_SESSION_WORKFLOW.md](PROTOCOL_CAPABILITY_SESSION_WORKFLOW.md). Keep this main protocol document focused on scope, lanes, native provider behavior, envelope shape, current transport baseline, and command/workflow message direction.
+
+MP-08: Local daemon protocol v371 adds the kernel-owned, value-free Project environment manifest query and environment input contract. Candidate B v370 shutdown observation remains a v370 client dependency. Project values resolve only inside the exporting kernel and never enter manifest projections.
+
+
+MP-08 / MP-10 / MP-11: The Project environment feature stays at local protocol 371 and moves relay peer 64 to 65 for authenticated leased Project environment installation. Interactive slice/M28 start requests opt into the shared kernel-owned Ready-to-move RuntimeInteraction; API requests default to unattended decisions. Review projections contain names, use sites, sources and decisions only. Missing values use the existing secret reply path to Vault or remain named as skipped inputs. Exported Project values are sealed to the authenticated target/context; the target resolves launch bindings locally. Provider-neutral user rules travel in the kernel context, while provider home transfer carries credentials only.
+
+MP-08 / MP-10 / MP-11: Local protocol v373 and relay peer v66 add lease-bound worker Environment query/Adjust, explicit selected private-file retrieval, and source-worker export/reuse. GetProjectEnvironmentManifest.agentId selects the execution kernel. Pending interactions are projected in waiting-room activity, including unattached utility sessions. CreateSlice.source_slice_ref selects a running home-owned Docker slice of the same Project/repository selection; its actual worker refreshes the manifest and seals values directly to the next worker, while the existing development exporter captures its owned mounted repository snapshot. The home routes the opaque sealed layer and does not decrypt worker values. The target binds subsequent leases to its existing Project state without source contact. Reaching the source is required only for explicit retrieval of a previously omitted private file. Imported manifests and source receipts are independent private target state; values remain absent from public projections. Metadata-only Codex utilities use ephemeral native threads and settle through native item/completion events, without durable turn-list reads.
+
+MP-08 / MP-10 / MP-11: Ordinary local prompt admission and leased-worker reuse resolve the exporting kernel's current Project bindings before reusing an idle provider process. Changed bindings retire the idle process before native conversation resume, releasing Codex's thread writer; active turns are never replaced for environment changes. Native TUI refresh reports that the TUI must restart when its selected inputs change. Account activation merges native credentials without dropping Project bindings. Secret-file length changes do not trigger metadata discovery; incremental discovery preserves kernel-owned unchanged selections, while unsupported names/locators remain rejected. Automatic queued-turn promotion and native-TUI refresh require further validation before acceptance.
+
+### MP-08 / MP-10 primitive MCP results (protocol 375)
+
+Runtime script results may be any JSON value. The shared MCP response producer
+wraps non-object values as `{ "result": <value> }` before serializing both
+`structuredContent` and its text representation. Object results retain their
+existing fields; image extraction is unchanged. This follows the
+[MCP structured content contract](https://modelcontextprotocol.io/specification/2025-06-18/server/tools#structured-content).
+The correction is shared by ordinary and worker provider runs. Local protocol
+375 records the serialized result correction; relay peer protocol remains 67.
+Web/native minimum versions remain unchanged because they do not depend on this
+MCP-only behavior. Provider-free transport/script tests are focused source
+proof, not MP-08 or MP-10 acceptance on a signed fresh Path-1 release.
+
+### MP-08 / MP-10 terminal workflow event authority (protocol 376)
+
+Terminal `workflow_run_updated` events come from the kernel's archival update
+stream exactly once per recipient. Hot-session snapshot diffs publish only
+nonterminal workflow runs; they cannot duplicate the archival terminal event.
+The focused WebSocket terminal-transition drill verifies Running, Completed,
+durable lookup after archival, and absence of duplicate terminal updates.
+Serialized fields and the relay peer contract are unchanged by this correction. Existing web/native
+minimum supported versions stay unchanged because this restores the existing
+terminal-event contract without adding a required client field or operation.
+
+### Protocol 405: native approval origin
+
+Native approval producers capture `NativeInteractionOrigin` before an asynchronous handoff.
+`RequestNativeProviderTurnInteraction.origin` is required; runtime interactions forwarded over
+relay carry the same `native_origin`. The origin identifies a kernel prompt or native turn
+and its provider run. Workspace trust uses the explicit `provider_startup` scope.
+`RemoteNativeInteractionContext.home_prompt_id` freezes the matching home prompt while the
+worker prompt still matches. The home kernel never substitutes its current prompt.
+Stale requests resolve as `timed_out` with no choice or reply, without applying timeout
+defaults or publishing an answerable approval. Pending approvals are withdrawn on turn,
+provider, agent, or session termination; all terminal projections receive the removal and
+withdrawal notice. The Claude native approval client requires protocol 405; display-only
+clients require no new minimum.
+
+Managed Codex/OpenCode approvals retain the actor's original kernel prompt identity.
+Codex approval `turnId` must match its active provider turn; OpenCode permission
+`tool.messageID` must belong to its active user message. Native turns use the recorded
+provider turn identity. Events without a usable turn/message identity are denied rather
+than borrowing the currently running turn (including legacy Codex approvals without a turn ID).
+
+`RequestNativeProviderTurnInteraction` and relay `forward_native_turn_interaction`
+replace the previous unbound request variants. Older kernels reject these unknown variants
+instead of silently ignoring origin fields; the native client reports a protocol-405 minimum.
+### Protocol 409: App clipboard copy-out and link opening
+
+`host.clipboard_write {text}` and `host.open_link {url}` on the App worker SDK
+channel create a pending, owner/installation/generation-bound offer:
+`{operationId, state:"pending", expiresAtMs}`. Room App views expose
+`window.chariox.host.writeClipboard(text)` and `openLink(url)` through the same
+host methods, after the kernel validates the view binding and generation.
+Neither backend nor view code performs the host action itself. There is no
+clipboard-read method. Clipboard offers require the signed `capabilities.clipboard: ["write"]` declaration;
+link offers need no separate capability. Neither requires external-file access.
+
+Clipboard text and each of its JSON/visible escaped representations are limited
+to 256 KiB, so the complete trusted prompt fits one terminal projection. URLs are limited to 8 KiB, must
+be absolute HTTP(S) URLs with a host, and cannot contain whitespace, control
+characters, backslashes, invisible Unicode formatting or nonempty userinfo
+(username/password). The exact submitted URL is shown and returned without
+normalization; the prompt also shows its parsed ASCII destination host (punycode
+for IDNs). Each installation may have
+four unanswered host offers; they expire after five minutes, or when its
+active generation changes or it is uninstalled. Settled payloads are dropped.
+
+The file-export prompt pump projects one `RuntimeInteraction` to the owner's
+terminals (local TUI, remote TUI and web), with id `app_host_<operationId>` and
+kernel subject `host_action:<operationId>`. It shows the exact URL or an escaped,
+complete representation of the offered text, plus a Decline choice and no
+approval on timeout. App views and agents cannot settle this prompt.
+
+An explicit human gesture in a trusted terminal sends
+`AcceptAppHostAction {session_id, operation_id}`. The kernel validates a human
+client, owner, showing session, pending interaction, generation and deadline,
+and arbitrates this take against decline/expiry under the existing interaction
+lock. It returns `AppHostActionAccepted {operation_id, action}` once:
+`action` is either `{kind:"clipboard_write", text}` or `{kind:"open_link", url}`.
+A generic `RespondToInteraction` can decline but cannot take the offer; clients
+must use this dedicated acceptance path. Stale, declined, expired, foreign or
+already accepted offers fail without returning a payload. No owner, URL or
+text can be supplied by the accepting client. Acceptance consumes the offer;
+a failed host action or lost reply requires a new App request.
+
+The accepting terminal performs the action on its own machine. TUI users type
+`/app host accept` after closing the approval panel selects the sole pending
+host offer in the attached session only when it matches the last offer displayed
+in that terminal's approval panel. Unviewed/replaced offers require re-opening
+the panel or an explicit ID. Multiple offers require
+`/app host accept OPERATION`. Copying uses the renderer-backed OSC 52/native
+clipboard helper and always shows the escaped text as a visible fallback
+because OSC 52 has no acknowledgement; link opening
+uses the existing default-browser shim and always prints the exact URL. Web
+clients must copy with `navigator.clipboard.writeText` from a trusted click,
+open a new tab with `noopener`, and show a visible fallback on failure. They
+must preserve browser user activation across kernel settlement (for example,
+show a fresh Copy/Open button after successful settlement). App iframe/Room gestures only create offers and never
+count as the human's acceptance. Clients exposing acceptance require protocol
+409; unrelated clients keep their existing minimum version.

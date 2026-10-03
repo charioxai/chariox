@@ -51,8 +51,23 @@ impl KernelRuntimeState {
             &user_config.credential_vault,
         )?;
         service.validate_computer_secret_input(&args.credential_id)?;
-        self.ensure_computer_secret_input_approved(session_id, agent_id, &args.credential_id)
+        let approved_generation = self
+            .reconcile_room_environment_actors(session_id, None)
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "computer_secret_input.target",
+                message: error.code().to_string(),
+            })?
+            .runtime_generation;
+        let target = self
+            .computer_secret_input_target(session_id, agent_id)
             .await?;
+        self.ensure_computer_secret_input_approved(
+            session_id,
+            agent_id,
+            &args.credential_id,
+            &target,
+        )
+        .await?;
         let _vault_unlock = self
             .ensure_vault_unlocked_for_agent(
                 session_id,
@@ -60,9 +75,22 @@ impl KernelRuntimeState {
                 "runtime_tool_paste_secret_to_computer",
             )
             .await?;
+        // Unlock may itself wait for the user. Reject a changed target before
+        // resolving the credential, then check again in the physical helper.
+        if self
+            .computer_secret_input_target(session_id, agent_id)
+            .await?
+            != target
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "computer_secret_input.target",
+                message: "computer credential input aborted: focused control or window changed"
+                    .into(),
+            });
+        }
         let secret = zeroize::Zeroizing::new(service.computer_secret_input(&args.credential_id)?);
         let execution = self
-            .execute_computer_input_as_agent(
+            .execute_computer_input_as_agent_for_generation(
                 session_id,
                 agent_id,
                 crate::transport::room_browser_controller::RoomComputerInputAction::SecretText {
@@ -70,7 +98,9 @@ impl KernelRuntimeState {
                         crate::transport::room_browser_controller::RoomComputerSecretInput::from_zeroizing(
                             secret,
                         ),
+                    expected_target: target,
                 },
+                Some(approved_generation),
             )
             .await?;
         Ok(crate::transport::runtime_tools::RuntimeToolResult {

@@ -2,6 +2,9 @@
 
 use crate::error::DaemonError;
 
+#[path = "bounded_artifact.rs"]
+mod bounded_artifact;
+
 const CLOUD_API_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 pub(crate) fn normalize_cloud_api_url(api_url: &str) -> Result<String, DaemonError> {
@@ -29,6 +32,26 @@ where
             operation: "post cloud relay json",
             message: error.to_string(),
         })?
+}
+
+pub(crate) async fn post_cloud_acknowledged(
+    api_url: String,
+    path: &'static str,
+    body: serde_json::Value,
+) -> Result<(), DaemonError> {
+    tokio::task::spawn_blocking(move || {
+        post_cloud_acknowledged_blocking_with_timeout(
+            api_url,
+            path,
+            body,
+            CLOUD_API_REQUEST_TIMEOUT,
+        )
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "acknowledge cloud relay request",
+        message: error.to_string(),
+    })?
 }
 
 pub(crate) async fn post_cloud_json_dynamic<T>(
@@ -77,6 +100,32 @@ where
     })?
 }
 
+pub(crate) async fn delete_cloud_json_authenticated<T>(
+    api_url: String,
+    path: String,
+    bearer_token: String,
+) -> Result<T, DaemonError>
+where
+    T: serde::de::DeserializeOwned + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        let agent = ureq::AgentBuilder::new()
+            .timeout(CLOUD_API_REQUEST_TIMEOUT)
+            .build();
+        let response = agent
+            .delete(&format!("{api_url}{path}"))
+            .set("authorization", &format!("Bearer {bearer_token}"))
+            .call()
+            .map_err(cloud_transport_error)?;
+        decode_cloud_response(response)
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "delete authenticated cloud json",
+        message: error.to_string(),
+    })?
+}
+
 pub(crate) async fn post_cloud_json_authenticated<T>(
     api_url: String,
     path: String,
@@ -94,6 +143,79 @@ where
         operation: "post authenticated cloud json",
         message: error.to_string(),
     })?
+}
+
+/// Streams a Cloud response body into `destination` (via a `.partial` file),
+/// refusing bodies larger than `max_bytes`.
+pub(crate) async fn post_cloud_to_file(
+    api_url: String,
+    path: &'static str,
+    body: serde_json::Value,
+    destination: std::path::PathBuf,
+    max_bytes: u64,
+) -> Result<(), DaemonError> {
+    tokio::task::spawn_blocking(move || {
+        let io_error = |message: String| DaemonError::LocalTransport {
+            operation: "download cloud artifact",
+            message,
+        };
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(30 * 60))
+            .build();
+        let response = agent
+            .post(&format!("{api_url}{path}"))
+            .set("content-type", "application/json")
+            .send_string(&body.to_string())
+            .map_err(cloud_transport_error)?;
+        let partial = destination.with_extension("partial");
+        let written = (|| {
+            let mut file =
+                std::fs::File::create(&partial).map_err(|error| io_error(error.to_string()))?;
+            let parent = destination
+                .parent()
+                .ok_or_else(|| io_error("artifact has no parent directory".into()))?;
+            bounded_artifact::copy(response.into_reader(), &mut file, max_bytes, || {
+                fs2::available_space(parent)
+            })
+            .map_err(|error| io_error(error.to_string()))?;
+            file.sync_all()
+                .map_err(|error| io_error(error.to_string()))?;
+            std::fs::rename(&partial, &destination).map_err(|error| io_error(error.to_string()))
+        })();
+        if written.is_err() {
+            let _ = std::fs::remove_file(&partial);
+        }
+        written
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "download cloud artifact",
+        message: error.to_string(),
+    })?
+}
+
+fn post_cloud_acknowledged_blocking_with_timeout(
+    api_url: String,
+    path: &str,
+    body: serde_json::Value,
+    timeout: std::time::Duration,
+) -> Result<(), DaemonError> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout(timeout)
+        .redirects(0)
+        .build();
+    let response = agent
+        .post(&format!("{api_url}{path}"))
+        .set("content-type", "application/json")
+        .send_string(&body.to_string())
+        .map_err(cloud_transport_error)?;
+    match response.status() {
+        200 | 204 => Ok(()),
+        status => Err(DaemonError::LocalTransport {
+            operation: "acknowledge cloud relay request",
+            message: format!("Cloud did not acknowledge completed logout (HTTP {status})"),
+        }),
+    }
 }
 
 fn post_cloud_json_blocking<T>(
@@ -416,6 +538,130 @@ mod tests {
             operation: "decode cloud relay response",
             message: "unexpected response shape".to_string(),
         }));
+    }
+
+    fn read_fixture_request(stream: &mut std::net::TcpStream) {
+        use std::io::{BufRead, BufReader, Read};
+
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .expect("bound fixture request read");
+        let mut reader = BufReader::new(stream);
+        let mut content_length = 0;
+        let mut line = String::new();
+        loop {
+            line.clear();
+            assert!(reader.read_line(&mut line).expect("read request headers") > 0);
+            if line == "\r\n" {
+                break;
+            }
+            if let Some((name, value)) = line.split_once(':') {
+                if name.eq_ignore_ascii_case("content-length") {
+                    content_length = value.trim().parse().expect("request body length");
+                }
+            }
+        }
+        let mut body = vec![0; content_length];
+        reader
+            .read_exact(&mut body)
+            .expect("read complete request body");
+    }
+
+    fn acknowledgement_fixture(status: u16, body: &str) -> Result<(), DaemonError> {
+        use std::io::Write;
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind Cloud acknowledgement fixture");
+        let address = listener.local_addr().expect("Cloud fixture address");
+        let response = format!(
+            "HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let fixture = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept Cloud request");
+            read_fixture_request(&mut stream);
+            stream
+                .write_all(response.as_bytes())
+                .expect("send Cloud acknowledgement fixture");
+        });
+        let result = post_cloud_acknowledged_blocking_with_timeout(
+            format!("http://{address}"),
+            "/auth/logout",
+            serde_json::json!({}),
+            std::time::Duration::from_secs(1),
+        );
+        fixture.join().expect("Cloud acknowledgement fixture");
+        result
+    }
+
+    #[test]
+    fn cloud_acknowledgement_accepts_an_empty_completed_204_response() {
+        let result = acknowledgement_fixture(204, "");
+        assert!(
+            result.is_ok(),
+            "HTTP 204 must acknowledge completed revocation: {result:?}"
+        );
+    }
+
+    #[test]
+    fn cloud_acknowledgement_accepts_completed_200_without_requiring_json() {
+        assert!(acknowledgement_fixture(200, "completed").is_ok());
+    }
+
+    #[test]
+    fn cloud_acknowledgement_rejects_pending_redirect_and_failed_responses() {
+        for status in [201, 202, 301, 302, 307, 308, 400, 401, 403, 409, 500] {
+            assert!(
+                acknowledgement_fixture(status, "").is_err(),
+                "HTTP {status} is not completed acknowledgement"
+            );
+        }
+        let error = acknowledgement_fixture(401, r#"{"error":{"code":"session_invalid"}}"#)
+            .expect_err("Cloud failure must remain an error");
+        assert_eq!(cloud_error_code(&error), Some("session_invalid"));
+    }
+
+    #[test]
+    fn cloud_acknowledgement_does_not_follow_a_redirect_to_success() {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind redirect fixture");
+        let address = listener.local_addr().expect("redirect fixture address");
+        let fixture = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept original logout");
+            read_fixture_request(&mut stream);
+            let response = format!("HTTP/1.1 302 Found\r\nLocation: http://{address}/redirected\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            stream
+                .write_all(response.as_bytes())
+                .expect("send redirect");
+            drop(stream);
+            listener
+                .set_nonblocking(true)
+                .expect("poll redirect listener");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+            while std::time::Instant::now() < deadline {
+                if let Ok((mut followed, _)) = listener.accept() {
+                    read_fixture_request(&mut followed);
+                    followed
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .expect("send redirected success");
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            false
+        });
+        let result = post_cloud_acknowledged_blocking_with_timeout(
+            format!("http://{address}"),
+            "/auth/logout",
+            serde_json::json!({}),
+            std::time::Duration::from_secs(1),
+        );
+        assert!(result.is_err());
+        assert!(
+            !fixture.join().expect("redirect fixture"),
+            "logout must not follow redirects"
+        );
     }
 
     #[test]

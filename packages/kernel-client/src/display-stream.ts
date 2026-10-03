@@ -29,6 +29,14 @@ export type SelkiesViewerControl = "START_VIDEO" | "STOP_VIDEO" | "REQUEST_KEYFR
 export type DisplayKernelClient = {
   send<TResponse>(request: unknown): Promise<TResponse>
   close?: () => Promise<void> | void
+  isRelayTransport?: () => boolean
+  getRelayClientIdentity?: () => DisplayViewerIdentity | null
+}
+
+export type DisplayViewerIdentity = {
+  readonly publicKeyBase64: string
+  encrypt(peerPublicKeyBase64: string, plaintext: string): EncryptedRelayPayload | Promise<EncryptedRelayPayload>
+  decrypt(payload: EncryptedRelayPayload, expectedSenderPublicKey?: string): string | Promise<string>
 }
 
 export type DisplayWebSocket = {
@@ -60,6 +68,7 @@ export type OpenSelkiesDisplayStreamOptions = {
   readonly webSocket?: DisplayWebSocketConstructor
   readonly signal?: AbortSignal
   readonly connectTimeoutMs?: number
+  readonly viewerIdentity?: DisplayViewerIdentity
 }
 
 /**
@@ -79,7 +88,11 @@ export async function openSelkiesDisplayStream(
   }
   throwIfAborted(options.signal, "before display authorization")
 
-  const viewer = await createRelayKeypair()
+  const suppliedIdentity = options.viewerIdentity ?? options.client.getRelayClientIdentity?.() ?? null
+  if (options.client.isRelayTransport?.() && !suppliedIdentity) {
+    throw displayError("remote viewing requires this CLI's paired key-bound relay identity; issue a bound token with /relay cloud client-token")
+  }
+  const viewer = suppliedIdentity ?? await createBrowserViewer()
   const response = await awaitWithAbort(
     Promise.resolve().then(() => options.client.send(
       getSliceDisplayEndpointRequest(options.sliceId, {
@@ -107,7 +120,7 @@ class EncryptedSelkiesDisplayStream implements SelkiesDisplayStream {
   readonly viewerPublicKey: string
 
   private readonly socket: DisplayWebSocket
-  private readonly viewer: RelayKeypair
+  private readonly viewer: DisplayViewerIdentity
   private readonly peerPublicKey: string
   private readonly streamId: string
   private readonly removeSocketListeners: () => void
@@ -133,7 +146,7 @@ class EncryptedSelkiesDisplayStream implements SelkiesDisplayStream {
   constructor(
     socket: DisplayWebSocket,
     endpoint: SliceDisplayEndpoint,
-    viewer: RelayKeypair,
+    viewer: DisplayViewerIdentity,
     signal?: AbortSignal,
   ) {
     this.socket = socket
@@ -273,13 +286,13 @@ class EncryptedSelkiesDisplayStream implements SelkiesDisplayStream {
         data_base64: bytesToBase64(data.subarray(start, end)),
       }
       const encrypted = await awaitWithAbort(
-        encryptRelayPayload(this.peerPublicKey, JSON.stringify(fragment), this.viewer),
+        Promise.resolve(this.viewer.encrypt(this.peerPublicKey, JSON.stringify(fragment))),
         signal,
         () => closeSocketNow(this.socket),
         "display send",
       )
       this.ensureOpen()
-      this.socket.send(encodedPayload(encrypted.payload))
+      this.socket.send(encodedPayload(encrypted))
     }
     this.sendSequence = nextSequence
   }
@@ -299,7 +312,7 @@ class EncryptedSelkiesDisplayStream implements SelkiesDisplayStream {
     if (JSON.stringify(payload).length > DISPLAY_ENCRYPTED_PACKET_BYTES) {
       throw displayError("received an oversized encrypted Selkies packet")
     }
-    const plaintext = await decryptRelayPayload(this.viewer.privateKey, payload, this.peerPublicKey)
+    const plaintext = await this.viewer.decrypt(payload, this.peerPublicKey)
     if (this.closed || this.failure) return
     const fragment = parseDisplayFragment(plaintext)
     if (
@@ -693,6 +706,17 @@ function abortError(phase: string): Error {
 
 function displayError(message: string): Error {
   return new Error(`Selkies display stream ${message}`)
+}
+
+async function createBrowserViewer(): Promise<DisplayViewerIdentity> {
+  const keypair = await createRelayKeypair()
+  return {
+    publicKeyBase64: keypair.publicKeyBase64,
+    encrypt: async (peerPublicKeyBase64, plaintext) =>
+      (await encryptRelayPayload(peerPublicKeyBase64, plaintext, keypair)).payload,
+    decrypt: (payload, expectedSenderPublicKey) =>
+      decryptRelayPayload(keypair.privateKey, payload, expectedSenderPublicKey),
+  }
 }
 
 function errorMessage(error: unknown): string {

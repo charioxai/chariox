@@ -207,7 +207,18 @@ pub(crate) fn validate_computer_input_action(
                 })
             }
         }
-        RoomComputerInputAction::SecretText { .. } => Ok(()),
+        RoomComputerInputAction::SecretText {
+            expected_target, ..
+        } => {
+            if expected_target.valid() {
+                Ok(())
+            } else {
+                Err(EnvironmentError::InvalidKeyboardText {
+                    utf8_byte_count: 0,
+                    max_utf8_bytes: ROOM_COMPUTER_KEYBOARD_TEXT_MAX_UTF8_BYTES,
+                })
+            }
+        }
     }
 }
 

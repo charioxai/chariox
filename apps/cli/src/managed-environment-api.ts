@@ -201,7 +201,9 @@ export async function startManagedContextTransfer(
   client: LocalIpcClient,
   ticket: ManagedContextTransferTicket,
 ): Promise<ManagedContextTransferStatus> {
-  const response = await client.send<Record<string, unknown>>(startManagedContextTransferRequest(ticket))
+  const response = await sendWithProtocolMinimum<Record<string, unknown>>(client.send.bind(client), startManagedContextTransferRequest(ticket, true), {
+    capability: "MP-08 / MP-10 Project export review", requestVariant: "StartManagedContextTransfer", unknownField: "interactive", minimumProtocolVersion: 371,
+  })
   return expectVariant<{ status: ManagedContextTransferStatus }>(
     response,
     "ManagedContextTransferStarted",

@@ -1,49 +1,93 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 set -Eeuo pipefail
 
+# MP-08/MP-11: image production and slice execution use one configured engine.
+# bash -p ignores inherited shell startup/functions before this script runs.
+for slice_override in BUILDX_BUILDER BUILDX_HOST BUILDKIT_HOST BASH_ENV ENV CDPATH GLOBIGNORE; do
+  if [[ -n "${!slice_override+x}" ]]; then
+    printf '[slice-linux] slice engine ignores caller override %s\n' "$slice_override" >&2
+    unset "$slice_override"
+  fi
+done
+export -n SHELLOPTS BASHOPTS
+if [[ -n "${CHARIOX_SLICE_MANAGED_DOCKER_HOST:-}" ]]; then
+  export DOCKER_HOST="$CHARIOX_SLICE_MANAGED_DOCKER_HOST"
+fi
+if [[ -n "${DOCKER_HOST:-}" ]]; then
+  if [[ -n "${DOCKER_CONTEXT+x}" ]]; then
+    printf '[slice-linux] slice engine ignores caller override DOCKER_CONTEXT\n' >&2
+    unset DOCKER_CONTEXT
+  fi
+fi
+
+unset IFS
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
-hash_stdin() {
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum | awk '{ print $1 }'
+# The Path-1 extension helper supplies only its pinned local socket. Caller
+# Docker config and credential helpers remain available after it drops UID.
+docker() {
+  # Interactive terminals retain their inherited TTY and user-controlled wait.
+  if [[ "$1" == exec && " $* " == *" -it "* ]]; then
+    if [[ -n "${CHARIOX_SLICE_MANAGED_DOCKER_HOST:-}" ]]; then
+      command /usr/bin/docker --host "$CHARIOX_SLICE_MANAGED_DOCKER_HOST" "$@"
+    else
+      command docker "$@"
+    fi
     return
   fi
-  shasum -a 256 | awk '{ print $1 }'
+  # Raw noninteractive Docker calls are control operations; builds opt in below.
+  run_with_timeout 30 docker "$@"
+}
+
+hash_stdin() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    run_with_timeout 20 sha256sum | awk '{ print $1 }'
+    return
+  fi
+  run_with_timeout 20 shasum -a 256 | awk '{ print $1 }'
 }
 
 runtime_source_revision() {
+  if [[ -n "${CHARIOX_SLICE_LOCAL_DEV_OWNER_UID:-}" ]]; then
+    [[ "$CHARIOX_SLICE_LOCAL_DEV_OWNER_UID" =~ ^[0-9]+$ \
+      && "${CHARIOX_SLICE_LOCAL_DEV_RUNTIME_REVISION:-}" =~ ^(sha256:)?[a-f0-9]{64}$ ]] || {
+      echo "local DEV worker runtime revision pin is unavailable" >&2
+      return 1
+    }
+    printf '%s\n' "$CHARIOX_SLICE_LOCAL_DEV_RUNTIME_REVISION"
+    return
+  fi
   if [[ "${CHARIOX_SLICE_BUILD_CONTEXT_DIGEST:-}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
     printf '%s\n' "$CHARIOX_SLICE_BUILD_CONTEXT_DIGEST"
     return
   fi
   (
     cd "$REPO_ROOT"
-    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-      git ls-files --cached --others --exclude-standard \
-        Cargo.toml Cargo.lock \
-        adapters/rust \
-        apps/aegs-dummy apps/kernel apps/relay \
-        examples/workflow-code \
-        packages/aegs-sdk packages/event-protocol
+    local roots=() root
+    while IFS= read -r root || [[ -n "$root" ]]; do
+      if [[ -n "$root" ]]; then
+        roots+=("$root")
+      fi
+    done < "$SCRIPT_DIR/runtime-source-roots.txt"
+    if [[ "${#roots[@]}" -eq 0 ]]; then
+      echo "runtime-source-roots.txt lists no runtime source roots" >&2
+      exit 1
+    fi
+    local git_status=0
+    if run_with_timeout 20 git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      run_with_timeout 20 git ls-files --cached --others --exclude-standard "${roots[@]}"
     else
-      find \
-        Cargo.toml Cargo.lock \
-        adapters/rust \
-        apps/aegs-dummy apps/kernel apps/relay \
-        examples/workflow-code \
-        packages/aegs-sdk packages/event-protocol \
+      git_status=$?
+      [[ "$git_status" != 124 ]] || fail "Git source identity probe timed out"
+      run_with_timeout 20 find \
+        "${roots[@]}" \
         -type f \
         ! -path '*/target/*' \
         ! -path '*/node_modules/*' \
         | LC_ALL=C sort
-    fi \
-      | while IFS= read -r path; do
-          [[ -f "$path" ]] || continue
-          printf '%s ' "$path"
-          hash_stdin < "$path"
-        done
-  ) | hash_stdin
+    fi
+  ) | python3 "$SCRIPT_DIR/slice-command-guard.py" digest-paths "$REPO_ROOT"
 }
 
 SLICE_NAME="${CHARIOX_SLICE_NAME:-chariox-slice-linux}"
@@ -58,14 +102,27 @@ SLICE_BUILD_IMAGE="${CHARIOX_SLICE_BUILD_IMAGE:-auto}"
 SLICE_RUNTIME_BUILD_PROFILE="${CHARIOX_SLICE_RUNTIME_BUILD_PROFILE:-release}"
 SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL="${CHARIOX_SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL:-3}"
 SLICE_EXTENSION_DOCKERFILE="${CHARIOX_SLICE_EXTENSION_DOCKERFILE:-}"
+SLICE_EXTENSION_BUILD_CONTEXT="${CHARIOX_SLICE_EXTENSION_BUILD_CONTEXT:-}"
 SLICE_DOCKER_MEMORY="${CHARIOX_SLICE_DOCKER_MEMORY:-}"
 SLICE_DOCKER_CPUS="${CHARIOX_SLICE_DOCKER_CPUS:-}"
+SLICE_DISK_LAYER_MB="${CHARIOX_SLICE_DISK_LAYER_MB:-}"
+SLICE_DISK_HOME_MB="${CHARIOX_SLICE_DISK_HOME_MB:-}"
 SLICE_DOCKER_PIDS_LIMIT="${CHARIOX_SLICE_DOCKER_PIDS_LIMIT:-1024}"
 SLICE_DOCKER_NOFILE_LIMIT="${CHARIOX_SLICE_DOCKER_NOFILE_LIMIT:-8192}"
 SLICE_HOME_VOLUME="${CHARIOX_SLICE_HOME_VOLUME:-${SLICE_NAME}-home}"
 SLICE_SAVED_HOME_ARCHIVE="${CHARIOX_SLICE_SAVED_HOME_ARCHIVE:-}"
+SLICE_SAVED_HOME_ARCHIVE_DIR="${CHARIOX_SLICE_BROKER_SAVED_HOME_ARCHIVE_DIR:-}"
 SLICE_WORKSPACE="${CHARIOX_SLICE_WORKSPACE:-$REPO_ROOT}"
 SLICE_WORKSPACE_SOURCE="${CHARIOX_SLICE_WORKSPACE_SOURCE:-$SLICE_WORKSPACE}"
+if [[ "${CHARIOX_SLICE_OWNED_WORKSPACE:-0}" == "1" ]]; then
+  # The broker sets this when a slice has no host/development workspace (always
+  # for the trusted local broker): it gets an owned Docker volume, never the
+  # source context.
+  [[ -z "${CHARIOX_SLICE_WORKSPACE:-}" && -z "${CHARIOX_SLICE_WORKSPACE_SOURCE:-}" ]] || fail "owned workspace authority mismatch"
+  SLICE_WORKSPACE="/workspace"
+  SLICE_WORKSPACE_SOURCE="${SLICE_NAME}-workspace"
+fi
+SLICE_WORKSPACE_OWNER="${CHARIOX_SLICE_LOCAL_DEV_OWNER_UID:-managed}"
 SLICE_DEVELOPMENT_MOUNT_COUNT="${CHARIOX_SLICE_DEVELOPMENT_MOUNT_COUNT:-0}"
 SLICE_WORKSPACE_MOUNT_MODE="${CHARIOX_SLICE_WORKSPACE_MOUNT_MODE:-rw}"
 SLICE_ALLOW_UNCONFINED_SECCOMP="${CHARIOX_SLICE_ALLOW_UNCONFINED_SECCOMP:-0}"
@@ -93,6 +150,7 @@ SLICE_RELAY_TOKEN="${CHARIOX_SLICE_RELAY_TOKEN:-slice-local}"
 SLICE_CLOUD_RELAY_CONFIG_JSON="${CHARIOX_SLICE_CLOUD_RELAY_CONFIG_JSON:-}"
 SLICE_CLOUD_RELAY_CONFIG_HOST_PATH="${CHARIOX_SLICE_CLOUD_RELAY_CONFIG_HOST_PATH:-}"
 SLICE_DAEMON_ALIAS="${CHARIOX_SLICE_DAEMON_ALIAS:-slice:linux}"
+SLICE_DAEMON_ID="${CHARIOX_SLICE_DAEMON_ID:-$SLICE_DAEMON_ALIAS}"
 SLICE_MACHINE_ID="${CHARIOX_SLICE_MACHINE_ID:-slice:linux}"
 SLICE_MACHINE_ALIAS="${CHARIOX_SLICE_MACHINE_ALIAS:-linux}"
 SLICE_CODEX_AUTH="${CHARIOX_SLICE_CODEX_AUTH:-$HOME/.codex/auth.json}"
@@ -108,10 +166,17 @@ SLICE_LOGIN_PROVIDER="${CHARIOX_SLICE_LOGIN_PROVIDER:-codex}"
 SLICE_AUTH_PROVIDER="${CHARIOX_SLICE_AUTH_PROVIDER:-all}"
 SLICE_ACCOUNT_OWNER="${CHARIOX_SLICE_ACCOUNT_OWNER:-local-user}"
 SLICE_ACCOUNT_PROFILE="${CHARIOX_SLICE_ACCOUNT_PROFILE:-default}"
+SLICE_PRIVATE_HOST_ROOT="${CHARIOX_SLICE_PRIVATE_HOST_ROOT:-}"
+SLICE_PRIVATE_ROOT="/var/lib/chariox/slice-private"
+SLICE_KERNEL_HOME="/home/slice/.chariox"
 SLICE_ACCOUNT_ROOT="/home/slice/.chariox/daemon/provider-accounts/$SLICE_ACCOUNT_OWNER"
 SLICE_PROVIDER_HOME="/home/slice/.chariox/provider-home"
+if [[ -n "$SLICE_PRIVATE_HOST_ROOT" ]]; then
+  SLICE_KERNEL_HOME="$SLICE_PRIVATE_ROOT/kernel"
+  SLICE_ACCOUNT_ROOT="$SLICE_PRIVATE_ROOT/provider-accounts/$SLICE_ACCOUNT_OWNER"
+  SLICE_PROVIDER_HOME="$SLICE_PRIVATE_ROOT/provider-home"
+fi
 SLICE_RELAY_PEER_PROTOCOL_VERSION="$(sed -nE 's/^pub const RELAY_PEER_PROTOCOL_VERSION: u32 = ([0-9]+);$/\1/p' "$REPO_ROOT/apps/kernel/src/transport/relay_peer.rs" | head -n 1)"
-SLICE_RUNTIME_SOURCE_REVISION="$(runtime_source_revision)"
 
 log() {
   printf '[slice-linux] %s\n' "$*" >&2
@@ -120,6 +185,27 @@ log() {
 fail() {
   printf '[slice-linux] error: %s\n' "$*" >&2
   exit 1
+}
+
+disk_quota_enabled() {
+  [[ -n "$SLICE_DISK_LAYER_MB" && -n "$SLICE_DISK_HOME_MB" ]]
+}
+
+apply_home_disk_quota() {
+  disk_quota_enabled || return 0
+  run_guarded_command unbounded -- /usr/bin/node "$SCRIPT_DIR/slice-disk-quota-client.mjs" apply_home \
+    || fail "failed to apply and verify the persistent-home hard quota before restore or start"
+}
+
+apply_layer_disk_quota() {
+  disk_quota_enabled || return 0
+  run_guarded_command unbounded -- /usr/bin/node "$SCRIPT_DIR/slice-disk-quota-client.mjs" apply_layer \
+    || fail "failed to apply and verify the writable-layer hard quota before start"
+}
+
+apply_both_disk_quotas() {
+  apply_home_disk_quota
+  apply_layer_disk_quota
 }
 
 if [[ ! "$SLICE_ACCOUNT_OWNER" =~ ^[A-Za-z0-9-]+$ || ! "$SLICE_ACCOUNT_PROFILE" =~ ^[A-Za-z0-9-]+$ ]]; then
@@ -140,73 +226,43 @@ if [[ ! "$SLICE_APPARMOR_PROFILE" =~ ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$ ]]; the
   fail "CHARIOX_SLICE_APPARMOR_PROFILE is invalid"
 fi
 
+run_guarded_command() {
+  local mode="$1"
+  shift
+  local seconds=""
+  if [[ "$mode" == run ]]; then
+    seconds="$1"
+    shift
+  fi
+  [[ "$1" == -- ]] || return 64
+  shift
+  local command="$1"
+  shift
+  if [[ "$command" == docker ]]; then
+    if [[ -n "${CHARIOX_SLICE_MANAGED_DOCKER_HOST:-}" ]]; then
+      command=/usr/bin/docker
+      set -- --host "$CHARIOX_SLICE_MANAGED_DOCKER_HOST" "$@"
+    else
+      command="$(type -P docker)" || return 127
+    fi
+  fi
+  if [[ "$mode" == run ]]; then
+    python3 "$SCRIPT_DIR/slice-command-guard.py" run "$seconds" -- "$command" "$@"
+  else
+    python3 "$SCRIPT_DIR/slice-command-guard.py" unbounded -- "$command" "$@"
+  fi
+}
+
 run_with_timeout() {
   local seconds="$1"
   shift
-  local timeout_marker="${TMPDIR:-/tmp}/chariox-slice-timeout.$$.$RANDOM"
-  rm -f "$timeout_marker"
-  "$@" &
-  local child=$!
-  (
-    local elapsed=0
-    while (( elapsed < seconds )); do
-      sleep 1
-      elapsed=$((elapsed + 1))
-    done
-    if kill -0 "$child" >/dev/null 2>&1; then
-      : >"$timeout_marker"
-      kill "$child" >/dev/null 2>&1 || true
-      sleep 2
-      kill -9 "$child" >/dev/null 2>&1 || true
-    fi
-  ) &
-  local watchdog=$!
-  local status=0
-  wait "$child" || status=$?
-  kill "$watchdog" >/dev/null 2>&1 || true
-  wait "$watchdog" 2>/dev/null || true
-  if [[ -f "$timeout_marker" ]]; then
-    rm -f "$timeout_marker"
-    log "managed slice Docker operation timed out after ${seconds}s"
-    return 124
-  fi
-  rm -f "$timeout_marker"
-  return "$status"
+  run_guarded_command run "$seconds" -- "$@"
 }
 
 run_with_file_stdin_timeout() {
-  local seconds="$1"
-  local input_file="$2"
+  local seconds="$1" input_file="$2"
   shift 2
-  local timeout_marker="${TMPDIR:-/tmp}/chariox-slice-timeout.$$.$RANDOM"
-  rm -f "$timeout_marker"
-  "$@" <"$input_file" &
-  local child=$!
-  (
-    local elapsed=0
-    while (( elapsed < seconds )); do
-      sleep 1
-      elapsed=$((elapsed + 1))
-    done
-    if kill -0 "$child" >/dev/null 2>&1; then
-      : >"$timeout_marker"
-      kill "$child" >/dev/null 2>&1 || true
-      sleep 2
-      kill -9 "$child" >/dev/null 2>&1 || true
-    fi
-  ) &
-  local watchdog=$!
-  local status=0
-  wait "$child" || status=$?
-  kill "$watchdog" >/dev/null 2>&1 || true
-  wait "$watchdog" 2>/dev/null || true
-  if [[ -f "$timeout_marker" ]]; then
-    rm -f "$timeout_marker"
-    log "managed slice Docker operation timed out after ${seconds}s"
-    return 124
-  fi
-  rm -f "$timeout_marker"
-  return "$status"
+  run_with_timeout "$seconds" "$@" < "$input_file"
 }
 
 usage() {
@@ -245,13 +301,26 @@ container_running() {
 }
 
 volume_inspect_reports_not_found() {
-  local output="$1"
-  grep -Eiq 'no such volume|volume .* (not found|does not exist)' <<<"$output"
+  local diagnostic="$1" status="$2"
+  [[ "$status" == 1 ]] || return 1
+  # The supervisor forwards stdout and stderr independently; Docker's empty
+  # inspect array may arrive before or after the one supported error line.
+  local array_prefix="[]"$'\n' array_suffix=$'\n'"[]"
+  if [[ "$diagnostic" == "$array_prefix"* ]]; then
+    diagnostic="${diagnostic#"$array_prefix"}"
+  elif [[ "$diagnostic" == *"$array_suffix" ]]; then
+    diagnostic="${diagnostic%"$array_suffix"}"
+  fi
+  [[ "$diagnostic" != *$'\n'* ]] || return 1
+  case "$diagnostic" in
+    "Error: No such volume: $SLICE_HOME_VOLUME"|"Error: no such volume: $SLICE_HOME_VOLUME"|"No such volume: $SLICE_HOME_VOLUME"|"Error response from daemon: get $SLICE_HOME_VOLUME: no such volume") return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 saved_home_archive_identity() {
   local identity
-  identity="$(hash_stdin < "$SLICE_SAVED_HOME_ARCHIVE")" || return 1
+  identity="$(python3 "$SCRIPT_DIR/slice-command-guard.py" digest "$SLICE_SAVED_HOME_ARCHIVE")" || return 1
   [[ "$identity" =~ ^[a-f0-9]{64}$ ]] || return 1
   printf '%s\n' "$identity"
 }
@@ -269,23 +338,47 @@ saved_home_volume_label() {
 restore_saved_home_volume() {
   [[ -n "$SLICE_SAVED_HOME_ARCHIVE" ]] || return 0
   [[ -f "$SLICE_SAVED_HOME_ARCHIVE" ]] || fail "saved slice home archive not found: $SLICE_SAVED_HOME_ARCHIVE"
-  local helper status=0 cleanup_status=0
+  local helper status=0 cleanup_status=0 archive_in_container=-
+  local -a archive_mount=()
+  # A protected restore streams the pinned archive itself and admits a helper
+  # whose only mount is the destination home.
+  if [[ -n "$SLICE_SAVED_HOME_ARCHIVE_DIR" && -z "${CHARIOX_SLICE_PRIVATE_HOST_ROOT:-}" ]]; then
+    archive_mount=(-v "$SLICE_SAVED_HOME_ARCHIVE_DIR:/restore:ro")
+    archive_in_container=/restore/home.tar.zst
+  fi
   helper="${SLICE_NAME}-home-restore-$$"
   log "restoring saved home archive $SLICE_SAVED_HOME_ARCHIVE into volume $SLICE_HOME_VOLUME"
   run_with_timeout 30 docker rm -f "$helper" >/dev/null 2>&1 || true
   if run_with_timeout 60 docker create --name "$helper" --user root \
+    --memory 512m --cpus 1 --pids-limit 64 --network none \
+    --label "io.chariox.home-restore-helper=$helper" \
     -v "$SLICE_HOME_VOLUME:/home-dst" \
+    "${archive_mount[@]}" \
     "$SLICE_IMAGE" \
     sleep infinity >/dev/null; then :; else status=$?; fi
   if (( status == 0 )); then
     if run_with_timeout 60 docker start "$helper" >/dev/null; then :; else status=$?; fi
   fi
-  if (( status == 0 )); then
-    if run_with_timeout 120 docker cp -L "$SLICE_SAVED_HOME_ARCHIVE" "$helper:/tmp/home.tar.zst"; then :; else status=$?; fi
-  fi
-  if (( status == 0 )); then
-    if run_with_timeout 120 docker exec -u root "$helper" \
-      bash -lc "set -euo pipefail; find /home-dst -mindepth 1 -maxdepth 1 -exec rm -rf {} +; cd /home-dst; tar --zstd -xf /tmp/home.tar.zst; chown -R slice:slice /home-dst"; then :; else status=$?; fi
+  if [[ -n "${CHARIOX_SLICE_PRIVATE_HOST_ROOT:-}" ]]; then
+    if (( status == 0 )); then
+      if run_with_timeout 1300 node "$REPO_ROOT/apps/kernel/slice-linux-docker/protected-home-restore.mjs" \
+        "$helper" "$SLICE_HOME_VOLUME" "$SLICE_SAVED_HOME_ARCHIVE"; then :; else status=$?; fi
+    fi
+  else
+    if (( status == 0 )); then
+      local -a restore_command=(docker exec)
+      if [[ -z "$SLICE_SAVED_HOME_ARCHIVE_DIR" ]]; then restore_command+=(-i); fi
+      restore_command+=(-u root "$helper" /bin/sh -c
+        'set -eu; find /home-dst -mindepth 1 -maxdepth 1 -exec rm -rf {} +; tar --zstd -C /home-dst -xf "$1"; chown -R slice:slice /home-dst'
+        chariox-home-restore "$archive_in_container")
+      if [[ -n "$SLICE_SAVED_HOME_ARCHIVE_DIR" ]]; then
+        if run_with_timeout 120 "${restore_command[@]}"; then :; else status=$?; fi
+      else
+        # The private archive flows through Docker stdin into the home volume;
+        # no credential-bearing copy is materialized in the helper's layer.
+        if run_with_file_stdin_timeout 120 "$SLICE_SAVED_HOME_ARCHIVE" "${restore_command[@]}"; then :; else status=$?; fi
+      fi
+    fi
   fi
   if run_with_timeout 30 docker rm -f "$helper" >/dev/null 2>&1; then :; else cleanup_status=$?; fi
   if (( status != 0 )); then return "$status"; fi
@@ -294,18 +387,34 @@ restore_saved_home_volume() {
 }
 
 prepare_home_volume() {
-  local inspect_output
-  if inspect_output="$(run_with_timeout 20 docker volume inspect "$SLICE_HOME_VOLUME" 2>&1)"; then
-    log "preserving existing home volume $SLICE_HOME_VOLUME; saved home archive is only used for an initial restore"
-    return 0
+  local inspect_output inspect_status=0
+  local -a quota_labels=(
+    --label "io.chariox.slice.id=$SLICE_ID"
+    --label "io.chariox.slice.owner-kernel-id=$SLICE_OWNER_KERNEL_ID"
+    --label "io.chariox.slice.owner-machine-id=$SLICE_OWNER_MACHINE_ID"
+  )
+  if disk_quota_enabled; then
+    quota_labels+=(--label "io.chariox.slice.disk-quota=xfs-project-v1")
   fi
-  if ! volume_inspect_reports_not_found "$inspect_output"; then
+  if inspect_output="$(run_with_timeout 20 docker volume inspect "$SLICE_HOME_VOLUME" 2>&1)"; then
+    if [[ -n "${CHARIOX_SLICE_RESTORE_GENERATION:-}" ]]; then
+      node "$REPO_ROOT/apps/kernel/slice-linux-docker/protected-home-generation.mjs" --require-ready \
+        || fail "restored home generation is incomplete; previous home is preserved"
+    fi
+    log "preserving existing home volume $SLICE_HOME_VOLUME; saved home archive is only used for an initial restore"
+    apply_home_disk_quota
+    return 0
+  else
+    inspect_status=$?
+  fi
+  if ! volume_inspect_reports_not_found "$inspect_output" "$inspect_status"; then
     fail "could not inspect home volume $SLICE_HOME_VOLUME; refusing to assume it is absent: ${inspect_output:-unknown Docker error}"
   fi
 
   if [[ -z "$SLICE_SAVED_HOME_ARCHIVE" ]]; then
-    run_with_timeout 30 docker volume create "$SLICE_HOME_VOLUME" >/dev/null \
+    run_with_timeout 30 docker volume create "${quota_labels[@]}" "$SLICE_HOME_VOLUME" >/dev/null \
       || fail "failed to create home volume $SLICE_HOME_VOLUME"
+    apply_home_disk_quota
     return 0
   fi
   [[ -f "$SLICE_SAVED_HOME_ARCHIVE" ]] \
@@ -314,7 +423,7 @@ prepare_home_volume() {
   archive_identity="$(saved_home_archive_identity)" \
     || fail "could not calculate the saved slice home archive identity"
   initialization_token="$(printf '%s\0%s\0%s\0%s' "$SLICE_NAME" "$SLICE_HOME_VOLUME" "$archive_identity" "$$" | hash_stdin)"
-  run_with_timeout 30 docker volume create \
+  run_with_timeout 30 docker volume create "${quota_labels[@]}" \
     --label "io.chariox.saved-home.archive-sha256=$archive_identity" \
     --label "io.chariox.saved-home.initialization-token=$initialization_token" \
     "$SLICE_HOME_VOLUME" >/dev/null \
@@ -326,6 +435,7 @@ prepare_home_volume() {
   if [[ "$created_archive_label" != "$archive_identity" || "$created_token_label" != "$initialization_token" ]]; then
     fail "home volume $SLICE_HOME_VOLUME was not proven newly-created for this saved archive; refusing to overwrite it"
   fi
+  apply_home_disk_quota
   if restore_saved_home_volume; then
     return 0
   fi
@@ -335,7 +445,7 @@ prepare_home_volume() {
 }
 
 machine_id_hex() {
-  printf '%s' "$SLICE_MACHINE_ID" | sha256sum | awk '{ print substr($1, 1, 32) }'
+  printf '%s' "$SLICE_MACHINE_ID" | hash_stdin | cut -c 1-32
 }
 
 configure_stable_machine_identity() {
@@ -379,6 +489,10 @@ copy_required_slice_overlay() {
 }
 
 refresh_slice_support_files() {
+  run_with_timeout 30 python3 "$SCRIPT_DIR/check-browser-overlay-admission.py" \
+    --container "$SLICE_NAME" --slice-id "$SLICE_ID" \
+    --owner-kernel-id "$SLICE_OWNER_KERNEL_ID" --owner-machine-id "$SLICE_OWNER_MACHINE_ID" \
+    || fail "browser overlay admission refused; stop then start this slice through the normal kernel lifecycle"
   # Saved images retain their original packages. Prepare the desktop services
   # before overlaying the current launcher.
   run_with_timeout 180 docker exec -u root "$SLICE_NAME" bash -lc '
@@ -395,6 +509,7 @@ refresh_slice_support_files() {
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-runtime.sh" "$SLICE_NAME:/opt/chariox-slice/start-runtime.sh" "runtime launcher"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-providers.sh" "$SLICE_NAME:/opt/chariox-slice/start-providers.sh" "provider launcher"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-screen.sh" "$SLICE_NAME:/opt/chariox-slice/slice-screen.sh" "screen launcher"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-keyboard.py" "$SLICE_NAME:/opt/chariox-slice/slice-keyboard.py" "physical keyboard and secret target guard"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/tint2rc" "$SLICE_NAME:/opt/chariox-slice/tint2rc" \
     || log "applications taskbar configuration refresh unavailable; continuing"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-text-finder.py" "$SLICE_NAME:/opt/chariox-slice/slice-text-finder.py" "screen text finder"
@@ -412,7 +527,13 @@ refresh_slice_support_files() {
   fi
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-cdp.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-cdp.mjs" "browser CDP helper"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-actions.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-actions.mjs" "Browser Controller actions module"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-input.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-input.mjs" "Browser Controller actions module"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-cdp.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-cdp.mjs" "Browser Controller CDP module"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-display.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-display.mjs" "Canonical display support"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/canonical-display.py" "$SLICE_NAME:/opt/chariox-slice/canonical-display.py" "Canonical display support"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/canonical_vnc.py" "$SLICE_NAME:/opt/chariox-slice/canonical_vnc.py" "Canonical display support"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/xorg-dummy.conf" "$SLICE_NAME:/opt/chariox-slice/xorg-dummy.conf" "Canonical display support"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/selkies-capture.py" "$SLICE_NAME:/opt/chariox-slice/selkies-capture.py" "Canonical display support"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-resources.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-resources.mjs" \
     || fail "failed to refresh required slice support overlay: Browser Controller resources"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-cookie-fence.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-cookie-fence.mjs" \
@@ -421,10 +542,21 @@ refresh_slice_support_files() {
     || fail "failed to refresh required slice support overlay: Browser Controller dialogs"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-compatibility.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-compatibility.mjs" \
     || fail "failed to refresh required slice support overlay: Browser Controller compatibility"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-apps.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-apps.mjs" \
+    || fail "failed to refresh required slice support overlay: Browser Controller App views"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-bar.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-bar.mjs" \
+    || fail "failed to refresh required slice support overlay: Browser Controller browser bar"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-app-restore.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-app-restore.mjs" \
+    || fail "failed to refresh required slice support overlay: safe App session restore"
+  run_with_timeout 30 docker exec -u root "$SLICE_NAME" chmod 0644 /opt/chariox-slice/browser-app-restore.mjs \
+    || fail "failed to set permissions on safe App session restore overlay"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-events.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-events.mjs" \
     || fail "failed to refresh required slice support overlay: Browser Controller events"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-files.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-files.mjs" \
     || fail "failed to refresh required slice support overlay: Browser Controller files"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-upload-staging.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-upload-staging.mjs" "Browser Controller upload staging module"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-upload-store.py" "$SLICE_NAME:/opt/chariox-slice/browser-upload-store.py" "Browser upload quota store"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-lifecycle.py" "$SLICE_NAME:/opt/chariox-slice/browser-lifecycle.py" "Browser lifecycle owner"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-frames.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-frames.mjs" \
     || fail "failed to refresh required slice support overlay: Browser Controller frames"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-history.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-history.mjs" \
@@ -452,13 +584,17 @@ refresh_slice_support_files() {
     /opt/chariox-slice/slice-screen.sh \
     /opt/chariox-slice/browser-cdp.mjs \
     /opt/chariox-slice/browser-controller-actions.mjs \
+    /opt/chariox-slice/browser-controller-input.mjs \
     /opt/chariox-slice/browser-controller-cdp.mjs \
     /opt/chariox-slice/browser-controller-resources.mjs \
     /opt/chariox-slice/browser-controller-cookie-fence.mjs \
     /opt/chariox-slice/browser-controller-dialogs.mjs \
     /opt/chariox-slice/browser-controller-compatibility.mjs \
+    /opt/chariox-slice/browser-controller-apps.mjs \
+    /opt/chariox-slice/browser-controller-bar.mjs \
     /opt/chariox-slice/browser-controller-events.mjs \
     /opt/chariox-slice/browser-controller-files.mjs \
+    /opt/chariox-slice/browser-controller-upload-staging.mjs \
     /opt/chariox-slice/browser-controller-frames.mjs \
     /opt/chariox-slice/browser-controller-history.mjs \
     /opt/chariox-slice/browser-controller-permissions.mjs \
@@ -494,7 +630,9 @@ available_mb_for_path() {
 require_slice_free_space() {
   local phase="$1"
   shift
-  [[ "$SLICE_MIN_FREE_MB" =~ ^[0-9]+$ ]] || fail "CHARIOX_SLICE_MIN_FREE_MB must be a non-negative integer"
+  [[ "$SLICE_MIN_FREE_MB" =~ ^[0-9]{1,10}$ ]] && (( 10#$SLICE_MIN_FREE_MB <= 4294967295 )) \
+    || fail "CHARIOX_SLICE_MIN_FREE_MB must be a non-negative u32 MiB value"
+  SLICE_MIN_FREE_MB="$((10#$SLICE_MIN_FREE_MB))"
   local paths=("$@")
   local path
   for path in "${paths[@]}"; do
@@ -587,6 +725,9 @@ require_saved_state_compatibility() {
     log "saved state image $SLICE_IMAGE is runtime-compatible and Selkies-capable"
     return 0
   fi
+  if [[ -n "$SLICE_PRIVATE_HOST_ROOT" ]]; then
+    fail "protected saved state requires its original compatible image; existing identity and saved state are preserved"
+  fi
   if saved_state_image_compatible "$SLICE_BASE_IMAGE"; then
     log "saved state migration: restoring $SLICE_SAVED_HOME_ARCHIVE on Selkies-capable runtime image $SLICE_BASE_IMAGE; home volume state is preserved"
     SLICE_IMAGE="$SLICE_BASE_IMAGE"
@@ -605,13 +746,18 @@ docker_target_arch() {
   esac
 }
 
+run_build_command() {
+  # MP-08/MP-10/MP-11: common owned wait; silence is not a build failure.
+  run_guarded_command unbounded -- "$@"
+}
+
 docker_build() {
   if docker buildx version >/dev/null 2>&1; then
-    docker buildx build --load "$@"
+    run_build_command docker buildx build --builder default --load "$@"
     return
   fi
-  if command -v docker-buildx >/dev/null 2>&1; then
-    docker-buildx build --load "$@"
+  if [[ -z "${CHARIOX_SLICE_MANAGED_DOCKER_HOST:-}" ]] && command -v docker-buildx >/dev/null 2>&1; then
+    run_build_command docker-buildx build --builder default --load "$@"
     return
   fi
   fail "Docker Buildx is required to build the slice runtime image"
@@ -634,6 +780,9 @@ build_standard_runtime_image() {
       -f "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/Dockerfile" \
       -t "$image" \
       "$REPO_ROOT"
+    if [[ "${CHARIOX_SLICE_BUILD_CONTEXT_DIGEST:-}" =~ ^sha256:[a-f0-9]{64}$ && -n "${CHARIOX_SLICE_PROTECTED_IMAGE_PROOF_ROOT:-}" ]]; then
+      node "$REPO_ROOT/apps/kernel/slice-linux-docker/protected-image-proof.mjs" --record-standard-build "$image"
+    fi
     return
   fi
   docker_build \
@@ -645,6 +794,9 @@ build_standard_runtime_image() {
     -f "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/Dockerfile" \
     -t "$image" \
     "$REPO_ROOT"
+  if [[ "${CHARIOX_SLICE_BUILD_CONTEXT_DIGEST:-}" =~ ^sha256:[a-f0-9]{64}$ && -n "${CHARIOX_SLICE_PROTECTED_IMAGE_PROOF_ROOT:-}" ]]; then
+    node "$REPO_ROOT/apps/kernel/slice-linux-docker/protected-image-proof.mjs" --record-standard-build "$image"
+  fi
 }
 
 ensure_runtime_base_image() {
@@ -706,11 +858,20 @@ build_image() {
     fi
     ensure_runtime_base_image
     if ! docker image inspect "$SLICE_IMAGE" >/dev/null 2>&1; then
+      if [[ -n "$SLICE_PRIVATE_HOST_ROOT" ]]; then
+        fail "protected saved state image is missing; existing identity and saved state are preserved"
+      fi
       log "saved state image $SLICE_IMAGE is missing; restoring the saved home archive on $SLICE_BASE_IMAGE"
       SLICE_IMAGE="$SLICE_BASE_IMAGE"
     fi
     log "preserving saved state image $SLICE_IMAGE; its worker runtime will be refreshed after startup"
     return 0
+  fi
+
+  # Cache preflight deliberately precedes opening the caller's Dockerfile.
+  # Auto/never retain their existing cache behavior even if its path vanished.
+  if [[ "${CHARIOX_SLICE_IMAGE_BUILD_CHECK_ONLY:-0}" == 1 ]]; then
+    return 42
   fi
 
   if [[ -n "$SLICE_EXTENSION_DOCKERFILE" ]]; then
@@ -726,7 +887,7 @@ build_image() {
       --build-arg "CHARIOX_RUNTIME_SOURCE_REVISION=$SLICE_RUNTIME_SOURCE_REVISION" \
       -f "$SLICE_EXTENSION_DOCKERFILE" \
       -t "$SLICE_IMAGE" \
-      "$(dirname "$SLICE_EXTENSION_DOCKERFILE")"
+      "${SLICE_EXTENSION_BUILD_CONTEXT:-$(dirname "$SLICE_EXTENSION_DOCKERFILE")}"
     return 0
   fi
   build_standard_runtime_image "$SLICE_IMAGE"
@@ -834,9 +995,22 @@ ensure_container() {
   else
     log "creating container $SLICE_NAME"
     prepare_home_volume
+    if [[ "${CHARIOX_SLICE_OWNED_WORKSPACE:-0}" == "1" ]]; then
+      if docker volume inspect "$SLICE_WORKSPACE_SOURCE" >/dev/null 2>&1; then
+        require_owned_workspace_volume
+      else
+        docker volume create --label "org.chariox.local.owner-slice=$SLICE_ID" \
+          --label "org.chariox.local.owner-uid=$SLICE_WORKSPACE_OWNER" "$SLICE_WORKSPACE_SOURCE" >/dev/null \
+          || fail "owned workspace creation failed"
+      fi
+    fi
     local docker_create_args=(
+      --init
       --name "$SLICE_NAME"
       --hostname "$SLICE_HOSTNAME"
+      --label "io.chariox.slice.id=$SLICE_ID"
+      --label "io.chariox.slice.owner-kernel-id=$SLICE_OWNER_KERNEL_ID"
+      --label "io.chariox.slice.owner-machine-id=$SLICE_OWNER_MACHINE_ID"
       --ulimit core=0:0
       --ulimit "nofile=$SLICE_DOCKER_NOFILE_LIMIT:$SLICE_DOCKER_NOFILE_LIMIT"
       --pids-limit "$SLICE_DOCKER_PIDS_LIMIT"
@@ -857,12 +1031,30 @@ ensure_container() {
       -v "$SLICE_WORKSPACE_SOURCE:/workspace:$SLICE_WORKSPACE_MOUNT_MODE"
       --add-host "host.docker.internal:host-gateway"
     )
+    if [[ -n "$SLICE_PRIVATE_HOST_ROOT" ]]; then
+      # The trusted host provisioner prepares and verifies this retained root.
+      # Existing legacy containers are not retrofitted or migrated here.
+      docker_create_args+=(
+        -e "HOME=/home/slice"
+        -e "CHARIOX_HOME=$SLICE_KERNEL_HOME"
+        -e "CHARIOX_MANAGED_PROVIDER_HOME=$SLICE_PROVIDER_HOME"
+        -e "GH_CONFIG_DIR=$SLICE_PROVIDER_HOME/.config/gh"
+        -e "CHARIOX_SLICE_PRIVATE_ROOT=$SLICE_PRIVATE_ROOT"
+        -v "$SLICE_PRIVATE_HOST_ROOT:$SLICE_PRIVATE_ROOT"
+        -v "$SLICE_PRIVATE_HOST_ROOT/nssdb:/home/slice/.local/share/pki/nssdb"
+        --tmpfs /tmp/chariox-slice-state:rw,nosuid,nodev,noexec,mode=0700,uid=1001,gid=1001
+      )
+    fi
+    if disk_quota_enabled; then
+      docker_create_args+=(--label "io.chariox.slice.disk-quota=xfs-project-v1")
+    fi
     if [[ "$SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY" == "1" ]]; then
       # The worker kernel launches providers through an inner bubblewrap user,
       # PID, and mount namespace. Docker's default seccomp, AppArmor, and
       # system-path masks block that setup before bubblewrap can install the
-      # narrower provider boundary. Managed hosts run this container in the
-      # dedicated rootless daemon; ordinary local slices must opt in. These
+      # narrower provider boundary. Managed hosts use a dedicated rootless
+      # daemon; explicit DEV enrollment uses a rootful unmapped engine.
+      # Ordinary local placements must explicitly opt in. These
       # are Bubblewrap's documented setup capabilities; the provider receives
       # none of them because the inner sandbox uses --cap-drop ALL.
       docker_create_args+=(
@@ -920,8 +1112,11 @@ ensure_container() {
     created_container=1
   fi
 
+  apply_layer_disk_quota
   if ! container_running; then
+    apply_both_disk_quotas
     log "starting container $SLICE_NAME"
+    reconcile_stopped_browser_lifetimes
     local start_status=0
     if run_with_timeout 60 docker start "$SLICE_NAME" >/dev/null; then
       start_status=0
@@ -945,6 +1140,7 @@ ensure_container() {
   if [[ "$created_container" == "1" ]]; then
     run_with_timeout 30 docker exec -u root "$SLICE_NAME" bash -lc "mkdir -p /home/slice/.local/share /home/slice/.config /home/slice/.cache && chown -R slice:slice /home/slice" \
       || log "home directory ownership refresh unavailable; continuing"
+    prepare_development_workspace_access
   fi
   configure_stable_machine_identity
   configure_chromium_browser_policy
@@ -954,8 +1150,31 @@ ensure_container() {
   probe_provider_sandbox_compatibility
 }
 
+prepare_development_workspace_access() {
+  # Managed publication ACLs are prepared by the broker. Ordinary Docker
+  # publications need access for the image's non-root worker as well.
+  if [[ -n "${CHARIOX_SLICE_MANAGED_DOCKER_HOST:-}" || "$SLICE_DEVELOPMENT_MOUNT_COUNT" -eq 0 ]]; then
+    return
+  fi
+  local mounts=() index variable
+  for ((index = 0; index < SLICE_DEVELOPMENT_MOUNT_COUNT; index++)); do
+    variable="CHARIOX_SLICE_DEVELOPMENT_MOUNT_${index}"
+    mounts+=("${!variable:?missing development workspace mount}")
+  done
+  run_with_timeout 120 docker exec -i -u root "$SLICE_NAME" python3 - "${mounts[@]}" \
+    < "$SCRIPT_DIR/prepare-development-workspace-access.py" \
+    || fail "failed to prepare development workspace access"
+}
+
+reconcile_stopped_browser_lifetimes() {
+  run_with_timeout 40 python3 "$SCRIPT_DIR/reconcile-stopped-browser-lifetimes.py" "$SLICE_NAME" \
+    "$SLICE_ID" "$SLICE_OWNER_KERNEL_ID" "$SLICE_OWNER_MACHINE_ID" >/dev/null \
+    || fail "stopped browser lifetime reconciliation failed for $SLICE_NAME"
+}
+
 recover_existing_container() {
   container_exists || fail "slice container $SLICE_NAME does not exist; cannot recover failed state save"
+  apply_both_disk_quotas
   apply_container_process_limit
   verify_container_nofile_limit
   local paused
@@ -972,6 +1191,7 @@ recover_existing_container() {
   esac
   if ! container_running; then
     log "restarting existing container $SLICE_NAME after failed state save"
+    reconcile_stopped_browser_lifetimes
     if ! run_with_timeout 60 docker start "$SLICE_NAME" >/dev/null \
       && ! wait_for_container_running 24 5; then
       fail "failed to restart existing container $SLICE_NAME after failed state save"
@@ -987,13 +1207,35 @@ recover_existing_container() {
   refresh_slice_support_files
 }
 
+ensure_protected_runtime_barrier() {
+  if [[ -n "${CHARIOX_SLICE_PRIVATE_HOST_ROOT:-}" ]]; then
+    # This reserved runtime tree is installed by the signed provisioner. Keep
+    # ordinary slice applications from replacing code after its hash is pinned.
+    # Legacy layouts are deliberately untouched.
+    run_with_timeout 30 docker exec -u root "$SLICE_NAME" sh -ec '
+      for path in / /opt /opt/chariox-slice /opt/chariox-slice/bin /opt/chariox-slice/bin/chariox-kernel; do
+        test ! -L "$path" || exit 1
+      done
+      chown -hR root:root /opt/chariox-slice
+      find /opt/chariox-slice -type d -exec chmod 0755 {} +
+      find /opt/chariox-slice -type f -exec chmod go-w {} +
+    ' || fail "protected runtime ownership could not be established"
+    node "$REPO_ROOT/apps/kernel/slice-linux-docker/protected-first-boot.mjs"
+  fi
+}
+
 start_slice_services() {
+  if [[ "${CHARIOX_SLICE_OWNED_WORKSPACE:-0}" == "1" ]]; then
+    run_with_timeout 30 docker exec -u root "$SLICE_NAME" chown 1001:1001 /workspace \
+      || fail "owned workspace ownership failed"
+  fi
+  ensure_protected_runtime_barrier
   if [[ "$SLICE_IMPORT_PROVIDER_AUTH" == "1" ]]; then
     import_provider_auth
   fi
   if [[ "$SLICE_START_DESKTOP" == "1" ]]; then
     require_slice_free_space "desktop" /home/slice /tmp
-    run_required_phase desktop exec_slice_with_timeout 60 bash -lc "/opt/chariox-slice/slice-screen.sh start"
+    run_required_phase desktop exec_slice_with_timeout 120 bash -lc "/opt/chariox-slice/slice-screen.sh start"
   fi
   if [[ "$SLICE_START_RUNTIME" == "1" ]]; then
     require_slice_free_space "runtime" /home/slice /tmp
@@ -1013,6 +1255,7 @@ ensure_auth_target_container() {
   verify_container_nofile_limit
   if ! container_running; then
     log "starting container $SLICE_NAME"
+    reconcile_stopped_browser_lifetimes
     run_with_timeout 60 docker start "$SLICE_NAME" >/dev/null || fail "failed to start container $SLICE_NAME"
   fi
   run_with_timeout 30 docker exec -u root "$SLICE_NAME" rm -f \
@@ -1025,6 +1268,13 @@ exec_slice_with_timeout() {
   local seconds="$1"
   shift
   local relay_env_args=()
+  if [[ -n "$SLICE_PRIVATE_HOST_ROOT" ]]; then
+    relay_env_args+=(
+      -e "CHARIOX_HOME=$SLICE_KERNEL_HOME"
+      -e "CHARIOX_MANAGED_PROVIDER_HOME=$SLICE_PROVIDER_HOME"
+      -e "CHARIOX_SLICE_PRIVATE_ROOT=$SLICE_PRIVATE_ROOT"
+    )
+  fi
   # Forward a provisioner-supplied binding, including partial values so kernel
   # boot validation rejects incomplete identities rather than running unbound.
   local binding_name
@@ -1090,6 +1340,7 @@ exec_slice_with_timeout() {
     -e CHARIOX_SLICE_NOVNC_PORT="$SLICE_NOVNC_PORT" \
     -e CHARIOX_SLICE_VIEWER_BACKEND="$SLICE_VIEWER_BACKEND" \
     "${relay_env_args[@]}" \
+    -e CHARIOX_SLICE_DAEMON_ID="$SLICE_DAEMON_ID" \
     -e CHARIOX_SLICE_DAEMON_ALIAS="$SLICE_DAEMON_ALIAS" \
     -e CHARIOX_SLICE_MACHINE_ID="$SLICE_MACHINE_ID" \
     -e CHARIOX_SLICE_MACHINE_ALIAS="$SLICE_MACHINE_ALIAS" \
@@ -1120,7 +1371,12 @@ slice_screen_diagnostics() {
       echo \"==== \${log_file}\"
       tail -n 40 \"\${log_file}\" 2>/dev/null || true
     done
-  " >&2 || log "slice screen diagnostics unavailable"
+  " 2>&1 \
+    | sed -E \
+        -e 's/(([Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn])"?[[:space:]]*[:=][[:space:]]*).*/\1[REDACTED]/g' \
+        -e 's/(([Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll])"?[[:space:]]*[:=][[:space:]]*).*/\1[REDACTED]/g' \
+        -e 's/([Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]+)[^[:space:]]+/\1[REDACTED]/g' \
+    >&2 || log "slice screen diagnostics unavailable"
 }
 
 run_required_phase() {
@@ -1308,7 +1564,7 @@ import_github_auth() {
       log "GitHub auth has no explicit managed credential input; skipping"
       return 0
     fi
-  elif ! gh auth token --hostname "$SLICE_GITHUB_HOST" >"$token_tmp" 2>/dev/null || [[ ! -s "$token_tmp" ]]; then
+  elif ! run_with_timeout 30 gh auth token --hostname "$SLICE_GITHUB_HOST" >"$token_tmp" 2>/dev/null || [[ ! -s "$token_tmp" ]]; then
       rm -f "$token_tmp"
       log "GitHub auth is not configured on the kernel host; skipping"
       return 0
@@ -1327,7 +1583,7 @@ import_github_auth() {
     install -d -m 0700 \"\$HOME/.config/gh\" '/home/slice/.config'
     gh auth login --hostname '$SLICE_GITHUB_HOST' --git-protocol https --with-token >/dev/null
     gh auth setup-git --hostname '$SLICE_GITHUB_HOST' >/dev/null
-    if [[ ! -e '/home/slice/.config/gh' ]]; then
+    if [[ -z '$SLICE_PRIVATE_HOST_ROOT' && ! -e '/home/slice/.config/gh' ]]; then
       ln -s \"$SLICE_PROVIDER_HOME/.config/gh\" '/home/slice/.config/gh'
     fi
     if ! HOME='/home/slice' git config --global --get-all include.path 2>/dev/null \
@@ -1366,16 +1622,22 @@ print_provider_auth_status() {
     probe() {
       local label=\"\$1\"
       shift
+      local status
+      # Auth/status harness output may contain credentials. Retain only the
+      # command label and exit classification, never either probe stream.
       if command -v timeout >/dev/null 2>&1; then
-        timeout 8s \"\$@\"
-        local status=\$?
-        if [[ \$status -eq 124 ]]; then
-          printf '%s probe timed out\\n' \"\$label\" >&2
-        fi
-        return \$status
+        timeout 8s \"\$@\" >/dev/null 2>&1
+        status=\$?
+      else
+        \"\$@\" >/dev/null 2>&1
+        status=\$?
       fi
-      \"\$@\"
-      return \$?
+      case \$status in
+        0) printf '%s auth status probe completed\\n' \"\$label\" ;;
+        124) printf '%s auth probe timed out\\n' \"\$label\" ;;
+        *) printf '%s auth unavailable (exit %s)\\n' \"\$label\" \"\$status\" ;;
+      esac
+      return \$status
     }
     echo '--- provider auth'
     probe codex codex login status || true
@@ -1398,7 +1660,7 @@ provider_login_command() {
       printf '%s\n' "CLAUDE_CONFIG_DIR='$SLICE_ACCOUNT_ROOT/claude/$SLICE_ACCOUNT_PROFILE/claude' claude auth login"
       ;;
     github)
-      printf '%s\n' "export HOME='$SLICE_PROVIDER_HOME' && install -d -m 0700 \"\$HOME/.config/gh\" '/home/slice/.config' && gh auth login --hostname '$SLICE_GITHUB_HOST' --git-protocol https --web && gh auth setup-git --hostname '$SLICE_GITHUB_HOST' && { [[ -e '/home/slice/.config/gh' ]] || ln -s '$SLICE_PROVIDER_HOME/.config/gh' '/home/slice/.config/gh'; } && { HOME='/home/slice' git config --global --get-all include.path 2>/dev/null | grep -Fxq '$SLICE_PROVIDER_HOME/.gitconfig' || HOME='/home/slice' git config --global --add include.path '$SLICE_PROVIDER_HOME/.gitconfig'; }"
+      printf '%s\n' "export HOME='$SLICE_PROVIDER_HOME' && install -d -m 0700 \"\$HOME/.config/gh\" '/home/slice/.config' && gh auth login --hostname '$SLICE_GITHUB_HOST' --git-protocol https --web && gh auth setup-git --hostname '$SLICE_GITHUB_HOST' && { [[ -n '$SLICE_PRIVATE_HOST_ROOT' || -e '/home/slice/.config/gh' ]] || ln -s '$SLICE_PROVIDER_HOME/.config/gh' '/home/slice/.config/gh'; } && { HOME='/home/slice' git config --global --get-all include.path 2>/dev/null | grep -Fxq '$SLICE_PROVIDER_HOME/.gitconfig' || HOME='/home/slice' git config --global --add include.path '$SLICE_PROVIDER_HOME/.gitconfig'; }"
       ;;
     *)
       fail "unsupported slice provider login: $SLICE_LOGIN_PROVIDER"
@@ -1412,13 +1674,15 @@ start_provider_login() {
   local safe_provider
   safe_provider="$(printf '%s' "$SLICE_LOGIN_PROVIDER" | tr -c 'A-Za-z0-9_.-' '-')"
   local session_name="chariox-slice-login-${safe_provider}"
-  local log_file="/opt/chariox-slice/logs/provider-login-${safe_provider}.log"
+  local login_logs="/opt/chariox-slice/logs"
+  if [[ -n "$SLICE_PRIVATE_HOST_ROOT" ]]; then login_logs="$SLICE_PRIVATE_ROOT/runtime/logs"; fi
+  local log_file="$login_logs/provider-login-${safe_provider}.log"
   local command_text
   command_text="$(provider_login_command)"
   log "starting $SLICE_LOGIN_PROVIDER login in $session_name"
   run_with_timeout 30 docker exec -u slice "$SLICE_NAME" bash -lc "
     set -euo pipefail
-    mkdir -p /opt/chariox-slice/logs
+    mkdir -p '$login_logs'
     rm -f '$log_file'
     screen -S '$session_name' -X quit >/dev/null 2>&1 || true
     screen -dmS '$session_name' bash -lc \"set +e; $command_text 2>&1 | tee -a '$log_file'; printf '\\n[chariox] provider login exited with status %s\\n' \\\${PIPESTATUS[0]} | tee -a '$log_file'; exec bash\"
@@ -1481,11 +1745,14 @@ print_status() {
 }
 
 stop_container() {
-  if ! docker ps -a --format '{{.Names}}' | grep -Fxq "$SLICE_NAME"; then
+  local all_names running_names
+  all_names="$(docker ps -a --format '{{.Names}}')" || fail "failed to inspect containers before stop"
+  if ! grep -Fxq "$SLICE_NAME" <<< "$all_names"; then
     log "container $SLICE_NAME does not exist"
     return 0
   fi
-  if docker ps --format '{{.Names}}' | grep -Fxq "$SLICE_NAME"; then
+  running_names="$(docker ps --format '{{.Names}}')" || fail "failed to inspect running containers before stop"
+  if grep -Fxq "$SLICE_NAME" <<< "$running_names"; then
     log "stopping slice processes in $SLICE_NAME"
     docker exec -u slice "$SLICE_NAME" bash -lc "
       screen -S chariox-slice-relay -X quit >/dev/null 2>&1 || true
@@ -1500,20 +1767,68 @@ stop_container() {
   fi
 }
 
+require_owned_workspace_volume() {
+  [[ "$(docker volume inspect --format '{{index .Labels "org.chariox.local.owner-slice"}}' "$SLICE_WORKSPACE_SOURCE")" == "$SLICE_ID" ]] || fail "foreign owned workspace volume"
+  [[ "$(docker volume inspect --format '{{index .Labels "org.chariox.local.owner-uid"}}' "$SLICE_WORKSPACE_SOURCE")" == "$SLICE_WORKSPACE_OWNER" ]] || fail "foreign owned workspace owner"
+}
+
+# Only explicit deletion removes the owned workspace; restore and recreation keep it.
+remove_owned_workspace_volume() {
+  [[ "${CHARIOX_SLICE_OWNED_WORKSPACE:-0}" == "1" ]] || return 0
+  docker volume inspect "$SLICE_WORKSPACE_SOURCE" >/dev/null 2>&1 || return 0
+  require_owned_workspace_volume
+  log "removing volume $SLICE_WORKSPACE_SOURCE"
+  docker volume rm "$SLICE_WORKSPACE_SOURCE" >/dev/null
+}
+
 destroy_container() {
   stop_container
-  if docker ps -a --format '{{.Names}}' | grep -Fxq "$SLICE_NAME"; then
+  local all_names volume_inspection volume_status=0
+  all_names="$(docker ps -a --format '{{.Names}}')" || fail "failed to inspect containers before removal"
+  if grep -Fxq "$SLICE_NAME" <<< "$all_names"; then
     log "removing container $SLICE_NAME"
     docker rm "$SLICE_NAME" >/dev/null
   fi
-  if docker volume inspect "$SLICE_HOME_VOLUME" >/dev/null 2>&1; then
+  if volume_inspection="$(docker volume inspect "$SLICE_HOME_VOLUME" 2>&1)"; then
     log "removing volume $SLICE_HOME_VOLUME"
     docker volume rm "$SLICE_HOME_VOLUME" >/dev/null
+  else
+    volume_status=$?
+    if ! volume_inspect_reports_not_found "$volume_inspection" "$volume_status"; then
+      fail "failed to inspect home volume before removal"
+    fi
   fi
+}
+
+restore_slice_state() {
+  require_docker
+  [[ -n "$SLICE_SAVED_HOME_ARCHIVE" ]] || fail "restore-state requires a saved home archive"
+  build_image
+  if [[ -n "${CHARIOX_SLICE_RESTORE_GENERATION:-}" ]]; then
+    # Materialize and durably verify the fresh generation while the old
+    # container/home still exist. Never remove retained previous data here.
+    prepare_home_volume
+    node "$REPO_ROOT/apps/kernel/slice-linux-docker/protected-home-generation.mjs" --require-ready \
+      || fail "restored home generation is incomplete; previous home is preserved"
+    stop_container
+    if container_exists; then run_with_timeout 30 docker rm "$SLICE_NAME" >/dev/null; fi
+  else
+    destroy_container
+  fi
+  ensure_container
+  ensure_protected_runtime_barrier
+  stop_container
+  log "saved slice state restored; container remains stopped"
 }
 
 main() {
   local action="${1:-provision}"
+  if [[ -n "$SLICE_DISK_LAYER_MB" || -n "$SLICE_DISK_HOME_MB" ]]; then
+    [[ "$SLICE_DISK_LAYER_MB" =~ ^[1-9][0-9]{0,9}$ && "$SLICE_DISK_HOME_MB" =~ ^[1-9][0-9]{0,9}$ ]] \
+      || fail "CHARIOX_SLICE_DISK_LAYER_MB and CHARIOX_SLICE_DISK_HOME_MB must both be positive integers"
+    (( SLICE_DISK_LAYER_MB <= 4294967295 && SLICE_DISK_HOME_MB <= 4294967295 )) \
+      || fail "disk quota limits must fit u32 MiB values"
+  fi
   case "$action" in
     -h|--help|help|status|stop|destroy) ;;
     *)
@@ -1530,6 +1845,10 @@ main() {
     -h|--help|help)
       usage
       ;;
+    build-image)
+      require_docker
+      build_image
+      ;;
     provision)
       require_docker
       build_image
@@ -1538,13 +1857,7 @@ main() {
       log "provision completed; use status or logs actions for diagnostics"
       ;;
     restore-state)
-      require_docker
-      [[ -n "$SLICE_SAVED_HOME_ARCHIVE" ]] || fail "restore-state requires a saved home archive"
-      build_image
-      destroy_container
-      ensure_container
-      stop_container
-      log "saved slice state restored; container remains stopped"
+      restore_slice_state
       ;;
     recover)
       require_docker
@@ -1563,6 +1876,7 @@ main() {
     destroy)
       require_docker
       destroy_container
+      remove_owned_workspace_volume
       ;;
     import-provider-auth)
       require_docker
@@ -1602,7 +1916,7 @@ main() {
       require_docker
       ensure_container
       require_slice_free_space "desktop" /home/slice /tmp
-      run_required_phase desktop exec_slice_with_timeout 60 bash -lc "/opt/chariox-slice/slice-screen.sh start"
+      run_required_phase desktop exec_slice_with_timeout 120 bash -lc "/opt/chariox-slice/slice-screen.sh start"
       ;;
     validate-screen)
       require_docker
@@ -1614,6 +1928,9 @@ main() {
       require_docker
       ensure_container
       require_slice_free_space "runtime" /home/slice /tmp
+      if [[ -n "${CHARIOX_SLICE_PRIVATE_HOST_ROOT:-}" ]]; then
+        node "$REPO_ROOT/apps/kernel/slice-linux-docker/protected-first-boot.mjs"
+      fi
       exec_slice /opt/chariox-slice/start-runtime.sh
       ;;
     start-providers)
@@ -1634,4 +1951,5 @@ main() {
   esac
 }
 
+SLICE_RUNTIME_SOURCE_REVISION="$(runtime_source_revision)"
 main "$@"

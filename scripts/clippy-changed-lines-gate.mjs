@@ -76,6 +76,7 @@ async function runClippy(cwd, targetDir) {
     }
     if (event?.reason === "compiler-message" && event.message?.level === "error") {
       compilerError = true
+      process.stderr.write(event.message.rendered ?? `${event.message.message}\n`)
     }
     const warning = warningFromCompilerEvent(event)
     if (warning) warnings.push(warning)

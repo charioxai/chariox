@@ -13,7 +13,7 @@ pub(crate) use super::provider_liveness::ProviderRunLivenessRuntime;
 pub(crate) use super::provider_processes::ProviderProcessTracker;
 
 impl DaemonApp {
-    pub(crate) fn end_provider_run_for_workflow_context_flush(
+    pub(crate) fn end_agent_provider_run(
         &mut self,
         session_id: &str,
         agent_id: &str,
@@ -402,7 +402,12 @@ impl DaemonApp {
             }),
         );
         let _ = self.providers.record_run_activity(run.id());
-        if let Some(agent_id) = run.agent_instance_id() {
+        // A substitute run reruns its one turn; it never becomes the agent's
+        // profile, and queued turns start on the agent's own provider.
+        if let Some(agent_id) = run
+            .agent_instance_id()
+            .filter(|_| run.turn_substitute().is_none())
+        {
             self.agents.set_agent_runtime_profile_durably(
                 &self.durable_state,
                 agent_id,
@@ -505,7 +510,11 @@ impl DaemonApp {
             self.sessions
                 .set_active_provider_run(run.session_id(), Some(run.id().to_string()))?;
             let _ = self.providers.record_run_activity(run.id());
-            if let Some(agent_id) = run.agent_instance_id() {
+            // A substitute run reruns one turn; it never becomes the agent's profile.
+            if let Some(agent_id) = run
+                .agent_instance_id()
+                .filter(|_| run.turn_substitute().is_none())
+            {
                 self.agents.set_agent_runtime_profile_durably(
                     &self.durable_state,
                     agent_id,

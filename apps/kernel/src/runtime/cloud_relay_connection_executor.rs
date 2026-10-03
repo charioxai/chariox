@@ -12,12 +12,13 @@ use crate::local::{
     ResolveKernelClientConnectionRequest,
 };
 use crate::runtime::cloud_api_client::{
-    cloud_profile_from_persisted, issue_cloud_runtime_token, post_cloud_json,
-    CloudPairingTokenResponse, CloudRuntimeTokenRequestOptions,
+    cloud_profile_from_persisted, issue_cloud_runtime_token, issue_cloud_terminal_client_token,
+    CloudRuntimeTokenRequestOptions, CloudTerminalClientOptions,
 };
 use crate::runtime::cloud_relay_control::{
     cloud_relay_profile_has_runtime_credentials, cloud_relay_runtime_token_is_fresh,
-    cloud_runtime_token_subject, CLOUD_RELAY_CLIENT_TOKEN_TTL_MS, CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS,
+    cloud_runtime_token_subject, relay_token_payload, CLOUD_RELAY_CLIENT_TOKEN_TTL_MS,
+    CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS,
 };
 use crate::runtime::cloud_relay_profile_store::{
     clear_cloud_profile_if_stale, persist_cloud_profile, required_cloud_relay_profile,
@@ -192,6 +193,7 @@ pub(crate) async fn execute_resolve_kernel_client_connection_request(
                 target_daemon_alias: kernel.kernel_id.clone(),
                 client_id,
                 session_id: request.session_id.clone(),
+                public_key_thumbprint: None,
             },
         )
         .await?;
@@ -231,60 +233,32 @@ async fn issue_cloud_relay_client_token(
     config_projection: &DaemonConfigProjectionStore,
     request: IssueCloudRelayClientTokenRequest,
 ) -> Result<(CloudRelayProfile, CloudRelayRuntimeToken), DaemonError> {
+    let required_public_key_thumbprint = request.public_key_thumbprint.clone();
     let mut profile = required_cloud_relay_profile(config_projection)?;
-    if profile.client_id.is_none() {
-        let pairing: CloudPairingTokenResponse = match post_cloud_json(
-            profile.api_url.clone(),
-            "/pairing-tokens",
-            serde_json::json!({
-                "accountId": profile.account_id,
-                "createdByUserId": profile.user_id,
-                "subjectKind": "client",
-            }),
-        )
-        .await
-        {
-            Ok(pairing) => pairing,
-            Err(error) => {
-                clear_cloud_profile_if_stale(runtime_state, &error).await?;
-                return Err(error);
-            }
-        };
-        if let Err(error) = post_cloud_json::<serde_json::Value>(
-            profile.api_url.clone(),
-            "/clients/pair",
-            serde_json::json!({
-                "accountId": profile.account_id,
-                "token": pairing.token,
-                "clientId": request.client_id,
-                "userId": profile.user_id,
-            }),
-        )
-        .await
-        {
-            clear_cloud_profile_if_stale(runtime_state, &error).await?;
-            return Err(error);
-        }
-        profile.client_id = Some(request.client_id.clone());
-        profile = persist_cloud_profile(runtime_state, profile).await?;
-    }
-    let client_id = profile
-        .client_id
-        .clone()
-        .unwrap_or_else(|| request.client_id.clone());
-    let issued = match issue_cloud_runtime_token(
+    let requested_client_id = profile.client_id.as_deref().unwrap_or(&request.client_id);
+    let config = config_projection.snapshot();
+    let machine_only = profile
+        .cloud_session_token
+        .as_deref()
+        .is_none_or(|token| token.trim().is_empty());
+    let target = if machine_only
+        && config.daemon_alias.as_deref() == Some(request.target_daemon_alias.as_str())
+    {
+        config.daemon_id.as_str()
+    } else {
+        request.target_daemon_alias.as_str()
+    };
+    let (client_id, issued) = match issue_cloud_terminal_client_token(
         &profile,
-        &client_id,
-        "client",
-        cloud_relay_client_token_options(
-            request.target_daemon_alias,
-            client_id.clone(),
-            profile
-                .machine_credential
-                .as_ref()
-                .and(profile.machine_id.clone()),
-            request.session_id,
-        ),
+        requested_client_id,
+        target,
+        CloudTerminalClientOptions {
+            pair_account_client: profile.client_id.is_none(),
+            ttl_ms: Some(CLOUD_RELAY_CLIENT_TOKEN_TTL_MS),
+            session_id: request.session_id,
+            public_key_thumbprint: request.public_key_thumbprint,
+            ..CloudTerminalClientOptions::default()
+        },
     )
     .await
     {
@@ -294,6 +268,13 @@ async fn issue_cloud_relay_client_token(
             return Err(error);
         }
     };
+    if let Some(public_key_thumbprint) = required_public_key_thumbprint.as_deref() {
+        require_cloud_relay_token_key_binding(&issued.token, public_key_thumbprint)?;
+    }
+    if profile.client_id.as_deref() != Some(client_id.as_str()) {
+        profile.client_id = Some(client_id);
+        profile = persist_cloud_profile(runtime_state, profile).await?;
+    }
     let token = CloudRelayRuntimeToken {
         relay_url: profile.relay_url.clone(),
         relay_token: issued.token,
@@ -302,20 +283,24 @@ async fn issue_cloud_relay_client_token(
     Ok((cloud_profile_from_persisted(&profile), token))
 }
 
-fn cloud_relay_client_token_options(
-    target_daemon_alias: String,
-    client_id: String,
-    machine_id: Option<String>,
-    session_id: Option<String>,
-) -> CloudRuntimeTokenRequestOptions {
-    CloudRuntimeTokenRequestOptions {
-        ttl_ms: Some(CLOUD_RELAY_CLIENT_TOKEN_TTL_MS),
-        allowed_targets: Some(vec![target_daemon_alias]),
-        client_id: Some(client_id),
-        machine_id,
-        session_id,
-        ..CloudRuntimeTokenRequestOptions::default()
+pub(crate) fn require_cloud_relay_token_key_binding(
+    relay_token: &str,
+    expected_thumbprint: &str,
+) -> Result<(), DaemonError> {
+    let actual_thumbprint = relay_token_payload(relay_token).and_then(|claims| {
+        claims
+            .get("public_key_thumbprint")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    });
+    if actual_thumbprint.as_deref() == Some(expected_thumbprint) {
+        return Ok(());
     }
+    Err(DaemonError::LocalTransport {
+        operation: "issue key-bound cloud relay token",
+        message: "Cloud relay returned a token that is not bound to the requested CLI public key"
+            .to_string(),
+    })
 }
 
 async fn resolve_relay_kernel_presence_with_refresh<F, Fut>(
@@ -421,6 +406,33 @@ fn relay_kernel_target_alias(kernel: &chariox_relay::protocol::RelayKernelPresen
 mod tests {
     use super::*;
 
+    fn relay_token_with_thumbprint(thumbprint: Option<&str>) -> String {
+        use base64::Engine;
+
+        let mut claims = serde_json::Map::new();
+        if let Some(thumbprint) = thumbprint {
+            claims.insert(
+                "public_key_thumbprint".to_string(),
+                serde_json::Value::String(thumbprint.to_string()),
+            );
+        }
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::Value::Object(claims).to_string());
+        format!("eyJhbGciOiJub25lIn0.{payload}.signature")
+    }
+
+    #[test]
+    fn key_bound_cloud_tokens_must_confirm_the_requested_thumbprint() {
+        let bound = relay_token_with_thumbprint(Some("cli-thumbprint"));
+        assert!(require_cloud_relay_token_key_binding(&bound, "cli-thumbprint").is_ok());
+
+        let foreign = relay_token_with_thumbprint(Some("foreign-thumbprint"));
+        assert!(require_cloud_relay_token_key_binding(&foreign, "cli-thumbprint").is_err());
+
+        let unbound = relay_token_with_thumbprint(None);
+        assert!(require_cloud_relay_token_key_binding(&unbound, "cli-thumbprint").is_err());
+    }
+
     fn request() -> ResolveKernelClientConnectionRequest {
         ResolveKernelClientConnectionRequest {
             kernel_ref: "kernel-new".to_string(),
@@ -445,25 +457,6 @@ mod tests {
             local_session_count: 0,
             public_key: "public-key".to_string(),
         }
-    }
-
-    #[test]
-    fn client_connection_token_outlives_bounded_slice_operations() {
-        let options = cloud_relay_client_token_options(
-            "kernel-new".to_string(),
-            "client-1".to_string(),
-            Some("machine-home".to_string()),
-            Some("session-1".to_string()),
-        );
-
-        assert_eq!(options.ttl_ms, Some(30 * 60_000));
-        assert_eq!(
-            options.allowed_targets,
-            Some(vec!["kernel-new".to_string()])
-        );
-        assert_eq!(options.client_id.as_deref(), Some("client-1"));
-        assert_eq!(options.machine_id.as_deref(), Some("machine-home"));
-        assert_eq!(options.session_id.as_deref(), Some("session-1"));
     }
 
     #[tokio::test]

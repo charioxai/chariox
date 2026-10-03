@@ -2,6 +2,9 @@
 set -eu
 
 [ "$(id -u)" -eq 0 ] || { echo "publication ACL drill requires root" >&2; exit 1; }
+# This drill crosses UIDs; the installer's root-private scratch is inaccessible
+# to those users. Each helper still creates a private mktemp file and removes it.
+export TMPDIR=/tmp
 helper=/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-publication-access.sh
 dockerfile=/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/docker/Dockerfile
 root=/var/lib/chariox-slice-share/slices/development/.acl-drill-$$

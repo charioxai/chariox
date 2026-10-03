@@ -96,6 +96,18 @@ impl std::fmt::Debug for ClaudeRuntimeState {
 }
 
 impl ClaudeRuntimeState {
+    pub(crate) fn metadata_discovery_credentials(
+        &self,
+    ) -> crate::provider::ProviderCredentialEnvironment {
+        let mut selected = crate::provider::ProviderCredentialEnvironment::default();
+        for (name, value) in self.provider_credential_env.iter() {
+            if matches!(name, "ANTHROPIC_API_KEY" | "CLAUDE_CODE_OAUTH_TOKEN") {
+                selected.insert(name, zeroize::Zeroizing::new(value.to_string()));
+            }
+        }
+        selected
+    }
+
     pub(crate) fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
     }

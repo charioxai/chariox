@@ -45,6 +45,10 @@ pub struct RuntimeProviderRun {
     pty_env: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pty_env_remove: Vec<String>,
+    /// Request-level removals before adapter and isolation augmentation.
+    /// Restored runs lack this provenance and conservatively reload once.
+    #[serde(skip)]
+    requested_provider_env_remove: Option<Vec<String>>,
     working_directory: Option<PathBuf>,
     structured_endpoint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -54,16 +58,6 @@ pub struct RuntimeProviderRun {
     /// for workflow execution, keeping ordinary turns' tool surface small.
     #[serde(skip)]
     workflow_tools_enabled: bool,
-    /// Capability snapshot for the current workflow provider run. This is
-    /// separate from `workflow_tools_enabled` because event reply is opt-in at
-    /// the event binding and must not pollute ordinary workflow contexts.
-    #[serde(skip)]
-    workflow_event_reply_enabled: bool,
-    /// Capability snapshot for bounded provider event context. This is
-    /// independent from the event reply capability.
-    #[serde(skip)]
-    workflow_event_context_enabled: bool,
-    workflow_event_actions_enabled: bool,
     /// Identifies the workflow node whose first turn received this provider's
     /// fresh context. Runtime-only because a restart may safely flush again.
     #[serde(skip)]
@@ -75,6 +69,17 @@ pub struct RuntimeProviderRun {
         skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
     )]
     remote_extension_manifest: crate::extension::RemoteExtensionManifest,
+    /// Cache freshness at actual provider launch. Metadata synchronization must
+    /// not make a provider's already-cached tool list appear refreshed. This is
+    /// local runtime state, never a serialized capability or authorization.
+    #[serde(skip)]
+    launched_remote_extension_manifest_hash: Option<String>,
+    #[serde(skip)]
+    observed_remote_extension_manifest_hash: Option<String>,
+    /// Process-local ordering token for competing manifest writers, including
+    /// equal-value updates. It is never sent to peers or restored from disk.
+    #[serde(skip)]
+    remote_extension_manifest_revision: u64,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     provider_config_overrides: BTreeMap<String, serde_json::Value>,
     #[serde(
@@ -94,6 +99,13 @@ pub struct RuntimeProviderRun {
     /// Git/SSH bindings, while discovery must scrub ambient parent controls.
     #[serde(skip)]
     read_only_discovery: bool,
+    /// Runtime-only: the failed turn this run reruns on an agent substitute.
+    #[serde(skip)]
+    turn_substitute: Option<super::TurnSubstitute>,
+    #[serde(skip)]
+    metadata_only_discovery: bool,
+    #[serde(skip)]
+    project_environment_revision: Option<String>,
     #[serde(default, skip_serializing_if = "AgentExecutionMode::is_build")]
     execution_mode: AgentExecutionMode,
     #[serde(default, skip_serializing_if = "AgentPermissionLevel::is_yolo")]
@@ -141,6 +153,7 @@ impl RuntimeProviderRun {
             pty_args: launch_result.pty_args,
             pty_env: launch_result.pty_env,
             pty_env_remove: launch_result.pty_env_remove,
+            requested_provider_env_remove: Some(request.provider_env_remove.clone()),
             working_directory: launch_result.working_directory,
             structured_endpoint: launch_result.structured_endpoint,
             runtime_mcp_server_url: request
@@ -152,17 +165,22 @@ impl RuntimeProviderRun {
                 .as_ref()
                 .map(|binding| binding.auth_token.clone()),
             workflow_tools_enabled: false,
-            workflow_event_reply_enabled: request.workflow_event_reply_enabled,
-            workflow_event_context_enabled: request.workflow_event_context_enabled,
-            workflow_event_actions_enabled: request.workflow_event_actions_enabled,
             workflow_fresh_context_node_run_id: None,
             mcp_servers: request.mcp_servers.clone(),
             remote_extension_manifest: request.remote_extension_manifest.clone(),
+            launched_remote_extension_manifest_hash: Some(
+                request.remote_extension_manifest.manifest_hash(),
+            ),
+            observed_remote_extension_manifest_hash: None,
+            remote_extension_manifest_revision: 0,
             provider_config_overrides: request.provider_config_overrides.clone(),
             write_access_mode: request.write_access_mode,
             workspace_live_sync_roots: request.workspace_live_sync_roots.clone(),
             preparation_base_path,
             read_only_discovery: false,
+            turn_substitute: request.turn_substitute.clone(),
+            metadata_only_discovery: false,
+            project_environment_revision: request.project_environment_revision.clone(),
             execution_mode: request.execution_mode.unwrap_or_default(),
             permission_level: request.permission_level.unwrap_or_default(),
             control_capabilities: default_provider_control_capabilities(
@@ -212,23 +230,27 @@ impl RuntimeProviderRun {
             pty_args: Vec::new(),
             pty_env: BTreeMap::new(),
             pty_env_remove: Vec::new(),
+            requested_provider_env_remove: None,
             working_directory: None,
             structured_endpoint: None,
             runtime_mcp_server_url: None,
             runtime_mcp_auth_token: inferred_has_runtime_mcp_binding
                 .then(|| "inferred-managed-mcp".to_string()),
             workflow_tools_enabled: false,
-            workflow_event_reply_enabled: false,
-            workflow_event_context_enabled: false,
-            workflow_event_actions_enabled: false,
             workflow_fresh_context_node_run_id: None,
             mcp_servers: Vec::new(),
             remote_extension_manifest: crate::extension::RemoteExtensionManifest::default(),
+            launched_remote_extension_manifest_hash: None,
+            observed_remote_extension_manifest_hash: None,
+            remote_extension_manifest_revision: 0,
             provider_config_overrides: BTreeMap::new(),
             write_access_mode: ProviderWriteAccessMode::Unrestricted,
             workspace_live_sync_roots: Vec::new(),
             preparation_base_path: None,
             read_only_discovery: false,
+            turn_substitute: None,
+            metadata_only_discovery: false,
+            project_environment_revision: None,
             execution_mode: AgentExecutionMode::default(),
             permission_level: AgentPermissionLevel::default(),
             control_capabilities: default_provider_control_capabilities(
@@ -341,6 +363,10 @@ impl RuntimeProviderRun {
         self.preparation_base_path.as_deref()
     }
 
+    pub(crate) fn requested_provider_env_remove(&self) -> Option<&[String]> {
+        self.requested_provider_env_remove.as_deref()
+    }
+
     pub fn pty_env_remove(&self) -> &[String] {
         &self.pty_env_remove
     }
@@ -366,6 +392,38 @@ impl RuntimeProviderRun {
         &self.remote_extension_manifest
     }
 
+    pub(crate) fn remote_extension_catalog_matches_launch(
+        &self,
+        desired: &crate::extension::RemoteExtensionManifest,
+    ) -> bool {
+        self.observed_remote_extension_manifest_hash
+            .as_deref()
+            .or(self.launched_remote_extension_manifest_hash.as_deref())
+            == Some(desired.manifest_hash().as_str())
+    }
+
+    pub(super) fn observe_remote_extension_catalog(&mut self, expected_hash: &str) -> bool {
+        if self.state == ProviderRunState::Ended
+            || self.remote_extension_manifest.manifest_hash() != expected_hash
+        {
+            return false;
+        }
+        self.observed_remote_extension_manifest_hash = Some(expected_hash.into());
+        true
+    }
+
+    pub(crate) fn remote_extension_manifest_revision(&self) -> u64 {
+        self.remote_extension_manifest_revision
+    }
+
+    pub(super) fn advance_manifest_revision_after_snapshot_restore(&mut self, current: &Self) {
+        self.remote_extension_manifest_revision = self
+            .remote_extension_manifest_revision
+            .max(current.remote_extension_manifest_revision)
+            .checked_add(1)
+            .expect("provider manifest revision exhausted");
+    }
+
     pub fn provider_config_overrides(&self) -> &BTreeMap<String, serde_json::Value> {
         &self.provider_config_overrides
     }
@@ -374,6 +432,10 @@ impl RuntimeProviderRun {
         &mut self,
         manifest: crate::extension::RemoteExtensionManifest,
     ) {
+        self.remote_extension_manifest_revision = self
+            .remote_extension_manifest_revision
+            .checked_add(1)
+            .expect("provider manifest revision exhausted");
         self.remote_extension_manifest = manifest;
         self.touch_activity();
     }
@@ -402,6 +464,72 @@ impl RuntimeProviderRun {
         self.execution_mode = execution_mode;
         self.permission_level = permission_level;
         self.touch_activity();
+    }
+
+    pub(crate) fn turn_substitute(&self) -> Option<&super::TurnSubstitute> {
+        self.turn_substitute.as_ref()
+    }
+
+    pub(crate) fn project_environment_revision(&self) -> Option<&str> {
+        self.project_environment_revision.as_deref()
+    }
+
+    pub(crate) fn metadata_only_discovery(&self) -> bool {
+        self.metadata_only_discovery
+    }
+
+    /// MP-08: Ephemeral utility clone only; never persist or mutate the ordinary run.
+    pub(crate) fn set_metadata_only_discovery(&mut self, directory: PathBuf) {
+        self.metadata_only_discovery = true;
+        self.read_only_discovery = true;
+        self.working_directory = Some(directory);
+        self.resume_state = ProviderResumeState::default();
+        self.mcp_servers.clear();
+        self.runtime_mcp_server_url = None;
+        self.runtime_mcp_auth_token = None;
+        self.provider_config_overrides.clear();
+        self.pty_env.retain(|name, _| {
+            matches!(
+                name.as_str(),
+                "HOME"
+                    | "PATH"
+                    | "CODEX_HOME"
+                    | "CLAUDE_CONFIG_DIR"
+                    | "XDG_DATA_HOME"
+                    | "XDG_CONFIG_HOME"
+                    | "XDG_STATE_HOME"
+                    | "OPENCODE_CONFIG_DIR"
+                    | "TERM"
+                    | "COLORTERM"
+            )
+        });
+        if self.adapter_key() == "claude" {
+            self.pty_args = vec![
+                "-p".into(),
+                "--input-format".into(),
+                "stream-json".into(),
+                "--output-format".into(),
+                "stream-json".into(),
+                "--verbose".into(),
+                "--tools".into(),
+                "".into(),
+                "--strict-mcp-config".into(),
+                "--setting-sources".into(),
+                "".into(),
+                "--disable-slash-commands".into(),
+                "--permission-mode".into(),
+                "plan".into(),
+            ];
+            if self.model != "default" {
+                self.pty_args.extend([
+                    "--model".into(),
+                    self.model
+                        .strip_prefix("claude/")
+                        .unwrap_or(&self.model)
+                        .to_string(),
+                ]);
+            }
+        }
     }
 
     pub(crate) fn read_only_discovery(&self) -> bool {
@@ -513,18 +641,6 @@ impl RuntimeProviderRun {
 
     pub fn enable_workflow_tools(&mut self) {
         self.workflow_tools_enabled = true;
-    }
-
-    pub fn workflow_event_reply_enabled(&self) -> bool {
-        self.workflow_event_reply_enabled
-    }
-
-    pub fn workflow_event_context_enabled(&self) -> bool {
-        self.workflow_event_context_enabled
-    }
-
-    pub fn workflow_event_actions_enabled(&self) -> bool {
-        self.workflow_event_actions_enabled
     }
 
     pub fn workflow_fresh_context_node_run_id(&self) -> Option<&str> {

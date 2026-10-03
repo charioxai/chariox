@@ -8,6 +8,13 @@ export const MAXIMUM_SOAK_DURATION_SECONDS = 24 * 60 * 60
 export const GATE_RECEIPT_MAX_AGE_MS = 60 * 60 * 1_000
 export const SELKIES_REQUIRED_PROTOCOL_VERSION = 322
 
+export function imageSourceMatches(sourceRevision, source) {
+  return /^[0-9a-f]{40}$/.test(sourceRevision ?? "")
+    ? sourceRevision === source?.commit
+    : /^[0-9a-f]{64}$/.test(sourceRevision ?? "")
+      && sourceRevision === source?.runtimeSourceRevision
+}
+
 export function parseBrowserComputerSoakArgs(argv, { repoRoot, homeDir }) {
   const values = new Map()
   const flags = new Set()
@@ -348,7 +355,7 @@ function validVerifiedImage(image) {
     && /^sha256:[0-9a-f]{64}$/.test(image?.digest ?? "")
     && image.identity.endsWith(`@${image.digest}`)
     && /^sha256:[0-9a-f]{64}$/.test(image?.engineImageId ?? "")
-    && /^[0-9a-f]{40}$/.test(image?.sourceRevision ?? "")
+    && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(image?.sourceRevision ?? "")
     && new Set(["docker", "podman"]).has(image?.engine)
     && image?.signature?.verified === true && image.signature.verifier === "cosign"
     && /^[0-9a-f]{64}$/.test(image.signature.keySha256 ?? "")
@@ -362,6 +369,6 @@ function validRuntimeImageBinding(runtime, image, source) {
     && runtime.running === true
     && runtime.imageId === image?.engineImageId
     && runtime.identity === image?.identity
-    && image?.sourceRevision === source?.commit
+    && imageSourceMatches(image?.sourceRevision, source)
     && runtime?.sourceRevision === image?.sourceRevision
 }

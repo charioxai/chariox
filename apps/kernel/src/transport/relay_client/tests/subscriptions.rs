@@ -300,8 +300,10 @@ async fn relay_waiting_room_subscription_sends_baseline_after_reload_and_observe
         "each null-cursor subscriber should receive the same unchanged inventory baseline",
     );
 
+    let worktree = crate::test_support::TestWorktree::new("workspace-relay-inventory");
     let request = LocalDaemonRequest::CreateSession(
-        CreateSessionRequest::new("workspace-relay-inventory", "worktree-relay-inventory")
+        worktree
+            .session_request()
             .with_alias("relay-visible-session"),
     );
     let command =
@@ -991,10 +993,7 @@ async fn relay_replay_after_runtime_recreation_filters_historical_resume_and_res
     )
     .await
     .expect("current post-restart heartbeat should follow the snapshot");
-    assert_eq!(
-        current_heartbeat.1["event"],
-        serde_json::json!("heartbeat")
-    );
+    assert_eq!(current_heartbeat.1["event"], serde_json::json!("heartbeat"));
     subscription_task.abort();
     let _ = subscription_task.await;
 }

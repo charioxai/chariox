@@ -6,10 +6,7 @@ fn room_environment_takeover_and_release_use_authenticated_actor_and_room_lane()
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new(
-                "workspace-environment-takeover",
-                "worktree-environment-takeover",
-            ),
+            harness.fixture_session_request("workspace-environment-takeover"),
         ))
         .expect("Room should be created")
     {
@@ -82,10 +79,9 @@ fn room_environment_action_cancel_uses_authenticated_actor_and_stable_errors() {
     let session = match harness
         .dispatch_as_user(
             "owner-1",
-            LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-                "workspace-environment-cancel",
-                "worktree-environment-cancel",
-            )),
+            LocalDaemonRequest::CreateSession(
+                harness.fixture_session_request("workspace-environment-cancel"),
+            ),
         )
         .expect("Room should be created")
     {
@@ -137,10 +133,9 @@ fn room_environment_human_input_requires_takeover_and_rejects_invalid_arguments(
     let session = match harness
         .dispatch_as_user(
             "owner-1",
-            LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-                "workspace-environment-pointer-click",
-                "worktree-environment-pointer-click",
-            )),
+            LocalDaemonRequest::CreateSession(
+                harness.fixture_session_request("workspace-environment-pointer-click"),
+            ),
         )
         .expect("Room should be created")
     {
@@ -426,6 +421,7 @@ fn room_environment_human_input_requires_takeover_and_rejects_invalid_arguments(
 
 #[test]
 fn room_environment_pointer_click_executes_once_and_returns_terminal_state() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!(
         "chariox-human-pointer-click-test-{}",
@@ -453,10 +449,9 @@ fn room_environment_pointer_click_executes_once_and_returns_terminal_state() {
     let session = match harness
         .dispatch_as_user(
             "owner-1",
-            LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-                "workspace-environment-pointer-click-execution",
-                "worktree-environment-pointer-click-execution",
-            )),
+            LocalDaemonRequest::CreateSession(
+                harness.fixture_session_request("workspace-environment-pointer-click-execution"),
+            ),
         )
         .expect("Room should be created")
     {
@@ -633,6 +628,7 @@ fn room_environment_pointer_click_executes_once_and_returns_terminal_state() {
 
 #[test]
 fn room_environment_pointer_motion_executes_and_records_coordinates() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!(
         "chariox-human-pointer-move-test-{}",
@@ -660,10 +656,9 @@ fn room_environment_pointer_motion_executes_and_records_coordinates() {
     let session = match harness
         .dispatch_as_user(
             "owner-1",
-            LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-                "workspace-environment-pointer-move-execution",
-                "worktree-environment-pointer-move-execution",
-            )),
+            LocalDaemonRequest::CreateSession(
+                harness.fixture_session_request("workspace-environment-pointer-move-execution"),
+            ),
         )
         .expect("Room should be created")
     {
@@ -857,6 +852,7 @@ fn room_environment_pointer_motion_executes_and_records_coordinates() {
 
 #[test]
 fn room_environment_keyboard_input_executes_without_persisting_input() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!(
         "chariox-human-keyboard-text-test-{}",
@@ -886,10 +882,9 @@ fn room_environment_keyboard_input_executes_without_persisting_input() {
     let session = match harness
         .dispatch_as_user(
             "owner-1",
-            LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-                "workspace-environment-keyboard-text",
-                "worktree-environment-keyboard-text",
-            )),
+            LocalDaemonRequest::CreateSession(
+                harness.fixture_session_request("workspace-environment-keyboard-text"),
+            ),
         )
         .expect("Room should be created")
     {
@@ -1061,6 +1056,7 @@ fn room_environment_keyboard_input_executes_without_persisting_input() {
 
 #[test]
 fn room_environment_clipboard_write_and_read_use_kernel_authority_without_persisting_content() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!(
         "chariox-human-clipboard-test-{}",
@@ -1088,10 +1084,9 @@ fn room_environment_clipboard_write_and_read_use_kernel_authority_without_persis
     let session = match harness
         .dispatch_as_user(
             "owner-1",
-            LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-                "workspace-environment-clipboard",
-                "worktree-environment-clipboard",
-            )),
+            LocalDaemonRequest::CreateSession(
+                harness.fixture_session_request("workspace-environment-clipboard"),
+            ),
         )
         .expect("Room should be created")
     {
@@ -1211,6 +1206,7 @@ fn room_environment_clipboard_write_and_read_use_kernel_authority_without_persis
 
 #[test]
 fn running_computer_input_cancels_the_physical_helper_and_resets_before_takeover() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!(
         "chariox-human-computer-cancellation-test-{}",
@@ -1239,10 +1235,9 @@ fn running_computer_input_cancels_the_physical_helper_and_resets_before_takeover
     let (session, default_agent) = match harness
         .dispatch_as_user(
             "owner-1",
-            LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-                "workspace-environment-computer-cancellation",
-                "worktree-environment-computer-cancellation",
-            )),
+            LocalDaemonRequest::CreateSession(
+                harness.fixture_session_request("workspace-environment-computer-cancellation"),
+            ),
         )
         .expect("Room should be created")
     {
@@ -1524,6 +1519,7 @@ fn running_computer_input_cancels_the_physical_helper_and_resets_before_takeover
 
 #[test]
 fn queued_human_pointer_click_promotes_after_agent_action_finishes_outside_room_lane() {
+    crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!(
         "chariox-queued-human-pointer-click-test-{}",
@@ -1551,10 +1547,9 @@ fn queued_human_pointer_click_promotes_after_agent_action_finishes_outside_room_
     let (session, agent) = match harness
         .dispatch_as_user(
             "owner-1",
-            LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-                "workspace-environment-queued-pointer-click",
-                "worktree-environment-queued-pointer-click",
-            )),
+            LocalDaemonRequest::CreateSession(
+                harness.fixture_session_request("workspace-environment-queued-pointer-click"),
+            ),
         )
         .expect("Room should be created")
     {
@@ -1736,10 +1731,7 @@ fn room_environment_reconciles_human_and_agent_presence() {
     let harness = LocalRouterTestHarness::new();
     let (session, default_agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new(
-                "workspace-environment-actors",
-                "worktree-environment-actors",
-            ),
+            harness.fixture_session_request("workspace-environment-actors"),
         ))
         .expect("Room should be created")
     {
@@ -1910,10 +1902,7 @@ fn room_environment_viewport_update_uses_authenticated_actor_and_revision() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new(
-                "workspace-environment-viewport",
-                "worktree-environment-viewport",
-            ),
+            harness.fixture_session_request("workspace-environment-viewport"),
         ))
         .expect("Room should be created")
     {
@@ -2001,10 +1990,7 @@ fn room_environment_pointer_update_uses_authenticated_actor_and_clears_presence(
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new(
-                "workspace-environment-pointer",
-                "worktree-environment-pointer",
-            ),
+            harness.fixture_session_request("workspace-environment-pointer"),
         ))
         .expect("Room should be created")
     {
@@ -2094,10 +2080,7 @@ fn room_environment_start_rejects_invalid_initial_viewport_with_stable_code() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new(
-                "workspace-environment-invalid-viewport",
-                "worktree-environment-invalid-viewport",
-            ),
+            harness.fixture_session_request("workspace-environment-invalid-viewport"),
         ))
         .expect("Room should be created")
     {
@@ -2133,7 +2116,7 @@ fn room_environment_start_crosses_the_router_boundary_without_duplication() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-environment-start", "worktree-environment-start"),
+            harness.fixture_session_request("workspace-environment-start"),
         ))
         .expect("Room should be created")
     {
@@ -2206,7 +2189,7 @@ fn room_environment_stop_preserves_identity_and_is_idempotent() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-environment-stop", "worktree-environment-stop"),
+            harness.fixture_session_request("workspace-environment-stop"),
         ))
         .expect("Room should be created")
     {
@@ -2302,7 +2285,7 @@ fn room_environment_retry_invalidates_failed_runtime_without_replacing_environme
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-environment-retry", "worktree-environment-retry"),
+            harness.fixture_session_request("workspace-environment-retry"),
         ))
         .expect("Room should be created")
     {
@@ -2361,7 +2344,7 @@ fn room_environment_state_crosses_the_router_boundary() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-environment", "worktree-environment"),
+            harness.fixture_session_request("workspace-environment"),
         ))
         .expect("Room should be created")
     {
@@ -2397,10 +2380,7 @@ fn room_environment_event_replay_crosses_the_router_boundary() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new(
-                "workspace-environment-events",
-                "worktree-environment-events",
-            ),
+            harness.fixture_session_request("workspace-environment-events"),
         ))
         .expect("Room should be created")
     {
@@ -2467,10 +2447,9 @@ fn room_environment_action_history_crosses_the_authenticated_read_boundary() {
     let session = match harness
         .dispatch_as_user(
             "owner-1",
-            LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-                "workspace-environment-history",
-                "worktree-environment-history",
-            )),
+            LocalDaemonRequest::CreateSession(
+                harness.fixture_session_request("workspace-environment-history"),
+            ),
         )
         .expect("Room should be created")
     {
@@ -2526,10 +2505,9 @@ fn room_environment_state_requires_room_membership() {
     let session = match harness
         .dispatch_as_user(
             "owner-1",
-            LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-                "workspace-environment-auth",
-                "worktree-environment-auth",
-            )),
+            LocalDaemonRequest::CreateSession(
+                harness.fixture_session_request("workspace-environment-auth"),
+            ),
         )
         .expect("Room should be created")
     {
@@ -2565,10 +2543,9 @@ fn room_environment_lifecycle_requires_room_membership() {
     let session = match harness
         .dispatch_as_user(
             "owner-1",
-            LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-                "workspace-environment-start-auth",
-                "worktree-environment-start-auth",
-            )),
+            LocalDaemonRequest::CreateSession(
+                harness.fixture_session_request("workspace-environment-start-auth"),
+            ),
         )
         .expect("Room should be created")
     {

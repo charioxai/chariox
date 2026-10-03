@@ -1,0 +1,26 @@
+--- a/safe_openat.c
++++ b/safe_openat.c
+@@ -36,6 +36,8 @@
+ #  define USE_OPENAT_FALLBACK 0
+ #endif
+ 
++#include "bwrap_openat_fallback.h"
++
+ #define cleanup_close cleanup_fd
+ 
+ #define LIKELY(x) __builtin_expect ((x), 1)
+@@ -184,13 +186,8 @@
+                       int mode)
+ {
+ #if !USE_OPENAT_FALLBACK
+-  (void) dirfd;
+   (void) rootfs;
+-  (void) path;
+-  (void) flags;
+-  (void) mode;
+-  errno = ENOSYS;
+-  return -1;
++  return cx_openat_nofollow (dirfd, path, flags, mode);
+ #else
+   cleanup_free char *parent_path = NULL;
+   const char *last_component = NULL;

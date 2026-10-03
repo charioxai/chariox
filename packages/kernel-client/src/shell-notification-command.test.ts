@@ -118,12 +118,7 @@ test("prompt settings reset-all requires explicit confirmation and uses every ca
 
 test("notification removal previews dependencies before confirmed removal", async () => {
   const requests: Record<string, unknown>[] = []
-  const dependency = {
-    session_id: "session-1",
-    publication_id: "publication-1",
-    binding_id: "binding-1",
-    status: "active" as const,
-  }
+  const dependency = { installation_id: "app_slack", route_id: "mentions", active: true }
   const client = {
     send: async (request: Record<string, unknown>) => {
       requests.push(request)
@@ -138,13 +133,12 @@ test("notification removal previews dependencies before confirmed removal", asyn
           created_at_ms: 1,
           updated_at_ms: 2,
         },
-        deactivated_bindings: [dependency],
       } }
     },
   }
 
   const preview = await executeNotificationCommand(["connection", "remove", "connection-1"], client)
-  assert.match(preview.message ?? "", /trigger-owner=publication-1/)
+  assert.match(preview.message ?? "", /active  app=app_slack inbox-route=mentions/)
   assert.match(preview.message ?? "", /--confirm/)
   assert.equal(requests.length, 1)
 

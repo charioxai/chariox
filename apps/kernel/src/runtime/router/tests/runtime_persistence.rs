@@ -1,5 +1,26 @@
 use super::*;
 
+async fn reboot_after_owner_release(config: DaemonConfig) -> DaemonApp {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    loop {
+        match DaemonApp::bootstrap(config.clone()) {
+            Ok(app) => return app,
+            Err(DaemonError::LocalTransport {
+                operation: "durable_state.acquire_owner",
+                message,
+            }) if message == "durable state is already owned by another kernel"
+                && tokio::time::Instant::now() < deadline =>
+            {
+                tokio::task::yield_now().await;
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            Err(error) => {
+                panic!("MP-08/MP-10 daemon should reboot after actor owner release: {error}")
+            }
+        }
+    }
+}
+
 #[tokio::test]
 async fn runtime_agent_skill_grant_survives_kernel_restart() {
     let config = DaemonConfig::for_tests();
@@ -18,7 +39,7 @@ async fn runtime_agent_skill_grant_survives_kernel_restart() {
         (session.id().to_string(), agent.id().to_string())
     };
 
-    let app = DaemonApp::bootstrap(config).expect("second daemon should boot");
+    let app = reboot_after_owner_release(config).await;
     let restored_agent = app
         .agents
         .get_agent(&agent_id)
@@ -70,7 +91,7 @@ async fn runtime_destroy_agent_survives_kernel_restart() {
         )
     };
 
-    let app = DaemonApp::bootstrap(config).expect("second daemon should boot");
+    let app = reboot_after_owner_release(config).await;
     assert!(app.agents.get_agent(&destroyed_agent_id).is_err());
     assert_eq!(
         app.agents
@@ -182,7 +203,7 @@ async fn workflow_definition_survives_kernel_restart() {
         )
     };
 
-    let app = DaemonApp::bootstrap(config).expect("second daemon should boot");
+    let app = reboot_after_owner_release(config).await;
     let restored_session = app
         .sessions()
         .get_session(&session_id)
@@ -213,7 +234,7 @@ async fn runtime_end_and_delete_session_survive_kernel_restart() {
             .expect("session should end");
         session.id().to_string()
     };
-    let app = DaemonApp::bootstrap(end_config).expect("daemon should reboot");
+    let app = reboot_after_owner_release(end_config).await;
     let restored = app
         .sessions()
         .get_session(&ended_session_id)
@@ -236,7 +257,7 @@ async fn runtime_end_and_delete_session_survive_kernel_restart() {
             .expect("session should delete");
         (session.id().to_string(), project_id)
     };
-    let app = DaemonApp::bootstrap(delete_config).expect("daemon should reboot");
+    let app = reboot_after_owner_release(delete_config).await;
     assert!(app.sessions().get_session(&deleted_session_id).is_err());
     assert!(app.sessions().get_project(&deleted_project_id).is_err());
     assert!(app

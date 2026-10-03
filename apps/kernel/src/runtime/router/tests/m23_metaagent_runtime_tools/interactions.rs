@@ -320,3 +320,126 @@ async fn metaagent_can_resolve_owned_regular_agent_interactions_but_not_its_own_
         denied.payload
     );
 }
+
+/// A Meta agent's `run_command` can wait on a person too: an App binding under
+/// Ask. The router's runtime tool entry marks the calling run as waiting for
+/// that whole time, so a Claude run's turn stall watchdog does not end it.
+#[test]
+fn a_meta_app_binding_approval_counts_as_a_runtime_tool_wait() {
+    run_large_stack_async_test(
+        "meta-app-binding-runtime-tool-wait",
+        a_meta_app_binding_approval_counts_as_a_runtime_tool_wait_inner,
+    );
+}
+
+async fn a_meta_app_binding_approval_counts_as_a_runtime_tool_wait_inner() {
+    let env = TestMetaRuntimeEnv::new("app-binding-wait");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta")
+                .with_permission_level_override(crate::provider::AgentPermissionLevel::Required),
+        )
+        .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
+    crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("worker")
+                .with_controlled_by_metaagent_id(metaagent.id()),
+        )
+        .expect("worker should spawn");
+    // The wait registry is per process, so this run's id must be unique
+    // among the tests running beside it.
+    let meta_run_id = format!("provider-run-meta-app-wait-{:016x}", rand::random::<u64>());
+    let token = format!("meta-app-wait-token-{:016x}", rand::random::<u64>());
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "dev-stub",
+        "dev-stub",
+        "default",
+        "meta-model",
+    )
+    .with_agent_id(metaagent.id())
+    .with_runtime_mcp_binding(crate::provider::RuntimeMcpBinding::new(
+        "http://127.0.0.1:1/mcp",
+        token.clone(),
+    ));
+    let mut meta_run = crate::provider::RuntimeProviderRun::new(
+        &meta_run_id,
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "dev-stub".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: Default::default(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("stdio://dev-stub".to_string()),
+        },
+    );
+    meta_run.mark_running();
+    app.providers_mut().insert_run_for_test(meta_run);
+    let app = Arc::new(Mutex::new(app));
+    let router = Arc::new(CommandRouter::with_interactive_capacity(
+        Arc::clone(&app),
+        4,
+    ));
+    assert!(!crate::provider::claude_runtime_tool_wait_pending(
+        &meta_run_id
+    ));
+
+    let call_router = Arc::clone(&router);
+    let call = tokio::spawn(async move {
+        call_router
+            .dispatch_authenticated_runtime_tool_call(
+                &token,
+                crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+                serde_json::json!({"command": "extension grant app worker installed"}),
+            )
+            .await
+    });
+    let interaction_id = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let Some(id) = app
+                .lock()
+                .await
+                .sessions()
+                .get_session(session.id())
+                .expect("session should exist")
+                .active_interaction_for_agent(metaagent.id())
+                .map(|interaction| interaction.id().to_string())
+            {
+                break id;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the App binding approval should open");
+    assert!(
+        crate::provider::claude_runtime_tool_wait_pending(&meta_run_id),
+        "the run waits on the approval, so its watchdog must see activity"
+    );
+
+    router
+        .runtime_state()
+        .resolve_runtime_interaction(session.id(), &interaction_id, "deny", None)
+        .await
+        .expect("approval should resolve");
+    let _ = call.await.expect("run_command should join");
+    assert!(!crate::provider::claude_runtime_tool_wait_pending(
+        &meta_run_id
+    ));
+}

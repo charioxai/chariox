@@ -2,6 +2,7 @@ use super::*;
 
 #[test]
 fn local_request_api_commits_workspace_changes() {
+    crate::test_support::isolated_env_test!();
     run_workspace_capability_test(
         "local_request_api_commits_workspace_changes",
         local_request_api_commits_workspace_changes_inner,
@@ -51,6 +52,7 @@ fn local_request_api_commits_workspace_changes_inner() {
 
 #[test]
 fn local_request_api_push_without_upstream_fails_loudly() {
+    crate::test_support::isolated_env_test!();
     run_workspace_capability_test(
         "local_request_api_push_without_upstream_fails_loudly",
         local_request_api_push_without_upstream_fails_loudly_inner,
@@ -86,6 +88,7 @@ fn local_request_api_push_without_upstream_fails_loudly_inner() {
 
 #[test]
 fn local_request_api_deletes_unused_workspace_worktree() {
+    crate::test_support::isolated_env_test!();
     run_workspace_capability_test(
         "local_request_api_deletes_unused_workspace_worktree",
         local_request_api_deletes_unused_workspace_worktree_inner,
@@ -145,6 +148,7 @@ fn local_request_api_deletes_unused_workspace_worktree_inner() {
 
 #[test]
 fn local_request_api_creates_session_worktree_without_duplicate_repo_prefix() {
+    crate::test_support::isolated_env_test!();
     run_workspace_capability_test(
         "local_request_api_creates_session_worktree_without_duplicate_repo_prefix",
         local_request_api_creates_session_worktree_without_duplicate_repo_prefix_inner,
@@ -200,6 +204,7 @@ fn local_request_api_creates_session_worktree_without_duplicate_repo_prefix_inne
 
 #[test]
 fn local_request_api_refuses_to_delete_runtime_owned_worktree() {
+    crate::test_support::isolated_env_test!();
     run_workspace_capability_test(
         "local_request_api_refuses_to_delete_runtime_owned_worktree",
         local_request_api_refuses_to_delete_runtime_owned_worktree_inner,
