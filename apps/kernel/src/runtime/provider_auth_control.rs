@@ -461,6 +461,10 @@ pub(crate) async fn execute_get_provider_login_status_request(
         .await?;
         return Ok(LocalDaemonResponse::ProviderLoginStatus { login });
     }
+    // The private collector commits the credential before publishing success.
+    if record.operation == crate::runtime::state::ProviderAuthProcessOperation::SetupToken {
+        return Ok(LocalDaemonResponse::ProviderLoginStatus { login: status });
+    }
     if process_state.is_exited() && status.state == ProviderLoginProcessState::Running {
         let registry = runtime_state.provider_account_profile_registry().clone();
         let owner = owner_user_id.to_string();

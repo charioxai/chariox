@@ -40,8 +40,8 @@ mod workspace_live_sync_policy;
 mod workspace_write_fence;
 
 pub(crate) use account_credential::{
-    launch_uses_vault_credential, provider_account_credential_registered,
-    provider_account_credential_id, provider_account_credential_uses_vault,
+    launch_uses_vault_credential, provider_account_credential_id,
+    provider_account_credential_registered, provider_account_credential_uses_vault,
     resolve_provider_account_credentials, resolve_provider_account_credentials_for_launch,
     store_provider_account_credential, validate_provider_account_credential_input,
     CLAUDE_OAUTH_TOKEN_ENV,

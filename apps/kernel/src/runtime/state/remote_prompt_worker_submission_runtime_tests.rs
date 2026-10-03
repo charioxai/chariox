@@ -163,8 +163,8 @@ async fn receive_fake_worker_request(
         &encrypted_request,
     )
     .expect("fake worker should decrypt the peer request");
-    let request = serde_json::from_slice(&decrypted.plaintext)
-        .expect("fake worker request should decode");
+    let request =
+        serde_json::from_slice(&decrypted.plaintext).expect("fake worker request should decode");
     (request_id, request)
 }
 
@@ -471,13 +471,12 @@ async fn connected_held_prompt_response_does_not_block_remote_manifest_sync() {
         "the fake worker must still be holding the prompt response"
     );
 
-    let submit_response =
-        crate::transport::relay_peer::RelayPeerResponse::LeasedPromptSubmitted {
-            provider_run_id: "provider-run-manifest-lane".to_string(),
-            outcome: crate::session::PromptSubmissionOutcome::Started {
-                prompt: submitted_prompt,
-            },
-        };
+    let submit_response = crate::transport::relay_peer::RelayPeerResponse::LeasedPromptSubmitted {
+        provider_run_id: "provider-run-manifest-lane".to_string(),
+        outcome: crate::session::PromptSubmissionOutcome::Started {
+            prompt: submitted_prompt,
+        },
+    };
     let encrypted_submit_response = crate::transport::relay_crypto::encrypt_payload_for_peer(
         &worker_config.relay_private_key,
         &home_public_key,
@@ -526,8 +525,7 @@ impl WorkflowSubmissionFixture {
         use crate::session::{CreateSessionRequest, DEFAULT_LOCAL_USER_ID};
         use std::sync::Arc;
 
-        static NEXT_FIXTURE_ID: std::sync::atomic::AtomicU64 =
-            std::sync::atomic::AtomicU64::new(0);
+        static NEXT_FIXTURE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let fixture_id = NEXT_FIXTURE_ID.fetch_add(1, Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
             "chariox-remote-workflow-submit-credential-{}-{}-{fixture_id}",
@@ -539,8 +537,7 @@ impl WorkflowSubmissionFixture {
         std::env::set_var("CHARIOX_HOME", &root);
         crate::secret::clear_vault_secret_process_cache().unwrap();
 
-        let mut config =
-            DaemonConfig::for_tests().with_session_history_root(root.join("history"));
+        let mut config = DaemonConfig::for_tests().with_session_history_root(root.join("history"));
         config.user_config.state.path = Some(root.join("state.db").display().to_string());
         config.user_config.history.operational.path =
             Some(root.join("operations.db").display().to_string());
@@ -742,8 +739,7 @@ impl WorkflowSubmissionFixture {
 
 impl Drop for WorkflowSubmissionFixture {
     fn drop(&mut self) {
-        let _ =
-            crate::secret::lock_chariox_encrypted_vault(self.root.join("credentials.vault"));
+        let _ = crate::secret::lock_chariox_encrypted_vault(self.root.join("credentials.vault"));
         let _ = crate::secret::clear_vault_secret_process_cache();
         match self.previous_home.take() {
             Some(value) => std::env::set_var("CHARIOX_HOME", value),
@@ -1044,8 +1040,7 @@ fn leased_prompt_submit_timeout_covers_codex_mcp_retry_window() {
 #[tokio::test(flavor = "current_thread")]
 async fn remote_workflow_submit_rejects_missing_vault_credential_before_transport() {
     let _env = crate::env_lock::lock();
-    let mut fixture =
-        WorkflowSubmissionFixture::new(WorkflowCredentialState::MissingCredential);
+    let mut fixture = WorkflowSubmissionFixture::new(WorkflowCredentialState::MissingCredential);
     assert!(fixture.dispatch.workflow_context.is_some());
     let error = fixture
         .submit()
@@ -1081,8 +1076,7 @@ async fn remote_workflow_submit_rejects_missing_or_locked_vault_before_transport
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn remote_workflow_submit_admits_vaulted_token_or_active_worker_run_without_exposing_it()
-{
+async fn remote_workflow_submit_admits_vaulted_token_or_active_worker_run_without_exposing_it() {
     let _env = crate::env_lock::lock();
     for credential_state in [
         WorkflowCredentialState::Unlocked,
