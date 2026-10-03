@@ -46,7 +46,7 @@ impl KernelRuntimeState {
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         {
             self.schedule_app_event_pump();
-            self.schedule_app_wake_pump();
+            self.schedule_app_maintenance_pump();
             self.schedule_app_validation_pump();
         }
         if !self.owned.publication_activation.is_active() {

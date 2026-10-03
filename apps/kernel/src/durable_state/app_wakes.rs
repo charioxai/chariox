@@ -41,6 +41,35 @@ impl std::fmt::Debug for AppWakeRequest {
 }
 
 impl DurableKernelStateStore {
+    /// Wait for the durable deadline or a committed schedule change. The one
+    /// scheduler reads again after notifications and periodically rechecks wall
+    /// time so a clock correction cannot strand a monotonic sleep (#764).
+    pub(crate) async fn wait_for_app_wake(&self) {
+        loop {
+            let store = self.clone();
+            let next = tokio::task::spawn_blocking(move || {
+                store
+                    .require_writer_healthy()
+                    .map_err(|_| StateError::Corrupt)?;
+                let connection = store
+                    .lock_connection("durable_state.next_app_wake")
+                    .map_err(|_| StateError::Corrupt)?;
+                managed_state::next_wake_at_ms(&connection, crate::session::unix_epoch_ms())
+            })
+            .await;
+            let now = crate::session::unix_epoch_ms();
+            let delay_ms = match next {
+                Ok(Ok(Some(due))) if due <= now => return,
+                Ok(Ok(Some(due))) => due.saturating_sub(now).min(1_000),
+                _ => 1_000,
+            };
+            tokio::select! {
+                _ = self.app_wake_changed.notified() => {},
+                _ = tokio::time::sleep(std::time::Duration::from_millis(delay_ms)) => {},
+            }
+        }
+    }
+
     pub(crate) fn app_wakes(
         &self,
         operation: AppWakeOperation,

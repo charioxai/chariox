@@ -145,6 +145,35 @@ fn row_wake(row: &rusqlite::Row<'_>) -> rusqlite::Result<Wake> {
     })
 }
 
+/// Earliest durable attempt deadline. After a wall clock rollback, expose the
+/// original deadline of waiting retries so `due_wakes` can apply #764 recovery
+/// on the writer instead of stranding them behind an obsolete future deadline.
+pub fn next_wake_at_ms(connection: &Connection, now_ms: u64) -> Result<Option<u64>> {
+    let next: Option<i64> =
+        connection.query_row("SELECT min(next_attempt_at_ms) FROM app_wakes", [], |row| {
+            row.get(0)
+        })?;
+    let corrected: bool = connection.query_row(
+        "SELECT last_poll_at_ms - ?1 >= ?2 FROM app_wake_clock WHERE singleton=1",
+        [
+            now_ms.min(MAX_REVISION) as i64,
+            CLOCK_ROLLBACK_TOLERANCE_MS as i64,
+        ],
+        |row| row.get(0),
+    )?;
+    let next = if corrected {
+        let retry: Option<i64> = connection.query_row(
+            "SELECT min(due_at_ms) FROM app_wakes WHERE next_attempt_at_ms>due_at_ms",
+            [],
+            |row| row.get(0),
+        )?;
+        next.into_iter().chain(retry).min()
+    } else {
+        next
+    };
+    Ok(next.map(|ms| ms.max(0) as u64))
+}
+
 /// Due wakes across installations, ordered by retry deadline then original due
 /// time. Correct a recorded clock rollback before selecting; no delivery is
 /// claimed. Empty and future-only schedules remain read-only.

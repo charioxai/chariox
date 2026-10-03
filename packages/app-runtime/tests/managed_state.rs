@@ -4,7 +4,7 @@ use chariox_app_runtime::{
         ReleaseMetadata,
     },
     managed_state::{
-        complete_wake, defer_wake, due_wakes, postpone_wake, ManagedStateStore, StateChanges,
+        complete_wake, defer_wake, due_wakes, next_wake_at_ms, postpone_wake, ManagedStateStore, StateChanges,
         StateCheck, StateError, StateScope, StateWrite, Wake, WakeChange, MAX_CHANGES, MAX_KEYS,
         MAX_REVISION, MAX_STATE_BYTES, MAX_VALUE_BYTES, MAX_WAKES,
     },
@@ -525,11 +525,17 @@ fn a_short_clock_correction_recovers_retries_in_due_order_after_reopen() {
     for wake in &due {
         defer_wake(&db, wake, ahead).unwrap();
     }
+    assert_eq!(next_wake_at_ms(&db, ahead).unwrap(), Some(ahead + 10_000));
+    // Sub-second jitter preserves retry backoff.
+    assert_eq!(next_wake_at_ms(&db, ahead - 1).unwrap(), Some(ahead + 10_000));
     // An unchanged clock must still honor real retry backoff.
     assert!(due_wakes(&db, ahead, 8).unwrap().is_empty());
     drop(db);
     let db = fixture.open();
     let corrected = now + 120_000;
+    // The scheduler must see the overdue original deadline before asking the
+    // writer to perform rollback recovery. This read itself mutates nothing.
+    assert_eq!(next_wake_at_ms(&db, corrected).unwrap(), Some(now));
     let recovered = due_wakes(&db, corrected, 8).unwrap();
     assert_eq!(
         recovered
@@ -542,6 +548,7 @@ fn a_short_clock_correction_recovers_retries_in_due_order_after_reopen() {
         complete_wake(&db, wake).unwrap();
     }
     assert!(due_wakes(&db, corrected, 8).unwrap().is_empty());
+    assert_eq!(next_wake_at_ms(&db, corrected).unwrap(), Some(now + 3_600_000));
     assert_eq!(
         due_wakes(&db, now + 3_600_000, 8).unwrap()[0].wake.id,
         "later"
@@ -600,4 +607,22 @@ fn empty_and_future_only_wake_polls_do_not_write_durable_state() {
     assert!(due_wakes(&db, 9_000, 8).unwrap().is_empty());
     assert_eq!(version(), before);
     assert_eq!(due_wakes(&db, 10_000, 8).unwrap().len(), 1);
+}
+
+#[test]
+fn wake_deadline_tracks_committed_replacements_cancellation_and_postponement() {
+    let fixture = Database::new();
+    let mut db = fixture.open();
+    install(&mut db, "todo");
+    assert_eq!(next_wake_at_ms(&db, 0).unwrap(), None);
+    apply_wakes(&mut db, "todo", &[wake("a", 100, "r1"), wake("b", 200, "r1")]).unwrap();
+    assert_eq!(next_wake_at_ms(&db, 0).unwrap(), Some(100));
+    let due = due_wakes(&db, 100, 8).unwrap();
+    postpone_wake(&db, &due[0], 400).unwrap();
+    assert_eq!(next_wake_at_ms(&db, 100).unwrap(), Some(200));
+    apply_wakes(&mut db, "todo", &[WakeChange::Cancel { id: "b".into() }]).unwrap();
+    assert_eq!(next_wake_at_ms(&db, 100).unwrap(), Some(400));
+    apply_wakes(&mut db, "todo", &[wake("a", 300, "r2")]).unwrap();
+    complete_wake(&db, &due[0]).unwrap(); // stale completion preserves replacement
+    assert_eq!(next_wake_at_ms(&db, 100).unwrap(), Some(300));
 }

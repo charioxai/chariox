@@ -94,8 +94,26 @@ fn wake_record(wake: DueWake, settle: Settle, now_ms: u64, reason: &str) -> AppW
 }
 
 impl KernelRuntimeState {
-    /// Coordinator wiring only: one bounded pass per reservation.
-    pub(crate) fn schedule_app_wake_pump(&self) {
+    /// One kernel-owned delivery lane, independent of transport reconciliation.
+    /// Each bounded page settles before the next deadline is read. A due
+    /// backlog drains immediately, without the maintenance pass throttle.
+    pub(crate) async fn run_app_wake_scheduler(&self) {
+        let Some(_scheduler) = self.app_control().reserve_wake_scheduler() else {
+            return;
+        };
+        loop {
+            self.owned.durable_state_store.wait_for_app_wake().await;
+            if !self.app_wake_pass(crate::session::unix_epoch_ms()).await {
+                // A transient read/settlement error must not spin on the same
+                // durable item or race its outstanding writer work.
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+
+    /// Coordinator wiring only: one bounded maintenance pass per reservation.
+    pub(crate) fn schedule_app_maintenance_pump(&self) {
         let now_ms = crate::session::unix_epoch_ms();
         if self
             .owned
@@ -111,7 +129,6 @@ impl KernelRuntimeState {
         let runtime = self.clone();
         tokio::spawn(async move {
             let _pass = pass;
-            runtime.app_wake_pass(now_ms).await;
             runtime.app_inbox_pass(now_ms).await;
             runtime.stop_idle_apps(now_ms).await;
             if runtime.app_control().wake_pump().prune_due(now_ms) {
@@ -168,7 +185,7 @@ impl KernelRuntimeState {
         }
     }
 
-    async fn app_wake_pass(&self, now_ms: u64) {
+    async fn app_wake_pass(&self, now_ms: u64) -> bool {
         let store = self.owned.durable_state_store.clone();
         let due = tokio::task::spawn_blocking(move || {
             store.app_wakes(AppWakeOperation::Due {
@@ -178,7 +195,7 @@ impl KernelRuntimeState {
         })
         .await;
         let Ok(Ok(AppWakeOutcome::Due(due))) = due else {
-            return;
+            return false;
         };
         let (deliver, planned) = self
             .plan_app_delivery(due, now_ms, |wake| {
@@ -222,12 +239,15 @@ impl KernelRuntimeState {
             ));
         }
         let store = self.owned.durable_state_store.clone();
-        let _ = tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
+            let mut recorded = true;
             for record in records {
-                let _ = store.app_wakes(record);
+                recorded &= store.app_wakes(record).is_ok();
             }
+            recorded
         })
-        .await;
+        .await
+        .unwrap_or(false)
     }
 
     /// Splits due work into items for live workers and items that wait,

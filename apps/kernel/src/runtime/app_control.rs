@@ -34,6 +34,7 @@ pub(crate) struct AppControlService {
     admission: Arc<Semaphore>,
     event_pump: super::app_event_pump::AppEventPump,
     wake_pump: super::app_wake_pump::AppWakePump,
+    wake_scheduler: Arc<Semaphore>,
     views: super::app_views::AppViews,
     validation_pump: super::app_wake_pump::AppWakePump,
     /// Shown prompts: operation → (owner, the session showing it once known).
@@ -87,6 +88,7 @@ impl AppControlService {
             admission,
             event_pump,
             wake_pump: Default::default(),
+            wake_scheduler: Arc::new(Semaphore::new(1)),
             views: Default::default(),
             validation_pump: Default::default(),
             validation_prompts: Default::default(),
@@ -123,6 +125,11 @@ impl AppControlService {
 
     pub(crate) fn event_pump(&self) -> &super::app_event_pump::AppEventPump {
         &self.event_pump
+    }
+
+    /// Shared across runtime clones: only one deadline delivery lane may run.
+    pub(crate) fn reserve_wake_scheduler(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        self.wake_scheduler.clone().try_acquire_owned().ok()
     }
 
     pub(crate) fn wake_pump(&self) -> &super::app_wake_pump::AppWakePump {

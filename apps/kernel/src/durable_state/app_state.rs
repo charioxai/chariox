@@ -94,6 +94,7 @@ pub(super) struct AppStateRequest {
     catalog: Arc<EventCatalog>,
     operation: AppStateOperation,
     budget: AppOperationBudget,
+    wake_changed: Arc<tokio::sync::Notify>,
     response: mpsc::Sender<Result<AppStateOutcome, AppStateError>>,
 }
 
@@ -144,6 +145,7 @@ impl DurableKernelStateStore {
                 catalog,
                 operation,
                 budget,
+                wake_changed: self.app_wake_changed.clone(),
                 response,
             })))?;
         receiver
@@ -183,6 +185,12 @@ pub(super) fn initialize(connection: &mut Connection) -> Result<(), DaemonError>
 }
 
 pub(super) fn execute(connection: &mut Connection, request: AppStateRequest) {
+    let changes_wakes = match &request.operation {
+        AppStateOperation::Schedule(wakes) | AppStateOperation::Transaction { wakes, .. } => {
+            !wakes.is_empty()
+        }
+        _ => false,
+    };
     let result = apply(
         connection,
         &request.owner,
@@ -190,6 +198,10 @@ pub(super) fn execute(connection: &mut Connection, request: AppStateRequest) {
         request.operation,
         &request.budget,
     );
+    if result.is_ok() && changes_wakes {
+        // Notify on the writer after commit, even if the caller was cancelled.
+        request.wake_changed.notify_one();
+    }
     let _ = request.response.send(result);
 }
 

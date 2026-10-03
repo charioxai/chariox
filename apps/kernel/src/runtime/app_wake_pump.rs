@@ -1,4 +1,4 @@
-//! Single-flight, throttled reservation for kernel-owned App wake delivery.
+//! Single-flight, throttled reservation for App inbox and idle maintenance.
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,

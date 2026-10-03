@@ -60,6 +60,7 @@ pub struct DurableKernelStateStore {
     connection: Arc<Mutex<Connection>>,
     writer: Arc<DurableStateWriter>,
     workflow_runtime_transition_lock: Arc<Mutex<()>>,
+    app_wake_changed: Arc<tokio::sync::Notify>,
     _owner: Option<Arc<fs::File>>,
 }
 
@@ -382,6 +383,7 @@ impl DurableKernelStateStore {
             connection: Arc::new(Mutex::new(connection)),
             writer: Arc::new(writer),
             workflow_runtime_transition_lock: Arc::new(Mutex::new(())),
+            app_wake_changed: Arc::new(tokio::sync::Notify::new()),
             _owner: None,
         })
     }

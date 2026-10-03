@@ -1397,3 +1397,86 @@ fn write_private_test_file(path: &Path, value: &str) {
     file.write_all(value.as_bytes())
         .expect("private test file should be written");
 }
+
+/// A schedule committed after the transport pump falls asleep must be processed
+/// at its deadline, without any client traffic or a five-second idle sweep.
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn app_wake_deadline_interrupts_idle_transport_without_client_traffic() {
+    use crate::durable_state::{
+        app_state::AppStateOperation,
+        app_wakes::{AppWakeOperation, AppWakeOutcome},
+    };
+    use crate::runtime::app_operation_budget::AppOperationBudget;
+    use chariox_app_runtime::managed_state::{Wake, WakeChange};
+    let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+    let mcp = StdTcpListener::bind("127.0.0.1:0").unwrap();
+    let app = DaemonApp::bootstrap(daemon_config_for_runtime_mcp_listener(&mcp)).unwrap();
+    let store = app.durable_state_store();
+    let catalog = crate::durable_state::app_state::fixture_event_catalog(&store);
+    let (stop, stopped) = oneshot::channel();
+    let server = tokio::spawn(run_kernel_websocket_server_on_listeners_with_auth(
+        Arc::new(Mutex::new(app)),
+        listener,
+        mcp,
+        None,
+        async {
+            let _ = stopped.await;
+        },
+    ));
+    // Let the initial transport pass finish before scheduling anything.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let due = crate::session::unix_epoch_ms() + 150;
+    let registration = store.clone();
+    tokio::task::spawn_blocking(move || {
+        registration.execute_app_state(
+            "alice",
+            catalog,
+            AppStateOperation::Schedule(vec![WakeChange::Set(Wake {
+                id: "deadline".into(),
+                due_at_ms: due,
+                revision: "r1".into(),
+            })]),
+            AppOperationBudget::fixture(TokioInstant::now() + Duration::from_secs(5), || false),
+        )
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let probe = store.clone();
+    // No package was staged: the scheduler must record its bounded failed
+    // start and defer the wake, rather than leave it due for the idle sweep.
+    let result = timeout(Duration::from_millis(700), async {
+        loop {
+            let probe = probe.clone();
+            let due = tokio::task::spawn_blocking(move || {
+                probe.app_wakes(AppWakeOperation::Due {
+                    now_ms: crate::session::unix_epoch_ms(),
+                    limit: 8,
+                })
+            })
+            .await
+            .unwrap()
+            .unwrap();
+            if matches!(due, AppWakeOutcome::Due(items) if items.is_empty()) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    stop.send(()).unwrap();
+    timeout(Duration::from_secs(5), server)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(
+        result.is_ok(),
+        "due App wake waited for coarse transport reconciliation"
+    );
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+mod wake_pressure;
