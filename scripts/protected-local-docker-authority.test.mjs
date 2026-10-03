@@ -93,6 +93,7 @@ test("actual provisioner compatibility uses worker revision while first-boot pro
   const compatible = source.match(/^image_runtime_compatible\(\) \{[\s\S]*?^\}/m)?.[0]
   assert.ok(runtime && compatible)
   const enrollment = fresh(), env = localDevRuntimeEnvironment(enrollment)
+  assert.equal(env.CHARIOX_SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY, "1")
   assert.notEqual(env.CHARIOX_SLICE_BUILD_CONTEXT_DIGEST, env.CHARIOX_SLICE_LOCAL_DEV_RUNTIME_REVISION)
   const run = overrides => spawnSync("/bin/bash", ["-ec", `${runtime}\n${compatible}\ndocker(){ case "$*" in *runtime-source-revision*) printf '%s' '${enrollment.workerRuntimeRevision}';; *relay-peer-protocol-version*) printf '42';; *) return 1;; esac; }\nSLICE_RELAY_PEER_PROTOCOL_VERSION=42\nSLICE_RUNTIME_SOURCE_REVISION=$(runtime_source_revision)\nimage_runtime_compatible '${enrollment.workerImageId}'\nprintf '%s' "$CHARIOX_SLICE_BUILD_CONTEXT_DIGEST"`],
     {encoding:"utf8",env:{PATH:"/usr/bin:/bin",...env,CHARIOX_SLICE_LOCAL_DEV_OWNER_UID:"1000",...overrides}})
@@ -100,4 +101,12 @@ test("actual provisioner compatibility uses worker revision while first-boot pro
   const refused=run({CHARIOX_SLICE_LOCAL_DEV_RUNTIME_REVISION:enrollment.sourceDigest});assert.notEqual(refused.status,0)
   assert.notEqual(run({CHARIOX_SLICE_LOCAL_DEV_RUNTIME_REVISION:""}).status,0)
   assert.throws(()=>localDevRuntimeEnvironment({...enrollment,workerRuntimeRevision:undefined}))
+})
+
+ test("local DEV installer requires an explicit provider sandbox compatibility grant", async () => {
+  const {spawnSync} = await import("node:child_process")
+  const installer = new URL("../deploy/local-linux/install-local-docker-dev.py", import.meta.url)
+  const result = spawnSync("python3", [installer.pathname], {encoding: "utf8"})
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /required:.*--allow-provider-sandbox-compatibility/)
 })

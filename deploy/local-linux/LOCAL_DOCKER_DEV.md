@@ -23,6 +23,7 @@ provider profiles, private keys and runtime state do not enter it.
 
 ```sh
 sudo python3 deploy/local-linux/install-local-docker-dev.py \
+  --allow-provider-sandbox-compatibility \
   --source /absolute/path/to/reviewed/chariox \
   --user ordinary-test-user \
   --worker-image sha256:VERIFIED_WORKER_IMAGE_ID \
@@ -44,6 +45,17 @@ per-user launcher, immutable public source, public image/engine pins and a
 private control root. Existing incompatible enrollment or private directories
 are refused rather than repaired. Updates need a reviewed enrollment procedure;
 the installer is not a private-state migration tool.
+
+Local DEV enrollment explicitly opts its workers into provider sandbox
+compatibility, just as the topology fixture does. The installer requires
+`--allow-provider-sandbox-compatibility` to acknowledge the grant: Docker
+seccomp is disabled, system paths are unmasked, and the selected AppArmor
+profile is used (default `unconfined`). The broker applies this grant only to
+its enrolled DEV workers; ordinary local slices still use
+`slices.linux.allow_provider_sandbox_compatibility = true` as a separate opt-in.
+The isolation probe still runs and must succeed. On hosts restricting
+unprivileged user namespaces, load `chariox-slice-provider.apparmor` and start
+the home kernel with `CHARIOX_SLICE_APPARMOR_PROFILE=chariox-slice-provider`.
 
 Use normal Create/Start/Save/Backup/Restore Slice operations after enrollment.
 Fresh workers must pass the protected first-use identity retention barrier
