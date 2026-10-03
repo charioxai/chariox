@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 import { retireProtectedQuotaHomes } from "./protected-home-retirement.mjs"
-import { recordCapturedImageProof } from "./protected-image-proof.mjs"
+import { recordCapturedImageProof, recordFlattenedImageProof } from "./protected-image-proof.mjs"
+import { captureNeedsFlatten } from "./captured-image-depth.mjs"
 import { requireSafeHomeVolume as requireSafeManagedHomeVolume } from "./protected-home-preflight.mjs"
 import { requireSafeLocalHomeVolume } from "./protected-local-home-scan.mjs"
 import { createManagedLayoutController } from "./protected-managed-layout.mjs"
@@ -380,7 +381,7 @@ function validateDocker(args) {
     || exactArguments(args, ["ps", "-a", "--format", "{{.Names}}"])
   ) return
   if (args[0] === "inspect" && args.length === 4 && args[1] === "--format") {
-    if (!["{{.State.Running}} {{.State.Status}}", "{{.HostConfig.Memory}}", '{{index .Config.Labels "io.chariox.snapshot-helper"}}'].includes(args[2])) {
+    if (!["{{.State.Running}} {{.State.Status}}", "{{.HostConfig.Memory}}", '{{index .Config.Labels "io.chariox.snapshot-helper"}}', "{{.Image}}"].includes(args[2])) {
       fail("Docker inspect format is invalid")
     }
     validateSliceContainer(args[3], "Docker container")
@@ -389,7 +390,8 @@ function validateDocker(args) {
   if (
     args[0] === "inspect" &&
     args.length === 5 &&
-    exactArguments(args.slice(1, 4), ["--size", "--format", "{{.SizeRw}}"])
+    (exactArguments(args.slice(1, 4), ["--size", "--format", "{{.SizeRw}}"])
+      || exactArguments(args.slice(1, 4), ["--size", "--format", "{{.SizeRootFs}}"]))
   ) {
     validateSliceContainer(args[4], "Docker container")
     return
@@ -406,7 +408,8 @@ function validateDocker(args) {
     validateResource(args[3], "Docker image")
     return
   }
-  if (exactArguments(args.slice(0, 4), ["image", "inspect", "--format", "{{.Id}}"])
+  if ((exactArguments(args.slice(0, 4), ["image", "inspect", "--format", "{{.Id}}"])
+      || exactArguments(args.slice(0, 4), ["image", "inspect", "--format", "{{len .RootFS.Layers}}"]))
       && args.length === 5) {
     if (!isDockerImageReference(args[4])) fail("Docker image reference is invalid")
     return
@@ -1755,6 +1758,7 @@ async function execute(request) {
   let commitSource
   let commitParent
   let legacyCommit = false
+  let flattenCapture = false
   if (request.kind === "docker" && request.args[0] === "commit") {
     const layout = protectedLayouts.captureLayout(request.args[1])
     legacyCommit = layout.layoutKind === "legacy-release-f"
@@ -1763,6 +1767,9 @@ async function execute(request) {
       docker: args => spawnSync("/usr/bin/docker", args, {env: dockerEnvironment(), timeout: 30_000, maxBuffer: 8 * 1024 * 1024})})
     commitSource = inspectDockerObject("container", request.args[1])
     commitParent = inspectDockerObject("image", commitSource.Image)
+    // A capture on a deep saved image flattens instead of adding a layer, so
+    // saved images never reach Docker's layer limit (captured-image-depth.mjs).
+    flattenCapture = captureNeedsFlatten(commitParent.RootFS?.Layers?.length)
   }
   if (request.kind === "provider_auth_layout") {
     const protectedLayout = protectedLayouts.providerAuthProtected(request.container)
@@ -1869,6 +1876,10 @@ async function execute(request) {
       prepared = request.kind === "docker" ? prepareDocker(request.args) : await prepareProvisioner(request)
       if (request.kind === "docker" && admission?.source === "broker-proof") {
         prepared.args[1] = admission.containerId
+      }
+      if (flattenCapture) {
+        return spawnBounded(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), "captured-image-depth.mjs"),
+          "flatten", commitSource.Id, prepared.args[2]], {env: dockerEnvironment(), maxBuffer: MAX_OUTPUT_BYTES})
       }
       const command = request.kind === "docker" ? "/usr/bin/docker" : PROVISIONER
       const args = request.kind === "docker" ? prepared.args : [request.action]
@@ -1981,9 +1992,10 @@ async function execute(request) {
       : await runPrepared()
     if (commitSource && result.status === 0) {
       const captured = inspectDockerObject("image", request.args[2])
-      if (legacyCommit) protectedLayouts.recordLegacyImage(request.args[1], commitParent, commitSource, captured)
-      else recordCapturedImageProof(protectedLayouts.imageRoot, VERIFIED_BUILD_CONTEXT_DIGEST,
-        commitParent, commitSource, captured)
+      if (legacyCommit) protectedLayouts.recordLegacyImage(request.args[1], commitParent, commitSource, captured,
+        {flattened: flattenCapture})
+      else (flattenCapture ? recordFlattenedImageProof : recordCapturedImageProof)(protectedLayouts.imageRoot,
+        VERIFIED_BUILD_CONTEXT_DIGEST, commitParent, commitSource, captured)
     }
     if (request.kind === "docker" && prepared.output && result.status === 0) {
       publishStagedOutput(prepared.output)
