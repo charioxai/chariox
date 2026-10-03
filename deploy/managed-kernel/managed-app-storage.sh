@@ -2,11 +2,17 @@
 enroll_managed_app_storage() (
   set -eu
   install_root=$1
-  app_storage_service=$2
+  # Install and upgrade retain the topology-owned enrollment, regardless of
+  # the upgrade receipt selecting a temporary allocation-worker supervisor.
+  case "$2" in
+    path1) app_storage_service=chariox-path1-managed-bootstrap.service ;;
+    shared_host) app_storage_service=chariox-managed-bootstrap.service ;;
+    *) echo "invalid App storage topology" >&2; exit 1 ;;
+  esac
 # Root-installed authority is derived from the actual managed kernel OS user.
 # App requests cannot supply this UID/GID, cgroup root, quota, or filesystem path.
-app_storage_uid=$(id -u chariox)
-app_storage_gid=$(id -g chariox)
+app_storage_uid=$(id -u chariox) || exit 1
+app_storage_gid=$(id -g chariox) || exit 1
 for app_storage_id in "$app_storage_uid" "$app_storage_gid"; do
   case "$app_storage_id" in
     ''|*[!0-9]*|0) echo "invalid managed App storage owner" >&2; exit 1 ;;
@@ -17,16 +23,16 @@ for app_storage_path in "$install_root/etc/chariox" "$install_root/var/lib/chari
     echo "managed App storage root is obstructed" >&2; exit 1
   fi
 done
-install -d -o root -g root -m 0755 "$install_root/etc/chariox"
-install -d -o root -g root -m 0711 "$install_root/var/lib/chariox-app-storage"
+install -d -o root -g root -m 0755 "$install_root/etc/chariox" || exit 1
+install -d -o root -g root -m 0711 "$install_root/var/lib/chariox-app-storage" || exit 1
 app_storage_config=$install_root/etc/chariox/app-storage.json
 if [ -L "$app_storage_config" ] || { [ -e "$app_storage_config" ] && [ ! -f "$app_storage_config" ]; }; then
   echo "managed App storage enrollment is obstructed" >&2; exit 1
 fi
-app_storage_pending=$(mktemp "$install_root/etc/chariox/.app-storage.XXXXXXXX")
-printf '{"schema":"chariox.app-storage-enrollment.v1","owners":[{"uid":%s,"gid":%s,"cgroup_root":"/sys/fs/cgroup/system.slice/%s/apps","kernel_database_paths":["/home/chariox/.chariox/state/kernel.db"]}]}\n' "$app_storage_uid" "$app_storage_gid" "$app_storage_service" > "$app_storage_pending"
-chmod 0644 "$app_storage_pending"
-chown root:root "$app_storage_pending"
+app_storage_pending=$(mktemp "$install_root/etc/chariox/.app-storage.XXXXXXXX") || exit 1
+printf '{"schema":"chariox.app-storage-enrollment.v1","owners":[{"uid":%s,"gid":%s,"cgroup_root":"/sys/fs/cgroup/system.slice/%s/apps","kernel_database_paths":["/home/chariox/.chariox/state/kernel.db"]}]}\n' "$app_storage_uid" "$app_storage_gid" "$app_storage_service" > "$app_storage_pending" || exit 1
+chmod 0644 "$app_storage_pending" || exit 1
+chown root:root "$app_storage_pending" || exit 1
 if [ -e "$app_storage_config" ] && ! cmp -s "$app_storage_config" "$app_storage_pending"; then
   rm -f -- "$app_storage_pending"
   echo "managed App storage enrollment conflicts with the installed owner" >&2; exit 1

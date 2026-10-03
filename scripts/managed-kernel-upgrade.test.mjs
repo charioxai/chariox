@@ -586,6 +586,9 @@ exec /usr/bin/install "\${arguments[@]}"
   await put(join(bin, "systemctl"), `#!/bin/sh
 set -eu
 printf '%s\n' "$*" >> "$HARNESS_STATE/systemctl.log"
+if [ "$1" = disable ] && [ "\${3:-}" = chariox-app-storage.service ]; then
+  [ -f "$CHARIOX_MANAGED_UPGRADE_ROOT/etc/systemd/system/chariox-app-storage.service" ] || exit 1
+fi
 if [ "$1" = "show" ]; then
   case "$*" in
     *--property=NeedDaemonReload*chariox-path1-managed-bootstrap.service)
@@ -1515,6 +1518,25 @@ test("managed kernel upgrade preserves an exact disposable worker receipt and pe
   )
 })
 
+test("allocation-worker upgrade and recovery preserve install-time App storage enrollment", async context => {
+  const harness = await makeHarness(context, {receiptKind: "allocation_worker", path1Release: true})
+  const config = {schema: "chariox.app-storage-enrollment.v1", owners: [{
+    uid: harness.charioxIdentity.uid, gid: harness.charioxIdentity.gid,
+    cgroup_root: "/sys/fs/cgroup/system.slice/chariox-path1-managed-bootstrap.service/apps",
+    kernel_database_paths: ["/home/chariox/.chariox/state/kernel.db"],
+  }]}
+  const enrollment = join(harness.installRoot, "etc/chariox/app-storage.json")
+  await put(enrollment, `${JSON.stringify(config)}\n`, 0o644)
+  await put(join(harness.state, "fail-health-once"), "fail\n")
+  const failed = harness.run({CHARIOX_MANAGED_PROVIDER_TOPOLOGY: "path1", CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY: harness.trustedBuilderKey})
+  assert.equal(failed.status, 1)
+  assert.match(failed.stderr, /restored previous managed kernel release/)
+  assert.deepEqual(JSON.parse(await readFile(enrollment, "utf8")), config)
+  const succeeded = harness.run({CHARIOX_MANAGED_PROVIDER_TOPOLOGY: "path1", CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY: harness.trustedBuilderKey})
+  assert.equal(succeeded.status, 0, succeeded.stderr)
+  assert.deepEqual(JSON.parse(await readFile(enrollment, "utf8")), config)
+})
+
 test("ordinary managed upgrade rejects a worker release override before service mutation", async (context) => {
   const harness = await makeHarness(context)
   await put(
@@ -2319,6 +2341,21 @@ test("managed kernel upgrade remains a dedicated offline release operation", asy
   assert.match(contents.slice(publishRelease, publishTransaction), /sync-tree[^\n]*\$pending_transaction/)
   assert.match(contents.slice(publishTransaction, stopService), /publish-transaction/)
   assert.match(stateContents, /await rename\(source, destination\)\n  await fsyncDirectory\(dirname\(destination\)\)/)
+})
+
+
+test("App enrollment propagates directory creation failure inside a conditional caller", async context => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-app-enroll-failure-"))
+  context.after(() => rm(root, {recursive: true, force: true}))
+  const bin = join(root, "bin")
+  await put(join(bin, "id"), "#!/bin/sh\necho 1000\n", 0o755)
+  await put(join(bin, "install"), "#!/bin/sh\nexit 42\n", 0o755)
+  const helper = join(repositoryRoot, "deploy/managed-kernel/managed-app-storage.sh")
+  const result = spawnSync("sh", ["-c", '. "$1"; enroll_managed_app_storage "$2" shared_host || exit 23', "test", helper, join(root, "host")], {
+    env: {...process.env, PATH: `${bin}:${process.env.PATH}`}, encoding: "utf8",
+  })
+  assert.equal(result.status, 23)
+  assert.equal(await lstat(join(root, "host/etc/chariox/app-storage.json")).then(() => true, () => false), false)
 })
 
 }

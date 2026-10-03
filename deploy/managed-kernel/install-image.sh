@@ -435,7 +435,7 @@ esac
 usermod --append --groups chariox-slice chariox
 
 . "$script_root/managed-app-storage.sh"
-enroll_managed_app_storage "$install_root" "$selected_bootstrap_service"
+enroll_managed_app_storage "$install_root" "$managed_provider_topology"
 
 install -d -o chariox -g chariox -m 0700 "$managed_home" "$managed_state"
 install -d -o chariox-docker -g chariox-docker -m 0700 \

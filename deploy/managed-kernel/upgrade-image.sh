@@ -358,12 +358,25 @@ atomic_symlink() {
   node "$script_root/managed-kernel-upgrade-state.mjs" atomic-symlink "$1" "$2"
 }
 
+# Disable while current still resolves the unit; systemd cannot disable a
+# dangling unit after the pre-Apps release has replaced current.
+prepare_managed_app_release_switch() {
+  [ ! -f "$1/usr/libexec/chariox-app-storage" ] || return 0
+  app_unit_link=$install_root/etc/systemd/system/chariox-app-storage.service
+  if path_exists "$app_unit_link"; then
+    [ -L "$app_unit_link" ] && [ "$(readlink "$app_unit_link")" = "../../../usr/lib/chariox/current/etc/systemd/system/chariox-app-storage.service" ] || {
+      echo "managed App storage release link is obstructed" >&2; return 1;
+    }
+    systemctl disable --now chariox-app-storage.service || return 1
+  fi
+}
+
 sync_managed_app_storage() {
   app_package_link=$install_root/usr/local/bin/chariox-app-package
   app_helper_link=$install_root/usr/libexec/chariox-app-storage
   app_unit_link=$install_root/etc/systemd/system/chariox-app-storage.service
   if [ -f "$current_link/usr/local/bin/chariox-app-package" ]; then
-    enroll_managed_app_storage "$install_root" "$service_name" || return 1
+    enroll_managed_app_storage "$install_root" "$managed_provider_topology" || return 1
     install -d -o root -g root -m 0755 "$install_root/usr/libexec" "$install_root/usr/local/bin" "$install_root/etc/systemd/system" || return 1
     publish_managed_app_link "../../../usr/lib/chariox/current/usr/local/bin/chariox-app-package" "$app_package_link" || return 1
     publish_managed_app_link "../lib/chariox/current/usr/libexec/chariox-app-storage" "$app_helper_link" || return 1
@@ -383,9 +396,6 @@ sync_managed_app_storage() {
         }
       fi
     done
-    if path_exists "$app_unit_link"; then
-      systemctl disable --now chariox-app-storage.service || return 1
-    fi
     rm -f -- "$app_package_link" "$app_helper_link" "$app_unit_link" || return 1
     if [ -f "$install_root/etc/chariox/app-storage.json" ]; then
       echo "Pre-Apps release: App storage is disabled; enrollment and App data are preserved for a later upgrade." >&2
@@ -666,6 +676,7 @@ rollback_transaction() {
     no) remove_release_override || return 1 ;;
     *) echo "managed kernel upgrade transaction has an invalid release override marker" >&2; return 1 ;;
   esac
+  prepare_managed_app_release_switch "$chariox_root/$previous_target" || return 1
   atomic_symlink "$previous_target" "$current_link" || return 1
   sync_path1_data_volume_unit_links || return 1
   sync_managed_app_storage || return 1
@@ -1079,7 +1090,10 @@ else
   remove_release_override || activation_failed=1
 fi
 if [ "${activation_failed:-0}" -eq 0 ]; then
-  atomic_symlink "releases/$release_name" "$current_link" || activation_failed=1
+  prepare_managed_app_release_switch "$published_release" || activation_failed=1
+  if [ "${activation_failed:-0}" -eq 0 ]; then
+    atomic_symlink "releases/$release_name" "$current_link" || activation_failed=1
+  fi
 fi
 if [ "${activation_failed:-0}" -eq 0 ]; then
   sync_path1_data_volume_unit_links || activation_failed=1
