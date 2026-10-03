@@ -486,3 +486,144 @@ fn actual_app_tools_follow_current_binding_for_ordinary_and_meta_provider_runs()
     owner.shutdown_blocking();
     assert!(restarted.was_reaped());
 }
+
+#[test]
+fn cancelling_the_turn_aborts_its_in_flight_app_tool() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .thread_stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
+        .enable_all()
+        .build()
+        .unwrap();
+    let scratch = Scratch(std::env::temp_dir().join(format!(
+        "chariox-app-turn-cancel-{:016x}",
+        rand::random::<u64>()
+    )));
+    std::fs::create_dir(&scratch.0).unwrap();
+    let (router, store, catalog, session, agent, token, prompts) = {
+        let _entered = runtime.enter();
+        let mut config = DaemonConfig::for_tests();
+        config.user_config.state.path = Some(scratch.0.join("state.db").to_string_lossy().into());
+        let mut app = DaemonApp::bootstrap(config).unwrap();
+        let store = app.durable_state_store();
+        let catalog = crate::durable_state::app_state::fixture_tool_catalog(&store);
+        let session = app
+            .sessions_mut()
+            .create_session(
+                CreateSessionRequest::new(scratch.0.to_string_lossy(), scratch.0.to_string_lossy())
+                    .with_owner_user_id("alice"),
+            )
+            .unwrap();
+        let agent = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(session.id(), "dev-stub").with_owner_user_id("alice"),
+            )
+            .unwrap();
+        let run = launch_test_provider(
+            &mut app,
+            session.id(),
+            agent.id(),
+            "dev-stub",
+            "dev-stub",
+            "native-tui-idle",
+        );
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .unwrap();
+        let crate::session::PromptSubmissionOutcome::Started { .. } = app
+            .submit_prompt(
+                session.id(),
+                attachment.id(),
+                Some(agent.id()),
+                "use the App",
+                Vec::new(),
+            )
+            .unwrap()
+        else {
+            panic!("turn starts")
+        };
+        let token = run.runtime_mcp_auth_token().unwrap().to_owned();
+        let prompts = app.prompt_state_owner();
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+        (router, store, catalog, session, agent, token, prompts)
+    };
+    let name = catalog.app_catalog().tools().next().unwrap().name.clone();
+    let fixture = Fixture::compile().unwrap();
+    let (bytes, publisher) = crate::durable_state::app_state::fixture_tool_package();
+    let package = verify(
+        &bytes,
+        &VerificationPolicy::new(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, vec![publisher]),
+    )
+    .unwrap();
+    let (process, observed) = fixture.spawn_blocking(Mode::ToolStall, &package).unwrap();
+    let (starting, _control) = crate::runtime::app_worker::AppWorkerOwner::start_blocking(
+        process,
+        &package,
+        catalog,
+        Arc::new(RejectBroker),
+        PeerLimits::default(),
+        runtime.handle().clone(),
+    )
+    .unwrap();
+    let mut registered = starting
+        .await_registered_blocking(std::time::Duration::from_secs(3))
+        .unwrap();
+    let proof = store
+        .confirm_app_activation(
+            "alice",
+            registered.catalog().clone(),
+            registered.take_activation_budget().unwrap(),
+        )
+        .unwrap();
+    let (owner, handle) = registered.activate_blocking(proof).unwrap();
+    router
+        .runtime_state
+        .app_control()
+        .publish_app_worker("alice", handle)
+        .unwrap();
+    runtime
+        .block_on(router.runtime_state.grant_agent_extension(
+            agent.id(),
+            crate::extension::ExtensionGrant::app("installed"),
+            "alice",
+        ))
+        .unwrap();
+    let dispatch = router.runtime_state.clone();
+    let mut call = runtime.spawn(async move {
+        dispatch
+            .dispatch_authenticated_runtime_tool_call(
+                &token,
+                &name,
+                serde_json::json!({"text":"stall"}),
+            )
+            .await
+    });
+    runtime.block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while observed.tool_invocations() == 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("handler starts");
+    });
+    // Keep the caller/connection alive: cancellation must observe the kernel
+    // turn state, rather than depend on dropping the MCP dispatch future.
+    assert!(prompts
+        .begin_cancelling_active_prompt(&session, agent.id())
+        .is_some());
+    let result = runtime.block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(2), &mut call).await
+    });
+    call.abort();
+    owner.shutdown_blocking();
+    assert!(observed.was_reaped());
+    assert!(
+        matches!(result, Ok(Ok(Err(_)))),
+        "cancelled turn must terminate App call while MCP connection remains open: {result:?}"
+    );
+}

@@ -30,6 +30,8 @@ impl KernelRuntimeState {
         }
         // Captured at submission, before any wait for an on-demand start.
         let turn_id = self.app_call_turn_id(agent, caller_run_id, remote.is_some());
+        let turn_cancelled = Arc::new(self.app_call_turn_cancellation(agent));
+        let observe_turn = turn_cancelled.clone();
         let cancelled = CancelOnDrop(Arc::new(AtomicBool::new(false)));
         let lease = match self
             .app_lease_on_demand(agent.owner_user_id(), &tool.name)
@@ -45,7 +47,7 @@ impl KernelRuntimeState {
         let observe = cancelled.0.clone();
         let budget =
             crate::runtime::app_operation_budget::AppOperationBudget::from_supervisor(move || {
-                observe.load(Ordering::Acquire)
+                observe.load(Ordering::Acquire) || observe_turn()
             });
         let expected_version = format!(
             "{}:{}",
@@ -91,7 +93,18 @@ impl KernelRuntimeState {
         .await
         .map_err(|_| unavailable())??;
         let (response, expected, tool, remote) = response;
-        let reply = response.receive().await.map_err(worker_call_error)?;
+        // The MCP connection can remain open after its turn is cancelled.
+        // Dropping the response future asks the existing worker peer to abort
+        // the handler, preserving that peer's cancellation/receipt ownership.
+        let reply = tokio::select! {
+            biased;
+            _ = async {
+                while !turn_cancelled() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            } => return Err(unavailable()),
+            reply = response.receive() => reply.map_err(worker_call_error)?,
+        };
         let permit = self
             .app_control()
             .admit_reply(reply.remaining(crate::session::unix_epoch_ms()))
@@ -100,6 +113,9 @@ impl KernelRuntimeState {
         let owned = self.owned.clone();
         let payload = tokio::task::spawn_blocking(move || {
             let _permit = permit;
+            if turn_cancelled() {
+                return Err(unavailable());
+            }
             let agents = owned.agent_store.read();
             let current = agents.get_agent(expected.id())?;
             require_binding(&current, &expected, &tool, remote.as_ref())?;
@@ -125,6 +141,36 @@ impl KernelRuntimeState {
             .ok()
             .and_then(Result::ok)
             .unwrap_or(false)
+    }
+
+    fn app_call_turn_cancellation(
+        &self,
+        agent: &crate::agent::AgentInstance,
+    ) -> impl Fn() -> bool + Send + Sync + 'static {
+        let prompts = self.owned.prompt_state_owner.clone();
+        let agent_id = agent.id().to_owned();
+        let turn = self
+            .owned
+            .session_store
+            .get_session(agent.session_id())
+            .ok()
+            .and_then(|session| {
+                prompts
+                    .active_prompt_for_agent_snapshot(&session, &agent_id)
+                    .map(|prompt| (session, prompt.id().to_owned()))
+            });
+        // Bind once, before any await. A later turn or focus change cannot
+        // retarget accepted work, and calls between turns keep their old path.
+        move || {
+            turn.as_ref().is_some_and(|(session, turn_id)| {
+                prompts
+                    .active_prompt_for_agent_snapshot(session, &agent_id)
+                    .is_none_or(|prompt| {
+                        prompt.id() != turn_id
+                            || prompt.status() != crate::session::PromptStatus::Running
+                    })
+            })
+        }
     }
 }
 
