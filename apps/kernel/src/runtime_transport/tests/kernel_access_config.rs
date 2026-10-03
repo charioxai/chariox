@@ -1,4 +1,4 @@
-//! Protocol 395 drill through the real websocket config request path.
+//! Protocol 404 drill through the real websocket config request path.
 use super::*;
 
 #[tokio::test]

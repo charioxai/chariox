@@ -1,6 +1,6 @@
 use super::*;
 
-/// Protocol 393: how the kernel identified a connection, from the fixed
+/// Protocol 402: how the kernel identified a connection, from the fixed
 /// vocabulary of the kernel access plan (section 9.1). It is assigned when a
 /// connection is admitted, recorded on its commands' caller and in traces, and
 /// named by audit events such as `critical_approval.passkey`.
@@ -31,7 +31,7 @@ impl KernelConnectionClass {
     }
 }
 
-/// Protocol 394: what a passkey prompt asks the owner to authorize. Critical
+/// Protocol 403: what a passkey prompt asks the owner to authorize. Critical
 /// approvals only, for now; `/sudo` and access grants add their kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -43,7 +43,7 @@ pub enum PasskeyPromptKind {
     Sudo,
 }
 
-/// Protocol 394: a kernel-owned pending interaction that needs the Chariox
+/// Protocol 403: a kernel-owned pending interaction that needs the Chariox
 /// passkey, projected as a popup to every terminal connected as its owner,
 /// attached to the session or not. Every field is what the kernel itself
 /// established. It is answered with `RespondToInteraction` on `session_id`
@@ -70,7 +70,7 @@ pub struct PasskeyPrompt {
     pub max_lifetime_minutes: Option<u32>,
 }
 
-/// Protocol 395: an OS-verified Unix peer asks for one session. No passkey or token.
+/// Protocol 404: an OS-verified Unix peer asks for one session. No passkey or token.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RequestKernelAccessRequest {
@@ -103,7 +103,7 @@ pub struct KernelAccessGrant {
     pub expires_at_ms: u64,
 }
 
-/// Protocol 406: a grant holder requests a human-authorized turn. Identity and
+/// Protocol 415: a grant holder requests a human-authorized turn. Identity and
 /// session are resolved by the kernel; credentials are never accepted here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -112,7 +112,7 @@ pub struct RequestKernelSudoRequest {
     pub prompt: String,
 }
 
-/// Protocol 404: public attribution for an ephemeral, one-turn authorization.
+/// Protocol 413: public attribution for an ephemeral, one-turn authorization.
 /// `entry_id` is a revoke handle, never a credential. No time expiry applies.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KernelSudoTurn {
@@ -121,7 +121,7 @@ pub struct KernelSudoTurn {
     pub agent_id: String,
     pub owner_user_id: String,
     pub terminal_id: String,
-    /// Protocol 406: OS-established requester attribution for external entries.
+    /// Protocol 415: OS-established requester attribution for external entries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requester: Option<KernelAccessGrant>,
     pub prompt_id: Option<String>,

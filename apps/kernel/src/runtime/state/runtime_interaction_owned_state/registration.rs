@@ -210,7 +210,7 @@ impl KernelRuntimeOwnedState {
                 worker: None,
             }
         });
-        // Protocol 394: a decision that needs the passkey is also a popup on
+        // Protocol 403: a decision that needs the passkey is also a popup on
         // every terminal of its owner.
         let passkey_prompt = super::super::passkey_prompts::passkey_prompt(
             &session,

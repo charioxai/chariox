@@ -38,9 +38,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::OpenAppView(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
-        LocalDaemonRequest::SetAppViewPanel(request) => Some(
-            SessionMembershipScope::SessionId(request.session_id.clone()),
-        ),
+        LocalDaemonRequest::SetAppViewPanel(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::ListSessions(_) => Some(SessionMembershipScope::AllSessions),
         LocalDaemonRequest::ResolveSession(request) => Some(SessionMembershipScope::SessionRef {
             session_ref: request.session_ref.clone(),
@@ -213,9 +213,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::UpdateRoomEnvironmentViewport(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
-        LocalDaemonRequest::SetRoomBrowserBar(request) => Some(
-            SessionMembershipScope::SessionId(request.session_id.clone()),
-        ),
+        LocalDaemonRequest::SetRoomBrowserBar(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::UpdateRoomEnvironmentPointer(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),

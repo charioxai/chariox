@@ -1,4 +1,4 @@
-//! Protocol 394: the passkey prompts one subscription has been sent. Every
+//! Protocol 403: the passkey prompts one subscription has been sent. Every
 //! subscription, session or waiting room, local or relayed, carries the
 //! popups of its user when its connection may submit a passkey, so a
 //! terminal gets them whether or not it is attached to the prompt's session.

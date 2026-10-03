@@ -64,15 +64,15 @@ pub(crate) use workflow_publication_app_copy::fixture_copy_request_id;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_deployment_consent_runtime;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_file_pick_runtime;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_foreground_runtime;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-mod app_view_poll;
+mod app_host_runtime;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_validation_pump_runtime;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-mod app_file_pick_runtime;
-#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-mod app_host_runtime;
+mod app_view_poll;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_view_runtime;
 mod computer_secret_input_runtime_state;
@@ -80,9 +80,9 @@ mod config_runtime_state;
 mod critical_approval_passkey;
 mod kernel_access;
 mod sudo;
-pub(crate) use sudo::{is_sudo_prompt, sudo_approval_receipt};
 #[cfg(test)]
 pub(crate) use critical_approval_passkey::critical_approval_audit_payload;
+pub(crate) use sudo::{is_sudo_prompt, sudo_approval_receipt};
 mod passkey_prompts;
 #[cfg(test)]
 pub(crate) use passkey_prompts::PASSKEY_ALREADY_ANSWERED;
@@ -359,12 +359,12 @@ pub(crate) use managed_activity_persistence::ManagedActivityObservation;
 mod metaagent_event_owned_state;
 mod metaagent_task_runtime_state;
 pub(crate) use metaagent_task_runtime_state::parse_meta_slash_command;
+mod external_command_authority;
 mod project_runtime_state;
 mod prompt;
 mod prompt_activity_owned_state;
 mod prompt_cancellation_owned_state;
 mod prompt_dispatch;
-mod external_command_authority;
 use external_command_authority::ExternalCommandAuthority;
 mod prompt_git_observer_runtime;
 mod prompt_queue_owned_state;
@@ -376,8 +376,8 @@ mod provider_launch_failure_runtime;
 mod provider_launch_owned_state;
 mod provider_launch_runtime;
 pub(crate) use provider_launch_runtime::ProviderLaunchStartOutcome;
-mod provider_liveness_runtime;
 mod claude_setup_token_capture;
+mod provider_liveness_runtime;
 pub(in crate::runtime) use claude_setup_token_capture::{
     SetupTokenScan, CLAUDE_SETUP_TOKEN_COLUMNS, CLAUDE_SETUP_TOKEN_ROWS,
 };

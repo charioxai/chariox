@@ -1,7 +1,7 @@
 import { isApprovalShortcut } from "./approval-shortcuts.js"
 import type { RuntimeInteraction, RuntimeSession } from "./cli-types.js"
 
-/** Protocol 394: the passkey is typed only into the passkey popup. */
+/** Protocol 403: the passkey is typed only into the passkey popup. */
 const PASSKEY_IN_POPUP = "Approve this in the Chariox passkey popup. Only the decision's owner gets it."
 
 export type KernelApprovalKey = {

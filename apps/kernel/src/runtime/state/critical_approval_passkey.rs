@@ -12,11 +12,11 @@
 //! later never moves it; only a passphrase change of that vault does, after
 //! the current passphrase verifies against the pin (`change_vault_passphrase`).
 //!
-//! Protocol 393: a passkey from a connection class that may not submit one
+//! Protocol 402: a passkey from a connection class that may not submit one
 //! (kernel agents, hosts, relay peers) is refused before verification, and
 //! every audit event names the answering connection's class.
 //!
-//! Protocol 394: the decision is a passkey prompt on every terminal of its
+//! Protocol 403: the decision is a passkey prompt on every terminal of its
 //! owner (`passkey_prompts`). Passkey answers are checked one at a time and
 //! each holds its turn until its answer is applied, so a second terminal's
 //! passkey for a prompt the first just answered is not verified: it is told
@@ -80,13 +80,6 @@ impl CriticalApprovalAuthorization {
             _turn: None,
         }
     }
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PinMove {
-    previous: VaultPasskeyVerifier,
-    next: VaultPasskeyVerifier,
 }
 
 #[derive(Debug, Default)]
@@ -971,7 +964,7 @@ mod tests {
 }
 
 /// The `critical_approval.passkey` event: the outcome and, since protocol
-/// 393, the answering connection's class. Never the passkey.
+/// 402, the answering connection's class. Never the passkey.
 pub(crate) fn critical_approval_audit_payload(
     owner: &str,
     interaction_id: &str,

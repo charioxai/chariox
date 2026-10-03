@@ -2,7 +2,8 @@ use crate::error::DaemonError;
 use crate::local::RoomEnvironmentResourceInventory;
 use crate::runtime::browser_controller_event::{RoomBrowserEvent, RoomBrowserEventBatch};
 use crate::runtime::browser_controller_process::{
-    BrowserControllerProcessSnapshot, BrowserControllerProcessState, BrowserControllerReconciliation,
+    BrowserControllerProcessSnapshot, BrowserControllerProcessState,
+    BrowserControllerReconciliation,
 };
 use crate::session::{
     agent_environment_actor_id, EnvironmentActionRequest, EnvironmentComponent,
@@ -205,17 +206,22 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
     ) -> Result<(), DaemonError> {
-        if let Err(error) = self.reconcile_browser_controller_environment(session_id).await {
+        if let Err(error) = self
+            .reconcile_browser_controller_environment(session_id)
+            .await
+        {
             let _ = self.update_room_environment_component_health(
                 session_id,
                 EnvironmentComponent::Browser,
                 EnvironmentComponentHealthState::Degraded,
                 Some("viewport_rollback_failed"),
             );
-            if self.room_environment_snapshot(session_id).is_ok_and(|environment| {
-                environment.lifecycle == EnvironmentLifecycle::Ready
-            }) {
-                let _ = self.transition_room_environment(session_id, EnvironmentLifecycle::Degraded);
+            if self
+                .room_environment_snapshot(session_id)
+                .is_ok_and(|environment| environment.lifecycle == EnvironmentLifecycle::Ready)
+            {
+                let _ =
+                    self.transition_room_environment(session_id, EnvironmentLifecycle::Degraded);
             }
             return Err(error);
         }
@@ -227,15 +233,22 @@ impl KernelRuntimeState {
         session_id: &str,
         environment: &RoomEnvironmentSnapshot,
     ) -> Result<BrowserControllerReconciliation, DaemonError> {
-        match self.room_browser_controller_command(
-            session_id,
-            RoomBrowserControllerCommand::Reconcile {
-                viewport: environment.viewport.clone(),
-                browser_bar_visible: environment.browser_bar_visible,
-            },
-        ).await? {
-            RoomBrowserControllerResult::Reconciled { reconciliation: Some(reconciliation) } => Ok(reconciliation),
-            _ => Err(controller_route_error("controller did not verify canonical viewport")),
+        match self
+            .room_browser_controller_command(
+                session_id,
+                RoomBrowserControllerCommand::Reconcile {
+                    viewport: environment.viewport.clone(),
+                    browser_bar_visible: environment.browser_bar_visible,
+                },
+            )
+            .await?
+        {
+            RoomBrowserControllerResult::Reconciled {
+                reconciliation: Some(reconciliation),
+            } => Ok(reconciliation),
+            _ => Err(controller_route_error(
+                "controller did not verify canonical viewport",
+            )),
         }
     }
 
@@ -1166,7 +1179,9 @@ impl KernelRuntimeState {
         self.begin_stop_room_environment(session_id)
             .map_err(|error| environment_runtime_error("environment.stop", error))?;
         match self.stop_browser_controller_process(session_id).await {
-            Ok(_) => { self.authorize_current_external_command()?; }
+            Ok(_) => {
+                self.authorize_current_external_command()?;
+            }
             // The controller lived in the slice, which is gone: nothing to release.
             Err(error) if is_room_slice_unreachable(&error) => {
                 self.authorize_current_external_command()?;

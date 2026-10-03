@@ -1,6 +1,6 @@
 //! Protocol 392: a critical approval needs the Chariox passkey (the vault
 //! passphrase) or the owner's remember window; deny and routine decisions
-//! need neither, and agent or Meta answers stay refused. Protocol 393: only
+//! need neither, and agent or Meta answers stay refused. Protocol 402: only
 //! terminals may submit the passkey, and audits name the connection class.
 use super::*;
 use crate::durable_state::DurableKernelStateStore;
@@ -809,7 +809,7 @@ async fn a_passkey_from_a_refused_class_is_neither_verified_nor_counted() {
     );
     assert!(f.outcomes("guarded").is_empty());
     assert_eq!(f.active().await, 1);
-    // Protocol 394: the popup stays open on the owner's terminals.
+    // Protocol 403: the popup stays open on the owner's terminals.
     assert_eq!(f.prompt_ids(), [id("guarded")]);
     // The owner is not locked out: a terminal's passkey is verified at once.
     f.answer_as(

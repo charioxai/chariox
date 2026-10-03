@@ -6,8 +6,8 @@ use crate::transport::{
 use chariox_relay::protocol::RelayEnvelope;
 use futures_util::{SinkExt, StreamExt};
 use std::sync::{
-    Arc,
     atomic::{AtomicUsize, Ordering},
+    Arc,
 };
 use tokio::sync::Notify;
 use tokio::time::timeout;

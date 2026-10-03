@@ -243,4 +243,10 @@ pub use workspace::*;
 /// restart limit is exhausted. Recovery uses the existing explicit start action.
 /// Version 409 adds owner-mediated App clipboard and link acceptance.
 /// Version 410 adds owner-scoped named saved App data snapshot restore.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 410;
+/// Version 402 adds KA connection classes and critical-approval audit attribution.
+/// Version 403 adds shared owner passkey popup projection.
+/// Version 404 adds process-bound external access grants and lifetime configuration.
+/// Version 412 enforces local credentials and admitted terminal authority.
+/// Version 413 adds terminal sudo turns and critical approval receipts.
+/// Version 415 adds external sudo requests and requester attribution.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 415;

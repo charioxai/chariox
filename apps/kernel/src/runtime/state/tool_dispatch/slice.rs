@@ -630,6 +630,7 @@ async fn run_slice_screen_command_with_capture(
         None,
         false,
         Some(capture_guard),
+        None,
     )
     .await
 }
@@ -766,6 +767,7 @@ async fn run_slice_screen_command_inner(
         None,
         false,
         None,
+        None,
     )
     .await
 }
@@ -780,6 +782,7 @@ async fn run_slice_screen_command_inner_exact_stdout(
         timeout_override_ms,
         None,
         true,
+        None,
         None,
     )
     .await
@@ -797,6 +800,7 @@ async fn run_slice_screen_command_inner_with_cancellation(
         timeout_override_ms,
         cancellation,
         false,
+        None,
         None,
     )
     .await
@@ -1297,6 +1301,7 @@ pub(crate) async fn run_room_clipboard_read_authorized(
         Some(ROOM_COMPUTER_INPUT_TIMEOUT_MS),
         None,
         true,
+        None,
         authorize,
     )
     .await?;
@@ -1689,16 +1694,12 @@ mod tests {
             read_bounded_png(std::io::Cursor::new(&png), png.len()).expect("bounded PNG"),
             png
         );
-        assert!(
-            read_bounded_png(std::io::Cursor::new(&png), png.len() - 1)
-                .expect_err("oversized PNG should fail")
-                .contains("runtime MCP limit")
-        );
-        assert!(
-            read_bounded_png(std::io::Cursor::new(b"not-a-png"), 32)
-                .expect_err("non-PNG should fail")
-                .contains("not a PNG")
-        );
+        assert!(read_bounded_png(std::io::Cursor::new(&png), png.len() - 1)
+            .expect_err("oversized PNG should fail")
+            .contains("runtime MCP limit"));
+        assert!(read_bounded_png(std::io::Cursor::new(b"not-a-png"), 32)
+            .expect_err("non-PNG should fail")
+            .contains("not a PNG"));
     }
 
     #[test]

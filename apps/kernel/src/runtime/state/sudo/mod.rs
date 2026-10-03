@@ -12,13 +12,13 @@ mod entry;
 mod external;
 mod lifecycle;
 mod policy;
-mod receipts;
 mod process;
+mod receipts;
 pub(crate) use policy::is_sudo_prompt;
 pub(crate) use receipts::sudo_approval_receipt;
-#[cfg(test)]
-mod tests;
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod process_tests;
+#[cfg(test)]
+mod tests;
 
 pub(super) type SudoStore = Arc<std::sync::Mutex<BTreeMap<String, KernelSudoTurn>>>;

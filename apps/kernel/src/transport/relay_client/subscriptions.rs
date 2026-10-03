@@ -12,7 +12,7 @@ use chariox_relay::protocol::RelayCallerIdentity;
 pub(super) type RelaySubscriptionTasks = Arc<Mutex<BTreeMap<String, RelaySubscriptionTask>>>;
 
 /// Who a relay subscription serves: the caller's user and, for its passkey
-/// popups (protocol 394), its connection class.
+/// popups (protocol 403), its connection class.
 pub(super) struct RelaySubscriber {
     pub(super) user_id: String,
     pub(super) connection_class: crate::local::KernelConnectionClass,

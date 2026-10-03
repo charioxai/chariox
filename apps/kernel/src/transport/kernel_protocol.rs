@@ -172,7 +172,7 @@ pub(crate) enum KernelEvent {
         latest_event_id: Option<u64>,
         message: String,
     },
-    /// Protocol 394: every passkey prompt now pending for this terminal's
+    /// Protocol 403: every passkey prompt now pending for this terminal's
     /// user, on every subscription of a connection that may submit a passkey.
     /// Sent when the subscription starts and whenever the set changes; a
     /// prompt that leaves the set was answered or expired, so its popup

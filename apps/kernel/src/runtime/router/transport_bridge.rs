@@ -139,7 +139,7 @@ impl CommandRouter {
             .await;
     }
 
-    /// Protocol 394: the passkey prompts pending for `user_id`.
+    /// Protocol 403: the passkey prompts pending for `user_id`.
     pub(crate) fn passkey_prompts_for(&self, user_id: &str) -> Vec<crate::local::PasskeyPrompt> {
         self.runtime_state.passkey_prompts_for(user_id)
     }

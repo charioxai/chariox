@@ -145,6 +145,7 @@ impl KernelRuntimeOwnedState {
             passkey_verified,
             None,
             None,
+            take_host,
         )
     }
 
@@ -159,6 +160,7 @@ impl KernelRuntimeOwnedState {
         passkey_verified: bool,
         sudo: Option<&crate::local::KernelSudoTurn>,
         authorizing_terminal: Option<&str>,
+        take_host: bool,
     ) -> Result<(), DaemonError> {
         let _mutation = self
             .pending_interactions

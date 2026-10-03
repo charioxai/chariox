@@ -6,7 +6,7 @@ import { BoxRenderable, TextRenderable, TextareaRenderable } from "@opentui/core
 import { createTestRenderer } from "@opentui/core/testing"
 import { createKernelApprovalRenderer } from "./kernel-approval-renderer.js"
 import { createKernelApprovalController, type KernelApprovalView } from "./kernel-approval-controller.js"
-import type { RuntimeSession } from "./cli-types.js"
+import type { RuntimeInteraction, RuntimeSession } from "./cli-types.js"
 
 const view: KernelApprovalView = {
   open: false, count: 1, criticalCount: 0, index: 0, selected: null, pending: false, connected: true, error: null,
@@ -142,7 +142,7 @@ test("App clipboard and link offers show the payload, explicit typed acceptance 
   const harness = await createTestRenderer({ width: 100, height: 26, useThread: false })
   const box = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0 })
   harness.renderer.root.add(box)
-  const surface = createKernelApprovalRenderer(harness.renderer, { show() {}, choose() {}, cycleRemember() {}, submitPasskey() {} })
+  const surface = createKernelApprovalRenderer(harness.renderer, { show() {}, choose() {} })
   surface.assign(box)
   try {
     for (const [title, payload] of [["Open a link from an App", "Exact URL: https://example.org/a?x=%20"], ["Copy text from an App", 'Text (11 UTF-8 bytes): "copy\\ntext"']] as const) {
@@ -173,7 +173,7 @@ for (const width of [80, 48]) {
       layout.add(prompt)
       h.renderer.root.add(layout)
       let opened = 0
-      const surface = createKernelApprovalRenderer(h.renderer, { show() { opened += 1 }, choose() {}, cycleRemember() {}, submitPasskey() {} })
+      const surface = createKernelApprovalRenderer(h.renderer, { show() { opened += 1 }, choose() {} })
       surface.assignBanner(banner)
       try {
         prompt.focus()
@@ -219,7 +219,7 @@ test("OpenTUI Ctrl+G terminal bytes open approvals and preserve focused draft", 
     getSession: () => ({ id: "session", agents: [], active_interactions: [view.interaction!] }) as unknown as RuntimeSession,
     connected: () => true, onView() {}, scroll() {},
     onOpen: () => prompt.blur(), onClose: () => prompt.focus(),
-    respond: async () => { assert.fail("shortcut approved an action") }, applySession() {},
+    respond: async () => { assert.fail("shortcut approved an action") }, applySession() {}, showPasskeyPrompt() { return false },
   })
   h.renderer.keyInput.on("keypress", controller.handleKey)
   try {
@@ -251,9 +251,9 @@ test("shared approval command opener handles waiting room, empty session and pen
   const approvals = createRoot(cleanup => {
     dispose = cleanup
     return createCliKernelApprovalComposition({
-      client: {} as never, renderer: h.renderer,
+      client: { onKernelEvent: () => () => {} } as never, renderer: h.renderer,
       session: () => ({ id: "session", agents: [], active_interactions: interactions }) as unknown as RuntimeSession,
-      connected: () => true, attached: () => attached,
+      connected: () => true, attached: () => attached, kernelConnected: () => true, notify() {},
       flashFooter: (message, tone) => flashes.push(`${tone}:${message}`),
       dimensions: () => ({ width: 80, height: 24 }), themeRevision: () => 0,
       currentFocus: () => prompt, promptFocus: () => prompt,

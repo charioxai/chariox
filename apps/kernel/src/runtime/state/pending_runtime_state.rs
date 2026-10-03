@@ -68,7 +68,7 @@ pub(super) struct PendingInteraction {
     /// but their answers belong exclusively to the human owner.
     pub(super) terminal_credential_owner: Option<String>,
     pub(super) kernel_operation_deadline: Option<std::time::Instant>,
-    /// Protocol 394: the popup projected to the owner's terminals, for a
+    /// Protocol 403: the popup projected to the owner's terminals, for a
     /// decision that needs the passkey.
     pub(super) passkey_prompt: Option<Arc<crate::local::PasskeyPrompt>>,
     pub(super) responder: Arc<StdMutex<Option<oneshot::Sender<PendingInteractionResolution>>>>,

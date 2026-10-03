@@ -153,7 +153,7 @@ export type RuntimeInteractionChoice = {
   requires_passkey?: boolean
 }
 
-/** Protocol 394: a kernel-owned pending interaction that needs the Chariox
+/** Protocol 403: a kernel-owned pending interaction that needs the Chariox
  * passkey, projected as a popup to every terminal connected as its owner.
  * Every field is what the kernel established. It is answered with
  * `RespondToInteraction`: the approve choice with the passkey, or the refuse

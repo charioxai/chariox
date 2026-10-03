@@ -188,7 +188,9 @@ impl<'a> KernelSessionService<'a> {
         }
         let session_store = self.app.session_state_store();
         let mut sessions = session_store.write();
-        let reopens = sessions.get_session(&session_id)?.attach_creates_default_agent();
+        let reopens = sessions
+            .get_session(&session_id)?
+            .attach_creates_default_agent();
         let attachment = self.app.attachments.attach(&mut sessions, request)?;
         drop(sessions);
 

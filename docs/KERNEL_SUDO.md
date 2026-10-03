@@ -1,4 +1,4 @@
-# One sudo turn (protocol 406)
+# One sudo turn (protocol 415)
 
 In a Chariox terminal, focus a local regular agent and enter `/sudo <prompt>`.
 The session host authorizes that entry in the kernel's passkey popup. Every
@@ -72,7 +72,7 @@ For one release `/meta` continues to run delegation-only tasks without a
 passkey and displays a notice pointing to `/sudo`. Existing Meta tasks finish
 in Meta mode; they must finish before sudo entry. Shell CLI calls do not gain
 sudo; process-tree sudo is PR 10. Leased sudo execution remains a separate leg.
-Cloud/native consumers must support the protocol-404 `sudo` popup kind before
+Cloud/native consumers must support the protocol-413 `sudo` popup kind before
 advertising sudo entry. Owner passkey and real-client acceptance remain later
 validation legs; the builder drill uses private test vaults and synthetic runs.
 

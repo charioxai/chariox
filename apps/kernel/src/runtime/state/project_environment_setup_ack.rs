@@ -572,6 +572,7 @@ pub(super) async fn cancel_remote_and_reconcile(
                     &current_execution.operation_id,
                     &current_execution.session_id,
                     &current_execution.owner_user_id,
+                    &|| state.authorize_current_external_command(),
                 )
                 .await
         }
@@ -862,6 +863,7 @@ mod tests {
                 &execution.operation_id,
                 &execution.session_id,
                 &execution.owner_user_id,
+                &|| Ok(()),
             )
             .await
             .unwrap();
@@ -929,6 +931,7 @@ mod tests {
                 &execution.operation_id,
                 &execution.session_id,
                 &execution.owner_user_id,
+                &|| Ok(()),
             )
             .await
             .unwrap();
@@ -1182,6 +1185,7 @@ mod tests {
                 &execution.operation_id,
                 &execution.session_id,
                 &execution.owner_user_id,
+                &|| Ok(()),
             )
             .await
             .unwrap();

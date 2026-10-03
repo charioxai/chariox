@@ -86,7 +86,7 @@ function passkeyKeyText(event: PasskeyPopupKey): string {
 
 const promptKey = (prompt: PasskeyPrompt) => `${prompt.session_id}\u001f${prompt.interaction_id}`
 
-/** Protocol 394: the kernel's passkey prompts as one popup on this terminal,
+/** Protocol 403: the kernel's passkey prompts as one popup on this terminal,
  * attached to a session or not. The passkey is typed only here. The kernel
  * closes a prompt everywhere once any terminal answers it. */
 export function createPasskeyPopupController(deps: {

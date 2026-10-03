@@ -169,8 +169,14 @@ impl KernelRuntimeState {
             .to_owned();
         let (tx, rx) = oneshot::channel();
         let event_interaction = interaction.clone();
-        self.owned
-            .register_runtime_interaction(session_id, interaction, tx, None, forwarding)?;
+        self.owned.register_runtime_interaction(
+            session_id,
+            interaction,
+            tx,
+            None,
+            forwarding,
+            None,
+        )?;
         // Login challenges and PTY output are human-only ephemeral state.
         if event_interaction
             .id()
@@ -257,6 +263,7 @@ impl KernelRuntimeState {
             tx,
             Some(owner_user_id),
             None,
+            None,
         )?;
         // Human-only decisions are projected to terminals, never dispatched to
         // an agent's prompt or Meta delegation tools.
@@ -286,9 +293,9 @@ impl KernelRuntimeState {
 
     /// A human terminal's answer; a critical approval also carries the
     /// passkey, or falls within the owner's remember window.
-    /// `connection_class` is the answering connection's (protocol 393). An
+    /// `connection_class` is the answering connection's (protocol 402). An
     /// answer to a passkey prompt a terminal already answered is refused with
-    /// `PASSKEY_ALREADY_ANSWERED` (protocol 394).
+    /// `PASSKEY_ALREADY_ANSWERED` (protocol 403).
     #[allow(clippy::too_many_arguments)]
     pub(in crate::runtime) async fn answer_terminal_runtime_interaction(
         &self,

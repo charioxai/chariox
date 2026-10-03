@@ -74,5 +74,3 @@ impl Drop for LocalIpcListener {
 
 #[cfg(test)]
 mod tests;
-
-pub(crate) mod legacy;

@@ -44,7 +44,7 @@ pub struct KernelCaller {
     pub public_key_thumbprint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metaagent_id: Option<String>,
-    /// Protocol 393: the class of the connection this caller was admitted on.
+    /// Protocol 402: the class of the connection this caller was admitted on.
     /// Absent for the kernel's own commands.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connection_class: Option<KernelConnectionClass>,

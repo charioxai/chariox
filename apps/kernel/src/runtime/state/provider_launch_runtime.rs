@@ -203,8 +203,10 @@ impl KernelRuntimeState {
         let send_state = self.clone();
         let send_request = request.clone();
         let send_agent_id = agent_id.clone();
+        let send_grant_id = external_grant_id.map(str::to_owned);
         let refresh_request = LocalDaemonRequest::LaunchProviderRun(request.clone());
-        let refresh_state = self.with_external_command_authority(external_grant_id.map(|id| (id, &refresh_request)));
+        let refresh_state = self
+            .with_external_command_authority(external_grant_id.map(|id| (id, &refresh_request)));
         let refresh_agent_id = agent_id.clone();
         let refresh_session_id = request.session_id.clone();
         let refresh_caller_user_id = caller_user_id.to_string();
@@ -228,6 +230,7 @@ impl KernelRuntimeState {
                 move |binding, credential| {
                     let state = send_state.clone();
                     let request = send_request.clone();
+                    let grant_id = send_grant_id.clone();
                     let agent_id = send_agent_id.clone();
                     async move {
                         state

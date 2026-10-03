@@ -334,14 +334,20 @@ impl KernelRuntimeState {
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let expected_binding = expected_binding.clone();
         let agent_id = agent_id.to_string();
-        let plan = self
-            .with_app_side_effect(move |app| {
+        self.authorize_current_external_command()?;
+        let mut plan = self
+            .with_authorized_app_side_effect(move |app| {
                 app.prepare_remote_agent_binding_refresh(&agent_id, &expected_binding)
             })
             .await?;
+        let authorizer = self.clone();
+        plan.authorizer = Arc::new(move || authorizer.authorize_current_external_command());
         let refresh = crate::app::DaemonApp::execute_remote_agent_binding_refresh(plan).await?;
         let (committed, binding_committed) = self
-            .with_app_side_effect(|app| app.commit_remote_agent_binding_refresh(&refresh))
+            .with_app_side_effect(|app| match self.authorize_current_external_command() {
+                Ok(()) => app.commit_remote_agent_binding_refresh(&refresh),
+                Err(error) => (Err(error), false),
+            })
             .await;
         match committed {
             Ok(agent) => Ok(agent),
@@ -457,7 +463,8 @@ impl KernelRuntimeState {
             })
             .await?;
         let mut response =
-            send_remote_queued_prompt_steer(&relay_config, &remote_execution, &payload).await;
+            send_remote_queued_prompt_steer(&relay_config, &remote_execution, &payload, self, None)
+                .await;
         if response.as_ref().is_err_and(
             super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_refresh_binding,
         ) {
@@ -505,6 +512,8 @@ impl KernelRuntimeState {
                 &relay_config,
                 &remote_execution,
                 &payload,
+                self,
+                None,
             )
             .await;
         }
@@ -835,6 +844,8 @@ impl KernelRuntimeState {
         prompt_id: &str,
         authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
     ) -> Result<crate::app::KernelQueuedPromptSteer, DaemonError> {
+        let authorized_state = self.with_external_command_authority(authority);
+        let self_state = &authorized_state;
         self.authorize_prompt_command(authority)?;
         let owned = &self.owned;
         if owned
@@ -891,7 +902,7 @@ impl KernelRuntimeState {
         let prompt_id = prompt_id.to_string();
         let (mut remote_execution, mut relay_config, reservation_guard) = self
             .with_app_side_effect(|app| {
-                    self.authorize_prompt_command(authority)?;
+                self.authorize_prompt_command(authority)?;
                 let current = owned
                     .prepare_remote_queued_prompt_steer(
                         &session_id,
@@ -950,8 +961,14 @@ impl KernelRuntimeState {
         let mut last_sent_remote_execution = remote_execution.clone();
 
         self.authorize_prompt_command(authority)?;
-        let mut response =
-            send_remote_queued_prompt_steer(&relay_config, &remote_execution, &payload).await;
+        let mut response = send_remote_queued_prompt_steer(
+            &relay_config,
+            &remote_execution,
+            &payload,
+            self,
+            authority,
+        )
+        .await;
         let mut advance_after_error = response
             .as_ref()
             .is_err_and(remote_queued_steer_failure_is_definitely_unaccepted);
@@ -962,7 +979,7 @@ impl KernelRuntimeState {
             // queue advancement still requires a validated rejection or a
             // pre-send failure. In particular, message-based stale detection
             // must not turn an ambiguous transport failure into a rejection.
-            let refresh = self
+            let refresh = self_state
                 .refresh_remote_agent_binding_for_steer(&target_agent_id, &remote_execution)
                 .await;
             let refreshed = match refresh {
@@ -1096,6 +1113,8 @@ impl KernelRuntimeState {
                 &relay_config,
                 &remote_execution,
                 &payload,
+                self,
+                authority,
             )
             .await;
             // A retry timeout or disconnect is ambiguous: the worker might
@@ -1154,7 +1173,7 @@ impl KernelRuntimeState {
         };
         let committed = self
             .with_app_side_effect(|app| {
-                    self.authorize_prompt_command(authority)?;
+                self.authorize_prompt_command(authority)?;
                 let steer = owned.finish_remote_queued_prompt_steer(
                     &session_id,
                     &target_agent_id,

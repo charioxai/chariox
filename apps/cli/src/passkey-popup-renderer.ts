@@ -16,7 +16,7 @@ function rows(text: string, width: number): number {
   return text.split("\n").reduce((count, line) => count + Math.max(1, Math.ceil(Array.from(line).length / width)), 0)
 }
 
-/** Protocol 394: the passkey popup, shaped like the hot-keys popup: a scrim
+/** Protocol 403: the passkey popup, shaped like the hot-keys popup: a scrim
  * over the whole terminal and a centered panel. It shows only what the kernel
  * established, and the passkey as dots. Hidden, it leaves an indicator. */
 export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {

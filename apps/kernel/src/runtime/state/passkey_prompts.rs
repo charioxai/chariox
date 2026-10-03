@@ -1,4 +1,4 @@
-//! Protocol 394: every passkey prompt is a kernel-owned pending interaction,
+//! Protocol 403: every passkey prompt is a kernel-owned pending interaction,
 //! projected as a popup to every terminal connected as its owner, attached to
 //! the session or not (kernel access plan, section 5.2, D1). Today that is
 //! each critical approval. It joins its owner's set when it is registered and

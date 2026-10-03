@@ -23,18 +23,19 @@ impl KernelRuntimeState {
     ) -> Result<RelayPeerResponse, DaemonError> {
         match self.connected_relay_state_for_config(config).await {
             Some(relay_state) => {
-                crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
+                crate::transport::relay_client::send_peer_request_via_connected_relay_authorized(
                     config,
                     &relay_state,
                     target,
                     request,
                     timeout,
+                    || self.authorize_current_external_command(),
                 )
                 .await
             }
             None => {
-                crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
-                    config, target, request, timeout,
+                crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized(
+                    config, target, request, timeout, || self.authorize_current_external_command(),
                 )
                 .await
             }
@@ -97,7 +98,10 @@ impl KernelRuntimeState {
     ) -> Result<Response, DaemonError> {
         self.room_browser_controller_command_inner(
             session_id,
-            Command::Reconcile { viewport, browser_bar_visible },
+            Command::Reconcile {
+                viewport,
+                browser_bar_visible,
+            },
             false,
             true,
             None,
@@ -494,7 +498,9 @@ async fn execute_local(
             ) {
                 execution.withhold_capture().await;
             }
-            let cancellation = execution.cancellation().with_authorizer(authorize_input.clone());
+            let cancellation = execution
+                .cancellation()
+                .with_authorizer(authorize_input.clone());
             let input_result = match action {
                 crate::transport::room_browser_controller::RoomComputerInputAction::PointerMove {
                     x,

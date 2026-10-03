@@ -8,8 +8,7 @@ use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::transport::relay_client::{
     send_peer_request_via_connected_relay_authorized,
-    send_peer_request_via_temporary_connection_authorized,
-    RelayClientState,
+    send_peer_request_via_temporary_connection_authorized, RelayClientState,
 };
 use crate::transport::relay_discovery;
 use crate::transport::relay_peer::{
@@ -28,6 +27,7 @@ const REMOTE_KERNEL_REF_DISCOVERY_ATTEMPTS: usize = 20;
 const REMOTE_KERNEL_REF_DISCOVERY_RETRY_DELAY_MS: u64 = 250;
 
 pub(crate) struct RemoteAgentBindingRefreshPlan {
+    pub(crate) authorizer: Arc<dyn Fn() -> Result<(), DaemonError> + Send + Sync>,
     agent: AgentInstance,
     expected_binding: RemoteAgentBinding,
     config: DaemonConfig,
@@ -46,6 +46,7 @@ pub(crate) struct RemoteAgentBindingRefreshPlan {
 pub(crate) async fn execute_remote_agent_binding_refresh(
     plan: RemoteAgentBindingRefreshPlan,
 ) -> Result<RemoteAgentBindingRefreshResult, DaemonError> {
+    (plan.authorizer)()?;
     let old_binding = plan.expected_binding.clone();
     let old_worker_ref = old_binding.worker_kernel_id.clone();
     let mut discovery_config = plan.relay_config.clone();
@@ -130,6 +131,7 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
             owner_user_id: plan.agent.owner_user_id().to_string(),
         },
         use_connected_relay,
+        plan.authorizer.as_ref(),
     )
     .await?
     {
@@ -252,6 +254,7 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
                     materialization: account_materialization,
                 },
                 use_connected_relay,
+                plan.authorizer.as_ref(),
             )
             .await
             {
@@ -350,6 +353,7 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
             worktree_placement: None,
         },
         use_connected_relay,
+        plan.authorizer.as_ref(),
     )
     .await
     {
@@ -1089,6 +1093,7 @@ impl DaemonApp {
         let slice_recovery =
             SliceBindingRecovery::admit(&self.slices, &current_binding, agent.session_id(), None)?;
         Ok(RemoteAgentBindingRefreshPlan {
+            authorizer: Arc::new(|| Ok(())),
             agent,
             expected_binding: current_binding.clone(),
             config: self.config.clone(),
@@ -1880,11 +1885,27 @@ async fn send_remote_binding_request_off_lock(
     target: ClientTarget,
     request: RelayPeerRequest,
     use_connected_relay: bool,
+    authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
 ) -> Result<RelayPeerResponse, DaemonError> {
     if use_connected_relay {
-        send_peer_request_via_connected_relay(relay_config, relay_state, target, request).await
+        send_peer_request_via_connected_relay_authorized(
+            relay_config,
+            relay_state,
+            target,
+            request,
+            Duration::from_millis(relay_config.relay_request_timeout_ms),
+            authorize,
+        )
+        .await
     } else {
-        send_peer_request_via_temporary_connection(relay_config, target, request).await
+        send_peer_request_via_temporary_connection_authorized(
+            relay_config,
+            target,
+            request,
+            Duration::from_millis(relay_config.relay_request_timeout_ms),
+            authorize,
+        )
+        .await
     }
 }
 
@@ -1905,6 +1926,7 @@ async fn cleanup_remote_binding_setup_off_lock(
                 leased_agent_id: leased_agent_id.to_string(),
             },
             use_connected_relay,
+            &|| Ok(()),
         )
         .await;
     }
@@ -1916,6 +1938,7 @@ async fn cleanup_remote_binding_setup_off_lock(
             lease_id: lease_id.to_string(),
         },
         use_connected_relay,
+        &|| Ok(()),
     )
     .await;
 }
@@ -2026,6 +2049,7 @@ async fn ensure_remote_skill_packages_off_lock(
             packages,
         },
         use_connected_relay,
+        plan.authorizer.as_ref(),
     )
     .await?
     {

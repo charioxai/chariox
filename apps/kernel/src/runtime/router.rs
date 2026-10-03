@@ -28,14 +28,14 @@ mod caller_identity_bridge;
 mod cloud_relay_bridge;
 mod composition;
 mod dispatch;
-mod kernel_access;
 pub(crate) mod event_connection_lifecycle;
+mod kernel_access;
 mod managed_context_bridge;
 pub(crate) use managed_context_bridge::{
     RelayManagedContextArmRequest, RelayManagedContextChunkRequest,
 };
-mod meta_runtime_command;
 mod app_event_routes;
+mod meta_runtime_command;
 mod pre_lane_dispatch;
 mod priority_dispatch;
 mod refresh_dispatch;
@@ -217,6 +217,7 @@ mod tests {
     mod remote_authorization;
     mod remote_workspace_live_sync_authorization;
     // Kernel resource telemetry reads /proc; other platforms report it as unsupported.
+    mod agent_workflow;
     #[cfg(target_os = "linux")]
     mod resource_telemetry;
     mod room_environment_placement;
@@ -227,7 +228,6 @@ mod tests {
     mod stack_budget;
     mod status_projection;
     mod terminal_output_projection;
-    mod agent_workflow;
     mod workflow_revision;
 
     fn attach_request(session_id: &str, client_id: &str) -> LocalDaemonRequest {

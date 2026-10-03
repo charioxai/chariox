@@ -32,10 +32,10 @@ pub use credentials::{
     UserCredentialMetadataConfig, UserCredentialSourceConfig, UserCredentialUse,
     UserCredentialVaultConfig,
 };
+pub use identity::prepare_protected_slice_identity;
 #[cfg(test)]
 use identity::{generate_identity_suffix, RuntimeIdentity};
 pub(crate) use identity::{load_or_create_managed_runtime_identity, ManagedRuntimeIdentity};
-pub use identity::prepare_protected_slice_identity;
 pub use kernel_access::UserKernelAccessConfig;
 #[cfg(test)]
 use persisted_daemon::PersistedDaemonConfig;

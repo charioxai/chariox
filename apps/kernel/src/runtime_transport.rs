@@ -335,7 +335,7 @@ struct KernelSubscription {
     session_id: String,
     attachment_id: String,
     subscription_scope: KernelSubscriptionScope,
-    /// Protocol 394: whether the subscription carries passkey prompts.
+    /// Protocol 403: whether the subscription carries passkey prompts.
     connection_class: KernelConnectionClass,
 }
 

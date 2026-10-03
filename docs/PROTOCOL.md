@@ -450,7 +450,7 @@ Current implementation notes:
 
 - the TypeScript CLI now defaults to `ws://127.0.0.1:${CHARIOX_KERNEL_PORT:-43118}/kernel`
 - the Rust daemon process hosts that WebSocket listener directly
-- local credentials travel on the upgrade's `Authorization: Bearer <token>` header, not in any frame. A kernel started with `CHARIOX_KERNEL_LOCAL_AUTH_TOKEN(_FILE)` (managed and hosted workers) refuses upgrades without that token with HTTP 401. Any other kernel generates a fresh `chx_kat_`-prefixed token at each start and writes it to the owner-only file `<state dir>/kernel-local-auth/<port>.token`, where the state dir is `$CHARIOX_HOME/state`, `$XDG_STATE_HOME/chariox` or `$HOME/.local/state/chariox`. Local clients read that file on every connection to a loopback endpoint and present the token. Since protocol 403, upgrades without the token, or with a wrong one, receive HTTP 401 naming the token file and the Unix socket; refusals are logged (rate-limited, never the token itself)
+- local credentials travel on the upgrade's `Authorization: Bearer <token>` header, not in any frame. A kernel started with `CHARIOX_KERNEL_LOCAL_AUTH_TOKEN(_FILE)` (managed and hosted workers) refuses upgrades without that token with HTTP 401. Any other kernel generates a fresh `chx_kat_`-prefixed token at each start and writes it to the owner-only file `<state dir>/kernel-local-auth/<port>.token`, where the state dir is `$CHARIOX_HOME/state`, `$XDG_STATE_HOME/chariox` or `$HOME/.local/state/chariox`. Local clients read that file on every connection to a loopback endpoint and present the token. Since protocol 412, upgrades without the token, or with a wrong one, receive HTTP 401 naming the token file and the Unix socket; refusals are logged (rate-limited, never the token itself)
 - the Unix socket serves the same websocket protocol with OS peer identity and process-bound access grants; an ungranted peer can only request access
 - the current wire shape now supports request/response plus pushed kernel events over one long-lived connection
 - subscriptions carry optional `resume_from_event_id`
@@ -2550,7 +2550,12 @@ Workflow trigger and deployment direction:
   bounds the whole exchange by its request timeout. Unsupported negotiation, EOF,
   timeout, or capability mismatch fails closed, with no fallback connection or
   automatic mutation replay. Numeric versions never replace capability checks.
-- protocol 393: every connection has a class from a fixed vocabulary:
+  This describes the pre-KA framed Unix transport. KA protocol 404 replaces
+  that listener with the shared kernel websocket at `ws+unix://`, admitted by
+  OS process identity and session grants. First-party terminal control uses
+  the authenticated TCP or relay websocket path; an external Unix grant does
+  not authorize global disposable-worker or managed-environment controls.
+- protocol 402: every connection has a class from a fixed vocabulary:
   `terminal` (the kernel's local token on TCP loopback, or a relay client with
   a user id), `external_agent` (reserved for access grants, not assigned yet),
   `kernel_agent` (an agent the kernel launched, by its per-run runtime MCP
@@ -2565,7 +2570,7 @@ Workflow trigger and deployment direction:
   refused with `PASSKEY_NOT_ACCEPTED` before verification: it is not audited
   and does not count toward the owner's limit. Nothing else changes; which
   connections answer as terminals is unchanged until enforcement.
-- protocol 394: passkey popups (kernel access plan D1). Every passkey prompt
+- protocol 403: passkey popups (kernel access plan D1). Every passkey prompt
   is a kernel-owned pending interaction; today each critical approval is one.
   It is projected as a popup to every terminal connected as its owner,
   attached to its session or not: every subscription, session or waiting
@@ -2588,13 +2593,13 @@ Workflow trigger and deployment direction:
   one at a time and each holds its turn until its answer is applied, so of
   two simultaneous right passkeys only the first is checked. A wrong passkey
   answers nothing: the prompt stays open, and the failure is audited and
-  counts toward the lockout as in protocol 383. A kernel decision that
+  counts toward the lockout as in protocol 392. A kernel decision that
   requires the passkey must have exactly one approve choice (marked
   `requires_passkey`) and one refuse choice. At its deadline the prompt
   leaves the set, a passkey sent for it is no longer checked, and the
   decision times out to whoever raised it. Clients no longer ask for the
   passkey inside their approval panels; it is typed only into the popup.
-- protocol 395: process-bound external agent access over the existing
+- protocol 404: process-bound external agent access over the existing
   `local_socket_path`. The kernel serves the same websocket envelopes on a
   Unix socket with mode 0600 in an owned 0700 directory. It rejects other
   UIDs, `Origin`, and bearer authorization headers. macOS identifies the
@@ -2676,7 +2681,7 @@ Workflow trigger and deployment direction:
   grant_extend_notice_minutes = 5
   request_timeout_minutes = 10
   ```
-- protocol 403: local access enforcement.
+- protocol 412: local access enforcement.
 
   TCP websocket admission now requires the generated local token. Missing, wrong,
   malformed and stale credentials receive HTTP 401 before command dispatch. Its
@@ -2697,7 +2702,7 @@ Workflow trigger and deployment direction:
   than the command transport source. Only that class may submit a passkey or
   receive owner passkey popups. Unauthenticated Unix peers can only request
   access; approved external peers keep the process-bound, session-scoped grant
-  path from protocol 395 and cannot answer critical approvals. Relay identities,
+  path from protocol 404 and cannot answer critical approvals. Relay identities,
   per-run runtime MCP admission and the publication gateway keep their existing
   credential paths. No first-party minimum version rises: token-aware clients
   also work with older log-mode kernels, and this change adds no request or event
@@ -2711,7 +2716,7 @@ Workflow trigger and deployment direction:
   drill checks both state-root conventions, control/event lanes and token rotation
   without provisioning any provider account. Grant/passkey drills use temporary
   test vaults. The owner's real passkey sitting remains separate.
-- protocol 404: terminal `/sudo <prompt>` raises a fresh-passkey popup of kind
+- protocol 413: terminal `/sudo <prompt>` raises a fresh-passkey popup of kind
   `sudo`. The resulting authorization is kernel-memory state, attached to one
   exact provider turn; yield and interruption consume its ephemeral binding.
   Queued sudo never enters the durable prompt queue. `KernelAccessGrantsListed`
@@ -2722,7 +2727,7 @@ Workflow trigger and deployment direction:
   to a live sudo turn. Critical replies use the shared interaction authority and
   append `kernel_access.sudo_approval` receipts naming the turn and human entry.
   No spawned/forked agent inherits elevation.
-- protocol 406: a live external grant holder may send
+- protocol 415: a live external grant holder may send
   `RequestKernelSudo { agent_id, prompt }` over the Unix socket. The kernel
   resolves the exact target to the granted session and raises the same `sudo`
   popup, naming the OS-established executable/PID, target/session and full

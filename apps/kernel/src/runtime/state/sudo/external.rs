@@ -113,6 +113,7 @@ impl KernelRuntimeState {
                 authorization.verified,
                 None,
                 Some(terminal),
+                false,
             )
             .map_err(|error| {
                 self.owned.closed_interaction_error(

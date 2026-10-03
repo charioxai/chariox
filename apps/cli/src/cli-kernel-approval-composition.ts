@@ -11,7 +11,7 @@ import { respondToInteraction } from "./prompt-runtime-api.js"
 import { routeRawPastes, type RawPasteEvent } from "./raw-paste-routing.js"
 
 /** The kernel's decisions on this terminal: the session's approval panel and,
- * on top of it, the passkey popup (protocol 394), which shows the owner's
+ * on top of it, the passkey popup (protocol 403), which shows the owner's
  * passkey prompts whether or not a session is attached. */
 export function createCliKernelApprovalComposition(deps: {
   client: LocalIpcClient

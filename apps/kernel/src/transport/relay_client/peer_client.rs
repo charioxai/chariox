@@ -500,41 +500,6 @@ pub async fn send_peer_request_via_temporary_connection_with_timeout(
     request: RelayPeerRequest,
     response_timeout: Duration,
 ) -> Result<RelayPeerResponse, DaemonError> {
-    #[cfg(test)]
-    {
-        let mut trace = relay_discovery::TemporaryPeerTestTrace::new(config.relay_url.as_deref());
-        let result = send_peer_request_via_temporary_connection_with_timeout_inner(
-            config,
-            target,
-            request,
-            response_timeout,
-            &mut trace,
-        )
-        .await;
-        trace.finish(if result.is_ok() {
-            "temporary_peer_call_returned_ok"
-        } else {
-            "temporary_peer_call_returned_error"
-        });
-        result
-    }
-    #[cfg(not(test))]
-    send_peer_request_via_temporary_connection_with_timeout_inner(
-        config,
-        target,
-        request,
-        response_timeout,
-    )
-    .await
-}
-
-async fn send_peer_request_via_temporary_connection_with_timeout_inner(
-    config: &crate::config::DaemonConfig,
-    target: ClientTarget,
-    request: RelayPeerRequest,
-    response_timeout: Duration,
-    #[cfg(test)] test_trace: &mut relay_discovery::TemporaryPeerTestTrace,
-) -> Result<RelayPeerResponse, DaemonError> {
     send_peer_request_via_temporary_connection_authorized(
         config,
         target,
@@ -551,6 +516,44 @@ pub(crate) async fn send_peer_request_via_temporary_connection_authorized(
     request: RelayPeerRequest,
     response_timeout: Duration,
     authorize: impl Fn() -> Result<(), DaemonError> + Send + Sync,
+) -> Result<RelayPeerResponse, DaemonError> {
+    #[cfg(test)]
+    {
+        let mut trace = relay_discovery::TemporaryPeerTestTrace::new(config.relay_url.as_deref());
+        let result = send_peer_request_via_temporary_connection_authorized_inner(
+            config,
+            target,
+            request,
+            response_timeout,
+            authorize,
+            &mut trace,
+        )
+        .await;
+        trace.finish(if result.is_ok() {
+            "temporary_peer_call_returned_ok"
+        } else {
+            "temporary_peer_call_returned_error"
+        });
+        result
+    }
+    #[cfg(not(test))]
+    send_peer_request_via_temporary_connection_authorized_inner(
+        config,
+        target,
+        request,
+        response_timeout,
+        authorize,
+    )
+    .await
+}
+
+async fn send_peer_request_via_temporary_connection_authorized_inner(
+    config: &crate::config::DaemonConfig,
+    target: ClientTarget,
+    request: RelayPeerRequest,
+    response_timeout: Duration,
+    authorize: impl Fn() -> Result<(), DaemonError> + Send + Sync,
+    #[cfg(test)] test_trace: &mut relay_discovery::TemporaryPeerTestTrace,
 ) -> Result<RelayPeerResponse, DaemonError> {
     authorize()?;
     let target_ref = target
@@ -1151,5 +1154,15 @@ pub(crate) async fn send_peer_request_via_connected_relay_authorized(
     response_timeout: Duration,
     authorize: impl Fn() -> Result<(), DaemonError> + Send + Sync,
 ) -> Result<RelayPeerResponse, DaemonError> {
-    enqueue_peer_request_via_connected_relay_authorized(config, state, target, request, response_timeout, authorize).await?.wait().await
+    enqueue_peer_request_via_connected_relay_authorized(
+        config,
+        state,
+        target,
+        request,
+        response_timeout,
+        authorize,
+    )
+    .await?
+    .wait()
+    .await
 }

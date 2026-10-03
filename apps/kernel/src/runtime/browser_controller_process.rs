@@ -184,7 +184,10 @@ pub(crate) trait BrowserControllerProcessBackend {
     ) -> Result<BrowserControllerPermissionResult, String> {
         Err("browser controller backend does not support permissions".to_string())
     }
-    fn app_view(&mut self, _request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest) -> Result<serde_json::Value, String> {
+    fn app_view(
+        &mut self,
+        _request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
+    ) -> Result<serde_json::Value, String> {
         Err("browser controller backend does not support App views".to_string())
     }
     fn poll_browser_events(
@@ -808,7 +811,10 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         Ok(result)
     }
 
-    fn app_view(&mut self, request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest) -> Result<serde_json::Value, String> {
+    fn app_view(
+        &mut self,
+        request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
+    ) -> Result<serde_json::Value, String> {
         let method = request.method();
         let timeout = self.timeout;
         self.request_serializable(method, &request.params(), timeout)?
@@ -1350,7 +1356,6 @@ pub(crate) struct BrowserControllerProcessStore {
 }
 
 impl BrowserControllerProcessStore {
-    #[cfg(test)]
     pub(crate) fn with_authorizer(
         &self,
         authorizer: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
@@ -1360,22 +1365,11 @@ impl BrowserControllerProcessStore {
         store
     }
 
-    fn authorize(&self) -> Result<(), String> {
+    pub(super) fn authorize(&self) -> Result<(), String> {
         if let Some(authorizer) = &self.authorizer {
             authorizer()?;
         }
         Ok(())
-    }
-
-    fn lock_ownership(&self) -> Result<Option<std::sync::MutexGuard<'_, StdioOwnership>>, String> {
-        let Some(ownership) = &self.ownership else {
-            return Ok(None);
-        };
-        let ownership = ownership
-            .lock()
-            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
-        self.authorize()?;
-        Ok(Some(ownership))
     }
 
     #[cfg(test)]
@@ -1386,6 +1380,7 @@ impl BrowserControllerProcessStore {
         self.lock_wait_probe = Some(probe);
     }
 
+    #[cfg(test)]
     pub(crate) fn new(command: impl Into<PathBuf>, args: Vec<String>, timeout: Duration) -> Self {
         Self {
             ownership: Some(Arc::new(Mutex::new(
@@ -1440,6 +1435,14 @@ impl BrowserControllerProcessStore {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
+        #[cfg(test)]
+        if let Some(probe) = &self.lock_wait_probe {
+            probe.notify_one();
+        }
+        let mut ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        self.authorize()?;
         ownership.acquire(session_id).map(Some)
     }
 
@@ -1451,6 +1454,14 @@ impl BrowserControllerProcessStore {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
+        #[cfg(test)]
+        if let Some(probe) = &self.lock_wait_probe {
+            probe.notify_one();
+        }
+        let mut ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        self.authorize()?;
         ownership.release(session_id).map(Some)
     }
 
@@ -1469,13 +1480,18 @@ impl BrowserControllerProcessStore {
         target_id: &str,
         document_id: &str,
     ) -> Result<Option<BrowserControllerStructuredSnapshot>, String> {
-        let Some(mut ownership) = self.lock_ownership()? else {
+        let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
         let (pending, timeout) = {
+            #[cfg(test)]
+            if let Some(probe) = &self.lock_wait_probe {
+                probe.notify_one();
+            }
             let mut ownership = ownership
                 .lock()
                 .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+            self.authorize()?;
             ownership.require_lease(session_id)?;
             let supervisor = &mut ownership.supervisor;
             // A health RPC is a controller barrier. While controller responses
@@ -1520,9 +1536,17 @@ impl BrowserControllerProcessStore {
         action: &BrowserLocatorAction,
         timeout_ms: u64,
     ) -> Result<Option<BrowserControllerActionResult>, String> {
-        let Some(mut ownership) = self.lock_ownership()? else {
+        let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
+        #[cfg(test)]
+        if let Some(probe) = &self.lock_wait_probe {
+            probe.notify_one();
+        }
+        let mut ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        self.authorize()?;
         ownership
             .perform_browser_action(
                 session_id,
@@ -1554,9 +1578,17 @@ impl BrowserControllerProcessStore {
         document_id: &str,
         action: &BrowserDialogAction,
     ) -> Result<Option<BrowserControllerDialogResult>, String> {
-        let Some(mut ownership) = self.lock_ownership()? else {
+        let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
+        #[cfg(test)]
+        if let Some(probe) = &self.lock_wait_probe {
+            probe.notify_one();
+        }
+        let mut ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        self.authorize()?;
         ownership
             .handle_browser_dialog(session_id, target_id, document_id, action)
             .map(Some)
@@ -1567,9 +1599,17 @@ impl BrowserControllerProcessStore {
         session_id: &str,
         cancellation: &BrowserDownloadCancellation,
     ) -> Result<Option<BrowserControllerDownloadCancellationResult>, String> {
-        let Some(mut ownership) = self.lock_ownership()? else {
+        let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
+        #[cfg(test)]
+        if let Some(probe) = &self.lock_wait_probe {
+            probe.notify_one();
+        }
+        let mut ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        self.authorize()?;
         ownership
             .cancel_browser_download(session_id, cancellation)
             .map(Some)
@@ -1580,9 +1620,17 @@ impl BrowserControllerProcessStore {
         session_id: &str,
         request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
     ) -> Result<Option<serde_json::Value>, String> {
-        let Some(mut ownership) = self.lock_ownership()? else {
+        let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
+        #[cfg(test)]
+        if let Some(probe) = &self.lock_wait_probe {
+            probe.notify_one();
+        }
+        let mut ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        self.authorize()?;
         ownership.app_view(session_id, request).map(Some)
     }
 
@@ -1593,9 +1641,17 @@ impl BrowserControllerProcessStore {
         cursor: u64,
         limit: u16,
     ) -> Result<Option<BrowserControllerEventBatch>, String> {
-        let Some(mut ownership) = self.lock_ownership()? else {
+        let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
+        #[cfg(test)]
+        if let Some(probe) = &self.lock_wait_probe {
+            probe.notify_one();
+        }
+        let mut ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        self.authorize()?;
         ownership
             .poll_browser_events(session_id, browser_generation, cursor, limit)
             .map(Some)
@@ -1611,6 +1667,14 @@ impl BrowserControllerProcessStore {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
+        #[cfg(test)]
+        if let Some(probe) = &self.lock_wait_probe {
+            probe.notify_one();
+        }
+        let mut ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        self.authorize()?;
         ownership
             .recover_browser_cookie_import(session_id, binding, target_id)
             .map(Some)
@@ -1621,13 +1685,25 @@ impl BrowserControllerProcessStore {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
+        #[cfg(test)]
+        if let Some(probe) = &self.lock_wait_probe {
+            probe.notify_one();
+        }
+        let mut ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        self.authorize()?;
         ownership.shutdown().map(Some)
     }
 
     pub(crate) fn snapshot(&self) -> Result<Option<BrowserControllerProcessSnapshot>, String> {
-        let Some(ownership) = self.lock_ownership()? else {
+        let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
+        let ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        self.authorize()?;
         Ok(Some(ownership.supervisor.snapshot().clone()))
     }
 }
@@ -1773,7 +1849,10 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
             .set_browser_permission(target_id, document_id, permission, setting)
     }
 
-    fn app_view(&mut self, request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest) -> Result<serde_json::Value, String> {
+    fn app_view(
+        &mut self,
+        request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
+    ) -> Result<serde_json::Value, String> {
         self.ensure_started_without_transparent_restart()?;
         self.backend.app_view(request)
     }
