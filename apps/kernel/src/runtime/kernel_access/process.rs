@@ -233,6 +233,8 @@ pub(crate) fn born_after(peer: &ProcessIdentity, cutoff: u64) -> bool {
     peer.start > cutoff
 }
 #[cfg(target_os = "macos")]
+// libc deprecates its binding in favor of mach2; the OS API remains supported.
+#[allow(deprecated)]
 pub(crate) fn birth_cutoff() -> io::Result<u64> {
     let now = unsafe { libc::mach_absolute_time() };
     if now == 0 {
