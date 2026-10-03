@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url"
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..")
 // The fixture must not inherit provider homes, credentials or live-kernel settings.
 const childBaseEnv = Object.fromEntries(
-  ["PATH", "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "RUST_LOG", "RUST_BACKTRACE"]
+  ["PATH", "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "RUST_LOG", "RUST_BACKTRACE", "RUST_MIN_STACK"]
     .filter((key) => process.env[key] !== undefined)
     .map((key) => [key, process.env[key]]),
 )
