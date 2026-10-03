@@ -272,7 +272,15 @@ fn refused_preparation(mode: Mode, timeout: bool) {
             .first_app_install_status("alice", "refused_update")
             .unwrap()
             .phase,
-        InstallPhase::Cancelled
+        InstallPhase::Failed
+    );
+    assert_eq!(
+        store
+            .first_app_install_status("alice", "refused_update")
+            .unwrap()
+            .failure
+            .as_deref(),
+        Some("app_lifecycle_notification")
     );
     let installation = store.get_app_installation("alice", &id).unwrap();
     assert_eq!(installation.generation, 1);

@@ -14,26 +14,40 @@ use std::{
     path::Path,
 };
 pub(super) const APPS: &str = "/sys/fs/cgroup/system.slice/chariox-managed-bootstrap.service/apps";
+pub(super) const PATH1_APPS: &str =
+    "/sys/fs/cgroup/system.slice/chariox-path1-managed-bootstrap.service/apps";
+
+// The caller cannot select a unit. Match only systemd's actual root post-start
+// control process, then require the enrollment for that exact topology.
+fn managed_service(cgroup: &[u8]) -> Result<(&'static str, &'static str)> {
+    match cgroup {
+        b"0::/system.slice/chariox-managed-bootstrap.service/.control\n" => {
+            Ok(("chariox-managed-bootstrap.service", APPS))
+        }
+        b"0::/system.slice/chariox-path1-managed-bootstrap.service/.control\n" => {
+            Ok(("chariox-path1-managed-bootstrap.service", PATH1_APPS))
+        }
+        _ => Err(Error::Identity),
+    }
+}
 
 pub(super) fn managed(config: Enrollment) -> Result<()> {
     config.validate()?;
+    let mut bytes = [0u8; 1024];
+    let count = File::open("/proc/self/cgroup")?.read_at(&mut bytes, 0)?;
+    let (service_name, root) = managed_service(&bytes[..count])?;
     let mut matches = config
         .owners
         .iter()
-        .filter(|owner| owner.cgroup_root == APPS);
+        .filter(|owner| owner.cgroup_root == root);
     let owner = matches.next().ok_or(Error::Identity)?;
     if matches.next().is_some() {
-        return Err(Error::Identity);
-    }
-    let mut bytes = [0u8; 1024];
-    let count = File::open("/proc/self/cgroup")?.read_at(&mut bytes, 0)?;
-    if &bytes[..count] != b"0::/system.slice/chariox-managed-bootstrap.service/.control\n" {
         return Err(Error::Identity);
     }
     // The systemd unit root can be delegated to the enrolled UID. Ancestors
     // remain root-owned and the final component is opened without symlinks.
     let parent = files::root_directory(Path::new("/sys/fs/cgroup/system.slice"))?;
-    let service = parent.child(OsStr::new("chariox-managed-bootstrap.service"))?;
+    let service = parent.child(OsStr::new(service_name))?;
     let mut fs = std::mem::MaybeUninit::<libc::statfs>::zeroed();
     if unsafe { libc::fstatfs(service.0.as_raw_fd(), fs.as_mut_ptr()) } != 0
         || unsafe { fs.assume_init() }.f_type != libc::CGROUP2_SUPER_MAGIC
@@ -109,4 +123,31 @@ fn write(directory: &Dir, name: &str, value: &str) -> Result<()> {
         return Err(Error::Io);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn managed_domain_is_bound_to_the_actual_systemd_topology() {
+        for (unit, root) in [
+            ("chariox-managed-bootstrap.service", APPS),
+            ("chariox-path1-managed-bootstrap.service", PATH1_APPS),
+        ] {
+            let cgroup = format!("0::/system.slice/{unit}/.control\n");
+            assert_eq!(managed_service(cgroup.as_bytes()), Ok((unit, root)));
+            for suffix in ["", "/supervisor", "/apps", "/.control/child"] {
+                let cgroup = format!("0::/system.slice/{unit}{suffix}\n");
+                assert_eq!(managed_service(cgroup.as_bytes()), Err(Error::Identity));
+            }
+        }
+        for cgroup in [
+            b"0::/system.slice/other.service/.control\n".as_slice(),
+            b"0::/system.slice/chariox-disposable-worker-bootstrap.service/.control\n",
+            b"0::/system.slice/chariox-path1-managed-bootstrap.service/.control\n1:cpu:/\n",
+        ] {
+            assert_eq!(managed_service(cgroup), Err(Error::Identity));
+        }
+    }
 }
