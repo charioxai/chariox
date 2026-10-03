@@ -6,6 +6,10 @@ use crate::runtime::command::{KernelCaller, KernelCommandSource};
 use crate::runtime::response_redaction::redact_response_for_user;
 
 impl CommandRouter {
+    pub(crate) fn local_popup_owner_user_id(&self) -> String {
+        self.config_projection.local_owner_user_id()
+    }
+
     pub(crate) async fn local_command_caller(
         &self,
         source: KernelCommandSource,

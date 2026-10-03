@@ -234,25 +234,25 @@ pub(crate) fn born_after(peer: &ProcessIdentity, cutoff: u64) -> bool {
 }
 #[cfg(target_os = "macos")]
 pub(crate) fn birth_cutoff() -> io::Result<u64> {
-    Ok(std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| invalid())?
-        .as_micros() as u64)
+    let now = unsafe { libc::mach_absolute_time() };
+    if now == 0 {
+        return Err(invalid());
+    }
+    Ok(now)
 }
 #[cfg(target_os = "macos")]
 pub(crate) fn born_after(peer: &ProcessIdentity, cutoff: u64) -> bool {
-    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-    let size = std::mem::size_of_val(&info) as i32;
+    let mut info: libc::rusage_info_v0 = unsafe { std::mem::zeroed() };
+    // Both values use mach absolute time, so wall-clock corrections cannot
+    // turn an old descendant into a post-admission process.
     (unsafe {
-        libc::proc_pidinfo(
+        libc::proc_pid_rusage(
             peer.pid as i32,
-            libc::PROC_PIDTBSDINFO,
-            0,
-            &mut info as *mut _ as *mut _,
-            size,
+            libc::RUSAGE_INFO_V0,
+            (&mut info as *mut libc::rusage_info_v0).cast::<libc::rusage_info_t>(),
         )
-    }) == size
-        && info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec > cutoff
+    }) == 0
+        && info.ri_proc_start_abstime > cutoff
         && peer.alive()
 }
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]

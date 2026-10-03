@@ -9,6 +9,7 @@ use crate::transport::kernel_protocol::KernelEvent;
 pub(crate) struct PasskeyPromptFeed {
     /// `None` when the connection may not submit a passkey: no popups.
     user_id: Option<String>,
+    follow_local_owner: bool,
     sequence: u64,
     sent: Option<Vec<PasskeyPrompt>>,
 }
@@ -19,15 +20,32 @@ impl PasskeyPromptFeed {
             user_id: connection_class
                 .may_submit_passkey()
                 .then(|| user_id.to_owned()),
+            follow_local_owner: false,
             sequence: 0,
             sent: None,
         }
+    }
+
+    pub(crate) fn new_local(
+        connection_class: KernelConnectionClass,
+        router: &CommandRouter,
+    ) -> Self {
+        let mut feed = Self::new(connection_class, &router.local_popup_owner_user_id());
+        feed.follow_local_owner = connection_class.may_submit_passkey();
+        feed
     }
 
     /// The event to send now: the user's current prompts, at the start and
     /// whenever they differ from the last ones sent. They are looked up again
     /// only after a change or once a sent prompt reached its expiry.
     pub(crate) fn next_event(&mut self, router: &CommandRouter) -> Option<KernelEvent> {
+        if self.follow_local_owner {
+            let owner = router.local_popup_owner_user_id();
+            if self.user_id.as_deref() != Some(owner.as_str()) {
+                self.user_id = Some(owner);
+                self.sent = None; // Clear the former owner's popup, even without a prompt change.
+            }
+        }
         let user_id = self.user_id.as_deref()?;
         let sequence = router.passkey_prompt_change_sequence();
         let now_ms = crate::session::unix_epoch_ms();

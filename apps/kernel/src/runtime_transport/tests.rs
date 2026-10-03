@@ -782,6 +782,7 @@ async fn kernel_websocket_credentials_attribute_critical_approval_audits_to_thei
 }
 
 struct ClassAuditKernel {
+    config_projection: crate::runtime::projection::DaemonConfigProjectionStore,
     router: Arc<CommandRouter>,
     addr: std::net::SocketAddr,
     durable: crate::durable_state::DurableKernelStateStore,
@@ -838,6 +839,7 @@ impl ClassAuditKernel {
         let session_id = session.id().to_owned();
         app.sessions_mut().restore_session(session);
         let durable = app.durable_state_store();
+        let config_projection = app.config_projection_store();
         let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
             Arc::new(Mutex::new(app)),
             crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
@@ -860,6 +862,7 @@ impl ClassAuditKernel {
             },
         ));
         Self {
+            config_projection,
             router,
             addr,
             durable,

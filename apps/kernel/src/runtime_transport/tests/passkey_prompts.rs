@@ -293,6 +293,20 @@ async fn linked_cloud_owner_popup_reaches_the_local_waiting_room_terminal() {
     let prompts = terminal.prompts().await;
     assert_eq!(prompts.len(), 1);
     assert_eq!(prompts[0]["interaction_id"], kernel.interaction_id);
+    let linked = kernel.config_projection.snapshot();
+    let mut unlinked = linked.clone();
+    unlinked.cloud_relay = None;
+    kernel.config_projection.update(unlinked);
+    assert!(
+        terminal.prompts().await.is_empty(),
+        "unlink clears the former owner's prompt"
+    );
+    kernel.config_projection.update(linked);
+    let relinked = terminal.prompts().await;
+    assert_eq!(
+        relinked[0]["interaction_id"], kernel.interaction_id,
+        "the same connection follows relinking without a prompt mutation"
+    );
     assert_eq!(
         terminal.answer(&kernel, "approve", Some(PASSKEY)).await,
         None
