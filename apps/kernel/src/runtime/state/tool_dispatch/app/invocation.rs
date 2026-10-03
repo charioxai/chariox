@@ -6,6 +6,8 @@ use std::sync::{
 };
 use std::time::Duration;
 
+mod caller_lifetime;
+
 struct CancelOnDrop(Arc<AtomicBool>);
 impl Drop for CancelOnDrop {
     fn drop(&mut self) {
@@ -24,11 +26,14 @@ impl KernelRuntimeState {
         if tool.kind != ExtensionKind::App {
             return Err(unavailable());
         }
+        // Capture before on-demand startup: a later turn must not keep this
+        // accepted call alive after its original caller is cancelled.
+        let lifetime = caller_lifetime::AppCallerLifetime::capture(self, agent)?;
         let cancelled = CancelOnDrop(Arc::new(AtomicBool::new(false)));
         let observe = cancelled.0.clone();
         let budget =
             crate::runtime::app_operation_budget::AppOperationBudget::from_supervisor(move || {
-                observe.load(Ordering::Acquire)
+                observe.load(Ordering::Acquire) || lifetime.cancelled()
             });
         let lease = self
             .app_lease_on_demand(agent.owner_user_id(), &tool.name)

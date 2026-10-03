@@ -457,6 +457,24 @@ impl AgentServiceStore {
         self.read().get_agent(agent_id)
     }
 
+    /// Cancellation polling must not wait for a store mutation or re-lock the
+    /// store while an App call is being enqueued under its binding guard.
+    pub(crate) fn agent_in_session_if_available(
+        &self,
+        agent_id: &str,
+        session_id: &str,
+    ) -> Option<bool> {
+        match self.inner.try_lock() {
+            Ok(service) => Some(
+                service
+                    .get_agent(agent_id)
+                    .is_ok_and(|agent| agent.session_id() == session_id),
+            ),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+            Err(std::sync::TryLockError::Poisoned(_)) => panic!("agent service mutex poisoned"),
+        }
+    }
+
     pub(crate) fn activate_agent_meta_mode(
         &self,
         agent_id: &str,
