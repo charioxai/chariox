@@ -84,7 +84,8 @@ test("Path-1 upgrade drop-in guard checks reload freshness and both effective se
   assert.match(guard, /systemctl show --property=NeedDaemonReload --value "\$unit"/)
   assert.match(guard, /systemctl show --property=DropInPaths --value "\$unit"/)
   assert.ok(guard.indexOf("--property=NeedDaemonReload") < guard.indexOf("--property=DropInPaths"))
-  assert.match(source, /select_supervisor_service\nassert_path1_units_have_no_dropins\nrecover_transaction/)
+  assert.match(source, /select_supervisor_service\nassert_path1_units_have_no_dropins\nif \[ "\$recover_only" -eq 1 \]; then/)
+  assert.ok(source.indexOf("\nassert_path1_units_have_no_dropins\n") < source.indexOf("\nrecover_transaction\n"))
   assert.match(source, /systemctl daemon-reload \|\| return 1\n  assert_path1_units_have_no_dropins \|\| return 1\n  start_path1_runtime_services \|\| return 1\n  start_managed_app_storage \|\| return 1\n  health_not_before_ms=/)
   assert.match(source, /if ! systemctl daemon-reload \\\n  \|\| ! assert_path1_units_have_no_dropins \\\n  \|\| ! start_path1_runtime_services \\\n/)
 
