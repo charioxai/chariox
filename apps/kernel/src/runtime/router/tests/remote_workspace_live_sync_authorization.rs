@@ -367,6 +367,8 @@ async fn forwarded_workspace_live_sync_retry_waits_for_inflight_permission_resul
             interaction_id,
             choice_id: "allow".to_string(),
             custom_reply: None,
+            passkey: None,
+            passkey_remember_minutes: None,
         });
     router
         .dispatch(

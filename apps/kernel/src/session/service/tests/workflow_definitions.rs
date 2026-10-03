@@ -426,7 +426,7 @@ fn workflow_design_endpoint_max_instances_contract() {
         Some(4)
     );
 
-    let publication = service
+    service
         .create_workflow_publication(
             session.id(),
             workflow.id(),
@@ -446,25 +446,6 @@ fn workflow_design_endpoint_max_instances_contract() {
             DEFAULT_LOCAL_USER_ID.to_string(),
         )
         .expect("event publication should be created");
-    service
-        .create_workflow_event_binding(
-            session.id(),
-            publication.id(),
-            "dev.chariox.github".to_string(),
-            "1".to_string(),
-            "manifest-digest".to_string(),
-            "github-connection".to_string(),
-            "charioxai/chariox".to_string(),
-            "pull_request.synchronize".to_string(),
-            1,
-            serde_json::json!({}),
-            None,
-            Some("default".to_string()),
-            Some("disabled".to_string()),
-            Vec::new(),
-        )
-        .expect("event binding should be created");
-
     let mut update_endpoint = |max_instances: Option<u16>| {
         service.apply_workflow_design_op(
             session.id(),
@@ -504,7 +485,6 @@ fn workflow_design_endpoint_max_instances_contract() {
         .get_session(session.id())
         .expect("updated session should load");
     assert_eq!(updated_session.workflow_publications().len(), 1);
-    assert_eq!(updated_session.workflow_event_bindings().len(), 1);
 }
 
 #[test]

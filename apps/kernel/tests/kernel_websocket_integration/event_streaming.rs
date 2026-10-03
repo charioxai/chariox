@@ -7,7 +7,6 @@ use chariox_kernel::local::{
     InvokeWorkflowEndpointRequest, LocalDaemonRequest, SpawnAgentRequest,
 };
 use chariox_kernel::runtime_transport::run_kernel_websocket_server_on_listener;
-use chariox_kernel::session::CreateSessionRequest;
 use chariox_kernel::{DaemonApp, DaemonConfig};
 use serde_json::json;
 use std::time::Duration;
@@ -15,6 +14,7 @@ use tokio::sync::oneshot;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_streams_session_snapshot_and_unavailable_events() {
+    let workspace = ExecutionWorkspace::directory("kernel-ws");
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
@@ -38,10 +38,7 @@ async fn kernel_websocket_streams_session_snapshot_and_unavailable_events() {
     let create_response = send_request(
         &mut socket,
         "create-session",
-        LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-            "workspace-kernel-ws",
-            "worktree-kernel-ws",
-        )),
+        LocalDaemonRequest::CreateSession(workspace.session_request()),
     )
     .await;
     let session_id = response_variant(&create_response, "SessionCreated")["session"]["id"]
@@ -78,12 +75,18 @@ async fn kernel_websocket_streams_session_snapshot_and_unavailable_events() {
     assert_eq!(subscribe_response["response"]["ok"].as_bool(), Some(true));
     assert!(subscribe_response["response"]["resumed_from_event_id"].is_null());
 
-    let snapshot_event = wait_for_event(&mut socket, "session_snapshot").await;
+    // The first heartbeat is emitted on subscribe and can precede the snapshot.
+    let mut events = wait_for_events(&mut socket, &["session_snapshot", "heartbeat"]).await;
+    let snapshot_event = events
+        .remove("session_snapshot")
+        .expect("session snapshot event should arrive");
     assert_eq!(
         snapshot_event["event"]["session"]["id"].as_str(),
         Some(session_id.as_str())
     );
-    let heartbeat_event = wait_for_event(&mut socket, "heartbeat").await;
+    let heartbeat_event = events
+        .remove("heartbeat")
+        .expect("heartbeat event should arrive");
     assert_eq!(
         heartbeat_event["event"]["session_id"].as_str(),
         Some(session_id.as_str())
@@ -96,7 +99,7 @@ async fn kernel_websocket_streams_session_snapshot_and_unavailable_events() {
             "request_id": "delete-session",
             "request": LocalDaemonRequest::DeleteSession(DeleteSessionRequest {
                 session_ref: session_id,
-                workspace_id: Some("workspace-kernel-ws".to_string()),
+                workspace_id: Some(workspace.path().to_string()),
             }),
         }),
     )
@@ -117,6 +120,7 @@ async fn kernel_websocket_streams_session_snapshot_and_unavailable_events() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_streams_workflow_run_updates() {
+    let workspace = ExecutionWorkspace::new();
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
@@ -140,10 +144,7 @@ async fn kernel_websocket_streams_workflow_run_updates() {
     let create_response = send_request(
         &mut socket,
         "create-session-workflow-run-events",
-        LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-            "workspace-workflow-run-events",
-            "worktree-workflow-run-events",
-        )),
+        LocalDaemonRequest::CreateSession(workspace.session_request()),
     )
     .await;
     let session = &response_variant(&create_response, "SessionCreated")["session"];
@@ -302,6 +303,7 @@ async fn kernel_websocket_streams_workflow_run_updates() {
 // `workflow_run_updated` per terminal transition.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_delivers_terminal_workflow_run_update_without_reload() {
+    let workspace = ExecutionWorkspace::new();
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
@@ -310,10 +312,7 @@ async fn kernel_websocket_delivers_terminal_workflow_run_update_without_reload()
 
     let session = app
         .sessions_mut()
-        .create_session(CreateSessionRequest::new(
-            "workspace-terminal-run-events",
-            "worktree-terminal-run-events",
-        ))
+        .create_session(workspace.session_request())
         .expect("session should be created");
     let agent = app
         .spawn_agent(
@@ -417,7 +416,27 @@ async fn kernel_websocket_delivers_terminal_workflow_run_update_without_reload()
         Some("Running")
     );
 
-    let completed_event = wait_for_event(&mut socket, "workflow_run_updated").await;
+    // MP-08/MP-10: launch and delivery (for example the node's provider
+    // starting) can publish additional Running updates before the terminal
+    // one. Reject any unexpected run or status.
+    let completed_event = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let event = wait_for_event(&mut socket, "workflow_run_updated").await;
+            assert_eq!(
+                event["event"]["workflow_run"]["id"].as_str(),
+                Some(expected_run_id.as_str())
+            );
+            if event["event"]["workflow_run"]["status"].as_str() == Some("Completed") {
+                break event;
+            }
+            assert_eq!(
+                event["event"]["workflow_run"]["status"].as_str(),
+                Some("Running")
+            );
+        }
+    })
+    .await
+    .expect("terminal workflow update should arrive within the event budget");
     assert_eq!(
         completed_event["event"]["workflow_run"]["id"].as_str(),
         Some(expected_run_id.as_str())

@@ -1,32 +1,10 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { WorkflowEventBinding } from "./kernel-types.js"
 import { createDefaultShellContext } from "./shell-core.js"
 import { executeWorkflowEventPublicationCommand } from "./shell-workflow-event-publication-command.js"
 
-const binding: WorkflowEventBinding = {
-  id: "event-binding-1",
-  publication_id: "publication-1",
-  generator_id: "github",
-  generator_version: "1.0.0",
-  manifest_digest: "sha256:abc",
-  connection_id: "connection-1",
-  connection_scope: "repo:charioxai/chariox",
-  event_type: "pull_request.opened",
-  event_type_version: 1,
-  filter: { repository: "charioxai/chariox" },
-  event_interest_key: "sha256:interest",
-  environment_id: "kernel-1",
-  endpoint_id: "endpoint-1",
-  queue_ref: "default",
-  revision: 1,
-  status: "active",
-  created_at_ms: 1,
-  updated_at_ms: 1,
-}
-
-test("workflow event publication command browses a bounded catalog and binds an event", async () => {
+test("workflow event publication command browses a bounded catalog", async () => {
   const requests: Record<string, unknown>[] = []
   const client = {
     send: async (request: Record<string, unknown>) => {
@@ -58,12 +36,7 @@ test("workflow event publication command browses a bounded catalog and binds an 
           } },
         }
       }
-      return {
-        WorkflowEventBindingCreated: {
-          binding,
-          session: { id: "session-1" },
-        },
-      }
+      return {}
     },
   }
   const context = createDefaultShellContext({ sessionId: "session-1" })
@@ -73,36 +46,10 @@ test("workflow event publication command browses a bounded catalog and binds an 
     context,
     client,
   )
-  const subscribed = await executeWorkflowEventPublicationCommand(
-    [
-      "bind",
-      "publication-1",
-      "github",
-      "pull_request.opened",
-      "--generator-version",
-      "1.0.0",
-      "--manifest-digest",
-      "sha256:abc",
-      "--connection",
-      "connection-1",
-      "--scope",
-      "repo:charioxai/chariox",
-      "--reply-mode",
-      "thread",
-      "--filter-json",
-      "{\"repository\":\"charioxai/chariox\"}",
-      "--actions",
-      "notification.reply,slack.reaction.add",
-    ],
-    context,
-    client,
-  )
 
   assert.equal(catalog.ok, true)
   assert.match(catalog.message ?? "", /github@1\.0\.0/)
   assert.match(catalog.message ?? "", /next cursor: cursor-2/)
-  assert.equal(subscribed.ok, true)
-  assert.match(subscribed.message ?? "", /subscribed event-binding-1/)
   assert.deepEqual(requests[0], {
     SearchEventGeneratorCatalog: {
       query: "pull request",
@@ -110,24 +57,6 @@ test("workflow event publication command browses a bounded catalog and binds an 
       verification: null,
       cursor: null,
       limit: 12,
-    },
-  })
-  assert.deepEqual(requests[1], {
-    CreateWorkflowEventBinding: {
-      session_id: "session-1",
-      publication_ref: "publication-1",
-      generator_id: "github",
-      generator_version: "1.0.0",
-      manifest_digest: "sha256:abc",
-      connection_id: "connection-1",
-      connection_scope: "repo:charioxai/chariox",
-      event_type: "pull_request.opened",
-      event_type_version: 1,
-      filter: { repository: "charioxai/chariox" },
-      environment_id: null,
-      queue_ref: null,
-      reply_mode: "thread",
-      action_ids: ["notification.reply", "slack.reaction.add"],
     },
   })
 })
@@ -230,7 +159,7 @@ test("workflow event publication command pages connections without a generator f
   }])
 })
 
-test("workflow event publication command maps lifecycle actions to shared kernel requests", async () => {
+test("workflow event publication command reports event delivery status", async () => {
   const requests: Record<string, unknown>[] = []
   const client = {
     send: async (request: Record<string, unknown>) => {
@@ -245,120 +174,25 @@ test("workflow event publication command maps lifecycle actions to shared kernel
           } },
         }
       }
-      return {
-        WorkflowEventBindingUpdated: {
-          binding: { ...binding, status: "paused" },
-          session: { id: "session-1" },
-        },
-      }
+      return {}
     },
   }
   const context = createDefaultShellContext({ sessionId: "session-1" })
 
-  const paused = await executeWorkflowEventPublicationCommand(
-    ["pause", "event-binding-1"],
-    context,
-    client,
-  )
   const status = await executeWorkflowEventPublicationCommand(["status"], context, client)
 
-  assert.equal(paused.ok, true)
-  assert.match(status.message ?? "", /connected/)
-  assert.deepEqual(requests, [
-    {
-      SetWorkflowEventBindingStatus: {
-        session_id: "session-1",
-        binding_id: "event-binding-1",
-        status: "paused",
-      },
-    },
-    { GetEventDeliveryStatus: {} },
-  ])
+  assert.match(status.message ?? "", /connected; active App routes=1/)
+  assert.deepEqual(requests, [{ GetEventDeliveryStatus: {} }])
 })
 
-test("workflow event attachment reports the canonical attach command in its usage", async () => {
-  const result = await executeWorkflowEventPublicationCommand(
-    ["attach"],
-    createDefaultShellContext({ sessionId: "session-1" }),
-    { send: async () => ({}) },
-  )
-
-  assert.equal(result.ok, false)
-  assert.match(result.message ?? "", /usage: workflow trigger event attach/)
-})
-
-test("workflow event attachment rejects an empty action capability list", async () => {
-  const result = await executeWorkflowEventPublicationCommand(
-    [
-      "attach",
-      "publication-1",
-      "github",
-      "pull_request.opened",
-      "--generator-version",
-      "1.0.0",
-      "--manifest-digest",
-      "sha256:abc",
-      "--connection",
-      "connection-1",
-      "--scope",
-      "repo:charioxai/chariox",
-      "--actions",
-      " , ",
-    ],
-    createDefaultShellContext({ sessionId: "session-1" }),
-    { send: async () => ({}) },
-  )
-
-  assert.equal(result.ok, false)
-  assert.match(result.message ?? "", /--actions must contain at least one comma-separated action ID/)
-})
-
-test("workflow event attachment requires a compatible reply mode for notification replies", async () => {
-  const withoutMode = await executeWorkflowEventPublicationCommand(
-    [
-      "attach",
-      "publication-1",
-      "github",
-      "pull_request.opened",
-      "--generator-version",
-      "1.0.0",
-      "--manifest-digest",
-      "sha256:abc",
-      "--connection",
-      "connection-1",
-      "--scope",
-      "repo:charioxai/chariox",
-      "--actions",
-      "notification.reply",
-    ],
-    createDefaultShellContext({ sessionId: "session-1" }),
-    { send: async () => ({}) },
-  )
-  assert.equal(withoutMode.ok, false)
-  assert.match(withoutMode.message ?? "", /notification.reply requires --reply-mode thread or channel/)
-
-  const invalidMode = await executeWorkflowEventPublicationCommand(
-    [
-      "attach",
-      "publication-1",
-      "github",
-      "pull_request.opened",
-      "--generator-version",
-      "1.0.0",
-      "--manifest-digest",
-      "sha256:abc",
-      "--connection",
-      "connection-1",
-      "--scope",
-      "repo:charioxai/chariox",
-      "--reply-mode",
-      "disabled",
-      "--actions",
-      "notification.reply",
-    ],
-    createDefaultShellContext({ sessionId: "session-1" }),
-    { send: async () => ({}) },
-  )
-  assert.equal(invalidMode.ok, false)
-  assert.match(invalidMode.message ?? "", /notification.reply requires --reply-mode thread or channel/)
+test("workflow event publication command no longer creates direct bindings", async () => {
+  for (const action of ["list", "attach", "pause", "transfer", "test"]) {
+    const result = await executeWorkflowEventPublicationCommand(
+      [action, "event-binding-1"],
+      createDefaultShellContext({ sessionId: "session-1" }),
+      { send: async () => { throw new Error("must not reach the kernel") } },
+    )
+    assert.equal(result.ok, false)
+    assert.match(result.message ?? "", /usage: workflow trigger event catalog\|category/)
+  }
 })

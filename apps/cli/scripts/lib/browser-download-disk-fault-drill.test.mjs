@@ -1,5 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
+import { execFileSync } from "node:child_process"
+import { fileURLToPath } from "node:url"
 
 import {
   BROWSER_DOWNLOAD_DISK_CASE_IDS,
@@ -26,4 +28,14 @@ test("browser download disk probe requires every safety assertion", () => {
     () => parseBrowserDownloadDiskProbe(output.replace(`✔ ${BROWSER_DOWNLOAD_DISK_TEST_NAMES[0]}`, "")),
     /did not pass/,
   )
+})
+
+test("browser download disk probe parses the selected Node reporter", () => {
+  const output = execFileSync(process.execPath, buildBrowserDownloadDiskNodeArgs(), {
+    cwd: fileURLToPath(new URL("../../../../", import.meta.url)),
+    encoding: "utf8",
+    timeout: 60_000,
+    env: { ...process.env, NODE_TEST_CONTEXT: undefined },
+  })
+  assert.equal(parseBrowserDownloadDiskProbe(output).concurrentDownloadRechecked, true)
 })

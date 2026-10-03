@@ -1,6 +1,7 @@
 import { mkdir, realpath, stat, statfs } from "node:fs/promises";
 import path from "node:path";
 import { assertNotCancelled } from "./browser-controller-actions.mjs";
+import { stageBrowserUploadFiles } from "./browser-controller-upload-staging.mjs";
 
 const MAX_UPLOAD_FILES = 20;
 const MAX_UPLOAD_PATH_BYTES = 4_096;
@@ -164,6 +165,7 @@ export async function uploadBrowserFiles({
   fileSystem = defaultFileSystem,
   assertContext = async () => {},
   signal,
+  stageUploads = stageBrowserUploadFiles,
 }) {
   assertNotCancelled(signal);
   await assertCurrentDocument(connection, sessionId, targetId, documentId);
@@ -180,6 +182,7 @@ export async function uploadBrowserFiles({
 
   const roots = await resolveUploadRoots(uploadRoots, fileSystem);
   const files = [];
+  const metadataByFile = [];
   let totalBytes = 0;
   for (const candidate of filePaths) {
     if (
@@ -193,7 +196,7 @@ export async function uploadBrowserFiles({
     let metadata;
     try {
       resolved = await fileSystem.realpath(candidate);
-      metadata = await fileSystem.stat(resolved);
+      metadata = await fileSystem.stat(resolved, { bigint: true });
     } catch (error) {
       throw invalidUpload(`browser upload file is unavailable: ${String(error?.code ?? "filesystem_error")}`);
     }
@@ -203,21 +206,29 @@ export async function uploadBrowserFiles({
         "browser upload file is outside configured roots",
       );
     }
-    if (!metadata.isFile() || !Number.isSafeInteger(metadata.size) || metadata.size < 0) {
+    const size = Number(metadata.size);
+    if (!metadata.isFile() || !Number.isSafeInteger(size) || size < 0) {
       throw invalidUpload("browser uploads require regular files with a bounded size");
     }
-    totalBytes += metadata.size;
+    totalBytes += size;
     if (!Number.isSafeInteger(totalBytes) || totalBytes > MAX_UPLOAD_TOTAL_BYTES) {
       throw invalidUpload(`browser upload exceeds ${MAX_UPLOAD_TOTAL_BYTES} total bytes`);
     }
     files.push(resolved);
+    metadataByFile.push({ ...metadata, size });
   }
 
-  await assertContext();
-  await assertCurrentDocument(connection, sessionId, targetId, documentId);
-  assertNotCancelled(signal);
+  const staged = await stageUploads({ files, metadata: metadataByFile,
+    browserIdentity: connection.browserInstanceId, signal, connection }).catch(error => {
+    if (error?.code === "browser_action_cancelled") throw error;
+    throw new BrowserFileTransferError("browser_upload_staging_unavailable",
+      error?.code === "browser_upload_staging_unavailable" ? error.message : "upload staging could not prepare private files");
+  });
   let objectId;
   try {
+    await assertContext();
+    await assertCurrentDocument(connection, sessionId, targetId, documentId);
+    assertNotCancelled(signal);
     const resolved = await connection.send("DOM.resolveNode", { backendNodeId }, sessionId);
     objectId = resolved?.object?.objectId;
     if (!objectId) throw staleFileInput();
@@ -239,9 +250,15 @@ export async function uploadBrowserFiles({
     await assertContext();
     await assertCurrentDocument(connection, sessionId, targetId, documentId);
     assertNotCancelled(signal);
+    // Dispatch may have succeeded even if its reply is lost. Retain these
+    // browser-owned File backing bytes across CDP/controller reconnects.
+    await staged.markExposed();
+    await assertContext();
+    await assertCurrentDocument(connection, sessionId, targetId, documentId);
+    assertNotCancelled(signal);
     await connection.send(
       "DOM.setFileInputFiles",
-      { objectId, files },
+      { objectId, files: staged.files },
       sessionId,
     );
   } catch (error) {
@@ -249,6 +266,7 @@ export async function uploadBrowserFiles({
     throw staleFileInput();
   } finally {
     if (objectId) await connection.send("Runtime.releaseObject", { objectId }, sessionId).catch(() => {});
+    await staged.discard();
   }
   return {
     target_id: targetId,

@@ -353,6 +353,35 @@ impl SessionService {
             .cloned())
     }
 
+    /// Protocols 377 and 378: records an exported release's inputs digest
+    /// and, for an App-bound publication, its App plan.
+    pub(crate) fn record_workflow_publication_release(
+        &mut self,
+        session_id: &str,
+        publication_id: &str,
+        package_digest: &str,
+        inputs_digest: &str,
+        plan: Option<Value>,
+    ) -> Result<WorkflowPublicationDefinition, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let publication = session
+            .workflow_publication_mut(publication_id)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "record workflow publication release",
+                message: format!("workflow publication `{publication_id}` was not found"),
+            })?;
+        publication.record_release_inputs(package_digest, inputs_digest);
+        if let Some(plan) = plan {
+            publication.record_release_app_plan(package_digest, plan);
+        }
+        Ok(publication.clone())
+    }
+
     pub fn disable_workflow_publication(
         &mut self,
         session_id: &str,
@@ -378,17 +407,6 @@ impl SessionService {
             publication.disable();
             publication.clone()
         };
-        let binding_ids = session
-            .workflow_event_bindings()
-            .iter()
-            .filter(|binding| binding.publication_id == publication_id && binding.active())
-            .map(|binding| binding.id.clone())
-            .collect::<Vec<_>>();
-        for binding_id in binding_ids {
-            if let Some(binding) = session.workflow_event_binding_mut(&binding_id) {
-                binding.set_status(crate::session::WorkflowEventBindingStatus::Tombstoned);
-            }
-        }
         Ok(publication)
     }
 

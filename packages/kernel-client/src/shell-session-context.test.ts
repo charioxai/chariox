@@ -23,5 +23,5 @@ test("sessionContextAgentId keeps only session-scoped focused agents", () => {
   assert.equal(sessionContextAgentId(makeSession({
     focused_agent_id: null,
     agents: [makeAgent({ id: "agent-1" })],
-  })), "agent-1")
+  })), undefined)
 })

@@ -1,0 +1,149 @@
+name: App runtime native build (unsigned)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_build:
+        description: 'Explicitly admit a bounded Linux native compilation (up to 300 minutes)'
+        type: boolean
+        required: true
+        default: false
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    paths:
+      - 'apps/app-worker/runtime.lock.json'
+      - 'apps/app-worker/src/runtime.h'
+      - 'apps/app-worker/src/node_runtime.cc'
+      - 'scripts/build-app-runtime*'
+      - 'scripts/app-runtime-build-admission*'
+      - 'scripts/app-runtime-ci-resources*'
+      - 'scripts/app-runtime-ci-receipt*'
+      - 'scripts/run-app-runtime-native-ci.sh'
+      - '.github/workflows/app-runtime-native.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  # Only this target's explicit admission may occupy its heavyweight queue.
+  group: app-runtime-native-linux-x64-${{ ((github.event_name == 'workflow_dispatch' && inputs.confirm_build == true) || (github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'app-runtime-build-linux' && github.event.pull_request.head.repo.full_name == github.repository)) && 'build' || 'checks' }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.20.0'
+      - name: Check resource guards and exact input provenance without compilation
+        run: node --test --test-concurrency=1 scripts/build-app-runtime.test.mjs scripts/app-runtime-ci-resources.test.mjs scripts/app-runtime-ci-receipt.test.mjs scripts/app-runtime-macos-build.test.mjs scripts/app-runtime-build-admission.test.mjs
+  admission:
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.confirm_build == true) ||
+      (github.event_name == 'pull_request' && github.event.action == 'labeled' &&
+       github.event.label.name == 'app-runtime-build-linux' && github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    outputs:
+      confirmed: ${{ steps.admit.outputs.confirmed }}
+      source_sha: ${{ steps.admit.outputs.source_sha }}
+      actor: ${{ steps.admit.outputs.actor }}
+      admission_event: ${{ steps.admit.outputs.admission_event }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.20.0'
+      - name: Verify explicit target event and current repository write permission
+        id: admit
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/app-runtime-build-admission.mjs linux-x64
+  build:
+    if: needs.admission.outputs.confirmed == 'true'
+    needs: [checks, admission]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    strategy:
+      max-parallel: 1
+      matrix:
+        target: [linux-x64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ needs.admission.outputs.source_sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.20.0'
+      # PR filters use the cumulative diff, and concurrency replaces older
+      # pending runs. Reuse exact successful input evidence, never the previous
+      # push's changed-file list: a queued newer commit may contain unbuilt code.
+      - name: Compute exact native input fingerprint
+        id: inputs
+        run: node scripts/app-runtime-ci-receipt.mjs key
+      - uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.inputs.outputs.path }}
+          key: ${{ steps.inputs.outputs.key }}
+          restore-keys: ${{ steps.inputs.outputs.prefix }}
+      - name: Verify retained unsigned compilation evidence
+        id: reuse
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/app-runtime-ci-receipt.mjs check
+      - name: Validate tooling and resource guards
+        run: node --test --test-concurrency=1 scripts/build-app-runtime.test.mjs scripts/app-runtime-ci-resources.test.mjs scripts/app-runtime-ci-receipt.test.mjs
+      - name: Compile Node and embedder in bounded container
+        if: steps.reuse.outputs.reuse != 'true'
+        id: native
+        env:
+          CHARIOX_NATIVE_BUILD_CONFIRMED: ${{ needs.admission.outputs.confirmed }}
+          NATIVE_ADMITTED_SHA: ${{ needs.admission.outputs.source_sha }}
+          NATIVE_ADMISSION_ACTOR: ${{ needs.admission.outputs.actor }}
+          NATIVE_ADMISSION_EVENT: ${{ needs.admission.outputs.admission_event }}
+        run: bash scripts/run-app-runtime-native-ci.sh
+      - uses: actions/upload-artifact@v4
+        if: success() && steps.reuse.outputs.reuse != 'true'
+        id: artifact
+        with:
+          name: UNSIGNED-NONRELEASE-${{ matrix.target }}-${{ needs.admission.outputs.source_sha }}
+          path: ${{ steps.native.outputs.artifact_path }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Record this successful compilation and artifact
+        if: success() && steps.reuse.outputs.reuse != 'true'
+        env:
+          NATIVE_ARTIFACT_ID: ${{ steps.artifact.outputs.artifact-id }}
+          NATIVE_ARTIFACT_URL: ${{ steps.artifact.outputs.artifact-url }}
+        run: node scripts/app-runtime-ci-receipt.mjs save
+      # Cache only this bounded JSON receipt. PR cache scope never supplies a
+      # binary, source, object, signing decision or release trust enrollment.
+      - uses: actions/cache/save@v4
+        if: success() && steps.reuse.outputs.reuse != 'true'
+        continue-on-error: true
+        with:
+          path: ${{ steps.inputs.outputs.path }}
+          key: ${{ steps.inputs.outputs.key }}
+      - name: Remove owned scratch after artifact handling
+        if: always() && steps.native.outputs.scratch != ''
+        env:
+          NATIVE_SCRATCH: ${{ steps.native.outputs.scratch }}
+        run: |
+          ci_temp="$(realpath -e -- "$RUNNER_TEMP")"
+          case "$NATIVE_SCRATCH" in
+            "$ci_temp"/chariox-native.*) rm -rf -- "$NATIVE_SCRATCH" ;;
+            *) echo 'Refusing unexpected native scratch path.' >&2; exit 1 ;;
+          esac

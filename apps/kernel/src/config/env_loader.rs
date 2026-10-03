@@ -4,7 +4,10 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-use super::identity::{load_or_create_runtime_identity, persist_runtime_display_aliases};
+use super::identity::{
+    load_or_create_runtime_identity, load_retained_slice_identity, persist_runtime_display_aliases,
+    protected_slice_identity_required,
+};
 use super::{
     default_os_name, load_user_config_from_path, parse_kernel_runtime_role,
     parse_remote_lease_capacity,
@@ -16,6 +19,19 @@ use super::{
 
 impl DaemonConfig {
     pub fn load_from_env() -> Self {
+        Self::load_from_env_with_identity_loader(|host, port| {
+            if protected_slice_identity_required() {
+                load_retained_slice_identity(host, port)
+                    .unwrap_or_else(|message| panic!("{message}"))
+            } else {
+                load_or_create_runtime_identity(host, port)
+            }
+        })
+    }
+
+    pub(super) fn load_from_env_with_identity_loader(
+        load_identity: impl FnOnce(&str, u16) -> super::identity::RuntimeIdentity,
+    ) -> Self {
         let user_config_path = Self::default_user_config_path();
         let user_config = load_user_config_from_path(&user_config_path);
         let kernel_websocket_host =
@@ -24,8 +40,7 @@ impl DaemonConfig {
             .ok()
             .and_then(|value| value.parse::<u16>().ok())
             .unwrap_or(43118);
-        let runtime_identity =
-            load_or_create_runtime_identity(&kernel_websocket_host, kernel_websocket_port);
+        let runtime_identity = load_identity(&kernel_websocket_host, kernel_websocket_port);
         let persisted_config = load_persisted_relay_config();
         let persisted_cloud_relay = persisted_config
             .as_ref()
@@ -45,10 +60,14 @@ impl DaemonConfig {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
         let env_relay_configured = env_relay_url.is_some() || env_relay_token.is_some();
-        let daemon_id = env::var("CHARIOX_DAEMON_ID")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| runtime_identity.daemon_id.clone());
+        let daemon_id = if protected_slice_identity_required() {
+            protected_slice_daemon_id(&runtime_identity.daemon_id)
+        } else {
+            env::var("CHARIOX_DAEMON_ID")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| runtime_identity.daemon_id.clone())
+        };
         let event_delivery_environment_id = env::var("CHARIOX_EVENT_ENVIRONMENT_ID")
             .ok()
             .map(|value| value.trim().to_string())
@@ -67,12 +86,14 @@ impl DaemonConfig {
             .filter(|value| !value.is_empty())
             .or(runtime_identity.daemon_alias)
             .or_else(|| default_kernel_alias(host_machine_alias.as_deref(), kernel_websocket_port));
-        persist_runtime_display_aliases(
-            &kernel_websocket_host,
-            kernel_websocket_port,
-            host_machine_alias.as_deref(),
-            daemon_alias.as_deref(),
-        );
+        if !protected_slice_identity_required() {
+            persist_runtime_display_aliases(
+                &kernel_websocket_host,
+                kernel_websocket_port,
+                host_machine_alias.as_deref(),
+                daemon_alias.as_deref(),
+            );
+        }
         let accept_remote_leases = env::var("CHARIOX_ACCEPT_REMOTE_LEASES")
             .ok()
             .map(|value| {
@@ -163,10 +184,14 @@ impl DaemonConfig {
                 .and_then(|value| value.parse::<u64>().ok())
                 .unwrap_or(0),
             daemon_id,
-            host_machine_id: env::var("CHARIOX_MACHINE_ID")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| runtime_identity.machine_id.clone()),
+            host_machine_id: if protected_slice_identity_required() {
+                runtime_identity.machine_id.clone()
+            } else {
+                env::var("CHARIOX_MACHINE_ID")
+                    .ok()
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| runtime_identity.machine_id.clone())
+            },
             host_machine_alias,
             os_name: env::var("CHARIOX_OS_NAME")
                 .ok()
@@ -339,6 +364,22 @@ fn parse_event_generator_management_targets(
         }
     }
     Ok(targets)
+}
+
+/// A protected slice boots from its retained keys and machine identity, never
+/// from ambient identity. A local Docker slice worker is named on the relay by
+/// the provisioner's canonical per-creation ref, scoped to the owning Machine,
+/// and the home discovers and routes to the worker by that exact ref. Accept
+/// only that form, for the provisioned owner Machine; any other value keeps
+/// the retained kernel id.
+fn protected_slice_daemon_id(retained_kernel_id: &str) -> String {
+    let owner_machine_id = env::var("CHARIOX_SLICE_OWNER_MACHINE_ID").unwrap_or_default();
+    env::var("CHARIOX_DAEMON_ID")
+        .ok()
+        .filter(|worker_ref| {
+            crate::slice::machine_scoped_slice_worker_ref(worker_ref, owner_machine_id.trim())
+        })
+        .unwrap_or_else(|| retained_kernel_id.to_string())
 }
 
 pub(super) fn runtime_display_machine_name() -> Option<String> {

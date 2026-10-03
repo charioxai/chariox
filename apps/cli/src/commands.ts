@@ -1,9 +1,12 @@
+import { tokenizeShellLine } from "@chariox/kernel-client/shell-core"
+
 export type SessionCommandAction = "create" | "new" | "attach" | "list" | "ls" | "status" | "info" | "inspect" | "delete"
 
 export type ParsedSlashCommand =
   | { kind: "exit"; raw: string }
   | { kind: "waiting"; raw: string }
   | { kind: "stop"; raw: string }
+  | { kind: "approvals"; raw: string }
   | { kind: "attachment"; raw: string }
   | {
       kind: "session"
@@ -34,6 +37,7 @@ export type ParsedSlashCommand =
   | { kind: "worktree"; raw: string; args: string[] }
   | { kind: "workflow"; raw: string; args: string[] }
   | { kind: "notifications"; raw: string; args: string[] }
+  | { kind: "app"; raw: string; args: string[] }
   | { kind: "settings"; raw: string; args: string[] }
   | { kind: "loop"; raw: string; prompt: string }
   | { kind: "goal"; raw: string; prompt: string }
@@ -56,6 +60,7 @@ export type ParsedSlashCommand =
 export type SlashCommandHandlers = {
   onExit: () => Promise<unknown> | unknown
   onWaiting: () => Promise<unknown> | unknown
+  onApprovals: () => Promise<unknown> | unknown
   onStop: () => Promise<unknown> | unknown
   onAttachment: (command: Extract<ParsedSlashCommand, { kind: "attachment" }>) => Promise<unknown> | unknown
   onSession: (command: Extract<ParsedSlashCommand, { kind: "session" }>) => Promise<unknown> | unknown
@@ -81,6 +86,7 @@ export type SlashCommandHandlers = {
   onWorktree: (command: Extract<ParsedSlashCommand, { kind: "worktree" }>) => Promise<unknown> | unknown
   onWorkflow: (command: Extract<ParsedSlashCommand, { kind: "workflow" }>) => Promise<unknown> | unknown
   onNotifications?: (command: Extract<ParsedSlashCommand, { kind: "notifications" }>) => Promise<unknown> | unknown
+  onApp?: (command: Extract<ParsedSlashCommand, { kind: "app" }>) => Promise<unknown> | unknown
   onSettings?: (command: Extract<ParsedSlashCommand, { kind: "settings" }>) => Promise<unknown> | unknown
   onLoop: (command: Extract<ParsedSlashCommand, { kind: "loop" }>) => Promise<unknown> | unknown
   onGoal: (command: Extract<ParsedSlashCommand, { kind: "goal" }>) => Promise<unknown> | unknown
@@ -104,6 +110,9 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
   }
   if (trimmed === "/waiting") {
     return { kind: "waiting", raw: trimmed }
+  }
+  if (trimmed === "/approvals") {
+    return { kind: "approvals", raw: trimmed }
   }
   if (trimmed === "/stop") {
     return { kind: "stop", raw: trimmed }
@@ -261,6 +270,14 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
       args: trimmed.replace(/^\/worktree\s*/, "").trim().split(/\s+/).filter(Boolean),
     }
   }
+  if (/^\/app(?:\s|$)/.test(trimmed)) {
+    try {
+      return { kind: "app", raw: trimmed, args: tokenizeShellLine(trimmed.slice(4)) }
+    } catch {
+      // Keep incomplete input recognizable during editing; dispatch validates it.
+      return { kind: "app", raw: trimmed, args: trimmed.slice(4).trim().split(/\s+/).filter(Boolean) }
+    }
+  }
   if (trimmed === "/notifications" || trimmed.startsWith("/notifications ")) {
     return {
       kind: "notifications",
@@ -357,6 +374,10 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
 
 export function sharedShellCommandForSlashCommand(input: string): string | null {
   const command = input.trim()
+  // `/app` runs in this terminal's App handler, never the shared shell: the
+  // shell tokenizer strips the quotes of an inbox test's JSON payload. The
+  // handler (appSlashArgs) keeps that payload exact, like the web palette.
+  if (/^\/app(?:\s|$)/.test(command)) return null
   if (command === "/settings prompts" || command.startsWith("/settings prompts ")) {
     return command.slice(1)
   }
@@ -426,6 +447,9 @@ export async function executeSlashCommand(
       break
     case "waiting":
       await handlers.onWaiting()
+      break
+    case "approvals":
+      await handlers.onApprovals()
       break
     case "stop":
       await handlers.onStop()
@@ -502,6 +526,9 @@ export async function executeSlashCommand(
     case "notifications":
       await handlers.onNotifications?.(command)
       break
+    case "app":
+      await handlers.onApp?.(command)
+      break
     case "settings":
       await handlers.onSettings?.(command)
       break
@@ -541,6 +568,7 @@ export async function executeSlashCommand(
 
 export function shouldClearCommandCenterForSlashCommand(command: ParsedSlashCommand): boolean {
   switch (command.kind) {
+    case "approvals":
     case "provider":
     case "model":
     case "variant":
@@ -562,6 +590,7 @@ export function shouldClearCommandCenterForSlashCommand(command: ParsedSlashComm
     case "worktree":
     case "workflow":
     case "notifications":
+    case "app":
     case "settings":
     case "loop":
     case "goal":

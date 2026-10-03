@@ -383,6 +383,11 @@ async fn structured_output_batch_fans_out_chunks_with_one_terminal_notification(
 
 #[tokio::test]
 async fn structured_output_usage_resolves_the_cloud_owners_local_account_authority() {
+    let _environment = crate::env_lock::lock();
+    let provider_home = crate::test_support::TestWorktree::new("synthetic-claude-account");
+    std::env::set_var("HOME", provider_home.path());
+    std::env::set_var("CHARIOX_HOME", provider_home.path().join(".chariox"));
+
     let worktree = crate::test_support::TestWorktree::new("structured-output-cloud-owner");
     let cloud_owner_user_id = "cloud-owner";
     let mut config = crate::config::DaemonConfig::for_tests();
@@ -407,14 +412,31 @@ async fn structured_output_usage_resolves_the_cloud_owners_local_account_authori
             cloud_owner_user_id,
         ))
         .expect("cloud owner should attach");
+    let environment = app
+        .provider_account_profile_registry()
+        .resolve_environment(crate::session::DEFAULT_LOCAL_USER_ID, "claude", "default")
+        .expect("local authority profile should resolve");
+    std::fs::create_dir_all(provider_home.path().join(".claude")).unwrap();
+    std::fs::write(
+        environment
+            .get("CLAUDE_CONFIG_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| provider_home.path().join(".claude"))
+            .join(".credentials.json"),
+        br#"{"claudeAiOauth":{"refreshToken":"synthetic-refresh-token"}}"#,
+    )
+    .unwrap();
     let run = app
         .launch_provider(
+            // The account-authority mapping does not depend on the provider.
+            // Codex avoids the Claude launch-credential gate, which needs a
+            // vault or portable login this fixture does not have.
             crate::provider::LaunchProviderRequest::new(
                 session.id(),
                 "dev-stub",
-                "claude",
+                "codex",
                 "default",
-                "sonnet",
+                "gpt-5",
             )
             .with_agent_id(agent.id()),
         )
@@ -444,7 +466,7 @@ async fn structured_output_usage_resolves_the_cloud_owners_local_account_authori
                 }],
                 account_usage: Some(crate::account_profile::ProviderAccountUsageSnapshot {
                     profile_id: "default".to_string(),
-                    provider: "claude".to_string(),
+                    provider: "codex".to_string(),
                     availability:
                         crate::account_profile::ProviderAccountUsageAvailability::Available,
                     meters: Vec::new(),
@@ -461,7 +483,7 @@ async fn structured_output_usage_resolves_the_cloud_owners_local_account_authori
     let profile = runtime
         .owned
         .provider_account_profiles
-        .get(crate::session::DEFAULT_LOCAL_USER_ID, "claude", "default")
+        .get(crate::session::DEFAULT_LOCAL_USER_ID, "codex", "default")
         .expect("the local account authority profile should remain resolvable");
     assert_eq!(profile.usage.source, "cloud-owner-usage-test");
     assert_eq!(
@@ -1044,8 +1066,8 @@ async fn idle_claude_native_tui_projects_startup_terminal_without_history() {
             pty_target: Some("claude:native-idle-runtime".to_string()),
             pty_program: Some("/bin/sh".to_string()),
             pty_args: vec![
-                "-lc".to_string(),
-                "printf '\\033[?2004hClaude Code\\n'; sleep 5".to_string(),
+                "-c".to_string(),
+                "printf '\\033[?2004hClaude Code\\n'; IFS= read -r ignored".to_string(),
             ],
             pty_env: std::collections::BTreeMap::new(),
             pty_env_remove: Vec::new(),
@@ -1064,19 +1086,35 @@ async fn idle_claude_native_tui_projects_startup_terminal_without_history() {
         .expect("history should load")
         .len();
 
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
-    let records = runtime
-        .pump_owned_provider_output(
-            session.id(),
-            run.id(),
-            vec![attachment.id().to_string()],
-            true,
-        )
-        .await
-        .expect("idle Claude native startup output should project");
+    let records = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let mut records = Vec::new();
+        loop {
+            records.extend(
+                runtime
+                    .pump_owned_provider_output(
+                        session.id(),
+                        run.id(),
+                        vec![attachment.id().to_string()],
+                        true,
+                    )
+                    .await
+                    .expect("idle Claude native startup output should project"),
+            );
+            let output = records
+                .iter()
+                .flat_map(|record| record.bytes.clone())
+                .collect::<Vec<_>>();
+            let frame = b"\x1b[?2004hClaude Code";
+            if output.windows(frame.len()).any(|bytes| bytes == frame) {
+                break records;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Claude startup frame should reach the client");
 
     assert!(
         !records.is_empty(),

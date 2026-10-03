@@ -75,6 +75,22 @@ export async function runManagedBrowserComputerParityHarness({
 
   try {
     if (failure) throw failure
+    if (inspectorAuthorized) {
+      if (typeof inspector.begin !== "function"
+        || typeof inspector.observeCreated !== "function"
+        || typeof inspector.beforeRetire !== "function"
+        || typeof transport.setLifecycleObserver !== "function") {
+        throw new HarnessFailure("independent_inspector_lifecycle_required", "inspector.begin")
+      }
+      await runBoundedTransportStep(
+        { run: (_step, request, options) => inspector.begin(request, options) },
+        "inspector.begin",
+        { runId: config.runId, binding: { ...config.expected }, scope: "run_owned_resources" },
+        config.stepTimeoutMs ?? DEFAULT_STEP_TIMEOUT_MS,
+        signal,
+      )
+      transport.setLifecycleObserver(inspector)
+    }
     preflight = await run("preflight", {
       resourceCeilings: { ...config.resourceCeilings },
     }, { bound: false })
@@ -88,13 +104,19 @@ export async function runManagedBrowserComputerParityHarness({
       ? error
       : new HarnessFailure("managed_parity_step_failed", "unknown")
   } finally {
+    let productCleanupFailed = false
     try {
       await run("cleanup.perform", { scope: "run_owned_resources" })
+    } catch {
+      productCleanupFailed = true
+    }
+    try {
       const inventory = inspectorAuthorized
         ? await runIndependentInspection(inspector, config, config.stepTimeoutMs ?? DEFAULT_STEP_TIMEOUT_MS)
         : await run("cleanup.inspect", { resourceCeilings: { ...config.resourceCeilings } })
       if (inspectorAuthorized) steps.push({ name: "cleanup.inspect.independent", status: "passed", result: inventory })
       validateCleanupInventory(inventory, config.resourceCeilings)
+      if (productCleanupFailed) throw new HarnessFailure("cleanup_incomplete", "cleanup.perform")
       cleanup = { clean: true, inventory, independent: inspectorAuthorized }
     } catch {
       cleanup = {

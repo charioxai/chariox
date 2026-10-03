@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs"
 import type { CommandNode } from "./command-center-tree-projection.js"
 
 const catalogFragmentUrls = [
+  "../../kernel/src/runtime/terminal_command_catalog/catalog/apps.json",
   "../../kernel/src/runtime/terminal_command_catalog/catalog/core.json",
   "../../kernel/src/runtime/terminal_command_catalog/catalog/extensions.json",
   "../../kernel/src/runtime/terminal_command_catalog/catalog/workflow.json",

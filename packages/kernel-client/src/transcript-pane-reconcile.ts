@@ -123,8 +123,33 @@ export function reconcileMountedTranscriptPane<TEntry extends TranscriptPaneEntr
     previousScrollHeight,
     scrollbox.height,
   )
-  const previousVisibleEntries = currentEntries.filter(transcriptPaneEntryIsMounted)
+  let previousVisibleEntries = currentEntries.filter(transcriptPaneEntryIsMounted)
   const nextVisibleEntries = nextEntries.filter(transcriptPaneEntryIsMounted)
+
+  const removeEntry = (entry: TEntry) => {
+    const renderable = renderables.get(entry.id)
+    if (!renderable) {
+      return
+    }
+    scrollbox.remove(renderable.wrapper.id)
+    renderable.wrapper.destroyRecursively()
+    renderables.delete(entry.id)
+  }
+
+  // Retention evicts from the front. Align the surviving rows before diffing
+  // their content, including turn toggles that can be reused under a new id.
+  const nextIds = new Set(nextVisibleEntries.map((entry) => entry.id))
+  const nextFirst = nextVisibleEntries[0]
+  let evictedPrefixLength = 0
+  while (
+    evictedPrefixLength < previousVisibleEntries.length
+    && !nextIds.has(previousVisibleEntries[evictedPrefixLength]!.id)
+    && (!nextFirst || !transcriptEntriesShareMountedPrefix(previousVisibleEntries[evictedPrefixLength]!, nextFirst))
+  ) {
+    removeEntry(previousVisibleEntries[evictedPrefixLength]!)
+    evictedPrefixLength += 1
+  }
+  previousVisibleEntries = previousVisibleEntries.slice(evictedPrefixLength)
 
   let preservedPrefixLength = 0
   while (
@@ -149,13 +174,7 @@ export function reconcileMountedTranscriptPane<TEntry extends TranscriptPaneEntr
   }
 
   for (const entry of previousVisibleEntries.slice(preservedPrefixLength)) {
-    const renderable = renderables.get(entry.id)
-    if (!renderable) {
-      continue
-    }
-    scrollbox.remove(renderable.wrapper.id)
-    renderable.wrapper.destroyRecursively()
-    renderables.delete(entry.id)
+    removeEntry(entry)
   }
 
   for (const entry of nextVisibleEntries.slice(preservedPrefixLength)) {

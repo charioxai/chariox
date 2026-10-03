@@ -274,10 +274,13 @@ fn performance_drill_high_output_terminal_stream_coalesces_records() {
 
 #[test]
 fn performance_drill_many_agent_session_keeps_runs_isolated() {
+    let worktree = crate::test_support::TestWorktree::new(
+        "performance_drill_many_agent_session_keeps_runs_isolated",
+    );
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let (session, default_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let mut agent_ids = vec![default_agent.id().to_string()];
 
@@ -286,7 +289,7 @@ fn performance_drill_many_agent_session_keeps_runs_isolated() {
             .spawn_agent(
                 CreateAgentRequest::new(session.id(), "dev-stub")
                     .with_alias(format!("perf-{index}"))
-                    .with_worktree("worktree-1"),
+                    .with_worktree(worktree.path().display().to_string()),
             )
             .expect("agent should spawn");
         agent_ids.push(agent.id().to_string());
@@ -321,10 +324,13 @@ fn performance_drill_many_agent_session_keeps_runs_isolated() {
 
 #[test]
 fn performance_drill_provider_park_resume_reuses_existing_run() {
+    let worktree = crate::test_support::TestWorktree::new(
+        "performance_drill_provider_park_resume_reuses_existing_run",
+    );
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let run = app
         .launch_provider(

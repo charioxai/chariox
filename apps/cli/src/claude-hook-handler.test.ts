@@ -1,12 +1,12 @@
 import assert from "node:assert/strict"
 import { execFileSync, spawn } from "node:child_process"
-import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises"
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import test from "node:test"
 
-import { claudeHookSettings, writeClaudeHookHandler } from "./native-tui/claude-hook-handler.js"
+import { claudeHookSettings, claudeHookShellCommand, writeClaudeHookHandler } from "./native-tui/claude-hook-handler.js"
 import { startClaudePermissionBridge } from "./native-tui/claude-permission-bridge.js"
 
 type PermissionContractCase = {
@@ -84,6 +84,22 @@ test("Claude native settings register the permission hook", () => {
   assert.equal(settings.hooks.PermissionRequest[0]!.matcher, "*")
 })
 
+test("Claude hooks run through Node from source and through the release executable otherwise", () => {
+  const handler = "/tmp/claude hooks/handler.mjs"
+  assert.equal(claudeHookShellCommand(handler, { version: undefined, executable: "/usr/bin/bun" }), "node '/tmp/claude hooks/handler.mjs'")
+  const release = claudeHookShellCommand(handler, { version: "0.2.0", executable: "/opt/chariox/bin/chariox" })
+  assert.equal(release, "'/opt/chariox/bin/chariox' __claude-hook '/tmp/claude hooks/handler.mjs'")
+  assert.equal(claudeHookSettings(handler, release).hooks.UserPromptSubmit[0]!.hooks[0]!.command, release)
+})
+
+test("Claude hook commands pass installation paths to the shell literally", () => {
+  const executable = "/opt/chariox-$USER/`id`/it's/chariox"
+  const handler = "/tmp/$(id)/hook's.mjs"
+  const command = claudeHookShellCommand(handler, { version: "0.2.0", executable })
+  const argv = execFileSync("/bin/sh", ["-c", `printf '%s\\n' ${command}`], { encoding: "utf8", env: { USER: "intruder" } })
+  assert.deepEqual(argv.trimEnd().split("\n"), [executable, "__claude-hook", handler])
+})
+
 test("Claude permission bridge preserves event-specific allow and deny response shapes", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "chariox-claude-permission-bridge-"))
   const handler = path.join(root, "hook-handler.mjs")
@@ -94,6 +110,8 @@ test("Claude permission bridge preserves event-specific allow and deny response 
   await mkdir(contextResponses)
   await mkdir(permissionResponses)
   await writeClaudeHookHandler(handler)
+  const originFile = path.join(root, "approval-origin.json")
+  await writeFile(originFile, JSON.stringify({ scope: "prompt", prompt_id: "prompt-A", provider_run_id: "run-1" }))
   let interactionCount = 0
   const bridge = await startClaudePermissionBridge({
     client: {
@@ -117,6 +135,7 @@ test("Claude permission bridge preserves event-specific allow and deny response 
     CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES: contextResponses,
     CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES: permissionResponses,
     CHARIOX_CLAUDE_NATIVE_HOOK_BRIDGE_URL: bridge.url,
+    CHARIOX_CLAUDE_NATIVE_ORIGIN: originFile,
   }
 
   try {

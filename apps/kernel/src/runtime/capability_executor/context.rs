@@ -17,6 +17,7 @@ pub(super) struct CapabilityContext {
     pub(super) operational_artifact_root: PathBuf,
     pub(super) operational_artifact_index_path: PathBuf,
     pub(super) history_archive_enabled: bool,
+    pub(super) environment: crate::provider::ProviderCredentialEnvironment,
 }
 
 impl CapabilityContext {
@@ -35,6 +36,12 @@ impl CapabilityRuntimeStore {
         Self { state }
     }
 
+    pub(super) fn capture_guard(
+        &self,
+    ) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, DaemonError> {
+        self.state.computer_screen_capture_guard()
+    }
+
     pub(super) async fn context(
         &self,
         session_id: &str,
@@ -45,7 +52,14 @@ impl CapabilityRuntimeStore {
             .state
             .capability_context(session_id, attachment_id, capability)
             .await?;
+        let environment = if capability == "shell" {
+            self.state
+                .project_environment_for_shell(session_id, &snapshot.worktree_root)?
+        } else {
+            Default::default()
+        };
         Ok(CapabilityContext {
+            environment,
             session_id: session_id.to_string(),
             attachment_id: attachment_id.to_string(),
             workspace_id: snapshot.workspace_id,

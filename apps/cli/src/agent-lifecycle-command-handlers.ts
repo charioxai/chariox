@@ -114,14 +114,20 @@ export async function handleAgentFocusCommand(
   deps: AgentLifecycleCommandHandlerDeps,
   args: string[],
 ): Promise<void> {
-  const agentId = args[1]
-  if (!agentId) {
-    deps.flashFooter("usage: /agent focus <agent-id>", "error")
+  const reference = args[1]
+  if (!reference) {
+    deps.flashFooter("usage: /agent focus <agent-ref>", "error")
+    return
+  }
+  // The kernel focuses by agent id; the user names an agent as the TUI shows it.
+  const resolved = deps.resolveSessionAgent(reference)
+  if (resolved.error || !resolved.agent) {
+    deps.flashFooter(resolved.error ?? `agent '${reference}' not found`, "error")
     return
   }
   try {
     const previousSession = deps.sessionState()
-    const payload = await deps.focusAgent(agentId)
+    const payload = await deps.focusAgent(resolved.agent.id)
     await applyFocusedAgentSession(deps, previousSession, payload.session, payload.agent)
     deps.flashFooter(
       `focused on agent ${payload.agent.agent_ref}${payload.agent.alias ? ` (${payload.agent.alias})` : ""}`,

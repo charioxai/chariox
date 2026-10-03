@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-const MAX_SNAPSHOT_NODES: usize = 5_000;
+pub(crate) const MAX_SNAPSHOT_NODES: usize = 5_000;
 const MAX_SNAPSHOT_STRING_BYTES: usize = 2_048;
 const MAX_NODE_ATTRIBUTES: usize = 32;
 
@@ -13,6 +13,10 @@ pub(crate) struct BrowserControllerStructuredSnapshot {
     pub(crate) document_id: String,
     pub(crate) snapshot_revision: u64,
     pub(crate) accessibility_nodes: Vec<BrowserControllerAccessibilityNode>,
+    /// The controller cut the accessibility tree at its node bound (protocol
+    /// 357; absent when it did not, as from older controllers).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) accessibility_truncated: bool,
     #[serde(default)]
     pub(crate) dom_documents: Vec<BrowserControllerDomDocument>,
     #[serde(default)]
@@ -45,7 +49,24 @@ pub(crate) struct BrowserControllerAccessibilityNode {
     pub(crate) ignored: bool,
     pub(crate) disabled: bool,
     pub(crate) focused: bool,
+    /// What a reader announces about the control, from `ANNOUNCED_STATES`.
+    #[serde(default)]
+    pub(crate) states: Vec<String>,
 }
+
+/// The control states a screen reader announces, as the controller names them.
+pub(crate) const ANNOUNCED_STATES: [&str; 10] = [
+    "checked",
+    "not checked",
+    "mixed",
+    "pressed",
+    "not pressed",
+    "expanded",
+    "collapsed",
+    "selected",
+    "required",
+    "invalid",
+];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct BrowserControllerDomNode {
@@ -77,6 +98,7 @@ pub(crate) struct RoomBrowserStructuredSnapshot {
     pub(crate) document_revision: u64,
     pub(crate) snapshot_revision: u64,
     pub(crate) accessibility_nodes: Vec<RoomBrowserAccessibilityNode>,
+    pub(crate) accessibility_truncated: bool,
     pub(crate) dom_documents: Vec<RoomBrowserDomDocument>,
     pub(crate) shadow_roots: Vec<RoomBrowserShadowRoot>,
     pub(crate) dom_nodes: Vec<RoomBrowserDomNode>,
@@ -107,6 +129,7 @@ pub(crate) struct RoomBrowserAccessibilityNode {
     pub(crate) ignored: bool,
     pub(crate) disabled: bool,
     pub(crate) focused: bool,
+    pub(crate) states: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -178,6 +201,7 @@ impl BrowserControllerStructuredSnapshot {
                     ignored: node.ignored,
                     disabled: node.disabled,
                     focused: node.focused,
+                    states: node.states,
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -228,6 +252,7 @@ impl BrowserControllerStructuredSnapshot {
             document_revision,
             snapshot_revision: self.snapshot_revision,
             accessibility_nodes,
+            accessibility_truncated: self.accessibility_truncated,
             dom_documents,
             shadow_roots,
             dom_nodes,
@@ -292,6 +317,17 @@ fn validate_accessibility_nodes(
         }
         for value in [&node.role, &node.name, &node.description, &node.value] {
             validate_bounded_string(value)?;
+        }
+        if node.states.len() > ANNOUNCED_STATES.len()
+            || node
+                .states
+                .iter()
+                .any(|state| !ANNOUNCED_STATES.contains(&state.as_str()))
+        {
+            return Err(format!(
+                "browser controller accessibility snapshot gave {} an unknown state",
+                node.node_ref
+            ));
         }
     }
     Ok(())
@@ -591,6 +627,7 @@ mod tests {
             document_id: "loader-a".to_string(),
             snapshot_revision: 1,
             accessibility_nodes: Vec::new(),
+            accessibility_truncated: false,
             dom_documents: vec![BrowserControllerDomDocument {
                 document_index: 0,
                 url: "https://top.test".to_string(),

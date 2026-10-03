@@ -145,19 +145,26 @@ impl KernelRuntimeState {
                     args.prompt.timeout_sec,
                     Some("cancel".to_string()),
                 );
+                let interaction =
+                    interaction.with_native_origin(self.owned.capture_native_interaction_origin(
+                        provider_run.session_id(),
+                        provider_run.agent_instance_id().unwrap_or(""),
+                        provider_run.id(),
+                    ));
                 let interaction_id = interaction.id().to_string();
                 let session_id = provider_run.session_id().to_string();
                 let timeout_sec = interaction.timeout_sec();
-                let remote_target = self
-                    .with_app_side_effect(|app| {
-                        let mut runtime = crate::app::RemoteLeaseRuntime::new(app);
-                        runtime.native_interaction_context_for_backing_agent(
-                            provider_run.session_id(),
-                            provider_run.agent_instance_id().unwrap_or(""),
-                            provider_run.id(),
-                        )
-                    })
-                    .await;
+                let remote_target = if let Some(origin) = interaction.native_origin() {
+                    self.remote_native_interaction_context(
+                        provider_run.session_id(),
+                        provider_run.agent_instance_id().unwrap_or(""),
+                        origin,
+                    )
+                    .await?
+                    .map(|(_, daemon, context)| (daemon, context))
+                } else {
+                    None
+                };
                 let resolution = if let Some((target_daemon_id, context)) = remote_target {
                     let response = self
                         .with_app_side_effect(|app| {
@@ -168,7 +175,7 @@ impl KernelRuntimeState {
                                         daemon_id: Some(target_daemon_id.clone()),
                                         daemon_alias: None,
                                     },
-                                    RelayPeerRequest::ForwardNativeInteraction {
+                                    RelayPeerRequest::ForwardNativeTurnInteraction {
                                         context: context.clone(),
                                         interaction: interaction.clone(),
                                     },
@@ -490,19 +497,26 @@ impl KernelRuntimeState {
                     args.timeout_sec,
                     default_choice_id.clone(),
                 );
+                let interaction =
+                    interaction.with_native_origin(self.owned.capture_native_interaction_origin(
+                        provider_run.session_id(),
+                        provider_run.agent_instance_id().unwrap_or(""),
+                        provider_run.id(),
+                    ));
                 let interaction_id = interaction.id().to_string();
                 let session_id = provider_run.session_id().to_string();
                 let timeout_sec = interaction.timeout_sec();
-                let remote_target = self
-                    .with_app_side_effect(|app| {
-                        let mut runtime = crate::app::RemoteLeaseRuntime::new(app);
-                        runtime.native_interaction_context_for_backing_agent(
-                            provider_run.session_id(),
-                            provider_run.agent_instance_id().unwrap_or(""),
-                            provider_run.id(),
-                        )
-                    })
-                    .await;
+                let remote_target = if let Some(origin) = interaction.native_origin() {
+                    self.remote_native_interaction_context(
+                        provider_run.session_id(),
+                        provider_run.agent_instance_id().unwrap_or(""),
+                        origin,
+                    )
+                    .await?
+                    .map(|(_, daemon, context)| (daemon, context))
+                } else {
+                    None
+                };
                 if let Some((target_daemon_id, context)) = remote_target {
                     let response = self
                         .with_app_side_effect(|app| {
@@ -513,7 +527,7 @@ impl KernelRuntimeState {
                                         daemon_id: Some(target_daemon_id.clone()),
                                         daemon_alias: None,
                                     },
-                                    RelayPeerRequest::ForwardNativeInteraction {
+                                    RelayPeerRequest::ForwardNativeTurnInteraction {
                                         context: context.clone(),
                                         interaction: interaction.clone(),
                                     },
@@ -635,7 +649,7 @@ impl KernelRuntimeState {
                     credential_from_runtime_input(args.credential)?,
                     Some(agent.id()),
                     &context.home_session_id,
-                    agent.primary_provider(),
+                    agent.provider(),
                     Some(&context.worker_provider_run_id),
                 );
                 let registry = crate::credential::CharioxCredentialRegistry::user()?;
@@ -808,20 +822,12 @@ impl KernelRuntimeState {
                 service.validate_terminal_secret_input(&credential_id)?
             }
             crate::transport::relay_peer::RemoteCredentialSecretInjection::Computer => {
-                service.validate_computer_secret_input(&credential_id)?
+                return Err(DaemonError::LocalTransport {
+                    operation: "home_credential_secret_resolve",
+                    message: "Computer credentials require home-owned Room input; use paste_secret_to_computer".into(),
+                });
             }
         };
-        if matches!(
-            &injection,
-            crate::transport::relay_peer::RemoteCredentialSecretInjection::Computer
-        ) {
-            self.ensure_computer_secret_input_approved(
-                &context.home_session_id,
-                agent.id(),
-                &credential_id,
-            )
-            .await?;
-        }
         let _vault_unlock = self
             .ensure_vault_unlocked_for_agent(
                 &context.home_session_id,
@@ -837,7 +843,7 @@ impl KernelRuntimeState {
                 service.terminal_secret_input(&credential_id)?
             }
             crate::transport::relay_peer::RemoteCredentialSecretInjection::Computer => {
-                service.computer_secret_input(&credential_id)?
+                unreachable!("unbound Computer secret resolution was rejected before Vault access")
             }
         };
         Ok((credential_id, secret_input))
@@ -869,7 +875,7 @@ impl KernelRuntimeState {
             credential_from_runtime_input(args.credential)?,
             Some(agent.id()),
             &context.home_session_id,
-            agent.primary_provider(),
+            agent.provider(),
             Some(&context.worker_provider_run_id),
         );
         match &credential.source {

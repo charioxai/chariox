@@ -41,6 +41,17 @@ impl KernelRuntimeState {
         agent_id: &str,
         input: RoomComputerInputAction,
     ) -> Result<ComputerControllerActionExecution, DaemonError> {
+        self.execute_computer_input_as_agent_for_generation(session_id, agent_id, input, None)
+            .await
+    }
+
+    pub(super) async fn execute_computer_input_as_agent_for_generation(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        input: RoomComputerInputAction,
+        approved_generation: Option<u64>,
+    ) -> Result<ComputerControllerActionExecution, DaemonError> {
         let _execution_guard = self
             .owned
             .environment_execution_gates
@@ -50,6 +61,14 @@ impl KernelRuntimeState {
         let environment = self
             .reconcile_room_environment_actors(session_id, None)
             .map_err(action_environment_error)?;
+        if approved_generation
+            .is_some_and(|generation| generation != environment.runtime_generation)
+        {
+            return Err(action_dispatch_error(
+                "computer credential input aborted: Room Environment changed after approval"
+                    .to_string(),
+            ));
+        }
         let actor_id = agent_environment_actor_id(agent_id);
         crate::runtime::computer_input_action::validate_computer_input_action(
             &environment.viewport,
@@ -488,7 +507,7 @@ fn action_dispatch_error(message: String) -> DaemonError {
 #[cfg(test)]
 pub(crate) mod computer_input_reconcile_test_support {
     use std::path::{Path, PathBuf};
-    use std::sync::{Arc, Mutex, MutexGuard};
+    use std::sync::Arc;
     use std::time::Duration;
 
     use tokio::sync::Mutex as AsyncMutex;
@@ -596,17 +615,13 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         }
     }
 
-    static SCREEN_TOOL_ENVIRONMENT_LOCK: Mutex<()> = Mutex::new(());
-
     pub(crate) struct ScreenToolEnvironment {
-        _lock: MutexGuard<'static, ()>,
+        _lock: crate::env_lock::EnvGuard,
         previous: Option<std::ffi::OsString>,
     }
 
     pub(crate) fn install_screen_tool(path: &Path) -> ScreenToolEnvironment {
-        let lock = SCREEN_TOOL_ENVIRONMENT_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let lock = crate::env_lock::lock();
         let previous = std::env::var_os("CHARIOX_SLICE_SCREEN_TOOL");
         std::env::set_var("CHARIOX_SLICE_SCREEN_TOOL", path);
         ScreenToolEnvironment {
@@ -795,6 +810,7 @@ mod tests {
 
     #[tokio::test]
     async fn completed_agent_computer_input_reconciles_enabled_browser_controller_tabs() {
+        crate::test_support::isolated_env_test!();
         let tools = TestTools::new("agent-success");
         let _screen_tool = install_screen_tool(&tools.screen_tool);
         let mut room = TestRoom::new("agent-success");
@@ -825,6 +841,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn agent_computer_input_skips_reconcile_while_another_action_is_running_or_queued() {
+        crate::test_support::isolated_env_test!();
         let tools = TestTools::new("agent-busy");
         let _screen_tool = install_screen_tool(&tools.screen_tool);
         let mut room = TestRoom::new("agent-busy");

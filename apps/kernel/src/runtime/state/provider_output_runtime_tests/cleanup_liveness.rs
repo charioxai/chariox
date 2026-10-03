@@ -519,6 +519,30 @@ async fn unexpected_owned_provider_exit_promotes_queued_prompt_once_on_replaceme
         .queued_prompts_for_agent(agent.id())
         .is_none_or(std::collections::VecDeque::is_empty));
 
+    // MP-08/MP-10: an asynchronous dispatch can report the old process's
+    // failure after liveness has already promoted the queued turn.
+    runtime
+        .fail_owned_provider_prompt(session.id(), run.id(), "old connection closed", true)
+        .await
+        .expect("late old-run failure should be ignored");
+    let after_late_failure = runtime.owned.session_snapshot(session.id()).unwrap();
+    assert_eq!(
+        after_late_failure
+            .active_prompt_for_agent(agent.id())
+            .map(crate::session::PromptQueueItem::id),
+        Some(active_prompt_id.as_str()),
+        "MP-08/MP-10 stale provider failure must preserve the promoted turn",
+    );
+    assert_eq!(
+        runtime
+            .owned
+            .agent_store
+            .get_agent(agent.id())
+            .unwrap()
+            .state(),
+        crate::agent::AgentState::Working
+    );
+
     let repeated = runtime
         .settle_unexpected_provider_run_exit(
             session.id(),

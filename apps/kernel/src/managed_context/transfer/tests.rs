@@ -428,6 +428,7 @@ fn credential_only_import_is_consumed_without_publishing_a_launch_target() {
 
 #[test]
 fn schema_v4_empty_launch_target_gains_a_durable_workspace_on_upgrade() {
+    crate::test_support::isolated_env_test!();
     let _lock = crate::env_lock::lock();
     let root = test_root("schema-v4-empty-workspace");
     fs::create_dir_all(&root).expect("create transfer root");
@@ -475,6 +476,7 @@ fn schema_v4_empty_launch_target_gains_a_durable_workspace_on_upgrade() {
 
 #[test]
 fn schema_v3_pruned_import_recovers_launch_target_from_confirmed_publication() {
+    crate::test_support::isolated_env_test!();
     let _environment = crate::env_lock::lock();
     let root = test_root("schema-v3-pruned-launch-target");
     let transfer_root = root.join("managed-context-transfers");
@@ -636,6 +638,7 @@ fn schema_v3_pruned_import_recovers_launch_target_from_confirmed_publication() {
 
 #[test]
 fn schema_v3_pruned_import_rejects_legacy_publication_without_source_bindings() {
+    crate::test_support::isolated_env_test!();
     let _environment = crate::env_lock::lock();
     let root = test_root("schema-v3-pruned-legacy-publication");
     let transfer_root = root.join("managed-context-transfers");
@@ -1482,23 +1485,46 @@ fn schema_v1_active_transfers_are_retired_without_blocking_startup() {
             .prepare_and_claim_import(&armed.transfer_id, &armed.capability, &caller, now + 3)
             .expect("claim legacy import"),
     );
-    fs::create_dir_all(&ready.destination_root).expect("create legacy publication");
+    fs::create_dir_all(ready.destination_root.join("repo")).expect("create legacy publication");
     fs::write(
         ready
             .destination_root
             .join(".chariox-managed-import-receipt.json"),
         serde_json::json!({
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "publicationId": armed.transfer_id,
             "archiveSha256": sha256_bytes(archive),
             "projectId": "project-1",
             "destinationRoot": ready.destination_root,
             "primaryRepositoryId": "repository-1",
-            "repositories": []
+            "sourceRepositoryBindingSha256s": ["a".repeat(64)],
+            "repositories": [{"repositoryId": "repository-1", "role": "primary",
+                "targetDirectory": "repo", "destinationPath": ready.destination_root.join("repo"),
+                "headSha": "b".repeat(40)}]
         })
         .to_string(),
     )
     .expect("write legacy publication receipt");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = fs::metadata(&ready.destination_root).unwrap();
+        let ownership = serde_json::json!({
+            "publication_id": armed.transfer_id,
+            "materialization_root": fs::canonicalize(&ready.destination_root).unwrap(),
+            "control_destination": fs::canonicalize(&ready.destination_root).unwrap(),
+            "control_identity": {"device": metadata.dev(), "inode": metadata.ino()},
+            "repositories": []
+        });
+        fs::write(
+            ready.destination_root.parent().unwrap().join(format!(
+                ".chariox-materialization-ownership-{}.json",
+                armed.transfer_id
+            )),
+            ownership.to_string(),
+        )
+        .unwrap();
+    }
     drop(store);
     rewrite_state_as_v1(&root.join("state.json"));
 
@@ -2094,4 +2120,172 @@ fn test_root(label: &str) -> PathBuf {
         std::process::id(),
         rand::random::<u64>()
     ))
+}
+
+#[test]
+fn schema_3_through_5_failed_publications_without_ownership_do_not_block_startup() {
+    for schema in [3, 4, 5] {
+        for expired in [false, true] {
+            for mismatched in [false, true] {
+                let root = test_root(&format!("failed-ownership-{schema}-{expired}-{mismatched}"));
+                let now = current_time_ms();
+                let archive = b"synthetic managed context archive";
+                let mut request = arm_request(archive, now + 10_000);
+                request.destination_parent = root.join("destinations");
+                let store = ManagedContextTransferStore::open(root.clone()).unwrap();
+                let armed = store.arm(request.clone(), now).unwrap();
+                let caller = caller(&sha256_bytes(b"source-key"));
+                store
+                    .begin(&armed.transfer_id, &armed.capability, &caller, now + 1)
+                    .unwrap();
+                store
+                    .upload_chunk(
+                        &armed.transfer_id,
+                        &armed.capability,
+                        &caller,
+                        ManagedContextTransferChunk {
+                            offset: 0,
+                            bytes: archive,
+                            sha256: &sha256_bytes(archive),
+                        },
+                        now + 2,
+                    )
+                    .unwrap();
+                let ready = claimed(
+                    store
+                        .prepare_and_claim_import(
+                            &armed.transfer_id,
+                            &armed.capability,
+                            &caller,
+                            now + 3,
+                        )
+                        .unwrap(),
+                );
+                fs::create_dir_all(ready.destination_root.join("repo")).unwrap();
+                let retained_file = ready
+                    .destination_root
+                    .join("repo/synthetic-credential-marker");
+                fs::write(&retained_file, b"synthetic fixture, not a credential").unwrap();
+                let receipt = serde_json::json!({
+                    "schemaVersion": 2, "publicationId": armed.transfer_id,
+                    "archiveSha256": sha256_bytes(archive), "projectId": "project-1",
+                    "destinationRoot": ready.destination_root, "primaryRepositoryId": "repository-1",
+                    "sourceRepositoryBindingSha256s": ["0".repeat(64)],
+                    "repositories": [{"repositoryId":"repository-1", "role":"primary",
+                        "targetDirectory":"repo", "destinationPath":ready.destination_root.join("repo"),
+                        "headSha":"a".repeat(40)}]
+                });
+                let receipt_path = ready
+                    .destination_root
+                    .join(".chariox-managed-import-receipt.json");
+                fs::write(&receipt_path, receipt.to_string()).unwrap();
+                let parent = ready.destination_root.parent().unwrap();
+                let ownership_path = parent.join(format!(
+                    ".chariox-materialization-ownership-{}.json",
+                    armed.transfer_id
+                ));
+                if mismatched {
+                    fs::write(&ownership_path, serde_json::json!({
+                        "publication_id":"different-publication", "materialization_root":ready.destination_root,
+                        "control_destination":ready.destination_root, "control_identity":{"device":0,"inode":0},
+                        "repositories":[]
+                    }).to_string()).unwrap();
+                }
+                let refusal =
+                    crate::managed_context::development::cleanup_development_context_publication(
+                        &ready.destination_root,
+                        &armed.transfer_id,
+                    )
+                    .unwrap_err()
+                    .to_string();
+                assert!(
+                    refusal.contains(if mismatched {
+                        "does not match the receipt"
+                    } else {
+                        "without private ownership proof"
+                    }),
+                    "{refusal}"
+                );
+                let staging = parent.join(format!(
+                    ".tmp-chariox-context-import-{}.staging",
+                    armed.transfer_id
+                ));
+                fs::create_dir(&staging).unwrap();
+                fs::write(staging.join("partial"), b"ambiguous staging").unwrap();
+                let safe_id = random_identifier("ctx");
+                let safe_archive = store.archive_path(&safe_id);
+                fs::copy(&ready.archive_path, &safe_archive).unwrap();
+                let original_entry = {
+                    let mut state = store.lock_state();
+                    state.schema_version = schema;
+                    let entry = state.entries.get_mut(&armed.transfer_id).unwrap();
+                    entry.phase = ManagedContextTransferPhase::Failed;
+                    entry.failure_code = Some("invalid_managed_context".into());
+                    entry.completed_at_ms = Some(if expired {
+                        now - COMPLETED_TRANSFER_RETENTION_MS - 1
+                    } else {
+                        now
+                    });
+                    let original = serde_json::to_value(&*entry).unwrap();
+                    let mut safely_expired = entry.clone();
+                    safely_expired.plan.context_id = "safely-expired-context".into();
+                    safely_expired.destination_root = parent.join("missing-safe-publication");
+                    safely_expired.completed_at_ms =
+                        Some(now - COMPLETED_TRANSFER_RETENTION_MS - 1);
+                    state.entries.insert(safe_id.clone(), safely_expired);
+                    store.persist_locked(&state).unwrap();
+                    original
+                };
+                drop(store);
+                let reopened = ManagedContextTransferStore::open(root.clone())
+                    .expect("ambiguous terminal cleanup cannot block startup");
+                assert_eq!(
+                    serde_json::to_value(&reopened.lock_state().entries[&armed.transfer_id])
+                        .unwrap(),
+                    original_entry
+                );
+                assert!(!reopened.lock_state().entries.contains_key(&safe_id));
+                assert!(
+                    !safe_archive.exists(),
+                    "safe expired transfer still gets cleaned"
+                );
+                assert_eq!(
+                    fs::read(&retained_file).unwrap(),
+                    b"synthetic fixture, not a credential"
+                );
+                assert_eq!(
+                    fs::read(staging.join("partial")).unwrap(),
+                    b"ambiguous staging"
+                );
+                assert_eq!(fs::read(&ready.archive_path).unwrap(), archive);
+                assert_eq!(
+                    fs::read_to_string(&receipt_path).unwrap(),
+                    receipt.to_string()
+                );
+                assert!(reopened
+                    .arm(request, now + 4)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("cannot be reused"));
+                let mut unrelated = arm_request(b"unrelated archive", now + 10_000);
+                unrelated.destination_parent = root.join("destinations");
+                unrelated.plan.context_id = "unrelated-context".into();
+                reopened
+                    .arm(unrelated, now + 5)
+                    .expect("retained failure does not block unrelated transfer");
+                drop(reopened);
+                let reopened = ManagedContextTransferStore::open(root.clone()).unwrap();
+                assert_eq!(
+                    serde_json::to_value(&reopened.lock_state().entries[&armed.transfer_id])
+                        .unwrap(),
+                    original_entry
+                );
+                assert_eq!(
+                    fs::read(&retained_file).unwrap(),
+                    b"synthetic fixture, not a credential"
+                );
+                fs::remove_dir_all(root).unwrap();
+            }
+        }
+    }
 }

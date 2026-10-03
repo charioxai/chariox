@@ -312,6 +312,23 @@ pub(super) fn write_claude_permission_response(
     allowed: bool,
     reason: &str,
 ) {
+    write_claude_permission_payload(
+        context_file,
+        request_id,
+        serde_json::json!({
+            "behavior": if allowed { "allow" } else { "deny" },
+            "message": reason,
+        }),
+    );
+}
+
+/// No decision: the waiting hook returns at once without one, and Claude asks
+/// in its own dialog.
+pub(super) fn write_claude_permission_passthrough(context_file: &str, request_id: &str) {
+    write_claude_permission_payload(context_file, request_id, serde_json::json!({}));
+}
+
+fn write_claude_permission_payload(context_file: &str, request_id: &str, payload: Value) {
     if request_id.trim().is_empty() {
         return;
     }
@@ -320,10 +337,6 @@ pub(super) fn write_claude_permission_response(
     };
     let dir = root.join("permission-responses");
     let _ = fs::create_dir_all(&dir);
-    let payload = serde_json::json!({
-        "behavior": if allowed { "allow" } else { "deny" },
-        "message": reason,
-    });
     let _ = fs::write(dir.join(format!("{request_id}.json")), payload.to_string());
 }
 
@@ -353,10 +366,25 @@ pub(super) fn take_claude_permission_inputs(context_file: &str) -> Vec<Vec<u8>> 
         .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("input"))
         .collect::<Vec<_>>();
     paths.sort();
+    let marker = claude_native_marker(context_file);
+    let active_id = marker
+        .as_deref()
+        .and_then(|marker| marker.strip_prefix("permission:"))
+        .map(str::to_owned)
+        .or_else(|| claude_headless_workspace_trust_interaction_id(context_file));
+    let expected_file =
+        active_id.map(|id| format!("{}.input", safe_claude_permission_filename(&id)));
     paths
         .into_iter()
         .filter_map(|path| {
-            let bytes = fs::read(&path).ok();
+            // A resolved approval may reach the mailbox after its turn ended.
+            // Discard it unless the provider is still displaying that exact decision.
+            let bytes =
+                if path.file_name().and_then(|name| name.to_str()) == expected_file.as_deref() {
+                    fs::read(&path).ok()
+                } else {
+                    None
+                };
             let _ = fs::remove_file(path);
             bytes
         })
@@ -400,7 +428,7 @@ pub(super) fn should_bridge_claude_permission(event: &Value) -> bool {
     event.get("hook_event_name").and_then(Value::as_str) != Some("PreToolUse") || !is_runtime_tool
 }
 
-pub(super) fn format_claude_permission_message(event: &Value) -> String {
+pub(crate) fn format_claude_permission_message(event: &Value) -> String {
     let tool_name = event
         .get("tool_name")
         .and_then(Value::as_str)
@@ -633,4 +661,43 @@ pub(super) fn redact_native_hidden_instructions(prompt: &str) -> String {
     redacted.push_str(&prompt[..start_index]);
     redacted.push_str(&prompt[end_index..]);
     redacted.replace("\n\n\n", "\n\n")
+}
+
+#[cfg(test)]
+mod approval_lifetime_tests {
+    use super::*;
+    #[test]
+    fn approval_lifetime_rendered_mailbox_drops_replies_for_previous_decision() {
+        let worktree = crate::test_support::TestWorktree::new("approval-mailbox");
+        let context_file = worktree
+            .path()
+            .join("hidden-context.txt")
+            .display()
+            .to_string();
+        write_claude_permission_input(&context_file, "approval-A", b"\r");
+        write_claude_permission_input(&context_file, "approval-B", &[0x03]);
+        write_claude_native_marker(&context_file, "permission:approval-B");
+        assert_eq!(
+            take_claude_permission_inputs(&context_file),
+            vec![vec![0x03]]
+        );
+        write_claude_permission_input(&context_file, "approval-A", &[0x03]);
+        write_claude_native_marker(&context_file, "injected:prompt-B");
+        assert!(take_claude_permission_inputs(&context_file).is_empty());
+    }
+    #[test]
+    fn approval_lifetime_rendered_mailbox_preserves_matching_startup_reply() {
+        let worktree = crate::test_support::TestWorktree::new("approval-startup-mailbox");
+        let context_file = worktree
+            .path()
+            .join("hidden-context.txt")
+            .display()
+            .to_string();
+        write_claude_headless_workspace_trust_interaction_marker(&context_file, "trust-A");
+        write_claude_permission_input(&context_file, "trust-A", b"\r");
+        assert_eq!(
+            take_claude_permission_inputs(&context_file),
+            vec![b"\r".to_vec()]
+        );
+    }
 }

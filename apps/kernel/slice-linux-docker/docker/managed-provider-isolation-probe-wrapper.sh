@@ -145,7 +145,14 @@ fi
 # Only the known /home/slice/.chariox empty mask is allowed to be readable.
 empty_masked_denied_path="none"
 inaccessible_masked_denied_paths="none"
+masked_private_root_parents="none"
 allowed_empty_masked_directory=/home/slice/.chariox
+# A protected-layout slice mounts its private root at /var/lib/chariox/slice-private.
+# Managed isolation masks that root, and protected roots below it, with empty
+# tmpfs mounts, so the parent can only list mountpoint directories. Any file,
+# link or socket at any depth is payload. A directory counts as masked only when
+# it can be neither listed nor searched; a searchable but unlistable directory
+# could still expose a file at a known name, so it fails closed.
 for denied in \
   /var/lib/chariox \
   /home/slice/.chariox \
@@ -170,6 +177,19 @@ do
     if [[ "$denied" == "$allowed_empty_masked_directory" && "$entry_count" == "0" ]]; then
       empty_masked_denied_path="$denied"
       continue
+    fi
+    if [[ "$entry_count" != "0" ]] \
+      && [[ "$denied" == /var/lib/chariox || "$denied" == /proc/1/root/var/lib/chariox ]]; then
+      if payload="$(find "$denied" -mindepth 1 \( -type d ! -readable ! -executable -prune \) \
+          -o \( -type d ! -readable -print -quit \) \
+          -o \( ! -type d -print -quit \) 2>/dev/null)" && [[ -z "$payload" ]]; then
+        if [[ "$masked_private_root_parents" == "none" ]]; then
+          masked_private_root_parents="$denied"
+        else
+          masked_private_root_parents+=",$denied"
+        fi
+        continue
+      fi
     fi
     if [[ "$entry_count" == "0" ]]; then
       fail_denied_path "$denied" empty_directory "$permission" "$entry_count"
@@ -239,11 +259,11 @@ git -C "$outside_repository" -c user.name=probe -c user.email=probe@example.inva
 git clone --quiet "$outside_repository" "$cloned_repository"
 git -C "$cloned_repository" status --porcelain >/dev/null
 
-printf 'managed_provider_isolation=ok\nisolation_assert_mode=%s\nreal_provider=%s\nworkspace=%s\naccount=%s\nprovider_cwd=%s\nnested_userns=%s\nxdg_runtime_dir=%s\nxdg_runtime_assessment=%s\ncontrol_env_scrubbed=%s\nlegacy_control_env=%s\nmasked_empty_denied_path=%s\nmasked_inaccessible_denied_paths=%s\nmasked_inaccessible_denied_path_permission=inaccessible\nmasked_inaccessible_denied_path_entries=unavailable\noutside_repository=%s\noutside_clone=%s\n' \
+printf 'managed_provider_isolation=ok\nisolation_assert_mode=%s\nreal_provider=%s\nworkspace=%s\naccount=%s\nprovider_cwd=%s\nnested_userns=%s\nxdg_runtime_dir=%s\nxdg_runtime_assessment=%s\ncontrol_env_scrubbed=%s\nlegacy_control_env=%s\nmasked_empty_denied_path=%s\nmasked_inaccessible_denied_paths=%s\nmasked_inaccessible_denied_path_permission=inaccessible\nmasked_inaccessible_denied_path_entries=unavailable\nmasked_private_root_parents=%s\noutside_repository=%s\noutside_clone=%s\n' \
   "$assert_mode" "$real_provider" "$workspace" "$account" "$provider_cwd" "$nested_userns" \
   "$runtime_dir" "$xdg_runtime_assessment" "$([[ "$assert_mode" == "strict" ]] && echo yes || echo baseline)" \
   "$legacy_control_env" "$empty_masked_denied_path" "$inaccessible_masked_denied_paths" \
-  "$outside_repository" "$cloned_repository" >"$result"
+  "$masked_private_root_parents" "$outside_repository" "$cloned_repository" >"$result"
 chmod 600 "$result"
 cleanup
 trap - EXIT

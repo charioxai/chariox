@@ -30,8 +30,7 @@ use super::workflow_instances::{
     WorkflowEndpointRuntimeInstance, WorkflowEndpointRuntimeInstanceStatus,
 };
 use super::workflow_publication::{
-    WorkflowEventBinding, WorkflowEventDeliveryReceipt, WorkflowPublicationDefinition,
-    WorkflowPublicationSnapshot,
+    WorkflowEventDeliveryReceipt, WorkflowPublicationDefinition, WorkflowPublicationSnapshot,
 };
 use super::workflow_run_records::WorkflowNodeRun;
 use super::workflow_runs::WorkflowRun;
@@ -66,8 +65,6 @@ struct WorkflowPublicationState {
     workflow_publications: Vec<WorkflowPublicationDefinition>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     workflow_publication_snapshots: BTreeMap<String, WorkflowPublicationSnapshot>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    workflow_event_bindings: Vec<WorkflowEventBinding>,
     // Delivery receipts are normalized in durable_event_delivery_receipts. Keep legacy
     // deserialization for migration, but never duplicate the receipt cache into session payloads.
     #[serde(default, skip_serializing)]
@@ -84,7 +81,6 @@ pub(crate) struct DurableWorkflowHotState {
     pub(crate) workflow_consoles: Vec<WorkflowConsole>,
     pub(crate) workflow_publications: Vec<WorkflowPublicationDefinition>,
     pub(crate) workflow_publication_snapshots: BTreeMap<String, WorkflowPublicationSnapshot>,
-    pub(crate) workflow_event_bindings: Vec<WorkflowEventBinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -182,10 +178,6 @@ impl RuntimeSession {
                 .workflow_publication_state
                 .workflow_publication_snapshots
                 .clone(),
-            workflow_event_bindings: self
-                .workflow_publication_state
-                .workflow_event_bindings
-                .clone(),
         }
     }
 
@@ -199,7 +191,6 @@ impl RuntimeSession {
         self.workflow_publication_state.workflow_publications = state.workflow_publications;
         self.workflow_publication_state
             .workflow_publication_snapshots = state.workflow_publication_snapshots;
-        self.workflow_publication_state.workflow_event_bindings = state.workflow_event_bindings;
     }
 
     pub(crate) fn durable_prompt_private_states(&self) -> Vec<DurablePromptPrivateState> {
@@ -466,6 +457,15 @@ impl RuntimeSession {
 
     pub fn status(&self) -> SessionStatus {
         self.status
+    }
+
+    /// An ended session (its agents were removed when it ended) gets a default
+    /// agent back when a client reopens it. Any other session with no agents
+    /// is empty because a person deleted them (a new session is created with
+    /// its default agent): attaching (a page load, a reconnect) never creates,
+    /// and so never focuses, an agent there.
+    pub fn attach_creates_default_agent(&self) -> bool {
+        self.status == SessionStatus::Ended
     }
 
     pub fn is_hidden(&self) -> bool {
@@ -866,12 +866,12 @@ impl RuntimeSession {
     pub fn active_interaction_for_agent(&self, agent_id: &str) -> Option<&RuntimeInteraction> {
         self.active_interactions
             .iter()
-            .find(|interaction| interaction.agent_id() == agent_id)
+            .find(|interaction| interaction.agent_id() == Some(agent_id))
     }
 
     pub fn add_active_interaction(&mut self, interaction: RuntimeInteraction) {
         self.active_interactions
-            .retain(|existing| existing.agent_id() != interaction.agent_id());
+            .retain(|existing| existing.subject() != interaction.subject());
         self.active_interactions.push(interaction);
         self.active_interactions
             .sort_by(|left, right| left.requested_at_ms().cmp(&right.requested_at_ms()));
@@ -983,22 +983,7 @@ impl RuntimeSession {
         state
             .workflow_publication_snapshots
             .retain(|publication_id, _| retained_publication_ids.contains(publication_id));
-        state
-            .workflow_event_bindings
-            .retain(|binding| retained_publication_ids.contains(&binding.publication_id));
-        let retained_binding_ids = state
-            .workflow_event_bindings
-            .iter()
-            .map(|binding| binding.id.clone())
-            .collect::<BTreeSet<_>>();
-        state
-            .workflow_event_delivery_receipts
-            .retain(|_, receipt| retained_binding_ids.contains(&receipt.binding_id));
         before.saturating_sub(state.workflow_publications.len())
-    }
-
-    pub fn workflow_event_bindings(&self) -> &[WorkflowEventBinding] {
-        &self.workflow_publication_state.workflow_event_bindings
     }
 
     pub fn workflow_event_delivery_receipts(

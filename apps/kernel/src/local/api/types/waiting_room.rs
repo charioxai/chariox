@@ -144,6 +144,8 @@ pub struct WaitingRoomPublicProjectSummary {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WaitingRoomSessionActivitySummary {
+    #[serde(default, skip_serializing_if = "crate::session::is_zero")]
+    pub pending_interaction_count: usize,
     pub agent_count: usize,
     pub working_agent_count: usize,
     pub active_prompt_count: usize,

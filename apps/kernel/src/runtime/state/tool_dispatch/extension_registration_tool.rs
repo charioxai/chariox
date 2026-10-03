@@ -212,7 +212,9 @@ impl KernelRuntimeState {
                     message: format!("environment `{}` is not registered", args.environment),
                 })?;
         let registry = global_script_registry()?;
+        let previous_catalog = self.runtime_catalog_signature_for_agent(agent);
         let (script, path) = registry.install(&source_path, args.name.as_deref(), &env)?;
+        self.runtime_catalog_registration_changed(agent, &previous_catalog);
         self.append_extension_registration_audit_event(
             "extension.registration.created",
             session,
@@ -274,7 +276,9 @@ impl KernelRuntimeState {
         }
         let registry = connector_registry()?;
         let adapters = connector_adapter_registry()?;
+        let previous_catalog = self.runtime_catalog_signature_for_agent(agent);
         let (connector, path) = registry.install_from_file(&source_path, &adapters)?;
+        self.runtime_catalog_registration_changed(agent, &previous_catalog);
         self.append_extension_registration_audit_event(
             "extension.registration.created",
             session,
@@ -551,7 +555,13 @@ impl KernelRuntimeState {
                         agent.owner_user_id(),
                     )
                     .await?;
-                (granted_agent, "now", false)
+                {
+                    let (effective, restart) = self.runtime_catalog_grant_effect(
+                        &granted_agent,
+                        agent.has_extension_grant(crate::extension::ExtensionKind::Script, name),
+                    );
+                    (granted_agent, effective, restart)
+                }
             }
             "connector" => {
                 if let Some(credential) = credential {
@@ -569,7 +579,13 @@ impl KernelRuntimeState {
                         agent.owner_user_id(),
                     )
                     .await?;
-                (granted_agent, "now", false)
+                {
+                    let (effective, restart) = self.runtime_catalog_grant_effect(
+                        &granted_agent,
+                        agent.has_extension_grant(crate::extension::ExtensionKind::Connector, name),
+                    );
+                    (granted_agent, effective, restart)
+                }
             }
             _ => {
                 return Err(DaemonError::LocalTransport {
@@ -591,7 +607,7 @@ impl KernelRuntimeState {
         granted_agent: &crate::agent::AgentInstance,
         mcp_name: &str,
     ) {
-        let (source_attachment_id, previous_prompt) = self
+        let previous_prompt = self
             .owned
             .session_store
             .get_session(session_id)
@@ -600,18 +616,12 @@ impl KernelRuntimeState {
                 self.owned
                     .prompt_state_owner
                     .active_prompt_for_agent(&session, granted_agent.id())
-                    .map(|prompt| {
-                        (
-                            prompt.source_attachment_id().to_string(),
-                            prompt.prompt().to_string(),
-                        )
-                    })
+                    .map(|prompt| prompt.prompt().to_string())
             })
-            .unwrap_or_else(|| ("chariox-runtime".to_string(), String::new()));
+            .unwrap_or_default();
         self.remember_pending_mcp_continuation(
             session_id,
             granted_agent.id(),
-            &source_attachment_id,
             mcp_name,
             &previous_prompt,
         );

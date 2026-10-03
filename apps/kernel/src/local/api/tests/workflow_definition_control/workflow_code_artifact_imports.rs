@@ -11,7 +11,10 @@ fn local_request_api_rejects_workflow_code_artifact_import_with_definition_hash_
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new(workspace_root.display().to_string(), "worktree-mismatch"),
+            CreateSessionRequest::new(
+                workspace_root.display().to_string(),
+                workspace_root.display().to_string(),
+            ),
         ))
         .expect("session create should succeed")
     {
@@ -124,7 +127,7 @@ fn local_request_api_creates_typescript_workflow_code_artifact() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-workflow-code-ts", "worktree-workflow-code-ts"),
+            harness.fixture_session_request("workspace-workflow-code-ts"),
         ))
         .expect("session create should succeed")
     {
@@ -202,10 +205,7 @@ fn local_request_api_applies_inline_typescript_workflow_code() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new(
-                "workspace-inline-workflow-code-ts",
-                "worktree-inline-workflow-code-ts",
-            ),
+            harness.fixture_session_request("workspace-inline-workflow-code-ts"),
         ))
         .expect("session create should succeed")
     {

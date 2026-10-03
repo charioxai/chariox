@@ -39,6 +39,7 @@ pub struct OpenCodePermissionRequest {
     pub session_id: String,
     pub permission: String,
     pub tool: Option<String>,
+    pub message_id: Option<String>,
     pub command: Option<String>,
     pub cwd: Option<String>,
     pub reason: Option<String>,
@@ -165,6 +166,11 @@ pub(super) fn parse_sse_event(payload: &str, provider_run_id: &str) -> Option<Op
                     session_id: properties.session_id,
                     permission: properties.permission,
                     tool,
+                    message_id: properties
+                        .tool
+                        .get("messageID")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
                     command: metadata
                         .and_then(|value| value.get("command"))
                         .and_then(Value::as_str)
@@ -203,4 +209,21 @@ fn session_error_message(error: Value, provider_run_id: &str) -> String {
         .unwrap_or_else(|| {
             format!("OpenCode reported an unknown session error for `{provider_run_id}`")
         })
+}
+
+#[cfg(test)]
+mod approval_origin_tests {
+    #[test]
+    fn approval_lifetime_opencode_parser_retains_permission_tool_message_identity() {
+        let payload = serde_json::json!({"type":"permission.asked", "properties": {
+            "id":"permission-A", "sessionID":"session", "permission":"bash", "patterns":[], "metadata":{},
+            "tool":{"messageID":"assistant-A", "callID":"call-A"}
+        }});
+        let Some(super::OpenCodeEvent::PermissionAsked { request }) =
+            super::parse_sse_event(&payload.to_string(), "run")
+        else {
+            panic!("missing permission event")
+        };
+        assert_eq!(request.message_id.as_deref(), Some("assistant-A"));
+    }
 }

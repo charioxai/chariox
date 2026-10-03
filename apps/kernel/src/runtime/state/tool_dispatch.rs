@@ -6,6 +6,8 @@
 use super::*;
 
 mod agent_messaging;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app;
 mod capability_registry;
 mod computer_secret;
 mod connector;
@@ -20,6 +22,7 @@ mod home_mcp_proxy_executor;
 mod home_room_browser_runtime;
 mod home_script_executor;
 mod meta;
+mod permission_prompt;
 mod recall;
 mod remote_capability_sync;
 mod remote_extension_control_plane;
@@ -27,10 +30,11 @@ mod script;
 mod skill_package_response;
 mod slice;
 pub(super) use slice::{
-    capture_room_environment_screenshot, execute_room_computer_observation,
-    reset_room_computer_input, run_room_clipboard_read, run_room_clipboard_write,
-    run_room_keyboard_key, run_room_keyboard_text, run_room_pointer_click, run_room_pointer_drag,
-    run_room_pointer_move, run_room_pointer_scroll, run_room_secret_text_input,
+    capture_computer_secret_target, capture_room_environment_screenshot,
+    execute_room_computer_observation, reset_room_computer_input, run_room_clipboard_read,
+    run_room_clipboard_write, run_room_keyboard_key, run_room_keyboard_text,
+    run_room_pointer_click, run_room_pointer_drag, run_room_pointer_move, run_room_pointer_scroll,
+    run_room_secret_text_input,
 };
 mod worker_home_credential_client;
 mod worker_home_extension_client;
@@ -47,6 +51,20 @@ mod workspace_live_sync_remote_dispatch;
 use workspace_live_sync_managed_fanout::*;
 
 impl KernelRuntimeState {
+    /// Marks every run this token authenticates as waiting on a runtime tool
+    /// call, for as long as the returned guards live.
+    pub(crate) fn begin_claude_runtime_tool_waits(
+        &self,
+        auth_token: &str,
+    ) -> Vec<crate::provider::ClaudeRuntimeToolWait> {
+        self.owned
+            .provider_store
+            .get_runs_by_runtime_mcp_auth_token(auth_token)
+            .iter()
+            .map(|run| crate::provider::begin_claude_runtime_tool_wait(run.id()))
+            .collect()
+    }
+
     #[cfg(test)]
     pub(crate) fn runtime_mcp_auth_token_for_provider_run(
         &self,
@@ -63,11 +81,78 @@ impl KernelRuntimeState {
         &self,
         auth_token: &str,
     ) -> Vec<crate::transport::runtime_tools::RuntimeToolSpec> {
+        let mut specs = self.runtime_tool_specs_without_apps_for_auth_token(auth_token);
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        // Legacy synchronous callers have a Vec-only interface. Production HTTP
+        // discovery uses the Result-returning async path below so a failed App
+        // projection is never cached as a successful incomplete catalog.
+        specs.extend(
+            self.app_runtime_tool_specs_for_auth_token(auth_token, &specs, None)
+                .unwrap_or_default(),
+        );
+        specs
+    }
+
+    /// HTTP discovery can touch current App trust in SQLite. Reserve admission
+    /// before submitting blocking work and keep the async coordinator free.
+    pub(crate) async fn runtime_tool_specs_for_auth_token_async(
+        &self,
+        auth_token: String,
+    ) -> Result<Vec<crate::transport::runtime_tools::RuntimeToolSpec>, DaemonError> {
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        let needs_apps = self.has_app_grants_for_auth_token(&auth_token);
+        #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+        let needs_apps = false;
+        if !needs_apps {
+            return Ok(self.runtime_tool_specs_without_apps_for_auth_token(&auth_token));
+        }
+        let Ok(permit) = self.app_control().try_admit() else {
+            // Saturated: an agent whose Apps neither run nor are dormant keeps
+            // its other tools now, and a catalog refresh lists its Apps once a
+            // slot frees; a running App's tools must not silently disappear.
+            #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+            if !self.has_active_apps_for_auth_token(&auth_token) {
+                self.refresh_app_catalog_later(&auth_token);
+                return Ok(self.runtime_tool_specs_without_apps_for_auth_token(&auth_token));
+            }
+            return Err(DaemonError::LocalTransport {
+                operation: "runtime_tools.list",
+                message: "App tool discovery is busy".into(),
+            });
+        };
+        let state = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut specs = state.runtime_tool_specs_without_apps_for_auth_token(&auth_token);
+            #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+            specs.extend(state.app_runtime_tool_specs_for_auth_token(
+                &auth_token,
+                &specs,
+                Some(&permit),
+            )?);
+            drop(permit);
+            Ok(specs)
+        })
+        .await
+        .map_err(|_| DaemonError::LocalTransport {
+            operation: "runtime_tools.list",
+            message: "App tool discovery did not complete".into(),
+        })?
+    }
+
+    fn runtime_tool_specs_without_apps_for_auth_token(
+        &self,
+        auth_token: &str,
+    ) -> Vec<crate::transport::runtime_tools::RuntimeToolSpec> {
         let provider_runs = self
             .owned
             .provider_store
             .get_runs_by_runtime_mcp_auth_token(auth_token);
         let mut specs = Vec::new();
+        if matches!(provider_runs.as_slice(), [run]
+            if crate::provider::provider_run_uses_claude_permission_prompt_tool(run))
+        {
+            specs.push(crate::transport::runtime_tools::permission_prompt_runtime_tool_spec());
+        }
         if self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token) {
             specs.extend(crate::transport::runtime_tools::meta_runtime_tool_specs());
             specs.extend(crate::transport::runtime_tools::agent_messaging_runtime_tool_specs());
@@ -79,6 +164,26 @@ impl KernelRuntimeState {
                     }),
             );
             specs.extend(crate::transport::runtime_tools::recall_runtime_tool_specs());
+            specs.extend(
+                provider_runs
+                    .iter()
+                    .filter(|_| provider_runs.len() == 1)
+                    .flat_map(|run| {
+                        run.remote_extension_manifest()
+                            .tools
+                            .iter()
+                            .filter(|tool| {
+                                tool.kind == crate::extension::ExtensionKind::App
+                                    && tool.execution_location
+                                        == crate::extension::ExtensionExecutionLocation::Home
+                            })
+                            .map(|tool| crate::transport::runtime_tools::RuntimeToolSpec {
+                                name: tool.tool_name.clone(),
+                                description: tool.description.clone(),
+                                input_schema: tool.input_schema.clone(),
+                            })
+                    }),
+            );
             specs.extend(self.slice_tool_specs_for_provider_runs(&provider_runs));
             return specs;
         }
@@ -107,27 +212,7 @@ impl KernelRuntimeState {
         let workflow_tools_enabled =
             leased_provider_run || provider_runs.iter().any(|run| run.workflow_tools_enabled());
         if workflow_tools_enabled {
-            specs.extend(
-                crate::transport::runtime_tools::workflow_runtime_tool_specs_without_event_reply(),
-            );
-            if provider_runs
-                .iter()
-                .any(|run| run.workflow_event_reply_enabled())
-            {
-                specs.push(crate::transport::runtime_tools::workflow_reply_to_event_tool_spec());
-            }
-            if provider_runs
-                .iter()
-                .any(|run| run.workflow_event_actions_enabled())
-            {
-                specs.push(crate::transport::runtime_tools::workflow_event_action_tool_spec());
-            }
-            if provider_runs
-                .iter()
-                .any(|run| run.workflow_event_context_enabled())
-            {
-                specs.push(crate::transport::runtime_tools::workflow_event_context_tool_spec());
-            }
+            specs.extend(crate::transport::runtime_tools::workflow_runtime_tool_specs());
         }
         specs
     }
@@ -179,15 +264,60 @@ impl KernelRuntimeState {
                 provider_runs.iter().map(|run| run.id().to_string()),
                 owned.provider_output_deadlines.clone(),
             );
+            if canonical_tool_name == crate::transport::runtime_tools::PERMISSION_PROMPT_TOOL {
+                let run =
+                    unambiguous_runtime_tool_provider_run(&provider_runs, canonical_tool_name)?;
+                return self
+                    .dispatch_permission_prompt_runtime_tool_call(run, arguments)
+                    .await;
+            }
             let is_metaagent_auth_token =
                 self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token);
+            // Apps share the current binding and operation dispatcher in every
+            // agent mode. Their exact known tools are checked before the Meta
+            // fixed-tool allowlist, with the same unique provider-run identity.
+            #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+            if canonical_tool_name.starts_with("app_") {
+                let run =
+                    unambiguous_runtime_tool_provider_run(&provider_runs, canonical_tool_name)?;
+                if run
+                    .remote_extension_manifest()
+                    .home_proxy_tool(canonical_tool_name)
+                    .is_some_and(|tool| tool.kind == crate::extension::ExtensionKind::App)
+                {
+                    if let Some(result) = self
+                        .try_dispatch_remote_home_extension_runtime_tool_call(
+                            run,
+                            canonical_tool_name,
+                            arguments.clone(),
+                        )
+                        .await?
+                    {
+                        return Ok(result);
+                    }
+                }
+                if let Some(result) = self
+                    .try_dispatch_app_runtime_tool_call(
+                        run,
+                        auth_token,
+                        canonical_tool_name,
+                        arguments.clone(),
+                    )
+                    .await?
+                {
+                    return Ok(result);
+                }
+            }
             let is_meta_tool =
                 crate::transport::runtime_tools::canonical_meta_tool_name(tool_name).is_some();
             let is_metaagent_allowed_direct_tool = is_metaagent_direct_runtime_tool_allowed(
                 canonical_tool_name,
                 self.slice_kernel_id().is_some()
                     || matches!(provider_runs.as_slice(), [run]
-                    if self.room_browser_slice_for_tool(run.session_id(), canonical_tool_name).is_some()),
+                    if room_browser_tools_available(
+                        self.room_browser_slice_for_tool(run.session_id(), canonical_tool_name).is_some(),
+                        run.remote_extension_manifest().room_browser_available,
+                    )),
             );
             if is_metaagent_auth_token && !is_meta_tool && !is_metaagent_allowed_direct_tool {
                 return Ok(crate::transport::runtime_tools::RuntimeToolResult {
@@ -420,9 +550,11 @@ impl KernelRuntimeState {
                     .await;
             }
             if is_slice_runtime_tool(canonical_tool_name) {
+                let provider_run =
+                    provider_run.expect("non-workflow tool should have provider run");
                 if let Some(result) = self
                     .try_dispatch_remote_room_browser_runtime_tool_call(
-                        provider_run.expect("non-workflow tool should have provider run"),
+                        provider_run,
                         canonical_tool_name,
                         arguments.clone(),
                     )
@@ -430,12 +562,14 @@ impl KernelRuntimeState {
                 {
                     return Ok(result);
                 }
+                ensure_leased_room_browser_context(
+                    owned
+                        .provider_run_projection
+                        .is_leased_provider_run(provider_run.id()),
+                    is_room_browser_controller_runtime_tool(canonical_tool_name),
+                )?;
                 return self
-                    .dispatch_slice_runtime_tool_call(
-                        provider_run.expect("non-workflow tool should have provider run"),
-                        canonical_tool_name,
-                        arguments,
-                    )
+                    .dispatch_slice_runtime_tool_call(provider_run, canonical_tool_name, arguments)
                     .await;
             }
             self.dispatch_authenticated_workflow_runtime_tool_call(
@@ -456,44 +590,18 @@ impl KernelRuntimeState {
             .filter(|spec| {
                 self.slice_kernel_id().is_some()
                     || matches!(runs, [run]
-                if self.room_browser_slice_for_tool(run.session_id(), &spec.name).is_some())
+                    if room_browser_tools_available(
+                        self.room_browser_slice_for_tool(run.session_id(), &spec.name).is_some(),
+                        run.remote_extension_manifest().room_browser_available,
+                    ))
             })
             .collect()
     }
 
     fn room_browser_slice_for_tool(&self, session_id: &str, tool_name: &str) -> Option<String> {
-        use crate::transport::runtime_tools::*;
-        // Advertise only operations whose physical worker path is implemented.
-        // Never run the legacy screen helper on a home machine as a fallback.
-        if !matches!(
-            canonical_slice_tool_name(tool_name),
-            Some(
-                SLICE_SCREEN_STATUS_TOOL
-                    | SLICE_OCR_TOOL
-                    | SLICE_FIND_TEXT_TOOL
-                    | SLICE_BROWSER_STATUS_TOOL
-                    | SLICE_BROWSER_TAB_TOOL
-                    | SLICE_BROWSER_HISTORY_TOOL
-                    | SLICE_SCREENSHOT_TOOL
-                    | SLICE_MOUSE_TOOL
-                    | SLICE_KEYBOARD_TOOL
-                    | SLICE_CLIPBOARD_WRITE_TOOL
-                    | SLICE_OPEN_URL_TOOL
-                    | SLICE_BROWSER_CLICK_TOOL
-                    | SLICE_BROWSER_FILL_TOOL
-                    | SLICE_BROWSER_SUBMIT_TOOL
-                    | SLICE_BROWSER_DIALOG_TOOL
-                    | SLICE_BROWSER_EVENTS_TOOL
-                    | SLICE_BROWSER_DOWNLOADS_TOOL
-                    | SLICE_BROWSER_UPLOAD_TOOL
-                    | SLICE_BROWSER_PERMISSION_TOOL
-                    | SLICE_BROWSER_FIND_TOOL
-                    | SLICE_BROWSER_TEXT_TOOL
-                    | SLICE_BROWSER_WAIT_FOR_TEXT_TOOL
-                    | SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL
-                    | SLICE_BROWSER_WAIT_FOR_IDLE_TOOL
-            )
-        ) {
+        // Home and leased callers use the same Room controller operations,
+        // including the home-owned Vault insertion path and its aliases.
+        if !is_room_browser_controller_runtime_tool(tool_name) {
             return None;
         }
         self.owned
@@ -503,13 +611,28 @@ impl KernelRuntimeState {
     }
 
     fn slice_kernel_id(&self) -> Option<String> {
-        self.owned
-            .config_projection
-            .snapshot()
-            .host_machine_id
-            .strip_prefix("slice:")
-            .map(str::to_string)
+        crate::slice::slice_worker_id_for_config(&self.owned.config_projection.snapshot())
     }
+}
+
+fn room_browser_tools_available(
+    local_environment_available: bool,
+    home_manifest_available: bool,
+) -> bool {
+    local_environment_available || home_manifest_available
+}
+
+fn ensure_leased_room_browser_context(
+    is_leased_provider_run: bool,
+    is_room_browser_tool: bool,
+) -> Result<(), DaemonError> {
+    if is_leased_provider_run && is_room_browser_tool {
+        return Err(DaemonError::LocalTransport {
+            operation: "dispatch leased Room browser runtime tool",
+            message: "leased Room browser tool has no authoritative home invocation context; refusing local slice fallback".to_string(),
+        });
+    }
+    Ok(())
 }
 
 fn is_home_credential_runtime_tool(tool_name: &str) -> bool {
@@ -703,4 +826,33 @@ mod tests {
             assert_eq!(super::canonical_room_browser_runtime_tool(name), None);
         }
     }
+
+    #[test]
+    fn room_browser_tools_are_not_advertised_without_environment_or_home_capability() {
+        let manifest = crate::extension::RemoteExtensionManifest::default();
+        let available = super::room_browser_tools_available(false, manifest.room_browser_available);
+        let advertised = crate::transport::runtime_tools::slice_runtime_tool_specs()
+            .into_iter()
+            .filter(|_| available)
+            .collect::<Vec<_>>();
+
+        assert!(advertised.is_empty());
+        assert!(!super::room_browser_tools_available(false, false));
+        assert!(super::room_browser_tools_available(true, false));
+        assert!(super::room_browser_tools_available(false, true));
+    }
+
+    #[test]
+    fn leased_room_browser_missing_context_fails_closed_before_local_fallback() {
+        let error = super::ensure_leased_room_browser_context(true, true)
+            .expect_err("missing home context must reject the local fallback");
+
+        assert!(error.to_string().contains("refusing local slice fallback"));
+        assert!(super::ensure_leased_room_browser_context(false, true).is_ok());
+        assert!(super::ensure_leased_room_browser_context(true, false).is_ok());
+    }
 }
+
+#[cfg(test)]
+#[path = "tool_dispatch/hosted_worker_tests.rs"]
+mod hosted_worker_tests;

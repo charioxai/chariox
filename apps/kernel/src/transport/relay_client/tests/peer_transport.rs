@@ -182,7 +182,7 @@ async fn run_controlled_workspace_live_sync_target(
 fn provider_account_materialization_peer_shape_is_versioned_and_debug_redacted() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        56
+        69
     );
     let mut materialization = crate::account_profile::ProviderAccountMaterialization {
         profile: crate::account_profile::ProviderAccountReplicaMetadata {
@@ -229,7 +229,7 @@ fn provider_account_materialization_peer_shape_is_versioned_and_debug_redacted()
 fn remote_provider_launch_credential_peer_shape_is_versioned_and_debug_redacted() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        56
+        69
     );
     let request = RelayPeerRequest::SubmitLeasedPrompt {
         leased_agent_id: "leased-agent-1".to_string(),
@@ -298,7 +298,7 @@ fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
 
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        56
+        69
     );
     let request = RelayPeerRequest::UploadManagedContextChunk {
         transfer_id: "ctx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
@@ -581,14 +581,14 @@ async fn proxied_peer_requests_are_handled_through_relay() {
     else {
         panic!("relay error should retain structured metadata: {missing_lease:?}");
     };
-    assert_eq!(code, "leased_agent_not_found");
+    assert_eq!(code, "unauthorized");
     assert!(!retryable);
     let diagnostic = missing_lease.to_string();
     assert!(
-        diagnostic.contains("leased_agent_not_found"),
+        diagnostic.contains("unauthorized"),
         "real relay error code should survive peer transport: {missing_lease:?}"
     );
-    assert!(diagnostic.contains("leased agent"));
+    assert!(diagnostic.contains("unauthorized"), "{diagnostic}");
     assert!(!diagnostic.contains("relay-secret-canary"));
 
     let _ = shutdown_a_tx.send(true);
@@ -793,6 +793,7 @@ impl ControlledWorkspaceLiveSyncWorker {
 #[tokio::test(flavor = "multi_thread")]
 async fn public_authenticated_workspace_live_sync_business_error_fails_fast_and_disconnect_recovers(
 ) {
+    crate::test_support::isolated_env_test!();
     let _relay_test_guard = relay_client_test_guard().await;
     let _test_home = RelayTestHome::new();
     let test_root = std::env::temp_dir().join(format!(

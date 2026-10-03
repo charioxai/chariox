@@ -149,6 +149,7 @@ mod tests {
 
     #[test]
     fn returns_unavailable_when_disabled() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         std::env::set_var("CHARIOX_SCREENSHOT_DISABLE", "1");
         let result = ScreenshotCapabilityService::new()

@@ -1,4 +1,6 @@
 use std::env;
+use std::fs;
+use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -24,11 +26,44 @@ pub struct LocalHarnessReport {
     pub output_preview: String,
 }
 
+/// A disposable working directory for the harness session. Provider launch
+/// requires the session worktree to exist, so the harness must not depend on a
+/// relative directory under the caller's current directory.
+struct HarnessWorktree(PathBuf);
+
+impl HarnessWorktree {
+    fn create() -> Result<Self, DaemonError> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let path = env::temp_dir().join(format!(
+            "chariox-local-harness-{}-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&path).map_err(|error| DaemonError::LocalTransport {
+            operation: "prepare local harness worktree",
+            message: format!("cannot create `{}`: {error}", path.display()),
+        })?;
+        Ok(Self(path))
+    }
+
+    fn path(&self) -> String {
+        self.0.display().to_string()
+    }
+}
+
+impl Drop for HarnessWorktree {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
 pub fn run_local_harness(app: DaemonApp) -> Result<LocalHarnessReport, DaemonError> {
+    let worktree = HarnessWorktree::create()?;
     let client = LocalDaemonClient::new(app)?;
 
     let session = match client.send(LocalDaemonRequest::CreateSession(
-        CreateSessionRequest::new("workspace-harness", "worktree-harness"),
+        CreateSessionRequest::new(worktree.path(), worktree.path()),
     ))? {
         LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
         _ => unreachable!("create-session must return SessionCreated"),

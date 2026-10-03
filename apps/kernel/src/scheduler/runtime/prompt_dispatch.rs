@@ -1,12 +1,9 @@
 use std::path::PathBuf;
 
-use chariox_relay::protocol::ClientTarget;
-
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::provider::LaunchProviderRequest;
 use crate::session::{PromptQueueItem, PromptSubmissionOutcome};
-use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 
 #[cfg(test)]
 mod credential_tests;
@@ -35,18 +32,10 @@ pub(super) fn dispatch_workflow_prompt(
     session_id: &str,
     target_agent_id: &str,
     prompt: &PromptQueueItem,
-) -> Result<(), DaemonError> {
+) -> Result<Option<crate::app::KernelRemotePromptDispatch>, DaemonError> {
     let target_agent = app.agents().get_agent(target_agent_id)?;
     if let Some(remote_execution) = target_agent.remote_execution().cloned() {
         app.ensure_remote_agent_binding_protocol(&remote_execution)?;
-        app.mark_active_prompt_delivery(
-            session_id,
-            target_agent_id,
-            prompt.id(),
-            crate::session::DurablePromptDeliveryPhase::Dispatching,
-            None,
-            None,
-        )?;
         let session = app.sessions().get_session(session_id)?;
         let workspace_live_sync_mode =
             crate::provider::provider_workspace_live_sync_mode_for_session(
@@ -56,71 +45,25 @@ pub(super) fn dispatch_workflow_prompt(
             );
         let workflow_context = crate::app::RemoteWorkflowTurnContextResolver::new(app)
             .remote_workflow_turn_context_for_prompt(session_id, target_agent_id, prompt)?;
-        let (required_mcps, required_skills, remote_extension_manifest) =
-            app.remote_prompt_capabilities_for_agent(&target_agent)?;
-        let relay_config = app.config().clone();
-        let response = app.send_remote_prompt_peer_request_with_credential_retry(
-            &relay_config,
-            ClientTarget {
-                daemon_id: Some(remote_execution.worker_kernel_id.clone()),
-                daemon_alias: None,
-            },
-            RelayPeerRequest::SubmitLeasedPrompt {
-                leased_agent_id: remote_execution.leased_agent_id,
-                expected_profile: crate::transport::relay_peer::RelayAgentExecutionProfile::from(
-                    &target_agent,
-                ),
-                prompt: prompt.prompt().to_string(),
-                hidden_system_context: prompt.hidden_system_context().to_string(),
-                attachments: app.serialize_remote_prompt_attachments(prompt.attachments())?,
-                workflow_context: Some(workflow_context),
-                git_context: Some(crate::transport::relay_peer::RemoteGitTurnContext {
-                    home_session_id: session_id.to_string(),
-                    home_agent_id: target_agent_id.to_string(),
-                    home_prompt_id: prompt.id().to_string(),
-                    home_turn_id: prompt.id().to_string(),
-                    source_attachment_id: Some(prompt.source_attachment_id().to_string()),
-                    workspace_live_sync_mode: Some(workspace_live_sync_mode),
-                    prompt_origin: Some(prompt.prompt_origin()),
-                    external_provider: prompt.external_provider().map(str::to_string),
-                    external_provider_session_id: prompt
-                        .external_provider_session_id()
-                        .map(str::to_string),
-                    external_provider_turn_id: prompt
-                        .external_provider_turn_id()
-                        .map(str::to_string),
-                    prompt_summary: crate::prompt_transcript::render_prompt_transcript(
-                        prompt.prompt(),
-                        prompt.attachments(),
-                    ),
-                }),
-                required_mcps,
-                required_skills,
-                remote_extension_manifest,
-                provider_launch_credential: None,
-            },
-            &target_agent,
-        );
-        return match response {
-            Ok(RelayPeerResponse::LeasedPromptSubmitted {
-                provider_run_id, ..
-            }) => {
-                app.mark_active_prompt_delivery(
-                    session_id,
-                    target_agent_id,
-                    prompt.id(),
-                    crate::session::DurablePromptDeliveryPhase::Delivered,
-                    Some(provider_run_id),
-                    None,
-                )?;
-                Ok(())
-            }
-            Ok(other) => Err(DaemonError::LocalTransport {
-                operation: "dispatch remote workflow prompt",
-                message: format!("unexpected remote workflow prompt response: {other:?}"),
-            }),
-            Err(error) => Err(error),
-        };
+        return Ok(Some(crate::app::KernelRemotePromptDispatch {
+            session_id: session_id.to_string(),
+            agent_id: target_agent_id.to_string(),
+            prompt_id: prompt.id().to_string(),
+            worker_kernel_id: remote_execution.worker_kernel_id,
+            leased_agent_id: remote_execution.leased_agent_id,
+            relay_url: remote_execution.relay_url,
+            relay_token: remote_execution.relay_token,
+            source_attachment_id: prompt.source_attachment_id().to_string(),
+            prompt: prompt.prompt().to_string(),
+            hidden_system_context: prompt.hidden_system_context().to_string(),
+            attachments: prompt.attachments().to_vec(),
+            workspace_live_sync_mode: Some(workspace_live_sync_mode),
+            prompt_origin: prompt.prompt_origin(),
+            external_provider: prompt.external_provider().map(str::to_string),
+            external_provider_session_id: prompt.external_provider_session_id().map(str::to_string),
+            external_provider_turn_id: prompt.external_provider_turn_id().map(str::to_string),
+            workflow_context: Some(workflow_context),
+        }));
     }
 
     let dispatch = |app: &mut DaemonApp, provider_run_id: &str| {
@@ -146,7 +89,7 @@ pub(super) fn dispatch_workflow_prompt(
         match dispatch(app, &provider_run_id) {
             Ok(()) => {
                 crate::transport::flow_control::note_prompt_started(app, &provider_run_id);
-                return Ok(());
+                return Ok(None);
             }
             Err(
                 error @ (DaemonError::InvalidProviderRunState { .. }
@@ -172,21 +115,15 @@ pub(super) fn ensure_workflow_provider_run_for_agent(
     app: &mut DaemonApp,
     session_id: &str,
     agent_id: &str,
-    event_reply_enabled: bool,
-    event_context_enabled: bool,
-    event_actions_enabled: bool,
     fresh_context: bool,
     workflow_node_run_id: Option<&str>,
 ) -> Result<String, DaemonError> {
     if fresh_context {
-        app.end_provider_run_for_workflow_context_flush(session_id, agent_id)?;
+        app.end_agent_provider_run(session_id, agent_id)?;
     }
+    app.retire_finished_turn_substitute_run(session_id, agent_id)?;
     if let Some(run) = app.providers().get_run_for_agent(session_id, agent_id) {
-        if run.workflow_tools_enabled()
-            && run.workflow_event_reply_enabled() == event_reply_enabled
-            && run.workflow_event_context_enabled() == event_context_enabled
-            && run.workflow_event_actions_enabled() == event_actions_enabled
-        {
+        if run.workflow_tools_enabled() {
             let provider_run_id = app.ensure_prompt_provider_run_for_agent(session_id, agent_id)?;
             app.sessions_mut()
                 .set_active_provider_run(session_id, Some(provider_run_id.clone()))?;
@@ -205,15 +142,7 @@ pub(super) fn ensure_workflow_provider_run_for_agent(
     // Cold workflow admission must launch the workflow-capable process directly.
     // Starting an ordinary process first and replacing it below leaves two live
     // provider processes for the same workflow agent.
-    let request = workflow_provider_request(
-        app,
-        session_id,
-        agent_id,
-        event_reply_enabled,
-        event_context_enabled,
-        event_actions_enabled,
-        fresh_context,
-    )?;
+    let request = workflow_provider_request(app, session_id, agent_id, fresh_context)?;
     let provider_run =
         app.start_workflow_provider_launch_for_node(request, workflow_node_run_id)?;
     Ok(provider_run.id().to_string())
@@ -223,12 +152,9 @@ fn workflow_provider_request(
     app: &DaemonApp,
     session_id: &str,
     agent_id: &str,
-    event_reply_enabled: bool,
-    event_context_enabled: bool,
-    event_actions_enabled: bool,
     fresh_context: bool,
 ) -> Result<LaunchProviderRequest, DaemonError> {
-    let agent = app.agents().get_agent(agent_id)?;
+    let (agent, turn_substitute) = app.agent_launch_profile(app.agents().get_agent(agent_id)?);
     let provider = crate::provider::provider_id_for_launch(agent.provider());
     let adapter_key = crate::provider::adapter_key_for_provider(provider);
     let session = app.sessions().get_session(session_id)?;
@@ -240,9 +166,6 @@ fn workflow_provider_request(
         agent.provider_account_profile(),
         agent.model().unwrap_or("default"),
     )
-    .with_workflow_event_reply(event_reply_enabled)
-    .with_workflow_event_context(event_context_enabled)
-    .with_workflow_event_actions(event_actions_enabled)
     .with_agent_id(agent.id().to_string())
     .with_variant(agent.effort().map(str::to_string))
     .with_execution_mode(effective_config.mode)
@@ -260,5 +183,5 @@ fn workflow_provider_request(
     {
         request = request.with_working_directory(working_directory);
     }
-    Ok(request)
+    Ok(request.with_turn_substitute(turn_substitute))
 }

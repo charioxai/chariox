@@ -12,6 +12,14 @@ use zeroize::{Zeroize, Zeroizing};
 pub(crate) const CLAUDE_MCP_CONFIG_PLACEHOLDER: &str = "chariox://claude-mcp-config";
 const CLAUDE_RUNTIME_FILES_PREFIX: &str = "chariox-claude-remote-native-";
 const CLAUDE_MCP_CONFIG_FILE_NAME: &str = "mcp-config.json";
+/// Claude Code's per-server `timeout` for the Chariox runtime MCP server, in
+/// milliseconds. Without it Claude Code waits 60 s for the first byte of an
+/// HTTP MCP answer and then fails the call with "The operation timed out".
+/// Runtime tools that wait for a person (the permission prompt, a popup, an
+/// App binding approval) answer only once the person decides; the permission
+/// prompt waits up to 300 s, so the budget covers that window with a margin.
+/// It also caps each runtime call at this length.
+const CLAUDE_RUNTIME_MCP_TIMEOUT_MS: u64 = 360_000;
 
 pub(super) struct ClaudeRuntimeFilesRoot {
     path: PathBuf,
@@ -262,6 +270,7 @@ fn claude_mcp_config(
                 "headers": {
                     "Authorization": format!("Bearer {token}"),
                 },
+                "timeout": CLAUDE_RUNTIME_MCP_TIMEOUT_MS,
             }),
         );
     }
@@ -419,6 +428,14 @@ mod tests {
         }
         let payload = std::fs::read_to_string(&path).expect("config should be readable by owner");
         assert!(payload.contains("Bearer private-token"));
+        let payload: serde_json::Value =
+            serde_json::from_str(&payload).expect("config should be valid JSON");
+        // Claude Code's default HTTP MCP budget is 60 s, shorter than a
+        // person's decision on a runtime approval or popup.
+        assert_eq!(
+            payload.pointer("/mcpServers/chariox/timeout"),
+            Some(&serde_json::json!(super::CLAUDE_RUNTIME_MCP_TIMEOUT_MS))
+        );
 
         drop(root);
         assert!(!root_path.exists());

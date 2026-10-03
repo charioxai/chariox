@@ -8,6 +8,7 @@ import type {
 import {
   handleWorkflowAliasCommand,
   handleWorkflowDeleteCommand,
+  handleWorkflowFromAgentCommand,
   handleWorkflowListCommand,
   handleWorkflowNewCommand,
   handleWorkflowRootCommand,
@@ -226,3 +227,42 @@ function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
     ...overrides,
   }
 }
+
+test("workflow from-agent gives an agent its one-node trigger workflow", async () => {
+  const harness = createHarness()
+  const created: string[] = []
+  const deps = {
+    ...harness.deps,
+    resolveSessionAgent: (reference?: string | null) => ({ agent: reference === "builder" ? { id: "agent-1" } : null }),
+    createAgentWorkflow: async (agentId: string, reason: "trigger" | "deploy", alias?: string | null) => {
+      created.push(`${agentId}:${reason}:${alias ?? "null"}`)
+      return { workflow: workflow({ id: "workflow-7", alias: "builder-trigger" }), endpoint: { id: "endpoint-1" }, session: session() }
+    },
+  }
+
+  await handleWorkflowFromAgentCommand(deps, ["from-agent", "builder", "trigger"])
+  assert.deepEqual(created, ["agent-1:trigger:null"])
+  assert.deepEqual(harness.calls, [
+    "select:workflow-7",
+    "show",
+    "footer:info:created workflow workflow-7 (builder-trigger) for builder; next: /workflow trigger ... on endpoint endpoint-1",
+  ])
+
+  // A trigger class names the command that adds it.
+  harness.calls.length = 0
+  await handleWorkflowFromAgentCommand(deps, ["from-agent", "builder", "trigger", "schedule", "nightly"])
+  await handleWorkflowFromAgentCommand(deps, ["from-agent", "builder", "trigger", "http"])
+  assert.deepEqual(created.slice(1), ["agent-1:trigger:nightly", "agent-1:trigger:null"])
+  assert.deepEqual(harness.calls.filter((call) => call.startsWith("footer")), [
+    "footer:info:created workflow workflow-7 (builder-trigger) for builder; next: /workflow schedule add workflow-7 endpoint-1 --every 1h",
+    "footer:info:created workflow workflow-7 (builder-trigger) for builder; next: /workflow trigger create workflow-7 endpoint-1 --route /",
+  ])
+
+  harness.calls.length = 0
+  await handleWorkflowFromAgentCommand(deps, ["from-agent", "builder", "bind"])
+  await handleWorkflowFromAgentCommand(deps, ["from-agent", "nobody", "deploy"])
+  assert.deepEqual(harness.calls, [
+    "footer:error:usage: /workflow from-agent <agent-ref> trigger [http|schedule|notification]|deploy [alias]",
+    "footer:error:unknown agent: nobody",
+  ])
+})

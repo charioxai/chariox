@@ -2,6 +2,9 @@
 set -eu
 
 [ "$(id -u)" -eq 0 ] || { echo "rootless handle drill requires root" >&2; exit 1; }
+# ACL helpers and the Docker client run as other users. Do not pass them the
+# installer's root-private TMPDIR; their temporary files remain private mktemp files.
+export TMPDIR=/tmp
 docker_host=unix:///run/chariox-docker/docker.sock
 docker_user=chariox-docker
 docker_uid=$(id -u "$docker_user")

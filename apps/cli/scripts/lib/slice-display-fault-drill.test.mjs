@@ -8,6 +8,14 @@ import {
   validateDisplayFaultProbe,
 } from "./slice-display-fault-drill.mjs"
 
+test("display fault container admits the production Chromium renderer sandbox", () => {
+  const args = buildDisplayFaultDockerArgs({ containerName: "fixture", image: "fixture",
+    sourceRoot: "/external/slice-runtime" })
+  assert.ok(args.includes("seccomp=/external/slice-runtime/chromium-seccomp.json"))
+  assert.ok(args.includes("no-new-privileges"))
+  assert.ok(!args.includes("--privileged"))
+})
+
 test("display fault container is bounded, offline, unprivileged, and current-source", () => {
   const args = buildDisplayFaultDockerArgs({
     containerName: "chariox-slice-display-fault-test",

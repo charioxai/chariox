@@ -98,6 +98,7 @@ impl AegsProvider for DummyProvider {
                     name: "Default test environment".to_string(),
                     kind: "test_scope".to_string(),
                     connection_scope: "default".to_string(),
+                    filter: None,
                 })
                 .into_iter()
                 .collect(),

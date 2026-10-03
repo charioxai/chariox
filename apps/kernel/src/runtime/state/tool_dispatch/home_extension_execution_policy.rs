@@ -10,31 +10,38 @@ impl KernelRuntimeState {
         hinted_tool: crate::extension::RemoteExtensionTool,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-        let tool =
-            match super::home_extension_authorizer::HomeExtensionAuthorizationService::new(self)
+        let ordinary_authorization = || {
+            super::home_extension_authorizer::HomeExtensionAuthorizationService::new(self)
                 .authorize_invocation(&context, &hinted_tool)
-            {
-                Ok(tool) => tool,
-                Err(error) => {
-                    let _ = self
-                        .append_home_extension_denied_event(
-                            &context,
-                            &metadata,
-                            &hinted_tool,
-                            &error,
-                        )
-                        .await;
-                    return Err(error);
-                }
-            };
+        };
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        let authorization = if hinted_tool.kind == crate::extension::ExtensionKind::App {
+            self.authorize_forwarded_app_tool(&context, &hinted_tool)
+                .await
+        } else {
+            ordinary_authorization()
+        };
+        #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+        let authorization = ordinary_authorization();
+        let tool = match authorization {
+            Ok(tool) => tool,
+            Err(error) => {
+                let _ = self
+                    .append_home_extension_denied_event(&context, &metadata, &hinted_tool, &error)
+                    .await;
+                return Err(error);
+            }
+        };
         if !matches!(
             tool.kind,
-            crate::extension::ExtensionKind::Script | crate::extension::ExtensionKind::Connector
+            crate::extension::ExtensionKind::Script
+                | crate::extension::ExtensionKind::Connector
+                | crate::extension::ExtensionKind::App
         ) {
             let error = DaemonError::LocalTransport {
                 operation: "home extension invocation",
                 message: format!(
-                    "home extension runtime tool invocation only supports scripts and connectors; `{}` is `{}` and must use its dedicated dispatch path",
+                    "home extension runtime tool invocation only supports scripts, connectors and Apps; `{}` is `{}` and must use its dedicated dispatch path",
                     tool.tool_name,
                     tool.kind.as_str()
                 ),
@@ -63,6 +70,14 @@ impl KernelRuntimeState {
         )
         .await?;
         let result = match tool.kind.clone() {
+            #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+            crate::extension::ExtensionKind::App => with_home_extension_timeout(
+                &tool,
+                "home App proxy",
+                self.dispatch_home_app_tool(&context, &tool, arguments),
+            )
+            .await
+            .and_then(enforce_home_extension_runtime_result_limit),
             crate::extension::ExtensionKind::Script => with_home_extension_timeout(
                 &tool,
                 "home script proxy",

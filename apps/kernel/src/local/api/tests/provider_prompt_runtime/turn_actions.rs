@@ -3,31 +3,24 @@ use super::*;
 #[test]
 fn public_session_state_preserves_failed_settlement_termination_after_late_completion() {
     let worktree = crate::test_support::TestWorktree::new("turn-actions-settlement");
-    let harness = LocalRouterTestHarness::new();
+    // The prompt launches the default (OpenCode) provider, which waits for its
+    // runtime MCP endpoint to connect.
+    let mut config = crate::config::DaemonConfig::for_tests();
+    crate::test_support::serve_runtime_mcp(&mut config);
+    let harness = LocalRouterTestHarness::with_config(config);
     let (session, agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            worktree.session_request(),
+            worktree
+                .session_request()
+                .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
         ))
         .expect("session create should succeed")
     {
         LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
         other => panic!("unexpected local response: {other:?}"),
     };
-    harness.with_app(|app| {
-        let registry = app.provider_account_profile_registry();
-        for profile in registry
-            .list_all()
-            .expect("synthetic provider profiles should list")
-        {
-            crate::test_support::authenticate_provider_account(
-                &registry,
-                &profile.owner_user_id,
-                &profile.provider,
-                &profile.profile_id,
-            )
-            .expect("synthetic provider account should be authenticated");
-        }
-    });
+    // Launch the provider up front so the admitted prompt starts deterministically.
+    harness.launch_workflow_test_provider(session.id(), agent.id());
     let attachment = match harness
         .dispatch(LocalDaemonRequest::AttachToSession(
             AttachToSessionRequest {
@@ -316,6 +309,8 @@ fn queued_native_tui_turn_projects_undo_action_after_provider_launch_inner() {
                     active.prompt() == prompt.prompt()
                         && active.pending_prompt_id().is_none()
                         && active.id() != prompt.id()
+                        && active.durable_delivery_phase()
+                            == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
                 })
         },
     );

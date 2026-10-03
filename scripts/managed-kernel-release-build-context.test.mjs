@@ -9,6 +9,7 @@ import test from "node:test"
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url))
 const packager = join(repositoryRoot, "scripts/package-managed-kernel-release.mjs")
+const packageTimeoutMs = 30_000
 
 test("managed release stages every local Dockerfile COPY source", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-managed-build-context-"))
@@ -24,6 +25,8 @@ test("managed release stages every local Dockerfile COPY source", async (context
       "--kernel", artifacts.kernel,
       "--supervisor", artifacts.supervisor,
       "--relay", artifacts.relay,
+      "--app-package", artifacts.appPackage,
+      "--app-storage", artifacts.appStorage,
       "--builder-attestation", artifacts.builderAttestation,
       "--builder-attestation-signature", artifacts.builderAttestationSignature,
       "--trusted-builder-public-key", artifacts.trustedBuilderPublicKey,
@@ -35,10 +38,16 @@ test("managed release stages every local Dockerfile COPY source", async (context
     {
       encoding: "utf8",
       env: { ...process.env, SOURCE_DATE_EPOCH: "946684800" },
-      timeout: 30_000,
+      timeout: packageTimeoutMs,
     },
   )
-  assert.equal(packaged.status, 0, packaged.stderr)
+  if (packaged.status === null) {
+    const detail = packaged.error?.code === "ETIMEDOUT"
+      ? `packager timed out after ${packageTimeoutMs}ms${packaged.signal ? ` (${packaged.signal})` : ""}`
+      : `packager did not exit${packaged.signal ? ` (${packaged.signal})` : ""}${packaged.error ? `: ${packaged.error.message}` : ""}`
+    assert.fail(`${detail}${packaged.stderr ? `\n${packaged.stderr}` : ""}`)
+  }
+  assert.equal(packaged.status, 0, `packager exited with status ${packaged.status}: ${packaged.stderr}`)
 
   const stagedContext = join(output, "rootfs/usr/lib/chariox/slice-build-context")
   const dockerfile = await readFile(
@@ -147,6 +156,8 @@ async function makeArtifacts(root, sourceCommit, sourceTree) {
     kernel: "kernel fixture\n",
     supervisor: "supervisor fixture\n",
     relay: "relay fixture\n",
+    appPackage: "app package fixture\n",
+    appStorage: "app storage fixture\n",
   }
   const paths = {}
   for (const [name, bytes] of Object.entries(contents)) {
@@ -166,6 +177,8 @@ async function makeArtifacts(root, sourceCommit, sourceTree) {
       { name: "chariox-kernel", sha256: digest(contents.kernel) },
       { name: "chariox-managed-bootstrap", sha256: digest(contents.supervisor) },
       { name: "chariox-relay", sha256: digest(contents.relay) },
+      { name: "chariox-app-package", sha256: digest(contents.appPackage) },
+      { name: "chariox-app-storage", sha256: digest(contents.appStorage) },
     ],
   }))
   const builderAttestation = join(root, "build-attestation.json")

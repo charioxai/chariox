@@ -1,3 +1,4 @@
+import { sendWithProtocolMinimum } from "./protocol-minimum-diagnostic.js"
 import type { LocalIpcClient } from "./ipc.js"
 import type {
   SliceBackupRecord,
@@ -44,6 +45,7 @@ export async function createSlice(
     displayBackend?: SliceDisplayBackend
     workspaceId?: string | null
     worktreeId?: string | null
+    sourceSliceRef?: string | null
     workspaceMount?: string | null
     developmentSetup?: ManagedEnvironmentDevelopmentSetup | null
     workerKernelRef?: string | null
@@ -62,7 +64,12 @@ export async function getSlice(client: LocalIpcClient, sliceRef: string): Promis
 }
 
 export async function startSlice(client: LocalIpcClient, sliceRef: string): Promise<SliceRecord> {
-  const response = await client.send<Record<string, unknown>>(startSliceRequest(sliceRef))
+  const response = await sendWithProtocolMinimum<Record<string, unknown>>(
+    client.send.bind(client), startSliceRequest(sliceRef, true), {
+      capability: "MP-08 / MP-10 / MP-11 Project export review", requestVariant: "StartSlice",
+      unknownField: "interactive", minimumProtocolVersion: 371,
+    },
+  )
   return expectVariant<{ slice: SliceRecord }>(response, "SliceStarted").slice
 }
 
@@ -106,8 +113,12 @@ export async function startSliceProviderLogin(
   return expectVariant<{ slice: SliceRecord; login: { provider: string; login_kind: string; auth_url?: string | null; verification_url?: string | null; user_code?: string | null; status: string; message: string } }>(response, "SliceProviderLoginStarted")
 }
 
-export async function getSliceDisplayEndpoint(client: LocalIpcClient, sliceRef: string): Promise<SliceDisplayEndpoint> {
-  const response = await client.send<Record<string, unknown>>(getSliceDisplayEndpointRequest(sliceRef))
+export async function getSliceDisplayEndpoint(
+  client: LocalIpcClient,
+  sliceRef: string,
+  room?: { sessionId: string; attachmentId: string; viewerPublicKey: string },
+): Promise<SliceDisplayEndpoint> {
+  const response = await client.send<Record<string, unknown>>(getSliceDisplayEndpointRequest(sliceRef, room))
   return expectVariant<{ endpoint: SliceDisplayEndpoint }>(response, "SliceDisplayEndpoint").endpoint
 }
 

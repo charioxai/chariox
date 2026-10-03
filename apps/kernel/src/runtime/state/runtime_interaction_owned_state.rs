@@ -1,96 +1,140 @@
 use super::*;
 
-impl KernelRuntimeOwnedState {
-    fn restore_session_and_publish_projection(
-        &self,
-        session: crate::session::RuntimeSession,
-    ) -> Result<crate::session::RuntimeSession, DaemonError> {
-        let activity_mutation = self.begin_managed_activity_mutation();
-        let session_id = session.id().to_string();
-        self.session_store.restore_session(session);
-        activity_mutation.record();
-        let session = self.session_snapshot(&session_id)?;
-        Ok(session)
-    }
+mod agent_lifetime;
+mod maintenance;
+mod registration;
+#[cfg(test)]
+mod regression_tests;
 
-    pub(super) fn register_runtime_interaction(
+/// Refusals that clear once the pending decision is answered.
+pub(crate) const INTERACTION_ALREADY_PENDING: &str =
+    "Interaction subject or identity is already pending";
+pub(crate) const KERNEL_DECISION_LIMIT: &str = "Kernel decision limit reached";
+
+/// Whether registering an interaction was refused only until a pending one is
+/// answered.
+pub(crate) fn interaction_waits(error: &DaemonError) -> bool {
+    matches!(
+        error,
+        DaemonError::LocalTransport { operation: "runtime interaction", message }
+            if message == INTERACTION_ALREADY_PENDING || message == KERNEL_DECISION_LIMIT
+    )
+}
+
+fn interaction_error(message: &str) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "runtime interaction",
+        message: message.into(),
+    }
+}
+
+impl KernelRuntimeOwnedState {
+    /// The owner and operation of a pending decision whose chosen choice needs
+    /// the passkey, when the caller owns that decision.
+    pub(super) fn passkey_gate(
         &self,
         session_id: &str,
-        interaction: crate::session::RuntimeInteraction,
-        responder: tokio::sync::oneshot::Sender<super::PendingInteractionResolution>,
+        interaction_id: &str,
+        choice_id: &str,
+        caller_user_id: Option<&str>,
+    ) -> Option<(String, String)> {
+        let owner = self
+            .pending_interactions
+            .write()
+            .get(interaction_id)
+            .filter(|pending| pending.session_id == session_id)
+            .and_then(|pending| pending.kernel_operation_owner.clone())
+            .filter(|owner| Some(owner.as_str()) == caller_user_id)?;
+        let session = self.session_store.get_session(session_id).ok()?;
+        let interaction = session
+            .active_interactions()
+            .iter()
+            .find(|interaction| interaction.id() == interaction_id)?;
+        interaction
+            .choice(choice_id)
+            .filter(|choice| choice.requires_passkey())?;
+        Some((owner, interaction.kernel_operation_id()?.to_owned()))
+    }
+
+    pub(super) fn update_provider_login_interaction(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        login: crate::session::RuntimeProviderLogin,
     ) -> Result<(), DaemonError> {
-        crate::logging::debug_with_fields(
-            "runtime.interaction",
-            "register runtime interaction requested",
-            serde_json::json!({
-                "session_id": session_id,
-                "interaction_id": interaction.id(),
-                "agent_id": interaction.agent_id(),
-                "kind": format!("{:?}", interaction.kind()),
-                "pending_store_ptr": format!("{:p}", std::sync::Arc::as_ptr(&self.pending_interactions.inner)),
-                "active_interaction_count_before": self
-                    .session_store
-                    .get_session(session_id)
-                    .ok()
-                    .map(|session| session.active_interactions().len()),
-                "pending_interaction_count_before": self.pending_interactions.write().len(),
-            }),
-        );
-        let mut session = self.session_store.get_session(session_id)?;
-        let agent = self.agent_store.get_agent(interaction.agent_id())?;
-        if agent.session_id() != session_id {
-            return Err(DaemonError::AgentNotInSession {
-                session_id: session_id.to_string(),
-                agent_id: interaction.agent_id().to_string(),
-            });
-        }
-        if session
-            .active_interaction_for_agent(interaction.agent_id())
-            .is_some()
-        {
-            return Err(DaemonError::LocalTransport {
-                operation: "register runtime interaction",
-                message: format!(
-                    "agent {} already has an active interaction",
-                    interaction.agent_id()
-                ),
-            });
-        }
-        session.add_active_interaction(interaction.clone());
-        self.pending_interactions.write().insert(
-            interaction.id().to_string(),
-            super::PendingInteraction {
-                session_id: session_id.to_string(),
-                responder: std::sync::Arc::new(std::sync::Mutex::new(Some(responder))),
-            },
-        );
-        if let Err(error) = self.restore_session_and_publish_projection(session) {
-            self.pending_interactions.write().remove(interaction.id());
-            return Err(error);
-        }
+        let activity_mutation = self.begin_managed_activity_mutation();
+        let mut sessions = self.session_store.write();
+        let mut session = sessions.get_session(session_id)?;
+        let Some(interaction) = session.remove_active_interaction(interaction_id) else {
+            return Ok(());
+        };
+        session.add_active_interaction(interaction.with_provider_login(login));
+        sessions.restore_session(session);
+        activity_mutation.record();
+        drop(sessions);
+        self.session_snapshot(session_id)?;
         self.terminal_stream
             .notify_terminal_projection_change(session_id);
-        crate::logging::debug_with_fields(
-            "runtime.interaction",
-            "registered runtime interaction",
-            serde_json::json!({
-                "session_id": session_id,
-                "interaction_id": interaction.id(),
-                "agent_id": interaction.agent_id(),
-                "pending_store_ptr": format!("{:p}", std::sync::Arc::as_ptr(&self.pending_interactions.inner)),
-                "pending_interaction_count_after": self.pending_interactions.write().len(),
-            }),
-        );
         Ok(())
     }
 
+    /// `passkey_verified`: the answer proved the owner's presence (see
+    /// `critical_approval_passkey`); a choice that requires the passkey is
+    /// refused without it.
     pub(super) fn resolve_runtime_interaction(
         &self,
         session_id: &str,
         interaction_id: &str,
         choice_id: &str,
         custom_reply: Option<&str>,
+        caller_user_id: Option<&str>,
+        passkey_verified: bool,
     ) -> Result<(), DaemonError> {
+        self.resolve_runtime_interaction_inner(
+            session_id,
+            interaction_id,
+            choice_id,
+            custom_reply,
+            caller_user_id,
+            passkey_verified,
+            false,
+        )
+    }
+
+    /// The dedicated terminal take path competes with decline/expiry under
+    /// the same interaction mutation lock. No generic reply can take an offer.
+    pub(super) fn take_app_host_interaction(
+        &self,
+        session_id: &str,
+        operation_id: &str,
+        owner: &str,
+    ) -> Result<(), DaemonError> {
+        self.resolve_runtime_interaction_inner(
+            session_id,
+            &format!("app_host_{operation_id}"),
+            "accept_host_action",
+            None,
+            Some(owner),
+            false,
+            true,
+        )
+    }
+
+    fn resolve_runtime_interaction_inner(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        choice_id: &str,
+        custom_reply: Option<&str>,
+        caller_user_id: Option<&str>,
+        passkey_verified: bool,
+        take_host: bool,
+    ) -> Result<(), DaemonError> {
+        let _mutation = self
+            .pending_interactions
+            .mutation
+            .lock()
+            .map_err(|_| interaction_error("Interaction store is unavailable"))?;
         crate::logging::debug_with_fields(
             "runtime.interaction",
             "resolve runtime interaction requested",
@@ -112,13 +156,44 @@ impl KernelRuntimeOwnedState {
                     message: format!("interaction {interaction_id} was not pending"),
                 })?
         };
-        if pending.session_id != session_id {
+        if pending.session_id != session_id || !pending.belongs_to(&self.session_store) {
             return Err(DaemonError::LocalTransport {
                 operation: "resolve runtime interaction",
                 message: "interaction does not belong to the requested session".to_string(),
             });
         }
-        let mut session = self.session_store.get_session(session_id)?;
+        if !self.agent_interaction_is_live(&pending) {
+            self.withdraw_agent_interaction_locked(interaction_id, &pending)?;
+            return Err(interaction_error(
+                "Agent interaction was withdrawn because its turn or agent ended",
+            ));
+        }
+        if pending
+            .kernel_operation_owner
+            .as_deref()
+            .is_some_and(|owner| Some(owner) != caller_user_id)
+        {
+            return Err(interaction_error(
+                "Only the operation owner can answer this decision",
+            ));
+        }
+        if pending
+            .kernel_operation_deadline
+            .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+        {
+            return Err(interaction_error("Kernel operation decision expired"));
+        }
+        let activity_mutation = self.begin_managed_activity_mutation();
+        let mut sessions = self.session_store.write();
+        let mut session = sessions.get_session(session_id)?.clone();
+        if !self.agent_interaction_turn_is_live(&pending, &session) {
+            drop(sessions);
+            drop(activity_mutation);
+            self.withdraw_agent_interaction_locked(interaction_id, &pending)?;
+            return Err(interaction_error(
+                "Agent interaction was withdrawn because its turn ended",
+            ));
+        }
         let interaction = session
             .active_interactions()
             .iter()
@@ -128,7 +203,29 @@ impl KernelRuntimeOwnedState {
                 operation: "resolve runtime interaction",
                 message: format!("interaction {interaction_id} is not active in session"),
             })?;
-        let resolved_reply = if let Some(choice) = interaction.choice(choice_id) {
+        if !passkey_verified
+            && interaction
+                .choice(choice_id)
+                .is_some_and(crate::session::RuntimeInteractionChoice::requires_passkey)
+        {
+            return Err(super::critical_approval_passkey::passkey_error(
+                super::critical_approval_passkey::PASSKEY_REQUIRED,
+                "approving this critical action needs your Chariox passkey",
+            ));
+        }
+        if take_host
+            && (pending.kernel_operation_owner.as_deref() != caller_user_id
+                || !interaction.kernel_operation_id().is_some_and(|subject| {
+                    subject
+                        .strip_prefix("host_action:")
+                        .is_some_and(|operation| interaction_id == format!("app_host_{operation}"))
+                }))
+        {
+            return Err(interaction_error("Not an owner-bound App host offer"));
+        }
+        let resolved_reply = if take_host {
+            "accept_host_action".to_owned()
+        } else if let Some(choice) = interaction.choice(choice_id) {
             if let Some(reply) = custom_reply {
                 let custom_choice =
                     interaction
@@ -171,6 +268,14 @@ impl KernelRuntimeOwnedState {
                 message: format!("interaction {interaction_id} does not define choice {choice_id}"),
             });
         };
+        // The same monotonic decision deadline applies after waiting for the
+        // session writer and immediately before consuming the decision.
+        if pending
+            .kernel_operation_deadline
+            .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+        {
+            return Err(interaction_error("Kernel operation decision expired"));
+        }
         let pending = self
             .pending_interactions
             .write()
@@ -180,7 +285,10 @@ impl KernelRuntimeOwnedState {
                 message: format!("interaction {interaction_id} was not pending"),
             })?;
         let _ = session.remove_active_interaction(interaction_id);
-        self.restore_session_and_publish_projection(session)?;
+        sessions.restore_session(session);
+        activity_mutation.record();
+        drop(sessions);
+        self.session_snapshot(session_id)?;
         self.terminal_stream
             .notify_terminal_projection_change(session_id);
         if let Some(sender) = pending
@@ -213,6 +321,20 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         interaction_id: &str,
     ) -> Result<(), DaemonError> {
+        self.timeout_runtime_interaction_if_current(session_id, interaction_id, None)
+    }
+
+    fn timeout_runtime_interaction_if_current(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        expected: Option<&super::PendingInteraction>,
+    ) -> Result<(), DaemonError> {
+        let _mutation = self
+            .pending_interactions
+            .mutation
+            .lock()
+            .map_err(|_| interaction_error("Interaction store is unavailable"))?;
         crate::logging::debug_with_fields(
             "runtime.interaction",
             "timeout runtime interaction requested",
@@ -222,18 +344,41 @@ impl KernelRuntimeOwnedState {
                 "pending_interaction_count_before": self.pending_interactions.write().len(),
             }),
         );
-        let pending = match self.pending_interactions.write().remove(interaction_id) {
-            Some(pending) => pending,
-            None => return Ok(()),
+        let pending = {
+            let pending = self.pending_interactions.write();
+            if !pending.get(interaction_id).is_some_and(|value| {
+                value.session_id == session_id
+                    && value.belongs_to(&self.session_store)
+                    && expected.is_none_or(|expected| {
+                        std::sync::Arc::ptr_eq(&value.responder, &expected.responder)
+                    })
+            }) {
+                return Ok(());
+            }
+            pending
+                .get(interaction_id)
+                .expect("checked pending interaction")
+                .clone()
         };
-        if pending.session_id != session_id {
-            return Ok(());
+        if !self.agent_interaction_is_live(&pending) {
+            return self.withdraw_agent_interaction_locked(interaction_id, &pending);
         }
-        let mut session = self.session_store.get_session(session_id)?;
+        self.pending_interactions.write().remove(interaction_id);
+        let activity_mutation = self.begin_managed_activity_mutation();
+        let mut sessions = self.session_store.write();
+        let mut session = sessions.get_session(session_id)?.clone();
+        if !self.agent_interaction_turn_is_live(&pending, &session) {
+            drop(sessions);
+            drop(activity_mutation);
+            return self.withdraw_agent_interaction_locked(interaction_id, &pending);
+        }
         let Some(interaction) = session.remove_active_interaction(interaction_id) else {
             return Ok(());
         };
-        self.restore_session_and_publish_projection(session)?;
+        sessions.restore_session(session);
+        activity_mutation.record();
+        drop(sessions);
+        self.session_snapshot(session_id)?;
         self.terminal_stream
             .notify_terminal_projection_change(session_id);
         let resolution = timeout_runtime_interaction_resolution(&interaction);
@@ -261,6 +406,13 @@ impl KernelRuntimeOwnedState {
 fn timeout_runtime_interaction_resolution(
     interaction: &crate::session::RuntimeInteraction,
 ) -> super::PendingInteractionResolution {
+    if interaction.kernel_operation_id().is_some() {
+        return super::PendingInteractionResolution {
+            status: "timed_out",
+            choice_id: None,
+            reply: None,
+        };
+    }
     let Some(default_choice_id) = interaction.default_on_timeout() else {
         return super::PendingInteractionResolution {
             status: "timed_out",

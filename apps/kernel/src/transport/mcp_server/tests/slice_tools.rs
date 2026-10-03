@@ -48,20 +48,23 @@ impl Drop for ControllerMcpFixture {
 
 #[tokio::test]
 async fn mcp_tools_list_exposes_slice_tools_only_for_slice_provider_tokens() {
+    let worktree = crate::test_support::TestWorktree::new(
+        "mcp_tools_list_exposes_slice_tools_only_for_slice_provider_tokens",
+    );
     let mut config = DaemonConfig::for_tests();
     config.host_machine_id = "slice:slice-test".to_string();
     config.user_config.providers.workspace_live_sync.mode =
         crate::config::WorkspaceLiveSyncMode::Tracked;
     let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
     let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should exist");
     let agent_id = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
                 .with_alias("agent-a")
                 .with_model("test-model")
-                .with_worktree("worktree-1"),
+                .with_worktree(worktree.path().display().to_string()),
         )
         .expect("agent should spawn")
         .id()
@@ -187,6 +190,7 @@ async fn mcp_tools_list_exposes_slice_tools_only_for_slice_provider_tokens() {
 #[cfg(unix)]
 #[test]
 fn mcp_tools_call_dispatches_slice_screen_fallbacks_inside_slice_kernel() {
+    crate::test_support::isolated_env_test!();
     run_mcp_server_large_stack_test(
         "mcp-tools-call-dispatches-slice-screen-fallbacks",
         mcp_tools_call_dispatches_slice_screen_fallbacks_inside_slice_kernel_inner,
@@ -195,6 +199,9 @@ fn mcp_tools_call_dispatches_slice_screen_fallbacks_inside_slice_kernel() {
 
 #[cfg(unix)]
 async fn mcp_tools_call_dispatches_slice_screen_fallbacks_inside_slice_kernel_inner() {
+    let worktree = crate::test_support::TestWorktree::new(
+        "mcp_tools_call_dispatches_slice_screen_fallbacks_inside_slice_kernel_inner",
+    );
     use std::os::unix::fs::PermissionsExt;
 
     let _guard = crate::env_lock::lock();
@@ -227,14 +234,14 @@ async fn mcp_tools_call_dispatches_slice_screen_fallbacks_inside_slice_kernel_in
         crate::config::WorkspaceLiveSyncMode::Tracked;
     let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
     let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should exist");
     let agent_id = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
                 .with_alias("agent-a")
                 .with_model("test-model")
-                .with_worktree("worktree-1"),
+                .with_worktree(worktree.path().display().to_string()),
         )
         .expect("agent should spawn")
         .id()
@@ -520,6 +527,7 @@ async fn assert_local_computer_observation_validation(
 #[cfg(unix)]
 #[test]
 fn mcp_browser_status_uses_the_room_owned_controller_instead_of_one_shot_cdp() {
+    crate::test_support::isolated_env_test!();
     run_mcp_server_large_stack_test(
         "mcp-browser-tools-use-the-room-owned-controller",
         mcp_browser_status_uses_the_room_owned_controller_instead_of_one_shot_cdp_inner,
@@ -628,7 +636,7 @@ done
     std::fs::write(
         &one_shot,
         format!(
-            "#!/bin/sh\nset -eu\nprintf 'called %s\\n' \"$*\" >> '{}'\nif [ \"${{1:-}}\" = computer-secret-paste-stdin ]; then\n  input=$(cat)\n  [ \"$input\" = \"$CHARIOX_CONTROLLER_MCP_COMPUTER_SECRET\" ]\n  printf 'computer-secret-match\\n' >> '{}'\n  exit 0\nfi\nexit 91\n",
+            "#!/bin/sh\nset -eu\nprintf 'called %s\\n' \"$*\" >> '{}'\nif [ \"${{1:-}}\" = computer-secret-target ]; then\n  printf '%s\\n' '{{\"focus_window\":101,\"active_window\":100,\"geometry\":[20,30,200,40],\"window_geometry\":[0,0,800,600]}}'\n  exit 0\nfi\nif [ \"${{1:-}}\" = computer-secret-paste-stdin ]; then\n  input=$(cat)\n  [ \"$input\" = \"$CHARIOX_CONTROLLER_MCP_COMPUTER_SECRET\" ]\n  printf 'computer-secret-match\\n' >> '{}'\n  exit 0\nfi\nexit 91\n",
             one_shot_log.display(),
             one_shot_log.display()
         ),
@@ -713,16 +721,17 @@ done
         crate::config::CredentialVaultBackend::ProcessMemory;
     config.user_config.providers.workspace_live_sync.mode =
         crate::config::WorkspaceLiveSyncMode::Tracked;
+    let worktree = crate::test_support::TestWorktree::new("mcp-room-browser");
     let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
     let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should exist");
     let agent_id = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
                 .with_alias("agent-a")
                 .with_model("test-model")
-                .with_worktree("worktree-1"),
+                .with_worktree(worktree.path().to_string_lossy()),
         )
         .expect("agent should spawn")
         .id()
@@ -970,6 +979,16 @@ done
                 .iter()
                 .find(|interaction| interaction.title() == Some("Computer credential input"))
             {
+                assert!(interaction
+                    .message()
+                    .contains("Confirm that this focused field masks secret input"));
+                assert!(interaction
+                    .message()
+                    .contains("approving an unmasked field can expose the credential"));
+                assert!(interaction
+                    .message()
+                    .contains("native window 100, focused control 101 at [20, 30, 200, 40]"));
+                assert_eq!(interaction.default_on_timeout(), Some("deny"));
                 break interaction.id().to_string();
             }
             tokio::task::yield_now().await;
@@ -1005,8 +1024,8 @@ done
     );
     assert_eq!(
         std::fs::read_to_string(&one_shot_log).unwrap_or_default(),
-        one_shot_before_denial,
-        "denial must not reach the desktop input helper"
+        format!("{one_shot_before_denial}called computer-secret-target\n"),
+        "denial must not submit any credential keystrokes"
     );
     assert!(
         router
@@ -1206,7 +1225,23 @@ done
     );
     assert!(recovered_actor_ids
         .contains(crate::session::agent_environment_actor_id(&agent_id).as_str()));
-    assert_eq!(recovered_environment.actions.len(), 4);
+    // slice_browser_status/find are recorded as non-mutating Room observations.
+    assert_eq!(
+        recovered_environment
+            .actions
+            .iter()
+            .map(|action| action.kind.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "browser_status",
+            "browser_find",
+            "fill",
+            "click",
+            "submit",
+            "secret_input",
+            "browser_status"
+        ]
+    );
     assert!(recovered_environment
         .actions
         .iter()
@@ -1629,10 +1664,13 @@ done
             .map(|action| action.kind.as_str())
             .collect::<Vec<_>>(),
         vec![
+            "browser_status",
+            "browser_find",
             "fill",
             "click",
             "submit",
             "secret_input",
+            "browser_status",
             "fill",
             "dialog",
             "download_configure",
@@ -1647,7 +1685,7 @@ done
     }));
     assert_eq!(
         std::fs::read_to_string(&controller_log).expect("controller log should exist"),
-        "reconcile\nsnapshot\nreconcile\nsnapshot\nfill\nclick\nsubmit\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nsecret-frame-target\nfill\nreconcile\ndialog-dismiss\nreconcile\ndownloads\nreconcile\nupload\nreconcile\npermission-denied\nreconcile\nevents\nreconcile\nnavigate\nreconcile\nreconcile\nwait-selector\nreconcile\nwait-idle\n"
+        "reconcile\nsnapshot\nreconcile\nsnapshot\nfill\nclick\nsubmit\nreconcile\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nsecret-frame-target\nfill\nreconcile\ndialog-dismiss\nreconcile\ndownloads\nreconcile\nupload\nreconcile\npermission-denied\nreconcile\nevents\nreconcile\nnavigate\nreconcile\nreconcile\nwait-selector\nreconcile\nwait-idle\n"
     );
     assert!(
         !std::fs::read_to_string(&controller_log)

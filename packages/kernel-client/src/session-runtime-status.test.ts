@@ -494,7 +494,7 @@ test("sessionAgentRuntimeDisplayState maps unfocused unread idle output to done"
   })), "Idle")
 })
 
-test("sessionFocusedAgentId keeps only session-scoped focus and falls back without explicit focus", () => {
+test("sessionFocusedAgentId keeps only the session's focus, including none", () => {
   assert.equal(sessionFocusedAgentId(makeSession({
     focused_agent_id: "agent-2",
     agents: [makeAgent({ id: "agent-1" }), makeAgent({ id: "agent-2" })],
@@ -513,7 +513,20 @@ test("sessionFocusedAgentId keeps only session-scoped focus and falls back witho
   assert.equal(sessionFocusedAgentId(makeSession({
     focused_agent_id: null,
     agents: [makeAgent({ id: "agent-1" }), makeAgent({ id: "agent-2" })],
-  })), "agent-1")
+  })), null)
+
+  // A private collaborator: the kernel hides the focus (another member's
+  // agent) and marks the agents it hides; the viewer addresses its own agent.
+  assert.equal(sessionFocusedAgentId(makeSession({
+    focused_agent_id: null,
+    agents: [makeAgent({ id: "agent-other", visible_in_freeform: false }), makeAgent({ id: "agent-own" })],
+  })), "agent-own")
+
+  // Only hidden agents (workflow copies): no focus agent.
+  assert.equal(sessionFocusedAgentId(makeSession({
+    focused_agent_id: null,
+    agents: [makeAgent({ id: "copy-1", visible_in_freeform: false })],
+  })), null)
 })
 
 test("sessionActiveInteractionForAgent returns active interaction scoped to agent", () => {

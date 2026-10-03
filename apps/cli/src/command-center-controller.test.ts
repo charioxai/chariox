@@ -7,19 +7,20 @@ import {
   type CommandCenterRenderState,
 } from "./command-center-controller.js"
 import { loadCommandCenterTestCatalog } from "./command-center-test-catalog.js"
+import type { CommandNode } from "./command-center-tree-projection.js"
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import { fallbackProviderCommandCatalogs } from "./provider-command-catalog.js"
 
 const commandTree = loadCommandCenterTestCatalog()
 
-function createHarness(initialPrompt = "") {
+function createHarness(initialPrompt = "", tree: readonly CommandNode[] = commandTree) {
   let promptText = initialPrompt
   const executed: string[] = []
   const errors: unknown[] = []
   const renderStates: CommandCenterRenderState[] = []
   const renderBoxes: Array<string | undefined> = []
   const controller = createCommandCenterController<string>({
-    getCommandTree: () => commandTree,
+    getCommandTree: () => tree,
     getProviderCatalog: fallbackProviderCatalog,
     getProviderCommandCatalogs: fallbackProviderCommandCatalogs,
     getCurrentProvider: () => "opencode",
@@ -184,6 +185,17 @@ test("command center controller lets exact leaf commands submit normally", () =>
   assert.equal(harness.promptText, "/exit")
 })
 
+test("command center controller submits an exact /app install instead of completing /app", () => {
+  const harness = createHarness("/app install")
+  harness.controller.sync()
+
+  assert.equal(harness.controller.selectedItem()?.value, "/app install")
+  assert.equal(harness.controller.selectFromSubmit(), false)
+
+  assert.deepEqual(harness.executed, [])
+  assert.equal(harness.promptText, "/app install")
+})
+
 test("command center lets event authorization commands with arguments submit normally", () => {
   const command = "/workflow trigger event authorize dev.chariox.dummy"
   const harness = createHarness(command)
@@ -204,4 +216,57 @@ test("command center controller bypasses session alias submit selection", () => 
 
   assert.deepEqual(harness.executed, [])
   assert.equal(harness.promptText, "/session docs")
+})
+
+test("command center controller submits typed arguments instead of the command they extend", () => {
+  // The palette lists "/tool run " because its description mentions the typed
+  // words; Enter must not run it without the arguments.
+  const tree: CommandNode[] = [{
+    id: "tool",
+    label: "/tool",
+    description: "Tools",
+    value: "/tool ",
+    children: [{ id: "tool-run", label: "run", description: "Run a tool, or run fast with --fast", value: "/tool run " }],
+  }]
+  const harness = createHarness("/tool run fast", tree)
+  harness.controller.sync()
+  assert.equal(harness.controller.selectedItem()?.value, "/tool run ")
+
+  const enter = handledKey("enter")
+  assert.equal(harness.controller.handleKey(enter.event), false)
+  assert.equal(enter.prevented, false)
+  // The prompt's own submit then sends the typed line.
+  assert.equal(harness.controller.selectFromSubmit(), false)
+  assert.deepEqual(harness.executed, [])
+  assert.equal(harness.promptText, "/tool run fast")
+})
+
+test("command center controller runs every typed /app subcommand the TUI implements", async () => {
+  // Each must be offered as itself, not completed to /app or to a sibling.
+  for (const command of [
+    "/app list", "/app set", "/app status", "/app journal", "/app logs", "/app worker", "/app start",
+    "/app stop", "/app restart", "/app open", "/app install", "/app uninstall", "/app update", "/app dev",
+    "/app dev stop",
+    "/app operation", "/app cancel", "/app publisher enroll", "/app publisher status", "/app publisher cancel",
+    "/app automation list", "/app automation add", "/app automation disable", "/app inbox list",
+    "/app inbox add", "/app inbox remove", "/app inbox test", "/app connection list", "/app connection grant",
+    "/app connection revoke", "/app file grant", "/app file save",
+  ]) {
+    const harness = createHarness(command)
+    harness.controller.sync()
+    assert.equal(harness.controller.selectedItem()?.value.trim(), command, command)
+    assert.equal(harness.controller.handleKey(handledKey("enter").event), true, command)
+    await Promise.resolve()
+    assert.equal(harness.executed[0]?.trim(), command, command)
+  }
+})
+
+test("command center controller submits /app dev stop as typed", () => {
+  const harness = createHarness("/app dev stop")
+  harness.controller.sync()
+
+  assert.equal(harness.controller.selectedItem()?.value, "/app dev stop")
+  assert.equal(harness.controller.selectFromSubmit(), false)
+  assert.deepEqual(harness.executed, [])
+  assert.equal(harness.promptText, "/app dev stop")
 })

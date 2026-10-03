@@ -113,6 +113,13 @@ pub(crate) async fn execute_remote_relay_inventory_request(
             )
             .await
         }
+        LocalDaemonRequest::QueryFreshRemoteMachineKernels(request) => {
+            crate::runtime::fresh_remote_relay_inventory::execute_fresh_remote_machine_kernels_request(
+                config_projection,
+                request,
+            )
+            .await
+        }
         _ => Err(DaemonError::LocalTransport {
             operation: "remote relay inventory request",
             message: "unsupported remote relay inventory request".to_string(),
@@ -127,6 +134,11 @@ pub(crate) async fn projected_relay_status(
     let config = config_projection.snapshot();
     let connected = relay_state.read().await.connected();
     RelayStatus {
+        runtime_process_identity: crate::runtime::kernel_process_identity::current(),
+        capabilities: crate::local::RUNTIME_CONTROL_CAPABILITIES
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect(),
         configured: config.relay_url.is_some() && config.relay_token.is_some(),
         connected,
         relay_url: config.relay_url,

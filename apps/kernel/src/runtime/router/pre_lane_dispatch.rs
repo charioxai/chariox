@@ -6,14 +6,8 @@ use crate::runtime::agent_utility_executor::execute_agent_utility_request;
 use crate::runtime::capability_registry::execute_capability_registry_request;
 use crate::runtime::command::KernelCommand;
 use crate::runtime::daemon_health_projection::execute_daemon_health_request;
-use crate::runtime::event_catalog_control::{
-    execute_event_catalog_request_with_client, validate_event_connection,
-    validate_event_connection_scopes, validate_registered_event_connection,
-    workflow_event_binding_contract, WorkflowEventBindingContract,
-};
-use crate::runtime::managed_bootstrap_observation_control::{
-    execute_managed_bootstrap_observation_request,
-};
+use crate::runtime::event_catalog_control::execute_event_catalog_request_with_client;
+use crate::runtime::managed_bootstrap_observation_control::execute_managed_bootstrap_observation_request;
 use crate::runtime::managed_context_outbound_control::execute_managed_context_outbound_request;
 use crate::runtime::managed_context_target_control::execute_managed_context_target_request;
 use crate::runtime::managed_environment_control::execute_managed_environment_control_request;
@@ -39,6 +33,58 @@ impl CommandRouter {
         request: &LocalDaemonRequest,
         caller_user_id: &str,
     ) -> Result<Option<LocalDaemonResponse>, DaemonError> {
+        if let Some(response) = self
+            .runtime_state
+            .app_control()
+            .publishers()
+            .execute(&self.runtime_state, command, request)
+            .await
+        {
+            return Ok(Some(response));
+        }
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        if let Some(response) = self
+            .runtime_state
+            .app_control()
+            .installs()
+            .execute(&self.runtime_state, command, request)
+            .await
+        {
+            return Ok(Some(response));
+        }
+        // Protocols 358–360: App routes and grants on a generator connection
+        // are checked with that generator before the App lane stores them.
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        if let Some(response) = self
+            .dispatch_app_event_request(command, request, caller_user_id)
+            .await?
+        {
+            return Ok(Some(response));
+        }
+        if let Some(response) = self
+            .runtime_state
+            .app_control()
+            .execute(command, request)
+            .await
+        {
+            return Ok(Some(response));
+        }
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        if let Some(response) = self
+            .runtime_state
+            .execute_app_control_request(command, request)
+            .await
+        {
+            return Ok(Some(response));
+        }
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        if let Some(response) = self
+            .runtime_state
+            .execute_app_view_request(command, request)
+            .await
+        {
+            return response.map(Some);
+        }
         if matches!(
             request,
             LocalDaemonRequest::PrepareBrowserImport(_)
@@ -65,15 +111,20 @@ impl CommandRouter {
         {
             return response.map(Some);
         }
-        if let LocalDaemonRequest::RemoveEventConnection(request) = request {
+        if let LocalDaemonRequest::RemoveEventConnection(removal) = request {
             let _connection_guard = self
                 .event_connection_lanes
-                .lock(caller_user_id, &request.connection_id)
+                .lock(caller_user_id, &removal.connection_id)
                 .await;
-            return self
-                .remove_event_connection(command, caller_user_id, request.clone())
-                .await
-                .map(Some);
+            return execute_event_catalog_request_with_client(
+                &self.runtime_state,
+                &self.config_projection,
+                &self.aegs_management_http_client,
+                caller_user_id,
+                request.clone(),
+            )
+            .await
+            .map(Some);
         }
         let managed_connection_id = match request {
             LocalDaemonRequest::RefreshEventConnection(request) => {
@@ -106,6 +157,16 @@ impl CommandRouter {
             .map(Some);
         }
         match request {
+            request @ (LocalDaemonRequest::CreateDisposableWorker(_)
+            | LocalDaemonRequest::GetDisposableWorker(_)
+            | LocalDaemonRequest::ReleaseDisposableWorker(_)
+            | LocalDaemonRequest::KeepDisposableWorkerRunning(_)
+            | LocalDaemonRequest::PrepareDisposableWorkerContextTransfer(_)
+            | LocalDaemonRequest::KeepManagedEnvironmentRunning(_)) => {
+                return crate::runtime::disposable_worker_control::execute_disposable_worker_control_request(
+                    self.config_projection.snapshot(), self.provider_account_profiles.clone(),
+                    caller_user_id, request.clone()).await.map(Some);
+            }
             LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(request) => {
                 return execute_managed_bootstrap_observation_request(
                     self.config_projection.snapshot(),
@@ -119,11 +180,14 @@ impl CommandRouter {
             request @ (LocalDaemonRequest::ListManagedEnvironmentCatalog(_)
             | LocalDaemonRequest::GetManagedEnvironment(_)
             | LocalDaemonRequest::GetManagedEnvironmentReimagePreflight(_)
+            | LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(_)
             | LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(_)
             | LocalDaemonRequest::PrepareManagedEnvironmentGitCredentialEnrollment(_)
             | LocalDaemonRequest::CreateManagedEnvironment(_)
             | LocalDaemonRequest::RequestManagedEnvironmentLifecycle(_)
-            | LocalDaemonRequest::RequestManagedEnvironmentReimage(_)) => {
+            | LocalDaemonRequest::RequestManagedEnvironmentReimage(_)
+            | LocalDaemonRequest::RequestManagedEnvironmentReleaseUpdate(_)
+            | LocalDaemonRequest::GetManagedEnvironmentReleaseUpdate(_)) => {
                 return execute_managed_environment_control_request(
                     self.config_projection.snapshot(),
                     self.provider_account_profiles.clone(),
@@ -141,6 +205,7 @@ impl CommandRouter {
                     Arc::clone(&self.relay_state),
                     self.managed_context_outbound.clone(),
                     self.provider_account_profiles.clone(),
+                    self.runtime_state.clone(),
                     caller_user_id,
                     request.clone(),
                 )
@@ -190,7 +255,8 @@ impl CommandRouter {
                 .map(Some);
             }
             request @ (LocalDaemonRequest::ListRemoteMachines(_)
-            | LocalDaemonRequest::ListRemoteMachineKernels(_)) => {
+            | LocalDaemonRequest::ListRemoteMachineKernels(_)
+            | LocalDaemonRequest::QueryFreshRemoteMachineKernels(_)) => {
                 return execute_remote_relay_inventory_request(
                     Arc::clone(&self.relay_state),
                     self.config_projection.clone(),
@@ -229,6 +295,20 @@ impl CommandRouter {
                 )
                 .await
                 .map(Some);
+            }
+            LocalDaemonRequest::AdjustProjectEnvironment(request) => {
+                return self
+                    .runtime_state
+                    .start_project_environment_adjustment(request.clone(), caller_user_id)
+                    .await
+                    .map(Some);
+            }
+            LocalDaemonRequest::GetProjectEnvironmentManifest(request) => {
+                return self
+                    .runtime_state
+                    .get_project_environment_manifest(request.clone(), caller_user_id)
+                    .await
+                    .map(Some);
             }
             request @ (LocalDaemonRequest::StartProjectEnvironmentSetup(_)
             | LocalDaemonRequest::GetProjectEnvironmentSetupStatus(_)
@@ -344,75 +424,6 @@ impl CommandRouter {
             let response = self
                 .agent_runtime
                 .dispatch_prompt_complete(command, request.clone())
-                .await?;
-            return self
-                .redact_result_for_user(Ok(response), caller_user_id)
-                .map(Some);
-        }
-        let connection_mutation = match request {
-            LocalDaemonRequest::CreateWorkflowEventBinding(request) => {
-                Some((WorkflowEventBindingContract::from(request), false))
-            }
-            LocalDaemonRequest::SetWorkflowEventBindingStatus(request)
-                if request.status == crate::session::WorkflowEventBindingStatus::Active =>
-            {
-                workflow_event_binding_contract(
-                    &self.runtime_state,
-                    &request.session_id,
-                    &request.binding_id,
-                )
-                .map(|contract| (contract, true))
-            }
-            LocalDaemonRequest::TransferWorkflowEventBinding(request) => {
-                workflow_event_binding_contract(
-                    &self.runtime_state,
-                    &request.source_session_id,
-                    &request.binding_id,
-                )
-                .map(|contract| (contract, true))
-            }
-            _ => None,
-        };
-        if let Some((binding_contract, requires_registered_connection)) = connection_mutation {
-            let required_scopes = binding_contract
-                .required_scopes(&self.config_projection)
-                .await?;
-            let generator_id = binding_contract.generator_id;
-            let connection_id = binding_contract.connection_id;
-            let _connection_guard = self
-                .event_connection_lanes
-                .lock(caller_user_id, &connection_id)
-                .await;
-            if requires_registered_connection {
-                validate_registered_event_connection(
-                    &self.runtime_state,
-                    &self.config_projection,
-                    &self.aegs_management_http_client,
-                    caller_user_id,
-                    &generator_id,
-                    &connection_id,
-                )
-                .await?;
-            } else {
-                validate_event_connection(
-                    &self.runtime_state,
-                    &self.config_projection,
-                    &self.aegs_management_http_client,
-                    caller_user_id,
-                    &generator_id,
-                    &connection_id,
-                )
-                .await?;
-            }
-            validate_event_connection_scopes(
-                &self.runtime_state,
-                caller_user_id,
-                &connection_id,
-                &required_scopes,
-            )?;
-            let response = self
-                .workflow_runtime
-                .dispatch_workflow_command(command.clone(), request.clone())
                 .await?;
             return self
                 .redact_result_for_user(Ok(response), caller_user_id)

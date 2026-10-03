@@ -5,16 +5,21 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto"
 import { readFile, writeFile } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, sep } from "node:path"
 import { promisify } from "node:util"
+import { CAPTURE_PROVENANCE_SCHEMA } from "./lib/managed-ordinary-provider-turn-binding.mjs"
+
+export { CAPTURE_PROVENANCE_SCHEMA }
+
+import {
+  validateProjectSetupProof,
+  validateProjectSetupProofCaptureBinding,
+} from "./lib/managed-ordinary-project-setup-observer.mjs"
 
 const execFileAsync = promisify(execFile)
 
-export const MATRIX_SCHEMA = "chariox.managed-ordinary-parity-matrix/v2"
+export const MATRIX_SCHEMA = "chariox.managed-ordinary-parity-matrix/v4"
 export const REPORT_SCHEMA = "chariox.managed-ordinary-parity-report/v2"
 export const ALLOWED_TOPOLOGIES = Object.freeze(["ordinary", "path1"])
-export const ALLOWED_CAPTURE_BOUNDARIES = Object.freeze([
-  "official-provider-turn",
-  "remote-command",
-])
+export const ALLOWED_CAPTURE_BOUNDARIES = Object.freeze(["official-provider-turn"])
 
 // These IDs match the locked MP-01..MP-10 ledger in
 // docs/BROWSER_COMPUTER_USE_END_TO_END_PLAN.md. MP-11 is the separate source
@@ -170,6 +175,40 @@ const COLLECTION_KEYS = Object.freeze([
   "inside_provider_turn",
   "independent",
   "fixture",
+  "capture_provenance",
+])
+const CAPTURE_PROVENANCE_KEYS = Object.freeze([
+  "schema",
+  "boundary",
+  "observed",
+  "kernel_identity",
+  "session_id",
+  "agent_id",
+  "attachment_id",
+  "prompt_id",
+  "prompt_origin",
+  "prompt_status",
+  "prompt_phase_start",
+  "prompt_phase_end",
+  "provider",
+  "process",
+])
+const CAPTURE_KERNEL_IDENTITY_KEYS = Object.freeze(["kernel_id", "machine_id", "transport"])
+const CAPTURE_PROVIDER_KEYS = Object.freeze(["provider_run_id", "name", "status", "process_status"])
+const CAPTURE_PROCESS_KEYS = Object.freeze([
+  "pid",
+  "linux_boot_id",
+  "start_time_ticks",
+  "ancestry_depth",
+  "executable_basename",
+  "executable_path_sha256",
+  "executable_sha256",
+  "command_line_sha256",
+  "current_working_directory_sha256",
+  "launch_program_basename",
+  "launch_program_sha256",
+  "launch_arguments_sha256",
+  "launch_working_directory_sha256",
 ])
 const ROW_KEYS = Object.freeze(["checks"])
 const CHECK_KEYS = Object.freeze(["status", "result", "command", "evidence_refs"])
@@ -208,7 +247,6 @@ const GENERIC_RESULT_REQUIREMENTS = Object.freeze({
   "MP-08/session_agent_launch": Object.freeze(["session_created", "agent_created", "official_command"]),
   "MP-08/terminal_file_git": Object.freeze(["terminal_ok", "file_ok", "git_ok"]),
   "MP-08/attachments_permissions_capabilities": Object.freeze(["attachments_ok", "permissions_ok", "capabilities_ok"]),
-  "MP-08/project_setup": Object.freeze(["project_setup_ok"]),
   "MP-08/reconnect_orphan_recovery": Object.freeze(["reconnect_ok", "orphan_recovered"]),
   "MP-08/restart_recovery": Object.freeze(["restart_recovered"]),
   "MP-08/reconnect_history_result_identity": Object.freeze(["history_preserved", "result_identity_preserved"]),
@@ -250,6 +288,7 @@ const CAPTURE_BOUNDARY_RESULT_KEYS = Object.freeze([
   "boundary_verified",
   "inside_provider_turn",
   "independent",
+  "provenance_sha256",
 ])
 const PROVIDER_ANCESTRY_RESULT_KEYS = Object.freeze([
   "observed",
@@ -457,7 +496,97 @@ function validateProvider(provider, failures, topology) {
   if (provider.official !== true) addFailure(failures, "provider_not_official", topology)
 }
 
-function validateCollection(collection, failures, topology, allowFixture) {
+function captureProvenanceFingerprint(proof) {
+  return `sha256:${createHash("sha256").update(canonicalJson(proof)).digest("hex")}`
+}
+
+function validateCaptureProvenance(proof, failures, topology, providerName) {
+  if (!isPlainObject(proof)) {
+    addFailure(failures, "capture_provenance_missing", topology)
+    return
+  }
+  if (!sameKeys(proof, CAPTURE_PROVENANCE_KEYS)) addFailure(failures, "capture_provenance_shape_invalid", topology)
+  if (proof.schema !== CAPTURE_PROVENANCE_SCHEMA) addFailure(failures, "capture_provenance_schema_invalid", topology)
+  if (proof.boundary !== "official-provider-turn" || proof.observed !== true) {
+    addFailure(failures, "capture_provenance_unobserved", topology)
+  }
+  for (const key of ["session_id", "agent_id", "attachment_id", "prompt_id"]) {
+    if (typeof proof[key] !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(proof[key])) {
+      addFailure(failures, `capture_provenance_${key}_invalid`, topology)
+    }
+  }
+  if (proof.prompt_origin !== "chariox" || proof.prompt_status !== "running") {
+    addFailure(failures, "capture_provenance_prompt_invalid", topology)
+  }
+  for (const key of ["prompt_phase_start", "prompt_phase_end"]) {
+    if (!["awaiting_first_output", "streaming"].includes(proof[key])) {
+      addFailure(failures, `capture_provenance_${key}_invalid`, topology)
+    }
+  }
+
+  const kernel = proof.kernel_identity
+  if (!isPlainObject(kernel) || !sameKeys(kernel, CAPTURE_KERNEL_IDENTITY_KEYS)) {
+    addFailure(failures, "capture_provenance_kernel_identity_invalid", topology)
+  } else {
+    for (const key of ["kernel_id", "machine_id"]) {
+      if (typeof kernel[key] !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(kernel[key])) {
+        addFailure(failures, `capture_provenance_${key}_invalid`, topology)
+      }
+    }
+    if (!["local-unix-ipc", "kernel-public-api", "relay"].includes(kernel.transport)) addFailure(failures, "capture_provenance_transport_invalid", topology)
+  }
+
+  const provider = proof.provider
+  if (!isPlainObject(provider) || !sameKeys(provider, CAPTURE_PROVIDER_KEYS)) {
+    addFailure(failures, "capture_provenance_provider_invalid", topology)
+  } else {
+    if (typeof provider.provider_run_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(provider.provider_run_id)) {
+      addFailure(failures, "capture_provenance_provider_run_invalid", topology)
+    }
+    if (provider.name !== providerName) addFailure(failures, "capture_provenance_provider_mismatch", topology)
+    if (provider.status !== "Running" || provider.process_status !== "active") {
+      addFailure(failures, "capture_provenance_provider_not_active", topology)
+    }
+  }
+
+  const process = proof.process
+  if (!isPlainObject(process) || !sameKeys(process, CAPTURE_PROCESS_KEYS)) {
+    addFailure(failures, "capture_provenance_process_invalid", topology)
+    return
+  }
+  if (!Number.isSafeInteger(process.pid) || process.pid < 1
+    || !Number.isSafeInteger(process.ancestry_depth) || process.ancestry_depth < 1) {
+    addFailure(failures, "capture_provenance_process_identity_invalid", topology)
+  }
+  if (typeof process.linux_boot_id !== "string"
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(process.linux_boot_id)
+    || typeof process.start_time_ticks !== "string" || !/^\d+$/.test(process.start_time_ticks)) {
+    addFailure(failures, "capture_provenance_process_identity_invalid", topology)
+  }
+  for (const key of ["executable_basename", "launch_program_basename"]) {
+    if (typeof process[key] !== "string" || !process[key] || process[key].includes("/")) {
+      addFailure(failures, `capture_provenance_${key}_invalid`, topology)
+    }
+  }
+  for (const key of [
+    "executable_path_sha256",
+    "executable_sha256",
+    "command_line_sha256",
+    "current_working_directory_sha256",
+    "launch_program_sha256",
+    "launch_arguments_sha256",
+  ]) {
+    if (!SHA256_DIGEST.test(process[key] ?? "")) {
+      addFailure(failures, `capture_provenance_${key}_invalid`, topology)
+    }
+  }
+  if (process.launch_working_directory_sha256 !== null
+    && !SHA256_DIGEST.test(process.launch_working_directory_sha256 ?? "")) {
+    addFailure(failures, "capture_provenance_launch_working_directory_sha256_invalid", topology)
+  }
+}
+
+function validateCollection(collection, failures, topology, allowFixture, providerName) {
   if (!isPlainObject(collection)) {
     addFailure(failures, "collection_missing", topology)
     return
@@ -476,6 +605,7 @@ function validateCollection(collection, failures, topology, allowFixture) {
   if (collection.inside_provider_turn !== true) addFailure(failures, "provider_turn_required", topology)
   if (collection.independent !== true) addFailure(failures, "independent_capture_required", topology)
   if (collection.fixture === true && !allowFixture) addFailure(failures, "fixture_not_allowed", topology)
+  validateCaptureProvenance(collection.capture_provenance, failures, topology, providerName)
 }
 
 function checkResultIsObject(result) {
@@ -664,8 +794,48 @@ function validateCheckResult(result, manifest, topology, rowId, checkId, failure
     }
     return
   }
+  if (rowId === "MP-08" && checkId === "project_setup") {
+    if (!checkResultIsObject(result) || !sameKeys(result, ["observed", "project_setup_ok", "project_setup_proof"])) {
+      addFailure(failures, "check_result_shape_invalid", topology, rowId, checkId)
+      return
+    }
+    if (result.observed !== true || result.project_setup_ok !== true) {
+      addFailure(failures, "check_result_semantics_invalid", topology, rowId, checkId, "project_setup_ok")
+    }
+    const proofValidation = validateProjectSetupProof(result.project_setup_proof)
+    if (!proofValidation.ok) {
+      addFailure(failures, "project_setup_proof_invalid", topology, rowId, checkId, proofValidation.code)
+    }
+    const captureBinding = validateProjectSetupProofCaptureBinding(
+      result.project_setup_proof,
+      manifest?.collection?.capture_provenance,
+    )
+    if (!captureBinding.ok) {
+      addFailure(
+        failures,
+        "project_setup_capture_identity_mismatch",
+        topology,
+        rowId,
+        checkId,
+        captureBinding.field ?? captureBinding.code,
+      )
+    }
+    return
+  }
   if (rowId === "MP-10" && checkId === "capture_boundary") {
-    requireExactTrueResult(result, CAPTURE_BOUNDARY_RESULT_KEYS.slice(1), topology, rowId, checkId, failures)
+    if (!checkResultIsObject(result) || !sameKeys(result, CAPTURE_BOUNDARY_RESULT_KEYS)) {
+      addFailure(failures, "check_result_shape_invalid", topology, rowId, checkId)
+      return
+    }
+    for (const key of CAPTURE_BOUNDARY_RESULT_KEYS.slice(0, -1)) {
+      if (result[key] !== true) addFailure(failures, "check_result_semantics_invalid", topology, rowId, checkId, key)
+    }
+    const proof = manifest?.collection?.capture_provenance
+    const expectedFingerprint = isPlainObject(proof) ? captureProvenanceFingerprint(proof) : null
+    if (!SHA256_DIGEST.test(result.provenance_sha256 ?? "")
+      || result.provenance_sha256 !== expectedFingerprint) {
+      addFailure(failures, "capture_provenance_fingerprint_mismatch", topology, rowId, checkId)
+    }
     return
   }
   if (rowId === "MP-01" && checkId === "provider_ancestry") {
@@ -739,7 +909,7 @@ export function validateManifest(manifest, {
     reviewed_build_id: expectedBuildId,
   })
   validateProvider(manifest.provider, failures, topology)
-  validateCollection(manifest.collection, failures, topology, allowFixture)
+  validateCollection(manifest.collection, failures, topology, allowFixture, manifest.provider?.name)
 
   const signatureFailure = verifySignature(manifest, signingKey)
   if (signatureFailure) addFailure(failures, signatureFailure, topology)
@@ -871,6 +1041,49 @@ function compareIdentity(ordinary, path1, failures) {
   }
 }
 
+function projectSetupParitySemantics(result) {
+  const proof = result.project_setup_proof
+  const validationReceipts = Array.isArray(proof.validation_receipts)
+    ? proof.validation_receipts.map((receipt) => (isPlainObject(receipt)
+      ? { command_digest: receipt.command_digest, exit_code: receipt.exit_code }
+      : receipt))
+    : null
+  return {
+    observed: result.observed,
+    project_setup_ok: result.project_setup_ok,
+    ready_validation_verified: proof.ready_validation_verified,
+    status_fresh: proof.status_fresh,
+    before_after_identity_stable: proof.before_after_identity_stable,
+    definition_identity_verified: proof.definition_identity_verified,
+    platform: proof.platform,
+    definition_digest: proof.definition_digest,
+    definition_origin: proof.definition_origin,
+    definition_source: proof.definition_source,
+    validation_command_count: proof.validation_command_count,
+    validation_receipts: validationReceipts,
+  }
+}
+
+function equivalentCheckResults(rowId, checkId, left, right) {
+  if (rowId === "MP-08" && checkId === "project_setup") {
+    if (!isPlainObject(left?.project_setup_proof) || !isPlainObject(right?.project_setup_proof)) {
+      return canonicalJson(left) === canonicalJson(right)
+    }
+    // Identity hashes, operation IDs/attempts, capture times, transport
+    // endpoints, before/after snapshots, and raw output byte counts describe
+    // each independent observation. The validators bind those per-capture
+    // values; parity compares only the shared definition and validation contract.
+    return canonicalJson(projectSetupParitySemantics(left)) === canonicalJson(projectSetupParitySemantics(right))
+  }
+  if (rowId === "MP-10" && checkId === "capture_boundary") {
+    if (!isPlainObject(left) || !isPlainObject(right)) return canonicalJson(left) === canonicalJson(right)
+    const { provenance_sha256: _leftFingerprint, ...leftEvidence } = left
+    const { provenance_sha256: _rightFingerprint, ...rightEvidence } = right
+    return canonicalJson(leftEvidence) === canonicalJson(rightEvidence)
+  }
+  return canonicalJson(left) === canonicalJson(right)
+}
+
 function compareRows(ordinary, path1, failures) {
   const reports = []
   for (const definition of ROW_DEFINITIONS) {
@@ -899,7 +1112,7 @@ function compareRows(ordinary, path1, failures) {
         const missing = { code: "missing_check", topology: missingTopology, rowId: definition.id, checkId }
         failures.push(missing)
         checkReport.failures.push(reportFailure(missing))
-      } else if (!definition.exemption && canonicalJson(ordinaryCheck.result) !== canonicalJson(path1Check.result)) {
+      } else if (!definition.exemption && !equivalentCheckResults(definition.id, checkId, ordinaryCheck.result, path1Check.result)) {
         const difference = { code: "unapproved_difference", topology: "both", rowId: definition.id, checkId }
         failures.push(difference)
         checkReport.failures.push(reportFailure(difference))

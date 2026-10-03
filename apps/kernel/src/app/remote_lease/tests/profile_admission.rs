@@ -24,6 +24,7 @@ async fn leased_prompt_preserves_busy_run_on_profile_mismatch() {
 
 // None means idle, Some(false) active, Some(true) queued for provider startup.
 async fn assert_run_profile_reconciliation(field: &str, queued_work: Option<bool>) {
+    crate::test_support::isolated_env_test!();
     let (mut app, lease) = leased_agent_fixture(false);
     let profile = crate::transport::relay_peer::RelayAgentExecutionProfile::from(
         &app.agents().get_agent(&lease.backing_agent_id).unwrap(),
@@ -276,6 +277,7 @@ async fn cancelling_leased_prompt_admission_releases_profile_operations() {
 
 #[tokio::test]
 async fn leased_prompt_reconciles_durable_home_profile_after_lost_ack_and_restart() {
+    crate::test_support::isolated_env_test!();
     let (mut app, lease) = leased_agent_fixture(false);
     RemoteLeaseRuntime::new(&mut app)
         .update_leased_agent_profile(
@@ -339,5 +341,115 @@ async fn leased_prompt_reconciles_durable_home_profile_after_lost_ack_and_restar
     assert_eq!(
         actual, home_profile,
         "a prompt must not use an unacknowledged worker profile"
+    );
+}
+
+// MP-08 / MP-10 / MP-11: Target worker re-resolves before its Ready shortcut.
+#[test]
+fn mp08_mp10_mp11_leased_reuse_observes_worker_value_changes() {
+    use crate::app::remote_lease::provider_run::LeasedProviderRunMatch;
+    use crate::project_environment::*;
+    let workspace = crate::test_support::TestWorktree::new("leased-project-refresh");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let execution = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease(
+            "home-kernel",
+            "home-session",
+            "home-agent",
+            false,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        )
+        .unwrap();
+    let lease = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &execution.id,
+            "managed-dev-stub",
+            "default",
+            Some("sonnet".into()),
+            None,
+            None,
+            None,
+            None,
+            Some(workspace.path().to_string_lossy().into_owned()),
+            None,
+        )
+        .unwrap();
+    let initial = app.sessions.get_session(&lease.backing_session_id).unwrap();
+    let project = app
+        .sessions
+        .read()
+        .prepare_leased_project(
+            initial.id(),
+            "envlayer5-leased-project",
+            vec![initial.workspace_id().into()],
+        )
+        .unwrap();
+    let session = app
+        .sessions
+        .write()
+        .bind_leased_project(initial.id(), project)
+        .unwrap();
+    let evidence = ProjectEnvironmentEvidence::default();
+    let state = StoredProjectEnvironment {
+        source: None,
+        evidence: evidence.clone(),
+        reported_missing: Default::default(),
+        reviewed_manifest: None,
+        last_review: None,
+        manifest: ProjectEnvironmentManifest {
+            schema_version: 1,
+            project_id: session.project_id().into(),
+            evidence_digest: evidence.digest(),
+            entries: vec![ProjectEnvironmentEntry {
+                name: "APP_LABEL".into(),
+                workspace_id: session.workspace_id().into(),
+                kind: ProjectEnvironmentEntryKind::Variable,
+                classification: ProjectEnvironmentClassification::NonSecret,
+                excluded: false,
+                uses: vec![ProjectEnvironmentUse {
+                    path: "app.ts".into(),
+                    line: 1,
+                }],
+                locator: ProjectEnvironmentLocator::EnvFile {
+                    path: ".env".into(),
+                    key: "APP_LABEL".into(),
+                },
+                status: ProjectEnvironmentEntryStatus::Found,
+            }],
+            private_files: vec![],
+            toolchain_hints: vec![],
+            package_hints: vec![],
+            service_hints: vec![],
+        },
+    };
+    ProjectEnvironmentStore::new(&app.config.private_runtime_state_root())
+        .save(&state)
+        .unwrap();
+    std::fs::write(workspace.path().join(".env"), "APP_LABEL=first\n").unwrap();
+    let manifest = crate::extension::RemoteExtensionManifest::default();
+    let select = |app: &mut DaemonApp| {
+        RemoteLeaseRuntime::new(app)
+            .prepare_leased_provider_run_matches_mcps(&lease, &[], &manifest)
+            .unwrap()
+    };
+    let LeasedProviderRunMatch::LaunchRequired(request) = select(&mut app) else {
+        panic!("initial launch")
+    };
+    let first = app.launch_provider_detached(request).unwrap();
+    assert!(matches!(select(&mut app), LeasedProviderRunMatch::Ready(id) if id == first.id()));
+    std::fs::write(workspace.path().join(".env"), "APP_LABEL=second\n").unwrap();
+    let LeasedProviderRunMatch::LaunchRequired(request) = select(&mut app) else {
+        panic!("changed values must relaunch")
+    };
+    assert_eq!(
+        app.providers.get_run(first.id()).unwrap().state(),
+        ProviderRunState::Ended
+    );
+    let second = app.launch_provider_detached(request).unwrap();
+    assert_ne!(
+        first.project_environment_revision(),
+        second.project_environment_revision()
     );
 }

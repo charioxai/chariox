@@ -4,6 +4,7 @@ import {
   appendInteractionCustomReply,
   deleteInteractionCustomReply,
   interactionCustomChoiceIndex,
+  interactionCustomReplyPasteText,
   nextInteractionChoiceIndex,
   resolveInteractionChoiceKeyAction,
   resolveInteractionChoiceSubmission,
@@ -11,10 +12,21 @@ import {
 
 export type FocusedInteractionChoiceKeyEvent = {
   name: string
+  sequence?: string
   eventType?: string
   ctrl?: boolean
   meta?: boolean
   alt?: boolean
+  shift?: boolean
+  preventDefault?: () => void
+  stopPropagation?: () => void
+}
+
+export type FocusedInteractionChoicePasteEvent = {
+  text: string
+  /** The paste as the terminal sent it, before OpenTUI strips ANSI codes. */
+  rawText?: string | null
+  defaultPrevented?: boolean
   preventDefault?: () => void
   stopPropagation?: () => void
 }
@@ -47,6 +59,7 @@ export type FocusedInteractionChoiceController = {
   submitChoice(choiceIndex?: number): Promise<boolean>
   cycleChoice(delta: number): boolean
   handleKey(event: FocusedInteractionChoiceKeyEvent): boolean
+  handlePaste(event: FocusedInteractionChoicePasteEvent): boolean
 }
 
 export function createFocusedInteractionChoiceController(
@@ -184,9 +197,43 @@ export function createFocusedInteractionChoiceController(
     return false
   }
 
+  // A paste while a custom reply is being typed belongs to that reply, never
+  // to the prompt: a pasted vault passphrase must not appear in the prompt.
+  // A selected secret custom choice takes the paste even before editing.
+  const handlePaste = (event: FocusedInteractionChoicePasteEvent) => {
+    const interaction = deps.getFocusedInteraction()
+    const customChoice = interaction?.custom_choice
+    if (!interaction || !customChoice || event.defaultPrevented) {
+      return false
+    }
+    const customIndex = interactionCustomChoiceIndex(interaction)
+    const secretSelected = customChoice.input_kind === "secret"
+      && (deps.getSelectedIndex(interaction.id) ?? 0) === customIndex
+    if (!deps.isCustomEditing(interaction.id) && !secretSelected) {
+      return false
+    }
+    event.preventDefault?.()
+    event.stopPropagation?.()
+    const text = interactionCustomReplyPasteText(event.rawText ?? event.text)
+    if (text === null) {
+      deps.flashFooter("paste not added: a reply is one line without control characters", "error")
+      return true
+    }
+    deps.setSelectedIndex(interaction.id, customIndex)
+    deps.setCustomEditing(interaction.id, true)
+    deps.setCustomReply(interaction.id, appendInteractionCustomReply({
+      current: deps.getCustomReply(interaction.id),
+      input: text,
+      maxLength: customChoice.max_length,
+    }))
+    repaintInteractions()
+    return true
+  }
+
   return {
     submitChoice,
     cycleChoice,
     handleKey,
+    handlePaste,
   }
 }

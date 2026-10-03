@@ -6,16 +6,19 @@ const SCREENSHOT_SHA256: &str = "3f96168e429ba6431f32b0f76efe5c49720be00e677026e
 
 #[test]
 fn room_screenshot_relay_drill_crosses_the_bound_worker_in_bounded_chunks() {
+    crate::test_support::isolated_env_test!();
     run_test(captures_and_reads_bound_worker_screenshot);
 }
 
 #[test]
 fn room_screenshot_rejects_an_attachment_from_another_room() {
+    crate::test_support::isolated_env_test!();
     run_test(rejects_cross_room_attachment);
 }
 
 #[test]
 fn room_screenshot_rejects_oversized_chunk_requests() {
+    crate::test_support::isolated_env_test!();
     run_test(rejects_oversized_chunk_request);
 }
 

@@ -566,7 +566,7 @@ fn runtime_interactions_only_changes_can_skip_session_snapshot() {
             assert_eq!(active_interactions.len(), 1);
             let interaction = active_interactions.first().expect("interaction");
             assert_eq!(interaction.id(), "interaction-a");
-            assert_eq!(interaction.agent_id(), "agent-a");
+            assert_eq!(interaction.agent_id(), Some("agent-a"));
             assert_eq!(interaction.kind(), RuntimeInteractionKind::Permission);
             assert_eq!(interaction.choices().len(), 2);
         }
@@ -664,6 +664,8 @@ fn waiting_room_snapshot(
         external_provider_sessions_has_more: false,
         external_provider_sessions_next_cursor: None,
         relay_status: RelayStatus {
+            runtime_process_identity: None,
+            capabilities: Vec::new(),
             configured: false,
             connected: false,
             relay_url: None,
@@ -746,5 +748,25 @@ fn project_summary(id: &str, name: &str) -> crate::local::WaitingRoomPublicProje
         last_session_activity_at_ms: None,
         joined_collaborator_count: 0,
         pending_collaboration_invite_count: 0,
+    }
+}
+
+#[test]
+fn mp08_mp10_terminal_workflow_updates_have_one_authoritative_stream() {
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 410);
+    let previous = session_snapshot_with_workflow_status(WorkflowRunStatus::Running);
+    for status in [
+        WorkflowRunStatus::Completed,
+        WorkflowRunStatus::Failed,
+        WorkflowRunStatus::Stopped,
+    ] {
+        let mut current = previous.clone();
+        current
+            .session
+            .workflow_run_mut("workflow-run-a")
+            .unwrap()
+            .set_status(status);
+        assert!(workflow_run_updated_events(&current, Some(&previous)).is_empty());
+        assert!(workflow_run_updated_events(&current, None).is_empty());
     }
 }

@@ -1,11 +1,16 @@
 import { writeFile } from "node:fs/promises"
 
+import { claudeHookCommand, releaseVersion } from "../release-build.js"
+import { shellQuote } from "./launch-environment.js"
+
 export async function writeClaudeHookHandler(file: string) {
   await writeFile(file, `#!/usr/bin/env node
 import { appendFileSync, existsSync, readFileSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 
+let nativeOrigin = null
+try { nativeOrigin = JSON.parse(readFileSync(process.env.CHARIOX_CLAUDE_NATIVE_ORIGIN, "utf8")) } catch {}
 const chunks = []
 for await (const chunk of process.stdin) chunks.push(chunk)
 const raw = Buffer.concat(chunks).toString("utf8")
@@ -74,7 +79,7 @@ if (eventName === "UserPromptSubmit") {
         const response = await fetch(new URL("/permission", bridgeUrl), {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify(input)
+          body: JSON.stringify({ ...input, native_origin: nativeOrigin })
         })
         if (response.ok) {
           const decision = await response.json()
@@ -104,8 +109,18 @@ if (eventName === "UserPromptSubmit") {
 `, "utf8")
 }
 
-export function claudeHookSettings(handlerPath: string) {
-  const command = `node ${JSON.stringify(handlerPath)}`
+// Claude runs each hook as a shell command. From source, Node runs the handler;
+// the release executable has no Node beside it, so it runs the handler itself.
+export function claudeHookShellCommand(
+  handlerPath: string,
+  release: { version: string | undefined, executable: string } = { version: releaseVersion, executable: process.execPath },
+): string {
+  return release.version === undefined
+    ? `node ${shellQuote(handlerPath)}`
+    : `${shellQuote(release.executable)} ${claudeHookCommand} ${shellQuote(handlerPath)}`
+}
+
+export function claudeHookSettings(handlerPath: string, command = claudeHookShellCommand(handlerPath)) {
   return {
     hooks: {
       UserPromptSubmit: [{ hooks: [{ type: "command", command }] }],

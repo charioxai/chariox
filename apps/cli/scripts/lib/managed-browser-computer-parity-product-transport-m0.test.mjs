@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import "./managed-browser-computer-parity-product-entry.test.mjs"
 import test from "node:test"
 
 import {
@@ -866,6 +867,16 @@ test("persistence rejects request/response mismatch and stale saved-state identi
 
 test("production persistence defaults to authoritative slice save, stop, and restore requests", async () => {
   const { transport, client } = createCleanupTransport({ inventoryUnavailableWhenStopped: true })
+  const receipts = []
+  transport.setLifecycleObserver({
+    async observeCreated(receipt) { receipts.push(receipt) },
+    async beforeRetire(receipt) {
+      receipts.push(receipt)
+      const variant = Object.keys(receipt.request)[0]
+      assert.equal(client.requests.some((request) => Object.hasOwn(request, variant)), false,
+        "retirement must be inspected before the lifecycle request is sent")
+    },
+  })
   const binding = {
     kernelId: "kernel-1",
     machineId: "machine-1",
@@ -886,6 +897,11 @@ test("production persistence defaults to authoritative slice save, stop, and res
   assert.equal(result.sameRoom, true)
   assert.equal(result.sameEnvironment, true)
   assert.equal(result.sameProfile, true)
+  assert.deepEqual(receipts.map(({ kind }) => kind), [
+    "slice.create", "slice.start", "slice.persist", "slice.persist", "slice.restore",
+  ])
+  assert.equal(receipts.filter(({ kind }) => ["slice.start", "slice.restore"].includes(kind)).length, 2,
+    "the observer receives both generations even when the logical slice id stays the same")
   assert.deepEqual(result.persistenceMutations.map(({ action }) => action), ["save", "remove", "restore"])
   assert.deepEqual(client.requests.filter((request) => [
     "SaveSliceState", "StopSlice", "StartSlice", "GetSliceStateStatus",
@@ -1020,6 +1036,7 @@ test("persistence timeout and partial lifecycle failure do not retry mutations",
 })
 
 function createCleanupTransport({
+  realProviderActions = false,
   deleteRemovesSlice = true,
   startDelayMs = 0,
   persistenceFailureAction = null,
@@ -1056,6 +1073,10 @@ function createCleanupTransport({
   let reconnectInventoryCalls = 0
   let reconnectMode = false
   const activeAgentIds = new Set(initialAgentIds)
+  const providerAgents = new Map()
+  const providerActions = []
+  const providerTurns = []
+  let providerSpawnCount = 0
   const activeAttachmentIds = new Set()
   const detachAttempts = []
   const requests = []
@@ -1115,6 +1136,20 @@ function createCleanupTransport({
     listAgentsRequest(sessionId) { return { ListAgents: { session_id: sessionId } } },
     listRoomEnvironmentActionHistoryRequest(sessionId, before, limit) {
       return { ListRoomEnvironmentActionHistory: { session_id: sessionId, before, limit } }
+    },
+    spawnAgentRequest(...args) { return { SpawnAgent: { args } } },
+    submitPromptRequest(sessionId, attachmentId, agentId, prompt) {
+      return { SubmitPrompt: { session_id: sessionId, attachment_id: attachmentId, agent_id: agentId, prompt } }
+    },
+    getSessionStateRequest(sessionId) { return { GetSessionState: { session_id: sessionId } } },
+    getSessionHistoryOutlineRequest(sessionId, agentIds) {
+      return { GetSessionHistoryOutline: { session_id: sessionId, agent_ids: agentIds } }
+    },
+    submitRoomEnvironmentActionRequest(sessionId) {
+      return { SubmitRoomEnvironmentAction: { session_id: sessionId } }
+    },
+    captureRoomEnvironmentScreenshotRequest(sessionId) {
+      return { CaptureRoomEnvironmentScreenshot: { session_id: sessionId } }
     },
     endSessionRequest(sessionId) { return { EndSession: { session_id: sessionId } } },
     deleteSessionRequest(sessionId) { return { DeleteSession: { session_ref: sessionId, workspace_id: null } } },
@@ -1218,8 +1253,10 @@ function createCleanupTransport({
             diagnostic_code: null,
           })),
           viewport: { revision: 1 },
-          tabs: [],
-          actions: [],
+          tabs: [{ tab_id: "tab-1", focused: true }],
+          focused_tab_id: "tab-1",
+          actors: realProviderActions ? [...providerAgents.keys()].map((id) => ({ actor_id: `agent:${id}`, kind: "agent" })) : [],
+          actions: realProviderActions ? [...providerActions] : [],
           input_ownership: [],
           pending_input_takeovers: [],
         } } }
@@ -1238,6 +1275,7 @@ function createCleanupTransport({
         return { SlicesListed: { slices: slicePresent ? [{ ...slice, agent_ids: [...activeAgentIds] }] : [] } }
       }
       if (Object.hasOwn(request, "ListAgents")) {
+        if (realProviderActions) return { AgentsListed: { agents: [...providerAgents.values()] } }
         return { AgentsListed: { agents: [...activeAgentIds].map((id) => ({
           id,
           session_id: "room-1",
@@ -1261,6 +1299,7 @@ function createCleanupTransport({
         } } }
       }
       if (Object.hasOwn(request, "ListRoomEnvironmentActionHistory")) {
+        if (realProviderActions) return { RoomEnvironmentActionHistoryListed: { page: { actions: [...providerActions] } } }
         reconnectMode = true
         const actionIds = Array.isArray(reconnectActionSnapshots)
           ? reconnectActionSnapshots[Math.min(reconnectHistoryCalls++, reconnectActionSnapshots.length - 1)]
@@ -1273,6 +1312,47 @@ function createCleanupTransport({
         const attachmentId = `attachment-${++attachmentSequence}`
         activeAttachmentIds.add(attachmentId)
         return { SessionAttached: { attachment: { id: attachmentId, session_id: "room-1" } } }
+      }
+      if (realProviderActions && Object.hasOwn(request, "SpawnAgent")) {
+        const [sessionId, provider, , model, , effort] = request.SpawnAgent.args
+        assert.equal(sessionId, "room-1")
+        const id = `agent-real-${++providerSpawnCount}`
+        const agent = { id, session_id: sessionId, provider, model, effort,
+          account_profile: "default", is_processing: false,
+          remote_execution: { worker_kernel_id: "kernel-1", worker_machine_id: "machine-1",
+            execution_lease_id: `lease-${id}`, leased_agent_id: `leased-${id}` } }
+        providerAgents.set(id, agent)
+        activeAgentIds.add(id)
+        return { AgentSpawned: { agent } }
+      }
+      if (realProviderActions && Object.hasOwn(request, "GetSessionState")) {
+        return { SessionState: { session: { id: "room-1", agents: [...providerAgents.values()] } } }
+      }
+      if (realProviderActions && Object.hasOwn(request, "GetSessionHistoryOutline")) {
+        return { SessionHistoryOutline: { agents: request.GetSessionHistoryOutline.agent_ids.map((agentId) => ({
+          agent_id: agentId, turns: providerTurns.filter((turn) => turn.agent_id === agentId).slice(-2).reverse(),
+        })) } }
+      }
+      if (realProviderActions && Object.hasOwn(request, "SubmitPrompt")) {
+        const { agent_id: agentId, prompt } = request.SubmitPrompt
+        assert.ok(providerAgents.has(agentId))
+        const mode = prompt.includes("slice_browser_click") ? "browser" : "computer"
+        const sequence = providerActions.length + 1
+        providerActions.push({ action_id: `provider-action-${sequence}`, actor_id: `agent:${agentId}`,
+          sequence, state: "completed", mode, kind: mode === "browser" ? "click" : "pointer_click",
+          targets: [{ kind: "browser_tab", id: "tab-1" }],
+          ...(mode === "computer" ? { arguments: { x: 640, y: 400, button: "left", click_count: 1 } } : {}),
+        })
+        const promptId = `provider-prompt-${sequence}`
+        providerTurns.push({ agent_id: agentId, turn_id: `provider-turn-${sequence}`, prompt_id: promptId,
+          lifecycle: "completed", entries: [], blobs: [] })
+        return { PromptSubmitted: { outcome: { Started: { prompt: { id: promptId } } } } }
+      }
+      if (realProviderActions && Object.hasOwn(request, "SubmitRoomEnvironmentAction")) {
+        return { RoomEnvironmentActionSubmitted: { action_id: "keyboard-action", environment: { session_id: "room-1" } } }
+      }
+      if (realProviderActions && Object.hasOwn(request, "CaptureRoomEnvironmentScreenshot")) {
+        return { RoomEnvironmentScreenshotCaptured: { attachment_id: "screenshot-1" } }
       }
       if (Object.hasOwn(request, "DetachFromSession")) {
         const attachmentId = request.DetachFromSession.attachment_id
@@ -1407,6 +1487,33 @@ function createCleanupTransport({
   }
 }
 
+test("observer failure after the actual create receipt preserves ownership and admits only cleanup", async () => {
+  const { transport, requests } = createCleanupTransport()
+  const observations = []
+  transport.setLifecycleObserver({
+    async observeCreated(receipt) {
+      observations.push(receipt)
+      assert.equal(receipt.sliceId, "slice-1")
+      assert.equal(Object.hasOwn(requests.at(-1), "CreateSlice"), true)
+      throw new Error("host census unavailable")
+    },
+    async beforeRetire(receipt) {
+      observations.push(receipt)
+      assert.equal(requests.some((request) => Object.hasOwn(request, "DeleteSlice")), false)
+    },
+  })
+  await assert.rejects(transport.run("selkies.create", {
+    runId: "run-1", kernelOwnedDefault: true, displayBackend: null,
+    binding: { kernelId: "kernel-1", machineId: "machine-1", roomId: "room-1", environmentId: "environment-1" },
+  }), /host census unavailable/)
+  await assert.rejects(transport.run("selkies.attach", {}), /host census unavailable/)
+  assert.equal(requests.some((request) => Object.hasOwn(request, "StartSlice")), false)
+  await assert.rejects(transport.run("cleanup.perform", {}), /host census unavailable/)
+  assert.equal(requests.some((request) => Object.hasOwn(request, "DeleteSlice")), true)
+  assert.equal(requests.some((request) => Object.hasOwn(request, "DeleteSession")), true)
+  assert.deepEqual(observations.map(({ kind }) => kind), ["slice.create", "run.cleanup"])
+})
+
 test("cleanup removes the owned Room after slice deletion and proves no public residue", async () => {
   const { transport, requests } = createCleanupTransport()
   await transport.run("selkies.create", {
@@ -1439,6 +1546,20 @@ test("cleanup removes the owned Room after slice deletion and proves no public r
   assert.equal(inspection.ownedAttachmentResidueCount, 0)
   assert.deepEqual(inspection.resources, { rssDeltaBytes: 0, diskDeltaBytes: 0 })
   assert.deepEqual(inspection.unsupportedChecks, [])
+})
+
+test("Browser and Computer actions use one official Room agent", async () => {
+  const { transport, requests } = createCleanupTransport({ realProviderActions: true })
+  const binding = { kernelId: "kernel-1", machineId: "machine-1",
+    roomId: "room-1", environmentId: "environment-1" }
+  await transport.run("selkies.create", {
+    runId: "same-room-agent", kernelOwnedDefault: true, displayBackend: null, binding,
+  })
+  const browser = await transport.run("selkies.browser", { binding, provider: "codex", model: "gpt-test" })
+  const computer = await transport.run("selkies.computer", { binding, provider: "codex", model: "gpt-test" })
+  assert.equal(browser.placementProof.actorId, "agent:agent-real-1")
+  assert.equal(computer.placementProof.actorId, "agent:agent-real-1")
+  assert.equal(requests.filter((request) => Object.hasOwn(request, "SpawnAgent")).length, 1)
 })
 
 test("cleanup retires Browser and Computer agents before authoritative DeleteSlice", async () => {

@@ -37,6 +37,17 @@ isolation with dropped capabilities. Ordinary fixture modes and user settings
 are unchanged. Do not use this local drill setting as managed-host acceptance;
 managed hosts additionally require the dedicated rootless Docker boundary.
 
+For MP-08/MP-10 worker startup, configure this option before creating the
+execution slice, including a fresh unbound slice created later in a provider-free
+fixture. A provider-free slice using the ordinary default security settings
+cannot create the inner provider namespaces. Codex account catalog startup can
+then exit early, and OpenCode auth status can fail, before any provider turn.
+The kernel reports only fixed diagnostic classes and stderr byte counts; the
+combination `namespace,permission_denied` identifies this boundary failure.
+Recreate the execution slice with the option enabled and use normal SpawnAgent
+account materialization. Do not import account files first or change provider
+credentials to repair a namespace failure.
+
 The empty provider workspace is under a private `mkdtemp` directory in
 `~/.chariox/dev/browser-computer-use/`, not macOS `/var/folders`, which Colima
 does not share by default. Only that empty child workspace is made writable

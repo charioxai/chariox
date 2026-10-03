@@ -1,5 +1,20 @@
 use super::*;
 
+#[path = "project_environment_setup_recovery.rs"]
+pub(super) mod process_lease;
+pub(super) use self::process_lease::{
+    cleanup_after_settled_group, kill_live_process_group, open_pidfd, wait_child_or_cancel,
+    wait_for_process_group_absence, ValidationProcessIdentity,
+};
+use self::process_lease::{recover_validation_command, ValidationCommandLease};
+
+// Version 1 means this platform persists a process identity before releasing
+// the validation command gate. Version 2 explicitly records that ordinary
+// validation may run but cannot be recovered after a kernel restart.
+const VALIDATION_RECOVERY_VERSION: u8 = if cfg!(target_os = "linux") { 1 } else { 2 };
+const VALIDATION_RECOVERY_SUPPORTED_VERSION: u8 = 1;
+const VALIDATION_RECOVERY_UNSUPPORTED_VERSION: u8 = 2;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct SetupExecution {
     pub(super) owner_user_id: String,
@@ -29,8 +44,25 @@ pub(super) struct SetupEntry {
     pub(super) status: ProjectEnvironmentSetupStatus,
     pub(super) fingerprint: String,
     pub(super) cancel_requested: bool,
+    #[serde(default)]
+    pub(super) home_definition_ack: Option<HomeDefinitionPersistenceAck>,
+    /// Versioned marker distinguishes new operations, which persist a scratch
+    /// intent before every child spawn, from legacy in-flight validation
+    /// entries that cannot be safely attributed after a kernel restart.
+    #[serde(default)]
+    validation_recovery_version: u8,
+    #[serde(default)]
+    validation_command_lease: Option<ValidationCommandLease>,
     #[serde(skip)]
     active_executions: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct HomeDefinitionPersistenceAck {
+    pub(super) attempt: u32,
+    pub(super) lease_id: String,
+    pub(super) project_id: String,
+    pub(super) definition_digest: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,6 +78,12 @@ pub(super) enum RemoteSetupRecoveryDecision {
     Acknowledged,
     Cancelled,
     Stale,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RemoteSetupReconcileSource {
+    StatusObservation,
+    InitialStartReply,
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +119,9 @@ fn recovery_state_attempt(state: &RemoteSetupRecoveryState) -> u32 {
     }
 }
 
+type ProviderContextGates =
+    Arc<Mutex<BTreeMap<(String, String), std::sync::Weak<tokio::sync::Mutex<()>>>>>;
+
 #[derive(Debug, Clone)]
 pub(in crate::runtime::state) struct ProjectEnvironmentSetupStore {
     entries: Arc<Mutex<BTreeMap<String, SetupEntry>>>,
@@ -91,6 +132,7 @@ pub(in crate::runtime::state) struct ProjectEnvironmentSetupStore {
     durable_state_store: Option<DurableKernelStateStore>,
     execution_settled: Arc<tokio::sync::Notify>,
     ordering_gates: Arc<Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    provider_context_gates: ProviderContextGates,
 }
 
 pub(super) struct SetupExecutionGuard {
@@ -173,6 +215,7 @@ impl Default for ProjectEnvironmentSetupStore {
             durable_state_store: None,
             execution_settled: Arc::new(tokio::sync::Notify::new()),
             ordering_gates: Arc::new(Mutex::new(BTreeMap::new())),
+            provider_context_gates: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 }
@@ -187,6 +230,7 @@ impl ProjectEnvironmentSetupStore {
             durable_state_store: Some(durable_state_store.clone()),
             execution_settled: Arc::new(tokio::sync::Notify::new()),
             ordering_gates: Arc::new(Mutex::new(BTreeMap::new())),
+            provider_context_gates: Arc::new(Mutex::new(BTreeMap::new())),
         };
         let events =
             match durable_state_store.load_events_by_kind("project.environment_setup.updated") {
@@ -214,24 +258,105 @@ impl ProjectEnvironmentSetupStore {
             );
         }
         for entry in entries.values_mut() {
-            if matches!(
+            let interrupted = matches!(
                 entry.status.phase,
                 ProjectEnvironmentSetupPhase::Requested
                     | ProjectEnvironmentSetupPhase::Preparing
                     | ProjectEnvironmentSetupPhase::Validating
-            ) {
-                entry.status.phase = ProjectEnvironmentSetupPhase::Failed;
-                entry.status.progress_percent = 0;
-                entry.status.message =
-                    Some("kernel restarted before target environment setup completed".to_string());
-                entry.status.failure_code = Some("kernel_restarted".to_string());
-                entry.status.failure_message = Some(
-                    "setup was interrupted by kernel restart; retry the operation".to_string(),
-                );
-                entry.status.retryable = true;
-                entry.status.updated_at_ms = crate::session::unix_epoch_ms();
-                entry.cancel_requested = false;
+            );
+            let cleanup_retry = entry.status.phase == ProjectEnvironmentSetupPhase::Failed
+                && entry.status.failure_code.as_deref() == Some("validation_cleanup_incomplete")
+                && entry.validation_command_lease.is_some();
+            if !interrupted && !cleanup_retry {
+                continue;
             }
+
+            let interrupted_phase = entry.status.phase;
+            let persisted_lease = entry.validation_command_lease.clone();
+            let unsupported_platform_recovery = persisted_lease.is_none()
+                && interrupted_phase == ProjectEnvironmentSetupPhase::Validating
+                && entry.validation_recovery_version == VALIDATION_RECOVERY_UNSUPPORTED_VERSION;
+            let recovery = match persisted_lease.as_ref() {
+                Some(lease)
+                    if lease
+                        .matches_operation(&entry.execution.operation_id, entry.status.attempt) =>
+                {
+                    recover_validation_command(lease)
+                }
+                Some(_) => {
+                    Err("validation process lease does not match its setup operation".to_string())
+                }
+                None if interrupted_phase == ProjectEnvironmentSetupPhase::Validating
+                    && entry.validation_recovery_version
+                        != VALIDATION_RECOVERY_SUPPORTED_VERSION =>
+                {
+                    Err(
+                        "validation has no recognized durable process lease; cleanup is incomplete"
+                            .to_string(),
+                    )
+                }
+                None => Ok(()),
+            };
+
+            let mut candidate = entry.clone();
+            candidate.status.phase = ProjectEnvironmentSetupPhase::Failed;
+            candidate.status.progress_percent = 0;
+            candidate.status.updated_at_ms = crate::session::unix_epoch_ms();
+            candidate.status.validation = None;
+            candidate.cancel_requested = false;
+            match recovery {
+                Ok(()) => {
+                    candidate.status.message = Some(
+                        "kernel restarted before target environment setup completed".to_string(),
+                    );
+                    candidate.status.failure_code = Some("kernel_restarted".to_string());
+                    candidate.status.failure_message = Some(
+                        "setup was interrupted by kernel restart; retry the operation".to_string(),
+                    );
+                    candidate.status.retryable = true;
+                    candidate.validation_command_lease = None;
+                }
+                Err(_) => {
+                    candidate.status.message =
+                        Some("validation command cleanup is incomplete".to_string());
+                    candidate.status.failure_code =
+                        Some("validation_cleanup_incomplete".to_string());
+                    candidate.status.failure_message = Some(if unsupported_platform_recovery {
+                        "restart recovery for this validation command was unsupported on its originating platform; process and scratch cleanup remain unverified".to_string()
+                    } else {
+                        "kernel restart left a validation process or scratch owner that could not be safely verified".to_string()
+                    });
+                    candidate.status.retryable = false;
+                    // Keep the exact lease for a later conservative retry of
+                    // startup reconciliation. Never clear uncertain ownership.
+                    candidate.validation_command_lease = persisted_lease.clone();
+                }
+            }
+
+            let append = durable_state_store.append_event(
+                "project.environment_setup.updated",
+                Some(candidate.execution.operation_id.clone()),
+                serde_json::json!(PersistedSetupEntry {
+                    entry: candidate.clone(),
+                }),
+            );
+            if let Err(error) = append {
+                candidate.status.message =
+                    Some("validation command cleanup state could not be persisted".to_string());
+                candidate.status.failure_code = Some("validation_cleanup_incomplete".to_string());
+                candidate.status.failure_message = Some(
+                    "kernel restarted after cleanup but could not persist the settled failure state"
+                        .to_string(),
+                );
+                candidate.status.retryable = false;
+                candidate.validation_command_lease = persisted_lease;
+                crate::logging::warn_with_fields(
+                    "project.environment_setup",
+                    "failed to persist validation restart recovery state",
+                    serde_json::json!({"error": error.to_string()}),
+                );
+            }
+            *entry = candidate;
         }
         drop(entries);
         store
@@ -306,6 +431,9 @@ impl ProjectEnvironmentSetupStore {
             status: status.clone(),
             fingerprint,
             cancel_requested: false,
+            home_definition_ack: None,
+            validation_recovery_version: VALIDATION_RECOVERY_VERSION,
+            validation_command_lease: None,
             active_executions: 0,
         };
         entries.insert(status.operation_id.clone(), entry.clone());
@@ -359,6 +487,9 @@ impl ProjectEnvironmentSetupStore {
         entry.status.retryable = true;
         entry.status.updated_at_ms = crate::session::unix_epoch_ms();
         entry.cancel_requested = false;
+        entry.home_definition_ack = None;
+        entry.validation_recovery_version = VALIDATION_RECOVERY_VERSION;
+        entry.validation_command_lease = None;
         let execution = entry.execution.clone();
         let status = entry.status.clone();
         let persisted = entry.clone();
@@ -894,14 +1025,27 @@ impl ProjectEnvironmentSetupStore {
         Ok((entry.status.clone(), entry.execution.definition.clone()))
     }
 
-    pub(super) fn reconcile_remote(
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keeps the existing session, worker and lease binding fields explicit without a second protocol representation."
+    )]
+    pub(super) fn reconcile_remote_with<F>(
         &self,
         operation_id: &str,
         expected: &SetupExecution,
         status: ProjectEnvironmentSetupStatus,
         definition: Option<ProjectEnvironmentDefinition>,
         observation_generation: Option<u64>,
-    ) -> Result<ProjectEnvironmentSetupStatus, DaemonError> {
+        source: RemoteSetupReconcileSource,
+        before_commit: F,
+    ) -> Result<ProjectEnvironmentSetupStatus, DaemonError>
+    where
+        F: FnOnce(
+            &mut SetupEntry,
+            &ProjectEnvironmentSetupStatus,
+            Option<&ProjectEnvironmentDefinition>,
+        ) -> Result<(), DaemonError>,
+    {
         let mut entries = self
             .entries
             .lock()
@@ -922,7 +1066,90 @@ impl ProjectEnvironmentSetupStore {
             ));
         }
         validate_remote_setup_status(expected, entry.status.attempt, &status, definition.as_ref())?;
+        if entry.cancel_requested && status.phase != ProjectEnvironmentSetupPhase::Cancelled {
+            if matches!(
+                status.phase,
+                ProjectEnvironmentSetupPhase::Ready | ProjectEnvironmentSetupPhase::Failed
+            ) {
+                entry.status.phase = ProjectEnvironmentSetupPhase::Cancelled;
+                entry.status.progress_percent = 0;
+                entry.status.validation = None;
+                entry.status.message =
+                    Some("setup cancellation completed after the worker stopped".to_string());
+                entry.status.failure_code = None;
+                entry.status.failure_message = None;
+                entry.status.retryable = true;
+                entry.status.updated_at_ms = crate::session::unix_epoch_ms();
+                let persisted = entry.clone();
+                let cancelled = entry.status.clone();
+                drop(entries);
+                self.persist(&persisted);
+                self.execution_settled.notify_waiters();
+                self.mark_remote_recovery_observed(
+                    operation_id,
+                    status.attempt,
+                    expected
+                        .remote_leased_agent_id
+                        .as_deref()
+                        .unwrap_or_default(),
+                    observation_generation,
+                );
+                return Ok(cancelled);
+            }
+            let current = entry.status.clone();
+            drop(entries);
+            self.mark_remote_recovery_observed(
+                operation_id,
+                status.attempt,
+                expected
+                    .remote_leased_agent_id
+                    .as_deref()
+                    .unwrap_or_default(),
+                observation_generation,
+            );
+            return Ok(current);
+        }
+        if matches!(
+            entry.status.phase,
+            ProjectEnvironmentSetupPhase::Ready
+                | ProjectEnvironmentSetupPhase::Failed
+                | ProjectEnvironmentSetupPhase::Cancelled
+        ) {
+            let current = entry.status.clone();
+            drop(entries);
+            self.mark_remote_recovery_observed(
+                operation_id,
+                status.attempt,
+                expected
+                    .remote_leased_agent_id
+                    .as_deref()
+                    .unwrap_or_default(),
+                observation_generation,
+            );
+            return Ok(current);
+        }
+        // Initial Start can return its Requested snapshot after a Get has
+        // already committed the same attempt's newer worker status. Ignore
+        // only that exact, definition-matched stale snapshot.
+        if source == RemoteSetupReconcileSource::InitialStartReply
+            && observation_generation.is_none()
+            && expected.operation_id == operation_id
+            && entry.execution.operation_id == operation_id
+            && status.operation_id == operation_id
+            && status.phase == ProjectEnvironmentSetupPhase::Requested
+            && matches!(
+                entry.status.phase,
+                ProjectEnvironmentSetupPhase::Preparing | ProjectEnvironmentSetupPhase::Validating
+            )
+            && definition.as_ref().is_some_and(|definition| {
+                entry.execution.definition.as_ref() == Some(definition)
+                    && entry.status.definition_digest.as_ref() == status.definition_digest.as_ref()
+            })
+        {
+            return Ok(entry.status.clone());
+        }
         validate_remote_setup_transition(entry.status.phase, status.phase)?;
+        before_commit(entry, &status, definition.as_ref())?;
         if let Some(definition) = definition {
             entry.execution.definition = Some(definition);
         }
@@ -948,6 +1175,146 @@ impl ProjectEnvironmentSetupStore {
             observation_generation,
         );
         Ok(status)
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keeps the existing session, worker and lease binding fields explicit without a second protocol representation."
+    )]
+    pub(super) fn acknowledge_home_definition_persistence(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        lease_id: &str,
+        home_session_id: &str,
+        home_agent_id: &str,
+        project_id: &str,
+        definition_digest: &str,
+    ) -> Result<HomeDefinitionPersistenceAck, DaemonError> {
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("setup state lock should not be poisoned");
+        let entry = entries
+            .get_mut(operation_id)
+            .ok_or_else(|| setup_error("setup operation was not found"))?;
+        if entry.status.attempt != attempt
+            || entry.cancel_requested
+            || matches!(
+                entry.status.phase,
+                ProjectEnvironmentSetupPhase::Failed | ProjectEnvironmentSetupPhase::Cancelled
+            )
+            || entry.execution.remote_leased_agent_id.as_deref() != Some(lease_id)
+            || entry.execution.session_id != home_session_id
+            || entry.execution.agent_id != home_agent_id
+            || entry.execution.project_id != project_id
+        {
+            return Err(setup_error(
+                "home definition acknowledgment does not match the active leased setup attempt",
+            ));
+        }
+        let definition = entry
+            .execution
+            .definition
+            .as_ref()
+            .filter(|definition| {
+                definition.origin == ProjectEnvironmentDefinitionOrigin::UtilityGenerated
+            })
+            .ok_or_else(|| {
+                setup_error("worker has no utility-generated definition to acknowledge")
+            })?;
+        if definition.digest() != definition_digest
+            || entry.status.definition_digest.as_deref() != Some(definition_digest)
+        {
+            return Err(setup_error(
+                "home definition acknowledgment digest does not match the staged definition",
+            ));
+        }
+        let acknowledgment = HomeDefinitionPersistenceAck {
+            attempt,
+            lease_id: lease_id.to_string(),
+            project_id: project_id.to_string(),
+            definition_digest: definition_digest.to_string(),
+        };
+        if let Some(previous) = entry.home_definition_ack.as_ref() {
+            if previous != &acknowledgment {
+                return Err(setup_error(
+                    "home definition acknowledgment conflicts with the staged attempt",
+                ));
+            }
+            return Ok(acknowledgment);
+        }
+        // Validation may reach Ready before a replayed ACK arrives. Only the
+        // exact previously accepted ACK may replay past that terminal boundary.
+        if entry.status.phase == ProjectEnvironmentSetupPhase::Ready {
+            return Err(setup_error(
+                "ready setup has no accepted home definition acknowledgment to replay",
+            ));
+        }
+        if entry.status.phase == ProjectEnvironmentSetupPhase::Validating {
+            return Err(setup_error(
+                "worker validation began without a home definition acknowledgment",
+            ));
+        }
+        entry.home_definition_ack = Some(acknowledgment.clone());
+        let persisted = entry.clone();
+        drop(entries);
+        self.persist(&persisted);
+        self.execution_settled.notify_waiters();
+        Ok(acknowledgment)
+    }
+
+    pub(super) async fn wait_for_home_definition_persistence_ack(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        lease_id: &str,
+        project_id: &str,
+        definition_digest: &str,
+    ) -> Result<(), DaemonError> {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let settled = self.execution_settled.notified();
+                tokio::pin!(settled);
+                settled.as_mut().enable();
+                let acknowledged = {
+                    let entries = self
+                        .entries
+                        .lock()
+                        .expect("setup state lock should not be poisoned");
+                    let entry = entries
+                        .get(operation_id)
+                        .ok_or_else(|| setup_error("setup operation was not found"))?;
+                    if entry.status.attempt != attempt
+                        || entry.cancel_requested
+                        || matches!(
+                            entry.status.phase,
+                            ProjectEnvironmentSetupPhase::Ready
+                                | ProjectEnvironmentSetupPhase::Failed
+                                | ProjectEnvironmentSetupPhase::Cancelled
+                        )
+                    {
+                        return Err(setup_error(
+                            "setup attempt ended before home definition persistence was acknowledged",
+                        ));
+                    }
+                    entry.home_definition_ack.as_ref().is_some_and(|ack| {
+                        ack.attempt == attempt
+                            && ack.lease_id == lease_id
+                            && ack.project_id == project_id
+                            && ack.definition_digest == definition_digest
+                    })
+                };
+                if acknowledged {
+                    return Ok(());
+                }
+                settled.await;
+            }
+        })
+        .await
+        .map_err(|_| {
+            setup_error("timed out waiting for home definition persistence acknowledgment")
+        })?
     }
 
     pub(super) fn cancel(
@@ -994,6 +1361,7 @@ impl ProjectEnvironmentSetupStore {
         let persisted = entry.clone();
         drop(entries);
         self.persist(&persisted);
+        self.execution_settled.notify_waiters();
         self.clear_remote_recovery(operation_id);
         Ok(status)
     }
@@ -1060,6 +1428,44 @@ impl ProjectEnvironmentSetupStore {
             .entry(operation_id.to_string())
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone()
+    }
+
+    // Setup temporarily rebinds and restores the agent's provider process. Keep
+    // that context owned by one operation through validation and restoration.
+    pub(super) async fn lock_provider_context(
+        &self,
+        execution: &SetupExecution,
+        attempt: u32,
+    ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        let gate = {
+            let mut gates = self.provider_context_gates.lock().unwrap();
+            gates.retain(|_, gate| gate.strong_count() > 0);
+            let key = (
+                execution.execution_session_id.clone(),
+                execution.execution_agent_id.clone(),
+            );
+            if let Some(gate) = gates.get(&key).and_then(std::sync::Weak::upgrade) {
+                gate
+            } else {
+                let gate = Arc::new(tokio::sync::Mutex::new(()));
+                gates.insert(key, Arc::downgrade(&gate));
+                gate
+            }
+        };
+        let acquisition = gate.lock_owned();
+        tokio::pin!(acquisition);
+        loop {
+            let changed = self.execution_settled.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self.is_cancelled(&execution.operation_id, attempt) {
+                return None;
+            }
+            tokio::select! {
+                guard = &mut acquisition => return Some(guard),
+                _ = changed => {}
+            }
+        }
     }
 
     pub(super) fn begin_execution(
@@ -1188,8 +1594,242 @@ impl ProjectEnvironmentSetupStore {
         true
     }
 
+    pub(super) fn persist_validation_scratch_intent(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        command_index: usize,
+        scratch_path: &Path,
+    ) -> Result<(), String> {
+        let lease = ValidationCommandLease::scratch_intent(
+            operation_id,
+            attempt,
+            command_index,
+            scratch_path,
+        )?;
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("setup state lock should not be poisoned");
+        let entry = entries
+            .get(operation_id)
+            .ok_or_else(|| "validation setup operation is unavailable".to_string())?;
+        if entry.status.attempt != attempt
+            || entry.cancel_requested
+            || entry.status.phase != ProjectEnvironmentSetupPhase::Validating
+            || entry.validation_recovery_version != VALIDATION_RECOVERY_SUPPORTED_VERSION
+            || entry.validation_command_lease.is_some()
+        {
+            return Err("validation setup attempt cannot authorize a command start".to_string());
+        }
+        let mut candidate = entry.clone();
+        candidate.validation_command_lease = Some(lease);
+        self.persist_checked(&candidate)?;
+        entries.insert(operation_id.to_string(), candidate);
+        Ok(())
+    }
+
+    pub(super) fn persist_validation_process_identity(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        command_index: usize,
+        pid: u32,
+    ) -> Result<ValidationProcessIdentity, String> {
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("setup state lock should not be poisoned");
+        let entry = entries
+            .get(operation_id)
+            .ok_or_else(|| "validation setup operation is unavailable".to_string())?;
+        if entry.status.attempt != attempt
+            || entry.cancel_requested
+            || entry.status.phase != ProjectEnvironmentSetupPhase::Validating
+        {
+            return Err("validation setup attempt cannot bind a child process".to_string());
+        }
+        let mut candidate = entry.clone();
+        let lease = candidate
+            .validation_command_lease
+            .as_mut()
+            .filter(|lease| {
+                lease.operation_id() == operation_id
+                    && lease.attempt() == attempt
+                    && lease.command_index() == command_index
+                    && lease.process().is_none()
+            })
+            .ok_or_else(|| "validation scratch intent is missing or already bound".to_string())?;
+        let identity = ValidationProcessIdentity::from_child(pid, lease.boot_id())?;
+        lease
+            .bind_process(identity.clone())
+            .map_err(|error| error.to_string())?;
+        self.persist_checked(&candidate)?;
+        entries.insert(operation_id.to_string(), candidate);
+        Ok(identity)
+    }
+
+    pub(super) fn release_validation_start_gate(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        command_index: usize,
+        release: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        let entries = self
+            .entries
+            .lock()
+            .expect("setup state lock should not be poisoned");
+        let entry = entries
+            .get(operation_id)
+            .ok_or_else(|| "validation setup operation is unavailable".to_string())?;
+        if entry.status.attempt != attempt
+            || entry.cancel_requested
+            || entry.status.phase != ProjectEnvironmentSetupPhase::Validating
+            || !entry
+                .validation_command_lease
+                .as_ref()
+                .is_some_and(|lease| {
+                    lease.operation_id() == operation_id
+                        && lease.attempt() == attempt
+                        && lease.command_index() == command_index
+                        && lease.process().is_some()
+                })
+        {
+            return Err("validation setup attempt no longer authorizes command start".to_string());
+        }
+        release()
+    }
+
+    pub(super) fn clear_validation_command_lease(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        command_index: usize,
+    ) -> Result<(), String> {
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("setup state lock should not be poisoned");
+        let entry = entries
+            .get(operation_id)
+            .ok_or_else(|| "validation setup operation is unavailable".to_string())?;
+        if entry.status.attempt != attempt
+            || !entry
+                .validation_command_lease
+                .as_ref()
+                .is_some_and(|lease| {
+                    lease.operation_id() == operation_id
+                        && lease.attempt() == attempt
+                        && lease.command_index() == command_index
+                })
+        {
+            return Err("validation command lease changed before cleanup settled".to_string());
+        }
+        let mut candidate = entry.clone();
+        candidate.validation_command_lease = None;
+        self.persist_checked(&candidate)?;
+        entries.insert(operation_id.to_string(), candidate);
+        Ok(())
+    }
+
+    pub(super) fn mark_validation_cleanup_incomplete(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        message: &str,
+    ) {
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("setup state lock should not be poisoned");
+        let Some(entry) = entries.get_mut(operation_id) else {
+            return;
+        };
+        if entry.status.attempt != attempt {
+            return;
+        }
+        entry.status.phase = ProjectEnvironmentSetupPhase::Failed;
+        entry.status.progress_percent = 0;
+        entry.status.message = Some("validation command cleanup is incomplete".to_string());
+        entry.status.failure_code = Some("validation_cleanup_incomplete".to_string());
+        entry.status.failure_message = Some(message.to_string());
+        entry.status.retryable = false;
+        entry.status.updated_at_ms = crate::session::unix_epoch_ms();
+        entry.cancel_requested = false;
+        if let Err(error) = self.persist_checked(entry) {
+            crate::logging::warn_with_fields(
+                "project.environment_setup",
+                "failed to persist validation cleanup-incomplete state",
+                serde_json::json!({"error": error}),
+            );
+        }
+    }
+
+    pub(super) fn mark_validation_output_unsettled(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        command_index: usize,
+    ) -> Result<(), String> {
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("setup state lock should not be poisoned");
+        let entry = entries
+            .get(operation_id)
+            .ok_or_else(|| "validation setup operation is unavailable".to_string())?;
+        if entry.status.attempt != attempt {
+            return Err("validation setup attempt changed before output settlement".to_string());
+        }
+        let mut candidate = entry.clone();
+        let lease = candidate
+            .validation_command_lease
+            .as_mut()
+            .filter(|lease| {
+                lease.operation_id() == operation_id
+                    && lease.attempt() == attempt
+                    && lease.command_index() == command_index
+            })
+            .ok_or_else(|| {
+                "validation process lease changed before output settlement".to_string()
+            })?;
+        lease.mark_output_pipe_unsettled();
+        candidate.status.phase = ProjectEnvironmentSetupPhase::Failed;
+        candidate.status.progress_percent = 0;
+        candidate.status.message = Some("validation command cleanup is incomplete".to_string());
+        candidate.status.failure_code = Some("validation_cleanup_incomplete".to_string());
+        candidate.status.failure_message = Some(
+            "validation output remained open after process-group settlement; a detached descendant may retain access to command scratch"
+                .to_string(),
+        );
+        candidate.status.retryable = false;
+        candidate.status.updated_at_ms = crate::session::unix_epoch_ms();
+        candidate.cancel_requested = false;
+        entries.insert(operation_id.to_string(), candidate.clone());
+        self.persist_checked(&candidate)?;
+        Ok(())
+    }
+
+    fn persist_checked(&self, entry: &SetupEntry) -> Result<(), String> {
+        let durable_state_store = self
+            .durable_state_store
+            .as_ref()
+            .ok_or_else(|| "durable setup state is unavailable".to_string())?;
+        durable_state_store
+            .append_event(
+                "project.environment_setup.updated",
+                Some(entry.execution.operation_id.clone()),
+                serde_json::json!(PersistedSetupEntry {
+                    entry: entry.clone(),
+                }),
+            )
+            .map(|_| ())
+            .map_err(|error| format!("validation command lease could not be persisted: {error}"))
+    }
+
     pub(super) fn mark_failed(&self, operation_id: &str, attempt: u32, code: &str, message: &str) {
-        self.mark_failed_with_retryability(operation_id, attempt, code, message, true);
+        let _ = self.mark_failed_with_retryability(operation_id, attempt, code, message, true);
     }
 
     pub(super) fn mark_failed_non_retryable(
@@ -1199,7 +1839,17 @@ impl ProjectEnvironmentSetupStore {
         code: &str,
         message: &str,
     ) {
-        self.mark_failed_with_retryability(operation_id, attempt, code, message, false);
+        let _ = self.mark_failed_non_retryable_if_active(operation_id, attempt, code, message);
+    }
+
+    pub(super) fn mark_failed_non_retryable_if_active(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        code: &str,
+        message: &str,
+    ) -> bool {
+        self.mark_failed_with_retryability(operation_id, attempt, code, message, false)
     }
 
     fn mark_failed_with_retryability(
@@ -1209,22 +1859,24 @@ impl ProjectEnvironmentSetupStore {
         code: &str,
         message: &str,
         retryable: bool,
-    ) {
+    ) -> bool {
         let mut entries = self
             .entries
             .lock()
             .expect("setup state lock should not be poisoned");
         let Some(entry) = entries.get_mut(operation_id) else {
-            return;
+            return false;
         };
         if entry.status.attempt != attempt
             || entry.cancel_requested
             || matches!(
                 entry.status.phase,
-                ProjectEnvironmentSetupPhase::Ready | ProjectEnvironmentSetupPhase::Cancelled
+                ProjectEnvironmentSetupPhase::Ready
+                    | ProjectEnvironmentSetupPhase::Failed
+                    | ProjectEnvironmentSetupPhase::Cancelled
             )
         {
-            return;
+            return false;
         }
         entry.status.phase = ProjectEnvironmentSetupPhase::Failed;
         entry.status.progress_percent = 0;
@@ -1237,6 +1889,7 @@ impl ProjectEnvironmentSetupStore {
         let persisted = entry.clone();
         drop(entries);
         self.persist(&persisted);
+        true
     }
 
     fn persist(&self, entry: &SetupEntry) {

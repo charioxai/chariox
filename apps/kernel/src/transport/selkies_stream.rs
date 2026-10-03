@@ -70,6 +70,38 @@ pub(crate) async fn forward_selkies_stream(
             }
         }
     };
+    if let Err(error) = &result {
+        // Only fixed, kernel-authored reasons may enter logs. Adapter stderr
+        // and all unexpected transport errors remain private.
+        let reason = match error {
+            DaemonError::LocalTransport {
+                operation: "private Selkies stream" | "encrypted display stream",
+                message,
+            } => match message.as_str() {
+                "display consumer stopped reading" => "consumer_timeout",
+                "display consumer disconnected" => "consumer_disconnected",
+                "private stream ended" => "adapter_eof",
+                "private stream closed" => "adapter_closed",
+                "malformed private stream record" => "malformed_record",
+                "unexpected private stream record" => "unexpected_record",
+                "private control write timed out" => "control_timeout",
+                "private control input disconnected" => "control_disconnected",
+                "display stream, direction, or sequence mismatch" => "sequence_mismatch",
+                "viewer input is not a read-only display control" => "invalid_control",
+                "display admission was closed" => "lease_closed",
+                "display admission expired" => "lease_expired",
+                _ => "other_private_stream_failure",
+            },
+            _ => "other_transport_failure",
+        };
+        if reason != "lease_closed" {
+            crate::logging::warn_with_fields(
+                "display.forwarder",
+                "Selkies forwarder stopped",
+                serde_json::json!({"reason": reason}),
+            );
+        }
+    }
     // EOF asks the adapter to revoke its token. Drain already-queued output so
     // its bounded writer can finish, then reap our child. Never wait forever.
     drop(input);

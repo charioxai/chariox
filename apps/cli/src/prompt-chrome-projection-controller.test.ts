@@ -17,7 +17,9 @@ test("prompt chrome projection derives status and footer from prompt state", () 
     isAttached: () => true,
     workflowScreenActive: () => false,
     workflowPromptState: workflowPromptState,
+    hasFocusAgent: () => true,
     attachedPlaceholder: "attached prompt",
+    noFocusPlaceholder: "no focus prompt",
     detachedPlaceholder: "detached prompt",
     attachedBackground: () => "attached",
     detachedBackground: () => "detached",
@@ -41,7 +43,9 @@ test("prompt chrome projection treats queued-only prompts as idle chrome with qu
     isAttached: () => true,
     workflowScreenActive: () => false,
     workflowPromptState: workflowPromptState,
+    hasFocusAgent: () => true,
     attachedPlaceholder: "attached prompt",
+    noFocusPlaceholder: "no focus prompt",
     detachedPlaceholder: "detached prompt",
     attachedBackground: () => "attached",
     detachedBackground: () => "detached",
@@ -66,7 +70,9 @@ test("prompt chrome projection derives placeholder and tracks prompt background 
     isAttached: () => false,
     workflowScreenActive: () => false,
     workflowPromptState: workflowPromptState,
+    hasFocusAgent: () => true,
     attachedPlaceholder: "attached prompt",
+    noFocusPlaceholder: "no focus prompt",
     detachedPlaceholder: "detached prompt",
     trackThemeRevision: () => {
       themeRevisionReads += 1
@@ -79,6 +85,34 @@ test("prompt chrome projection derives placeholder and tracks prompt background 
   assert.equal(controller.promptPlaceholder(), "detached prompt")
   assert.equal(controller.promptAreaBackground(), "detached")
   assert.equal(themeRevisionReads, 1)
+})
+
+test("prompt chrome projection says when the prompt area has no focus agent to address", () => {
+  let hasFocusAgent = false
+  const controller = createPromptChromeProjectionController({
+    daemonDisconnected: () => false,
+    working: () => false,
+    hasActiveTurnWork: () => false,
+    submitting: () => false,
+    queueDepth: () => 0,
+    fatalError: () => null,
+    activePromptId: () => null,
+    statusLine: () => "connected",
+    isAttached: () => true,
+    workflowScreenActive: () => false,
+    workflowPromptState: workflowPromptState,
+    hasFocusAgent: () => hasFocusAgent,
+    attachedPlaceholder: "attached prompt",
+    noFocusPlaceholder: "no focus prompt",
+    detachedPlaceholder: "detached prompt",
+    attachedBackground: () => "attached",
+    detachedBackground: () => "detached",
+    workflowBackground: () => "workflow",
+  })
+
+  assert.equal(controller.promptPlaceholder(), "no focus prompt")
+  hasFocusAgent = true
+  assert.equal(controller.promptPlaceholder(), "attached prompt")
 })
 
 function workflowPromptState(): WorkflowPromptState {

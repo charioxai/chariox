@@ -1,6 +1,7 @@
 import type { FooterFlash } from "./footer-flash-controller.js"
 import {
   executeSlashCommand,
+  parseSlashCommand,
   type ParsedSlashCommand,
 } from "./commands.js"
 
@@ -10,6 +11,7 @@ type CommandHandler<K extends ParsedSlashCommand["kind"]> = (command: Command<K>
 type CommandCenterCommandExecutorDeps = {
   onExit: () => Promise<unknown> | unknown
   onWaiting: () => Promise<unknown> | unknown
+  onApprovals: () => unknown
   onStop: () => Promise<unknown> | unknown
   handleAttachmentCommand: (raw: string) => Promise<unknown> | unknown
   onSession: CommandHandler<"session">
@@ -35,6 +37,7 @@ type CommandCenterCommandExecutorDeps = {
   onWorktree: CommandHandler<"worktree">
   onWorkflow: CommandHandler<"workflow">
   onNotifications?: CommandHandler<"notifications">
+  onApp?: CommandHandler<"app">
   onSettings?: CommandHandler<"settings">
   onLoop: CommandHandler<"loop">
   onGoal: CommandHandler<"goal">
@@ -64,7 +67,7 @@ export function createCommandCenterCommandExecutor(
     }
 
   const execute = async (value: string) => {
-    if (deps.handleSharedShellCommand) {
+    if (parseSlashCommand(value)?.kind !== "approvals" && deps.handleSharedShellCommand) {
       try {
         if (await deps.handleSharedShellCommand(value)) {
           return
@@ -77,6 +80,7 @@ export function createCommandCenterCommandExecutor(
     await executeSlashCommand(value, {
       onExit: deps.onExit,
       onWaiting: deps.onWaiting,
+      onApprovals: deps.onApprovals,
       onStop: deps.onStop,
       onAttachment: (command) => deps.handleAttachmentCommand(command.raw),
       onSession: deps.onSession,
@@ -102,6 +106,7 @@ export function createCommandCenterCommandExecutor(
       onWorktree: contained(deps.onWorktree),
       onWorkflow: contained(deps.onWorkflow),
       ...(deps.onNotifications ? { onNotifications: contained(deps.onNotifications) } : {}),
+      ...(deps.onApp ? { onApp: contained(deps.onApp) } : {}),
       ...(deps.onSettings ? { onSettings: contained(deps.onSettings) } : {}),
       onLoop: contained(deps.onLoop),
       onGoal: contained(deps.onGoal),

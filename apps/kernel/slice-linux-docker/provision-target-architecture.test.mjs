@@ -53,7 +53,7 @@ process.exit(1);
     const [build] = (await readFile(dockerLog, "utf8")).trim().split("\n").map(JSON.parse)
     const targetArg = build.args.find((value, index) => build.args[index - 1] === "--build-arg" && value.startsWith("TARGETARCH="))
     assert.equal(build.source, "standalone")
-    assert.deepEqual(build.args.slice(0, 2), ["build", "--load"])
+    assert.deepEqual(build.args.slice(0, 4), ["build", "--builder", "default", "--load"])
     assert.equal(targetArg, "TARGETARCH=arm64")
     assert.ok(build.args.includes("CHARIOX_RUNTIME_BUILD_PROFILE=dev"))
     assert.ok(build.args.includes("CARGO_PROFILE_RELEASE_OPT_LEVEL=1"))

@@ -64,6 +64,8 @@ pub struct SliceProviderLoginStart {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SliceRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_slice_ref: Option<String>,
     pub id: String,
     pub name: String,
     pub owner_kernel_id: String,
@@ -293,8 +295,24 @@ pub struct SliceBackupRestoreTransactionRecord {
     pub started_at_ms: u64,
 }
 
+/// Broker acknowledgement still owed after the kernel durably resolved a
+/// backup restore. It is retried until the broker accepts it; it never rolls
+/// back the committed resolution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SliceBackupRestoreAcknowledgementRecord {
+    pub transaction_id: String,
+    pub source_slice_id: String,
+    /// Archive of the published home generation the broker must resolve.
+    pub home_archive_path: String,
+    /// Rollback backup a rolled-back resolution still references. It is
+    /// retained until the acknowledgement completes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retained_rollback_backup: Option<SliceBackupRecord>,
+}
+
 #[derive(Debug, Clone)]
 pub struct CreateSliceInput {
+    pub source_slice_ref: Option<String>,
     pub name: String,
     pub backend: SliceBackendKind,
     pub os: String,

@@ -291,10 +291,16 @@ async fn missing_session_inspection_uses_warmed_projection_without_app_lock() {
     }
 }
 
-fn session_inspection_projection_setup() -> (Arc<Mutex<DaemonApp>>, Box<CommandRouter>, String) {
+fn session_inspection_projection_setup() -> (
+    Arc<Mutex<DaemonApp>>,
+    Box<CommandRouter>,
+    String,
+    crate::test_support::TestWorktree,
+) {
+    let worktree = crate::test_support::TestWorktree::new("session-inspection-projection");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let session_id = session.id().to_string();
     let app = Arc::new(Mutex::new(app));
@@ -302,7 +308,7 @@ fn session_inspection_projection_setup() -> (Arc<Mutex<DaemonApp>>, Box<CommandR
         Arc::clone(&app),
         1,
     ));
-    (app, router, session_id)
+    (app, router, session_id, worktree)
 }
 
 fn spawn_session_inspection_request(
@@ -317,7 +323,7 @@ fn spawn_session_inspection_request(
 
 #[tokio::test]
 async fn session_inspection_reads_use_warmed_projection_without_app_lock() {
-    let (app, router, session_id) = session_inspection_projection_setup();
+    let (app, router, session_id, _worktree) = session_inspection_projection_setup();
 
     let spawn_request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
         account_profile: None,
@@ -486,10 +492,8 @@ fn warmed_session_list_projection_tracks_create_and_delete_responses() {
                 .await
                 .expect("initial list should warm an empty projection");
 
-            let create_request = LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-                "workspace-list-projection",
-                "worktree-list-projection",
-            ));
+            let worktree = crate::test_support::TestWorktree::new("workspace-list-projection");
+            let create_request = LocalDaemonRequest::CreateSession(worktree.session_request());
             let create_command = KernelCommand::from_local_request(
                 "cmd-create-for-list",
                 None,

@@ -9,7 +9,6 @@ mod deployment_contract;
 pub(super) fn workflow_publication_package_files(
     publication: &crate::session::WorkflowPublicationDefinition,
     snapshot: &crate::session::WorkflowPublicationSnapshot,
-    event_bindings: &[crate::session::WorkflowEventBinding],
     extension_requirements: &serde_json::Value,
     kernel_url: Option<&str>,
     agent_app: Option<&serde_json::Value>,
@@ -30,9 +29,9 @@ pub(super) fn workflow_publication_package_files(
         workflow_publication_package_json(publication, &publication_value, agent_app);
     let requirements = extension_requirements.clone();
     let bindings = workflow_publication_bindings_json(snapshot);
-    let event_bindings = workflow_publication_event_bindings_json(publication, event_bindings);
     let config =
         workflow_publication_gateway_config_json(publication, &publication_value, kernel_url);
+    let apps = publication.apps();
     let mut files = vec![
         package_file(
             "publication.json",
@@ -55,13 +54,6 @@ pub(super) fn workflow_publication_package_files(
             false,
         ),
     ];
-    if publication.kind() == crate::session::WORKFLOW_PUBLICATION_KIND_EVENT_BASED {
-        files.push(package_file(
-            "event-bindings.example.json",
-            pretty_json(&event_bindings)?,
-            false,
-        ));
-    }
     if publication_uses_http_ingress(&publication_value) {
         files.extend([
             package_file(
@@ -90,12 +82,16 @@ pub(super) fn workflow_publication_package_files(
             files.extend(workflow_publication_agent_app_asset_files(assets_dir)?);
         }
     }
+    if let Some(apps) = apps {
+        files.push(package_file("apps.json", pretty_json(apps)?, false));
+    }
     let deployment_contract = deployment_contract::workflow_publication_deployment_contract_json(
         publication,
         &publication_value,
         snapshot,
         agent_app,
         &requirements,
+        apps,
         &files,
     )?;
     files.push(package_file(
@@ -195,10 +191,6 @@ fn workflow_publication_package_json(
             "schema_version": 1,
         },
     });
-    if publication.kind() == crate::session::WORKFLOW_PUBLICATION_KIND_EVENT_BASED {
-        package["event_bindings_path"] =
-            serde_json::Value::String("event-bindings.local.json".to_string());
-    }
     if agent_app
         .and_then(|value| value.get("enabled"))
         .and_then(|value| value.as_bool())
@@ -337,44 +329,6 @@ fn workflow_publication_bindings_json(
     })
 }
 
-fn workflow_publication_event_bindings_json(
-    publication: &crate::session::WorkflowPublicationDefinition,
-    bindings: &[crate::session::WorkflowEventBinding],
-) -> serde_json::Value {
-    let bindings = bindings
-        .iter()
-        .map(|binding| {
-            serde_json::json!({
-                "source_binding_id": binding.id,
-                "generator_id": binding.generator_id,
-                "generator_version": binding.generator_version,
-                "manifest_digest": binding.manifest_digest,
-                "event_type": binding.event_type,
-                "event_type_version": binding.event_type_version,
-                "filter": binding.filter,
-                "requested_scope": binding.connection_scope,
-                "endpoint_id": binding.endpoint_id,
-                "queue_ref": binding.queue_ref,
-                "reply_mode": binding.reply_mode,
-                "action_ids": binding.action_ids,
-                "source_environment_id": binding.environment_id,
-                "source_revision": binding.revision,
-                "activation": {
-                    "connection_id": null,
-                    "environment_id": null,
-                    "mode": "authorize_or_explicit_transfer",
-                },
-            })
-        })
-        .collect::<Vec<_>>();
-    serde_json::json!({
-        "schema_version": 1,
-        "publication_id": publication.id(),
-        "secrets_included": false,
-        "bindings": bindings,
-    })
-}
-
 fn workflow_publication_gateway_config_json(
     publication: &crate::session::WorkflowPublicationDefinition,
     publication_value: &serde_json::Value,
@@ -505,9 +459,6 @@ fn workflow_publication_readme(
         "# Workflow Publication {}\n\nThis directory is a Chariox workflow-gateway package. It runs only when a Chariox kernel is reachable.\n\n## Files\n\n- `publication.json`: workflow trigger package metadata\n- `deployment-contract.json`: immutable release requirements and compatibility contract\n- `workflow.snapshot.json`: captured workflow, endpoint, queues, schedules, and agents\n- `requirements.json`: exact non-secret extension definitions, usage, credential slots, network destinations, readiness tests, and portability\n- `bindings.example.json`: provider/model override template\n",
         publication.alias().unwrap_or(publication.id())
     );
-    if publication_package.get("event_bindings_path").is_some() {
-        readme.push_str("- `event-bindings.example.json`: non-secret event requirements; authorize a target connection or explicitly transfer an existing same-environment route\n");
-    }
     readme.push_str("- `publication.config.json`: gateway config for existing scripts\n- `.env.example`: environment template\n- `run.sh`: launcher for `chariox-workflow-gateway`\n");
     if uses_http_ingress {
         readme.push_str(&format!(
@@ -622,6 +573,79 @@ pub(super) fn workflow_publication_package_digest(
         hash.update([u8::from(file.executable)]);
     }
     Ok(format!("sha256:{:x}", hash.finalize()))
+}
+
+/// Package files the kernel templates: they change with kernel upgrades,
+/// not with the workflow, so a release's inputs digest leaves them out.
+const KERNEL_TEMPLATED_PACKAGE_FILES: &[&str] = &[
+    ".env.example",
+    "run.sh",
+    "README.md",
+    "public/index.html",
+    "public/app.js",
+    "public/styles.css",
+];
+
+/// Protocol 378: the digest of a release's workflow-owned package files
+/// (its publication, snapshot, requirements, bindings, config, Apps, agent
+/// app assets and deployment contract), which a bind or recovery re-export
+/// must reproduce. The contract counts without the fields a kernel upgrade
+/// changes: its kernel version and what derives from the package digest or
+/// the templates.
+pub(in crate::runtime::state) fn workflow_publication_release_inputs_digest(
+    files: &[crate::local::WorkflowPublicationPackageFile],
+) -> Result<String, DaemonError> {
+    let inputs = files
+        .iter()
+        .filter(|file| !KERNEL_TEMPLATED_PACKAGE_FILES.contains(&file.path.as_str()))
+        .map(|file| {
+            if file.path == "deployment-contract.json" {
+                release_inputs_contract(file)
+            } else {
+                Ok(file.clone())
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    workflow_publication_package_digest(&inputs)
+}
+
+fn release_inputs_contract(
+    file: &crate::local::WorkflowPublicationPackageFile,
+) -> Result<crate::local::WorkflowPublicationPackageFile, DaemonError> {
+    let error = |message: String| DaemonError::LocalTransport {
+        operation: "digest workflow publication release inputs",
+        message,
+    };
+    let content = base64::engine::general_purpose::STANDARD
+        .decode(&file.content_base64)
+        .map_err(|decode| {
+            error(format!(
+                "failed to decode the deployment contract: {decode}"
+            ))
+        })?;
+    let mut contract: serde_json::Value = serde_json::from_slice(&content)
+        .map_err(|parse| error(format!("failed to parse the deployment contract: {parse}")))?;
+    if let Some(contract) = contract.as_object_mut() {
+        contract.remove("package_id");
+    }
+    if let Some(artifact) = contract["artifact"].as_object_mut() {
+        artifact.remove("content_digest");
+    }
+    if let Some(compatibility) = contract["compatibility"].as_object_mut() {
+        compatibility.remove("minimum_kernel_version");
+    }
+    if let Some(assets) = contract["presentation"]["assets"].as_array_mut() {
+        assets.retain(|asset| {
+            !asset["path"]
+                .as_str()
+                .is_some_and(|path| KERNEL_TEMPLATED_PACKAGE_FILES.contains(&path))
+        });
+    }
+    Ok(package_file(
+        &file.path,
+        pretty_json(&contract)?,
+        file.executable,
+    ))
 }
 
 pub(super) fn workflow_publication_package_archive_base64(
@@ -795,6 +819,66 @@ mod digest_tests {
         assert_eq!(
             workflow_publication_package_digest(&files).expect("package digest"),
             "sha256:41adbfede761eb36ea3202865c16f8e3c1f5b232994d16bde44852ebb3687f4a"
+        );
+    }
+
+    #[test]
+    fn release_inputs_digest_ignores_the_kernel_templates_only() {
+        let contract = |kernel: &str, digest: &str, slots: serde_json::Value| {
+            serde_json::to_vec(&serde_json::json!({
+                "package_id": digest,
+                "artifact": {"content_digest": digest, "digest_algorithm": "sha256"},
+                "compatibility": {"minimum_kernel_version": kernel},
+                "credential_slots": slots,
+                "presentation": {"assets": [
+                    {"path": "public/app.js", "sha256": format!("sha256:{kernel}")},
+                    {"path": "app/index.html", "sha256": "sha256:app"},
+                ]},
+            }))
+            .expect("contract")
+        };
+        let files = |readme: &[u8], contract: Vec<u8>, snapshot: &[u8]| {
+            vec![
+                package_file("README.md", readme, false),
+                package_file("deployment-contract.json", &contract, false),
+                package_file("run.sh", b"#!/bin/sh\n", true),
+                package_file("workflow.snapshot.json", snapshot, false),
+            ]
+        };
+        let digest = |files: Vec<_>| {
+            workflow_publication_release_inputs_digest(&files).expect("inputs digest")
+        };
+        let slots = serde_json::json!([{"id": "slack"}]);
+        let release = digest(files(
+            b"readme",
+            contract("1.0.0", "sha256:a", slots.clone()),
+            b"{}",
+        ));
+        // A kernel upgrade: new templates, kernel version and package digest.
+        assert_eq!(
+            release,
+            digest(files(
+                b"new readme",
+                contract("1.1.0", "sha256:b", slots.clone()),
+                b"{}"
+            ))
+        );
+        // The workflow's own files and the contract it was consented against count.
+        assert_ne!(
+            release,
+            digest(files(
+                b"readme",
+                contract("1.0.0", "sha256:a", slots.clone()),
+                b"{\"n\":1}"
+            ))
+        );
+        assert_ne!(
+            release,
+            digest(files(
+                b"readme",
+                contract("1.0.0", "sha256:a", serde_json::json!([{"id": "github"}])),
+                b"{}"
+            ))
         );
     }
 

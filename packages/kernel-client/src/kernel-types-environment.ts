@@ -49,6 +49,25 @@ export type RoomEnvironmentTab = {
   title: string
   document_revision: number
   focused: boolean
+  /** An App view Tab (protocol 351); absent on every other Tab. */
+  app?: RoomEnvironmentTabApp
+}
+
+/** Desktop pixels. The trusted terminal draws `agent_id`'s conversation there. */
+export type RoomEnvironmentAppPanel = {
+  x: number
+  y: number
+  width: number
+  height: number
+  agent_id: string | null
+  /** Protocol 380: where the App placed it; minimized, it is a bar at the bottom. */
+  placement?: "right" | "bottom"
+  minimized?: boolean
+}
+
+export type RoomEnvironmentTabApp = {
+  installation_id: string
+  panel?: RoomEnvironmentAppPanel
 }
 
 export type RoomEnvironmentInputTarget =
@@ -130,6 +149,8 @@ export type RoomEnvironmentSnapshot = {
   actions: RoomEnvironmentAction[]
   input_ownership: RoomEnvironmentInputOwnership[]
   pending_input_takeovers: RoomEnvironmentPendingInputTakeover[]
+  /** Protocol 379: ordinary Tabs show the browser bar; absent means hidden. */
+  browser_bar_visible?: boolean
   event_cursor: number
 }
 
@@ -192,6 +213,31 @@ export type RoomEnvironmentResourceInventory = {
 
 export type RoomEnvironmentResourceInventoryResponse = {
   RoomEnvironmentResourceInventory: { inventory: RoomEnvironmentResourceInventory }
+}
+
+export type RoomEnvironmentAccessibilityNode = {
+  element_ref: string
+  parent_ref?: string
+  role: string
+  name: string
+  value?: string
+  description?: string
+  disabled?: boolean
+  focused?: boolean
+  /** checked, not checked, mixed, pressed, not pressed, expanded, collapsed, selected, required, invalid */
+  states?: string[]
+}
+
+export type RoomEnvironmentTabAccessibility = {
+  session_id: string
+  tab_id: string
+  document_revision: number
+  nodes: RoomEnvironmentAccessibilityNode[]
+  truncated: boolean
+}
+
+export type RoomEnvironmentTabAccessibilityResponse = {
+  RoomEnvironmentTabAccessibility: { accessibility: RoomEnvironmentTabAccessibility }
 }
 
 export type RoomEnvironmentScreenshotArtifact = {

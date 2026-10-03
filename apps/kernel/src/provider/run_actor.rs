@@ -53,6 +53,8 @@ pub(crate) struct ProviderRunActorMailbox {
     finished_output_polls: Arc<Mutex<Vec<FinishedProviderOutputPollJob>>>,
     completion_signal: ProviderRunActorCompletionSignal,
     output_poll_delays: Arc<Mutex<BTreeMap<String, Duration>>>,
+    #[cfg(test)]
+    manual_output_polls: Arc<std::sync::atomic::AtomicBool>,
     blocking_executor_permits: Arc<Semaphore>,
 }
 
@@ -70,6 +72,8 @@ impl Default for ProviderRunActorMailbox {
             finished_output_polls: Arc::new(Mutex::new(Vec::new())),
             completion_signal: ProviderRunActorCompletionSignal::default(),
             output_poll_delays: Arc::new(Mutex::new(BTreeMap::new())),
+            #[cfg(test)]
+            manual_output_polls: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             blocking_executor_permits: Arc::new(Semaphore::new(64)),
         }
     }
@@ -88,6 +92,11 @@ struct ProviderRunActorCompletionSignalState {
 }
 
 impl ProviderRunActorMailbox {
+    #[cfg(test)]
+    pub(crate) fn use_manual_output_polls_for_tests(&self) {
+        self.manual_output_polls.store(true, Ordering::Relaxed);
+    }
+
     pub(crate) fn operation_lanes(&self) -> ProviderRunOperationLanes {
         self.operation_lanes.clone()
     }

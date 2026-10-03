@@ -1,8 +1,9 @@
 use super::*;
+#[path = "leased_project.rs"]
+mod leased_project;
 use crate::session::{WorkflowEventDeliveryReceipt, WorkflowPublicationSnapshot};
 use std::path::Path;
 
-mod event_publication;
 mod publication;
 
 impl SessionService {
@@ -15,11 +16,11 @@ impl SessionService {
         Self {
             store: SessionStore::new(),
             room_environments: RoomEnvironmentRegistry::new(),
+            room_environment_durable_state: None,
             projects: BTreeMap::new(),
             ephemeral_session_ids: BTreeSet::new(),
             host_machine_id: config.host_machine_id.clone(),
             host_daemon_id: config.daemon_id.clone(),
-            event_environment_id: config.event_delivery_environment_id.clone(),
             prompt_id_allocator,
             next_workflow_number: 0,
             next_workflow_schema_number: 0,
@@ -30,7 +31,6 @@ impl SessionService {
             next_workflow_message_number: 0,
             next_workflow_watchdog_number: 0,
             next_workflow_publication_number: 0,
-            next_workflow_event_binding_number: 0,
             next_workflow_prompt_queue_number: 0,
             next_workflow_queued_prompt_number: 0,
             next_agent_prompt_schedule_number: 0,
@@ -111,12 +111,19 @@ impl SessionService {
     }
 
     pub(crate) fn durable_sessions(&self) -> Vec<RuntimeSession> {
-        self.store
-            .list()
-            .into_iter()
-            .filter(|session| !self.is_ephemeral_session(session.id()))
-            .map(|session| session.durable_runtime_snapshot())
+        self.durable_session_refs()
+            .map(RuntimeSession::durable_runtime_snapshot)
             .collect()
+    }
+
+    pub(crate) fn durable_session_refs(&self) -> impl Iterator<Item = &RuntimeSession> {
+        self.store
+            .iter()
+            .filter(|session| !self.is_ephemeral_session(session.id()))
+    }
+
+    pub(crate) fn non_ended_session_refs(&self) -> impl Iterator<Item = &RuntimeSession> {
+        self.store.non_ended_sessions()
     }
 
     pub(crate) fn all_session_ids(&self) -> Vec<String> {
@@ -1342,6 +1349,33 @@ impl SessionService {
                     workflow_id: workflow_id.to_string(),
                 })?;
         workflow.set_alias(Some(alias));
+        Ok(workflow.clone())
+    }
+
+    pub fn set_workflow_origin(
+        &mut self,
+        session_id: &str,
+        workflow_ref: &str,
+        origin: crate::session::WorkflowOrigin,
+    ) -> Result<WorkflowDefinition, DaemonError> {
+        let workflow_id = self
+            .resolve_workflow_ref(session_id, workflow_ref)?
+            .id()
+            .to_string();
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let workflow =
+            session
+                .workflow_mut(&workflow_id)
+                .ok_or_else(|| DaemonError::WorkflowNotFound {
+                    session_id: session_id.to_string(),
+                    workflow_id: workflow_id.clone(),
+                })?;
+        workflow.set_origin(origin);
         Ok(workflow.clone())
     }
 

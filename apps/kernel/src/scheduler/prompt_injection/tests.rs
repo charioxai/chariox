@@ -121,6 +121,7 @@ fn downstream_workflow_handoff_is_the_visible_user_prompt() {
 
 #[test]
 fn workflow_prompt_assembly_tags_runtime_subprompts_without_legacy_titles() {
+    crate::test_support::isolated_env_test!();
     let _guard = env_lock::lock();
     let home = temp_chariox_home("tagged-subprompts");
     let previous_home = set_chariox_home(&home);
@@ -224,6 +225,7 @@ fn workflow_prompt_component_delimiters_are_escaped_and_handoff_extraction_recov
 
 #[test]
 fn metaagent_event_prompt_is_hidden_from_user_history() {
+    crate::test_support::isolated_env_test!();
     let _guard = env_lock::lock();
     let home = temp_chariox_home("metaagent-event-tag");
     let previous_home = set_chariox_home(&home);
@@ -340,6 +342,7 @@ fn render_workflow_turn_prompt_reads_workflow_prompt_from_definition() {
 
 #[test]
 fn workflow_prompt_teaches_selected_edge_routing_contract() {
+    crate::test_support::isolated_env_test!();
     let _guard = env_lock::lock();
     let home = temp_chariox_home("routing-contract");
     let previous_home = set_chariox_home(&home);
@@ -377,6 +380,7 @@ fn workflow_prompt_teaches_selected_edge_routing_contract() {
 
 #[test]
 fn workflow_prompt_separates_user_visible_intermediate_outputs_from_handoffs() {
+    crate::test_support::isolated_env_test!();
     let _guard = env_lock::lock();
     let home = temp_chariox_home("intermediate-output-contract");
     let previous_home = set_chariox_home(&home);
@@ -512,6 +516,7 @@ fn workflow_run_output_contract_includes_resolved_schema_and_value_guidance() {
 
 #[test]
 fn workflow_prompt_assembly_reads_user_edited_registry_template() {
+    crate::test_support::isolated_env_test!();
     let _guard = env_lock::lock();
     let home = temp_chariox_home("registry-edit");
     let previous_home = set_chariox_home(&home);
@@ -553,6 +558,7 @@ fn workflow_prompt_assembly_reads_user_edited_registry_template() {
 
 #[test]
 fn workflow_node_prompt_fragments_read_user_edited_registry_templates() {
+    crate::test_support::isolated_env_test!();
     let _guard = env_lock::lock();
     let home = temp_chariox_home("node-fragments");
     let previous_home = set_chariox_home(&home);

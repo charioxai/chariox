@@ -9,6 +9,38 @@ use crate::transport::room_browser_controller::{
 use super::*;
 
 impl KernelRuntimeState {
+    /// Send a Room request to its slice worker over the connected relay when one
+    /// matches the slice's relay. A temporary connection needs relay metadata
+    /// access, which a kernel-scoped Cloud relay token does not carry; the
+    /// connected path avoids it while the worker key is pinned or cached (managed
+    /// slice workers pin theirs at token refresh).
+    pub(super) async fn send_room_slice_peer_request(
+        &self,
+        config: &crate::config::DaemonConfig,
+        target: chariox_relay::protocol::ClientTarget,
+        request: RelayPeerRequest,
+        timeout: std::time::Duration,
+    ) -> Result<RelayPeerResponse, DaemonError> {
+        match self.connected_relay_state_for_config(config).await {
+            Some(relay_state) => {
+                crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
+                    config,
+                    &relay_state,
+                    target,
+                    request,
+                    timeout,
+                )
+                .await
+            }
+            None => {
+                crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+                    config, target, request, timeout,
+                )
+                .await
+            }
+        }
+    }
+
     pub(crate) fn browser_controller_enabled_for_room(&self, session_id: &str) -> bool {
         self.owned
             .slice_store
@@ -28,8 +60,24 @@ impl KernelRuntimeState {
         session_id: &str,
         command: Command,
     ) -> Result<Response, DaemonError> {
-        self.room_browser_controller_command_inner(session_id, command, false)
+        self.room_browser_controller_command_inner(session_id, command, false, false, None)
             .await
+    }
+
+    pub(super) async fn room_browser_controller_command_with_admission_deadline(
+        &self,
+        session_id: &str,
+        command: Command,
+        deadline: tokio::time::Instant,
+    ) -> Result<Response, DaemonError> {
+        self.room_browser_controller_command_inner(
+            session_id,
+            command,
+            false,
+            false,
+            Some(deadline),
+        )
+        .await
     }
 
     pub(super) async fn room_browser_controller_recovery_command(
@@ -37,8 +85,27 @@ impl KernelRuntimeState {
         session_id: &str,
         command: Command,
     ) -> Result<Response, DaemonError> {
-        self.room_browser_controller_command_inner(session_id, command, true)
+        self.room_browser_controller_command_inner(session_id, command, true, false, None)
             .await
+    }
+
+    pub(super) async fn room_browser_controller_health_probe(
+        &self,
+        session_id: &str,
+        viewport: crate::session::CanonicalViewport,
+        browser_bar_visible: bool,
+    ) -> Result<Response, DaemonError> {
+        self.room_browser_controller_command_inner(
+            session_id,
+            Command::Reconcile {
+                viewport,
+                browser_bar_visible,
+            },
+            false,
+            true,
+            None,
+        )
+        .await
     }
 
     async fn room_browser_controller_command_inner(
@@ -46,6 +113,8 @@ impl KernelRuntimeState {
         session_id: &str,
         command: Command,
         recovery_authority: bool,
+        background_probe: bool,
+        admission_deadline: Option<tokio::time::Instant>,
     ) -> Result<Response, DaemonError> {
         // Cleanup must remain available while the Room is quarantined, including
         // when the durable store cannot establish that execution is safe.
@@ -74,13 +143,23 @@ impl KernelRuntimeState {
                 | Command::Navigate { .. }
                 | Command::ComputerInput { .. }
                 | Command::CancelDownload { .. }
-                | Command::ImportCookies { .. }
+                | Command::ImportCookies { .. } | Command::AppView {
+                request: crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Open { .. }
+                    | crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Reload { .. }
+            }
         );
         let response = if let Some(slice) = self.owned.slice_store.environment_slice(session_id) {
             // Keep the relay client's large future off callers' async stacks. Local
             // controller operations stay allocation-free; only the remote boundary
             // owns this boxed transport future.
-            Box::pin(self.route_room_browser_controller_command(session_id, slice, command)).await?
+            Box::pin(self.route_room_browser_controller_command(
+                session_id,
+                slice,
+                command,
+                background_probe,
+                admission_deadline,
+            ))
+            .await?
         } else {
             if self
                 .owned
@@ -129,20 +208,26 @@ impl KernelRuntimeState {
         session_id: &str,
         slice: crate::slice::SliceRecord,
         command: Command,
+        background_probe: bool,
+        admission_deadline: Option<tokio::time::Instant>,
     ) -> Result<Response, DaemonError> {
-        // The original action retains its operation guard until terminal proof.
-        // Cancellation must not wait for that very action to release the guard.
-        let _guard = if matches!(&command, Command::CancelAction { .. }) {
-            None
-        } else {
-            Some(self.owned.slice_store.guard_environment_use(
+        let (slice, _guard) = self
+            .admit_room_browser_controller_route(
+                session_id,
                 &slice.id,
-                Some(session_id),
-                "browser_controller.route",
-            )?)
-        };
+                &command,
+                background_probe,
+                admission_deadline,
+            )
+            .await?;
         let config = self.owned.config_projection.snapshot();
-        let config = config.slice_relay_override(&slice).unwrap_or(config);
+        let slice_relay = config.slice_relay_override(&slice);
+        let private_slice_relay = slice_relay.is_some()
+            && slice
+                .relay_endpoint
+                .as_ref()
+                .is_none_or(|endpoint| endpoint.private);
+        let config = slice_relay.unwrap_or(config);
         let target = ClientTarget {
             daemon_id: slice.worker_kernel_id.clone(),
             daemon_alias: slice
@@ -158,37 +243,28 @@ impl KernelRuntimeState {
         };
         let send = |target, command| async {
             let timeout = match &command {
+                // Outlast the worker's verified display/layout application and
+                // rollback; a home timeout must not race that physical work.
+                Command::Reconcile { .. } => Duration::from_secs(60),
                 Command::ComputerInput {
                     action: crate::transport::room_browser_controller::RoomComputerInputAction::KeyboardText { input },
                     ..
                 } => Duration::from_millis(
                     crate::runtime::computer_input_action::keyboard_text_timeout_ms(input.as_str()) + 10_000,
                 ),
+                Command::ComputerInput {
+                    action: crate::transport::room_browser_controller::RoomComputerInputAction::SecretText { input, .. }, ..
+                } => Duration::from_millis(
+                    crate::runtime::computer_input_action::keyboard_text_timeout_ms(input.as_str()) + 10_000,
+                ),
                 _ => Duration::from_secs(15),
             };
-            match self.connected_relay_state_for_config(&config).await {
-                Some(relay_state) => {
-                    crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
-                        &config,
-                        &relay_state,
-                        target,
-                        request(command),
-                        timeout,
-                    )
-                    .await
-                }
-                None => {
-                    crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
-                        &config,
-                        target,
-                        request(command),
-                        timeout,
-                    )
-                    .await
-                }
-            }
+            self.send_room_slice_peer_request(&config, target, request(command), timeout)
+                .await
         };
-        let first = send(target.clone(), command.clone()).await;
+        let first = send(target.clone(), command.clone())
+            .await
+            .map_err(|error| room_slice_unreachable(&slice.name, private_slice_relay, error));
         let response = match first {
             Ok(response) => response,
             Err(first_error) if recovery.is_some() => {
@@ -236,7 +312,9 @@ impl KernelRuntimeState {
         }
         if !matches!(
             &command,
-            Command::ComputerInput { .. } | Command::ComputerClipboardRead { .. }
+            Command::ComputerInput { .. }
+                | Command::ComputerClipboardRead { .. }
+                | Command::ComputerSecretTarget
         ) && !self.browser_controller_process_enabled()
         {
             return Err(controller_route_error(
@@ -397,6 +475,12 @@ async fn execute_local(
             let execution = computer_input_executions
                 .begin(session_id, &action_id)
                 .map_err(controller_route_error)?;
+            if matches!(
+                &action,
+                crate::transport::room_browser_controller::RoomComputerInputAction::SecretText { .. }
+            ) {
+                execution.withhold_capture().await;
+            }
             let cancellation = execution.cancellation();
             let input_result = match action {
                 crate::transport::room_browser_controller::RoomComputerInputAction::PointerMove {
@@ -476,8 +560,8 @@ async fn execute_local(
                     .await
                 }
                 crate::transport::room_browser_controller::RoomComputerInputAction::SecretText {
-                    input,
-                } => super::tool_dispatch::run_room_secret_text_input(input, cancellation).await,
+                    input, expected_target,
+                } => super::tool_dispatch::run_room_secret_text_input(input, expected_target, cancellation).await,
             };
             if matches!(
                 input_result,
@@ -490,6 +574,14 @@ async fn execute_local(
             }
             input_result?;
             return Ok(Response::ComputerInputApplied { action_id });
+        }
+        Command::ComputerSecretTarget => {
+            let capture_guard = computer_input_executions
+                .capture_guard()
+                .map_err(controller_route_error)?;
+            let target =
+                super::tool_dispatch::capture_computer_secret_target(capture_guard).await?;
+            return Ok(Response::ComputerSecretTarget { target });
         }
         Command::ComputerClipboardRead {
             actor_id,
@@ -522,8 +614,11 @@ async fn execute_local(
         Command::Release => processes
             .release(&session_id)
             .map(|snapshot| Response::Process { snapshot }),
-        Command::Reconcile { viewport } => processes
-            .reconcile_browser(&session_id, &viewport)
+        Command::Reconcile {
+            viewport,
+            browser_bar_visible,
+        } => processes
+            .reconcile_browser(&session_id, &viewport, browser_bar_visible)
             .map(|reconciliation| Response::Reconciled { reconciliation }),
         Command::Snapshot {
             target_id,
@@ -684,6 +779,9 @@ async fn execute_local(
                 setting,
             },
         ),
+        Command::AppView { request } => processes
+            .app_view(&session_id, &request)
+            .map(|result| Response::AppView { result }),
         Command::PollEvents {
             browser_generation,
             cursor,
@@ -723,6 +821,9 @@ async fn execute_local(
             &action,
             timeout_ms,
         ),
+        Command::ComputerSecretTarget => {
+            unreachable!("Computer focus executes before the blocking controller path")
+        }
         Command::ComputerInput { .. } => {
             unreachable!("Computer input executes before the blocking controller path")
         }
@@ -770,6 +871,34 @@ async fn execute_local(
         }
         result => result.map_err(|message| controller_route_error(&message)),
     }
+}
+
+const ROOM_SLICE_UNREACHABLE: &str = "room_slice_unreachable";
+
+/// Only a refused connection to the selected private slice relay can be treated
+/// as a missing slice. Shared relay outages and timeouts retain stop failures.
+fn room_slice_unreachable(
+    slice: &str,
+    private_slice_relay: bool,
+    error: DaemonError,
+) -> DaemonError {
+    match &error {
+        DaemonError::LocalTransport { operation, message }
+            if private_slice_relay
+                && (operation.starts_with("connect relay")
+                    || operation == &"connect temporary relay peer socket")
+                && message.contains("Connection refused") =>
+        {
+            controller_route_error(&format!(
+                "{ROOM_SLICE_UNREACHABLE}: the Room's slice `{slice}` is not reachable ({message}); start the slice and retry"
+            ))
+        }
+        _ => error,
+    }
+}
+
+pub(super) fn is_room_slice_unreachable(error: &DaemonError) -> bool {
+    matches!(error, DaemonError::LocalTransport { message, .. } if message.starts_with(ROOM_SLICE_UNREACHABLE))
 }
 
 pub(super) fn controller_route_error(message: &str) -> DaemonError {

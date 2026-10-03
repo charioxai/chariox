@@ -1,4 +1,8 @@
+import { createAppHostTerminal } from "./app-host-action.js"
 import process from "node:process"
+import { AppDevLoop } from "./app-dev-loop.js"
+import { AppFileInstaller, formatInstallProgress } from "./app-install-file.js"
+import { AppPublisherEnrollment } from "./app-publisher-file.js"
 import { randomBytes } from "node:crypto"
 import { homedir } from "node:os"
 import { clearTimeout, setTimeout as startTimeout } from "node:timers"
@@ -24,6 +28,7 @@ import {
   createCliAppWorkflowProjectionComposition,
 } from "./cli-app-workflow-composition.js"
 import { createCliOverlayInteractionComposition } from "./cli-overlay-interaction-composition.js"
+import { createCliKernelApprovalComposition } from "./cli-kernel-approval-composition.js"
 import { createCliPrimaryTranscriptComposition } from "./cli-primary-transcript-composition.js"
 import { createCliPromptSurfaceComposition } from "./cli-prompt-surface-composition.js"
 import { createCliResponseShellComposition } from "./cli-response-shell-composition.js"
@@ -503,7 +508,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     clearTimer: clearTimeout,
     daemonDisconnected, working, anyPromptWork, anyTurnWork,
     submitting, focusedQueueDepth, fatalError, focusedActivePrompt,
-    statusLine, isAttached, workflowScreenShowing, workflowPromptState,
+    statusLine, isAttached, workflowScreenShowing, workflowPromptState, focusedAgentId,
     themeRevision, preferencesState, setPreferencesState, setPromptHistoryEntries,
     setPromptHistoryIndex, setPromptHistoryDraft, promptTextController, attachmentState,
     promptHistoryEntries, promptHistoryIndex, promptHistoryDraft, promptInputRefController,
@@ -660,6 +665,15 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     refreshSplitPaneFocusRepaint: () => refreshSplitPaneFocusRepaint(),
   })
   const applySessionState = sessionStateApplyController.apply
+  const kernelApprovals = createCliKernelApprovalComposition({
+    client, renderer, session: sessionState, dimensions, themeRevision,
+    attached: isAttached, flashFooter,
+    connected: () => isAttached() && !daemonDisconnected(),
+    currentFocus: currentFocusedRenderable,
+    promptFocus: promptInputRefController.currentOrNull,
+    closeOtherDialog: closeActiveDialogOverlay,
+    applySession: applySessionState,
+  })
 
   const runUiBatch = uiBatchController.run
 
@@ -797,6 +811,15 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   })
   const clearAgentPaneRuntime = agentPaneRuntimeResetController.reset
 
+  const appFileInstaller = new AppFileInstaller(
+    (request) => client.send(request),
+    (progress) => flashFooter(formatInstallProgress(progress), "info"),
+  )
+  const appPublisherEnrollment = new AppPublisherEnrollment((request) => client.send(request), appendNotice)
+  const appDevLoop = new AppDevLoop({
+    send: (request) => client.send(request), installer: appFileInstaller, notice: appendNotice,
+    currentSession: () => isAttached() ? sessionState().id : undefined,
+  })
   let recordDaemonActivity: (activityType: string) => void = () => {}
   const {
     hydrateCurrentAttachedSession, kernelEventSubscriptionController, syncKernelEventSubscription, recoverAttachedSessionAfterKernelRestart,
@@ -804,6 +827,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     requestExit, requestWaitingRoom,
   } = createCliSessionLifecycleComposition({
     client, options, appLogger, renderer,
+    drainAppInstall: async () => { await Promise.all([appDevLoop.dispose(), appFileInstaller.dispose(), appPublisherEnrollment.dispose()]) },
     sleep, formatError, supportsKernelEventStream, closingStateController,
     isAttached, daemonDisconnected, attachmentState, sessionState,
     providerRunState, createdSessionState, waitingRoomState, preferencesState,
@@ -850,7 +874,9 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     handleSigint, handleStdinData, requestPromptStop, submitFocusedInteractionChoice,
     submitPrompt, submitWorkspaceShellCommand,
   } = createCliAppCommandRoutingComposition({
-    client, options, appLogger, formatError,
+    appHostTerminal: createAppHostTerminal(renderer),
+    lastViewedAppHostOperationId: kernelApprovals.lastViewedAppHostOperationId,
+    client, options, appLogger, formatError, appFileInstaller, appDevLoop, appPublisherEnrollment,
     preferencesState, setPreferencesState, initialWorkspaceTarget, initialWorktreeTarget,
     pendingWorkspaceTarget, pendingWorktreeTarget, setPendingWorkspaceTarget, setPendingWorktreeTarget,
     isAttached, anyTurnWork, sessionState, attachmentState, providerRunState,
@@ -886,6 +912,9 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     openWorkflowNodeInstructionsEditor: workflowActions.openWorkflowNodeInstructionsEditor,
     closeWorkflowNodeInstructionsEditor: workflowActions.closeWorkflowNodeInstructionsEditor,
     focusedAgentInteraction, interactionChoiceStore, renderAgentInteractions, handleHotkeysToggleShortcut,
+    handleKernelApprovalKey: kernelApprovals.handleKey,
+    openKernelApprovals: kernelApprovals.openFromCommand,
+    kernelApprovalOwnsInput: kernelApprovals.ownsInput,
     dialogOverlayOpen, closeActiveDialogOverlay, activePrompt, handleCommandCenterKey,
     handleQueuedPromptKey: handleQueuedPromptStripKey,
     commandCenterOpen, promptHistoryIndex, promptHistoryDraft, navigatePromptHistoryInput,
@@ -983,7 +1012,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       promptPlaceholder={promptPlaceholder()}
       promptInputMaxHeight={promptInputMaxHeight()}
       promptAreaBackground={promptAreaBackground()}
-      retainPromptFocus={retainPromptFocus}
+      retainPromptFocus={() => { if (!kernelApprovals.ownsInput()) retainPromptFocus() }}
       handlePromptSelectionSurfaceMouseUp={handlePromptSelectionSurfaceMouseUp}
       responsePaneRenderRefStore={responsePaneRenderRefStore}
       historyLoadingRenderController={historyLoadingRenderController}
@@ -995,6 +1024,9 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       assignStatusIndicatorBox={assignStatusIndicatorBox}
       assignFooterSummaryBox={assignFooterSummaryBox}
       assignDialogOverlayBox={assignDialogOverlayBox}
+      assignKernelApprovalBox={kernelApprovals.assignBox}
+      assignKernelApprovalBanner={kernelApprovals.assignBanner}
+      kernelApprovalOwnsInput={kernelApprovals.ownsInput}
       handlePromptKeyDown={handlePromptKeyDown}
       handlePromptContentChange={handlePromptContentChange}
       focusedAgentInteraction={focusedAgentInteraction}

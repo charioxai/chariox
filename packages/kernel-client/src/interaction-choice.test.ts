@@ -6,6 +6,8 @@ import {
   appendInteractionCustomReply,
   deleteInteractionCustomReply,
   interactionCustomChoiceIndex,
+  interactionCustomReplyKeyText,
+  interactionCustomReplyPasteText,
   nextInteractionChoiceIndex,
   resolveInteractionChoiceKeyAction,
   resolveInteractionChoiceSubmission,
@@ -173,6 +175,85 @@ test("resolveInteractionChoiceKeyAction handles custom reply editing keys", () =
   })
 })
 
+test("custom replies keep letter case, shifted symbols, spaces and Unicode as typed", () => {
+  const source = interaction({ custom_choice: { id: "passphrase", label: "Vault passphrase", input_kind: "secret" } })
+  // Terminal key events as OpenTUI parses them: legacy bytes name a shifted
+  // letter in lower case and keep the typed text in `sequence`; the kitty
+  // protocol puts its associated text in `sequence`.
+  const keys = [
+    { name: "c", shift: true, sequence: "C" },
+    { name: "o", sequence: "o" },
+    { name: "r", shift: true, sequence: "R" },
+    { name: "1", shift: true, sequence: "!" },
+    { name: "@", sequence: "@" },
+    { name: "3", shift: true, sequence: "#" },
+    { name: "space", sequence: " " },
+    { name: "é", sequence: "é" },
+    { name: "\u{1D11E}", sequence: "\u{1D11E}" },
+    { name: "ß", shift: true, sequence: "ẞ" },
+    // kitty without associated text: the sequence is the escape sequence.
+    { name: "z", shift: true, sequence: "\u001b[122;2u" },
+  ]
+  let reply = ""
+  for (const event of keys) {
+    const action = resolveInteractionChoiceKeyAction({
+      interaction: source,
+      event,
+      selectedIndex: 2,
+      customEditing: true,
+      customReply: reply,
+    })
+    assert.equal(action.action, "append_custom_reply", event.name)
+    reply = appendInteractionCustomReply({
+      current: reply,
+      input: action.action === "append_custom_reply" ? action.input : "",
+      maxLength: 512,
+    })
+  }
+  assert.equal(reply, "CoR!@# é\u{1D11E}ẞZ")
+  assert.notEqual(reply, reply.toLowerCase())
+})
+
+test("custom reply key text ignores chords and keys that type nothing", () => {
+  assert.equal(interactionCustomReplyKeyText({ name: "a", ctrl: true, sequence: "\u0001" }), "")
+  assert.equal(interactionCustomReplyKeyText({ name: "a", meta: true, sequence: "\u001ba" }), "")
+  assert.equal(interactionCustomReplyKeyText({ name: "b", alt: true, sequence: "b" }), "")
+  assert.equal(interactionCustomReplyKeyText({ name: "up", sequence: "\u001b[A" }), "")
+  assert.equal(interactionCustomReplyKeyText({ name: "f1", sequence: "\u001bOP" }), "")
+  assert.equal(interactionCustomReplyKeyText({ name: "tab", sequence: "\t" }), "")
+  assert.equal(interactionCustomReplyKeyText({ name: "a", shift: true }), "A")
+  assert.equal(interactionCustomReplyKeyText({ name: "space" }), " ")
+  assert.deepEqual(resolveInteractionChoiceKeyAction({
+    interaction: interaction({ custom_choice: { id: "custom", label: "Custom" } }),
+    event: { name: "a", ctrl: true, sequence: "\u0001" },
+    selectedIndex: 2,
+    customEditing: true,
+    customReply: "",
+  }), { action: "handled", consumeEvent: false })
+})
+
+test("pasted custom replies are kept exactly, one line, within the length limit", () => {
+  assert.equal(interactionCustomReplyPasteText("Mixed Case!@# é\u{1D11E}"), "Mixed Case!@# é\u{1D11E}")
+  assert.equal(interactionCustomReplyPasteText("Copied-Line\r\n"), "Copied-Line")
+  assert.equal(interactionCustomReplyPasteText("two\nlines"), null)
+  assert.equal(interactionCustomReplyPasteText("tab\there"), null)
+  assert.equal(interactionCustomReplyPasteText("esc\u001b[31m"), null)
+  assert.equal(
+    appendInteractionCustomReply({ current: "Ab", input: "C\u{1D11E}dE", maxLength: 4 }),
+    "AbC\u{1D11E}",
+  )
+  assert.equal(deleteInteractionCustomReply("aB\u{1D11E}"), "aB")
+})
+
+test("custom reply minimum length counts characters, as the kernel does", () => {
+  const source = interaction({ custom_choice: { id: "custom", label: "Custom", min_length: 2 } })
+  assert.deepEqual(resolveInteractionChoiceSubmission({
+    interaction: source,
+    selectedIndex: 2,
+    customReply: "\u{1D11E}",
+  }), { action: "edit_custom" })
+})
+
 test("resolveInteractionChoiceKeyAction handles navigation and submission keys", () => {
   const source = interaction({
     custom_choice: {
@@ -258,7 +339,7 @@ test("resolveInteractionChoiceKeyAction ignores releases and unrelated keys", ()
   })
 })
 
-function interaction(overrides: Partial<RuntimeInteraction> = {}): RuntimeInteraction {
+function interaction(overrides: Partial<Extract<RuntimeInteraction, { agent_id: string }>> = {}): RuntimeInteraction {
   return {
     id: "interaction-1",
     agent_id: "agent-1",

@@ -185,6 +185,7 @@ mod tests {
 
     #[test]
     fn required_remote_skills_validate_hash_and_replace_backing_grants() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-required-remote-skill-test-{}",
@@ -268,6 +269,7 @@ mod tests {
 
     #[test]
     fn required_remote_skills_reject_missing_worker_package() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-missing-required-remote-skill-test-{}",
@@ -302,6 +304,7 @@ mod tests {
 
     #[test]
     fn leased_prompt_dispatch_includes_worker_local_required_skill_context() {
+        crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-required-remote-skill-prompt-test-{}",

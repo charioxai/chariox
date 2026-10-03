@@ -1,0 +1,19 @@
+[Unit]
+Description=Delete exact owned temporary Chariox image builder %i
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=900
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+ExecStart=/usr/bin/python3 /usr/local/lib/chariox/image-builder-cleanup.py expire --receipt /var/lib/chariox/image-builders/%i/receipt.json
+TimeoutStartSec=190
+Restart=on-failure
+RestartSec=60
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true

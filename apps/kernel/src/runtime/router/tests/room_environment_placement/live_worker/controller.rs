@@ -18,6 +18,7 @@ pub(super) fn process_store(
 
 #[test]
 fn room_environment_controller_uses_its_slice_without_worker_agents() {
+    crate::test_support::isolated_env_test!();
     run_test(uses_its_slice_without_worker_agents);
 }
 
@@ -27,6 +28,7 @@ async fn uses_its_slice_without_worker_agents() {
 
 #[test]
 fn room_environment_controller_uses_its_private_slice_relay() {
+    crate::test_support::isolated_env_test!();
     run_test(uses_private_slice_relay);
 }
 
@@ -36,6 +38,7 @@ async fn uses_private_slice_relay() {
 
 #[test]
 fn room_environment_controller_rejects_unprovisioned_worker() {
+    crate::test_support::isolated_env_test!();
     run_test(rejects_unprovisioned_worker);
 }
 
@@ -85,6 +88,7 @@ fn room_environment_controller_boot_rejects_invalid_binding() {
         let mut config = state.config.clone();
         config.host_machine_id = "slice:slice-1".into();
         let mut binding = crate::config::RoomEnvironmentWorkerBinding {
+            provisioned_slice_id: None,
             home_kernel_id: "home".into(),
             home_public_key: config.relay_public_key.clone(),
             session_id: "room-1".into(),

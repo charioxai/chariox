@@ -1,8 +1,9 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http"
 import process from "node:process"
 
+import { sendWithProtocolMinimum } from "../protocol-minimum-diagnostic.js"
 import { LocalIpcClient } from "../ipc.js"
-import { requestNativeProviderInteractionRequest } from "../ipc-requests.js"
+import { nativeProviderInteractionMinimumProtocolVersion, requestNativeProviderInteractionRequest } from "../ipc-requests.js"
 
 export type ClaudePromptOriginState = {
   current: "native" | "external" | null
@@ -57,17 +58,28 @@ async function handleClaudePermissionBridgeRequest(
       writeJsonResponse(response, 200, { handled: false })
       return
     }
+    const origin = payload.native_origin
+    if (!origin || typeof origin !== "object"
+      || origin.scope !== "prompt" || typeof origin.prompt_id !== "string" || !origin.prompt_id
+      || typeof origin.provider_run_id !== "string" || !origin.provider_run_id) {
+      writeJsonResponse(response, 200, { handled: true, behavior: "deny", message: "Approval has no originating turn." })
+      return
+    }
     const toolName = typeof payload.tool_name === "string" ? payload.tool_name : "tool"
     const interactionId = `claude-native-permission-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`
-    const interactionResponse = await options.client.send<Record<string, unknown>>(
+    const interactionResponse = await sendWithProtocolMinimum<Record<string, unknown>>(
+      options.client.send.bind(options.client),
       requestNativeProviderInteractionRequest(
         options.sessionId,
         options.agentId,
         interactionId,
         `Approve Claude Code ${toolName}?`,
         formatClaudePermissionMessage(payload),
+        { scope: "prompt", prompt_id: origin.prompt_id, provider_run_id: origin.provider_run_id },
         300,
       ),
+      { capability: "Native approval turn identity", requestVariant: "RequestNativeProviderTurnInteraction",
+        unknownField: "origin", minimumProtocolVersion: nativeProviderInteractionMinimumProtocolVersion },
     )
     const resolution = expectVariant<{ resolution: { status?: string; choice_id?: string | null; reply?: string | null } }>(
       interactionResponse,
@@ -93,6 +105,7 @@ async function handleClaudePermissionBridgeRequest(
 }
 
 type ClaudePermissionPayload = {
+  native_origin?: { scope?: unknown; prompt_id?: unknown; provider_run_id?: unknown } | null
   hook_event_name?: unknown
   permission_mode?: unknown
   tool_name?: unknown
