@@ -1,6 +1,17 @@
 //! Reuse the command-result journal for durable, non-evicting reservations.
 use super::*;
 
+#[derive(Debug, thiserror::Error)]
+#[error("at-most-once receipt capacity reached")]
+struct ReceiptCapacityError;
+
+/// OS ENOMEM is also OutOfMemory, but must never authorize a control effect.
+pub(crate) fn is_receipt_capacity_error(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|error| error.is::<ReceiptCapacityError>())
+}
+
 impl CommandFingerprint {
     pub(crate) fn for_app_control(command: &KernelCommand, request: &LocalDaemonRequest) -> Self {
         use sha2::{Digest, Sha256};
@@ -101,7 +112,7 @@ impl CommandResultCache {
         if results.len() >= self.retention.max_entries {
             return Err(io::Error::new(
                 io::ErrorKind::OutOfMemory,
-                "at-most-once receipt capacity reached",
+                ReceiptCapacityError,
             ));
         }
         let persistence = self

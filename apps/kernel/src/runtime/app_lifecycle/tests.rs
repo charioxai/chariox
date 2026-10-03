@@ -789,10 +789,12 @@ fn full_receipt_journal_stops_and_reaps_a_live_worker() {
                 }
             })
             .await;
-        eprintln!(
-            "receipt_capacity_stop_ms={:.3}",
-            started.elapsed().as_secs_f64() * 1000.0
-        );
+        if std::env::var_os("CHARIOX_RECEIPT_STOP_TIMING").is_some() {
+            eprintln!(
+                "receipt_capacity_stop_ms={:.3}",
+                started.elapsed().as_secs_f64() * 1000.0
+            );
+        }
         assert_eq!(
             result,
             LocalDaemonResponse::AppWorker {

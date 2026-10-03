@@ -701,10 +701,19 @@ async fn at_most_once_receipts_never_evict_and_refuse_new_identity_at_capacity()
             },
         )
         .await;
-    assert!(cache
+    let capacity = match cache
         .reserve_at_most_once("two", &fingerprint, response.clone())
         .await
-        .is_err());
+    {
+        Err(error) => error,
+        Ok(_) => panic!("full journal admitted a new receipt"),
+    };
+    assert!(is_receipt_capacity_error(&capacity));
+    // The OS uses the same ErrorKind for ENOMEM. It is an I/O failure,
+    // not receipt capacity, and cannot authorize the safety-control exception.
+    let enomem = io::Error::from_raw_os_error(libc::ENOMEM);
+    assert_eq!(enomem.kind(), capacity.kind());
+    assert!(!is_receipt_capacity_error(&enomem));
     assert!(matches!(
         cache
             .reserve_at_most_once("one", &fingerprint, response.clone())
