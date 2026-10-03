@@ -631,7 +631,7 @@ impl KernelRuntimeState {
         let tool = view_call_tool(lease.catalog(), binding.generation, tool)?;
         let slot = lease
             .reserve_call(Duration::from_secs(30))
-            .map_err(|error| coded(app_call_errors::busy_error(&error)))?;
+            .map_err(|error| view_error("APP_BUSY", &format!("{error}; retry after 500 ms")))?;
         slot.validate_input(&tool, &input)
             .map_err(|error| coded(app_call_errors::input_error(&error)))?;
         let permit = self

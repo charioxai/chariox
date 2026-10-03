@@ -166,6 +166,74 @@ test("queues bridge calls bound to the installation and resolves responses", asy
   await assert.rejects(tabs.respond({ target_id: "nope", call_id: "1" }));
 });
 
+for (const counts of [[80, 0, 0, 0], [20, 20, 20, 20]]) {
+test(`an 80-call backlog (${counts.join("/")}) across four views settles every promise or returns retryable APP_BUSY`, async () => {
+  const { browser, connection } = fakeBrowser();
+  const tabs = new AppTabs(browser);
+  const contexts = new Map();
+  const bindings = [];
+  const send = connection.send.bind(connection);
+  connection.send = async (method, params, sessionId) => {
+    if (method === "Runtime.evaluate") vm.runInContext(params.expression, contexts.get(sessionId));
+    return send(method, params, sessionId);
+  };
+  for (let i = 1; i <= 4; i++) {
+    const { target_id } = await tabs.open({ origin_label: `app-${i}`, installation_id: `inst-${i}`,
+      assets: [asset("index.html", "<p>backlog</p>")] });
+    const sessionId = await browser.ensureTargetSession(connection, target_id);
+    const context = vm.createContext({ crypto: globalThis.crypto, __charioxAppCall: (payload) => {
+      bindings.push(tabs.handle(connection, { method: "Runtime.bindingCalled", sessionId,
+        params: { name: "__charioxAppCall", payload } }));
+    } });
+    contexts.set(sessionId, context);
+    const bridge = connection.sent.find((m) => m.method === "Page.addScriptToEvaluateOnNewDocument"
+      && m.sessionId === sessionId).params.source;
+    vm.runInContext(bridge, context);
+  }
+  // One burst fills the Room queue before the next kernel poll. Each view
+  // keeps real bridge promises, so a silently dropped call cannot pass.
+  const outcomes = [...contexts.values()].map((context, i) => vm.runInContext(`
+    Promise.all(Array.from({length:${counts[i]}}, () => chariox.call("usage").then(
+      value => ({ok:true,value}), error => ({ok:false,code:error.code,message:error.message}))))`, context));
+  await Promise.all(bindings);
+  const refusals = connection.sent.filter((m) => m.method === "Runtime.evaluate");
+  assert.equal(refusals.length, 16, "overflow must answer instead of silently dropping calls");
+  const batch = await tabs.takeCalls();
+  assert.equal(batch.calls.length, 64);
+  assert.equal(batch.open_targets.length, 4);
+  for (const call of batch.calls) {
+    await tabs.respond({ target_id: call.target_id, call_id: call.call_id, result: { usage: 1 } });
+  }
+  let timer;
+  try {
+    const results = (await Promise.race([Promise.all(outcomes), new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("view backlog timed out")), 1000);
+    })])).flat();
+    assert.equal(results.length, 80);
+    assert.equal(results.filter((r) => r.ok).length, 64);
+    const busy = results.filter((r) => !r.ok);
+    assert.equal(busy.length, 16);
+    for (const error of busy) {
+      assert.equal(error.code, "APP_BUSY");
+      assert.match(error.message, /queue.*64.*retry after 500 ms/i);
+    }
+    // A later request can use the capacity freed by the poll.
+    vm.runInContext("chariox.call('usage')", [...contexts.values()][0]);
+    await Promise.all(bindings);
+    assert.equal((await tabs.takeCalls()).calls.length, 1);
+  } finally { clearTimeout(timer); }
+});
+}
+
+test("a saturated App call queue still answers controller-owned panel requests", async () => {
+  const { tabs, connection } = await opened();
+  const app = tabs.apps.get("s1");
+  for (let i = 0; i < 64; i++) await tabs.enqueueCall(app, JSON.stringify({ id: String(i), method: "usage" }), "s1");
+  await tabs.enqueueCall(app, JSON.stringify({ id: "panel", method: "chariox.panel", params: { rect: null } }), "s1");
+  assert.equal(connection.sent.at(-1).params.expression, 'globalThis.__charioxAppResolve("panel", true, {"released":true})');
+  assert.equal((await tabs.takeCalls()).calls.length, 64);
+});
+
 test("the App document cannot open popups or new windows and has no WebRTC", async () => {
   assert.match(APP_CSP, /sandbox allow-scripts allow-same-origin allow-forms(;|$)/);
   assert.doesNotMatch(APP_CSP, /allow-popups|allow-top-navigation|allow-downloads|allow-modals/);
