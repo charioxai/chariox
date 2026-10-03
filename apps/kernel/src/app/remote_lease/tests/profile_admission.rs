@@ -399,11 +399,7 @@ fn assert_leased_project_launch_and_refresh(imported_workspace: bool) {
     let project = app
         .sessions
         .read()
-        .prepare_leased_project(
-            initial.id(),
-            "envlayer5-leased-project",
-            workspace_ids,
-        )
+        .prepare_leased_project(initial.id(), "envlayer5-leased-project", workspace_ids)
         .unwrap();
     let session = app
         .sessions
