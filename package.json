@@ -26,5 +26,10 @@
   "devDependencies": {
     "typescript": "^5.6.3",
     "@types/node": "^22.10.1"
+  },
+  "pnpm": {
+    "patchedDependencies": {
+      "@opentui/core@0.1.87": "patches/@opentui__core@0.1.87.patch"
+    }
   }
 }
