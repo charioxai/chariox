@@ -164,6 +164,7 @@ fn closed_run_and_session_reject_late_process_ownership() {
 
 #[test]
 fn request_timeout_kills_the_unresponsive_stdio_child() {
+    crate::test_support::isolated_env_test!();
     let Some(mut config) = node_stdio_config(
         r#"
 import fs from 'node:fs'
