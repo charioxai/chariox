@@ -9,10 +9,8 @@
 /// without allowing it into the executables built by release/packaging scripts.
 #[doc(hidden)]
 pub const fn assert_production_build() {
-    assert!(
-        !cfg!(feature = "test-fixtures"),
-        "test-fixtures is test-only and must not be enabled in production release builds"
-    );
+    #[cfg(feature = "test-fixtures")]
+    panic!("test-fixtures is test-only and must not be enabled in production release builds");
 }
 
 pub mod app_catalog;
