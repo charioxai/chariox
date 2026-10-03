@@ -92,6 +92,13 @@ impl Observation {
             .map(|m| m.len() / 2)
             .unwrap_or(0)
     }
+    pub fn tool_cancellations(&self) -> u64 {
+        self.marker
+            .with_file_name("tool-cancellations")
+            .metadata()
+            .map(|m| m.len() / 2)
+            .unwrap_or(0)
+    }
     /// Observe only the fixed broker fixture output; no caller-selected path.
     pub fn private_file(&self) -> io::Result<Option<Vec<u8>>> {
         let file = match File::open(self.marker.with_file_name("fixture-file")) {

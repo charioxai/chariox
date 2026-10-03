@@ -119,7 +119,17 @@ static int fixture_sdk_tool(const struct cx_launch_record* record, int stall) {
     if (file < 0) return 114;
     const int failed = send_all(file, "1\n", 2) || fsync(file);
     if (close(file) || failed) return 115;
-    if (stall) return fixture_sdk_receive(request, deadline) == 0 ? 0 : 129;
+    if (stall) {
+      const int cancelled = fixture_sdk_receive(request, deadline);
+      if (cancelled != 1 || strncmp(request, "{\"kind\":\"cancel\",", 17)) return 129;
+      const int marker_size = snprintf(marker, sizeof(marker), "%s/tool-cancellations", record->roots[CX_DATA]);
+      if (marker_size < 0 || (size_t)marker_size >= sizeof(marker)) return 130;
+      const int cancel_file = open(marker, O_WRONLY | O_CREAT | O_APPEND, 0600);
+      if (cancel_file < 0) return 131;
+      const int cancel_failed = send_all(cancel_file, "1\n", 2) || fsync(cancel_file);
+      if (close(cancel_file) || cancel_failed) return 132;
+      return 0;
+    }
     char response[512];
     const int count = snprintf(response, sizeof(response),
         "{\"kind\":\"response\",\"version\":1,\"generation\":\"1\",\"id\":\"%.*s\",\"result\":{\"ok\":true}}",

@@ -134,7 +134,11 @@ impl KernelRuntimeState {
                     .active_prompt_for_agent_snapshot(session, &agent_id)
                     .is_none_or(|prompt| {
                         prompt.id() != turn_id
-                            || prompt.status() != crate::session::PromptStatus::Running
+                            || !matches!(
+                                prompt.status(),
+                                crate::session::PromptStatus::Dispatching
+                                    | crate::session::PromptStatus::Running
+                            )
                     })
             })
         }

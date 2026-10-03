@@ -214,6 +214,15 @@ fn actual_app_tools_follow_current_binding_for_ordinary_and_meta_provider_runs()
 
 #[test]
 fn cancelling_the_turn_aborts_its_in_flight_app_tool() {
+    for status in [
+        crate::session::PromptStatus::Dispatching,
+        crate::session::PromptStatus::Running,
+    ] {
+        check_app_call_turn_lifetime(status);
+    }
+}
+
+fn check_app_call_turn_lifetime(status: crate::session::PromptStatus) {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .thread_stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
@@ -284,7 +293,18 @@ fn cancelling_the_turn_aborts_its_in_flight_app_tool() {
         &VerificationPolicy::new(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, vec![publisher]),
     )
     .unwrap();
-    let (process, observed) = fixture.spawn_blocking(Mode::ToolStall, &package).unwrap();
+    let active = prompts
+        .active_prompt_for_agent_snapshot(&session, agent.id())
+        .unwrap();
+    let mut pending = active.clone();
+    pending.set_status(status);
+    assert!(prompts.replace_active_prompt_if_matches(&session, agent.id(), &active, pending));
+    let mode = if status == crate::session::PromptStatus::Dispatching {
+        Mode::ToolEcho
+    } else {
+        Mode::ToolStall
+    };
+    let (process, observed) = fixture.spawn_blocking(mode, &package).unwrap();
     let (starting, _control) = crate::runtime::app_worker::AppWorkerOwner::start_blocking(
         process,
         &package,
@@ -336,6 +356,22 @@ fn cancelling_the_turn_aborts_its_in_flight_app_tool() {
         .await
         .expect("handler starts");
     });
+    if status == crate::session::PromptStatus::Dispatching {
+        let result = runtime.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(2), &mut call).await
+        });
+        call.abort();
+        owner.shutdown_blocking();
+        assert!(
+            matches!(result, Ok(Ok(Ok(ref reply))) if reply.ok),
+            "dispatch acknowledgement must not be required for an in-turn call: {result:?}"
+        );
+        return;
+    }
+    assert!(
+        !call.is_finished(),
+        "stalled call must still be pending before turn cancellation"
+    );
     // Keep the caller/connection alive: cancellation must observe the kernel
     // turn state, rather than depend on dropping the MCP dispatch future.
     assert!(prompts
@@ -345,10 +381,23 @@ fn cancelling_the_turn_aborts_its_in_flight_app_tool() {
         tokio::time::timeout(std::time::Duration::from_secs(2), &mut call).await
     });
     call.abort();
+    let cancelled = runtime.block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while observed.tool_cancellations() == 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .is_ok()
+    });
     owner.shutdown_blocking();
     assert!(observed.was_reaped());
     assert!(
-        matches!(result, Ok(Ok(Err(_)))),
+        cancelled,
+        "worker must receive Cancel before explicit test shutdown"
+    );
+    assert!(
+        matches!(result, Ok(Ok(Err(DaemonError::LocalTransport { operation: "app.tools", ref message }))) if message == "App operation is not currently available to this agent"),
         "cancelled turn must terminate App call while MCP connection remains open: {result:?}"
     );
 }
