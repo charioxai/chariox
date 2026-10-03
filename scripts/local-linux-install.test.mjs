@@ -279,6 +279,37 @@ test("AppArmor without unprivileged userns restriction does not load an ABI 4 ex
     assert.equal(existsSync(p(h, "etc/apparmor.d/chariox-app-bwrap")), false)
     assert.match(await h.log("loginctl"), /^enable-linger alice$/m)
     assert.match(await h.log("systemctl"), /^start chariox-app-storage\.service$/m)
+    // The old installer wrote this file before the ABI 4 parser failure.
+    const profile = p(h, "etc/apparmor.d/chariox-app-bwrap")
+    await mkdir(join(profile, ".."), { recursive: true })
+    await writeFile(profile, await readFile(join(repositoryRoot, "deploy/local-linux/chariox-app-bwrap.apparmor")))
+    const dry = h.install(["alice"], ["--dry-run"])
+    assert.equal(dry.status, 0, dry.out)
+    assert.ok(existsSync(profile))
+    const recovered = h.install(["alice"])
+    assert.equal(recovered.status, 0, recovered.out)
+    assert.equal(existsSync(profile), false)
+    assert.equal(await h.log("apparmor"), "")
+  } finally {
+    await rm(h.base, { recursive: true, force: true })
+  }
+})
+
+
+test("restricted kernel with an incompatible AppArmor parser fails actionably before installation", { skip: !linux }, async () => {
+  const h = await harness()
+  try {
+    await script(join(h.bin, "apparmor_parser"), `#!/bin/sh
+ echo "$*" >> "$HARNESS_STATE/apparmor"
+ echo "Could not open abi/4.0" >&2
+ exit 1
+`)
+    const result = h.install(["alice"])
+    assert.equal(result.status, 1, result.out)
+    assert.match(result.out, /AppArmor 4.*parser.*ABI 4.*re-run/)
+    assert.deepEqual(created(h), [])
+    assert.equal(await h.log("runtime-install"), "")
+    assert.doesNotMatch(await h.log("systemctl"), /^start |^restart |^enable /m)
   } finally {
     await rm(h.base, { recursive: true, force: true })
   }
