@@ -7,7 +7,6 @@ import { createTestRenderer } from "@opentui/core/testing"
 import { createKernelApprovalRenderer } from "./kernel-approval-renderer.js"
 import { createKernelApprovalController, type KernelApprovalView } from "./kernel-approval-controller.js"
 import type { RuntimeInteraction, RuntimeSession } from "./cli-types.js"
-import { routeRawPastes } from "./raw-paste-routing.js"
 
 const view: KernelApprovalView = {
   open: false, count: 1, criticalCount: 0, index: 0, selected: null, pending: false, connected: true, error: null,
@@ -122,7 +121,7 @@ test("actual mouse clicks require the primary button and a connected, nonpending
   const box = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0 })
   harness.renderer.root.add(box)
   const choices: string[] = []
-  const surface = createKernelApprovalRenderer(harness.renderer, { show() {}, choose: (interactionId, id) => { assert.equal(interactionId, "approval-1"); choices.push(id) },  })
+  const surface = createKernelApprovalRenderer(harness.renderer, { show() {}, choose: (interactionId, id) => { assert.equal(interactionId, "approval-1"); choices.push(id) } })
   surface.assign(box)
   try {
     surface.render({ ...view, open: true }, { width: 80, height: 24 })
