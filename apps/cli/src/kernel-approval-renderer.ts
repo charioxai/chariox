@@ -8,7 +8,8 @@ export function createKernelApprovalRenderer(renderer: CliRenderer, actions: {
   choose(interactionId: string, choiceId: string): void
   cycleRemember(): void
   submitPasskey(): void
-}) {
+}, platform = process.platform) {
+  const shortcutLabel = approvalShortcutLabel(platform)
   let banner: BoxRenderable | undefined
   let box: BoxRenderable | undefined
   let body: ScrollBoxRenderable | undefined
@@ -47,7 +48,7 @@ export function createKernelApprovalRenderer(renderer: CliRenderer, actions: {
             wrapMode: "word", fg: theme.error, attributes: TextAttributes.BOLD, flexShrink: 0,
           }))
           banner.add(new TextRenderable(renderer, {
-            content: `Open: ${approvalShortcutLabel()} or /approvals`,
+            content: `Open: ${shortcutLabel} or /approvals`,
             wrapMode: "word", fg: theme.primary, flexShrink: 0,
           }))
         }
@@ -75,7 +76,7 @@ export function createKernelApprovalRenderer(renderer: CliRenderer, actions: {
         position: "absolute", right: 0, top: 0, height: 1,
         backgroundColor: theme.backgroundElement, paddingLeft: 1, paddingRight: 1,
       })
-      text(indicator, `Chariox · ${view.count} approval${view.count === 1 ? "" : "s"} · ${approvalShortcutLabel()}`, true)
+      text(indicator, `Chariox · ${view.count} approval${view.count === 1 ? "" : "s"} · ${shortcutLabel}`, true)
       indicator.onMouseUp = (event) => {
         event.stopPropagation()
         if (event.button === MouseButton.LEFT) actions.show()
