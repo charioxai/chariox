@@ -290,7 +290,13 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line',line
         move || {
             processes.app_view(
                 &session,
-                &crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Calls,
+                &crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Layout {
+                    target_id: "fixture".into(),
+                    page: crate::runtime::browser_controller_app_view::AppViewPage {
+                        width: 800,
+                        height: 600,
+                    },
+                },
             )
         }
     });
