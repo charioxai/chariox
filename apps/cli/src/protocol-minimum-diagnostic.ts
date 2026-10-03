@@ -6,6 +6,9 @@ export type ProtocolMinimumDiagnostic = {
   minimumProtocolVersion: number
 }
 
+/** Local diagnostic only; transport response contracts remain unchanged. */
+export class KernelProtocolMinimumError extends Error {}
+
 export async function withProtocolMinimum<T>(
   operation: () => Promise<T>,
   diagnostic: ProtocolMinimumDiagnostic,
@@ -21,8 +24,8 @@ export async function withProtocolMinimum<T>(
     const unsupportedField = diagnostic.unknownField
       && isUnknownRequestField(message, diagnostic.unknownField)
     if (!unsupportedVariant && !unsupportedField) throw error
-    throw new Error(
-      `${diagnostic.capability} requires kernel protocol ${diagnostic.minimumProtocolVersion} or newer: ${message}`,
+    throw new KernelProtocolMinimumError(
+      `${diagnostic.capability} requires kernel protocol ${diagnostic.minimumProtocolVersion} or newer; update the kernel: ${message}`,
     )
   }
 }

@@ -37,6 +37,18 @@ test("declined, expired, foreign and malformed offers never act", async () => {
       { copy: async () => assert.fail(), openLink: async () => assert.fail() }))
   }
 })
+test("host not_found explains missing, answered, expired or other-session offers without taking an action", async () => {
+  await assert.rejects(acceptAppHostOffer("s", "op", async () => ({ AppRequestFailed: { code: "not_found" } }), () => assert.fail(),
+    { copy: async () => assert.fail(), openLink: async () => assert.fail() }), {
+    message: "That App host offer is missing, already answered, expired, or belongs to another session",
+  })
+})
+test("unknown host acceptance on an older kernel names the minimum and upgrade action", async () => {
+  await assert.rejects(acceptAppHostOffer("s", "op", async () => {
+    throw new Error("invalid local request: unknown variant `AcceptAppHostAction`")
+  }, () => assert.fail(), { copy: async () => assert.fail(), openLink: async () => assert.fail() }),
+  /App host actions requires kernel protocol 409 or newer; update the kernel/)
+})
 test("typed host command accepts empty text and requires an attached session before settlement", async () => {
   let copies = 0
   const deps = { currentAppSessionId: () => "s", sendAppRequest: async () => ({ AppHostActionAccepted: { operation_id: "op", action: { kind: "clipboard_write", text: "" } } }),

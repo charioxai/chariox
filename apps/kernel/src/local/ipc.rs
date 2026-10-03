@@ -235,7 +235,10 @@ async fn handle_connection(
             );
             IpcResponseEnvelope {
                 response: None,
-                error: Some(format!("invalid local request: {error}")),
+                error: Some(crate::transport::request_decode_error::message(
+                    "invalid local request",
+                    &error,
+                )),
             }
         }
     };

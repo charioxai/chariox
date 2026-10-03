@@ -1,3 +1,5 @@
+export const relayClientKeyBindingMinimumProtocolVersion = 349
+
 export function relayStatusRequest() {
   return { RelayStatus: null }
 }
