@@ -780,3 +780,53 @@ async fn a_fork_copies_app_bindings_through_the_checked_audited_grant() {
         .iter()
         .any(|event| event.payload["grant"]["name"] == "gone"));
 }
+
+#[tokio::test]
+async fn uninstall_keeps_missing_binding_visible_without_tools_or_a_reinstall_regrant() {
+    let fixture = Fixture::new();
+    let (app, router, _session, agent, _auth) =
+        fixture.router(crate::provider::AgentPermissionLevel::Yolo);
+    let state = &router.runtime_state;
+    state
+        .grant_agent_extension(&agent, ExtensionGrant::app("installed"), "alice")
+        .await
+        .unwrap();
+    let store = app.lock().await.durable_state_store();
+    let generation = store
+        .get_app_installation("alice", "installed")
+        .unwrap()
+        .generation;
+    let request = LocalDaemonRequest::UninstallApp(crate::local::UninstallAppRequest {
+        installation_id: "installed".into(),
+        expected_generation: generation.to_string(),
+        delete_data: false,
+    });
+    let mut command =
+        KernelCommand::from_local_request("missing-binding-uninstall", None, None, &request);
+    command.caller.user_id = Some("alice".into());
+    assert!(matches!(
+        router.dispatch(command, request).await.unwrap(),
+        LocalDaemonResponse::AppInstallation { .. }
+    ));
+    // The existing grant identifies the broken binding to every inspector;
+    // the inactive installation gives it no executable tools or version.
+    assert!(
+        granted(&app, &agent).await,
+        "uninstall silently erased the binding"
+    );
+    assert!(store
+        .get_app_installation("alice", "installed")
+        .unwrap()
+        .active
+        .is_none());
+    let bound = app.lock().await.agents().get_agent(&agent).unwrap();
+    assert!(state
+        .app_control()
+        .app_extension_tools_for_agent(&bound, &std::collections::BTreeSet::new())
+        .unwrap()
+        .is_empty());
+    // BeginAppUpdate uses this gate before asking approval for a reinstall.
+    // Its old binding must be removed before the App can become active again.
+    state.unbind_if_uninstalled("alice", "installed").await;
+    assert!(!granted(&app, &agent).await);
+}
