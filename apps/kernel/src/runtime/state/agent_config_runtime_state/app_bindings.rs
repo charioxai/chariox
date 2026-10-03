@@ -79,6 +79,40 @@ impl KernelRuntimeState {
         Ok(agent)
     }
 
+    /// Preserve the broken binding for inspectors while the inactive App has
+    /// no authority or tools. The existing reinstall gate removes it before
+    /// an approved release can become active, so reinstall never regrants it.
+    pub(crate) async fn refresh_uninstalled_app_bindings(&self, owner: &str, installation: &str) {
+        self.app_control()
+            .views()
+            .forget_installation(owner, installation);
+        for agent in self.owned.agent_store.list_agents() {
+            if agent.owner_user_id() != owner
+                || !agent.has_extension_grant(ExtensionKind::App, installation)
+            {
+                continue;
+            }
+            if let Err(error) = self.invalidate_workflow_copies_after_source_agent_change(
+                agent.session_id(),
+                agent.id(),
+            ) {
+                tracing::debug!(%error, "uninstalled App workflow copy invalidation failed");
+            }
+            if let Err(error) = self
+                .sync_remote_extension_manifest_for_agent(&agent, Some(owner), Some(true))
+                .await
+            {
+                tracing::debug!(%error, "uninstalled App manifest refresh failed");
+            }
+            if let Err(error) = self
+                .refresh_agent_runtime_tool_catalog(agent.session_id(), agent.id())
+                .await
+            {
+                tracing::debug!(%error, "uninstalled App catalog refresh failed");
+            }
+        }
+    }
+
     pub(super) async fn revoke_agent_app(
         &self,
         agent_ref: &str,

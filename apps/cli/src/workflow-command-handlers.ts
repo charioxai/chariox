@@ -1,3 +1,4 @@
+import type { AppInstallationSummary } from "@chariox/kernel-client/kernel-types"
 import type {
   AgentInstance,
   RuntimeAttachment,
@@ -221,6 +222,7 @@ export type WorkflowCommandHandlerDeps = {
     maxTurns: number | null,
   ) => Promise<WorkflowNodePayload>
   grantAgentMcp?: (agentRef: string, name: string) => Promise<AgentInstance>
+  getAppInstallation?: (installationId: string) => Promise<AppInstallationSummary | null>
   grantAgentApp?: (agentRef: string, installationId: string) => Promise<AgentInstance>
   revokeAgentApp?: (agentRef: string, installationId: string) => Promise<AgentInstance>
   revokeAgentMcp?: (agentRef: string, name: string) => Promise<AgentInstance>

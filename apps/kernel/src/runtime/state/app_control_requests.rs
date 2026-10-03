@@ -284,7 +284,7 @@ impl KernelRuntimeState {
             ) => AppRequestErrorCode::Conflict,
             error => crate::runtime::app_control::registry_error(error),
         })?;
-        self.unbind_uninstalled_app(&view_owner, &view_installation)
+        self.refresh_uninstalled_app_bindings(&view_owner, &view_installation)
             .await;
         let crate::durable_state::apps::AppRegistryOutcome::Installation(mut installation) =
             outcome

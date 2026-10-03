@@ -1,3 +1,5 @@
+import { getAppInstallationRequest } from "@chariox/kernel-client/ipc-requests"
+import type { AppInstallationSummary } from "@chariox/kernel-client/kernel-types"
 import type { AppDevLoop } from "./app-dev-loop.js"
 import type { AppFileInstaller } from "./app-install-file.js"
 import type { AppPublisherEnrollment } from "./app-publisher-file.js"
@@ -690,6 +692,13 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     registerScript: (sourcePath, environment, name) => registerScript(client, pendingWorkspaceTarget(), sourcePath, environment, name),
     removeScript: (name) => removeScript(client, pendingWorkspaceTarget(), name),
     grantAgentScript: (agentRef, name, environment) => grantAgentScript(client, pendingWorkspaceTarget(), agentRef, name, environment),
+    getAppInstallation: async (installationId) => {
+      const response = await client.send<Record<string, unknown>>(getAppInstallationRequest(installationId))
+      const value = (response.AppInstallation as { installation: AppInstallationSummary } | undefined)?.installation
+      if (value) return value
+      if ((response.AppRequestFailed as { code: string } | undefined)?.code === "not_found") return null
+      throw new Error("App installation status unavailable")
+    },
     grantAgentApp: (agentRef, installationId) => grantAgentApp(client, pendingWorkspaceTarget(), agentRef, installationId),
     revokeAgentApp: (agentRef, installationId) => revokeAgentApp(client, agentRef, installationId),
     revokeAgentScript: (agentRef, name) => revokeAgentScript(client, agentRef, name),
