@@ -25,12 +25,17 @@ impl KernelRuntimeState {
             let Ok(turn) = serde_json::from_value::<KernelSudoTurn>(payload["turn"].clone()) else {
                 continue;
             };
-            let _ = self.audit_sudo(&turn, "restart_dropped");
+            let _ = self.record_sudo_end(&turn, "restart_dropped");
             self.owned.record_notice(&turn.session_id, None, self.owned.attachment_store.list_session_attachment_ids(&turn.session_id),
-                "Kernel restart dropped a pending or running /sudo authorization. Enter /sudo again with a fresh passkey.");
+                "Kernel restart discarded sudo state whose last durable receipt was pending or running; it may already have ended before restart. Enter /sudo again with a fresh passkey.");
         }
     }
-    pub(crate) fn revoke_sudo(&self, owner: Option<&str>, id: Option<&str>, reason: &str) -> usize {
+    pub(crate) fn revoke_sudo(
+        &self,
+        owner: Option<&str>,
+        id: Option<&str>,
+        reason: &str,
+    ) -> Result<usize, DaemonError> {
         let revoked = {
             let mut access = self.owned.sudo_turns.lock().expect("access state poisoned");
             let ids = access
@@ -46,8 +51,16 @@ impl KernelRuntimeState {
                 .collect::<Vec<_>>()
         };
         let count = revoked.len();
+        let mut receipt_error = None;
         for turn in revoked {
-            let _ = self.audit_sudo(&turn, reason);
+            self.owned
+                .sudo_process_cutoffs
+                .lock()
+                .expect("sudo process cutoffs poisoned")
+                .remove(&turn.entry_id);
+            if let Err(error) = self.record_sudo_end(&turn, reason) {
+                receipt_error.get_or_insert(error);
+            }
             let _ = self
                 .owned
                 .timeout_runtime_interaction(&turn.session_id, &turn.entry_id);
@@ -64,7 +77,21 @@ impl KernelRuntimeState {
                 }
             }
         }
-        count
+        if let Some(error) = receipt_error {
+            return Err(error);
+        }
+        Ok(count)
+    }
+
+    pub(super) fn record_sudo_end(
+        &self,
+        turn: &KernelSudoTurn,
+        reason: &str,
+    ) -> Result<(), DaemonError> {
+        self.audit_sudo(turn, reason).map_err(|error| {
+            crate::logging::warn_with_fields("kernel_access.sudo", "sudo authority removed but its durable receipt failed", serde_json::json!({"entry_id": turn.entry_id, "outcome": reason, "error": error.to_string()}));
+            error
+        })
     }
 
     pub(crate) fn list_sudo_turns(&self, owner: &str) -> Vec<KernelSudoTurn> {
@@ -107,7 +134,12 @@ impl KernelRuntimeState {
             let _ = self
                 .owned
                 .timeout_runtime_interaction(&turn.session_id, &turn.entry_id);
-            let _ = self.audit_sudo(&turn, "ended");
+            self.owned
+                .sudo_process_cutoffs
+                .lock()
+                .expect("sudo process cutoffs poisoned")
+                .remove(&turn.entry_id);
+            let _ = self.record_sudo_end(&turn, "ended");
         }
     }
 }

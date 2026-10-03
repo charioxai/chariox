@@ -904,6 +904,7 @@ mod tests {
                 &execution.session_id,
                 &execution.owner_user_id,
                 true,
+                &|| Ok(()),
             )
             .await
             .unwrap();

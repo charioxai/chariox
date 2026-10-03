@@ -38,10 +38,10 @@ impl PendingMcpContinuationStore {
 
 #[derive(Debug, Clone)]
 pub(super) struct PendingProviderReload {
-    pub(super) authority: Option<super::ExternalCommandAuthority>,
     pub(super) session_id: String,
     pub(super) agent_id: String,
     pub(super) reason: super::ProviderReloadReason,
+    pub(super) provisional_meta_activation: bool,
 }
 
 #[derive(Debug, Clone, Default)]

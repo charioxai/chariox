@@ -100,7 +100,7 @@ export function createPasskeyPopupController(deps: {
 }) {
   let prompts: PasskeyPrompt[] = []
   let index = 0
-  let hidden = false
+  let hidden = true
   let open = false
   // The passkey lives only here until it is sent, then it is dropped.
   let value = ""
@@ -142,6 +142,9 @@ export function createPasskeyPopupController(deps: {
   // Keeps the shown request where it went, or shows the first one.
   const reselect = (shown: PasskeyPrompt | null) => {
     const at = shown ? prompts.findIndex((item) => promptKey(item) === promptKey(shown)) : -1
+    // A different request needs deliberate focus, including when a remembered
+    // approval closes and another pending request takes its place.
+    if (at < 0) hidden = true
     select(at >= 0 ? at : 0, shown)
   }
   const settle = (prompt: PasskeyPrompt) => {
@@ -222,14 +225,12 @@ export function createPasskeyPopupController(deps: {
     isOpen: () => open,
     ownsInput: () => open || claimedInputTurn,
     /** The kernel's current set, from `passkey_prompts_changed`. A prompt
-     * that arrives shows the popup again; one that left it closes. */
+     * that arrives shows an indicator; F8 or a click explicitly opens it. */
     apply(next: PasskeyPrompt[]) {
       const shown = current()
-      const known = new Set(prompts.map(promptKey))
       const listed = new Set(next.map(promptKey))
       for (const key of answered) if (!listed.has(key)) answered.delete(key)
       prompts = next.filter((prompt) => !answered.has(promptKey(prompt)))
-      if (prompts.some((prompt) => !known.has(promptKey(prompt)))) hidden = false
       reselect(shown)
       syncOpen()
       render()

@@ -104,6 +104,25 @@ impl KernelRuntimeOwnedState {
         &self,
         dispatch: &crate::app::KernelPromptDispatch,
     ) -> Result<bool, DaemonError> {
+        if dispatch.steering {
+            let session = self.session_store.get_session(&dispatch.session_id)?;
+            if dispatch
+                .target_active_prompt_id
+                .as_deref()
+                .is_some_and(|prompt| {
+                    self.prompt_state_owner.prompt_is_sudo_bound(
+                        &session,
+                        &dispatch.agent_id,
+                        prompt,
+                    )
+                })
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "steer prompt",
+                    message: "a human-authorized sudo turn cannot receive steering input".into(),
+                });
+            }
+        }
         let matches = self.prompt_dispatch_matches_active_prompt(dispatch)?;
         if matches || !dispatch.steering {
             return Ok(matches);
@@ -3494,6 +3513,9 @@ impl KernelRuntimeState {
                 source_client_id.as_deref(),
                 &hidden_system_context,
             );
+            if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
+                return Ok(false);
+            }
             let result = owned.provider_store.enqueue_structured_prompt_submit(
                 dispatch.session_id.clone(),
                 dispatch.provider_run_id.clone(),
@@ -3656,6 +3678,12 @@ impl KernelRuntimeState {
             loop {
                 let attempt = self
                     .with_app_side_effect(|app| {
+                        if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
+                            return Err(DaemonError::LocalTransport {
+                                operation: "dispatch prompt",
+                                message: "prompt changed before native dispatch".into(),
+                            });
+                        }
                         app.process_claude_native_prompt_dispatch_attempt_for_runtime(
                             &dispatch.session_id,
                             &dispatch.provider_run_id,
@@ -3726,8 +3754,17 @@ impl KernelRuntimeState {
             .with_app_side_effect(|app| app.provider_pty_input_writer_for_runtime(&provider_run_id))
             .await?;
         let provider_run_id = dispatch.provider_run_id.clone();
-        let write_task =
-            tokio::task::spawn_blocking(move || writer.write_input(&provider_pty_input));
+        let owned_for_write = owned.clone();
+        let dispatch_for_write = dispatch.clone();
+        let write_task = tokio::task::spawn_blocking(move || {
+            if !owned_for_write.ensure_prompt_dispatch_matches_active_prompt(&dispatch_for_write)? {
+                return Err(DaemonError::LocalTransport {
+                    operation: "dispatch prompt",
+                    message: "prompt changed before PTY dispatch".into(),
+                });
+            }
+            writer.write_input(&provider_pty_input)
+        });
         match tokio::time::timeout(std::time::Duration::from_secs(15), write_task).await {
             Ok(result) => result.map_err(|error| DaemonError::LocalTransport {
                 operation: "write provider PTY input",

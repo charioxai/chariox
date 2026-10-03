@@ -553,6 +553,24 @@ impl PromptStateOwner {
         true
     }
 
+    pub(crate) fn prompt_is_sudo_bound(
+        &self,
+        session: &RuntimeSession,
+        agent: &str,
+        prompt: &str,
+    ) -> bool {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = owner.ensure_agent_state(session, agent);
+        state.sudo_entry_id.is_some()
+            && state
+                .active_prompt
+                .as_ref()
+                .is_some_and(|active| active.id() == prompt)
+    }
+
     pub(crate) fn sudo_turn_live(
         &self,
         session: &RuntimeSession,

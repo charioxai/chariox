@@ -192,7 +192,7 @@ pub(crate) async fn enqueue_peer_request_to_known_kernel_via_relay_with_timeout(
     .await
 }
 
-async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
+pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
     config: &crate::config::DaemonConfig,
     state: &Arc<RwLock<RelayClientState>>,
     target: ClientTarget,

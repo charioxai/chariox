@@ -230,7 +230,7 @@ async fn kernel_access_revocation_during_meta_credential_wait_keeps_run_and_task
 }
 
 #[tokio::test]
-async fn kernel_access_revocation_drops_deferred_prompt_policy_reload() {
+async fn kernel_access_revocation_retains_accepted_deferred_prompt_policy_reload() {
     let (worktree, app, state, session, agent, attachment) = policy_fixture("access-meta-deferred");
     let request =
         LaunchProviderRequest::new(session.id(), "claude", "dev-stub", "default", "model")
@@ -290,18 +290,15 @@ async fn kernel_access_revocation_drops_deferred_prompt_policy_reload() {
     state
         .revoke_kernel_access(None, Some(&grant), "explicit_revoke")
         .unwrap();
-    timeout(Duration::from_secs(5), async {
-        while state
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        state
             .owned
             .pending_provider_reloads
             .write()
-            .contains_key(agent.id())
-        {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
+            .contains_key(agent.id()),
+        "accepted deferred reload was silently dropped after grant revocation"
+    );
     assert!(
         state
             .session_snapshot(session.id())

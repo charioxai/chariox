@@ -24,6 +24,9 @@ pub(in crate::runtime::state) struct WorkerSpy {
     pub(in crate::runtime::state) native_recovery: Arc<std::sync::atomic::AtomicBool>,
     pub(in crate::runtime::state) native_launch_started: Arc<Notify>,
     pub(in crate::runtime::state) release_native_launch: Arc<Notify>,
+    pub(in crate::runtime::state) pause_destroy: Arc<std::sync::atomic::AtomicBool>,
+    pub(in crate::runtime::state) destroy_committed: Arc<Notify>,
+    pub(in crate::runtime::state) release_destroy: Arc<Notify>,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -51,6 +54,12 @@ impl WorkerSpy {
         let release_native_launch = Arc::new(Notify::new());
         let launch_started = native_launch_started.clone();
         let launch_released = release_native_launch.clone();
+        let pause_destroy = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let destroy_committed = Arc::new(Notify::new());
+        let release_destroy = Arc::new(Notify::new());
+        let worker_pause_destroy = pause_destroy.clone();
+        let worker_destroy_committed = destroy_committed.clone();
+        let worker_release_destroy = release_destroy.clone();
         let (shutdown, stopped) = tokio::sync::oneshot::channel();
         let thread = std::thread::spawn(move || {
             tokio::runtime::Runtime::new().unwrap().block_on(async move {
@@ -137,6 +146,11 @@ impl WorkerSpy {
                                 }
                                 _ => panic!("unexpected worker request"),
                             };
+                            if matches!(&response, RelayPeerResponse::LeasedAgentDestroyed { .. })
+                                && worker_pause_destroy.swap(false, Ordering::SeqCst) {
+                                worker_destroy_committed.notify_one();
+                                worker_release_destroy.notified().await;
+                            }
                             send(&mut socket, RelayEnvelope::DaemonPeerResponse { request_id, from_daemon_id: worker_id.clone(), encrypted_response: Some(relay_crypto::encrypt_payload_for_peer(&worker.relay_private_key, &registration.public_key, &serde_json::to_vec(&response).unwrap()).unwrap()), error: None }).await;
                         }
                         _ => panic!("unexpected relay request"),
@@ -155,6 +169,9 @@ impl WorkerSpy {
             native_recovery,
             native_launch_started,
             release_native_launch,
+            pause_destroy,
+            destroy_committed,
+            release_destroy,
             shutdown: Some(shutdown),
             thread: Some(thread),
         }
@@ -163,6 +180,7 @@ impl WorkerSpy {
 
 impl Drop for WorkerSpy {
     fn drop(&mut self) {
+        self.release_destroy.notify_one();
         self.release_discovery.notify_one();
         self.release_native_launch.notify_one();
         let _ = self.shutdown.take().unwrap().send(());

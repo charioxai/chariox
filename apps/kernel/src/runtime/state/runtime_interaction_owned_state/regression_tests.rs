@@ -100,6 +100,7 @@ impl Fixture {
             send,
             Some(DEFAULT_LOCAL_USER_ID),
             None,
+            None,
         )?;
         Ok(receive)
     }

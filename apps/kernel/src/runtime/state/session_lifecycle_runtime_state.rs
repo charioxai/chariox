@@ -717,9 +717,9 @@ impl KernelRuntimeState {
                 })
             })
             .await?;
-        self.authorize_current_external_command()?;
         if let Some(slice_ref) = target_slice_id {
-            self.attach_slice_agent(&slice_ref, session_id, agent.id())
+            self.with_external_command_authority(None)
+                .attach_slice_agent(&slice_ref, session_id, agent.id())
                 .await?;
         }
         Ok(agent)
@@ -760,7 +760,7 @@ impl KernelRuntimeState {
                 })
             })
             .await?;
-        self.authorize_current_external_command()?;
+        // The move committed; finish its slice bookkeeping under kernel authority.
         if let Some(slice_ref) = slice_ref {
             let slice = self.owned.slice_store.detach_agent(
                 &slice_ref,
@@ -841,7 +841,7 @@ impl KernelRuntimeState {
         }
         // The app and runtime share the agent store. Delete once, after worker
         // cleanup, through the owner that also clears prompt and run state.
-        self.authorize_current_external_command()?;
+        // Worker cleanup has committed. Finish deleting the corresponding home state.
         let destroyed = self.owned.destroy_agent(agent_id, caller_user_id)?;
         for slice_ref in slice_refs {
             let slice = self.owned.slice_store.detach_agent(

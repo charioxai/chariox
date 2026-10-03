@@ -12,7 +12,7 @@ async fn known_peer_request_rechecks_authority_after_enqueue_lock_wait() {
     let mut guard = state.write().await;
     guard.test_set_connected_sender(sender, "ws://fixture");
     let authorized = AtomicBool::new(true);
-    let pending = send_peer_request_to_known_kernel_via_relay_authorized(
+    let pending = peer_client::enqueue_peer_request_to_known_kernel_via_relay_authorized(
         &home,
         &state,
         ClientTarget {
@@ -45,7 +45,7 @@ async fn known_peer_request_rechecks_authority_after_enqueue_lock_wait() {
     .await;
     authorized.store(false, Ordering::SeqCst);
     drop(guard);
-    assert!(pending.await.unwrap_err().to_string().contains("revoked"));
+    assert!(matches!(pending.await, Err(error) if error.to_string().contains("revoked")));
     assert!(
         priority_rx.try_recv().is_err(),
         "revoked request was enqueued"

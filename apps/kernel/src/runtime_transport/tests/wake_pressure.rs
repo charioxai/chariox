@@ -200,7 +200,7 @@ async fn native_wake_pressure_four_starts_four_calls() {
             mcp
         })
         .unwrap(),
-        None,
+        KernelLocalAuth::Unconfigured,
         async {
             let _ = stopped.await;
         },

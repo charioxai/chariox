@@ -1173,7 +1173,7 @@ impl KernelRuntimeState {
         };
         let committed = self
             .with_app_side_effect(|app| {
-                self.authorize_prompt_command(authority)?;
+                // The worker committed the steer: settle its exact receipt even after revocation.
                 let steer = owned.finish_remote_queued_prompt_steer(
                     &session_id,
                     &target_agent_id,

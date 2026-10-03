@@ -244,3 +244,156 @@ async fn revoked_remote_operation(spawn: bool, discovery_wait: bool) {
         "terminal operation should reach worker"
     );
 }
+
+#[tokio::test]
+async fn kernel_access_grants_cannot_mint_durable_membership_or_scheduled_prompts() {
+    let worktree = crate::test_support::TestWorktree::new("access-no-delegation");
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
+            .unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let state = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+        Arc::new(Mutex::new(app)),
+        32,
+    )
+    .runtime_state();
+    let grant = state.insert_access_grant_for_test(session.id());
+    for request in [
+        LocalDaemonRequest::CreateSessionInvite(crate::local::CreateSessionInviteRequest {
+            session_id: session.id().into(),
+            expires_in_ms: None,
+            max_uses: None,
+            collaboration_level: Default::default(),
+        }),
+        LocalDaemonRequest::CreateAgentPromptSchedule(
+            crate::local::CreateAgentPromptScheduleRequest {
+                session_id: session.id().into(),
+                agent_id: agent.id().into(),
+                kind: crate::session::AgentPromptScheduleKind::Recurring,
+                interval_seconds: 60,
+                prompt: Some("run after grant expires".into()),
+            },
+        ),
+    ] {
+        assert!(state.authorize_external_request(&grant, &request).is_err());
+    }
+    assert!(state
+        .authorize_external_request(
+            &grant,
+            &LocalDaemonRequest::ResolveSession(crate::local::ResolveSessionRequest {
+                session_ref: session.id().into()
+            })
+        )
+        .is_ok());
+}
+
+#[tokio::test]
+async fn kernel_access_targeted_revocation_preserves_other_owners_pending_requests() {
+    let app =
+        crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
+            .unwrap();
+    let state = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+        Arc::new(Mutex::new(app)),
+        32,
+    )
+    .runtime_state();
+    let pending = |owner: &str, id: &str| KernelAccessGrant {
+        grant_id: id.into(),
+        session_id: "fixture".into(),
+        owner_user_id: owner.into(),
+        holder_pid: 1,
+        holder_executable: "fixture".into(),
+        lifetime_minutes: 30,
+        expires_at_ms: 0,
+    };
+    {
+        let mut access = state.owned.kernel_access.lock().unwrap();
+        access
+            .pending
+            .insert((1, 1, "a".into()), pending("owner-a", "grant-a"));
+        access
+            .pending
+            .insert((2, 2, "b".into()), pending("owner-b", "grant-b"));
+    }
+    let generation = state.owned.kernel_access.lock().unwrap().generation;
+    state
+        .revoke_kernel_access(Some("owner-a"), None, "test")
+        .unwrap();
+    let access = state.owned.kernel_access.lock().unwrap();
+    assert_eq!(access.generation, generation);
+    assert_eq!(access.pending.len(), 1);
+    assert_eq!(
+        access.pending.values().next().unwrap().owner_user_id,
+        "owner-b"
+    );
+    drop(access);
+    state.revoke_kernel_access(None, None, "shutdown").unwrap();
+    let access = state.owned.kernel_access.lock().unwrap();
+    assert!(access.pending.is_empty());
+    assert_ne!(access.generation, generation);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kernel_access_revocation_after_remote_destroy_still_settles_lease_and_home_state() {
+    let worktree = crate::test_support::TestWorktree::new("access-destroy-settlement");
+    let worker = WorkerSpy::new(false);
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.relay_url = Some(worker.url.clone());
+    config.relay_token = Some("session-operation-fixture".into());
+    let mut daemon = crate::test_support::bootstrap_authenticated_app(config).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut daemon)
+        .create_session(worktree.session_request())
+        .unwrap();
+    daemon
+        .agents_mut()
+        .bind_remote_execution(
+            agent.id(),
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: worker.id.clone(),
+                worker_machine_id: "fixture-machine".into(),
+                execution_lease_id: "lease".into(),
+                leased_agent_id: "leased-agent".into(),
+                active_worker_provider_run_id: None,
+                relay_url: None,
+                relay_token: None,
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                ),
+            },
+        )
+        .unwrap();
+    let app = Arc::new(Mutex::new(daemon));
+    let state =
+        crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(app.clone(), 32)
+            .runtime_state();
+    let runtime = runtime(&state, &*app.lock().await);
+    let grant = state.insert_access_grant_for_test(session.id());
+    let request = LocalDaemonRequest::DestroyAgent(crate::local::DestroyAgentRequest {
+        session_id: session.id().into(),
+        agent_id: agent.id().into(),
+    });
+    worker.pause_destroy.store(true, Ordering::SeqCst);
+    let pending = tokio::spawn({
+        let command = external_command(&request, &grant);
+        async move { runtime.dispatch_session_command(command, request).await }
+    });
+    timeout(Duration::from_secs(5), worker.destroy_committed.notified())
+        .await
+        .unwrap();
+    state
+        .revoke_kernel_access(Some(session.owner_user_id()), Some(&grant), "after-commit")
+        .unwrap();
+    worker.release_destroy.notify_one();
+    assert!(pending.await.unwrap().is_ok());
+    assert_eq!(
+        worker.requests.load(Ordering::SeqCst),
+        2,
+        "lease cleanup must still run"
+    );
+    assert!(
+        state.owned.agent_store.get_agent(agent.id()).is_err(),
+        "home must settle the committed destruction"
+    );
+}

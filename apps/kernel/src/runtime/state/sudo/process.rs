@@ -33,15 +33,19 @@ impl KernelRuntimeState {
                 .map(|(run_id, identity)| (identity, vec![run_id])),
         );
         // The nearest launched provider is the boundary. Shared servers fail closed.
-        let (_, owners) = chain
+        let (root_index, owners) = chain
             .iter()
-            .find_map(|identity| {
-                roots.iter().find(|(launched, _)| {
-                    // Wrapper exec preserves the OS start identity, unlike PID reuse.
-                    launched.pid == identity.pid
-                        && launched.uid == identity.uid
-                        && launched.start == identity.start
-                })
+            .enumerate()
+            .find_map(|(index, identity)| {
+                roots
+                    .iter()
+                    .find(|(launched, _)| {
+                        // Wrapper exec preserves the OS start identity, unlike PID reuse.
+                        launched.pid == identity.pid
+                            && launched.uid == identity.uid
+                            && launched.start == identity.start
+                    })
+                    .map(|(_, owners)| (index, owners))
             })
             .ok_or_else(|| error("peer is outside a tracked provider process tree"))?;
         let [run_id] = owners.as_slice() else {
@@ -58,7 +62,21 @@ impl KernelRuntimeState {
         turns
             .into_iter()
             .find(|turn| {
-                turn.provider_run_id.as_deref() == Some(run_id.as_str()) && self.sudo_live(turn)
+                turn.provider_run_id.as_deref() == Some(run_id.as_str())
+                    && self.sudo_live(turn)
+                    && self
+                        .owned
+                        .sudo_process_cutoffs
+                        .lock()
+                        .expect("sudo process cutoffs poisoned")
+                        .get(&turn.entry_id)
+                        .is_some_and(|cutoff| {
+                            chain[..root_index].iter().all(|identity| {
+                                crate::runtime::kernel_access::process::born_after(
+                                    identity, *cutoff,
+                                )
+                            })
+                        })
             })
             .ok_or_else(|| error("this provider turn has no sudo authority"))
     }

@@ -183,7 +183,7 @@ impl KernelRuntimeState {
             )
             .await?
         };
-        self.authorize_current_external_command()?;
+        // A completed controller effect must keep its result after grant revocation.
         match response {
             Response::ActionCancelled { controller_fenced } if admitted_mutation_command => {
                 Err(DaemonError::BrowserControllerActionCancelled { controller_fenced })

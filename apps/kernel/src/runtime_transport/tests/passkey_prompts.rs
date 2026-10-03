@@ -258,3 +258,46 @@ async fn one_passkey_prompt_reaches_every_terminal_and_the_first_answer_closes_i
     let _ = controller.socket.close(None).await;
     host.stop().await;
 }
+
+#[tokio::test]
+async fn linked_cloud_owner_popup_reaches_the_local_waiting_room_terminal() {
+    let root = RuntimeTransportTempDir::new("cloud-owner-popup");
+    let vault = root.path().join("vault.json");
+    crate::secret::create_chariox_encrypted_vault_for_test(&vault, PASSKEY).unwrap();
+    let token = local_auth::generate_kernel_local_auth_token();
+    let auth =
+        KernelLocalAuth::LocalToken(Arc::new(local_auth::LocalTokenAuth::new(token.clone())));
+    let kernel =
+        ClassAuditKernel::start_for_owner(&root, &vault, auth, "synthetic-cloud-owner").await;
+    assert!(kernel
+        .router
+        .runtime_state()
+        .passkey_prompts_for("local")
+        .is_empty());
+    assert_eq!(
+        kernel
+            .router
+            .runtime_state()
+            .passkey_prompts_for("synthetic-cloud-owner")
+            .len(),
+        1
+    );
+    let mut terminal = Terminal::connect(&kernel, &format!("Bearer {token}")).await;
+    terminal
+        .subscribe(
+            WAITING_ROOM_INVENTORY_SENTINEL_ID,
+            WAITING_ROOM_INVENTORY_SENTINEL_ID,
+            Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+        )
+        .await;
+    let prompts = terminal.prompts().await;
+    assert_eq!(prompts.len(), 1);
+    assert_eq!(prompts[0]["interaction_id"], kernel.interaction_id);
+    assert_eq!(
+        terminal.answer(&kernel, "approve", Some(PASSKEY)).await,
+        None
+    );
+    assert!(terminal.prompts().await.is_empty());
+    kernel.shutdown.send(()).unwrap();
+    kernel.server.await.unwrap().unwrap();
+}

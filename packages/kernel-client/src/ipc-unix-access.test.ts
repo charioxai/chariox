@@ -7,7 +7,7 @@ import { test } from "node:test"
 import { WebSocketServer } from "ws"
 import { LocalIpcClient } from "./ipc.js"
 
-test("ws+unix serves the same kernel frames and never sends a bearer", async () => {
+for (const explicit of [true, false]) test(`${explicit ? "ws+unix" : "bare Unix path"} serves kernel websocket frames and never sends a bearer`, async () => {
   const root = await mkdtemp(join(tmpdir(), "chx-unix-"))
   await mkdir(join(root, "run"), { mode: 0o700 })
   const path = join(root, "run", "k.sock")
@@ -24,7 +24,7 @@ test("ws+unix serves the same kernel frames and never sends a bearer", async () 
     })
   })
   await new Promise<void>(resolve => server.listen(path, resolve))
-  const client = new LocalIpcClient(`ws+unix://${path}`)
+  const client = new LocalIpcClient(explicit ? `ws+unix://${path}` : path)
   try {
     assert.equal(client.supportsKernelEvents(), true)
     const result = await client.send<{ KernelAccessGranted: { grant: { holder_pid: number } } }>({ RequestKernelAccess: { session_id: "s", holder_pid: process.pid } })

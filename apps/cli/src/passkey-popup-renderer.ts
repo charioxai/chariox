@@ -108,7 +108,7 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
         height: Math.max(2, Math.min(wanted, dimensions.height - top - 1 - fixedRows)),
         flexShrink: 0, scrollY: true, scrollX: false,
       })
-      body.add(text(`${prompt.kind === "critical_approval" ? "Critical approval" : "External agent access"}${view.count > 1 ? ` · ${view.index + 1} of ${view.count}` : ""}`, { muted: true }))
+      body.add(text(`${prompt.kind === "critical_approval" ? "Critical approval" : prompt.kind === "sudo" ? "One sudo turn" : "External agent access"}${view.count > 1 ? ` · ${view.index + 1} of ${view.count}` : ""}`, { muted: true }))
       body.add(text(prompt.title || "Critical approval", { accent: true, bold: true }))
       body.add(text(prompt.message))
       panel.add(body)
@@ -117,10 +117,11 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
       // Hidden input: only the length is ever rendered.
       const remember = text(prompt.kind === "critical_approval"
         ? `Remember for: ${view.passkey.rememberMinutes ? `${view.passkey.rememberMinutes} minutes` : "off"}`
+        : prompt.kind === "sudo" ? "Fresh passkey required · authority ends when this turn yields"
         : `Access for: ${view.passkey.accessLifetimeMinutes} minutes · maximum ${prompt.max_lifetime_minutes}`)
       remember.onMouseUp = (event) => {
         event.stopPropagation()
-        if (event.button === MouseButton.LEFT) actions.cycleRemember()
+        if (event.button === MouseButton.LEFT && prompt.kind !== "sudo") actions.cycleRemember()
       }
       const input = text(`Passkey: ${"•".repeat(Math.min(view.passkey.length, 40))}▏`, { accent: true })
       section(input, remember)
@@ -132,7 +133,7 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
       panel.add(buttons)
       section(text(view.pending ? "Waiting for the kernel…"
         : !view.connected ? "Disconnected · reconnect to answer"
-        : `Enter approves · Ctrl+R refuses${view.prompt?.kind === "critical_approval" ? " · Tab remember" : " · Tab lifetime"}${view.count > 1 ? " · ←/→ requests" : ""}`, { muted: true }))
+        : `Enter approves · Ctrl+R refuses${view.prompt?.kind === "critical_approval" ? " · Tab remember" : view.prompt?.kind === "sudo" ? "" : " · Tab lifetime"}${view.count > 1 ? " · ←/→ requests" : ""}`, { muted: true }))
       scrim.add(panel)
       box.add(scrim)
       box.requestRender()

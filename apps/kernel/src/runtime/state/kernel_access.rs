@@ -38,7 +38,8 @@ impl KernelRuntimeState {
         id: Option<&str>,
         reason: &str,
     ) -> Result<usize, DaemonError> {
-        let sudo_count = self.revoke_sudo(owner, id, reason);
+        let sudo_result = self.revoke_sudo(owner, id, reason);
+        let sudo_count = sudo_result.as_ref().copied().unwrap_or(0);
         let mut state = self
             .owned
             .kernel_access
@@ -58,20 +59,26 @@ impl KernelRuntimeState {
             .into_iter()
             .filter_map(|id| state.grants.remove(&id))
             .collect::<Vec<_>>();
-        let pending = state
+        let pending_keys = state
             .pending
-            .values()
-            .filter(|grant| {
+            .iter()
+            .filter(|(_, grant)| {
                 id.is_none_or(|id| id == grant.grant_id)
                     && owner.is_none_or(|owner| owner == grant.owner_user_id)
             })
-            .cloned()
+            .map(|(key, _)| key.clone())
             .collect::<Vec<_>>();
-        if count > 0 || !pending.is_empty() || (id.is_none() && owner.is_none()) {
+        let pending = pending_keys
+            .into_iter()
+            .filter_map(|key| state.pending.remove(&key))
+            .collect::<Vec<_>>();
+        // Targeted revocation invalidates only its own pending requests. The
+        // generation fence is reserved for a kernel-wide reset/shutdown.
+        if id.is_none() && owner.is_none() {
             state.generation = state.generation.wrapping_add(1);
         }
         drop(state);
-        let mut audit_error = None;
+        let mut audit_error = sudo_result.err();
         for grant in revoked {
             if let Err(error) = self.audit_access(&grant.summary, "revoked", Some(reason)) {
                 audit_error.get_or_insert(error);
@@ -276,9 +283,13 @@ impl KernelRuntimeState {
             .kernel_access
             .lock()
             .expect("access state poisoned");
-        state.pending.remove(&key);
+        let admitted = state
+            .pending
+            .remove(&key)
+            .is_some_and(|pending| pending.grant_id == summary.grant_id);
         let minutes = result?;
-        if state.generation != generation
+        if !admitted
+            || state.generation != generation
             || !holder.contains(&peer)
             || self.access_session(session.id()).is_err()
         {

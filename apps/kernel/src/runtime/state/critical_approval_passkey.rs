@@ -661,9 +661,10 @@ impl KernelRuntimeState {
         interaction_id: &str,
     ) -> Box<dyn std::any::Any + Send> {
         use crate::session::{RuntimeInteraction, RuntimeInteractionChoice};
+        let session = self.owned.session_store.get_session(session_id).unwrap();
         self.create_kernel_operation_interaction(
             session_id,
-            crate::session::DEFAULT_LOCAL_USER_ID,
+            session.owner_user_id(),
             RuntimeInteraction::for_kernel_operation(
                 interaction_id,
                 format!("validation:{interaction_id}"),

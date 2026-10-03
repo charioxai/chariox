@@ -57,6 +57,7 @@ async fn subscription_delivers_three_mib_burst_in_order_without_another_append()
             session_id,
             attachment_id,
             subscription_scope: KernelSubscriptionScope::Session,
+            connection_class: KernelConnectionClass::Terminal,
         },
     ));
     let receipt = tokio::time::timeout(Duration::from_secs(3), async {

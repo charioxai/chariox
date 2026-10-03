@@ -311,7 +311,7 @@ async fn slice_recovery_synchronous_keeps_recorded_worker_when_other_room_is_les
         .home
         .lock()
         .await
-        .refresh_remote_agent_binding(&fixture.agent_id)
+        .refresh_remote_agent_binding_authorized(&fixture.agent_id, &|| Ok(()))
         .unwrap();
     assert_eq!(
         rebound.remote_execution().unwrap().worker_kernel_id,
@@ -386,7 +386,7 @@ async fn slice_recovery_missing_record_cannot_fall_back_to_parent_machine() {
         .home
         .lock()
         .await
-        .refresh_remote_agent_binding(&fixture.agent_id)
+        .refresh_remote_agent_binding_authorized(&fixture.agent_id, &|| Ok(()))
         .is_err());
     fixture.assert_foreign_worker_untouched().await;
 }
@@ -429,7 +429,7 @@ async fn slice_recovery_synchronous_unavailable_worker_cannot_fail_over_to_other
         .home
         .lock()
         .await
-        .refresh_remote_agent_binding(&fixture.agent_id)
+        .refresh_remote_agent_binding_authorized(&fixture.agent_id, &|| Ok(()))
         .is_err());
     fixture.assert_foreign_worker_untouched().await;
 }
@@ -447,7 +447,7 @@ async fn slice_recovery_ordinary_machine_failover_still_uses_eligible_lower_load
         .home
         .lock()
         .await
-        .refresh_remote_agent_binding(&fixture.agent_id)
+        .refresh_remote_agent_binding_authorized(&fixture.agent_id, &|| Ok(()))
         .unwrap();
     assert_eq!(
         rebound.remote_execution().unwrap().worker_kernel_id,
@@ -491,7 +491,7 @@ async fn slice_recovery_foreign_room_rejected_by_every_entry_point() {
         .prepare_remote_agent_binding_refresh(&fixture.agent_id, &fixture.binding)
         .is_err());
     assert!(home
-        .refresh_remote_agent_binding(&fixture.agent_id)
+        .refresh_remote_agent_binding_authorized(&fixture.agent_id, &|| Ok(()))
         .is_err());
     assert!(home
         .refresh_remote_agent_binding_to_worker_kernel(&fixture.agent_id, &fixture.presences[0])
@@ -819,7 +819,7 @@ async fn slice_machine_selection_synchronous_excludes_recorded_custom_ssh_worker
     slice.backend = crate::slice::SliceBackendKind::SshDocker;
     home.slices().restore_records(vec![slice]);
     let refreshed = home
-        .refresh_remote_agent_binding(&fixture.agent_id)
+        .refresh_remote_agent_binding_authorized(&fixture.agent_id, &|| Ok(()))
         .unwrap();
     assert_eq!(
         refreshed.remote_execution().unwrap().worker_kernel_id,
@@ -866,7 +866,7 @@ async fn slice_recovery_recorded_machine_disagreement_is_rejected_before_contact
         .prepare_remote_agent_binding_refresh(&fixture.agent_id, &fixture.binding)
         .is_err());
     assert!(home
-        .refresh_remote_agent_binding(&fixture.agent_id)
+        .refresh_remote_agent_binding_authorized(&fixture.agent_id, &|| Ok(()))
         .is_err());
     assert!(home
         .refresh_remote_agent_binding_to_worker_kernel(&fixture.agent_id, &fixture.presences[0])

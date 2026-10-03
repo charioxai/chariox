@@ -43,22 +43,15 @@ impl CommandRouter {
         if command.caller.connection_class != Some(KernelConnectionClass::ExternalAgent) {
             return result;
         }
-        result.map(|mut response| {
+        result.and_then(|mut response| {
             if let LocalDaemonResponse::SessionsListed { sessions } = &mut response {
-                sessions.retain(|session| {
-                    self.runtime_state
-                        .authorize_external_request(
-                            &command.caller.caller_id,
-                            &LocalDaemonRequest::GetSessionState(
-                                crate::local::GetSessionStateRequest {
-                                    session_id: session.id().into(),
-                                },
-                            ),
-                        )
-                        .is_ok()
-                });
+                let granted_session = self.runtime_state.authorize_external_request(
+                    &command.caller.caller_id,
+                    &LocalDaemonRequest::ListSessions(crate::local::ListSessionsRequest),
+                )?;
+                sessions.retain(|session| session.id() == granted_session);
             }
-            response
+            Ok(response)
         })
     }
 

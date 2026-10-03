@@ -56,13 +56,17 @@ test("only well-formed passkey prompts reach the popup", () => {
   assert.deepEqual(passkeyPromptsFromEvent(undefined), [])
 })
 
-test("a prompt opens the popup on its own, and the kernel closing it closes the popup", () => {
+test("a new prompt needs explicit focus and does not take composer keys", () => {
   const h = harness()
   h.popup.apply([prompt("p1")])
-  assert.equal(h.popup.view().open, true)
+  assert.equal(h.popup.view().open, false)
+  assert.deepEqual(h.focus, [])
+  assert.equal(h.popup.ownsInput(), false)
+  assert.equal(h.popup.handleKey(key("x")), false)
+  assert.equal(h.popup.handleKey(key("return")), false)
+  assert.deepEqual(h.requests, [])
+  assert.equal(h.popup.handleKey(key("f8")), true)
   assert.deepEqual(h.focus, ["open"])
-  assert.equal(h.popup.ownsInput(), true)
-  // Answered on another terminal: the kernel's set no longer has it.
   h.popup.apply([])
   assert.equal(h.popup.view().open, false)
   assert.equal(h.popup.view().count, 0)
@@ -72,6 +76,7 @@ test("a prompt opens the popup on its own, and the kernel closing it closes the 
 test("a typed and pasted passkey is kept exactly and sent with the approve choice", async () => {
   const h = harness()
   h.popup.apply([prompt("p1")])
+  h.popup.show()
   h.popup.handleKey(key("x", { shift: true, sequence: "X" }))
   h.popup.handleKey(key("\u{1D11E}", { sequence: "\u{1D11E}" }))
   h.popup.handleKey(key("1", { shift: true, sequence: "!" }))
@@ -100,6 +105,7 @@ test("a typed and pasted passkey is kept exactly and sent with the approve choic
 test("a terminal control sequence typed into the passkey clears it and the rest of that input", async () => {
   const h = harness()
   h.popup.apply([prompt("p1")])
+  h.popup.show()
   // An unbracketed paste of styled text, as OpenTUI parses it into keys.
   h.popup.handleKey(key("a", { sequence: "a" }))
   h.popup.handleKey(key("", { sequence: "\u001b[31m", ctrl: true, meta: true, alt: true }))
@@ -117,6 +123,7 @@ test("a terminal control sequence typed into the passkey clears it and the rest 
 test("a wrong passkey keeps the popup open and asks again", async () => {
   const h = harness()
   h.popup.apply([prompt("p1")])
+  h.popup.show()
   type(h, "guess")
   h.popup.handleKey(key("return"))
   h.reject("local transport `critical approval` failed: PASSKEY_REJECTED: the passkey is not correct")
@@ -132,6 +139,7 @@ test("a wrong passkey keeps the popup open and asks again", async () => {
 test("a later answer is told it was already answered and the popup closes", async () => {
   const h = harness()
   h.popup.apply([prompt("p1"), prompt("p2")])
+  h.popup.show()
   type(h, "right")
   h.popup.handleKey(key("return"))
   h.reject("PASSKEY_ALREADY_ANSWERED: already answered")
@@ -144,15 +152,17 @@ test("a later answer is told it was already answered and the popup closes", asyn
 test("Ctrl+R refuses with the refuse choice and no passkey", async () => {
   const h = harness()
   h.popup.apply([prompt("p1")])
+  h.popup.show()
   type(h, "half")
   h.popup.handleKey(key("r", { ctrl: true, sequence: "\u0012" }))
   assert.deepEqual(h.requests, [["p1", "deny"]])
   assert.equal(h.popup.view().passkey.length, 0)
 })
 
-test("Esc hides the popup, F8 and a new prompt bring it back", () => {
+test("Esc hides the popup and only explicit focus brings it back", () => {
   const h = harness()
   h.popup.apply([prompt("p1")])
+  h.popup.show()
   type(h, "secret")
   h.popup.handleKey(key("escape"))
   assert.equal(h.popup.view().open, false)
@@ -165,7 +175,7 @@ test("Esc hides the popup, F8 and a new prompt bring it back", () => {
   h.popup.apply([prompt("p1")])
   assert.equal(h.popup.view().open, false, "the same set does not reopen it")
   h.popup.apply([prompt("p1"), prompt("p2")])
-  assert.equal(h.popup.view().open, true)
+  assert.equal(h.popup.view().open, false)
   assert.equal(h.popup.view().prompt?.interaction_id, "p1")
   h.popup.handleKey(key("escape"))
   assert.equal(h.popup.show("session-1", "p2"), true)
@@ -176,6 +186,7 @@ test("Esc hides the popup, F8 and a new prompt bring it back", () => {
 test("this terminal's remember window approves without retyping until the kernel refuses", async () => {
   const h = harness()
   h.popup.apply([prompt("p1"), prompt("p2")])
+  h.popup.show()
   type(h, "x")
   h.popup.handleKey(key("tab"))
   assert.equal(h.popup.view().passkey.rememberMinutes, 5)
@@ -184,6 +195,10 @@ test("this terminal's remember window approves without retyping until the kernel
   h.resolve()
   await settle()
   assert.equal(h.popup.view().prompt?.interaction_id, "p2")
+  assert.equal(h.popup.view().open, false)
+  h.popup.handleKey(key("return"))
+  assert.equal(h.requests.length, 1, "remembered presence cannot consume a composer Enter")
+  h.popup.show()
   h.popup.handleKey(key("return"))
   assert.deepEqual(h.requests[1], ["p2", "approve"])
   h.reject("PASSKEY_REQUIRED: approving this critical action needs your Chariox passkey")
@@ -196,6 +211,7 @@ test("this terminal's remember window approves without retyping until the kernel
 test("a disconnected terminal sends nothing", () => {
   const h = harness()
   h.popup.apply([prompt("p1")])
+  h.popup.show()
   h.setConnected(false)
   type(h, "secret")
   h.popup.handleKey(key("return"))
@@ -207,6 +223,7 @@ test("a disconnected terminal sends nothing", () => {
 test("a passkey typed for one request never answers another that takes its place", async () => {
   const h = harness()
   h.popup.apply([prompt("p1"), prompt("p2")])
+  h.popup.show()
   type(h, "for-p1")
   h.popup.handleKey(key("tab"))
   assert.deepEqual(h.popup.view().passkey, { length: 6, rememberMinutes: 5 })
@@ -216,7 +233,8 @@ test("a passkey typed for one request never answers another that takes its place
   assert.deepEqual(h.popup.view().passkey, { length: 0, rememberMinutes: 0 })
   h.popup.handleKey(key("return"))
   assert.deepEqual(h.requests, [], "nothing typed for p2, so nothing is sent")
-  // The same request staying in place keeps what was typed for it.
+  // The same explicitly focused request keeps what was typed for it.
+  h.popup.show()
   type(h, "for-p2")
   h.popup.apply([prompt("p2"), prompt("p3")])
   assert.equal(h.popup.view().passkey.length, 6)
@@ -232,6 +250,7 @@ test("a passkey typed for one request never answers another that takes its place
 test("an answered earlier request leaves the shown one in view", async () => {
   const h = harness()
   h.popup.apply([prompt("p1"), prompt("p2"), prompt("p3")])
+  h.popup.show()
   h.popup.handleKey(key("r", { ctrl: true }))
   assert.deepEqual(h.requests, [["p1", "deny"]])
   // The approval panel shows another request while the refusal is pending.
@@ -245,6 +264,7 @@ test("an answered earlier request leaves the shown one in view", async () => {
 test("access grants and extensions require a fresh passkey and let the owner choose a bounded term", async () => {
   const h = harness()
   h.popup.apply([prompt("critical")])
+  h.popup.show()
   type(h, "correct")
   h.popup.handleKey(key("tab"))
   h.popup.handleKey(key("return"))
@@ -252,6 +272,7 @@ test("access grants and extensions require a fresh passkey and let the owner cho
   for (const kind of ["access_grant", "access_extension"] as const) {
     const access = { ...prompt(kind), kind, lifetime_minutes: 30, max_lifetime_minutes: 45 }
     h.popup.apply([access])
+    h.popup.show()
     const count = h.requests.length
     h.popup.handleKey(key("return"))
     await settle()
@@ -270,6 +291,7 @@ test("access grants and extensions require a fresh passkey and let the owner cho
 test("sudo always asks for a fresh passkey and has no remember or lifetime control", async () => {
   const h = harness()
   h.popup.apply([prompt("critical")])
+  h.popup.show()
   type(h, "correct")
   h.popup.handleKey(key("tab"))
   h.popup.handleKey(key("return"))
@@ -277,6 +299,7 @@ test("sudo always asks for a fresh passkey and has no remember or lifetime contr
   const sudo = { ...prompt("sudo"), kind: "sudo" as const }
   assert.deepEqual(passkeyPromptsFromEvent([sudo]), [sudo])
   h.popup.apply([sudo])
+  h.popup.show()
   const count = h.requests.length
   h.popup.handleKey(key("return"))
   await settle()

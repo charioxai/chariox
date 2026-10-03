@@ -106,7 +106,9 @@ async function popupHarness(kittyKeyboard: boolean) {
   const stopPastes = routeRawPastes(harness.renderer.keyInput, popup.handlePaste)
   textarea.focus()
   popup.apply([prompt])
-  assert.equal(textarea.focused, false)
+  assert.equal(textarea.focused, true, "arrival leaves the composer focused")
+  harness.renderer.stdin.emit("data", Buffer.from("\x1b[19~"))
+  assert.equal(textarea.focused, false, "F8 deliberately focuses the popup")
   return {
     harness, textarea, proofs, popup,
     send: (bytes: string) => { harness.renderer.stdin.emit("data", Buffer.from(bytes)) },
@@ -174,4 +176,20 @@ test("Escape hides the popup and gives the prompt back; the passkey is gone", as
     assert.equal(h.popup.view().open, true)
     assert.equal(h.popup.view().passkey.length, 0)
   } finally { h.dispose() }
+})
+
+test("sudo popup describes a fresh one-turn decision without grant lifetime controls", async () => {
+  const harness = await createTestRenderer({ width: 90, height: 30, useThread: false })
+  const box = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0 })
+  harness.renderer.root.add(box)
+  const surface = createPasskeyPopupRenderer(harness.renderer, noActions)
+  surface.assign(box)
+  try {
+    surface.render({ ...view, prompt: { ...prompt, kind: "sudo" } }, { width: 90, height: 30 })
+    await harness.renderOnce()
+    const frame = harness.captureCharFrame()
+    assert.match(frame, /One sudo turn/)
+    assert.match(frame, /fresh passkey/i)
+    assert.doesNotMatch(frame, /External agent access|undefined|Tab lifetime|Tab remember|Remember for/)
+  } finally { harness.renderer.destroy() }
 })

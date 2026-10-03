@@ -118,7 +118,7 @@ impl KernelRuntimeState {
             let _ = self
                 .owned
                 .timeout_runtime_interaction(&entry.session_id, &entry.entry_id);
-            let _ = self.audit_sudo(&ended, "refused_or_cancelled");
+            let _ = self.record_sudo_end(&ended, "refused_or_cancelled");
         }
         result
     }
@@ -328,7 +328,14 @@ impl KernelRuntimeState {
         {
             return Err(error("sudo authorization revoked before dispatch"));
         }
+        let cutoff = crate::runtime::kernel_access::process::birth_cutoff()
+            .map_err(|e| error(e.to_string()))?;
         self.audit_sudo(turn, "started")?;
+        self.owned
+            .sudo_process_cutoffs
+            .lock()
+            .expect("sudo process cutoffs poisoned")
+            .insert(entry.entry_id.clone(), cutoff);
         access.insert(entry.entry_id.clone(), turn.clone());
         Ok(())
     }
@@ -343,7 +350,7 @@ struct PendingSudoGuard {
 impl Drop for PendingSudoGuard {
     fn drop(&mut self) {
         if self.armed {
-            self.state.revoke_sudo(
+            let _ = self.state.revoke_sudo(
                 Some(&self.entry.owner_user_id),
                 Some(&self.entry.entry_id),
                 "request_cancelled",

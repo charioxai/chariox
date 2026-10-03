@@ -598,7 +598,7 @@ impl KernelRuntimeState {
                     });
                 }
             };
-        self.authorize_prompt_command(authority)?;
+        // The worker completion is committed; settle its home receipt even after revocation.
         let completion = owned.complete_remote_prompt_owner_with_termination(
             session_id,
             target_agent_id,

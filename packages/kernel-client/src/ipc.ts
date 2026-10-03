@@ -14,8 +14,7 @@ import WebSocket from "ws"
 import { kernelUpgradeRejectionHandler } from "./websocket-upgrade-rejection.js"
 
 import { getKernelResourceTelemetryRequest } from "./ipc-kernel-control-requests.js"
-import { isGuardedKernelControl, requireKernelControlCapability } from "./ipc-disposable-worker-requests.js"
-import { sendGuardedLocalSocketRequest } from "./local-socket-session.js"
+import { requireKernelControlCapability } from "./ipc-disposable-worker-requests.js"
 import type { KernelEvent } from "./kernel-events.js"
 import type {
   IpcEnvelope,
@@ -40,7 +39,6 @@ import {
 import { readLocalKernelAuthToken } from "./local-kernel-auth-token.js"
 import { LocalIpcError } from "./local-ipc-error.js"
 import { waitsForKernelAuthorization } from "./kernel-authorization-request-policy.js"
-import { sendLocalSocketRequest } from "./local-socket-transport.js"
 import {
   createRelayKeypair,
   type RelayClientIdentity,
@@ -277,6 +275,10 @@ export class LocalIpcClient {
   private readonly kernelMaxMissedPongs: number
 
   constructor(endpoint: string, options: LocalIpcClientOptions = {}) {
+    if (!isWebSocketEndpoint(endpoint)) {
+      if (endpoint.includes("://") && !endpoint.startsWith("unix://")) throw new Error("unsupported kernel endpoint")
+      endpoint = `ws+unix://${endpoint.replace(/^unix:\/\//, "")}`
+    }
     if (endpoint.startsWith("ws+unix://") && (options.localAuthToken !== undefined || options.relayAuthToken !== undefined)) {
       throw new Error("Unix kernel access uses OS process identity, without bearer credentials")
     }
@@ -357,12 +359,8 @@ export class LocalIpcClient {
   }
 
   async send<TResponse>(request: unknown): Promise<TResponse> {
-    if (!isWebSocketEndpoint(this.socketPath) && isGuardedKernelControl(request)) {
-      return sendGuardedLocalSocketRequest<TResponse>(this.socketPath, request, IPC_TIMEOUT_MS)
-    }
     let admittedSocket: WebSocket | undefined
     await requireKernelControlCapability(async query => {
-      if (!isWebSocketEndpoint(this.socketPath)) return this.sendUnchecked(query)
       admittedSocket = await this.ensureWebSocket("control")
       return this.sendWebSocket(query, "control", admittedSocket)
     }, request)
@@ -371,10 +369,7 @@ export class LocalIpcClient {
   }
 
   private sendUnchecked<TResponse>(request: unknown): Promise<TResponse> {
-    if (isWebSocketEndpoint(this.socketPath)) {
-      return this.sendWebSocket(request)
-    }
-    return this.sendLocalSocket(request)
+    return this.sendWebSocket(request)
   }
 
   async getManagedTargetResourceTelemetry(options: {
@@ -547,10 +542,6 @@ export class LocalIpcClient {
     this.controlRelayDaemonPublicKey = null
     this.eventRelayDaemonPublicKey = null
     this.rejectPending(pendingMessage)
-  }
-
-  private sendLocalSocket<TResponse>(request: unknown): Promise<TResponse> {
-    return sendLocalSocketRequest(this.socketPath, request, waitsForKernelAuthorization(request) ? 0 : IPC_TIMEOUT_MS)
   }
 
   private async sendWebSocket<TResponse>(request: unknown, lane: KernelSocketLane = "control", admittedSocket?: WebSocket): Promise<TResponse> {

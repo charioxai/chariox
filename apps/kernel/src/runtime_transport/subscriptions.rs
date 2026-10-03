@@ -40,11 +40,18 @@ pub(super) async fn run_subscription_loop(
     close_requested: Arc<AtomicBool>,
     subscription: KernelSubscription,
 ) {
-    // A local connection acts as the local owner.
-    let mut passkey_prompts = PasskeyPromptFeed::new(
-        subscription.connection_class,
-        crate::session::DEFAULT_LOCAL_USER_ID,
-    );
+    // Use the same owner identity as local request admission, including linked Cloud profiles.
+    let caller = router
+        .local_command_caller(
+            crate::runtime::command::KernelCommandSource::LocalCli,
+            subscription.connection_class,
+        )
+        .await;
+    let owner = caller
+        .user_id
+        .as_deref()
+        .unwrap_or(crate::session::DEFAULT_LOCAL_USER_ID);
+    let mut passkey_prompts = PasskeyPromptFeed::new(subscription.connection_class, owner);
     if subscription.subscription_scope == KernelSubscriptionScope::WaitingRoomInventory {
         run_waiting_room_inventory_subscription_loop(
             router,

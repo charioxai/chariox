@@ -280,15 +280,12 @@ impl KernelRuntimeState {
                 .agent_store
                 .deactivate_agent_meta_mode(original.id());
         }
-        if let Some(authority) = &self.external_command_authority {
-            let mut pending = self.owned.pending_provider_reloads.write();
-            if pending
-                .get(original.id())
-                .and_then(|reload| reload.authority.as_ref())
-                .is_some_and(|pending| pending.grant_id == authority.grant_id)
-            {
-                pending.remove(original.id());
-            }
+        let mut pending = self.owned.pending_provider_reloads.write();
+        if pending
+            .get(original.id())
+            .is_some_and(|reload| reload.provisional_meta_activation)
+        {
+            pending.remove(original.id());
         }
     }
 

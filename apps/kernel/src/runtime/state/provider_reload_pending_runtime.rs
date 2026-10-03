@@ -24,21 +24,17 @@ impl KernelRuntimeState {
         reason: ProviderReloadReason,
     ) {
         let mut pending = self.owned.pending_provider_reloads.write();
-        let authority = if pending
-            .get(agent_id)
-            .is_some_and(|previous| previous.authority.is_none())
-        {
-            None
-        } else {
-            self.external_command_authority.clone()
-        };
+        // A failed provisional Meta activation can drop its own reload, but
+        // must preserve any accepted config/catalog work already in the queue.
+        let provisional_meta_activation = !pending.contains_key(agent_id)
+            && matches!(&reason, ProviderReloadReason::LaunchInputs(label) if label == "meta mode activation");
         let reason = pending
             .get(agent_id)
             .map_or(reason.clone(), |previous| reason.merge(&previous.reason));
         pending.insert(
             agent_id.to_string(),
             PendingProviderReload {
-                authority,
+                provisional_meta_activation,
                 session_id: session_id.to_string(),
                 agent_id: agent_id.to_string(),
                 reason,
@@ -54,33 +50,6 @@ impl KernelRuntimeState {
         let agent_id = agent_id.to_string();
         tokio::spawn(async move {
             while poller.next().await {
-                let authority = state
-                    .owned
-                    .pending_provider_reloads
-                    .write()
-                    .get(&agent_id)
-                    .and_then(|pending| pending.authority.clone());
-                if let Some(authority) = authority {
-                    if state
-                        .with_external_command_authority(Some(authority.as_request()))
-                        .authorize_current_external_command()
-                        .is_err()
-                    {
-                        let mut queued = state.owned.pending_provider_reloads.write();
-                        if queued
-                            .get(&agent_id)
-                            .and_then(|pending| pending.authority.as_ref())
-                            .is_some_and(|current| current.grant_id == authority.grant_id)
-                        {
-                            queued.remove(&agent_id);
-                        }
-                        if !queued.contains_key(&agent_id) {
-                            poller.release();
-                            return;
-                        }
-                        continue;
-                    }
-                }
                 let is_idle = state
                     .owned
                     .session_store
@@ -99,12 +68,9 @@ impl KernelRuntimeState {
                         pending.remove(&agent_id)
                     };
                     if let Some(pending) = pending {
-                        let authorized = state.with_external_command_authority(
-                            pending
-                                .authority
-                                .as_ref()
-                                .map(ExternalCommandAuthority::as_request),
-                        );
+                        // The accepted configuration/catalog change already committed.
+                        // Reconcile it under kernel authority even if its grant expired.
+                        let authorized = state.with_external_command_authority(None);
                         match authorized
                             .reload_agent_provider_if_idle_for_reason(
                                 &pending.session_id,

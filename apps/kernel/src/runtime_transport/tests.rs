@@ -80,7 +80,7 @@ async fn fd_exhaustion_transport_child() {
         router,
         listener,
         adopt_std_listener(mcp_listener, "test MCP").unwrap(),
-        None,
+        KernelLocalAuth::Unconfigured,
         async {
             let _ = shutdown_rx.await;
         },
@@ -472,7 +472,7 @@ async fn kernel_websocket_refuses_browser_origins_with_or_without_local_auth() {
                 app,
                 listener,
                 mcp_listener,
-                token.map(Arc::<str>::from),
+                KernelLocalAuth::host_token_or_unconfigured(token.map(Arc::<str>::from)),
                 async {
                     let _ = shutdown_rx.await;
                 },
@@ -794,6 +794,15 @@ struct ClassAuditKernel {
 
 impl ClassAuditKernel {
     async fn start(root: &RuntimeTransportTempDir, vault: &Path, auth: KernelLocalAuth) -> Self {
+        Self::start_for_owner(root, vault, auth, crate::session::DEFAULT_LOCAL_USER_ID).await
+    }
+
+    async fn start_for_owner(
+        root: &RuntimeTransportTempDir,
+        vault: &Path,
+        auth: KernelLocalAuth,
+        owner: &str,
+    ) -> Self {
         let listener = StdTcpListener::bind("127.0.0.1:0").expect("listener should bind");
         let addr = listener.local_addr().expect("listener should have addr");
         let mcp_listener =
@@ -805,6 +814,17 @@ impl ClassAuditKernel {
         config.user_config_path = root
             .path()
             .join(format!("config-{}.toml", rand::random::<u64>()));
+        if owner != crate::session::DEFAULT_LOCAL_USER_ID {
+            config.cloud_relay = Some(
+                serde_json::from_value(serde_json::json!({
+                    "api_url": "https://fixture.invalid", "email": "test@fixture.invalid",
+                    "account_id": "synthetic-account", "user_id": owner, "account_slug": "fixture",
+                    "realm_id": "synthetic-realm", "relay_url": "wss://fixture.invalid",
+                    "issuer_id": "synthetic-issuer", "client_id": "synthetic-terminal"
+                }))
+                .unwrap(),
+            );
+        }
         let app = DaemonApp::bootstrap(config).expect("daemon should boot");
         let session = crate::session::RuntimeSession::new(
             format!("class-audit-{:016x}", rand::random::<u64>()),
@@ -813,7 +833,8 @@ impl ClassAuditKernel {
             "worktree",
             "machine",
             "kernel",
-        );
+        )
+        .with_owner_user_id(owner);
         let session_id = session.id().to_owned();
         app.sessions_mut().restore_session(session);
         let durable = app.durable_state_store();
@@ -2341,7 +2362,7 @@ async fn app_wake_deadline_interrupts_idle_transport_without_client_traffic() {
         Arc::new(Mutex::new(app)),
         listener,
         mcp,
-        None,
+        KernelLocalAuth::Unconfigured,
         async {
             let _ = stopped.await;
         },

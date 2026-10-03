@@ -721,8 +721,9 @@ where
                 let _ = router.shutdown_cleanup().await;
                 return Ok(());
             },
-            accept_result = unix_listener.listener.accept() => {
-                let (stream, _) = accept_result.map_err(|e| crate::runtime::kernel_access::error(e.to_string()))?;
+            (stream, _) = crate::transport::listener_admission::accept_unix_with_backoff(
+                &unix_listener.listener, &transport_health, "kernel Unix websocket",
+            ) => {
                 let runtime = Arc::clone(&runtime);
                 let router = Arc::clone(&router);
                 let admission = inbound_request_admission.clone();

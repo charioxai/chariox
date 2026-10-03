@@ -218,6 +218,52 @@ pub(crate) fn peer(_: &tokio::net::UnixStream) -> io::Result<ProcessIdentity> {
     Err(invalid())
 }
 
+/// Compare process birth in the OS clock domain. Same-tick births fail closed.
+#[cfg(target_os = "linux")]
+pub(crate) fn birth_cutoff() -> io::Result<u64> {
+    let mut now: libc::timespec = unsafe { std::mem::zeroed() };
+    let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    if hz <= 0 || unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut now) } != 0 {
+        return Err(invalid());
+    }
+    Ok(now.tv_sec as u64 * hz as u64 + now.tv_nsec as u64 * hz as u64 / 1_000_000_000)
+}
+#[cfg(target_os = "linux")]
+pub(crate) fn born_after(peer: &ProcessIdentity, cutoff: u64) -> bool {
+    peer.start > cutoff
+}
+#[cfg(target_os = "macos")]
+pub(crate) fn birth_cutoff() -> io::Result<u64> {
+    Ok(std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| invalid())?
+        .as_micros() as u64)
+}
+#[cfg(target_os = "macos")]
+pub(crate) fn born_after(peer: &ProcessIdentity, cutoff: u64) -> bool {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of_val(&info) as i32;
+    (unsafe {
+        libc::proc_pidinfo(
+            peer.pid as i32,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            &mut info as *mut _ as *mut _,
+            size,
+        )
+    }) == size
+        && info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec > cutoff
+        && peer.alive()
+}
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub(crate) fn birth_cutoff() -> io::Result<u64> {
+    Err(invalid())
+}
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub(crate) fn born_after(_: &ProcessIdentity, _: u64) -> bool {
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

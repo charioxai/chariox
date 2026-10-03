@@ -137,6 +137,10 @@ pub(super) fn running(f: &Fixture) -> KernelSudoTurn {
         "sudo-exact-turn",
         &turn.entry_id
     ));
+    f.state.owned.sudo_process_cutoffs.lock().unwrap().insert(
+        turn.entry_id.clone(),
+        crate::runtime::kernel_access::process::birth_cutoff().unwrap(),
+    );
     f.state
         .owned
         .sudo_turns
@@ -800,11 +804,13 @@ async fn sudo_fresh_popup_starts_one_separate_turn_through_normal_admission() {
         .any(|event| event.payload["outcome"] == "started"
             && event.payload["turn"]["prompt_id"] == started.id()));
     // The metadata-only run cannot execute effects. End any admitted fixture turn.
-    f.state.revoke_sudo(
-        Some("local"),
-        Some(&prompt.interaction_id),
-        "fixture_cleanup",
-    );
+    f.state
+        .revoke_sudo(
+            Some("local"),
+            Some(&prompt.interaction_id),
+            "fixture_cleanup",
+        )
+        .unwrap();
 }
 
 fn external_request(f: &Fixture) -> RequestKernelSudoRequest {
@@ -901,7 +907,9 @@ async fn external_sudo_popup_names_os_requester_target_session_and_full_prompt()
         .answer_sudo_entry_from_terminal("local", "other-terminal", &answer)
         .await
         .is_err());
-    f.state.revoke_sudo(Some("local"), None, "fixture_cleanup");
+    f.state
+        .revoke_sudo(Some("local"), None, "fixture_cleanup")
+        .unwrap();
     assert_eq!(
         f.state
             .owned
@@ -1193,4 +1201,161 @@ async fn sudo_admission_waiting_for_grants_does_not_block_a_critical_receipt() {
         responder.await.unwrap().choice_id.as_deref(),
         Some("approve")
     );
+}
+
+#[tokio::test]
+async fn sudo_bound_turn_refuses_queued_steering_from_terminals_and_external_grants() {
+    let f = fixture();
+    let turn = running(&f);
+    let session = f
+        .state
+        .owned
+        .session_store
+        .get_session(&turn.session_id)
+        .unwrap();
+    f.state
+        .owned
+        .prompt_state_owner
+        .submit_prepared_prompt_with_queue_policy(
+            &session,
+            PromptQueueItem::new(
+                "untrusted-queued",
+                &f.request.attachment_id,
+                &turn.agent_id,
+                "injected privileged instructions",
+                PromptStatus::Queued,
+            ),
+            true,
+            true,
+        )
+        .unwrap();
+    let grant = f.state.insert_access_grant_for_test(&turn.session_id);
+    let request = LocalDaemonRequest::SteerQueuedPrompt(crate::local::SteerQueuedPromptRequest {
+        session_id: turn.session_id.clone(),
+        attachment_id: f.request.attachment_id.clone(),
+        target_agent_id: turn.agent_id.clone(),
+        prompt_id: "untrusted-queued".into(),
+    });
+    for authority in [None, Some((grant.as_str(), &request))] {
+        let error = f
+            .state
+            .steer_queued_prompt_with_external_authority(
+                &turn.session_id,
+                &turn.agent_id,
+                &f.request.attachment_id,
+                "untrusted-queued",
+                authority,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("sudo"), "{error}");
+        let (active, queued) = f
+            .state
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, &turn.agent_id);
+        assert_eq!(active.unwrap().id(), "sudo-exact-turn");
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].id(), "untrusted-queued");
+        assert_eq!(
+            f.state.sudo_for_auth_token("sudo-fixture-bearer").unwrap(),
+            turn
+        );
+    }
+}
+
+#[tokio::test]
+async fn sudo_bound_turn_refuses_messages_from_another_running_agent() {
+    let f = fixture();
+    let turn = running(&f);
+    let sender = f
+        .state
+        .owned
+        .agent_store
+        .create_agent(
+            crate::agent::CreateAgentRequest::new(&turn.session_id, "dev-stub"),
+            &mut f.state.owned.session_store.write(),
+        )
+        .unwrap();
+    let session = f
+        .state
+        .owned
+        .session_store
+        .get_session(&turn.session_id)
+        .unwrap();
+    f.state
+        .owned
+        .prompt_state_owner
+        .submit_prepared_prompt_with_queue_policy(
+            &session,
+            PromptQueueItem::new(
+                "ordinary-sender",
+                &f.request.attachment_id,
+                sender.id(),
+                "ordinary task",
+                PromptStatus::Queued,
+            ),
+            false,
+            false,
+        )
+        .unwrap();
+    let result = f.state.handle_send_agent_message_runtime_tool(&session, &sender,
+        serde_json::json!({"agent": turn.agent_id, "message": "injected privileged instructions",
+            "origin_prompt_id": "ordinary-sender"}),
+    ).await;
+    assert!(matches!(result, Err(error) if error.to_string().contains("sudo")));
+    let (active, queued) = f
+        .state
+        .owned
+        .prompt_state_owner
+        .state_parts(&session, &turn.agent_id);
+    assert_eq!(active.unwrap().prompt(), "protected task");
+    assert!(queued.is_empty());
+    assert_eq!(
+        f.state.sudo_for_auth_token("sudo-fixture-bearer").unwrap(),
+        turn
+    );
+}
+
+#[tokio::test]
+async fn sudo_revocation_removes_authority_and_reports_failed_durable_end_receipt() {
+    let f = fixture();
+    let turn = running(&f);
+    f.state.audit_sudo(&turn, "started").unwrap();
+    let database = rusqlite::Connection::open(f.state.owned.durable_state_store.path()).unwrap();
+    database
+        .execute_batch(
+            "CREATE TRIGGER reject_sudo_end
+        BEFORE INSERT ON durable_state_events
+        WHEN NEW.kind = 'kernel_access.sudo'
+        BEGIN SELECT RAISE(ABORT, 'injected sudo receipt failure'); END;",
+        )
+        .unwrap();
+    let result = f
+        .state
+        .revoke_sudo(Some("local"), Some(&turn.entry_id), "explicit_revoke");
+    assert!(
+        result.is_err(),
+        "the caller must see a failed durable receipt"
+    );
+    assert!(f.state.owned.sudo_turns.lock().unwrap().is_empty());
+    assert!(f
+        .state
+        .owned
+        .sudo_process_cutoffs
+        .lock()
+        .unwrap()
+        .is_empty());
+    assert!(f.state.sudo_for_auth_token("sudo-fixture-bearer").is_err());
+    database
+        .execute_batch("DROP TRIGGER reject_sudo_end;")
+        .unwrap();
+    f.state.recover_sudo_notices();
+    let events = f
+        .state
+        .owned
+        .durable_state_store
+        .load_subject_events_by_kind(&turn.entry_id, "kernel_access.sudo", 10)
+        .unwrap();
+    assert_eq!(events.last().unwrap().payload["outcome"], "restart_dropped");
 }

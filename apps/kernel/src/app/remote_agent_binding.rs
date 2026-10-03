@@ -1434,7 +1434,7 @@ impl DaemonApp {
                 lease_id: remote_execution.execution_lease_id.clone(),
             },
             use_connected_relay,
-            authorize,
+            &|| Ok(()), // Cleanup of an already destroyed agent cannot depend on its grant.
         )? {
             RelayPeerResponse::ExecutionLeaseDestroyed { .. } => {}
             other => {
@@ -1444,7 +1444,6 @@ impl DaemonApp {
                 });
             }
         }
-        authorize()?;
         let moved = self.agents.clear_remote_execution(agent.id())?;
         self.durable_state_store().append_event(
             "agent.updated",
@@ -1497,7 +1496,7 @@ impl DaemonApp {
                 lease_id: remote_execution.execution_lease_id.clone(),
             },
             use_connected_relay,
-            authorize,
+            &|| Ok(()), // Cleanup of an already destroyed agent cannot depend on its grant.
         )? {
             RelayPeerResponse::ExecutionLeaseDestroyed { .. } => Ok(()),
             other => Err(DaemonError::LocalTransport {

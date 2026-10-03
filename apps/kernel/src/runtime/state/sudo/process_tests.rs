@@ -179,12 +179,12 @@ async fn sudo_shell_piped_claude_has_dedicated_session_and_tracked_identity() {
     // Fixture teardown owns the provider service and its piped child.
 }
 
-struct SiblingCleanup([u32; 2]);
+struct SiblingCleanup(Vec<u32>);
 impl Drop for SiblingCleanup {
     fn drop(&mut self) {
-        for pid in self.0 {
+        for pid in &self.0 {
             unsafe {
-                libc::kill(pid as i32, libc::SIGKILL);
+                libc::kill(*pid as i32, libc::SIGKILL);
             }
         }
     }
@@ -228,7 +228,7 @@ while True: time.sleep(1)
         .await
         .parse::<u32>()
         .unwrap();
-    let _children = SiblingCleanup([target, sibling]);
+    let _children = SiblingCleanup(vec![target, sibling]);
     assert_eq!(unsafe { libc::getpgid(target as i32) }, unsafe {
         libc::getpgid(sibling as i32)
     });
@@ -421,4 +421,70 @@ done
     println!("live shell CLI: test passkey admitted; setsid root={}; ListSessions accepted; same command after yield refused", root(&f).pid);
     let _ = stop.send(());
     server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn sudo_shell_excludes_old_descendants_and_their_new_children() {
+    let scratch = ShellDrillScratch::new();
+    let script = scratch.path().join("birth-fence.py");
+    std::fs::write(
+        &script,
+        r#"
+import os, sys, time
+root = sys.argv[1]
+def wait(name):
+    while not os.path.exists(root+'/'+name): time.sleep(.01)
+def idle():
+    while True: time.sleep(1)
+old = os.fork()
+if old == 0:
+    open(root+'/old', 'w').write(str(os.getpid()))
+    wait('go')
+    grandchild = os.fork()
+    if grandchild == 0:
+        open(root+'/grandchild', 'w').write(str(os.getpid()))
+        idle()
+    idle()
+wait('go')
+new = os.fork()
+if new == 0:
+    open(root+'/new', 'w').write(str(os.getpid()))
+    idle()
+idle()
+"#,
+    )
+    .unwrap();
+    let f = fixture_with_provider(Some(&format!(
+        "exec python3 '{}' '{}'",
+        script.display(),
+        scratch.path().display()
+    )));
+    let old = file(&scratch.path().join("old"))
+        .await
+        .parse::<u32>()
+        .unwrap();
+    // Make the old process unambiguously earlier than the admission tick.
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let turn = running(&f);
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    std::fs::write(scratch.path().join("go"), "go").unwrap();
+    let new = file(&scratch.path().join("new"))
+        .await
+        .parse::<u32>()
+        .unwrap();
+    let grandchild = file(&scratch.path().join("grandchild"))
+        .await
+        .parse::<u32>()
+        .unwrap();
+    let _children = SiblingCleanup(vec![old, new, grandchild]);
+    assert!(f.state.sudo_for_peer(&inspect(old).unwrap().0).is_err());
+    assert!(f
+        .state
+        .sudo_for_peer(&inspect(grandchild).unwrap().0)
+        .is_err());
+    assert_eq!(
+        f.state.sudo_for_peer(&inspect(new).unwrap().0).unwrap(),
+        turn
+    );
+    assert_eq!(f.state.sudo_for_peer(&root(&f)).unwrap(), turn);
 }
