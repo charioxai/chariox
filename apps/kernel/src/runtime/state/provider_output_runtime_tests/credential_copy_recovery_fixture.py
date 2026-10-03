@@ -23,6 +23,11 @@ home = Path(os.environ['CODEX_HOME'])
 (Path(__file__).parent / ('synthetic-home-' + str(os.getpid()))).write_text(str(home))
 state_path = home / 'synthetic-turns.json'
 login_marker = home / 'synthetic-login-complete'
+# MP-08/MP-10/MP-11: fail the next replacement process, including every
+# initialization probe. Existing login/status connections must not consume it.
+failure_marker = home / 'synthetic-relaunch-failure'
+fail_relaunch = login_marker.exists() and failure_marker.exists()
+if fail_relaunch: failure_marker.unlink()
 import http.server
 import urllib.request
 import urllib.error
@@ -110,6 +115,9 @@ class Handler(socketserver.StreamRequestHandler):
                     state = json.loads(state_path.read_text()) if state_path.exists() else {'threads': {}, 'resumes': []}
                     notification = None
                     if method == 'initialize':
+                        if fail_relaunch:
+                            self.send({'id': request['id'], 'error': {'code': -32000, 'message': 'synthetic replacement initialization failed'}})
+                            return
                         if login_marker.exists(): (home / 'synthetic-ready').write_text('initialize')
                     elif method == 'account/read':
                         result = {'account': {'email':'fixture@chariox.test'} if login_marker.exists() else None, 'requiresOpenaiAuth': True}

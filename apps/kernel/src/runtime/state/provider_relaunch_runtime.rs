@@ -66,20 +66,37 @@ impl KernelRuntimeState {
             if runtime_init_delay_ms > 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(runtime_init_delay_ms)).await;
             }
+            let permit = state.provider_runtime_lanes.acquire(started.run.id()).await;
             let spawn_result = state
                 .with_app_side_effect(|app| {
+                    // MP-08/MP-10/MP-11: recovery can retire a slow replacement
+                    // before its initialization delay ends. Never spawn it later.
+                    if state
+                        .owned
+                        .provider_store
+                        .get_run(started.run.id())?
+                        .state()
+                        != crate::provider::ProviderRunState::Starting
+                    {
+                        return Ok(false);
+                    }
                     crate::app::ProviderLaunchProcessRuntime::new(app)
                         .spawn_for_launch(&started.run)
+                        .map(|_| true)
                 })
                 .await;
+            if matches!(spawn_result, Ok(false)) {
+                return;
+            }
             if let Err(error) = spawn_result {
-                state.fail_provider_launch(&started, &error).await;
+                state.fail_provider_launch_in_lane(&started, &error).await;
                 return;
             }
             state
                 .owned
                 .provider_run_projection
                 .update(started.run.clone());
+            drop(permit);
             let run = started.run.clone();
             let binding = tokio::task::spawn_blocking(move || {
                 crate::provider::ProviderProcessService::initialize_runtime_binding(&run)
@@ -94,7 +111,15 @@ impl KernelRuntimeState {
                     state.finish_provider_launch(&started, binding).await;
                 }
                 Ok(Err(error)) | Err(error) => {
-                    state.fail_provider_launch(&started, &error).await;
+                    let _permit = state.provider_runtime_lanes.acquire(started.run.id()).await;
+                    if state
+                        .owned
+                        .provider_store
+                        .get_run(started.run.id())
+                        .is_ok_and(|run| run.state() == crate::provider::ProviderRunState::Starting)
+                    {
+                        state.fail_provider_launch_in_lane(&started, &error).await;
+                    }
                 }
             }
         });
