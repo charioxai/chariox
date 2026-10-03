@@ -1970,9 +1970,10 @@ async function execute(request) {
           },
         )
       : await runPrepared()
-    if (commitSource && !legacyCommit && result.status === 0) {
+    if (commitSource && result.status === 0) {
       const captured = inspectDockerObject("image", request.args[2])
-      recordCapturedImageProof(protectedLayouts.imageRoot, VERIFIED_BUILD_CONTEXT_DIGEST,
+      if (legacyCommit) protectedLayouts.recordLegacyImage(request.args[1], commitParent, commitSource, captured)
+      else recordCapturedImageProof(protectedLayouts.imageRoot, VERIFIED_BUILD_CONTEXT_DIGEST,
         commitParent, commitSource, captured)
     }
     if (request.kind === "docker" && prepared.output && result.status === 0) {

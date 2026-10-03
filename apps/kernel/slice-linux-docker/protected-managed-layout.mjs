@@ -7,6 +7,7 @@ import { requireRuntimeProof } from "./protected-runtime-proof.mjs"
 import { requireIdentityRetention } from "./protected-identity-retention.mjs"
 import { PRIVATE_ROOT, verifyProtectedCaptureLayout } from "./protected-layout.mjs"
 import { createHomeGenerationStore } from "./protected-home-generation.mjs"
+import { recordLegacyImageProof, requireLegacyImageProof } from "./legacy-image-proof.mjs"
 import { verifyLegacyReleaseFLayout } from "./legacy-release-f-layout.mjs"
 import { createHash } from "node:crypto"
 
@@ -77,6 +78,29 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
     if (!existsSync(join(receiptRoot, `${container}.json`))) return null
     return readProtectedLayoutReceipt(receiptRoot, container)
   }
+  function legacyDirectory() {
+    initialize()
+    const directory = join(root, "legacy-layouts")
+    try { mkdirSync(directory, {mode: 0o700}) } catch (error) { if (error.code !== "EEXIST") throw error }
+    verifyPrivateHostDirectory(directory, controlOwner)
+    return directory
+  }
+  function legacyRecord(container) {
+    if (!identifier(container)) refuse()
+    const directory = join(root, "legacy-layouts")
+    if (!existsSync(directory)) return null
+    verifyPrivateHostDirectory(directory, controlOwner)
+    return existsSync(join(directory, `${container}.json`)) ? readProtectedLayoutReceipt(directory, container) : null
+  }
+  function requireLegacyRestoreImage(record, image) {
+    if (image.Config?.Env?.some(value => value.startsWith("CHARIOX_SLICE_PRIVATE_ROOT="))) refuse()
+    try { requireLegacyImageProof(join(root, "legacy-images"), record, image.Id) }
+    catch {
+      // Pre-upgrade saved images inherit release F's image label. Only an
+      // already retained legacy home may restore them; new slices cannot.
+      if (!/^(?:5[8-9]|6[0-8])$/.test(image.Config?.Labels?.["io.chariox.relay-peer-protocol-version"] ?? "")) refuse()
+    }
+  }
   function legacyReceipt(container) {
     if (!trusted || receipt(container)) refuse()
     const info = containerInfo(container)
@@ -85,18 +109,15 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
     if (inspected.status !== 0) refuse()
     const images = JSON.parse(inspected.stdout)
     if (!Array.isArray(images) || images.length !== 1) refuse()
-    const current = verifyLegacyReleaseFLayout(container, info, images[0])
-    initialize()
-    const directory = join(root, "legacy-layouts")
-    try { mkdirSync(directory, {mode: 0o700}) } catch (error) { if (error.code !== "EEXIST") throw error }
-    verifyPrivateHostDirectory(directory, controlOwner)
-    const path = join(directory, `${container}.json`)
-    if (existsSync(path)) {
-      const retained = readProtectedLayoutReceipt(directory, container)
-      if (JSON.stringify(retained) !== JSON.stringify(current)) refuse()
-    } else {
-      writeProtectedLayoutReceipt(directory, container, current)
+    const retained = legacyRecord(container)
+    const current = verifyLegacyReleaseFLayout(container, info, images[0], retained)
+    if (retained && (retained.containerId !== current.containerId || retained.imageId !== current.imageId)) {
+      // The signed provisioner refreshes stale workers without migrating their
+      // mixed home. Adopt only that attested base or an owned saved image.
+      try { requireManagedImageProof(imageRoot, sourceDigest, current.imageId) }
+      catch { requireLegacyRestoreImage(retained, images[0]) }
     }
+    writeProtectedLayoutReceipt(legacyDirectory(), container, current)
     return current
   }
   function captureOrigin(container, digest) {
@@ -137,6 +158,12 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
         return pending.newHomeVolume
       }
       return record.homeVolume
+    },
+    recordLegacyImage(container, parent, source, captured) {
+      const layout = legacyReceipt(container)
+      const directory = join(root, "legacy-images")
+      try { mkdirSync(directory, {mode: 0o700}) } catch (error) { if (error.code !== "EEXIST") throw error }
+      recordLegacyImageProof(directory, layout, parent, source, captured)
     },
     recordCapture(container, digest) {
       const record = receipt(container)
@@ -199,6 +226,16 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
       if (!trusted) return null // Unsigned/unattested contexts never enable capture.
       const container = environment.CHARIOX_SLICE_NAME
       if (!identifier(container) || !identifier(environment.CHARIOX_SLICE_ID)) refuse()
+      if (["provision", "restore-state"].includes(action) && !receipt(container) && !legacyRecord(container)) {
+        const prior = containerInfo(container)
+        if (prior) {
+          const inspected = docker(["image", "inspect", prior.Image])
+          if (inspected.status === 0) {
+            const images = JSON.parse(inspected.stdout)
+            if (/^(?:5[8-9]|6[0-8])$/.test(images[0]?.Config?.Labels?.["io.chariox.relay-peer-protocol-version"] ?? "")) legacyReceipt(container)
+          }
+        }
+      }
       if (["provision", "restore-state"].includes(action) && environment.CHARIOX_SLICE_SAVED_HOME_ARCHIVE) {
         // Reject an unknown/missing lineage before creating roots or allowing
         // the provisioner to replace a container/volume. Never fall back to a
@@ -207,7 +244,9 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
         if (inspected.status !== 0) refuse()
         const images = JSON.parse(inspected.stdout)
         if (!Array.isArray(images) || images.length !== 1) refuse()
-        requireManagedRuntimeHash(imageRoot, sourceDigest, images[0].Id)
+        const legacy = !receipt(container) && legacyRecord(container)
+        if (legacy) requireLegacyRestoreImage(legacy, images[0])
+        else requireManagedRuntimeHash(imageRoot, sourceDigest, images[0].Id)
       }
       const existing = receipt(container)
       if (existing) {
@@ -221,7 +260,16 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
       // Existing mixed containers/homes are never retrofitted or migrated.
       const prior = containerInfo(container)
       if (prior) {
-        legacyReceipt(container)
+        if (prior.Mounts?.some(mount => mount.Destination === PRIVATE_ROOT)
+            || prior.Config?.Env?.some(value => value.startsWith("CHARIOX_SLICE_PRIVATE_ROOT="))) refuse()
+        if (legacyRecord(container)) legacyReceipt(container)
+        else {
+          const inspected = docker(["image", "inspect", prior.Image])
+          if (inspected.status === 0) {
+            const images = JSON.parse(inspected.stdout)
+            if (/^(?:5[8-9]|6[0-8])$/.test(images[0]?.Config?.Labels?.["io.chariox.relay-peer-protocol-version"] ?? "")) legacyReceipt(container)
+          }
+        }
         return null
       }
       const volumes = docker(["volume", "ls", "--format", "{{.Name}}"])
@@ -232,7 +280,10 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
       return preparePrivateHostRoot(homeRoot, environment.CHARIOX_SLICE_ID, controlOwner, true, dataOwner)
     },
     complete(environment) {
-      if (!environment.CHARIOX_SLICE_PRIVATE_HOST_ROOT) return
+      if (!environment.CHARIOX_SLICE_PRIVATE_HOST_ROOT) {
+        if (legacyRecord(environment.CHARIOX_SLICE_NAME)) legacyReceipt(environment.CHARIOX_SLICE_NAME)
+        return
+      }
       const info = containerInfo(environment.CHARIOX_SLICE_NAME)
       if (!info) refuse()
       requireManagedImageProof(imageRoot, sourceDigest, info.Image)

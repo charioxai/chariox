@@ -325,8 +325,8 @@ authorize leaves Cloud's release record unchanged.
 
 Release F Path-1 slices retain their original save/backup behavior until migrated.
 The broker records `layoutKind: legacy-release-f` under its private
-`legacy-layouts/` inventory, bound to the inspected container, image and home.
-Capture emits a kernel warning that the mixed home/image may contain credentials.
+`legacy-layouts/` inventory, bound to the inspected home lineage, with the current container and image recorded. Signed worker refreshes and broker-recorded legacy saved images retain that lineage across recreation and restore.
+Capture emits a warning in the home kernel diagnostics that the mixed home/image may contain credentials. Legacy saved-image proofs are separate from protected image proofs; they never admit protected capture.
 Only pre-Apps release F image protocols (relay 58–68), without protected mounts
 or environment markers, qualify. New slices and protected slices still require
 the complete verified protected layout; losing its receipt never enables legacy
