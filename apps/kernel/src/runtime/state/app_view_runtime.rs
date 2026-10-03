@@ -235,26 +235,37 @@ impl KernelRuntimeState {
                 if let Some(binding) = views.next_cold_start_attempt(&session_id) {
                     match self.restore_cold_app_view(&session_id, &binding).await {
                         Ok(())
-                        | Err(AppRequestErrorCode::NotFound | AppRequestErrorCode::LimitExceeded) => {
-                            views.finish_cold_start_view(&session_id, &binding)
+                        | Err(ColdAppRestoreError::Failed(
+                            AppRequestErrorCode::NotFound | AppRequestErrorCode::LimitExceeded,
+                        )) => views.finish_cold_start_view(&session_id, &binding),
+                        Err(ColdAppRestoreError::Busy) => {}
+                        Err(ColdAppRestoreError::Failed(_)) => {
+                            views.fail_cold_start_view(&session_id, &binding);
                         }
-                        Err(_) => {}
                     }
                 }
                 // Poll registered targets after every attempt, even if another
                 // restore failed. Their bindings already carry call authority.
             }
             let polled_up_to = views.registrations(&session_id);
-            let Ok(batch) = self
+            let polled = self
                 .app_view_command::<BrowserAppViewCalls>(&session_id, BrowserAppViewRequest::Calls)
-                .await
-            else {
-                failures += 1;
-                if failures >= MAX_POLL_FAILURES {
-                    views.forget_session(&session_id);
+                .await;
+            let batch = match polled {
+                Ok(batch) => batch,
+                // Both end fast polling; only a genuine failure spends the budget.
+                Err(error) if crate::runtime::app_views::slice_busy(&error.to_string()) => {
+                    polls.failed();
+                    continue;
                 }
-                polls.failed();
-                continue;
+                Err(_) => {
+                    failures += 1;
+                    if failures >= MAX_POLL_FAILURES {
+                        views.forget_session(&session_id);
+                    }
+                    polls.failed();
+                    continue;
+                }
             };
             failures = 0;
             polls.observed_calls(!batch.calls.is_empty());
@@ -331,7 +342,13 @@ impl KernelRuntimeState {
         &self,
         session: &str,
         binding: &AppViewBinding,
-    ) -> Result<(), AppRequestErrorCode> {
+    ) -> Result<(), ColdAppRestoreError> {
+        // Acquire before reading assets: a Running slice can still be held by
+        // slice.start while its attached agents relaunch. Admission refusals
+        // are downtime, and spend neither restore nor polling failure budgets.
+        self.ensure_browser_controller_process_started(session)
+            .await
+            .map_err(cold_restore_error)?;
         let store = self.owned.durable_state_store.clone();
         let (owner, installation) = (binding.owner.clone(), binding.installation.clone());
         let view =
@@ -356,12 +373,6 @@ impl KernelRuntimeState {
                 environment.viewport.app_layout(layout, None).0
             });
         let (entry, assets) = view_assets(view);
-        // The worker kernel restarted with the slice. Reacquire its normal
-        // Room controller before sending App commands; home metadata may still
-        // be ready while that worker has no controller lease yet.
-        self.ensure_browser_controller_process_started(session)
-            .await
-            .map_err(|_| AppRequestErrorCode::Conflict)?;
         let opened: BrowserAppViewOpened = self
             .app_view_command(
                 session,
@@ -374,7 +385,7 @@ impl KernelRuntimeState {
                 },
             )
             .await
-            .map_err(|_| AppRequestErrorCode::Conflict)?;
+            .map_err(cold_restore_error)?;
         if let Some(page) = page {
             views.sent_page(session, &opened.target_id, page);
         }
@@ -398,7 +409,7 @@ impl KernelRuntimeState {
         .unwrap_or(false)
         {
             views.forget_installation(&binding.owner, &binding.installation);
-            return Err(AppRequestErrorCode::NotFound);
+            return Err(AppRequestErrorCode::NotFound.into());
         }
         let _ = self.reconcile_browser_controller_environment(session).await;
         Ok(())
@@ -1031,3 +1042,27 @@ fn view_assets(
         .collect();
     (view.entry, assets)
 }
+
+// Private recovery outcomes; no serialized App or transport contract changes.
+enum ColdAppRestoreError {
+    Busy,
+    Failed(AppRequestErrorCode),
+}
+
+impl From<AppRequestErrorCode> for ColdAppRestoreError {
+    fn from(code: AppRequestErrorCode) -> Self {
+        Self::Failed(code)
+    }
+}
+
+fn cold_restore_error(error: DaemonError) -> ColdAppRestoreError {
+    if crate::runtime::app_views::slice_busy(&error.to_string()) {
+        ColdAppRestoreError::Busy
+    } else {
+        ColdAppRestoreError::Failed(AppRequestErrorCode::Conflict)
+    }
+}
+
+#[cfg(test)]
+#[path = "app_view_cold_start_tests.rs"]
+mod cold_start_tests;

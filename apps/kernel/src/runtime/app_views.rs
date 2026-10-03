@@ -199,16 +199,26 @@ impl AppViews {
     }
 
     /// One restore per poll, rotating past failures so they cannot starve
-    /// another view. Downtime does not call this or consume the three attempts.
+    /// another view. Only admitted failures spend the three attempts.
     pub(crate) fn next_cold_start_attempt(&self, session: &str) -> Option<AppViewBinding> {
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let views = sessions.get_mut(session)?;
         views.restoring.retain(|(_, attempts)| *attempts < 3);
-        let (binding, attempts) = views.restoring.first_mut()?;
-        *attempts += 1;
+        let (binding, _) = views.restoring.first()?;
         let binding = binding.clone();
         views.restoring.rotate_left(1);
         Some(binding)
+    }
+
+    pub(crate) fn fail_cold_start_view(&self, session: &str, binding: &AppViewBinding) {
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(views) = sessions.get_mut(session) {
+            if let Some((_, attempts)) = views.restoring.iter_mut().find(|(old, _)| {
+                old.owner == binding.owner && old.installation == binding.installation
+            }) {
+                *attempts += 1;
+            }
+        }
     }
 
     pub(crate) fn finish_cold_start_view(&self, session: &str, binding: &AppViewBinding) {
@@ -1112,6 +1122,7 @@ mod reconnect_tests {
                 views.finish_cold_start_view("room", &next);
             } else {
                 bad_attempts += 1; // Persistent controller/storage failure.
+                views.fail_cold_start_view("room", &next);
             }
             // The pump polls between attempts; a normal Open and recovered
             // view retain their independent authority while another fails.
