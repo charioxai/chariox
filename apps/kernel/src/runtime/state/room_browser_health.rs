@@ -149,8 +149,9 @@ impl KernelRuntimeState {
                 Some("browser_controller_unreachable")
             }
             // Reconcile shares a serial controller queue with foreground
-            // commands and can wait on page dialogs. A timeout or route error
-            // is inconclusive; only positive browser/controller loss changes health.
+            // commands and can wait on page dialogs. Busy, timeout and other
+            // route errors are inconclusive; only positive browser/controller
+            // loss changes health.
             Ok(_) | Err(_) => return,
         };
         self.observe_room_browser_health(session_id, generation, diagnostic);
