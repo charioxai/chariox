@@ -1137,7 +1137,7 @@ test("MP-08 MP-10 MP-11 all provisioner requests use common owned lifetime", asy
     PROVISIONER: process.execPath, DOCKER_HOST: "unix:///synthetic/unused", MAX_OUTPUT_BYTES: 1024,
     // Phase 1 managed authority: no Local DEV enrollment, no verified build
     // context, and an accepting protected-layout controller.
-    LOCAL_AUTHORITY: undefined, VERIFIED_BUILD_CONTEXT_DIGEST: "", protectedLayouts: { complete: () => {} },
+    LOCAL_AUTHORITY: undefined, VERIFIED_BUILD_CONTEXT_DIGEST: "", protectedLayouts: { homeVolume: name => `${name}-home`, complete: () => {} },
     validateRequest: () => {},
     provisionerQuotaRequest: () => ({ identity: { containerName: "synthetic-owned" } }),
     diskQuotaMarkerPresent: () => false,
@@ -1195,7 +1195,7 @@ test("Phase 1 local DEV broker runs unbounded slices without release F's managed
     LOCAL_AUTHORITY: { enrollment: { ownerUid: 1000 } },
     verifiedProtectedAuthority: () => { authorityChecks++ },
     localDevRuntimeEnvironment: () => ({CHARIOX_SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY: "1"}),
-    VERIFIED_BUILD_CONTEXT_DIGEST: "", protectedLayouts: { complete: () => {} },
+    VERIFIED_BUILD_CONTEXT_DIGEST: "", protectedLayouts: { homeVolume: name => `${name}-home`, complete: () => {} },
     validateRequest: () => {},
     fail: message => { throw new Error(message) },
     diskQuotaMarkerPresent: name => markers.has(name),
@@ -1373,4 +1373,73 @@ test("MP-08 MP-11 broker admits documented nondefault slice tuning", async conte
  for(const [name,values] of Object.entries({CHARIOX_SLICE_DOCKER_PIDS_LIMIT:["0","-1","2147483648","1.5"],CHARIOX_SLICE_DOCKER_NOFILE_LIMIT:["0","1023","1048577","bad"],CHARIOX_SLICE_MIN_FREE_MB:["-1","4294967296","bad"]})) {
   for(const value of values) assert.notEqual(validate({kind:"provisioner",action:"recover",environment:{...environment,[name]:value},files:[]},root).status,0,`${name} ${value}`)
  }
+})
+
+test("quota admission uses the retained generation and final evidence uses the prepared restore generation", async () => {
+  const source = await readFile(broker, "utf8")
+  const spawnSource = source.slice(source.indexOf("function spawnBounded("), source.indexOf("\nfunction provisionerQuotaRequest("))
+  const executeSource = source.slice(source.indexOf("async function execute(request)"), source.indexOf("\nfunction errorResponse("))
+  const container = "chariox-slice-generation"
+  const retained = `${container}-home-g${"a".repeat(32)}`
+  const restored = `${container}-home-g${"b".repeat(32)}`
+  const quotas = [], environments = []
+  const execute = runInNewContext(`${spawnSource}\n${executeSource}\nexecute`, {
+    ...archivePolicy, process, Buffer, Set, join,
+    PROVISIONER: "/synthetic/provisioner", DOCKER_HOST: "unix:///synthetic", MAX_OUTPUT_BYTES: 1024,
+    LOCAL_AUTHORITY: undefined, VERIFIED_BUILD_CONTEXT_DIGEST: "", brokerLifetime: new AbortController(), BROKER_OUTPUT_ROOT: "/synthetic",
+    protectedLayouts: {homeVolume: () => retained, complete: () => {}},
+    validateRequest: () => {}, diskQuotaMarkerPresent: () => false,
+    provisionerQuotaRequest: environment => ({identity: {containerName: container, homeVolumeName: environment.CHARIOX_SLICE_HOME_VOLUME}, limits: {persistentHomeBytes: 2048, writableLayerBytes: 1024}}),
+    requestSliceDiskQuota: async request => {quotas.push(request); return {evidence: {checked: true}}},
+    sliceDiskQuotaCoordinator: {withContainerLock: async (_name, run) => run({}), assertBounded: async () => {}},
+    prepareProvisioner: async request => ({environment: {...request.environment, CHARIOX_SLICE_HOME_VOLUME: restored}, handles: new Set(), newHandles: new Set()}),
+    runBrokerCommand: async (_command, _args, options) => {environments.push(options.env); return {status: 0, stdout: Buffer.from("ran"), stderr: Buffer.alloc(0)}},
+    cleanupPrepared: () => {}, removePersistentHandles: () => {},
+  })
+  const result = await execute({kind: "provisioner", action: "restore-state", environment: {CHARIOX_SLICE_NAME: container, CHARIOX_SLICE_HOME_VOLUME: `${container}-home`}})
+  assert.equal(result.status, 0)
+  assert.deepEqual(quotas.map(q => [q.operation, q.identity.homeVolumeName]), [["reserve", retained], ["verify", restored]])
+  assert.equal(environments[0].CHARIOX_SLICE_HOME_VOLUME, restored)
+})
+
+test("quota destroy retires retained generations after current-home removal even without a marker", async () => {
+  const {retireProtectedQuotaHomes} = await import("../apps/kernel/slice-linux-docker/protected-home-retirement.mjs")
+  const source = await readFile(broker, "utf8")
+  const spawnSource = source.slice(source.indexOf("function spawnBounded("), source.indexOf("\nfunction provisionerQuotaRequest("))
+  const executeSource = source.slice(source.indexOf("async function execute(request)"), source.indexOf("\nfunction errorResponse("))
+  const identity = {containerName: "chariox-slice-retirement", sliceId: "retirement", ownerKernelId: "kernel", ownerMachineId: "machine"}
+  const oldHome = `${identity.containerName}-home`
+  const currentHome = `${oldHome}-g${"e".repeat(32)}`
+  identity.homeVolumeName = currentHome
+  const remaining = new Set([oldHome, currentHome]), events = []
+  const execute = runInNewContext(`${spawnSource}\n${executeSource}\nexecute`, {
+    ...archivePolicy, process, Buffer, Set, join,
+    PROVISIONER: "/synthetic/provisioner", DOCKER_HOST: "unix:///synthetic", MAX_OUTPUT_BYTES: 1024,
+    LOCAL_AUTHORITY: undefined, VERIFIED_BUILD_CONTEXT_DIGEST: "", brokerLifetime: new AbortController(), BROKER_OUTPUT_ROOT: "/synthetic",
+    protectedLayouts: {homeVolume: () => currentHome, retainedHomeVolumes: () => [oldHome, currentHome]},
+    validateRequest: () => {}, diskQuotaMarkerPresent: () => false,
+    provisionerQuotaRequest: () => ({identity}), sliceDiskQuotaIdentityFromEnvironment: () => identity,
+    requestSliceDiskQuota: async request => {
+      events.push(request.operation)
+      if (request.operation === "status") return {bounded: true}
+      assert.equal(remaining.size, 0, "owned retained homes must be retired before quota release")
+      return {released: true}
+    },
+    sliceDiskQuotaCoordinator: {withContainerLock: async (_name, run) => run({}), revokeUnboundedProof: () => {}},
+    prepareProvisioner: async request => ({environment: request.environment, handles: new Set(), newHandles: new Set()}),
+    runBrokerCommand: async () => {remaining.delete(currentHome); return {status: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0)}},
+    spawnControl: (_command, args) => {
+      if (!remaining.has(args[2])) return {status: 1, stderr: `Error: No such volume: ${args[2]}\n`}
+      if (args[1] === "inspect") return {status: 0, stdout: JSON.stringify([{Name: args[2], Driver: "local", Labels: {
+        "io.chariox.slice.id": identity.sliceId, "io.chariox.slice.owner-kernel-id": identity.ownerKernelId,
+        "io.chariox.slice.owner-machine-id": identity.ownerMachineId,
+      }}])}
+      assert.equal(args[1], "rm"); remaining.delete(args[2]); events.push("retire"); return {status: 0}
+    },
+    retireProtectedQuotaHomes, dockerEnvironment: () => ({}),
+    releasePersistentHandles: () => {}, cleanupPrepared: () => {}, removePersistentHandles: () => {},
+  })
+  const result = await execute({kind: "provisioner", action: "destroy", environment: {CHARIOX_SLICE_NAME: identity.containerName}})
+  assert.equal(result.status, 0)
+  assert.deepEqual(events, ["status", "retire", "release"])
 })

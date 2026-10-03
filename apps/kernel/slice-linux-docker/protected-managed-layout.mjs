@@ -111,6 +111,14 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
       }
       return record.homeVolume
     },
+    retainedHomeVolumes(container) {
+      const record = receipt(container)
+      if (!record) return []
+      retained(record)
+      const pending = generations.read(container)
+      return [...new Set([record.homeVolume, pending?.oldHomeVolume, pending?.newHomeVolume,
+        pending?.failedHomeVolume, ...(pending?.retainedPreviousHomes ?? [])].filter(Boolean))]
+    },
     recordCapture(container, digest) {
       const record = receipt(container)
       if (!record || !/^[a-f0-9]{64}$/.test(digest)) refuse()

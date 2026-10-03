@@ -117,3 +117,30 @@ test("durable state validates 70,000 reservations without a spread-argument limi
 
   assert.equal(validateSliceDiskQuotaState(state), state)
 })
+
+test("quota accepts only the owning container's legacy or protected generation home", () => {
+  for (const homeVolumeName of [identity.homeVolumeName, `${identity.containerName}-home-g${"a".repeat(32)}`]) {
+    assert.equal(validateSliceDiskQuotaRequest({protocolVersion: 1, operation: "apply_home",
+      identity: {...identity, homeVolumeName}}).identity.homeVolumeName, homeVolumeName)
+  }
+  for (const homeVolumeName of [`chariox-slice-foreign-home-g${"a".repeat(32)}`,
+    `${identity.containerName}-home-gshort`, `${identity.containerName}-home-g${"A".repeat(32)}`,
+    `${identity.containerName}-home-g${"a".repeat(32)}/../other`]) {
+    assert.throws(() => validateSliceDiskQuotaRequest({protocolVersion: 1, operation: "apply_home",
+      identity: {...identity, homeVolumeName}}), /identity/)
+  }
+})
+
+test("retained home project IDs remain unique, bounded and tracked by durable state", () => {
+  const min = SLICE_DISK_QUOTA_PROJECT_ID_MIN
+  const state = {schemaVersion: 1, nextProjectId: min + 3, reservations: {
+    [sliceDiskQuotaIdentityKey(identity)]: {identity, limits: request.limits,
+      projectIds: {writableLayer: min, persistentHome: min + 2}, retainedHomeProjectIds: [min + 1]},
+  }}
+  assert.equal(validateSliceDiskQuotaState(state), state)
+  for (const ids of [[min], [min + 1, min + 1], [0], "invalid"]) {
+    const invalid = structuredClone(state)
+    invalid.reservations[sliceDiskQuotaIdentityKey(identity)].retainedHomeProjectIds = ids
+    assert.throws(() => validateSliceDiskQuotaState(invalid), /project ID/)
+  }
+})
