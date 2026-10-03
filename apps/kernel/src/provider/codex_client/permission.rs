@@ -287,3 +287,89 @@ mod tests {
         ));
     }
 }
+
+// MP-08/MP-10: nested provider namespaces are intentionally denied by the
+// managed boundary. Build turns must use Codex's official external-sandbox
+// policy while retaining the kernel-selected approval policy. Plan/discovery
+// restrictions stay with Codex until the outer boundary can enforce them.
+pub(super) fn managed_codex_permission_policy(
+    write_access_mode: ProviderWriteAccessMode,
+    execution_mode: AgentExecutionMode,
+    permission_level: AgentPermissionLevel,
+    managed_isolation: bool,
+) -> CodexPermissionPolicy {
+    let mut policy = codex_permission_policy(write_access_mode, execution_mode, permission_level);
+    if managed_isolation
+        && execution_mode == AgentExecutionMode::Build
+        && write_access_mode != ProviderWriteAccessMode::WorkspaceLiveSyncManaged
+    {
+        policy.sandbox = "danger-full-access";
+        policy.sandbox_policy = json!({ "type": "externalSandbox", "networkAccess": "enabled" });
+    }
+    policy
+}
+
+#[cfg(test)]
+mod managed_codex_tests {
+    use super::*;
+
+    #[test]
+    fn managed_codex_build_uses_outer_sandbox_and_retains_approval() {
+        for permission in [AgentPermissionLevel::Required, AgentPermissionLevel::Yolo] {
+            let policy = managed_codex_permission_policy(
+                ProviderWriteAccessMode::Unrestricted,
+                AgentExecutionMode::Build,
+                permission,
+                true,
+            );
+            assert_eq!(policy.sandbox, "danger-full-access");
+            assert_eq!(
+                policy.sandbox_policy,
+                json!({"type":"externalSandbox", "networkAccess":"enabled"})
+            );
+            assert_eq!(
+                policy.approval_policy,
+                if permission == AgentPermissionLevel::Required {
+                    json!("untrusted")
+                } else {
+                    json!("never")
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn managed_codex_preserves_plan_and_unmanaged_sandbox() {
+        let managed = managed_codex_permission_policy(
+            ProviderWriteAccessMode::WorkspaceLiveSyncManaged,
+            AgentExecutionMode::Build,
+            AgentPermissionLevel::Required,
+            true,
+        );
+        let original = codex_permission_policy(
+            ProviderWriteAccessMode::WorkspaceLiveSyncManaged,
+            AgentExecutionMode::Build,
+            AgentPermissionLevel::Required,
+        );
+        assert_eq!(managed.sandbox_policy, original.sandbox_policy);
+        for (mode, isolated) in [
+            (AgentExecutionMode::Plan, true),
+            (AgentExecutionMode::Build, false),
+        ] {
+            let original = codex_permission_policy(
+                ProviderWriteAccessMode::Unrestricted,
+                mode,
+                AgentPermissionLevel::Required,
+            );
+            let policy = managed_codex_permission_policy(
+                ProviderWriteAccessMode::Unrestricted,
+                mode,
+                AgentPermissionLevel::Required,
+                isolated,
+            );
+            assert_eq!(policy.sandbox, original.sandbox);
+            assert_eq!(policy.sandbox_policy, original.sandbox_policy);
+            assert_eq!(policy.approval_policy, original.approval_policy);
+        }
+    }
+}

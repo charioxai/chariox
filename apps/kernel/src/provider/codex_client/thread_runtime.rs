@@ -10,7 +10,7 @@ use super::mcp_config::{
     append_codex_mcp_overrides, append_runtime_mcp_overrides,
     codex_provider_facing_mcp_proxy_configs,
 };
-use super::permission::codex_permission_policy;
+use super::permission::managed_codex_permission_policy;
 use super::permission::CodexPermissionPolicy;
 use super::{CodexClient, CodexNotification, CodexSocket};
 
@@ -59,7 +59,12 @@ impl CodexClient {
         permission_level: AgentPermissionLevel,
         developer_instructions: Option<&str>,
     ) -> Result<Value, DaemonError> {
-        let policy = codex_permission_policy(write_access_mode, execution_mode, permission_level);
+        let policy = managed_codex_permission_policy(
+            write_access_mode,
+            execution_mode,
+            permission_level,
+            crate::provider::managed_isolation::managed_provider_isolation_required(),
+        );
         crate::logging::info_with_fields(
             "daemon.provider.codex",
             "codex thread/start policy",
@@ -120,7 +125,12 @@ impl CodexClient {
         developer_instructions: Option<&str>,
         buffered_notifications: &mut Vec<CodexNotification>,
     ) -> Result<CodexThreadStartResponse, DaemonError> {
-        let policy = codex_permission_policy(write_access_mode, execution_mode, permission_level);
+        let policy = managed_codex_permission_policy(
+            write_access_mode,
+            execution_mode,
+            permission_level,
+            crate::provider::managed_isolation::managed_provider_isolation_required(),
+        );
         crate::logging::info_with_fields(
             "daemon.provider.codex",
             "codex thread/resume policy",
@@ -269,7 +279,12 @@ impl CodexClient {
         permission_level: AgentPermissionLevel,
         _developer_instructions: Option<&str>,
     ) -> Value {
-        let policy = codex_permission_policy(write_access_mode, execution_mode, permission_level);
+        let policy = managed_codex_permission_policy(
+            write_access_mode,
+            execution_mode,
+            permission_level,
+            crate::provider::managed_isolation::managed_provider_isolation_required(),
+        );
         let mut params = json!({
             "threadId": thread_id,
             "input": input,
