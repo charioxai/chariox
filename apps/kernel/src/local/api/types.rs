@@ -241,4 +241,5 @@ pub use workspace::*;
 /// restart limit is exhausted. Recovery uses the existing explicit start action.
 /// Version 409 adds owner-mediated App clipboard and link acceptance.
 /// Version 410 adds owner-scoped named saved App data snapshot restore.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 410;
+/// Version 416 refuses evicted App control replays with `receipt_expired`.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 416;

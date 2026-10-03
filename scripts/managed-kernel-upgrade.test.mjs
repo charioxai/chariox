@@ -138,8 +138,9 @@ test("repository release policy admits reviewed predecessors and matches the run
   const policy = JSON.parse(policyBytes)
   const runtimeTypes = await readFile(join(repositoryRoot, "apps/kernel/src/local/api/types.rs"), "utf8")
   const runtimeProtocol = Number(runtimeTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+);/)[1])
-  // Release F's reciprocal set (343, 367..376) plus the current protocol; unreleased 377..409 are not admitted.
-  const admittedProtocols = [343, ...Array.from({ length: 10 }, (_, index) => 367 + index), runtimeProtocol]
+  // Retain reviewed Release F/Phase 1 predecessors plus the current protocol.
+  // v416 fences legacy receipt readers when expiration markers exist.
+  const admittedProtocols = [343, ...Array.from({ length: 10 }, (_, index) => 367 + index), 410, runtimeProtocol]
   assert.deepEqual(policy, {
     schemaVersion: 1,
     protocol: runtimeProtocol,
