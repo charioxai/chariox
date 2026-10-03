@@ -374,6 +374,8 @@ fn resume_deadline_keeps_worker_unpublished_and_never_overlaps_shutdown() {
         before.elapsed() >= Duration::from_secs(29) && before.elapsed() < Duration::from_secs(35)
     );
     assert_eq!(names(&frames(&observations, 1)), ["startup", "resume"]);
+    // Reaping precedes the owner's final durable status write.
+    wait(|| !control.lifecycle().has_pending_owner("alice", "installed"));
     assert_eq!(
         store
             .app_worker_status("alice", "installed")
