@@ -123,6 +123,11 @@ impl WorkerSpy {
                                     "model":null, "effort":null, "execution_mode":execution_mode, "permission_level":permission_level,
                                     "backing_session_id":"worker-session", "backing_agent_id":"worker-agent", "backing_attachment_id":"worker-attachment", "created_at_ms":1
                                 })).unwrap() },
+                                RelayPeerRequest::UpdateLeasedAgentMetaMode { leased_agent_id, .. } => RelayPeerResponse::LeasedAgentMetaModeUpdated { leased_agent: serde_json::from_value(serde_json::json!({
+                                    "id":leased_agent_id, "lease_id":"lease", "home_agent_id":home_agent, "provider":"dev-stub", "account_profile":"default",
+                                    "model":null, "effort":null, "execution_mode":null, "permission_level":null,
+                                    "backing_session_id":"worker-session", "backing_agent_id":"worker-agent", "backing_attachment_id":"worker-attachment", "created_at_ms":1
+                                })).unwrap() },
                                 RelayPeerRequest::CancelLeasedPrompt { .. } => RelayPeerResponse::LeasedPromptCancelled { cancellation: crate::session::PromptCancellation {
                                     prompt: crate::session::PromptQueueItem::new("worker-prompt", "worker-attachment", "worker-agent", "fixture", crate::session::PromptStatus::Cancelled),
                                     started_next: None,

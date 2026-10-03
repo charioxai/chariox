@@ -996,12 +996,13 @@ async fn kernel_access_workflow_control_resume_rechecks_settlement_wait() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn kernel_access_workflow_control_remote_cancel_rechecks_app_wait() {
+async fn kernel_access_committed_workflow_control_remote_cancel_survives_revocation_at_app_wait() {
     revoked_remote_workflow_interrupt(false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn kernel_access_workflow_control_remote_cancel_rechecks_discovery_wait() {
+async fn kernel_access_committed_workflow_control_remote_cancel_survives_revocation_at_discovery_wait(
+) {
     revoked_remote_workflow_interrupt(true).await;
 }
 
@@ -1050,7 +1051,17 @@ async fn revoked_remote_workflow_interrupt(discovery: bool) {
         .prompt_state_owner
         .active_prompt_for_agent(&before, &fixture.target_agent_id)
         .unwrap();
-    let attachment_id = active.source_attachment_id().to_string();
+    state
+        .owned
+        .mark_active_prompt_delivery(
+            &fixture.session_id,
+            &fixture.target_agent_id,
+            active.id(),
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            Some("worker-run".into()),
+            None,
+        )
+        .unwrap();
     let grant = state.insert_access_grant_for_test(&fixture.session_id);
     let request = LocalDaemonRequest::PauseWorkflowRun(crate::local::PauseWorkflowRunRequest {
         session_id: fixture.session_id.clone(),
@@ -1097,34 +1108,20 @@ async fn revoked_remote_workflow_interrupt(discovery: bool) {
         .unwrap();
     assert_eq!(
         worker.requests.load(Ordering::SeqCst),
-        0,
-        "revoked workflow cancellation reached worker"
+        1,
+        "committed workflow cancellation must reach worker"
     );
     let after = state
         .owned
         .session_store
         .get_session(&fixture.session_id)
         .unwrap();
-    assert_eq!(
-        state
-            .owned
-            .prompt_state_owner
-            .active_prompt_for_agent(&after, &fixture.target_agent_id)
-            .unwrap(),
-        active,
-        "revoked cancellation changed active prompt"
-    );
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("grant revoked or expired"));
-    state
-        .cancel_agent_prompt(
-            &fixture.session_id,
-            &fixture.target_agent_id,
-            &attachment_id,
-        )
-        .await
+    let remaining = state
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&after, &fixture.target_agent_id)
         .unwrap();
-    assert_eq!(worker.requests.load(Ordering::SeqCst), 1);
+    assert_eq!(remaining.id(), active.id());
+    assert_eq!(remaining.status(), crate::session::PromptStatus::Cancelling);
+    result.unwrap();
 }

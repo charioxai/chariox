@@ -605,12 +605,16 @@ impl KernelRuntimeState {
                         )
                     },
                 )?;
-                self.cancel_active_metaagent_prompt_if_any(
-                    &request.session_id,
-                    &metaagent,
-                    "pause_metaagent_task",
-                )
-                .await?;
+                // The durable task transition has committed. Settle its cancellation
+                // under kernel authority even if the initiating grant is revoked.
+                let settlement = self.with_external_command_authority(None);
+                settlement
+                    .cancel_active_metaagent_prompt_if_any(
+                        &request.session_id,
+                        &metaagent,
+                        "pause_metaagent_task",
+                    )
+                    .await?;
                 let session = self.owned.session_store.get_session(&request.session_id)?;
                 let session = self.project_metaagent_task_session(session);
                 Ok(metaagent_task_response(session, &request.metaagent_id))
@@ -701,19 +705,24 @@ impl KernelRuntimeState {
                         )
                     },
                 )?;
-                self.cancel_active_metaagent_prompt_if_any(
-                    &request.session_id,
-                    &metaagent,
-                    "abort_metaagent_task",
-                )
-                .await?;
-                self.cancel_controlled_regular_agent_work(
-                    &request.session_id,
-                    &metaagent,
-                    "abort_metaagent_task",
-                )
-                .await?;
-                let session = self
+                // The durable task transition has committed. Settle its cancellation
+                // under kernel authority even if the initiating grant is revoked.
+                let settlement = self.with_external_command_authority(None);
+                settlement
+                    .cancel_active_metaagent_prompt_if_any(
+                        &request.session_id,
+                        &metaagent,
+                        "abort_metaagent_task",
+                    )
+                    .await?;
+                settlement
+                    .cancel_controlled_regular_agent_work(
+                        &request.session_id,
+                        &metaagent,
+                        "abort_metaagent_task",
+                    )
+                    .await?;
+                let session = settlement
                     .deactivate_meta_mode_for_terminal_task(
                         &request.session_id,
                         &request.metaagent_id,

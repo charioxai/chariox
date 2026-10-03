@@ -9,7 +9,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
 #[tokio::test]
-async fn kernel_access_revocation_refuses_remote_cancellation_waiting_for_app_lock() {
+async fn kernel_access_committed_remote_cancellation_survives_revocation_at_app_wait() {
     assert_revoked_remote_control(RemoteControl::Cancel).await;
 }
 
@@ -82,6 +82,22 @@ async fn assert_revoked_remote_control(operation: RemoteControl) {
             .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
             .unwrap();
     }
+    if operation == RemoteControl::Cancel {
+        let prompt = daemon
+            .prompt_state_owner()
+            .active_prompt_for_agent(&session, agent.id())
+            .unwrap();
+        daemon
+            .mark_active_prompt_delivery(
+                session.id(),
+                agent.id(),
+                prompt.id(),
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+                Some("worker-run".into()),
+                None,
+            )
+            .unwrap();
+    }
     let projection = daemon.session_state_projection_store();
     let agent_projection = daemon.agent_runtime_projection_store();
     let prompts = daemon.prompt_state_owner();
@@ -150,8 +166,8 @@ async fn assert_revoked_remote_control(operation: RemoteControl) {
         .unwrap();
     assert_eq!(
         worker.request_count(),
-        0,
-        "revoked control reached the worker"
+        usize::from(operation == RemoteControl::Cancel),
+        "only an already committed cancellation may reach the worker after revocation"
     );
     let after = state.session_snapshot(session.id()).await.unwrap();
     assert_eq!(
@@ -160,7 +176,11 @@ async fn assert_revoked_remote_control(operation: RemoteControl) {
     );
     assert_eq!(
         after.active_prompt_for_agent(agent.id()).unwrap().status(),
-        before.active_prompt_for_agent(agent.id()).unwrap().status()
+        if operation == RemoteControl::Cancel {
+            PromptStatus::Cancelling
+        } else {
+            before.active_prompt_for_agent(agent.id()).unwrap().status()
+        }
     );
     if let Some(queued_id) = queued_id {
         assert!(after
@@ -168,6 +188,10 @@ async fn assert_revoked_remote_control(operation: RemoteControl) {
             .unwrap()
             .iter()
             .any(|prompt| prompt.id() == queued_id));
+    }
+    if operation == RemoteControl::Cancel {
+        result.unwrap();
+        return;
     }
     let error = result.unwrap_err();
     assert!(

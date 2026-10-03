@@ -1229,12 +1229,20 @@ async fn sudo_bound_turn_refuses_queued_steering_from_terminals_and_external_gra
             true,
         )
         .unwrap();
+    let queued_id = f
+        .state
+        .owned
+        .prompt_state_owner
+        .state_parts(&session, &turn.agent_id)
+        .1[0]
+        .id()
+        .to_owned();
     let grant = f.state.insert_access_grant_for_test(&turn.session_id);
     let request = LocalDaemonRequest::SteerQueuedPrompt(crate::local::SteerQueuedPromptRequest {
         session_id: turn.session_id.clone(),
         attachment_id: f.request.attachment_id.clone(),
         target_agent_id: turn.agent_id.clone(),
-        prompt_id: "untrusted-queued".into(),
+        prompt_id: queued_id.clone(),
     });
     for authority in [None, Some((grant.as_str(), &request))] {
         let error = f
@@ -1243,7 +1251,7 @@ async fn sudo_bound_turn_refuses_queued_steering_from_terminals_and_external_gra
                 &turn.session_id,
                 &turn.agent_id,
                 &f.request.attachment_id,
-                "untrusted-queued",
+                &queued_id,
                 authority,
             )
             .await
@@ -1257,7 +1265,7 @@ async fn sudo_bound_turn_refuses_queued_steering_from_terminals_and_external_gra
             .state_parts(&session, &turn.agent_id);
         assert_eq!(active.unwrap().id(), "sudo-exact-turn");
         assert_eq!(queued.len(), 1);
-        assert_eq!(queued[0].id(), "untrusted-queued");
+        assert_eq!(queued[0].id(), queued_id);
         assert_eq!(
             f.state.sudo_for_auth_token("sudo-fixture-bearer").unwrap(),
             turn

@@ -486,5 +486,10 @@ idle()
         f.state.sudo_for_peer(&inspect(new).unwrap().0).unwrap(),
         turn
     );
-    assert_eq!(f.state.sudo_for_peer(&root(&f)).unwrap(), turn);
+    assert_eq!(
+        f.state
+            .sudo_for_peer(&inspect(root(&f).pid).unwrap().0)
+            .unwrap(),
+        turn
+    );
 }

@@ -1837,7 +1837,23 @@ mod tests {
             let interaction = interaction.expect("vault interaction should be observed");
             assert_eq!(interaction.title(), Some("Unlock Chariox Vault"));
             runtime
-                .resolve_runtime_interaction(&session_id, interaction.id(), "cancel", None)
+                .answer_terminal_runtime_interaction(
+                    &session_id,
+                    interaction.id(),
+                    "cancel",
+                    None,
+                    Some(
+                        runtime
+                            .owned
+                            .session_store
+                            .get_session(&session_id)
+                            .unwrap()
+                            .owner_user_id(),
+                    ),
+                    None,
+                    None,
+                    Some(crate::local::KernelConnectionClass::Terminal),
+                )
                 .await
                 .expect("vault cancellation should resolve");
             submission.await

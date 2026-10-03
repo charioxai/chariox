@@ -329,9 +329,9 @@ impl KernelRuntimeState {
                     session_id,
                     &agent_id,
                     &attachment_id,
-                    self.external_command_authority
-                        .as_ref()
-                        .map(external_command_authority::ExternalCommandAuthority::as_request),
+                    // The interrupt and queued-prompt removal already committed atomically.
+                    // Cancellation is required kernel settlement of that transition.
+                    None,
                 )
                 .await
             {

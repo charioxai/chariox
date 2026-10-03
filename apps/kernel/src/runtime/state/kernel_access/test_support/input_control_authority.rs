@@ -18,14 +18,26 @@ macro_rules! meta_regression {
         }
     };
 }
-meta_regression!(kernel_access_meta_pause_rechecks_app_wait, false, false);
-meta_regression!(kernel_access_meta_abort_rechecks_app_wait, true, false);
 meta_regression!(
-    kernel_access_meta_pause_rechecks_discovery_wait,
+    kernel_access_committed_meta_pause_survives_revocation_at_app_wait,
+    false,
+    false
+);
+meta_regression!(
+    kernel_access_committed_meta_abort_survives_revocation_at_app_wait,
+    true,
+    false
+);
+meta_regression!(
+    kernel_access_committed_meta_pause_survives_revocation_at_discovery_wait,
     false,
     true
 );
-meta_regression!(kernel_access_meta_abort_rechecks_discovery_wait, true, true);
+meta_regression!(
+    kernel_access_committed_meta_abort_survives_revocation_at_discovery_wait,
+    true,
+    true
+);
 
 fn remote_binding(worker: &WorkerSpy) -> crate::agent::RemoteAgentBinding {
     crate::agent::RemoteAgentBinding {
@@ -112,6 +124,17 @@ async fn revoked_meta_control(abort: bool, discovery: bool) {
         .prompt_state_owner
         .active_prompt_for_agent(&before, meta.id())
         .unwrap();
+    state
+        .owned
+        .mark_active_prompt_delivery(
+            session.id(),
+            meta.id(),
+            active.id(),
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            Some("worker-run".into()),
+            None,
+        )
+        .unwrap();
     let request = if abort {
         LocalDaemonRequest::AbortMetaagentTask(crate::local::AbortMetaagentTaskRequest {
             session_id: session.id().into(),
@@ -165,24 +188,15 @@ async fn revoked_meta_control(abort: bool, discovery: bool) {
         .prompt_state_owner
         .active_prompt_for_agent(&after, meta.id())
         .unwrap();
-    // The task transition happened before revocation; cancellation must still stop.
-    assert_eq!(requests, 0, "revoked Meta control reached worker");
+    // Revocation cannot abandon cancellation of the committed task transition.
     assert_eq!(
-        remaining, active,
-        "revoked Meta control changed active prompt"
+        requests,
+        if abort { 2 } else { 1 },
+        "committed Meta control and abort mode cleanup must reach worker"
     );
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("grant revoked or expired"));
-    let attachment = state
-        .ensure_metaagent_task_attachment(session.id(), &meta)
-        .unwrap();
-    state
-        .cancel_agent_prompt(session.id(), meta.id(), &attachment)
-        .await
-        .unwrap();
-    assert_eq!(worker.requests.load(Ordering::SeqCst), 1);
+    assert_eq!(remaining.id(), active.id());
+    assert_eq!(remaining.status(), crate::session::PromptStatus::Cancelling);
+    result.unwrap();
 }
 
 #[tokio::test]
