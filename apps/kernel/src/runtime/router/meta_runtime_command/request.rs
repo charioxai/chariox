@@ -2,8 +2,8 @@ use super::result::meta_command_error;
 use super::spawn_args::parse_meta_agent_spawn_args;
 use super::*;
 use crate::local::{
-    CreateSliceBackupRequest, ListSlicesRequest, RestoreSliceBackupRequest, SliceStateSaveMode,
-    SliceStateSaveRequest, SliceStateSaveScope, SliceStateStatusRequest,
+    CreateSliceBackupRequest, KernelConnectionClass, ListSlicesRequest, RestoreSliceBackupRequest,
+    SliceStateSaveMode, SliceStateSaveRequest, SliceStateSaveScope, SliceStateStatusRequest,
 };
 
 pub(super) fn meta_agent_request(
@@ -966,6 +966,9 @@ pub(super) fn meta_kernel_command_without_request(
             realm_id: None,
             public_key_thumbprint: None,
             metaagent_id: Some(metaagent.id().to_string()),
+            // The metaagent reached the kernel through its run's runtime MCP
+            // bearer (forwarded by its worker kernel when it runs remotely).
+            connection_class: Some(KernelConnectionClass::KernelAgent),
         },
         None,
         Some(metaagent.id().to_string()),

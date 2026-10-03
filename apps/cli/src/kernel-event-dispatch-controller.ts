@@ -158,6 +158,10 @@ export function createKernelEventDispatchController(
       case "heartbeat":
         deps.recordDaemonActivity("kernel_heartbeat")
         return
+      case "passkey_prompts_changed":
+        // The passkey popup composition subscribes to these itself.
+        deps.recordDaemonActivity("kernel_passkey_prompts_changed")
+        return
       case "session_unavailable":
         await deps.handleKernelSessionUnavailable(event.message)
         return

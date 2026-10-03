@@ -790,8 +790,9 @@ export async function runHostedSecondKernelAssertions({
     log("start-second-kernel", { workerAlias })
     worker = spawnProcess(kernelPath, [], { cwd: repoRoot, env: workerEnv, name: "worker-kernel" })
     const workerKernelUrl = `ws://127.0.0.1:${workerPorts.kernelPort}/kernel`
-    await waitForLocalDaemon(LocalIpcClient, requests, workerKernelUrl, workerWorkspace)
+    await waitForLocalDaemon(LocalIpcClient, requests, workerKernelUrl, workerWorkspace, workerEnv)
     workerClient = new LocalIpcClient(workerKernelUrl, {
+      localAuthEnvironment: workerEnv,
       kernelPingIntervalMs: 60_000,
       kernelMaxMissedPongs: 10,
     })

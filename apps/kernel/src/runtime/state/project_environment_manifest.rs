@@ -533,11 +533,15 @@ mod tests {
         };
         assert_eq!(unlock.title(), Some("Unlock Chariox Vault"));
         runtime
-            .resolve_runtime_interaction(
+            .answer_terminal_runtime_interaction(
                 session.id(),
                 unlock.id(),
                 "passphrase",
                 Some("synthetic-envlayer4-passphrase"),
+                Some(session.owner_user_id()),
+                None,
+                None,
+                Some(crate::local::KernelConnectionClass::Terminal),
             )
             .await
             .unwrap();

@@ -15,11 +15,31 @@ pub(crate) async fn accept_with_backoff(
     health: &TransportHealthStore,
     transport: &'static str,
 ) -> (TcpStream, SocketAddr) {
+    accept_with_retry(|| listener.accept(), health, transport).await
+}
+
+pub(crate) async fn accept_unix_with_backoff(
+    listener: &tokio::net::UnixListener,
+    health: &TransportHealthStore,
+    transport: &'static str,
+) -> (tokio::net::UnixStream, tokio::net::unix::SocketAddr) {
+    accept_with_retry(|| listener.accept(), health, transport).await
+}
+
+async fn accept_with_retry<T, F, Fut>(
+    mut accept: F,
+    health: &TransportHealthStore,
+    transport: &'static str,
+) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = std::io::Result<T>>,
+{
     let mut delay = Duration::from_millis(100);
     let mut failures = 0u64;
     let mut next_diagnostic = Instant::now();
     loop {
-        match listener.accept().await {
+        match accept().await {
             Ok(connection) => {
                 if failures > 0 {
                     crate::logging::info_with_fields(
@@ -51,5 +71,53 @@ pub(crate) async fn accept_with_backoff(
                 delay = (delay * 2).min(Duration::from_secs(1));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[tokio::test]
+    async fn unix_admission_recovers_after_descriptor_exhaustion() {
+        let health = TransportHealthStore::default();
+        let attempts = Cell::new(0);
+        let accepted = accept_with_retry(
+            || {
+                let attempt = attempts.get();
+                attempts.set(attempt + 1);
+                std::future::ready(if attempt < 2 {
+                    Err(std::io::Error::from_raw_os_error(libc::EMFILE))
+                } else {
+                    Ok("accepted")
+                })
+            },
+            &health,
+            "unix-test",
+        )
+        .await;
+        assert_eq!(accepted, "accepted");
+        assert_eq!(attempts.get(), 3);
+        assert_eq!(health.snapshot(0, 0, 0).inbound_overload_rejections, 2);
+    }
+
+    #[tokio::test]
+    async fn unix_admission_pressure_keeps_shutdown_selectable() {
+        let health = TransportHealthStore::default();
+        let admission = accept_with_retry(
+            || {
+                std::future::ready(Err::<(), _>(std::io::Error::from_raw_os_error(
+                    libc::EMFILE,
+                )))
+            },
+            &health,
+            "unix-test",
+        );
+        tokio::select! {
+            _ = admission => panic!("exhaustion must not terminate the server"),
+            _ = sleep(Duration::from_millis(120)) => {},
+        }
+        assert!(health.snapshot(0, 0, 0).inbound_overload_rejections >= 1);
     }
 }

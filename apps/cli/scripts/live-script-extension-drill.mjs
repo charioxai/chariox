@@ -94,11 +94,11 @@ async function stopDaemon(child) {
   if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
 }
 
-async function waitForDaemon(kernelUrl) {
+async function waitForDaemon(kernelUrl, localAuthEnvironment) {
   const deadline = Date.now() + 20_000
   let lastError = null
   while (Date.now() < deadline) {
-    const client = new LocalIpcClient(kernelUrl)
+    const client = new LocalIpcClient(kernelUrl, { localAuthEnvironment })
     try {
       await client.send(listSessionsRequest())
       await client.close().catch(() => {})
@@ -179,8 +179,8 @@ def test_run() -> None:
 
     const kernelBinary = await buildKernel()
     daemon = startDaemon(kernelBinary, env)
-    await waitForDaemon(kernelUrl)
-    client = new LocalIpcClient(kernelUrl)
+    await waitForDaemon(kernelUrl, env)
+    client = new LocalIpcClient(kernelUrl, { localAuthEnvironment: env })
 
     const environment = variant(await client.send(registerEnvironmentRequest(workspace, {
       name: 'py-drill',

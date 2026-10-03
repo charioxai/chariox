@@ -44,10 +44,20 @@ ws://127.0.0.1:43118/kernel
 ```
 
 The iOS Simulator can reach the Mac's local kernel through `127.0.0.1`. A
-physical device cannot use that loopback URL; point it at a kernel bound to a
-reachable host, or use the Cloud/relay path when that client flow is enabled.
+physical device must use the Cloud/relay path when that client flow is enabled.
+Direct LAN connections are unsupported: local TCP admission requires the kernel's
+token, and first-party clients send it only to loopback endpoints. Binding the
+kernel to a reachable LAN host does not enable physical-device access.
 The kernel bind host and port come from `CHARIOX_KERNEL_HOST` and
 `CHARIOX_KERNEL_PORT`; defaults are `127.0.0.1` and `43118`.
+
+For simulator launches, set
+`SIMCTL_CHILD_CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE` to the host kernel's
+`<state>/kernel-local-auth/<port>.token` file. The client rereads it for each
+request or event connection, including after a kernel restart. If the simulator
+cannot read that host file, `SIMCTL_CHILD_CHARIOX_KERNEL_LOCAL_AUTH_TOKEN` is
+the fallback. These overrides apply only to simulator loopback WebSocket URLs;
+physical devices and remote endpoints never receive this local token.
 
 Workspace/worktree paths default to empty unless
 `CHARIOX_IOS_DEFAULT_WORKSPACE` is set for the app process. Set them from the

@@ -153,6 +153,9 @@ mod tests {
     #[test]
     fn user_config_policy_identifies_unwired_paths() {
         assert!(user_config_path_is_unwired("ui.worktree_aliases.repo"));
+        assert!(!user_config_path_is_unwired(
+            "kernel_access.grant_default_minutes"
+        ));
         assert!(user_config_path_is_unwired(
             "history.archive.archive_before_delete"
         ));

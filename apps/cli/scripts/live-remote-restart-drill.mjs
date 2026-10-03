@@ -134,10 +134,10 @@ async function terminateChild(child, signal = 'SIGTERM') {
   }
 }
 
-async function waitForKernel(LocalIpcClient, requests, kernelUrl) {
+async function waitForKernel(LocalIpcClient, requests, kernelUrl, localAuthEnvironment) {
   let lastError = null
   for (let attempt = 0; attempt < 80; attempt += 1) {
-    const probe = new LocalIpcClient(kernelUrl)
+    const probe = new LocalIpcClient(kernelUrl, { localAuthEnvironment })
     try {
       await probe.send(requests.listSessionsRequest())
       await probe.close().catch(() => {})
@@ -249,8 +249,8 @@ async function sendWithTimeout(client, request, timeoutMs, description) {
   ])
 }
 
-async function attachClient(LocalIpcClient, requests, kernelUrl, sessionId, clientId) {
-  const client = new LocalIpcClient(kernelUrl)
+async function attachClient(LocalIpcClient, requests, kernelUrl, sessionId, clientId, localAuthEnvironment) {
+  const client = new LocalIpcClient(kernelUrl, { localAuthEnvironment })
   const attachment = unwrap(await client.send(requests.attachToSessionRequest(sessionId, clientId)), 'SessionAttached').attachment
   const events = []
   client.onKernelEvent((event) => events.push({ ...event, observed_at_ms: Date.now() }))
@@ -390,17 +390,17 @@ async function main() {
     relayChild = spawnProcess(relayBinary, [], { cwd: repoRoot, env: relayEnv })
     homeChild = spawnProcess(kernelBinary, [], { cwd: repoRoot, env: homeEnv })
     workerChild = spawnProcess(kernelBinary, [], { cwd: repoRoot, env: workerEnv })
-    await waitForKernel(LocalIpcClient, requests, homeKernelUrl)
+    await waitForKernel(LocalIpcClient, requests, homeKernelUrl, homeEnv)
     await waitForRelayTarget(LocalIpcClient, requests, relayUrl, relayToken, 'home')
     await waitForRelayTarget(LocalIpcClient, requests, relayUrl, relayToken, 'worker')
 
-    const setupClient = new LocalIpcClient(homeKernelUrl)
+    const setupClient = new LocalIpcClient(homeKernelUrl, { localAuthEnvironment: homeEnv })
     await waitForRemoteMachine(setupClient, requests, workerMachineId, options.timeoutMs, options.pollMs)
     const workerKernel = await waitForRemoteKernel(setupClient, workerMachineId, options.timeoutMs, options.pollMs)
     const workerKernelRef = workerKernel.kernel_id || workerKernel.daemon_id || workerKernel.kernel_alias || workerMachineId
     const created = unwrap(await setupClient.send(requests.createSessionRequest(workspace, workspace)), 'SessionCreated')
     sessionId = created.session.id
-    const attachedSetup = await attachClient(LocalIpcClient, requests, homeKernelUrl, sessionId, `remote-restart-${process.pid}`)
+    const attachedSetup = await attachClient(LocalIpcClient, requests, homeKernelUrl, sessionId, `remote-restart-${process.pid}`, homeEnv)
     attached = attachedSetup
     await setupClient.close().catch(() => {})
 
@@ -437,8 +437,8 @@ async function main() {
     attached = null
     await terminateChild(homeChild)
     homeChild = spawnProcess(kernelBinary, [], { cwd: repoRoot, env: homeEnv })
-    await waitForKernel(LocalIpcClient, requests, homeKernelUrl)
-    attached = await attachClient(LocalIpcClient, requests, homeKernelUrl, sessionId, `remote-restart-home-${process.pid}`)
+    await waitForKernel(LocalIpcClient, requests, homeKernelUrl, homeEnv)
+    attached = await attachClient(LocalIpcClient, requests, homeKernelUrl, sessionId, `remote-restart-home-${process.pid}`, homeEnv)
     await waitForRemoteMachine(attached.client, requests, workerMachineId, options.timeoutMs, options.pollMs)
     const afterHomeState = unwrapVariant(await attached.client.send(requests.getSessionStateRequest(sessionId)), 'SessionStateLoaded', 'SessionState')
     const afterHomeAgent = (afterHomeState.agents || afterHomeState.session?.agents || []).find((agent) => agent.id === remoteAgentId)
@@ -485,9 +485,9 @@ async function main() {
     await terminateChild(workerChild)
     homeChild = spawnProcess(kernelBinary, [], { cwd: repoRoot, env: homeEnv })
     workerChild = spawnProcess(kernelBinary, [], { cwd: repoRoot, env: workerEnv })
-    await waitForKernel(LocalIpcClient, requests, homeKernelUrl)
+    await waitForKernel(LocalIpcClient, requests, homeKernelUrl, homeEnv)
     await waitForRelayTarget(LocalIpcClient, requests, relayUrl, relayToken, 'worker')
-    attached = await attachClient(LocalIpcClient, requests, homeKernelUrl, sessionId, `remote-restart-both-${process.pid}`)
+    attached = await attachClient(LocalIpcClient, requests, homeKernelUrl, sessionId, `remote-restart-both-${process.pid}`, homeEnv)
     await waitForRemoteMachine(attached.client, requests, workerMachineId, options.timeoutMs, options.pollMs)
     const finalWorkerKernel = await waitForRemoteKernel(attached.client, workerMachineId, options.timeoutMs, options.pollMs)
     await promptRemoteAgent({

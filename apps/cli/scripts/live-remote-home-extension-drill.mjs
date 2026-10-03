@@ -486,13 +486,13 @@ async function main() {
       })
     }
     const homeUrl = `ws://127.0.0.1:${homeKernelPort}`
-    await waitForDaemon(LocalIpcClient, homeUrl, listRemoteMachinesRequest)
+    await waitForDaemon(LocalIpcClient, homeUrl, listRemoteMachinesRequest, { ...process.env, XDG_STATE_HOME: path.join(rootDir, "home-state") })
     if (!options.hetznerWorker) {
-      await waitForDaemon(LocalIpcClient, `ws://127.0.0.1:${workerKernelPort}`, listRemoteMachinesRequest)
+      await waitForDaemon(LocalIpcClient, `ws://127.0.0.1:${workerKernelPort}`, listRemoteMachinesRequest, localWorkerEnv)
     }
     await waitForRelayTarget(LocalIpcClient, relayUrl, probeRelayToken, 'home', listRemoteMachinesRequest)
     await waitForRelayTarget(LocalIpcClient, relayUrl, probeRelayToken, 'worker', listRemoteMachinesRequest)
-    client = new LocalIpcClient(homeUrl)
+    client = new LocalIpcClient(homeUrl, { localAuthEnvironment: { ...process.env, XDG_STATE_HOME: path.join(rootDir, "home-state") } })
     if (!options.collab) {
       await waitForRemoteMachine(client, workerMachineId, listRemoteMachinesRequest)
     }

@@ -388,6 +388,16 @@ impl KernelRuntimeState {
                 message: "target agent is stopping; message was not delivered".to_string(),
             });
         }
+        if self.owned.prompt_state_owner.prompt_is_sudo_bound(
+            &session,
+            agent_id,
+            active_prompt.id(),
+        ) {
+            return Err(DaemonError::LocalTransport {
+                operation: "steer agent message",
+                message: "agent messages cannot steer a human-authorized sudo turn".into(),
+            });
+        }
         if active_prompt.is_external() {
             return Err(DaemonError::LocalTransport {
                 operation: "steer agent message",

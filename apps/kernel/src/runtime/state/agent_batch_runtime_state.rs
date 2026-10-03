@@ -8,6 +8,7 @@ impl KernelRuntimeState {
         caller_user_id: &str,
         slice_refs: &[Option<String>],
     ) -> Result<Vec<AgentInstance>, DaemonError> {
+        self.authorize_current_external_command()?;
         if requests.len() != slice_refs.len() {
             return Err(DaemonError::InternalInvariant {
                 operation: "agents.spawn",
@@ -38,6 +39,7 @@ impl KernelRuntimeState {
                 }
             }
             if !local_requests.is_empty() {
+                self.authorize_current_external_command()?;
                 let local_agents = self.owned.spawn_agents(local_requests)?;
                 for (index, agent) in local_indices.into_iter().zip(local_agents) {
                     ordered_agents[index] = Some(agent);
@@ -54,6 +56,7 @@ impl KernelRuntimeState {
             // Worker-backed batches follow the same rule as local ones: a
             // metaagent's new agents never take the focus.
             if let Some(target) = crate::agent::new_agent_focus_target(&agents) {
+                self.authorize_current_external_command()?;
                 self.owned
                     .focus_agent(target.session_id(), target.id(), caller_user_id)?;
             }
@@ -63,6 +66,7 @@ impl KernelRuntimeState {
         match result {
             Ok(agents) => Ok(agents),
             Err(error) => Err(self
+                .with_external_command_authority(None)
                 .rollback_agent_batch(ordered_agents, slice_refs, caller_user_id, error)
                 .await),
         }

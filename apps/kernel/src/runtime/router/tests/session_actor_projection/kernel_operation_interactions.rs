@@ -74,7 +74,8 @@ async fn two_kernel_decisions_project_without_agents_and_use_the_existing_termin
     assert_eq!(snapshot.active_interactions().len(), 2);
     assert!(router.terminal_session_change_sequence(&session) > before);
     let request = reply(&session, "first");
-    let command = KernelCommand::from_local_request("answer-first", None, None, &request);
+    let mut command = KernelCommand::from_local_request("answer-first", None, None, &request);
+    command.caller.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
     assert!(matches!(
         router.dispatch(command, request).await.unwrap(),
         LocalDaemonResponse::InteractionResponded { .. }

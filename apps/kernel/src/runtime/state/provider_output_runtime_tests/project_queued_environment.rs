@@ -219,7 +219,16 @@ async fn run_case(case: Case) {
                         queued.id()
                     );
                     runtime
-                        .resolve_runtime_interaction(session.id(), interaction.id(), "cancel", None)
+                        .answer_terminal_runtime_interaction(
+                            session.id(),
+                            interaction.id(),
+                            "cancel",
+                            None,
+                            Some(session.owner_user_id()),
+                            None,
+                            None,
+                            Some(crate::local::KernelConnectionClass::Terminal),
+                        )
                         .await
                         .unwrap();
                     break;

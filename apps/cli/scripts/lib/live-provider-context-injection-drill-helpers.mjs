@@ -127,12 +127,12 @@ export function unwrap(response, variant) {
   return value
 }
 
-export async function waitForKernelIpc(LocalIpcClient, listSessionsRequest, kernelUrl, child, timeoutMs = 25_000) {
+export async function waitForKernelIpc(LocalIpcClient, listSessionsRequest, kernelUrl, child, timeoutMs = 25_000, localAuthEnvironment = process.env) {
   const deadline = Date.now() + timeoutMs
   let lastError = null
   while (Date.now() < deadline) {
     if (child?.exitCode != null) throw new Error(`kernel exited before ready: ${child.exitCode}`)
-    const client = new LocalIpcClient(kernelUrl)
+    const client = new LocalIpcClient(kernelUrl, { localAuthEnvironment })
     try {
       await client.send(listSessionsRequest())
       await client.close().catch(() => {})

@@ -33,6 +33,7 @@ pub(crate) struct ProviderLaunchCommandExecutor {
 #[derive(Clone)]
 pub(crate) struct ProviderLaunchStore {
     state: KernelRuntimeState,
+    external_grant_id: Option<String>,
 }
 
 #[derive(Clone, Default)]
@@ -47,6 +48,7 @@ pub(crate) async fn execute_provider_launch_command(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let command_trace = CommandTrace::from_command(command);
     ProviderLaunchCommandExecutor::new(runtime_state.clone())
+        .with_external_grant(command.external_grant_id())
         .execute(request, command_caller_user_id(command), command_trace)
         .await
 }
@@ -57,6 +59,7 @@ pub(crate) async fn execute_provider_batch_launch_command(
     request: LaunchProviderRunsRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     ProviderLaunchCommandExecutor::new(runtime_state.clone())
+        .with_external_grant(command.external_grant_id())
         .execute_batch(
             request,
             command_caller_user_id(command),
@@ -72,12 +75,18 @@ impl ProviderLaunchCommandExecutor {
         }
     }
 
+    fn with_external_grant(mut self, grant_id: Option<String>) -> Self {
+        self.store.external_grant_id = grant_id;
+        self
+    }
+
     pub(crate) async fn execute(
         &self,
         request: LaunchProviderRunRequest,
         caller_user_id: String,
         command_trace: CommandTrace,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.store.authorize_launch(&request)?;
         if let Some(response) = self
             .store
             .launch_remote_native_provider_run(&request, &caller_user_id)
@@ -86,7 +95,10 @@ impl ProviderLaunchCommandExecutor {
             return Ok(response);
         }
         let launch_started_at_ms = crate::runtime::command_latency::now_ms();
-        let start_outcome = self.store.start_launch(request, caller_user_id).await?;
+        let start_outcome = self
+            .store
+            .start_launch(request.clone(), caller_user_id)
+            .await?;
         let (started, runtime_init_delay_ms) = match start_outcome {
             ProviderLaunchStartOutcome::Reused(provider_run) => {
                 return Ok(LocalDaemonResponse::ProviderRunLaunched { provider_run });
@@ -106,6 +118,10 @@ impl ProviderLaunchCommandExecutor {
         tokio::spawn(async move {
             if runtime_init_delay_ms > 0 {
                 sleep(Duration::from_millis(runtime_init_delay_ms)).await;
+            }
+            if let Err(error) = store.authorize_launch(&request) {
+                store.fail_launch(&started, &error).await;
+                return;
             }
             let binding_started_at_ms = log_provider_runtime_binding_started(
                 &command_trace,
@@ -367,7 +383,15 @@ fn provider_batch_failures(
 
 impl ProviderLaunchStore {
     pub(crate) fn new(state: KernelRuntimeState) -> Self {
-        Self { state }
+        Self {
+            state,
+            external_grant_id: None,
+        }
+    }
+
+    fn authorize_launch(&self, request: &LaunchProviderRunRequest) -> Result<(), DaemonError> {
+        self.state
+            .authorize_provider_launch_grant(self.external_grant_id.as_deref(), request)
     }
 
     async fn normalize_batch_launch_targets(
@@ -404,7 +428,11 @@ impl ProviderLaunchStore {
         caller_user_id: String,
     ) -> Result<ProviderLaunchStartOutcome, DaemonError> {
         self.state
-            .start_provider_launch(request, caller_user_id)
+            .start_provider_launch_with_grant(
+                request,
+                caller_user_id,
+                self.external_grant_id.as_deref(),
+            )
             .await
     }
 
@@ -414,7 +442,11 @@ impl ProviderLaunchStore {
         caller_user_id: &str,
     ) -> Result<Option<LocalDaemonResponse>, DaemonError> {
         self.state
-            .launch_remote_native_provider_run(request, caller_user_id)
+            .launch_remote_native_provider_run_with_grant(
+                request,
+                caller_user_id,
+                self.external_grant_id.as_deref(),
+            )
             .await
     }
 

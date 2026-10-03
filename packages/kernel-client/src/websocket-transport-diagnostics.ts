@@ -1,5 +1,5 @@
 export function isWebSocketEndpoint(value: string) {
-  return value.startsWith("ws://") || value.startsWith("wss://")
+  return value.startsWith("ws+unix://") || value.startsWith("ws://") || value.startsWith("wss://")
 }
 
 export function formatTransportError(error: unknown, endpoint: string): string {

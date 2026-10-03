@@ -144,10 +144,10 @@ async function sendWithTimeout(client, request, timeoutMs, description) {
   ])
 }
 
-async function waitForKernel(LocalIpcClient, requests, kernelUrl) {
+async function waitForKernel(LocalIpcClient, requests, kernelUrl, localAuthEnvironment) {
   let lastError = null
   for (let attempt = 0; attempt < 80; attempt += 1) {
-    const probe = new LocalIpcClient(kernelUrl)
+    const probe = new LocalIpcClient(kernelUrl, { localAuthEnvironment })
     try {
       await probe.send(requests.listSessionsRequest())
       await probe.close().catch(() => {})
@@ -316,11 +316,11 @@ async function main() {
     relayChild = spawnProcess(relayBinary, [], { cwd: repoRoot, env: relayEnv })
     homeChild = spawnProcess(kernelBinary, [], { cwd: repoRoot, env: homeEnv })
     workerChild = spawnProcess(kernelBinary, [], { cwd: repoRoot, env: workerEnv })
-    await waitForKernel(LocalIpcClient, requests, homeKernelUrl)
+    await waitForKernel(LocalIpcClient, requests, homeKernelUrl, homeEnv)
     await waitForRelayTarget(LocalIpcClient, requests, relayUrl, relayToken, 'home')
     await waitForRelayTarget(LocalIpcClient, requests, relayUrl, relayToken, 'worker')
 
-    client = new LocalIpcClient(homeKernelUrl)
+    client = new LocalIpcClient(homeKernelUrl, { localAuthEnvironment: homeEnv })
     const workerKernel = await waitForRemoteKernel(client, requests, workerMachineId, options.timeoutMs, options.pollMs)
     const created = unwrap(await client.send(requests.createSessionRequest(workspace, workspace, 'remote-git-observation')), 'SessionCreated')
     sessionId = created.session.id
