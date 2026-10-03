@@ -57,6 +57,7 @@ export type WorkspaceLayoutProps = {
   onStatusIndicatorBoxRef: RefHandler
   onFooterSummaryBoxRef: RefHandler
   onHotkeysOverlayBoxRef: RefHandler
+  onKernelApprovalBannerRef: RefHandler
   onKernelApprovalBoxRef: RefHandler
 }
 
@@ -297,6 +298,7 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
         </box>
       </box>
 
+      <box ref={props.onKernelApprovalBannerRef} flexShrink={0} flexDirection="column" visible={false} />
       <box
         flexShrink={0}
         overflow="visible"
