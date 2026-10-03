@@ -169,6 +169,8 @@ struct Control {
     update: AtomicBool,
     manual: AtomicBool,
     manual_committed: AtomicBool,
+    /// Native ownership ended; terminal persistence/thread teardown may remain.
+    retiring: AtomicBool,
     done: Mutex<bool>,
     wake: Condvar,
     drain: Mutex<Option<crate::runtime::app_worker::AppWorkerDrain>>,
