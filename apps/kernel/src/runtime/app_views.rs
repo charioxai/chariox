@@ -723,7 +723,7 @@ impl AppViews {
 /// so retry without consuming the cold-restore failure budget.
 pub(crate) fn slice_busy(error: &str) -> bool {
     error.contains("already has an active")
-        || error.contains("Room Environment operation admission deadline expired before dispatch")
+        || error.contains(crate::slice::ENVIRONMENT_USE_ADMISSION_EXPIRED)
 }
 
 /// Projects the Room again after a view's first call. Another Room command
@@ -1222,7 +1222,10 @@ mod reconnect_tests {
             let attempt = attempts.get();
             async move {
                 if attempt == 1 {
-                    Err("local transport `browser_controller.route` failed: Room Environment operation admission deadline expired before dispatch".to_owned())
+                    Err(format!(
+                        "local transport `browser_controller.route` failed: {}",
+                        crate::slice::ENVIRONMENT_USE_ADMISSION_EXPIRED
+                    ))
                 } else {
                     Ok(())
                 }

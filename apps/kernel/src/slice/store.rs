@@ -13,6 +13,7 @@ use super::model::{
 use super::ports::{self, LocalDockerSlicePorts};
 
 mod environment;
+pub(crate) use environment::ENVIRONMENT_USE_ADMISSION_EXPIRED;
 mod execution_reference;
 mod invariants;
 

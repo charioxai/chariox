@@ -52,7 +52,9 @@ pub use model::{
 use ports::LocalDockerSlicePorts;
 pub(crate) use store::unacknowledged_backup_restore_error;
 pub use store::{SliceAgentAttachment, SliceHostRuntimeState, SliceOperationGuard, SliceStore};
-pub(crate) use store::{SliceEnvironmentUseGuard, ENVIRONMENT_USE_ADMISSION_TIMEOUT};
+pub(crate) use store::{
+    SliceEnvironmentUseGuard, ENVIRONMENT_USE_ADMISSION_EXPIRED, ENVIRONMENT_USE_ADMISSION_TIMEOUT,
+};
 
 #[cfg(test)]
 mod tests {

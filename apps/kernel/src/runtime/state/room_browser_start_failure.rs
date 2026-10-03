@@ -1,10 +1,11 @@
 //! A refused dispatch is recoverable without replacing the Room's runtime.
 use crate::error::DaemonError;
 use crate::session::EnvironmentLifecycle;
+use crate::slice::ENVIRONMENT_USE_ADMISSION_EXPIRED;
 
 pub(super) fn lifecycle_after_start_error(error: &DaemonError) -> EnvironmentLifecycle {
     if matches!(error, DaemonError::LocalTransport { operation: "browser_controller.route", message }
-        if message == "Room Environment operation admission deadline expired before dispatch")
+        if message == ENVIRONMENT_USE_ADMISSION_EXPIRED)
     {
         // No controller command ran. Retain the runtime and its Tab identities;
         // the normal health poll can finish startup when the slice queue drains.
@@ -35,7 +36,7 @@ mod tests {
         room.reconcile_after_kernel_restart();
         let error = DaemonError::LocalTransport {
             operation: "browser_controller.route",
-            message: "Room Environment operation admission deadline expired before dispatch".into(),
+            message: ENVIRONMENT_USE_ADMISSION_EXPIRED.into(),
         };
         // Startup completion ignores a redundant Degraded -> Degraded
         // transition after restart, just as it does in production.
@@ -54,10 +55,7 @@ mod tests {
                 "browser_controller_scope_denied",
             ),
             ("browser_controller.route", "controller exited"),
-            (
-                "another.operation",
-                "Room Environment operation admission deadline expired before dispatch",
-            ),
+            ("another.operation", ENVIRONMENT_USE_ADMISSION_EXPIRED),
         ] {
             let error = DaemonError::LocalTransport {
                 operation,
